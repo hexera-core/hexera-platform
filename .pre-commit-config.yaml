@@ -1,0 +1,26 @@
+# Responsibility: Run the fast local checks before a commit - lint, whitespace, parseability, secret detection.
+# Boundaries: a local convenience; CI, not this file, is what blocks a merge.
+
+# Pre-commit hooks - catch issues in 5 seconds before CI catches them in 5 minutes.
+# Install:  pip install pre-commit && pre-commit install
+# (Ruff lint here; mypy runs in CI - it needs the project's deps. Ruff-format is
+#  deliberately NOT enabled yet, to avoid a one-shot reformat of the whole tree.)
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.19
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key          # block accidental secret commits
+      - id: debug-statements

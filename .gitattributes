@@ -1,0 +1,10 @@
+# Responsibility: Exempt machine-emitted CAD and mesh fixtures from the whitespace linter.
+# Boundaries: one attribute per generated format, so `git diff --check` stays meaningful for hand-edited source.
+
+# Generated CAD / mesh-surface fixtures are machine-emitted text (OpenCASCADE STEP, VTK XML).
+# They carry format-inherent trailing whitespace and are opaque data, not hand-edited source -
+# exempt them from the whitespace linter so `git diff --check` stays meaningful for real code.
+*.step -whitespace
+*.stp  -whitespace
+*.vtp  -whitespace
+*.stl  -whitespace

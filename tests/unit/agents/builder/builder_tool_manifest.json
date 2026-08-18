@@ -1,0 +1,246 @@
+{
+ "actions": {
+  "configure_mesh": {
+   "async": false,
+   "qualname": "Setting the meshing strategy"
+  },
+  "geometry_report": {
+   "async": false,
+   "qualname": "Inspecting the geometry"
+  },
+  "list_directory": {
+   "async": false,
+   "qualname": "Checking the workspace"
+  },
+  "measure_scales": {
+   "async": false,
+   "qualname": "Measuring the body's length scales"
+  },
+  "read_file": {
+   "async": false,
+   "qualname": "Reading the brief"
+  },
+  "run_mesh": {
+   "async": false,
+   "qualname": "Generating the mesh"
+  },
+  "run_python": {
+   "async": false,
+   "qualname": "Computing sizes"
+  },
+  "submit_mesh": {
+   "async": false,
+   "qualname": "Submitting the mesh"
+  },
+  "web_search": {
+   "async": false,
+   "qualname": "Looking up guidance"
+  },
+  "write_file": {
+   "async": false,
+   "qualname": "Writing the mesh spec"
+  }
+ },
+ "engine_scope": {
+  "cfmesh": [
+   "read_file",
+   "list_directory",
+   "web_search",
+   "geometry_report",
+   "submit_mesh",
+   "measure_scales",
+   "run_mesh",
+   "run_python",
+   "configure_mesh"
+  ],
+  "gmsh": [
+   "write_file",
+   "read_file",
+   "list_directory",
+   "web_search",
+   "geometry_report",
+   "submit_mesh",
+   "run_mesh",
+   "run_python"
+  ],
+  "snappy": [
+   "read_file",
+   "list_directory",
+   "web_search",
+   "geometry_report",
+   "submit_mesh",
+   "measure_scales",
+   "run_mesh",
+   "run_python",
+   "configure_mesh"
+  ],
+  "snappy_multiregion": [
+   "read_file",
+   "list_directory",
+   "web_search",
+   "geometry_report",
+   "submit_mesh",
+   "measure_scales",
+   "run_mesh",
+   "run_python",
+   "configure_mesh"
+  ],
+  "vmtk": [
+   "read_file",
+   "list_directory",
+   "web_search",
+   "geometry_report",
+   "submit_mesh",
+   "measure_scales",
+   "run_mesh",
+   "run_python",
+   "configure_mesh"
+  ]
+ },
+ "registry": [
+  {
+   "description_sha": "e57f0e9b6cd6c368",
+   "name": "write_file",
+   "position": 0,
+   "schema": {
+    "properties": {
+     "content": {
+      "description": "Full file content to write.",
+      "type": "string"
+     },
+     "path": {
+      "description": "Relative path from workspace root, e.g. 'notes.txt' or the engine's spec file",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path",
+     "content"
+    ],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "39751849a86bab90",
+   "name": "read_file",
+   "position": 1,
+   "schema": {
+    "properties": {
+     "path": {
+      "description": "Relative path from workspace root.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "2ed18e7cfadf427e",
+   "name": "list_directory",
+   "position": 2,
+   "schema": {
+    "properties": {
+     "path": {
+      "description": "Relative path from workspace root. Use '.' for root.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "71822e17a3da2926",
+   "name": "web_search",
+   "position": 3,
+   "schema": {
+    "properties": {
+     "query": {
+      "description": "A specific, self-contained question (include the mesher/tool context).",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "b635ca48968cc9d3",
+   "name": "geometry_report",
+   "position": 4,
+   "schema": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "13a1e74422cbf486",
+   "name": "submit_mesh",
+   "position": 5,
+   "schema": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "28d582abe9778dba",
+   "name": "measure_scales",
+   "position": 6,
+   "schema": {
+    "properties": {
+     "geometry_file": {
+      "description": "body STL (default input.stl)",
+      "type": "string"
+     }
+    },
+    "required": [],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "269eef89aaff6f9f",
+   "name": "run_mesh",
+   "position": 7,
+   "schema": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "type": "function"
+  },
+  {
+   "description_sha": "43f328f49857d2d6",
+   "name": "run_python",
+   "position": 8,
+   "schema": {
+    "properties": {
+     "code": {
+      "description": "Python 3 source; print() the values you need back.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "type": "object"
+   },
+   "type": "function"
+  }
+ ]
+}

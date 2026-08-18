@@ -1,0 +1,591 @@
+{
+ "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
+ "denominator": 62,
+ "proven": 62,
+ "unproven": 0,
+ "historical_reconciliation": {
+  "historical_execution_rows": 63,
+  "historical_result": "50 proven / 13 unproven / 63 rows",
+  "retired_to_terminal_authority": 2,
+  "relocated_one_to_one": 1,
+  "renamed_in_place": 17,
+  "unchanged": 43,
+  "per_row_historical_status": "unrecorded",
+  "per_row_historical_status_note": "The historical 50/13 split was recorded as an aggregate only. The checkpoint that established the original 34 proven rows kept no per-row status list, so which rows were already proven before this campaign is not recoverable from retained evidence and is not inferred here. Every row's CURRENT status is derived individually below.",
+  "retired": [
+   {
+    "historical_alias": "E034",
+    "historical_id": "application/artifact_uploader.py::deliver_succeeded_run::note#1",
+    "current_lifecycle": "post-ownership-terminal",
+    "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
+   },
+   {
+    "historical_alias": "E035",
+    "historical_id": "application/artifact_uploader.py::deliver_succeeded_run::error#1",
+    "current_lifecycle": "post-ownership-terminal",
+    "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
+   }
+  ],
+  "new_since_reconciliation": 1
+ },
+ "rows": [
+  {
+   "canonical_id": "agents/builder/agent.py::node_builder::attempt#1",
+   "historical_alias": "E015",
+   "historical_id": "agents/builder/agent.py::node_builder::attempt#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/agent.py::node_builder::note#1",
+   "historical_alias": "E014",
+   "historical_id": "agents/builder/agent.py::node_builder::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-budget:exhausted-before-start"
+  },
+  {
+   "canonical_id": "agents/builder/agent.py::node_builder::note#2",
+   "historical_alias": "E016",
+   "historical_id": "agents/builder/agent.py::node_builder::note#2",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/agent.py::node_builder::note#3",
+   "historical_alias": "E017",
+   "historical_id": "agents/builder/agent.py::node_builder::note#3",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/executor.py::BuilderToolExecutor._publish_for::file#1",
+   "historical_alias": "E020",
+   "historical_id": "agents/builder/executor.py::_publish_for::file#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/executor.py::BuilderToolExecutor._publish_for::meshed#1",
+   "historical_alias": "E018",
+   "historical_id": "agents/builder/executor.py::_publish_for::meshed#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/executor.py::BuilderToolExecutor._publish_for::search#1",
+   "historical_alias": "E021",
+   "historical_id": "agents/builder/executor.py::_publish_for::search#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/executor.py::BuilderToolExecutor._publish_for::warn#1",
+   "historical_alias": "E019",
+   "historical_id": "agents/builder/executor.py::_publish_for::warn#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/executor.py::BuilderToolExecutor._run_announced_mesh::meshing#1",
+   "historical_alias": "E024",
+   "historical_id": "agents/builder/tools/meshing.py::run_mesh::meshing#1",
+   "mapping": "relocated",
+   "mapping_reason": "relocated one-to-one to the async executor boundary",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/loop.py::_run_tool_loop._on_round::note#1",
+   "historical_alias": "E022",
+   "historical_id": "agents/builder/loop.py::_on_round::note#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/builder/loop_policy.py::BuilderLoopPolicy.close_out::note#1",
+   "historical_alias": "E023",
+   "historical_id": "agents/builder/loop_policy.py::close_out::note#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-policy:auto-submit-close-out"
+  },
+  {
+   "canonical_id": "agents/loop/tracing.py::around_begin::reasoning#1",
+   "historical_alias": "E027",
+   "historical_id": "agents/loop/tracing.py::round_begin::reasoning#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/loop/tracing.py::around_end::reasoning#1",
+   "historical_alias": "E028",
+   "historical_id": "agents/loop/tracing.py::round_end::reasoning#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/loop/tracing.py::atool_call::tool_call#1",
+   "historical_alias": "E025",
+   "historical_id": "agents/loop/tracing.py::tool_call::tool_call#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/loop/tracing.py::atool_result::tool_result#1",
+   "historical_alias": "E026",
+   "historical_id": "agents/loop/tracing.py::tool_result::tool_result#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "agents/reviewer/visual.py::_nonverdict::warn#1",
+   "historical_alias": "E032",
+   "historical_id": "agents/reviewer/visual.py::_nonverdict::warn#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "reviewer:unvalidated-execution-refusal"
+  },
+  {
+   "canonical_id": "agents/reviewer/visual.py::_publish_inspection_image::screenshot#1",
+   "historical_alias": "E033",
+   "historical_id": "agents/reviewer/visual.py::_publish_inspection_image::screenshot#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "reviewer:completed-review-with-verdict"
+  },
+  {
+   "canonical_id": "agents/reviewer/visual.py::_translate_outcome::verdict#1",
+   "historical_alias": "E031",
+   "historical_id": "agents/reviewer/visual.py::_translate_outcome::verdict#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "reviewer:completed-review-with-verdict"
+  },
+  {
+   "canonical_id": "agents/reviewer/visual.py::node_reviewer::note#1",
+   "historical_alias": "E030",
+   "historical_id": "agents/reviewer/visual.py::node_reviewer::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "reviewer:completed-review-with-verdict"
+  },
+  {
+   "canonical_id": "agents/reviewer/visual.py::node_reviewer::stage#1",
+   "historical_alias": "E029",
+   "historical_id": "agents/reviewer/visual.py::node_reviewer::stage#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "reviewer:completed-review-with-verdict"
+  },
+  {
+   "canonical_id": "application/pipeline_run.py::_run_async._announce_dispute::note#1",
+   "historical_alias": "E049",
+   "historical_id": "application/pipeline_run.py::_announce_dispute::anote#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "pipeline-run:pinned-engine-and-dispute"
+  },
+  {
+   "canonical_id": "application/pipeline_run.py::_run_async._announce_dispute::stage#1",
+   "historical_alias": "E048",
+   "historical_id": "application/pipeline_run.py::_announce_dispute::astage#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "pipeline-run:pinned-engine-and-dispute"
+  },
+  {
+   "canonical_id": "application/pipeline_run.py::_run_async._announce_engine::note#1",
+   "historical_alias": "E047",
+   "historical_id": "application/pipeline_run.py::_announce_engine::anote#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "pipeline-run:pinned-engine-and-dispute"
+  },
+  {
+   "canonical_id": "application/pipeline_run.py::_run_async._announce_engine::stage#1",
+   "historical_alias": "E046",
+   "historical_id": "application/pipeline_run.py::_announce_engine::astage#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "pipeline-run:pinned-engine-and-dispute"
+  },
+  {
+   "canonical_id": "contracts/rationale.py::_asay::rationale#1",
+   "historical_alias": "E052",
+   "historical_id": "contracts/rationale.py::_say::rationale#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#3",
+   "historical_alias": "E062",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-refuse"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::meshed#1",
+   "historical_alias": "E066",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::meshed#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#1",
+   "historical_alias": "E063",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#2",
+   "historical_alias": "E064",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#2",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#3",
+   "historical_alias": "E065",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#3",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#4",
+   "historical_alias": "E067",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#4",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#5",
+   "historical_alias": "E068",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#5",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-exhaust"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#6",
+   "historical_alias": "E069",
+   "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#6",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-exhaust"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::error#1",
+   "historical_alias": "E054",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::error#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:reject"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::meshed#1",
+   "historical_alias": "E058",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::meshed#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#1",
+   "historical_alias": "E055",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#2",
+   "historical_alias": "E056",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#2",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#3",
+   "historical_alias": "E057",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#3",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#4",
+   "historical_alias": "E059",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#4",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#5",
+   "historical_alias": "E060",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#5",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:exhaust"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#6",
+   "historical_alias": "E061",
+   "historical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#6",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:exhaust"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_op_begin::tool_call#1",
+   "historical_alias": "E070",
+   "historical_id": "engines/snappy/drivers.py::_op_begin::tool_call#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_op_end::tool_result#1",
+   "historical_alias": "E071",
+   "historical_id": "engines/snappy/drivers.py::_op_end::tool_result#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_run_snappy_timed::meshing#1",
+   "historical_alias": "E053",
+   "historical_id": "engines/snappy/drivers.py::_run_snappy_timed::meshing#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/planner.py::_plan_trace_begin::reasoning#1",
+   "historical_alias": "E072",
+   "historical_id": "engines/snappy/planner.py::_plan_trace_begin::reasoning#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "engines/snappy/planner.py::_plan_trace_end::reasoning#1",
+   "historical_alias": "E073",
+   "historical_id": "engines/snappy/planner.py::_plan_trace_end::reasoning#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "builder-driver:snappy-retry"
+  },
+  {
+   "canonical_id": "pipeline/engine_select.py::_publish::note#1",
+   "historical_alias": "E075",
+   "historical_id": "pipeline/engine_select.py::_publish::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "engine-select:internal-topology"
+  },
+  {
+   "canonical_id": "pipeline/engine_select.py::_publish::stage#1",
+   "historical_alias": "E074",
+   "historical_id": "pipeline/engine_select.py::_publish::stage#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "engine-select:internal-topology"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::check#1",
+   "historical_alias": "E078",
+   "historical_id": "pipeline/executor.py::node_executor::check#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:early_reject"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::check#2",
+   "historical_alias": "E080",
+   "historical_id": "pipeline/executor.py::node_executor::check#2",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:gate_fail"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::check#3",
+   "historical_alias": "E081",
+   "historical_id": "pipeline/executor.py::node_executor::check#3",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:gate_fail"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::check#4",
+   "historical_alias": "E083",
+   "historical_id": "pipeline/executor.py::node_executor::check#4",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:extent_reject"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::check#5",
+   "historical_alias": "E084",
+   "historical_id": "pipeline/executor.py::node_executor::check#5",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:solv_fail"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::check#6",
+   "historical_alias": "E079",
+   "historical_id": "pipeline/executor.py::_report_gate::check#1",
+   "mapping": "renamed",
+   "mapping_reason": "same site under the current canonical spelling",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:all_pass"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::note#1",
+   "historical_alias": "E077",
+   "historical_id": "pipeline/executor.py::node_executor::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:early_reject"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::note#2",
+   "historical_alias": "E082",
+   "historical_id": "pipeline/executor.py::node_executor::note#2",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:all_pass"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::note#3",
+   "historical_alias": "E085",
+   "historical_id": "pipeline/executor.py::node_executor::note#3",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:all_pass"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::note#4",
+   "historical_alias": "E086",
+   "historical_id": "pipeline/executor.py::node_executor::note#4",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:gate_fail"
+  },
+  {
+   "canonical_id": "pipeline/executor.py::node_executor::stage#1",
+   "historical_alias": "E076",
+   "historical_id": "pipeline/executor.py::node_executor::stage#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "pipeline-executor:early_reject"
+  },
+  {
+   "canonical_id": "pipeline/geometry_admission.py::_publish::note#1",
+   "historical_alias": "E088",
+   "historical_id": "pipeline/geometry_admission.py::_publish::note#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "geometry-admission:measured-rejection"
+  },
+  {
+   "canonical_id": "pipeline/geometry_admission.py::_publish::stage#1",
+   "historical_alias": "E087",
+   "historical_id": "pipeline/geometry_admission.py::_publish::stage#1",
+   "mapping": "unchanged",
+   "mapping_reason": "identity unchanged",
+   "status": "proven",
+   "proof_scenario": "geometry-admission:measured-rejection"
+  },
+  {
+   "canonical_id": "agents/loop/tracing.py::areasoning_sink._publish::reasoning#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "a new publication: a round's reasoning is published AS IT ARRIVES, against the id around_begin opened, so a long round shows its thinking instead of an empty card",
+   "status": "proven",
+   "proof_scenario": "builder-loop:cfmesh"
+  }
+ ]
+}

@@ -1,0 +1,23 @@
+# Responsibility: Schedule version-update pull requests for the two dependency surfaces this repository has.
+# Boundaries: it proposes updates; the pins stay owned by requirements/ and by the action digests in ci.yml.
+
+# Dependabot: version-update PRs for the two dependency surfaces this repository has.
+# Python is ONE pinned environment (requirements/runtime.txt + requirements/dev.txt - enforced by
+# devtools/quality/check_dependency_drift.py); GitHub Actions are SHA-pinned in ci.yml, and Dependabot
+# understands the `sha  # vX.Y.Z` convention and keeps the comment in sync.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /requirements        # runtime.txt + dev.txt live here
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

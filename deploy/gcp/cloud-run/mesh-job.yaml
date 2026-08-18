@@ -1,0 +1,48 @@
+# Responsibility: Declare the Cloud Run mesh job - its pinned image, identity, resources and retry policy.
+# Owns: the immutable command; per-run input arrives as execution overrides, so the job holds no per-run state.
+# Boundaries: rendered by create-mesh-tier.sh; it carries no secret, and a supplied job is never replaced by it.
+
+# Cloud Run mesh JOB (Knative run.googleapis.com/v1). Rendered by scripts/create-mesh-tier.sh
+# (envsubst) then applied with `gcloud run jobs replace` - only when this tooling OWNS the mesh
+# job. A supplied, pre-existing job is validated, never
+# replaced by this manifest.
+#
+# The command is IMMUTABLE: `python -m meshpipeline.runtime.mesh_runner`. It carries no per-run
+# input; the pipeline supplies INPUT_URI / OUTPUT_URI / ENGINE / TIMEOUT per execution as ENV
+# overrides (adapters/mesh_execution/cloud_run_client._trigger_job). The static job therefore holds
+# NO database/Redis/model secrets - the mesh identity is compute-only and reads/writes solely the
+# signed exchange objects it is handed.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: ${CLOUDRUN_MESH_JOB}
+  labels:
+    app: hexera
+    component: mesh
+    version: "0-0-1"
+    deployment-id: ${DEPLOYMENT_ID}
+    managed-by: deploy
+spec:
+  template:               # ExecutionTemplate
+    metadata:
+      labels:
+        app: mesh
+        component: mesh
+        deployment-id: ${DEPLOYMENT_ID}
+    spec:
+      parallelism: 1
+      taskCount: 1
+      template:           # TaskTemplate
+        spec:
+          serviceAccountName: ${MESH_SA_EMAIL}
+          maxRetries: 0                       # a mesh run is expensive + externally observable; no silent retry
+          timeoutSeconds: ${MESH_TIMEOUT_SECONDS}
+          containers:
+            - image: ${MESH_IMAGE}
+              command: ["python", "-m", "meshpipeline.runtime.mesh_runner"]
+              # NO env/secrets here: INPUT_URI/OUTPUT_URI/ENGINE/TIMEOUT arrive as per-execution
+              # overrides; the mesh identity never receives DATABASE_URL/REDIS_URL/model keys.
+              resources:
+                limits:
+                  cpu: "${MESH_CPU}"
+                  memory: ${MESH_MEMORY}

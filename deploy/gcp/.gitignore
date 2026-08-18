@@ -1,0 +1,7 @@
+# Responsibility: Keep discovered deployment state and rendered manifests out of version control.
+# Boundaries: this state is machine-local and every value in it is re-derived by discovery.
+
+# Written by bootstrap/discovery and by the manifest renderer. Both are machine-local: the values
+# are re-derived on demand, and generated.env names the operator's own project resources.
+generated.env
+.rendered/

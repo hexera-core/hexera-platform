@@ -1,0 +1,41 @@
+# Responsibility: Keep secrets, non-redistributable fixtures, runtime data and local scratch out of version control.
+# Boundaries: ignoring only - a path already tracked stays tracked until it is removed explicitly.
+
+# THE repository-local root: scratch, evidence, and every tool cache this project can redirect
+# (ruff, mypy and pytest write under it - see pyproject.toml). Nothing here is ever part of a build.
+/BETA/
+
+# Secrets - never commit. .env.example is the tracked template and is deliberately not matched.
+.env
+*.pem
+*.key
+# The canonical home of the local Google credential, and the cloud credential directory some
+# tooling writes. Root-anchored: they protect THE directory, not any path ending in the same word.
+/secrets/
+/.local/
+
+# Real external CAD, licensed and of unconfirmed redistribution rights. Local-only and per-machine;
+# the tests that want it report its absence rather than committing a copy.
+tests/fixtures/external/geometry/*.step
+tests/fixtures/external/geometry/*.STEP
+tests/fixtures/external/geometry/*.stp
+tests/fixtures/external/geometry/*.vtp
+tests/fixtures/external/geometry/*.VTP
+
+# Runtime roots the application itself writes at their configured defaults (DATA_ROOT,
+# WORKSPACE_BASE), and the deployment state Gate C and Gate D write (release.json,
+# deployment.json). Redirecting these would move a real runtime or deployment artifact, not a cache.
+data/
+workspaces/
+deploy/output/
+
+# The virtualenv setup.sh creates and the Makefile invokes by path, and the packaging output
+# `make wheel` writes before deleting. Both are fixed locations that tooling depends on.
+/.venv/
+/build/
+/dist/
+*.egg-info/
+
+# Python bytecode. Redirecting it means changing interpreter behaviour repository-wide.
+__pycache__/
+*.py[cod]

@@ -1,0 +1,22 @@
+# Responsibility: Enable the JSON search format the web_search tool requires, reproducibly.
+# Boundaries: it overrides one SearXNG default; everything else, including the secret, comes from elsewhere.
+
+# WHY THIS FILE EXISTS. SearXNG ships `search.formats: [html]`, so the `format=json` request that
+# meshpipeline/adapters/search/searxng.py makes is answered with 403 and an HTML body. The compose
+# file used to claim JSON was "enabled via settings below" while nothing enabled it, and the image
+# generates its own settings.yml whenever the volume is empty - so the capability disappeared with
+# every volume reset. Tracking it here is what makes it survive one.
+#
+# The image's entrypoint creates /etc/searxng/settings.yml ONLY when that path does not exist, so
+# mounting this read-only over it is supported: the entrypoint finds a file and leaves it alone.
+#
+# NO SECRET LIVES HERE. SearXNG reads `server.secret_key` from the SEARXNG_SECRET environment
+# variable (searx/settings_defaults.py), which the compose file supplies; a committed placeholder
+# would also be refused outright - the server exits rather than start with the upstream default.
+use_default_settings: true
+
+search:
+  # `json` is the contract the product depends on; `html` stays so the debug UI still works.
+  formats:
+    - html
+    - json

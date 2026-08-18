@@ -1,0 +1,110 @@
+# Responsibility: Pin the one runtime and test environment every image, CI job and virtualenv installs.
+# Owns: the direct version of each runtime dependency, hand-edited, with no lock or compile step.
+# Boundaries: tooling that must not ship in an image is in dev.txt; the resolved closure is in constraints.txt.
+
+# requirements/runtime.txt - the CANONICAL runtime + test environment (Python 3.11).
+#
+# OWNERSHIP: HAND-EDITED. This is the single source of truth for runtime dependency versions.
+# It is NOT generated - there is no lock/compile step. Edit pins here directly.
+#   • pyproject.toml declares NO runtime dependencies (the wheel installs --no-deps into an
+#     environment built from THIS file), so the two can never contradict.
+#   • The Docker base image, CI and `make setup` all install this file with
+#     `-c requirements/constraints.txt`, so every environment resolves the same closure.
+#   • `make dependencies` validates that this stays the only runtime source of truth
+#     (devtools/quality/check_dependency_drift.py).
+# Tooling that must never ship in an image (ruff/mypy/build) lives in requirements/dev.txt.
+
+# Core framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17        # REQUIRED: Starlette imports it at request time for the upload route's UploadFile
+
+# LangGraph + LangChain
+langgraph==1.0.10
+langchain-core==1.2.17
+langgraph-checkpoint-postgres==3.0.4
+
+# LLM clients (all three providers use OpenAI wire protocol)
+openai==1.59.3
+tiktoken==0.13.0
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+psycopg2-binary==2.9.10
+# psycopg[binary] is required by langgraph.checkpoint.postgres.aio (AsyncPostgresSaver).
+# Without it the worker silently falls back to MemorySaver and every requeue/resume
+# restarts the pipeline from scratch instead of resuming from checkpoint.
+psycopg[binary]==3.2.3
+
+# Celery + Redis
+celery==5.4.0
+redis==5.2.1
+sentry-sdk==2.19.2
+kombu==5.4.2
+
+# MinIO / S3
+minio==7.2.11
+
+# Knowledge: failure recovery is served by deterministic keyed dispatch inside
+# meshpipeline/pipeline/classifier.py; the long tail is served by the web_search sub-agent
+# (SearXNG + DeepSeek V4-Flash) over httpx. The old RAG stack (chromadb,
+# rank-bm25) has been removed.
+
+# Mesh geometry
+numpy==1.26.4
+
+# Mesh renderer - VTK includes EGL support (GPU-accelerated headless rendering).
+# PINNED EXACTLY: these are graphics libraries whose offscreen-render behaviour
+# changes between minor versions. Unpinned (>=) ranges previously let `docker
+# compose build` silently drift VTK 9.3.1 → 9.6.1 across rebuilds, which changed
+# render-context thread-affinity enforcement and surfaced a SIGABRT in the
+# reviewer sandbox. Bump these deliberately, never implicitly.
+pyvista==0.48.2
+vtk==9.6.2          # pinned to match cadquery-ocp (OCC binding) which requires ==9.6.2
+pillow==12.2.0
+
+# Config
+python-dotenv==1.0.1
+typing_extensions==4.12.2
+
+# Utilities
+httpx==0.27.2
+
+# Observability
+langfuse==2.36.2
+prometheus-fastapi-instrumentator==7.0.2
+
+# Dev / test
+pytest==8.3.4
+pytest-asyncio==0.24.0
+
+scipy==1.14.1
+# gmsh: builds the reviewer's renderable surface mesh (mesh.msh) from named patches.
+gmsh==4.15.2
+
+# Solvability gate - assemble the discrete FV pressure-Poisson operator (a graph
+# Laplacian over the cfMesh polyMesh owner/neighbour connectivity) and solve it
+# with PCG + pyamg's algebraic multigrid. The same solver stack production CFD
+# codes use for the pressure step; zero OpenFOAM-case dependency.
+pyamg==5.3.0
+
+# CAD tessellation (STEP -> STL) via OpenCASCADE BRepMesh for the cfMesh path.
+# Robust + sub-second on intricate assemblies where gmsh's Delaunay remesh is
+# slow/unstable. Provides the OCP module; needs the vtkmodules dir on
+# LD_LIBRARY_PATH (set in worker_entrypoint.sh).
+cadquery-ocp==7.9.3.1.1
+
+
+# --- Observability: OpenTelemetry distributed tracing (env-gated, off by default) ---
+opentelemetry-sdk==1.41.1
+opentelemetry-exporter-otlp-proto-http==1.41.1
+opentelemetry-instrumentation-fastapi==0.62b1
+opentelemetry-instrumentation-httpx==0.62b1
+opentelemetry-instrumentation-celery==0.62b1
+opentelemetry-instrumentation-sqlalchemy==0.62b1
+
+# Off-box compute: Cloud Run Job meshing (see adapters/mesh_execution/cloud_run_client.py).
+google-cloud-storage==2.18.2
+google-auth==2.35.0

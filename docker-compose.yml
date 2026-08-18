@@ -1,0 +1,348 @@
+# Responsibility: Define the local development stack - the application services and the data services they need.
+# Owns: the sibling addresses and in-image paths, the only values a container cannot read from .env.
+# Boundaries: development only; each service reads its configuration through env_file, and no secret is set here.
+
+# The build arguments every revision-checked application image shares. `make rebuild` computes
+# MESH_SOURCE_TREE from the working tree (tests/integration/source_digest.sh) and exports it, so
+# the supported rebuild always stamps the image with the source it was actually built from.
+# Building through a bare `docker compose build` leaves it EMPTY - not "unknown" - and the
+# integration preflight refuses that image, which is the intended outcome: an unstamped image is
+# not provably current.
+x-app-build-args: &app-build-args
+  MESH_SOURCE_TREE: ${MESH_SOURCE_TREE-}
+  # Carried through to the image label. The Makefile targets and setup export it from the one
+  # authority (src/meshpipeline/__init__.py); supplied or not, Compose renders whatever it is given.
+  APP_VERSION: ${APP_VERSION-}
+
+# Mesh application - docker-compose.yml
+# Services: api, worker (simulation), worker-utility, beat, redis, postgres, minio, searxng
+# Langfuse is NOT bundled in this compose file. To enable tracing, run a
+# separate Langfuse instance and point LANGFUSE_HOST + KEYS at it.
+#
+# Usage:
+#   make dev-up      → start full stack
+#   make dev-down    → stop all
+#   make logs        → tail all service logs
+#
+# PRODUCTION READINESS - HA / single points of failure:
+#   This compose runs ONE instance each of postgres, redis, minio, searxng - fine
+#   for single-node dev/test, but each is a SPOF. The app DEGRADES gracefully (does
+#   not corrupt): /readyz returns 503 when a hard dep is down; the API returns a
+#   clean 500 if the broker can't enqueue; in-flight jobs fail with the blameless
+#   "try again" message; circuit breakers shield the external LLM providers.
+#   For multi-node / HA production, do NOT scale these via compose replicas - use:
+#     • Postgres: managed/replicated (primary+replica) - holds jobs + LangGraph checkpoints
+#     • Redis:    Sentinel or managed (broker + log pub/sub) - the hardest dependency
+#     • MinIO:    distributed mode (or managed S3) - holds the deliverable mesh bundles
+#   api + worker are stateless and DO scale horizontally (add replicas / more workers).
+#   Beat must stay at exactly 1 (duplicate schedulers = duplicate periodic tasks).
+
+# Only what a container cannot read from .env: the addresses its siblings answer on, and the paths
+# inside the image. Everything else arrives through env_file, because ${VAR} sets a key .env omits
+# to the empty string, which overrides the code default instead of leaving it in force.
+x-app-env: &app_env
+  POSTGRES_HOST:     postgres
+  POSTGRES_PORT:     5432
+  MINIO_ENDPOINT:    minio:9000
+  REDIS_URL:         redis://redis:6379/0
+  WEB_SEARCH_BASE_URL: http://searxng:8080
+  WORKSPACE_BASE:    /srv/workspaces
+  DATA_ROOT:         /srv/data
+  JOBS_DIR:          /srv/data/jobs
+  CORPUS_DIR:        /srv/data/corpus
+  OPENFOAM_BASHRC:   /usr/lib/openfoam/openfoam2412/etc/bashrc
+  # Google's OWN name for the project, derived from this product's one so there is still a single
+  # place to set it. A container has no gcloud config and no metadata server, so without it
+  # google.auth.default() can infer no project and warns on every call - about a value the code
+  # discards, since Cloud Run is addressed from GCP_PROJECT_ID. That warning is indistinguishable
+  # from a real missing-project fault, which is the only reason it is worth silencing.
+  GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID-}
+  # Qwen's recommended THINKING generation parameters for the model the reviewer runs. Retained as
+  # an environment-specific override; the open decision is recorded in docs/reference/configuration.md.
+
+services:
+
+  # PostgreSQL - job metadata + LangGraph checkpointer
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Bind to localhost only - never expose the database to the network.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis - Celery broker + result backend + pub/sub log streaming
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    # volatile-lru: only evict keys with TTL set; never evicts the training counter (no TTL).
+    # allkeys-lru would evict the counter on memory pressure, corrupting sample numbering.
+    # Enable auth when REDIS_PASSWORD is set (set it in production). The
+    # broker controls the workers, which run LLM-authored code - an open broker
+    # is a remote-code-execution pivot. An empty --requirepass means no auth
+    # (dev default); set REDIS_PASSWORD + a matching REDIS_URL in production.
+    command: redis-server --maxmemory 512mb --maxmemory-policy volatile-lru --appendonly yes --requirepass "${REDIS_PASSWORD}"
+    volumes:
+      - redis_data:/data
+    ports:
+      # Bind to localhost only - do not expose the broker to the network.
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # MinIO - S3-compatible object storage (STL uploads, mesh outputs, videos)
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    ports:
+      # Bind to localhost only - do not expose object storage to the network.
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # Console UI (localhost:9001)
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # MinIO bucket init - one-shot, exits after creating the bucket
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY};
+      mc mb --ignore-existing local/${MINIO_BUCKET};
+      echo 'MinIO bucket ready';
+      "
+    restart: "no"
+
+  # API - FastAPI + Uvicorn
+  api:
+    build:
+      context: .
+      target: api
+      args: *app-build-args
+    # entrypoint.sh runs the advisory-locked migration wrapper (python -m
+    # meshpipeline.runtime.migrate) then starts uvicorn automatically
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      <<: *app_env
+    volumes:
+      # workspace_data so the /debug reviewer endpoint can read on-disk verdict.json
+      # (the API's primary review source until the workspace is purged).
+      - workspace_data:/srv/workspaces:ro
+      # data/ READ-WRITE for the API: it writes jobs/<id>/input.step at upload;
+      # corpus/ is written by the worker, the API only reads (debug/viewer).
+      - ./data:/srv/data
+      # the FRONTEND is a separate deliverable - bind-mounted so a UI edit is a
+      # browser refresh, not a container rebuild (and so it can be lifted out to a
+      # CDN/Vercel deploy without touching the API image).
+      - ./ui:/srv/ui:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Worker - Celery simulation worker (heavy: OpenFOAM + LLM agents)
+  # Only consumes simulation_jobs queue
+  worker:
+    build:
+      context: .
+      target: pipeline
+      args: *app-build-args
+    entrypoint: ["/srv/worker_entrypoint.sh"]
+    command: >
+      celery -A meshpipeline.runtime.celery_worker worker
+      --queues simulation_jobs
+      --concurrency ${CELERY_WORKER_CONCURRENCY}
+      --loglevel info
+      --hostname simulation@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      <<: *app_env
+      # CORPUS_DIR comes from the *app_env anchor
+      # No GPU - the reviewer sandbox ALWAYS renders in SOFTWARE (Mesa EGL → llvmpipe),
+      # configured in code (pipeline.sandbox). GPU-free by design; runs identically on a
+      # laptop, a CPU-only cloud box, or CI. No GPU/OSMesa switch.
+      NVIDIA_VISIBLE_DEVICES: none
+      # Worker Prometheus exporter (multiprocess: Celery prefork). The main process
+      # serves the aggregated registry on this port; Prometheus scrapes worker:9100.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prom_multiproc
+      GOOGLE_APPLICATION_CREDENTIALS: /gcp/adc.json
+    ports:
+      - "127.0.0.1:9100:9100"   # worker metrics (localhost-only; for scraping/verify)
+    volumes:
+      # Only this service reaches Google, so only this service is given an identity. The
+      # developer's credential is mounted read-only; nothing is copied into repo, image or .env.
+      # /dev/null is not a second default for the setting - it is the fail-CLOSED placeholder
+      # that lets this file render without a credential (config, build, CI). dev-up exports the
+      # resolved path from the one resolver before it starts anything, so the real path never
+      # reaches this fallback, and a stack that did would mount an empty, unusable file.
+      - ${GOOGLE_ADC_FILE:-/dev/null}:/gcp/adc.json:ro
+      - workspace_data:/srv/workspaces
+      - ./data:/srv/data
+      # Integration tests run here (real deps); never baked into the image - .dockerignore
+      # excludes tests/, so this dev-stack bind mount is the only way they exist in a container.
+      # The WHOLE package is mounted, not just integration/: the tier imports root helpers
+      # (tests._geometry_support, tests.harness_provisioning, tests.cad_fixtures, ...) and must
+      # import the same package host execution does, never a second copy.
+      # Run: make test-integration
+      - ./tests:/srv/tests:ro
+    restart: unless-stopped
+    # Workers are CPU/RAM heavy - resource limits prevent runaway jobs.
+    # No GPU - reviewer sandbox renders in software (Mesa EGL/llvmpipe), set in code.
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+          # Container-level fork-bomb guard for LLM-authored run_python (replaces a
+          # per-process RLIMIT_NPROC, which would break OpenBLAS/numpy threads).
+          pids: 4096
+
+  # Celery Beat - periodic task scheduler (exactly one instance)
+  # NEVER scale this service to >1 replica - duplicate Beat instances
+  # would submit duplicate periodic tasks (double cleanup, double requeue).
+  beat:
+    build:
+      context: .
+      target: api
+      args: *app-build-args
+    entrypoint: ["/srv/worker_entrypoint.sh"]
+    command: >
+      celery -A meshpipeline.runtime.celery_worker beat
+      --loglevel info
+      --scheduler celery.beat:PersistentScheduler
+      --schedule /data/beat/celerybeat-schedule
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      <<: *app_env
+    volumes:
+      - workspace_data:/srv/workspaces
+      - beat_data:/data/beat
+    restart: unless-stopped
+
+  # Worker Utility - Celery cleanup + training-export tasks (lightweight, scalable)
+  # Beat scheduler is now a separate 'beat' service - do NOT add --beat here.
+  worker-utility:
+    build:
+      context: .
+      target: api
+      args: *app-build-args
+    entrypoint: ["/srv/worker_entrypoint.sh"]
+    command: >
+      celery -A meshpipeline.runtime.celery_worker worker
+      --queues cleanup_tasks,training_export
+      --concurrency 2
+      --loglevel info
+      --hostname utility@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      <<: *app_env
+      # CORPUS_DIR comes from the *app_env anchor
+      NVIDIA_VISIBLE_DEVICES: none
+    volumes:
+      - workspace_data:/srv/workspaces
+      - ./data:/srv/data
+    restart: unless-stopped
+
+
+  # SearXNG - self-hosted metasearch backing the web_search sub-agent ($0, no API key)
+  searxng:
+    image: searxng/searxng@sha256:3bc6ae0e872ecd4b003e97e9cb58ec0fb56b02d46ad97ea67e2fa4ff2e8ff759
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      # SearXNG refuses to start on its upstream placeholder secret, and it reads this one from the
+      # environment rather than the settings file. The default below is a LOCAL-DEVELOPMENT value,
+      # not a credential: compose publishes this service on 127.0.0.1 only and it signs nothing that
+      # leaves the machine. Set SEARXNG_SECRET in .env for anything else.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-local-development-only-not-a-secret}
+    volumes:
+      - searxng_data:/etc/searxng
+      # JSON output is required by the web_search tool, and SearXNG defaults to html-only. The
+      # image generates its own settings.yml on a fresh volume, so the override has to be tracked
+      # and mounted rather than left in the volume - otherwise every volume reset silently removes
+      # the capability. Read-only: the entrypoint only writes this path when it does not exist.
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    expose:
+      - "8080"
+
+# Named volumes - data persists across container restarts
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  searxng_data:
+  workspace_data:
+  beat_data:       # persists celerybeat-schedule so Beat restarts don't replay all overdue tasks
+
+# Network - all services on a private bridge.
+#
+# DELIBERATELY UNNAMED. Compose scopes the default network to the project ("<project>_default"),
+# and that scoping is load-bearing: service DNS is per-network, so `postgres` must only ever resolve
+# to THIS project's database. A fixed global name silently merges every project that declares it -
+# two checkouts, or a throwaway stack beside the real one, share one network and one set of service
+# names, and a container reaches the wrong database while every log line still reads `postgres`.
+# The volumes above are already project-scoped for the same reason; the network must match them.
+#
+# An existing developer whose stack predates this still has the old fixed network. It is not
+# removed here: `docker compose up` attaches to the project network from now on, and the leftover
+# can be dropped once nothing is on it - see docs/getting-started/setup.md, "Networking".

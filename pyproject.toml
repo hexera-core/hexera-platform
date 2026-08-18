@@ -1,0 +1,131 @@
+# Responsibility: Declare the one installable distribution and configure the toolchain that checks it.
+# Owns: the ruff, mypy, coverage and pytest settings, so a check behaves the same locally and in CI.
+# Boundaries: it declares no runtime dependency - requirements/runtime.txt is the single pinned environment.
+
+# Single installable distribution (PyPA src-layout). The whole product ships as one
+# wheel importable under the neutral `meshpipeline` namespace; multiple runtime images are
+# built from it. Runtime dependencies are pinned in requirements/runtime.txt (the Docker build
+# installs them) rather than duplicated here, to avoid drift.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# meshpipeline is this application's INTERNAL package, not a reusable public library. The metadata
+# here is only what the build and the runtime need: a name to install under, the version derived
+# from the one authority, and the interpreter floor setup.sh gates on. Library-facing fields
+# (description, readme) were removed - nothing reads them, and they only make the distribution look
+# like something meant to be consumed elsewhere. No license field: README.md and the Dockerfile's
+# org.opencontainers.image.licenses label already state the proprietary status.
+[project]
+name = "meshpipeline"
+dynamic = ["version"]
+requires-python = ">=3.11"
+# "Private :: Do Not Upload" is the classifier a package index rejects an upload on. It is metadata
+# only - it does not stop `python -m build` - but it is the one line that turns an accidental
+# upload into a failure at the index instead of a success.
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.11",
+]
+
+# No `dependencies` here ON PURPOSE. requirements/runtime.txt is the single pinned environment the
+# images and CI install (devtools/quality/check_dependency_drift.py enforces that this stays true); a
+# second pinned list here would drift from it. Consumers install the wheel with --no-deps
+# into an environment already built from requirements/runtime.txt.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "meshpipeline.__version__" }
+
+# Runtime package data (read from the installed package, not the checkout): the agent prompt
+# templates and the render palette. Without this the wheel ships only .py and the app can't load
+# its prompts. READMEs are shipped too so the package is self-describing.
+[tool.setuptools.package-data]
+# Only what the INSTALLED application reads: the prompt texts. The review palette is code
+# (render/review_palette.py), not shipped data, and documentation lives in docs/, outside the
+# distribution - a glob matching no file is a promise of something that is not there.
+meshpipeline = ["prompts/**/*.txt"]
+
+# Toolchain config (Ruff + mypy + coverage + pytest). There is no pytest.ini: pytest reads
+# [tool.pytest.ini_options] below, so this file is the one place a tool setting is declared.
+[tool.ruff]
+# Caches live under the repository-local scratch root so the ignore file needs one rule, not
+# three. Each tool creates the directory itself, so a clean clone without BETA/ still works.
+cache-dir = "BETA/repository-local/generated/ruff"
+target-version = "py311"
+line-length = 120
+src = ["src", "tests"]
+extend-exclude = ["STEP FILE", "alembic/versions"]
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "B", "UP", "C4", "S"]
+ignore = [
+    "E501",          # line length - handled by line-length, don't fail on long prompts
+    "E741",          # ambiguous name (l/I) - used for math (L = length)
+    "E701", "E702",  # compact one-liners (if x: return / import a; b) - intentional style
+    "E402",          # module import not at top - intentional conditional/lazy imports
+    "E712",          # `== False` - the correct SQLAlchemy filter idiom, not a bool check
+    "B008",          # call in default arg - FastAPI Depends() idiom
+    "B904",          # raise ... from - context preserved via the failure taxonomy
+    "B905",          # zip(strict=) - not needed for the equal-length zips here
+    "S101",          # assert - fine in tests
+    "S110",          # try/except/pass - intentional fail-OPEN (metrics, pubsub, cleanup)
+    "S310",          # urlopen scheme - the only URLs are config-controlled (Langfuse)
+    "S311",          # random - used for backoff jitter, not crypto
+    "S324",          # md5 - non-crypto (stuck-loop call-signature dedup hash)
+    "S603", "S607",  # subprocess / partial path - the mesh runners shell out by design
+    "UP042",         # StrEnum migration - cosmetic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/unit/**"        = ["S", "B", "E402", "F841"]   # tests assert, import after sys.path, etc.
+"tests/integration/**" = ["S", "E402"]
+# the parity tier EXECs the pre-migration module straight out of git (S102) and asserts both
+# sides refuse an unknown event type the same way (B017) - both are the test, not an oversight.
+"src/meshpipeline/sandbox/sandbox_exec.py" = ["S"]   # ctypes/seccomp/prctl is the whole point
+"src/meshpipeline/agents/reviewer.py" = ["B023"]     # loop closures are awaited IMMEDIATELY (no late-binding)
+
+[tool.mypy]
+cache_dir = "BETA/repository-local/generated/mypy"
+python_version = "3.11"
+ignore_missing_imports = true     # heavy deps (pyvista, gmsh, langgraph) lack stubs
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+exclude = ['alembic/']
+
+# google-cloud-* are NAMESPACE packages that ship no py.typed. Installed, mypy resolves
+# `google.cloud` and then reports `has no attribute "storage"`; absent, ignore_missing_imports
+# silently makes it Any. That difference made the type check depend on whether the GCS SDK
+# happened to be in the environment - so the ratchet's baseline (built without it) did not
+# match CI's (which installs requirements/runtime.txt). Skipping the follow gives the SAME answer
+# either way, which is the only property a ratchet can be built on.
+[[tool.mypy.overrides]]
+module = ["google.*", "google.cloud.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/meshpipeline"]
+omit = ["*/__pycache__/*", "*/tests/*"]
+
+[tool.pytest.ini_options]
+cache_dir = "BETA/repository-local/generated/pytest"
+asyncio_mode = "auto"
+# the fast, hermetic suite; integration/ is opt-in (real deps, run in-container)
+testpaths = ["tests/unit"]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "external_fixture: needs licensed / non-redistributable CAD (tests/fixtures/external/) that a clean clone does NOT have. NOT ordinary fast-suite coverage - run via `make test-external-fixtures`, which reports the fixture's absence loudly instead of skipping quietly. See docs/development/overview.md.",
+    "container: needs the real runtime image or native tooling (OpenFOAM/vmtk); run via `make test-container-integration`.",
+    "ui: the shipped browser UI, driven in a REAL headless Chrome over the DevTools protocol (tests/ui/). Boots the actual application, so it catches what an HTTP client cannot: a module that will not parse, an asset that 404s, an exception during startup. Needs Chrome/Chromium (or CHROME_BIN) and FAILS rather than skips without one - a release must not pass with its browser validation quietly absent. Run via `make test-ui`. See docs/development/overview.md.",
+    "hermetic: an integration-tier test that needs the real runtime image (langgraph/pyvista/celery) but NO external service (no Postgres/Redis/MinIO). The `test-container-smoke` target runs exactly these; a test WITHOUT this marker is treated as dependency-backed and only runs under `test-container-integration`. New integration tests are dependency-backed by default - mark a test hermetic ONLY after proving it touches no service, or smoke will overclaim.",
+    "native: needs the REAL mesh toolchains (OpenFOAM cfMesh/snappy, gmsh, vmtk) and runs INSIDE the `mesh` Docker image via the production dispatch path (tests/native/). Never collected by the hermetic run; driven by `make test-native-all`. See docs/development/overview.md.",
+    "native_smoke: the bounded packaging capability subset of the native tier - engine executables/modules present, importable, versionable, and every supported engine resolves in the dispatch registry. Run via `make test-native-smoke`; must stay fast.",
+    "native_terminal: the five-engine native-to-terminal matrix (tests/native/test_native_terminal_matrix) - a GENUINE native mesh driven through the real production terminal chain (_run_async) against real PostgreSQL+Redis+MinIO, read back on every durable surface. Needs services AND the mesh toolchains; run ONLY via `make test-native-terminal`. Excluded from the service-free native tiers.",
+]

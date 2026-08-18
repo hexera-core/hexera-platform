@@ -1,0 +1,107 @@
+# Responsibility: Verify the inversion gate uses an explicit signed-volume convention and counts only inverted cells.
+from __future__ import annotations
+
+import numpy as np
+import pytest
+import pyvista as pv
+import vtk
+
+from meshpipeline.engines.vmtk.vmtk_runner import check_mesh
+
+# a unit right-handed tet in canonical VTK node order → analytic signed volume +1/6
+_BASE_PTS = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+
+
+def _signed_volume(pts: np.ndarray, conn) -> float:
+    a, b, c, d = (pts[i] for i in conn)
+    return float(np.dot(np.cross(b - a, c - a), d - a) / 6.0)
+
+
+def _write_tet_vtu(path, tets, pts=_BASE_PTS, extra_pts=None):
+    points = pts if extra_pts is None else np.vstack([pts, extra_pts])
+    cells = np.hstack([[4, *t] for t in tets]).astype(np.int64)
+    ctypes = np.full(len(tets), vtk.VTK_TETRA, dtype=np.uint8)
+    grid = pv.UnstructuredGrid(cells, ctypes, points)
+    grid.save(str(path))
+
+
+def test_the_signed_volume_convention_is_explicit_and_matches_analytic():
+    pos = pv.UnstructuredGrid(
+        np.array([4, 0, 1, 2, 3], np.int64), np.array([vtk.VTK_TETRA], np.uint8), _BASE_PTS)
+    swp = pv.UnstructuredGrid(
+        np.array([4, 1, 0, 2, 3], np.int64), np.array([vtk.VTK_TETRA], np.uint8), _BASE_PTS)
+    vpos = float(pos.compute_cell_sizes(length=False, area=False, volume=True).cell_data["Volume"][0])
+    vswp = float(swp.compute_cell_sizes(length=False, area=False, volume=True).cell_data["Volume"][0])
+    assert vpos == pytest.approx(_signed_volume(_BASE_PTS, [0, 1, 2, 3]))   # +1/6
+    assert vswp == pytest.approx(_signed_volume(_BASE_PTS, [1, 0, 2, 3]))   # -1/6
+    assert vpos > 0 > vswp
+
+
+def test_a_single_positively_oriented_tet_passes(tmp_path):
+    _write_tet_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)])
+    q = check_mesh(tmp_path)
+    assert q["cells"] == 1
+    assert q["fatal"] == []
+    assert q["mesh_ok"] is True
+    assert q["min_quality"] is not None and q["min_quality"] > 0.01
+
+
+def test_two_swapped_vertices_is_flagged_inverted(tmp_path):
+    _write_tet_vtu(tmp_path / "mesh.vtu", [(1, 0, 2, 3)])
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("inverted" in f.lower() or "non-positive" in f.lower() for f in q["fatal"])
+
+
+def test_several_valid_tets_all_pass(tmp_path):
+    # four apexes, each forming a positively-oriented tet with the same base
+    apexes = np.array([[0, 0, 1], [0.2, 0.2, 1], [0.1, -0.3, 2], [-0.2, 0.1, 1.5]], float)
+    tets, pts = [], np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float)
+    for i, ap in enumerate(apexes):
+        base = 3 + i
+        pts = np.vstack([pts, ap])
+        conn = (0, 1, 2, base)
+        # orient positively w.r.t. analytic sign
+        if _signed_volume(pts, conn) < 0:
+            conn = (1, 0, 2, base)
+        tets.append(conn)
+    _write_tet_vtu(tmp_path / "mesh.vtu", tets, pts=pts[:3], extra_pts=pts[3:])
+    q = check_mesh(tmp_path)
+    assert q["cells"] == len(apexes)
+    assert q["fatal"] == []
+    assert q["mesh_ok"] is True
+
+
+def test_a_mixed_valid_and_inverted_set_fails_and_counts_only_the_inverted(tmp_path):
+    extra = np.array([[0.3, 0.3, 1.0]], float)   # a 5th point for a 2nd/3rd tet
+    tets = [(0, 1, 2, 3),            # positive
+            (1, 0, 2, 4),            # inverted (swapped) using the extra apex
+            (2, 1, 0, 3)]            # inverted (swapped)
+    _write_tet_vtu(tmp_path / "mesh.vtu", tets, pts=_BASE_PTS, extra_pts=extra)
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    inv = [f for f in q["fatal"] if "inverted" in f.lower() or "non-positive" in f.lower()]
+    assert inv and "2 inverted" in inv[0]
+
+
+def test_a_degenerate_zero_volume_tet_is_rejected_by_explicit_policy(tmp_path):
+    coplanar = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.4, 0.4, 0]], float)  # all z=0
+    _write_tet_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], pts=coplanar)
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("inverted" in f.lower() or "non-positive" in f.lower() for f in q["fatal"])
+
+
+def test_a_tetgen_refusal_logged_with_rc0_still_fails(tmp_path):
+    _write_tet_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)])      # a perfectly good tet on disk
+    (tmp_path / "log.vmtk").write_text("... Invalid PLC: subfaces intersect ...\n")
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("plc" in f.lower() or "self-intersect" in f.lower() for f in q["fatal"])
+
+
+def test_a_truncated_vtu_is_rejected_before_the_reader_hangs(tmp_path):
+    (tmp_path / "mesh.vtu").write_text('<?xml version="1.0"?>\n<VTKFile type="Unstructured')
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("truncat" in f.lower() or "corrupt" in f.lower() for f in q["fatal"])

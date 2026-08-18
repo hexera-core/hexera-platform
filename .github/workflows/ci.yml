@@ -1,0 +1,165 @@
+# Responsibility: Run the blocking checks for every push and pull request: source gates, image builds, integration.
+# Owns: the pinned action digests, the fixed test seed, and the guard that fails a silently skipped integration test.
+# Boundaries: it only reads the repository; every version it installs comes from requirements/.
+
+name: CI
+
+# The workflow only reads the repository; nothing here writes contents, packages, or
+# statuses beyond the default check reporting. Least privilege, stated explicitly.
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: make check (ruff + mypy ratchet + unit) & boundary suites
+    runs-on: ubuntu-latest
+    env:
+      DEEPSEEK_API_KEY: test
+      DEEPINFRA_API_KEY: test
+      POSTGRES_PASSWORD: test
+      # Run the blocking unit suites in a DETERMINISTIC randomised order (pytest-randomly): a fixed
+      # seed so the run is reproducible, but a shuffled order that surfaces inter-test state leakage
+      # a fixed order would hide. `make test-random` sweeps more seeds locally. The seed is echoed by
+      # pytest-randomly on every run, so a failure is reproducible with --randomly-seed=<n>.
+      PYTEST_ADDOPTS: "--randomly-seed=8675309"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      # gmsh's Python wheel dlopen()s its GUI shared libs AT IMPORT even headless, and
+      # pytest.importorskip does not catch the resulting OSError - without these the gmsh
+      # engine tests do not skip, they ERROR at collection and fail the job. Same list the
+      # pipeline image ships. libgl1/libegl1 additionally back the pyvista render stack.
+      - run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
+            libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6
+      # The single pinned environment + the toolchain. No inline pins: a version pinned here
+      # AND in a requirements file is two lists that drift apart silently (enforced by
+      # devtools/quality/check_dependency_drift.py below).
+      - run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+      # The suite runs against the INSTALLED package (PyPA src layout) - not a path hack.
+      - name: Install the meshpipeline distribution (editable)
+        run: pip install -e . --no-deps
+
+      # `make check` = ruff (src/tests/alembic/devtools) + the mypy ratchet + the unit suite.
+      - name: make check - BLOCKING
+        run: make check
+
+      # Called out as their own steps so a boundary/provider regression is legible in CI,
+      # not buried inside the unit run.
+      - name: Architecture boundary tests - BLOCKING
+        run: python -m pytest -q -p no:cacheprovider tests/unit/hygiene
+
+      # Runs the contract for BOTH shipped backends of every seam. The provider SDKs come
+      # from requirements/runtime.txt above (google-cloud-storage / google-auth / minio) and the
+      # suite FAILS if one is missing - it must never quietly cover only the local backend.
+      - name: Provider-contract tests (both backends of every seam) - BLOCKING
+        run: python -m pytest -q -p no:cacheprovider -rs tests/unit/platform
+
+      - name: mypy ratchet (explicit) - BLOCKING on any NEW type error
+        run: python devtools/quality/mypy_ratchet.py
+
+      - name: Dependency-drift check - BLOCKING on a second dependency list
+        run: python devtools/quality/check_dependency_drift.py
+
+  images:
+    name: Docker image targets (api / pipeline / mesh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      # One wheel, three runtime images - each target must build (see deploy/IMAGE_BUILD.md).
+      # The product version is read from its one authority and transported into the build; the
+      # Dockerfile refuses to produce an image whose label disagrees with the installed package.
+      - name: Resolve the authoritative product version
+        run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
+      - name: Build api target (light - FastAPI + beat + maintenance)
+        run: docker build --target api --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-api:ci .
+      - name: Build pipeline target (Celery worker + render stack)
+        run: docker build --target pipeline --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-pipeline:ci .
+      - name: Build mesh target (OpenFOAM + vmtk + OCC)
+        run: docker build --target mesh --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-mesh:ci .
+
+      - name: Smoke - api imports
+        run: |
+          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+            --entrypoint python meshpipeline-api:ci -c "import meshpipeline.runtime.api_server as m; assert m.app; print('api OK')"
+      - name: Smoke - pipeline imports (celery app + render stack)
+        run: |
+          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+            --entrypoint python meshpipeline-pipeline:ci -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w.celery_app; print('pipeline OK')"
+      - name: Smoke - mesh toolchain (OpenFOAM bashrc + vmtk shim + runner import)
+        run: |
+          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+            meshpipeline-mesh:ci bash -lc "test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c 'import meshpipeline.runtime.mesh_runner; print(\"mesh OK\")'"
+
+      # The integration tier runs the REAL graph/celery/pyvista + a REAL Redis + a REAL Postgres
+      # + a REAL MinIO - the boundary the hermetic unit tier stubs. It runs INSIDE the pipeline
+      # image just built above (no second build) with the suite bind-mounted (the wheel ships the
+      # package, not the tests), as its own pytest session (the tier conftest fails loudly on
+      # unit-stub contamination). Redis, Postgres AND MinIO are PROVISIONED, not skipped: the
+      # migration wrapper test drives the real production run_migrations() against Postgres and the
+      # artifact-delivery test drives real fault-injected uploads against MinIO - both FAIL (never
+      # skip) if their service is unavailable. A skipped DB test is exactly what let an unbootable
+      # API through, and a skipped MinIO test is exactly what let a false artifact success through.
+      # Any skip other than the one test that needs licensed 3D CAD a clean clone never has FAILS
+      # the job.
+      - name: Integration tier (real Redis + real Postgres + real MinIO, inside the pipeline image) - BLOCKING
+        run: |
+          set -euo pipefail
+          docker network create ci-net
+          docker run -d --name ci-redis --network ci-net redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+          docker run -d --name ci-postgres --network ci-net \
+            -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh postgres:16-alpine
+          # MinIO: the SAME pinned image the local stack uses. Deterministic test-only credentials.
+          docker run -d --name ci-minio --network ci-net \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for i in $(seq 1 20); do
+            if docker run --rm --network ci-net redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99 redis-cli -h ci-redis ping 2>/dev/null | grep -q PONG; then break; fi
+            sleep 1
+          done
+          for i in $(seq 1 30); do
+            if docker exec ci-postgres pg_isready -U mesh >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          # Health-check MinIO on its S3 endpoint before tests begin; FAIL if it never comes up.
+          minio_ok=""
+          for i in $(seq 1 30); do
+            if docker run --rm --network ci-net --entrypoint curl curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 \
+                 -sf http://ci-minio:9000/minio/health/ready >/dev/null 2>&1; then minio_ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$minio_ok" ]; then
+            echo "::error::MinIO did not become healthy - the artifact-delivery integration tests cannot run"
+            docker logs ci-minio || true
+            docker rm -f ci-redis ci-postgres ci-minio >/dev/null 2>&1 || true
+            docker network rm ci-net >/dev/null 2>&1 || true
+            exit 1
+          fi
+          docker run --rm --network ci-net \
+            -e REDIS_URL=redis://ci-redis:6379/0 \
+            -e POSTGRES_HOST=ci-postgres -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh \
+            -e MINIO_ENDPOINT=ci-minio:9000 -e MINIO_ACCESS_KEY=minioadmin -e MINIO_SECRET_KEY=minioadmin \
+            -e MINIO_BUCKET=ci-test-jobs \
+            -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x \
+            -v "$PWD/tests:/srv/tests:ro" --entrypoint python meshpipeline-pipeline:ci \
+            -m pytest -q -rs -o asyncio_mode=auto -p no:cacheprovider /srv/tests/integration | tee integ.log
+          # Silent-skip guard: the ONLY acceptable skip is the one test that needs licensed 3D CAD
+          # (real STEP not staged). A Redis/Postgres/MinIO/service skip must FAIL, not pass green.
+          if grep -E "^SKIPPED" integ.log | grep -v "real STEP not staged" ; then
+            echo "::error::an integration test skipped for a reason other than the licensed-CAD fixture - a required service was not provisioned"
+            exit 1
+          fi
+          docker rm -f ci-redis ci-postgres ci-minio >/dev/null 2>&1 || true
+          docker network rm ci-net >/dev/null 2>&1 || true

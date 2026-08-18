@@ -1,0 +1,6 @@
+# Vendored browser assets, pinned. Verify from this directory:
+#     sha256sum -c SHA256SUMS
+#
+# Provenance, licence and the open question about this bundle's upstream identity:
+#     docs/reference/third-party.md
+393d9391b926ade6c59fda061eca0043bccba85e157e2ede5df11607085d8b7a  vtk.js

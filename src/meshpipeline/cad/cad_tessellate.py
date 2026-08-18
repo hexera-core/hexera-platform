@@ -1,0 +1,270 @@
+# Responsibility: Turn a CAD solid into a triangulated surface.
+# Boundaries: tessellation only; the unit and scale it works in are decided before it runs.
+from __future__ import annotations
+
+from pathlib import Path
+
+from meshpipeline.cad.stl_io import read_stl_triangles
+
+
+def _occ_to_metres(prepared):
+    from meshpipeline.cad.normalise import occ_scale_transform
+
+    if prepared is None:
+        raise ValueError(
+            "CAD tessellation needs the OCC-output coordinate state; without it the conversion "
+            "to metres would be a guess that is right only for well-formed files")
+    return occ_scale_transform(prepared)
+
+
+def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: float = 0.2,
+                      linear_deflection: float | None = None) -> Path:
+    import shutil as _sh
+    geom_path, out_stl = Path(geom_path), Path(out_stl)
+    if geom_path.suffix.lower() == ".stl":
+        if geom_path.resolve() != out_stl.resolve():
+            _sh.copy2(geom_path, out_stl)
+        return out_stl
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.StlAPI import StlAPI_Writer
+    if geom_path.suffix.lower() in (".igs", ".iges"):
+        from OCP.IGESControl import IGESControl_Reader as _Reader
+    else:
+        from OCP.STEPControl import STEPControl_Reader as _Reader
+    reader = _Reader()
+    if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
+        raise RuntimeError(f"OpenCASCADE could not read CAD file: {geom_path.name}")
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    trsf = _occ_to_metres(prepared)
+    shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+    box = Bnd_Box(); BRepBndLib.Add_s(shape, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+    lin = linear_deflection if linear_deflection is not None else diag / 2500.0
+    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    StlAPI_Writer().Write(shape, str(out_stl))
+    return out_stl
+
+
+def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
+                        linear_deflection: float | None = None,
+                        opening_faces: list[int] | None = None) -> dict:
+    import math as _m
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.BRepGProp import BRepGProp
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.gp import gp_Pnt
+    from OCP.GProp import GProp_GProps
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.StlAPI import StlAPI_Writer
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_IN, TopAbs_REVERSED, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    geom_path = Path(geom_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if geom_path.suffix.lower() in (".igs", ".iges"):
+        from OCP.IGESControl import IGESControl_Reader as _Reader
+    else:
+        from OCP.STEPControl import STEPControl_Reader as _Reader
+    reader = _Reader()
+    if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
+        raise RuntimeError(f"OpenCASCADE could not read CAD file: {geom_path.name}")
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    trsf = _occ_to_metres(prepared)
+    shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+    solid_exp = TopExp_Explorer(shape, TopAbs_SOLID)
+    if not solid_exp.More():
+        raise RuntimeError(
+            "internal-flow input is not a watertight SOLID - the fluid volume must be a "
+            "closed solid (a loose surface/shell is the pipe skin, not the flow passage)")
+    solid = TopoDS.Solid_s(solid_exp.Current())
+
+    diag = 0.0
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    box = Bnd_Box(); BRepBndLib.Add_s(shape, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+    lin = linear_deflection if linear_deflection is not None else diag / 2500.0
+    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+
+    # classify faces: planar -> opening candidate, curved -> wall (see docstring)
+    faces: list = []
+    e = TopExp_Explorer(shape, TopAbs_FACE)
+    while e.More():
+        faces.append(TopoDS.Face_s(e.Current())); e.Next()
+
+    def _face_props(f):
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(f, g)
+        c = g.CentreOfMass()
+        return g.Mass(), (c.X(), c.Y(), c.Z())
+
+    wall_idx: list[int] = []
+    open_idx: list[int] = []
+    for i, f in enumerate(faces):
+        is_open = (i in opening_faces) if opening_faces is not None \
+            else (BRepAdaptor_Surface(f).GetType() == GeomAbs_Plane)
+        (open_idx if is_open else wall_idx).append(i)
+
+    if len(open_idx) < 2:
+        raise RuntimeError(
+            f"internal-flow geometry needs >=2 flat openings (inlet+outlet); found "
+            f"{len(open_idx)}. If the walls are planar (box duct), pass opening_faces "
+            f"explicitly.")
+    # if a duct has extra planar faces, the ports are the two largest planar faces;
+    # the remainder are flat wall sections.
+    open_idx.sort(key=lambda i: _face_props(faces[i])[0], reverse=True)
+    ports, extra_walls = open_idx[:2], open_idx[2:]
+    wall_idx += extra_walls
+
+    # inlet vs outlet: order the two ports along the axis of greatest separation
+    ca = _face_props(faces[ports[0]])[1]
+    cb = _face_props(faces[ports[1]])[1]
+    axis = max(range(3), key=lambda k: abs(ca[k] - cb[k]))
+    if ca[axis] > cb[axis]:
+        ports = [ports[1], ports[0]]
+    inlet_i, outlet_i = ports
+
+    def _write_group(idxs, path):
+        comp = TopoDS_Compound(); bld = BRep_Builder(); bld.MakeCompound(comp)
+        for i in idxs:
+            bld.Add(comp, faces[i])
+        w = StlAPI_Writer(); w.ASCIIMode = False
+        w.Write(comp, str(path))
+
+    stls = {"wall": out_dir / "wall.stl", "inlet": out_dir / "inlet.stl",
+            "outlet": out_dir / "outlet.stl"}
+    _write_group(wall_idx, stls["wall"])
+    _write_group([inlet_i], stls["inlet"])
+    _write_group([outlet_i], stls["outlet"])
+
+    # verified interior point for locationInMesh. Candidates, cheapest-first:
+    # volume centroid, then each port centroid nudged inward along its (oriented) normal.
+    def _inside(p) -> bool:
+        cls = BRepClass3d_SolidClassifier(solid)
+        cls.Perform(gp_Pnt(*p), 1e-9)
+        return cls.State() == TopAbs_IN
+
+    gv = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, gv)
+    vc = gv.CentreOfMass()
+    candidates = [(vc.X(), vc.Y(), vc.Z())]
+    for pi in ports:
+        f = faces[pi]
+        area, c = _face_props(f)
+        ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+        n = [ax.X(), ax.Y(), ax.Z()]
+        if f.Orientation() == TopAbs_REVERSED:
+            n = [-v for v in n]
+        step = 0.5 * _m.sqrt(area / _m.pi)              # ~half the port radius, inward
+        candidates.append(tuple(c[k] - step * n[k] for k in range(3)))
+        candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
+    interior = next((p for p in candidates if _inside(p)), None)
+    if interior is None:
+        raise RuntimeError("could not locate a point inside the fluid solid for "
+                           "locationInMesh (geometry may not be a closed volume)")
+
+    n_wall_faces = sum(len(read_stl_triangles(stls["wall"])) for _ in [0])
+    return {
+        "stls": {k: str(v) for k, v in stls.items()},
+        "interior_point": [round(v, 6) for v in interior],
+        "bbox_min": [round(v, 6) for v in (x0, y0, z0)],
+        "bbox_max": [round(v, 6) for v in (x1, y1, z1)],
+        "openings": {
+            "inlet": {"area": round(_face_props(faces[inlet_i])[0], 8),
+                      "centroid": [round(v, 6) for v in _face_props(faces[inlet_i])[1]]},
+            "outlet": {"area": round(_face_props(faces[outlet_i])[0], 8),
+                       "centroid": [round(v, 6) for v in _face_props(faces[outlet_i])[1]]}},
+        "n_wall_faces": n_wall_faces,
+    }
+
+
+def tessellate_regions_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: float = 0.2,
+                              linear_deflection: float | None = None) -> list[str]:
+    # Each named component tessellated into its own STL solid; returns the names written.
+    #
+    # The flat path above writes OneShape(), which fuses every component into one unnamed solid.
+    # That is right for a body meshed as a single wall, and lossy for a surface whose parts are
+    # named - and the loss happens here, before any engine could have chosen. A file that
+    # distinguishes nothing takes the flat path unchanged and reports no names.
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+    from meshpipeline.cad.regions import components_of, regions_of
+    from meshpipeline.cad.stl_io import write_stl_solids
+
+    geom_path, out_stl = Path(geom_path), Path(out_stl)
+
+    def _flat() -> list[str]:
+        tessellate_to_stl(geom_path, out_stl, prepared=prepared,
+                          angular_deflection=angular_deflection,
+                          linear_deflection=linear_deflection)
+        return []
+
+    if regions_of(geom_path).count < 2:
+        return _flat()
+
+    _doc, tool, found, _roots = components_of(geom_path)
+    trsf = _occ_to_metres(prepared)
+    solids: dict[str, list] = {}
+    for index, (label, name) in enumerate(found):
+        shape = tool.GetShape_s(label)
+        if shape is None or shape.IsNull():
+            continue
+        shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+        box = Bnd_Box()
+        BRepBndLib.Add_s(shape, box)
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+        lin = linear_deflection if linear_deflection is not None else max(diag / 2500.0, 1e-9)
+        BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+        tris = _triangles_of(shape)
+        if tris:
+            solids[name or f"region_{index + 1}"] = tris
+    if len(solids) < 2:
+        # Fewer than two solids survived tessellation, so there is nothing to keep apart.
+        return _flat()
+    write_stl_solids(out_stl, solids)
+    return list(solids)
+
+
+def _triangles_of(shape) -> list:
+    # Every triangulated face of one shape, in world coordinates.
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    out: list = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face_s(explorer.Current())
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(face, loc)
+        if tri is not None:
+            transform = loc.Transformation()
+            for k in range(1, tri.NbTriangles() + 1):
+                a, b, c = tri.Triangle(k).Get()
+                pts = []
+                for node in (a, b, c):
+                    p = tri.Node(node).Transformed(transform)
+                    pts.append((float(p.X()), float(p.Y()), float(p.Z())))
+                out.append(tuple(pts))
+        explorer.Next()
+    return out

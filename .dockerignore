@@ -1,0 +1,37 @@
+# Responsibility: Keep the build context to what an image needs - no secrets, no history, no local trees.
+# Boundaries: it shapes what Docker can see; the Dockerfile's COPY lines decide what is actually copied.
+
+# Secrets and credentials. COPY is already narrow, but a future `COPY . .` must not be able to ship
+# these. Root-anchored, so it is THE directory that is excluded rather than any path ending in the
+# same word.
+.env
+*.pem
+*.key
+/secrets/
+/.local/
+
+# Repository metadata. History is not a build input, and shipping it would put every past value of
+# every file - including ones since removed - inside the image.
+.git/
+
+# Repository-local scratch, evidence and redirected tool caches. 112M, none of it a build input.
+/BETA/
+
+# Heavy local trees the image never needs: the 1.7G virtualenv, and the runtime roots the
+# application writes at their configured defaults.
+/.venv/
+/data/
+/workspaces/
+/deploy/output/
+
+# Packaging output. The wheel the image installs is built inside the build, never uploaded into it.
+/build/
+/dist/
+*.egg-info/
+
+# Python bytecode - never bundle a host's compiled cache into an image.
+**/__pycache__/
+*.py[cod]
+
+# Tests run from the repo (unit) or a bind mount (integration), never baked in.
+tests/

@@ -1,0 +1,399 @@
+/* Responsibility: Restyle the light-mode literals the component sheets still carry into the dark finish. */
+/* Boundaries: loaded last, and every selector here already exists - only colour, weight, radius and spacing move. */
+
+/* /
+   THEME OVERLAY - dark instrument finish.
+
+   Loaded LAST so it restyles the light-mode literals the existing rule tree
+   still carries. Nothing here changes layout, structure or behaviour: every
+   selector below already exists. Only colour, weight, radius and spacing move.
+
+   The finish is drawing-office, not consumer app: 3px corners, hairline rules,
+   uppercase micro-labels with real tracking, monospace for anything the user
+   could type into a case file, and orange used ONLY for the primary action and
+   the current selection.
+/ */
+
+/* Shell. */
+header{background:var(--background);color:var(--text);height:50px;
+  border-bottom:1px solid var(--border)}
+.brand{color:var(--text);font-size:14px;font-weight:650;letter-spacing:-.025em}
+.brand b{color:var(--accent)}
+.chip{background:transparent;border-color:var(--border);color:var(--text-muted);
+  border-radius:3px;font-size:11.5px;padding:5px 10px;letter-spacing:.01em}
+.chip:hover{border-color:var(--border-strong);color:var(--text)}
+.dot{background:var(--steel-muted);border-radius:2px;width:6px;height:6px}
+.dot.online{background:var(--ok)}
+.dot.error{background:var(--danger)}
+
+#upload-bar{background:var(--background);border-bottom:1px solid var(--border);
+  padding:9px 20px;gap:12px}
+#file-label{color:var(--text-muted);font-size:12px;letter-spacing:.01em}
+#file-label.ready{color:var(--text)}
+#upload-btn{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);
+  font-weight:650;letter-spacing:.01em;border-radius:3px;font-size:12px;padding:6px 13px}
+#upload-btn:hover{background:var(--accent-hover);border-color:var(--accent-hover);opacity:1}
+#upload-btn.done{background:transparent;color:var(--text-muted);border-color:var(--border)}
+#upload-btn.done:hover{color:var(--text);border-color:var(--border-strong);background:transparent}
+
+.scroll::-webkit-scrollbar-thumb{background:var(--border-strong)}
+/* the column carries the viewer and the mesh-parts panel as well as the prose,
+   so it is sized for the widest thing in it, not for a paragraph */
+.chat-col{max-width:1060px;padding:34px 28px 44px;gap:20px}
+#empty{color:var(--text-faint);font-size:13px}
+
+#notice.show{background:var(--surface-1);border-color:var(--border);border-radius:3px;
+  color:var(--text);box-shadow:var(--shadow-1)}
+#notice.info{background:var(--surface-1);border-color:var(--border);color:var(--steel-bright)}
+#notice.warn{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+#notice.error{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
+#notice .nt-act{border-radius:3px}
+#notice .nt-act:hover{background:rgba(255,255,255,.06)}
+
+/* Chat. */
+/* the speaker is a label, not a bubble ornament: micro-caps, tracked, with a
+   small square mark in the agent's colour */
+.im .who{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;
+  letter-spacing:.09em;color:var(--steel);margin-bottom:7px}
+.im.assistant .who::before{content:'';width:12px;height:12px;border-radius:2px;
+  border:1px solid var(--accent);background:var(--accent-soft);flex:none}
+.im.user .who{color:var(--text-faint)}
+.im.assistant .txt{color:var(--text-bright);font-size:14.5px;line-height:1.72;letter-spacing:-.003em}
+.im.assistant .txt strong{color:var(--text);font-weight:650}
+/* The user speaks on the right, the agent runs full width on the left - the
+   layout every chat client uses, so the turn-taking is readable at a glance.
+   Only the geometry changes here; the panel keeps its own surface and rules. */
+.im.user{align-items:flex-end}
+.im.user .who{justify-content:flex-end;margin-right:2px}
+.im.user .bub{background:var(--surface-1);color:var(--text);font-size:14.5px;line-height:1.72;
+  border:1px solid var(--border);border-left:2px solid var(--steel-muted);
+  border-radius:0 3px 3px 0;padding:13px 18px;max-width:72%;width:fit-content}
+/* One code chip, everywhere. The base rule still carried a light-mode fill, so
+   any inline identifier OUTSIDE a chat bubble - the validation ticks, a table
+   cell - rendered as a pale block. Same steel-on-panel treatment as the tool
+   calls in the timeline, so a name the user could type reads the same wherever
+   it appears. */
+code{font-family:var(--mono);font-size:.87em;background:var(--surface-2);
+  border:1px solid var(--border);border-radius:2px;padding:1px 5px;
+  color:var(--steel-bright)}
+th,td{border-color:var(--border)}
+.im .txt ul{margin:8px 0 8px 2px;padding-left:16px}
+.im .txt li{margin:3px 0}
+
+/* Input bar. */
+#input-bar{background:var(--background);border-top:1px solid var(--border)}
+#input-inner{max-width:1060px;padding:0 4px}
+#chat-input{background:var(--surface-1);border:1px solid var(--border);border-radius:3px;
+  color:var(--text);font-family:var(--sans);font-size:13.5px}
+#chat-input:focus{border-color:var(--accent-line)}
+#chat-input::placeholder{color:var(--text-faint)}
+#send-btn{background:var(--accent);color:var(--accent-ink);border:0;font-weight:650;
+  border-radius:3px;font-size:12.5px;padding:11px 20px}
+#send-btn:hover:not(:disabled){background:var(--accent-hover)}
+#send-btn:disabled{background:var(--surface-2);color:var(--text-faint)}
+
+/* Process / timeline. */
+.proc{background:var(--surface-1);border:1px solid var(--border);border-radius:3px;
+  box-shadow:none}
+.proc-head{background:var(--background);border-bottom:1px solid var(--border);
+  color:var(--text);padding:12px 18px;gap:10px}
+/* /
+   WORKING MARK - one indicator for the whole app.
+
+   Two arcs closing a ring, each ending in an arrowhead, turning anticlockwise:
+   the circular-arrows motif, drawn in the app's own hairline vocabulary rather
+   than borrowed as a glyph. It is stroke and geometry only, so it takes the
+   accent while it runs and the success colour when the work lands - and every
+   place that says "working" now says it the same way.
+/ */
+.proc-orb,.v-spin{display:block;flex-shrink:0;overflow:visible;
+  animation:spin 1.5s linear infinite}
+@keyframes spin{to{transform:rotate(-360deg)}}   /* anticlockwise */
+.sp-arm{fill:none;stroke:var(--accent);stroke-width:2.0;stroke-linecap:butt;
+  stroke-dasharray:17.59 5.03}
+.sp-hd{fill:var(--accent);stroke:none}
+/* landed: the ring closes, stops turning, and takes the success colour.
+   The base rule filled this element with --ink for its old dot state, which
+   under a dark theme is a near-white tile behind the mark. */
+.proc.done .proc-orb{animation:none;transform:none;background:none;border:0}
+.proc.done .sp-arm{stroke:var(--ok);stroke-dasharray:none}
+.proc.done .sp-hd{fill:var(--ok)}
+.proc-orb{width:15px;height:15px;border:0;border-radius:0;background:none}
+.proc-title{color:var(--text);font-size:12px;font-weight:600;
+  letter-spacing:.08em;text-transform:uppercase}
+.proc-sub,.proc-clock{color:var(--text-faint);font-size:11px}
+.tl{padding:6px 18px 12px}
+.tl-node{border-bottom:none;padding-bottom:12px}
+.tl-node::before{left:6px;top:18px;width:1px;background:var(--border)}
+.tl-dot{left:0;top:3px;width:13px;height:13px;border-radius:2px;
+  background:var(--surface-2);border:1px solid var(--border-strong)}
+.tl-dot.active{border-color:var(--accent);background:var(--accent-soft)}
+.tl-dot.active::after{width:5px;height:5px;border-radius:1px;background:var(--accent)}
+.tl-dot.done{border-color:var(--ok);background:var(--ok)}
+.tl-dot.done::after{content:'✓';color:var(--canvas);font-size:8px}
+.tl-name{padding:2px 0}
+.tl-name .nm{color:var(--text);font-size:12.5px;font-weight:600;letter-spacing:-.01em}
+.tl-name:hover .nm{color:var(--accent)}
+.tl-name .ct,.tl-name .dur,.tl-chev{color:var(--text-faint);font-size:10.5px}
+.tl-body,.tl-inner{background:transparent}
+.tl-inner{max-height:300px;padding-right:8px;padding-left:1px;overflow-x:hidden}
+.tl-node{padding-left:26px}
+
+.e-check{color:var(--text-muted);font-size:12px;line-height:1.55}
+.e-check .ic{width:14px;height:14px;border-radius:2px;background:var(--ok-soft);
+  color:var(--ok);font-size:9px;line-height:14px;margin-top:3px}
+.e-check.bad .ic{background:var(--danger-soft);color:var(--danger)}
+.e-info{color:var(--text-faint);font-size:11px;letter-spacing:.01em}
+.e-info.warn{color:var(--warn)}
+.e-tool{color:var(--text-muted);font-size:11.5px;padding:1px 0}
+.e-tool .tag{background:transparent;color:var(--steel);border:1px solid var(--border);
+  border-radius:2px;font-size:9px;letter-spacing:.09em;padding:1px 5px}
+.e-tool .call{color:var(--steel-bright);word-break:break-word}
+.e-detail{color:var(--text-faint);font-family:var(--mono);font-size:10.5px;
+  border-left:1px solid var(--border);margin-left:16px;max-height:80px}
+.e-mcp{background:var(--steel-soft);border:1px solid var(--border);
+  border-left:2px solid var(--steel);border-radius:2px;color:var(--steel)}
+.e-mcp .hid{color:var(--text-faint)}
+.e-edit{background:var(--surface-2);border:1px solid var(--border);border-radius:2px}
+.e-edit-h{background:transparent;border-bottom:1px solid var(--border);padding:7px 11px}
+.e-edit-h .ic{border-radius:1px;background:var(--accent)}
+.e-edit .fname{color:var(--text);font-family:var(--mono);font-size:11px;font-weight:500}
+.e-edit .act,.e-edit .badge{color:var(--text-faint);font-size:10px}
+
+/* the agent's reasoning: quoted, not styled like a system message */
+.e-think{background:transparent;border:0;border-left:2px solid var(--steel-muted);
+  border-radius:0;padding:2px 0 2px 12px;margin:8px 0}
+.e-think .lbl{color:var(--steel);font-size:9.5px;letter-spacing:.1em;margin-bottom:4px}
+/* the completed line carries MEASURED values - "8.4s", "1,276 tokens" - so it is
+   set as data rather than as a shouted section label */
+.e-think .lbl.measured{text-transform:none;letter-spacing:.02em;font-size:11px;
+  font-variant-numeric:tabular-nums}
+.e-think .lbl::before{display:none}
+.e-think .body{color:var(--text-muted);font-size:12px;line-height:1.68;font-style:normal}
+
+/* an agent's thinking: a live beat while it runs, a measured line when it lands */
+.e-think.active .lbl::after{content:'';display:inline-block;width:4px;height:4px;
+  margin-left:6px;border-radius:1px;background:var(--accent);
+  animation:demo-pulse 1.2s ease-in-out infinite}
+.e-think .body:empty{display:none}
+.e-tool .tres{color:var(--text-faint);font-size:10.5px}
+.e-tool.bad .tag{color:var(--warn);border-color:var(--warn)}
+/* the APPLICATION's own conclusion - stated, not quoted */
+.e-rat{margin:8px 0;padding:2px 0 2px 12px;border-left:2px solid var(--accent)}
+.e-rat .rat-c{color:var(--text);font-size:12.5px;line-height:1.6}
+.e-rat .rat-w{color:var(--text-muted);font-size:11.5px;line-height:1.6;margin-top:3px}
+
+.e-shot{display:inline-block;margin:4px 6px 2px 0;vertical-align:top}
+.e-shot:first-of-type{margin-left:16px}
+.e-shot img{border-radius:2px;border:1px solid var(--border);width:124px;height:93px;
+  object-fit:cover;object-position:center}
+.e-shot img:hover{border-color:var(--accent);box-shadow:none}
+
+.tl-att{color:var(--steel);border-top:1px solid var(--border);font-size:10px;letter-spacing:.1em}
+.tl-verd .pill{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok);
+  border-radius:2px;font-size:10px;letter-spacing:.09em;padding:2px 9px}
+.tl-verd .pill.fail{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
+.tl-verd .mt{color:var(--text-faint);font-size:10.5px}
+
+/* mesh progress bar - orange while running, teal once it lands */
+.meshbar{background:var(--surface-2);border:1px solid var(--border);border-radius:2px;
+  padding:9px 12px}
+.mb-lbl{color:var(--text-muted);font-size:11px;letter-spacing:.02em}
+.mb-num{color:var(--text);font-size:11px;font-variant-numeric:tabular-nums}
+.mb-track{background:var(--canvas);border:1px solid var(--border);border-radius:1px;height:4px}
+.mb-fill{background:var(--accent);border-radius:0}
+.mb-fill.over{background:var(--warn)}
+.meshbar.done{opacity:.85}
+.meshbar.done .mb-fill{background:var(--ok)}
+.mb-sub{color:var(--text-faint);font-size:10.5px}
+
+/* Viewer. */
+.viewer{background:var(--viewer-frame);border:1px solid var(--border);
+  border-radius:3px;overflow:hidden;box-shadow:none;margin:16px 0}
+.v-bar{background:var(--viewer-frame);border-bottom:1px solid var(--border);
+  color:var(--text);padding:12px 16px;gap:10px}
+.v-bar b{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text)}
+.v-meta,.v-status,.v-cost,.v-brush{color:var(--text-muted);font-size:11.5px}
+.v-status{color:var(--text-faint);font-size:11px}
+.v-pill{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok);
+  border-radius:2px;font-size:9.5px;letter-spacing:.1em;padding:2px 8px}
+.v-pill.fail{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
+.v-btn{background:transparent;border:1px solid var(--border);color:var(--text);
+  border-radius:3px;font-size:12px;padding:6px 13px}
+.v-btn:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-2)}
+.v-btn:disabled{opacity:.4}
+.v-btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);
+  font-weight:650}
+.v-btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.v-btn.armed{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.v-brush input[type=range]{accent-color:var(--accent)}
+.v-canvas{background:var(--viewer-canvas)}
+.v-hint,.v-count{color:var(--text-faint);background:rgba(9,14,19,.8);font-size:10.5px;
+  border:1px solid var(--border);border-radius:2px;padding:3px 8px}
+.v-dlbtn{background:transparent;border:1px solid var(--border);color:var(--text);
+  border-radius:3px;font-size:11.5px}
+.v-dlbtn:hover{border-color:var(--border-strong);background:var(--surface-2)}
+.v-dlbtn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.v-dlbtn span{color:inherit;opacity:.7;font-size:10px}
+.v-loading{background:var(--viewer-canvas);color:var(--text-muted);font-size:12px}
+.v-spin{width:34px;height:34px;border:0;border-radius:0;background:none}
+.v-flags{background:var(--surface-1);border-top:1px solid var(--border);color:var(--text-muted)}
+.v-flag{background:var(--surface-2);border:1px solid var(--border);border-radius:2px}
+.f-edit{border-radius:2px;background:var(--canvas);border-color:var(--border)}
+
+/* dialogs - these were still the light-mode boxes, glaring on a dark app */
+.v-modal{background:rgba(9,14,19,.74)}
+.v-modal .box{background:var(--surface-1);border:1px solid var(--border);
+  border-radius:3px;color:var(--text);box-shadow:var(--shadow-2)}
+.v-modal .box h3{font-size:14px;font-weight:650;letter-spacing:-.015em;color:var(--text)}
+.v-modal .box b{color:var(--text)}
+.v-modal textarea{background:var(--canvas);border:1px solid var(--border);
+  border-radius:3px;color:var(--text)}
+.v-modal textarea:focus{outline:none;border-color:var(--accent-line)}
+.v-modal textarea::placeholder{color:var(--text-faint)}
+
+/* Result. */
+.res{background:var(--surface-1);border:1px solid var(--border);border-radius:3px}
+#lb img{border-radius:2px}
+
+/* /
+   MESH PARTS - the case's own selectable entities.
+
+   A LIST, not a wall of buttons. Every part is one row carrying its name, its
+   OpenFOAM type and its size; the controls belong to the SELECTED part alone
+   and live in the inspector beside the list, so at rest there is exactly one
+   button on screen. Orange = the selection, as the token contract reserves it.
+/ */
+.v-bnd{display:block;padding:0;border-top:1px solid var(--border);background:var(--surface-1)}
+.v-bnd-head{display:flex;align-items:center;gap:10px;padding:10px 16px;
+  border-bottom:1px solid var(--border)}
+.v-bnd-lbl{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--accent)}
+.v-bnd-count{font-size:10.5px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.v-bnd-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.v-bnd-list{padding:8px 0 10px;max-height:262px;overflow-y:auto;
+  border-right:1px solid var(--border)}
+.v-bnd-group{display:block}
+.v-bnd-gl{display:block;font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--text-faint);padding:8px 16px 4px}
+
+/* one row per part */
+.v-bnd-chip{display:grid;grid-template-columns:9px minmax(0,1fr) auto auto;
+  white-space:nowrap;
+  align-items:center;gap:9px;width:100%;text-align:left;cursor:pointer;
+  padding:6px 16px;border:0;border-left:2px solid transparent;background:transparent;
+  color:var(--text);font:inherit;font-size:12.5px;transition:background .12s}
+.v-bnd-chip:hover{background:var(--surface-2)}
+.v-bnd-chip .sw{width:8px;height:8px;border-radius:1px;background:var(--steel-muted)}
+.v-bnd-chip .nm{font-family:var(--mono);font-size:12px;letter-spacing:-.01em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v-bnd-chip .fc{color:var(--text-faint);font-variant-numeric:tabular-nums;font-size:10.5px;
+  min-width:56px;text-align:right}
+.v-bnd-chip .v-bnd-vis{color:var(--warn);font-size:9.5px;letter-spacing:.06em}
+.v-bnd-chip.meta .sw{background:transparent;border:1px dashed var(--steel-muted)}
+.v-bnd-chip.meta .nm{color:var(--text-muted)}
+.v-bnd-chip.sel{border-left-color:var(--accent);background:var(--accent-soft)}
+.v-bnd-chip.sel .sw{background:var(--accent)}
+.v-bnd-chip.sel .nm{color:var(--text)}
+.v-bnd-chip.hidden-b .nm{color:var(--text-faint)}
+
+/* the inspector: identity, statistics, then the actions for THIS part */
+.v-bnd-insp{padding:12px 16px 14px;min-height:150px}
+.ins-empty{font-size:12px;color:var(--text-muted);line-height:1.7}
+.ins-empty span{display:block;color:var(--text-faint);font-size:11px}
+.ins-empty .ins-off{color:var(--warn);margin-top:5px;font-family:var(--mono);font-size:10.5px}
+.ins-eyebrow{font-size:9.5px;font-weight:600;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--text-faint);margin-bottom:6px}
+.ins-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.ins-nm{font-family:var(--mono);font-size:16px;color:var(--text);letter-spacing:-.02em}
+.ins-badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.05em;color:var(--steel);
+  background:var(--surface-2);border:1px solid var(--border);border-radius:2px;padding:2px 6px}
+.ins-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);
+  border:1px solid var(--border);border-radius:2px;margin-bottom:12px}
+.ins-cell{background:var(--surface-1);padding:7px 10px}
+.ins-k{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+.ins-v{font-size:12.5px;color:var(--text);font-variant-numeric:tabular-nums;margin-top:2px}
+.ins-acts{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.ins-no{font-size:11.5px;line-height:1.6;color:var(--warn);border-left:2px solid var(--warn);
+  padding-left:10px}
+.v-bnd-act{font-size:11.5px;padding:7px 12px;border-radius:3px;cursor:pointer;
+  border:1px solid var(--border);background:transparent;color:var(--text);transition:.12s;
+  font-family:inherit;text-align:center}
+.v-bnd-act:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-2)}
+.v-bnd-act:disabled{opacity:.4;cursor:default}
+.v-bnd-act.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.v-bnd-op{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text-faint);
+  letter-spacing:.08em;text-transform:uppercase;grid-column:1/-1;
+  border:1px solid var(--border);border-radius:3px;padding:6px 10px}
+.v-bnd-op input{flex:1;min-width:0;accent-color:var(--accent)}
+.v-bnd-op span{font-variant-numeric:tabular-nums;width:34px;text-align:right;
+  color:var(--text);font-size:11px;letter-spacing:0}
+
+@media(max-width:720px){.v-bnd-cols{grid-template-columns:1fr}
+  .v-bnd-list{border-right:0;border-bottom:1px solid var(--border)}}
+
+/* The live beat an agent's "thinking" card breathes with while it runs. Named for the
+   pulsing marker it was written for; `.e-think.active` is the surface that uses it now. */
+@keyframes demo-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* the structured brief Hexera has captured */
+.req-card{border:1px solid var(--border);background:var(--surface-1);
+  border-radius:3px;padding:0;margin-top:6px;overflow:hidden}
+.req-card .rc-h{font-size:9.5px;font-weight:600;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--text-faint);padding:9px 14px;border-bottom:1px solid var(--border);
+  background:var(--background)}
+.req-card .rc-h2{border-top:1px solid var(--border);margin-top:0}
+.req-card .rc-row{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px;
+  padding:6px 14px;font-size:12.5px;border-bottom:1px solid rgba(43,59,71,.45)}
+.req-card .rc-row:last-child{border-bottom:0}
+.req-card .rc-k{color:var(--text-faint);font-size:11px;letter-spacing:.02em}
+.req-card .rc-v{color:var(--text)}
+.req-card.ok{border-color:var(--ok)}
+.req-card .rc-ck{display:flex;align-items:flex-start;gap:8px;padding:5px 14px;
+  font-size:12px;color:var(--text-muted);line-height:1.55}
+.req-card .rc-ck:last-child{padding-bottom:11px}
+.req-card .rc-ck .ic{flex:none;width:14px;height:14px;border-radius:2px;margin-top:2px;
+  background:var(--ok-soft);color:var(--ok);font-size:9px;line-height:14px;text-align:center}
+/* a check the application could not evaluate says so - it does not read as passed */
+.req-card .rc-ck.unk .ic{background:var(--warn-soft);color:var(--warn)}
+.req-card .rc-ck.bad .ic{background:var(--danger-soft);color:var(--danger)}
+.req-card .rc-ck.bad{color:var(--text)}
+.req-card .rc-d{color:var(--text-faint);font-size:11px}
+.req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--steel-bright)}
+
+/* /
+   DELIVERED-MESH METRICS - a sheet, not a column of label/value lines.
+   Figures read across in a grid; the per-patch breakdown is a real table with
+   a header row, because that is what it is.
+/ */
+.mx{margin-top:14px;border:1px solid var(--border);border-radius:3px;overflow:hidden}
+.v-facts .mx{margin:0;border:0;border-top:1px solid var(--border);border-radius:0}
+.v-facts .mx-c{background:var(--viewer-frame)}
+.mx-h{display:flex;align-items:center;gap:9px;padding:9px 14px;background:var(--background);
+  border-bottom:1px solid var(--border);font-size:9.5px;font-weight:600;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--text-faint)}
+.mx-h .eng{text-transform:none;letter-spacing:0;font-family:var(--mono);
+  font-size:11px;font-weight:400;color:var(--text-muted)}
+.mx-h .ok{color:var(--ok);letter-spacing:.06em}
+.mx-h .ok::before{content:'✓ '}
+.mx-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border)}
+.mx-c{background:var(--surface-1);padding:10px 14px}
+.mx-k{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-faint)}
+.mx-v{font-size:15px;color:var(--text);font-variant-numeric:tabular-nums;margin-top:3px;
+  letter-spacing:-.02em}
+.mx-v small{font-size:11px;color:var(--text-muted);letter-spacing:0}
+.mx table{width:100%;border-collapse:collapse;margin:0;font-size:12.5px;
+  border-top:1px solid var(--border)}
+.mx th{text-align:left;font-size:9.5px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--text-faint);padding:8px 14px;
+  background:var(--background);border:0;border-bottom:1px solid var(--border)}
+.mx td{padding:8px 14px;border:0;border-bottom:1px solid rgba(43,59,71,.5);color:var(--text)}
+.mx tr:last-child td{border-bottom:0}
+.mx td.n{font-variant-numeric:tabular-nums;text-align:right}
+.mx td.nm{font-family:var(--mono);font-size:12px}
+@media(max-width:820px){.mx-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* the agent is working - a labelled beat, not three anonymous dots */
+.im.typing .txt{display:flex;align-items:center;gap:10px;padding:3px 0}
+@keyframes typ{0%,60%,100%{opacity:.25}30%{opacity:1}}

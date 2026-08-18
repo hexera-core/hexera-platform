@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!-- Responsibility: Serve the page structure and load its stylesheets and the one entry module. -->
+<!-- Boundaries: markup only - it holds no script logic, and nothing here depends on tag order. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HEXERA</title>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/shell.css">
+<link rel="stylesheet" href="/static/css/chat.css">
+<link rel="stylesheet" href="/static/css/timeline.css">
+<link rel="stylesheet" href="/static/css/result.css">
+<link rel="stylesheet" href="/static/css/viewer.css">
+<link rel="stylesheet" href="/static/css/a11y.css">
+<link rel="stylesheet" href="/static/css/theme.css">
+</head>
+<body>
+<div id="lb"><img id="lb-img" alt=""></div>
+
+<div id="app">
+  <header>
+    <div class="brand">
+      <img class="brand-mark" src="/static/assets/logo.png" alt="">
+      <span class="brand-name">HEXERA</span>
+    </div>
+    <div class="h-spacer"></div>
+    <div class="chip chip-status" id="api-status" role="status" aria-live="polite"><div class="dot" id="dot"></div><span id="api-lbl">checking…</span></div>
+  </header>
+
+  <div id="notice" role="status" aria-live="polite"></div>
+
+  <div id="upload-bar">
+    <input type="file" id="step-file-input" data-accept-from-capabilities="" class="sr-only" aria-label="Upload a geometry file">
+    <span id="file-label">No geometry file selected</span>
+    <button id="upload-btn" type="button">Upload geometry</button>
+  </div>
+
+  <div id="stage"></div>
+
+  <div id="input-bar">
+    <div id="input-inner">
+      <textarea id="chat-input" rows="1" placeholder="Upload a geometry file to begin…" aria-label="Message Hexera" disabled></textarea>
+      <button id="send-btn" type="button" disabled>Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- ONE entry module. It imports what it composes; nothing depends on tag order. -->
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
