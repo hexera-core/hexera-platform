@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pathlib
 import shutil
 import subprocess
 import time as _time
@@ -69,12 +70,84 @@ def _foam_version(bashrc: str) -> str:
         return ""
 
 
+def _cgroup_value(path: str) -> str:
+    try:
+        return pathlib.Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def _container_cpus(fallback: int) -> int:
+    """CPUs this container may actually use, not the host's core count.
+
+    cpu.max (v2) and cfs_quota_us (v1) express a QUOTA, which no affinity mask reflects:
+    Cloud Run hands the process a wide mask and then throttles it. Reading the quota is
+    the only way to see the limit the job was actually configured with.
+    """
+    raw = _cgroup_value("/sys/fs/cgroup/cpu.max")           # v2: "<quota> <period>" or "max ..."
+    if raw:
+        parts = raw.split()
+        if len(parts) == 2 and parts[0] != "max":
+            try:
+                return max(1, int(float(parts[0]) / float(parts[1])))
+            except (ValueError, ZeroDivisionError):
+                pass
+    quota = _cgroup_value("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")   # v1
+    period = _cgroup_value("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+    try:
+        q, per = int(quota), int(period)
+        if q > 0 and per > 0:
+            return max(1, q // per)
+    except ValueError:
+        pass
+    return fallback
+
+
+def _container_mem_bytes() -> int:
+    for path in ("/sys/fs/cgroup/memory.max",                      # v2
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):   # v1
+        raw = _cgroup_value(path)
+        if raw and raw != "max":
+            try:
+                v = int(raw)
+                # v1 reports a sentinel near 2**63 when unlimited.
+                if 0 < v < (1 << 62):
+                    return v
+            except ValueError:
+                pass
+    return 0
+
+
+def _rank_count(*, hard_max: int = 12, gib_per_rank: float = 3.0) -> int:
+    """How many MPI ranks this container can afford - bounded by MEMORY, not just CPU.
+
+    Two bugs lived in the one-liner this replaces (`min(os.cpu_count() or 1, 12)`):
+
+    os.cpu_count() reports the HOST's cores and ignores the cgroup quota entirely, so a
+    4-vCPU Cloud Run job ran `-np 5` and an 8-vCPU job ran `-np 10` - every rank
+    oversubscribed, with `--oversubscribe` hiding it rather than failing.
+
+    And CPU was the wrong budget to begin with. Every snappy rank carries its own copy of
+    the surface and its mesh partition, so total memory grows with rank count. Doubling
+    the machine doubled the ranks and left memory-per-rank flat, which is why a 16 GiB job
+    was OOM-killed at the same stage an 8 GiB one was. Ranks must be capped by memory or
+    buying a bigger container buys nothing.
+    """
+    cpus = _container_cpus(os.cpu_count() or 1)
+    ranks = min(cpus, hard_max)
+    mem = _container_mem_bytes()
+    if mem:
+        by_mem = int(mem / (gib_per_rank * (1 << 30)))
+        ranks = min(ranks, max(1, by_mem))
+    return max(1, ranks)
+
+
 def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                       timeout: int = 1800) -> dict:
     from meshpipeline.engines.snappy import parallel_stages as ps
 
     ws = Path(workspace)
-    nproc = min(os.cpu_count() or 1, 12)
+    nproc = _rank_count()
     attempt_started = _time.time()
     stages: list[ps.StageResult] = []
 

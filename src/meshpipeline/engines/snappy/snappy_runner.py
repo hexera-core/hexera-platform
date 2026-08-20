@@ -243,7 +243,28 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
 
     # coarse background grid over the WHOLE domain (snappy refines down); clamp so a large
     # far-field box never explodes the background cell count.
-    div = [max(12, min(80, int(round(ext[i] / base)))) for i in range(3)]
+    #
+    # The clamp used to be a flat per-axis cap of 80, which spent the budget in the wrong
+    # currency. Background cells grow LINEARLY with div; the `deficit` compensation below grows
+    # the refinement level, and cells grow EXPONENTIALLY with level (8x per level in 3D). On a
+    # 20-chord far field the flat cap forced base_actual = 1.025 m against an intended 0.0833 m -
+    # 12x coarse - which bought a 37k-cell background and paid for it with FOUR extra refinement
+    # levels. That is a ~4000x multiplier on the wall shell to save 500k background cells, and it
+    # OOM-killed snappy at both 8 GiB and 16 GiB.
+    #
+    # So budget the background directly and let each axis resolve as finely as that budget allows.
+    _BG_MAX_DIV = 256          # per-axis sanity bound
+    _BG_CELL_BUDGET = 600_000  # total background cells before refinement
+    div = [max(12, min(_BG_MAX_DIV, int(round(ext[i] / base)))) for i in range(3)]
+    # Trim the coarsest-paying axis until the whole grid fits the budget. The floor of 12 is a
+    # blockMesh sanity minimum, so a thin slab's span axis is exempt from the trimming.
+    for _ in range(256):
+        if div[0] * div[1] * div[2] <= _BG_CELL_BUDGET:
+            break
+        k = max(range(3), key=lambda i: div[i])
+        if div[k] <= 12:
+            break
+        div[k] = max(12, int(div[k] * 0.92))
 
     # DOMAIN-DECOUPLED RESOLUTION. A refinement LEVEL is relative to the background base cell,
     # but the clamp above (needed so a large far-field doesn't explode the background) makes the
@@ -255,7 +276,12 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # the hard budget backstop and the distance bands are already in absolute units, so this
     # cannot explode the count - the fine cells stay a thin shell on the wall.
     base_actual = max(ext[i] / max(div[i], 1) for i in range(3))
-    deficit = max(0, int(math.ceil(math.log2(max(base_actual / max(base, 1e-30), 1.0)))))
+    # floor, not ceil - the same correction render_internal_case already carries at the matching
+    # line. div is an integer count, so ext/div lands slightly above the requested base cell for
+    # pure rounding reasons; ceil turns that rounding into a whole extra refinement level, and a
+    # level is an 8x cell multiplier in 3D. Only a genuine doubling of the base cell should cost
+    # a level.
+    deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base, 1e-30), 1.0)) + 1e-9)))
     _HARD_MAX_LEVEL = 10
 
     # levels - the surface level is FLOORED at the body-sealing level the recommender computed
