@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import pathlib
 import tarfile
 import tempfile
 
@@ -40,7 +41,11 @@ def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        tf.add(workspace, arcname=".")
+        # Same rule as the input side: children only, so no "." member is written. The local
+        # worker extracts this through the identical safe_extract, so a "." root here fails the
+        # run just as surely - one step later, after the mesh has already been paid for.
+        for child in sorted(pathlib.Path(workspace).iterdir()):
+            tf.add(str(child), arcname=child.name)
     out_bucket, out_key = split_gs(output_uri)
     gcs.bucket(out_bucket).blob(out_key).upload_from_string(
         buf.getvalue(), content_type="application/gzip")

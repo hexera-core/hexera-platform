@@ -56,9 +56,15 @@ def require_cloudrun_config() -> None:
 
 
 def _tar_dir(path: Path) -> bytes:
+    # The workspace's CHILDREN, never the directory itself. arcname="." emits a member literally
+    # named "." alongside "./case" and friends, and safe_extract._safe_member_path rejects "." as
+    # an empty name - so the archive this produced could never be opened by the extractor on the
+    # other side. Adding the children yields "case", "case/geom.stl" with no root entry, which is
+    # the same content the extractor already expects to see once it has stripped a leading "./".
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        tf.add(str(path), arcname=".")
+        for child in sorted(Path(path).iterdir()):
+            tf.add(str(child), arcname=child.name)
     return buf.getvalue()
 
 
