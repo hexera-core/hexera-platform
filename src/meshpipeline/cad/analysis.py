@@ -121,12 +121,38 @@ def analyze_surface(surface, *, max_samples: int = 60000) -> dict:
     # no longer silently drives refinement. Trust it only when it is a real narrow channel.
     gap_is_real = feature_size * 0.25 < thin_gap < feature_size * 4
     min_feature = min(feature_size, thin_gap) if gap_is_real else feature_size
+    # END-CAP AREA PER AXIS. For each axis, how much of the wetted area is a flat face lying ON
+    # the bbox extreme with its normal along that axis. An EXTRUDED body (a wing section swept
+    # along its span) has two such caps - one at each end - and nothing else does: a closed
+    # curved body has no flat face pinned to the bbox plane, and a half-model has exactly one.
+    # This is what distinguishes "slab with two symmetry ends" from "half-model with one cut
+    # face", which the caller cannot otherwise tell apart from a bounding box alone.
+    cn = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    cnn = np.linalg.norm(cn, axis=1)
+    ok = cnn > 0
+    unit = cn[ok] / cnn[ok, None]
+    cent = T.mean(axis=1)[ok]
+    a_ok = area[ok]
+    total_a = float(a_ok.sum()) or 1.0
+    axis_caps: list[dict[str, float]] = []
+    for _ax in range(3):
+        _tol = max(float(ext[_ax]) * 1e-3, diag * 1e-6)
+        # 0.999, not 0.99: a curved body is TANGENT to its own bbox plane (an aerofoil at max
+        # thickness), and a loose threshold counts that grazing band as an end cap. A real cap
+        # is planar, so its normals sit on the axis rather than near it.
+        flat = np.abs(unit[:, _ax]) > 0.999         # normal along this axis
+        lo = flat & (cent[:, _ax] < float(mn[_ax]) + _tol)
+        hi = flat & (cent[:, _ax] > float(mx[_ax]) - _tol)
+        axis_caps.append({"min": float(a_ok[lo].sum()) / total_a,
+                          "max": float(a_ok[hi].sum()) / total_a})
+
     return {
         "bbox_min": mn.tolist(), "bbox_max": mx.tolist(),
         "extent": ext.tolist(), "diag": diag, "L": L, "n_triangles": int(len(T)),
         "edge_pct": edge_p, "thin_gap": float(thin_gap), "feature_size": float(feature_size),
         "min_feature": float(min_feature), "curvature_hi": curvature_hi,
         "surface_area": float(area_g.sum()),     # wetted area - drives the budget back-solve
+        "axis_caps": axis_caps,                  # per-axis flat end-cap area fractions
     }
 
 

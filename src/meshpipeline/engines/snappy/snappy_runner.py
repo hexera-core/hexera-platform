@@ -191,18 +191,67 @@ _BOX_FACES: dict[tuple[int, str], str] = {
 _ALL_BOX_FACES = ["(0 3 2 1)", "(4 5 6 7)", "(0 1 5 4)", "(2 3 7 6)", "(1 2 6 5)", "(0 4 7 3)"]
 
 
-def detect_symmetry_plane(analysis: dict, sym_name: str, *, tol_frac: float = 0.005) -> dict | None:
+def detect_symmetry_plane(analysis: dict, sym_name: str, *, tol_frac: float = 0.005,
+                          min_cap_frac: float = 0.005) -> dict | None:
     if not sym_name:
         return None
     bmin, bmax = analysis["bbox_min"], analysis["bbox_max"]
     tol = tol_frac * (float(analysis["L"]) or 1.0)
+    caps = analysis.get("axis_caps")
+    # A bounding box that merely TOUCHES zero is not a cut plane. A NACA 0012 sitting at
+    # x = 0.0011 with L = 2 passes abs(lo) < tol on the X axis and was declared a half-model cut
+    # on its own leading edge - which clamped the domain to x >= 0 and left the case with no
+    # upstream far field at all. The mesh came out geometrically clean and aerodynamically
+    # useless. A real cut face is FLAT and carries area, so require the end cap to exist.
+    def _has_cap(ax: int, side: str) -> bool:
+        if not caps:
+            return True                    # no measurement available - preserve prior behaviour
+        return float(caps[ax].get(side, 0.0)) >= min_cap_frac
+
     for ax in range(3):
         lo, hi = float(bmin[ax]), float(bmax[ax])
-        if abs(lo) < tol < hi:            # sits on the plane at 0, extends positive
+        if abs(lo) < tol < hi and _has_cap(ax, "min"):    # sits on the plane at 0, extends positive
             return {"axis": ax, "pos": 0.0, "side": "min", "name": sym_name}
-        if abs(hi) < tol and lo < -tol:   # sits on the plane at 0, extends negative
+        if abs(hi) < tol and lo < -tol and _has_cap(ax, "max"):  # on the plane at 0, extends negative
             return {"axis": ax, "pos": 0.0, "side": "max", "name": sym_name}
     return None                            # straddles the centreline - no half-model plane
+
+
+def detect_slab_symmetry(analysis: dict, lo_name: str, hi_name: str, *,
+                         min_cap_frac: float = 0.002) -> dict | None:
+    """The 2.5D case: an extruded section with a symmetry patch on EACH spanwise end.
+
+    detect_symmetry_plane above answers a different question - "is this half a body, cut on a
+    plane?" - and can only ever name ONE face. A wing section swept along its span is not a half
+    model: it is a whole body whose two end caps are both symmetry boundaries. Asking for that
+    used to silently produce a mesh with the second patch empty, which the manifest contract
+    then rejected after the mesh had already been paid for.
+
+    The signal is the flat end caps measured in analysis["axis_caps"]: an extrusion has real
+    surface area lying ON both bbox planes of its sweep axis, normals along that axis. A curved
+    closed body has neither cap, and a half-model has exactly one - so requiring BOTH separates
+    this case from the one above without guessing from the bounding box.
+    """
+    caps = analysis.get("axis_caps")
+    if not caps or not lo_name or not hi_name:
+        return None
+    best, best_score = None, 0.0
+    for ax in range(3):
+        lo_f, hi_f = float(caps[ax].get("min", 0.0)), float(caps[ax].get("max", 0.0))
+        # Weight by how EQUAL the two caps are. A swept section ends in two identical faces;
+        # anything else that happens to present flat area at both bbox planes does not, so this
+        # separates the real sweep axis from a coincidence without needing a second measurement.
+        balance = 1.0 - abs(lo_f - hi_f) / max(lo_f, hi_f, 1e-30)
+        score = min(lo_f, hi_f) * balance
+        if lo_f >= min_cap_frac and hi_f >= min_cap_frac and score > best_score:
+            best, best_score = ax, score
+    if best is None:
+        return None
+    return {"slab": True, "axis": best,
+            "pos_lo": float(analysis["bbox_min"][best]),
+            "pos_hi": float(analysis["bbox_max"][best]),
+            "lo_name": lo_name, "hi_name": hi_name,
+            "cap_frac": best_score}
 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
@@ -213,7 +262,12 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
     side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
     dmin = [bmin[0] - up * L, bmin[1] - side * L, bmin[2] - vert * L]
     dmax = [bmax[0] + dn * L, bmax[1] + side * L, bmax[2] + vert * L]
-    if symmetry:
+    if symmetry and symmetry.get("slab"):
+        # Both ends of the sweep axis ARE the domain: a 2.5D slab is not padded spanwise, or the
+        # symmetry planes would sit out in the far field with fluid between them and the body.
+        ax = symmetry["axis"]
+        dmin[ax], dmax[ax] = symmetry["pos_lo"], symmetry["pos_hi"]
+    elif symmetry:
         ax = symmetry["axis"]
         if symmetry["side"] == "min":
             dmin[ax] = symmetry["pos"]
@@ -313,7 +367,17 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
          (domain_max[0], domain_max[1], domain_min[2]), (domain_min[0], domain_max[1], domain_min[2]),
          (domain_min[0], domain_min[1], domain_max[2]), (domain_max[0], domain_min[1], domain_max[2]),
          (domain_max[0], domain_max[1], domain_max[2]), (domain_min[0], domain_max[1], domain_max[2])]
-    if symmetry:
+    if symmetry and symmetry.get("slab"):
+        # 2.5D slab: BOTH faces of the sweep axis are symmetryPlanes, each under the name the
+        # user declared for it. The other four are farfield. Emitting only one of these is what
+        # left the second declared patch with zero faces.
+        _lo = _BOX_FACES[(symmetry["axis"], "min")]
+        _hi = _BOX_FACES[(symmetry["axis"], "max")]
+        _ff = "".join(f for f in _ALL_BOX_FACES if f not in (_lo, _hi))
+        _boundary = (f"boundary (farfield {{ type patch; faces ({_ff}); }} "
+                     f"{symmetry['lo_name']} {{ type symmetryPlane; faces ({_lo}); }} "
+                     f"{symmetry['hi_name']} {{ type symmetryPlane; faces ({_hi}); }});")
+    elif symmetry:
         # half-model: one box face is the symmetryPlane (named as the user declared); the
         # remaining five are farfield.
         _sym_face = _BOX_FACES[(symmetry["axis"], symmetry["side"])]

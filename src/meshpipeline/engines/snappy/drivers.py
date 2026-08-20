@@ -123,27 +123,48 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _surface = staged_surface(_materialized(state), workspace / "input.stl")
     analysis = analyze_surface(_surface)
 
-    # HALF-MODEL SYMMETRY (3D external): if the user declared a symmetry patch, find the plane
-    # the geometry is cut on. A full-span body has no such plane - detection returns None - so
-    # we fail FAST here (once, before any mesh) rather than build a mesh that fails the patch
-    # contract with "zero faces: symmetry" and burns every retry.
+    # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
+    # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
+    # section whose both end caps are symmetry planes. Either way, resolve it HERE and fail fast
+    # if the geometry cannot carry what was declared, rather than build a mesh that dies on the
+    # patch contract with "zero faces" and burns every retry after the mesh is already paid for.
     symmetry = None
-    _sym_name = next((p.get("name") for p in (state.get("intake_patches") or [])
-                      if (p.get("type") or "").strip() == "symmetry"), None)
-    if _sym_name and (state.get("dimensionality") or "3D").upper() == "3D":
-        symmetry = R.detect_symmetry_plane(analysis, _sym_name)
+    # EVERY declared symmetry patch, not just the first. Taking only the first silently dropped
+    # the second one: blockMesh never created that face, the manifest contract still expected it,
+    # and the run died on "zero faces" AFTER a production-grade mesh had already been built and
+    # paid for. Two declared patches is the 2.5D slab case and needs both ends emitted.
+    _sym_names = [p.get("name") for p in (state.get("intake_patches") or [])
+                  if (p.get("type") or "").strip() == "symmetry" and p.get("name")]
+    if _sym_names and (state.get("dimensionality") or "3D").upper() == "3D":
+        # ONE declared patch is a half-model; TWO is a swept slab. Same decision, same two
+        # outcomes, so they share this module's refusal and its note rather than adding sites:
+        # every publication here is a certified user-facing message, and two ways of saying
+        # "symmetry could not be placed" is one more than the reader needs.
+        _slab = len(_sym_names) >= 2
+        symmetry = (R.detect_slab_symmetry(analysis, _sym_names[0], _sym_names[1]) if _slab
+                    else R.detect_symmetry_plane(analysis, _sym_names[0]))
         if symmetry is None:
-            await publish.aerror(f"The symmetry boundary '{_sym_name}' was declared, but the geometry is "
-                             "not a half-model - it has no coplanar cut face to place a "
-                             "symmetry plane on (a full-span body straddles the centreline). "
-                             "Mesh the full domain without symmetry, or supply a half-model.",
-                    op_id="snappy:symmetry-unusable")
+            await publish.aerror(
+                (f"Two symmetry boundaries were declared ('{_sym_names[0]}', '{_sym_names[1]}'), "
+                 "which describes an extruded section meshed as a slab - but this geometry has "
+                 "no pair of flat end caps to place them on."
+                 if _slab else
+                 f"The symmetry boundary '{_sym_names[0]}' was declared, but the geometry is not "
+                 "a half-model - it has no coplanar cut face to place a symmetry plane on (a "
+                 "full-span body straddles the centreline).")
+                + " Mesh the full domain without symmetry, or supply a half-model.",
+                op_id="snappy:symmetry-unusable")
             return False
         # `axis` is the INDEX every other consumer indexes with (snappy_runner's _BOX_FACES and
         # domain bounds); the reader is told which axis that is, not the number.
-        await publish.anote(f"Half-model detected - mirroring on the {'XYZ'[int(symmetry['axis'])]} cut "
-                        f"face and meshing one side only (boundary '{symmetry['name']}')",
-                op_id="snappy:symmetry-detected")
+        await publish.anote(
+            (f"Extruded slab detected - symmetry on both {'XYZ'[int(symmetry['axis'])]} end faces "
+             f"('{symmetry['lo_name']}', '{symmetry['hi_name']}'); the domain is not padded along "
+             "that axis."
+             if _slab else
+             f"Half-model detected - mirroring on the {'XYZ'[int(symmetry['axis'])]} cut face "
+             f"and meshing one side only (boundary '{symmetry['name']}')"),
+            op_id="snappy:symmetry-detected")
 
     plan = initial_plan
     # retry mode arrives with a prior failure but no pre-made plan → seed the first re-plan with it
