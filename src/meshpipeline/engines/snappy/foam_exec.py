@@ -60,9 +60,9 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
         cached = ws / "mesh_quality.json"
         if cached.is_file():
             try:
-                q = json.loads(cached.read_text())
-                if isinstance(q, dict) and q:
-                    return q
+                measured = json.loads(cached.read_text())
+                if isinstance(measured, dict) and measured:
+                    return measured
             except (OSError, ValueError):
                 logger.warning("mesh_quality.json unreadable; measuring locally instead")
     reason = scan_case_dicts(ws)
