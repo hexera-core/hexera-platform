@@ -122,8 +122,11 @@ async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
         # generation is authoritative, has its own workspace and will produce its own result. It
         # used to fall into the generic RuntimeError branch, be swallowed, and return an
         # ordinary-looking Builder state dict a reader could mistake for current output.
-        logger.error("Builder: superseded mid-attempt - job_id=%s; a newer generation owns this "
-                     "job. Writing no state.", job_id)
+        # Do not assert WHY. This handler cannot see whether a newer generation exists; it only
+        # knows this worker's publication was refused. Claiming supersession sent a reader to
+        # look for a competing generation that the job row proves never existed.
+        logger.error("Builder: lost execution ownership mid-attempt - job_id=%s; this worker may "
+                     "no longer publish. Writing no state.", job_id)
         raise
     except asyncio.CancelledError:
         # Never converted, never recorded, never swallowed.
