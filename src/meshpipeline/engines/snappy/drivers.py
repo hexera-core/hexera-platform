@@ -242,10 +242,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 read_purpose(workspace), run=run, native_attempt=attempt)
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation
             # still owns the job and may accept, publish and record the result.
-            # The runner measures quality beside the mesh and sends it back; re-running
-            # checkMesh here only works when the mesh was built locally, and this worker has no
-            # OpenFOAM. Trust what travelled with the result, fall back for a genuine local run.
-            q = result.get("quality") or R.check_mesh(workspace)
+            q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
             wall_faces = sum(c for p, c in fc.items() if p != "farfield")
@@ -391,7 +388,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             result = await _run_snappy_timed(
                 R, workspace, _cap, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
-            q = result.get("quality") or R.check_mesh(workspace)
+            q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
             wall_faces = int(fc.get(prep["names"]["wall"], 0))

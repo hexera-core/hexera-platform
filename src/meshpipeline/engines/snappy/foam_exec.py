@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from pathlib import Path
 
@@ -49,6 +50,21 @@ _FATAL = (("negative volume", "negative-volume cells"),
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:
     ws = Path(workspace)
+    # A measurement taken WHERE THE MESH WAS BUILT wins, because here it may be impossible.
+    # checkMesh is an OpenFOAM binary; on the Cloud Run path the mesh is built in a container
+    # that has one and read back by a worker that does not. Shelling out here then returned an
+    # empty dict on every single run - the `cells=None` in every log line this system has
+    # written - and the reviewer refused each mesh for evidence that could not be produced.
+    # The runner writes this file next to the polyMesh it measured; it arrives with it.
+    if not region:
+        cached = ws / "mesh_quality.json"
+        if cached.is_file():
+            try:
+                q = json.loads(cached.read_text())
+                if isinstance(q, dict) and q:
+                    return q
+            except (OSError, ValueError):
+                logger.warning("mesh_quality.json unreadable; measuring locally instead")
     reason = scan_case_dicts(ws)
     if reason:
         return {"mesh_ok": False, "fatal": [f"case dicts rejected: {reason}"],

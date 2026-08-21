@@ -2,6 +2,7 @@
 # Boundaries: the native seam: it executes the real mesher and returns the shared result contract. It judges nothing.
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pathlib
@@ -197,6 +198,12 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                 q = check_mesh(ws, bashrc=bashrc)
                 if q:
                     out["quality"] = q
+                    # Beside the mesh, not just in the return value. The measurement has three
+                    # more readers on the far side - finalize (which writes it into the manifest
+                    # the reviewer reads), solvability, and the judge - and threading a return
+                    # value to each is four chances to miss one. A file in the workspace travels
+                    # home with the mesh it describes and every reader finds it the same way.
+                    (ws / "mesh_quality.json").write_text(json.dumps(q, default=str))
             except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
                 logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)
         return out
