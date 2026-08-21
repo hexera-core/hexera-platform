@@ -267,7 +267,28 @@ class ReviewLoopPolicy:
             self._mark_progress(f"deficits:{deficits.signature()}")
         else:
             self._mark_no_progress(f"deficits:{deficits.signature()}")
-        return ToolOutcome(content=self.rejection_correction(deficits), accepted=False)
+
+        # TELL THE REVIEWER WHY. This rejection came from evaluate_eligibility, which composes a
+        # reviewer-facing correction_message for exactly this moment - and it was being dropped on
+        # the floor, its reasons kept only for the log. What went back instead was the DEFICIT
+        # text, and on a rejection whose deficits are clean that text names nothing at all: "The
+        # listed axes need a corrected finding" with no axes listed. Nothing in it is actionable,
+        # so the model resubmits the same findings, is refused identically, and the review ends at
+        # the round limit with no verdict. Six submissions, six rejections, on a mesh that had
+        # already passed every other gate in the pipeline.
+        #
+        # Deficits and eligibility answer different questions - is the submission well-formed, and
+        # does it amount to a verdict - so when both have something to say, say both.
+        _elig = (decision.correction_message or "").strip()
+        if not _elig and decision.reasons:
+            _elig = "Rejected: " + "; ".join(decision.reasons)
+        if deficits.clean:
+            _text = _elig or self.rejection_correction(deficits)
+        else:
+            _text = self.rejection_correction(deficits)
+            if _elig:
+                _text = f"{_text}\n{_elig}"
+        return ToolOutcome(content=_text, accepted=False)
 
     def _mark_progress(self, signature: str) -> None:
         self._round_progressed, self._progress_signature = True, signature
