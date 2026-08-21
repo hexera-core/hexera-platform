@@ -312,6 +312,18 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         # 60 downstream - paid for in background cells - while the direction that actually needed
         # the room got the smallest multiplier.
         i_s, i_v, i_p = roles
+        # A brief cannot bind a model. The planner is told which direction each key names, and it
+        # still emitted vert=0 while reasoning "vert: 0 (spanwise, no padding)" - it had the key
+        # meaning the span. That put the far-field boundary flat on the aerofoil's suction and
+        # pressure surfaces: 809k cells, 29,657 of them skewed, and a lift number that would have
+        # been meaningless had anything downstream accepted it. SPANWISE may legitimately be zero
+        # for a slab; the direction a lifting body develops its pressure field in may not.
+        _VERT_FLOOR = 2.0
+        if vert < _VERT_FLOOR:
+            logger.warning("domain_margin vert=%.3g is below the %.3g-body-length floor for external "
+                           "flow - raising it. A zero here puts the far-field on the body's own "
+                           "surface; only the SPANWISE margin may be zero.", vert, _VERT_FLOOR)
+            vert = _VERT_FLOOR
         ref = float(_extent_of(analysis)[i_s]) or L
         dmin, dmax = list(bmin), list(bmax)
         dmin[i_s], dmax[i_s] = bmin[i_s] - up * ref,   bmax[i_s] + dn * ref

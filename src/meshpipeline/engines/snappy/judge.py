@@ -27,6 +27,18 @@ def _repair_message(key: str, result: dict, q: dict) -> str:
                 "REDUCE the budget: lower max_cells and/or surface_level; fewer n_layers also "
                 "helps. Do NOT enlarge anything.")
     if key == "rc":
+        # -3 is RC_INFRASTRUCTURE: the run never reached snappyHexMesh at all. Describing that as
+        # a geometry problem sent a planner enlarging its domain 20->25->30 and 30->40->50 across
+        # four attempts over 46 minutes, each one taking 0:00 against a 13-minute average, because
+        # nothing was ever dispatched. Worse, the advice is what sustains the failure: re-planning
+        # changes the payload, and it is the payload changing under one operation identity that
+        # the submission claim refuses. The only honest instruction is to change NOTHING.
+        from meshpipeline.application.native_submission import RC_INFRASTRUCTURE
+        if result.get("rc") == RC_INFRASTRUCTURE:
+            return ("INFRASTRUCTURE failure - the mesh run never started, so nothing about this "
+                    "plan caused it and nothing in it can fix it. Do NOT change the domain, the "
+                    "levels, the layers or the budget: a different plan is a different payload, "
+                    "and that is what the submission claim rejects. Resubmit this plan unchanged.")
         return ("snappyHexMesh FAILED (nonzero exit) - a setup issue (domain point, feature "
                 "file, or over-aggressive levels). Try quality='strict' and a slightly larger "
                 "domain_margin. Not a budget problem - do not raise max_cells.")
