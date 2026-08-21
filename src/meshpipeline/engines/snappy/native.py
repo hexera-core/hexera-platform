@@ -176,9 +176,30 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         snap_log = log.read_text(errors="replace") if log.exists() else ""
         verdict = ps.classify(ws, stages, foam_version=_foam_version(bashrc),
                               attempt_started=attempt_started)
-        return _snappy_result(ws, verdict["rc"], verdict["timed_out"], snap_log,
-                              stages=stages, stage_note=verdict["note"],
-                              benign=verdict["benign"])
+        out = _snappy_result(ws, verdict["rc"], verdict["timed_out"], snap_log,
+                             stages=stages, stage_note=verdict["note"],
+                             benign=verdict["benign"])
+        # QUALITY IS MEASURED HERE, beside the mesh, and travels home in the result.
+        #
+        # The caller runs check_mesh() itself, which shells out to `checkMesh` - an OpenFOAM
+        # binary. That works when the mesh was built in the same container. On the Cloud Run
+        # path it cannot: the local worker image carries no OpenFOAM at all, so every metric
+        # came back empty. It is why every log line reads `cells=None`, and why the reviewer
+        # refused each run for missing `max_non_ortho` evidence AFTER a mesh had been built,
+        # paid for, and passed both the manifest and solvability gates.
+        #
+        # Measuring on this side is not a workaround for that - it is where the measurement
+        # belongs. The mesh is here, the binary is here, and the numbers describe bytes that
+        # have not yet crossed a network.
+        if (ws / "constant" / "polyMesh" / "owner").exists():
+            try:
+                from meshpipeline.engines.snappy.foam_exec import check_mesh
+                q = check_mesh(ws, bashrc=bashrc)
+                if q:
+                    out["quality"] = q
+            except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
+                logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)
+        return out
 
     # background grid + feature edges (fast, serial). A pre-parallel failure short-circuits.
     if not _sh("blockMesh", "blockMesh.log",
