@@ -254,14 +254,69 @@ def detect_slab_symmetry(analysis: dict, lo_name: str, hi_name: str, *,
             "cap_frac": best_score}
 
 
+def _extent_of(analysis: dict) -> list[float]:
+    ext = analysis.get("extent")
+    if ext:
+        return [float(v) for v in ext]
+    lo, hi = analysis["bbox_min"], analysis["bbox_max"]
+    return [float(hi[i]) - float(lo[i]) for i in range(3)]
+
+
+def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, int] | None:
+    """(streamwise, vertical, spanwise) axis indices, or None when they cannot be told apart.
+
+    The margins below are named for a body's flow directions, but were applied by fixed index -
+    axis 0 up/down, axis 1 side, axis 2 vert. That is a guess about how the CAD happens to be
+    oriented. A NACA 0012 exported with chord on X, THICKNESS on Y and span on Z gets the
+    "side" margin applied to its vertical direction and the "vert" margin applied to its span,
+    where the slab clamp then discards it: a 20-chord brief produced 2 chords of clearance above
+    and below the aerofoil. The mesh is clean and the lift computed on it is wrong, which is the
+    expensive kind of wrong.
+
+    Only answerable when the spanwise axis is known independently - which is exactly what a
+    declared symmetry gives us. Without it, return None and leave the historical mapping alone
+    rather than guess: for a bare body, the thinnest axis is as likely to be a wing's thickness
+    as its span.
+    """
+    if not symmetry:
+        return None
+    span = int(symmetry["axis"])
+    # bbox is the authority; "extent" is a convenience analyze_surface happens to publish and not
+    # every caller carries it. Deriving keeps this readable from any analysis that can describe a
+    # box at all, which is the only thing it needs to answer the question.
+    ext = _extent_of(analysis)
+    rest = [i for i in range(3) if i != span]
+    # Of the two non-span axes, the longer is the streamwise one - chord exceeds thickness on any
+    # body worth wrapping in a far field.
+    stream = max(rest, key=lambda i: float(ext[i]))
+    vert = rest[0] if rest[1] == stream else rest[1]
+    return stream, vert, span
+
+
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          symmetry: dict | None = None) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     m = (strategy or {}).get("domain_margin") or {}
     up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
     side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
-    dmin = [bmin[0] - up * L, bmin[1] - side * L, bmin[2] - vert * L]
-    dmax = [bmax[0] + dn * L, bmax[1] + side * L, bmax[2] + vert * L]
+
+    roles = axis_roles(analysis, symmetry)
+    if roles is None:
+        dmin = [bmin[0] - up * L, bmin[1] - side * L, bmin[2] - vert * L]
+        dmax = [bmax[0] + dn * L, bmax[1] + side * L, bmax[2] + vert * L]
+    else:
+        # REFERENCE LENGTH is the STREAMWISE extent, not the largest bbox dimension. Far-field
+        # distances are quoted in chords by every text and every reviewer, and the planner is
+        # briefed in "body-lengths L" meaning exactly that. With L = max(extent), a 2 m span on a
+        # 1 m chord silently doubled every margin: a 20-chord brief became 40 chords upstream and
+        # 60 downstream - paid for in background cells - while the direction that actually needed
+        # the room got the smallest multiplier.
+        i_s, i_v, i_p = roles
+        ref = float(_extent_of(analysis)[i_s]) or L
+        dmin, dmax = list(bmin), list(bmax)
+        dmin[i_s], dmax[i_s] = bmin[i_s] - up * ref,   bmax[i_s] + dn * ref
+        dmin[i_v], dmax[i_v] = bmin[i_v] - vert * ref, bmax[i_v] + vert * ref
+        dmin[i_p], dmax[i_p] = bmin[i_p] - side * ref, bmax[i_p] + side * ref
     if symmetry and symmetry.get("slab"):
         # Both ends of the sweep axis ARE the domain: a 2.5D slab is not padded spanwise, or the
         # symmetry planes would sit out in the far field with fluid between them and the body.
