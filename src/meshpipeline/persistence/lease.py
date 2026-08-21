@@ -161,12 +161,23 @@ class LeaseRepository:
         await db.flush()
         # ONLY THEN the mirror, and only if it is still ours. `refresh` never SETs, so a delayed
         # heartbeat from a superseded worker cannot bring a revoked fence back.
+        # A refresh that reports 0 found no fence of ours to extend, and discarding that answer is
+        # how a healthy job dies: the mirror can never return, every later beat no-ops in silence,
+        # PostgreSQL goes on reporting perfect health, and the next fenced publish is refused for a
+        # supersession that never happened.
+        #
+        # `heal` is NX, so it can only fill a hole. It cannot displace a newer generation's fence -
+        # that write simply loses - which is the takeover `refresh`'s never-SET rule was protecting
+        # against. And the row above was read FOR UPDATE with its generation and token compared to
+        # ours, so PostgreSQL has already confirmed on this line that the fence being restored is
+        # the one that belongs here. A superseded worker returned False long before reaching it.
         _ops = _fence_ops()
+        _fp = _ops.fingerprint(str(own.job_id), own.execution_generation, own.worker_token)
+        _ttl = self.fence_ttl_seconds(row, now)
         try:
-            _ops.refresh(str(own.job_id),
-                         _ops.fingerprint(str(own.job_id), own.execution_generation,
-                                          own.worker_token),
-                         self.fence_ttl_seconds(row, now))
+            if not _ops.refresh(str(own.job_id), _fp, _ttl) and _ops.heal(str(own.job_id), _fp, _ttl):
+                logger.warning("execution fence for job %s had lapsed - restored from the claim "
+                               "this heartbeat verified", own.job_id)
         except Exception:  # noqa: BLE001 - a mirror blip costs availability, never safety
             logger.warning("could not refresh the execution fence for job %s", own.job_id)
         return True

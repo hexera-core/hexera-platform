@@ -44,6 +44,24 @@ def refresh(job_id: str, value: str, ttl_seconds: int) -> bool:
                                    str(max(1, int(ttl_seconds)))))
 
 
+def heal(job_id: str, value: str, ttl_seconds: int) -> bool:
+    """Restore a LAPSED mirror, and only a lapsed one. NX is the whole point.
+
+    `refresh` cannot bring a vanished fence back, by design, and `install` would overwrite
+    whatever is there - including a newer generation's fence, which is exactly the takeover this
+    module exists to prevent. NX splits the difference: it fills a hole and loses every race for
+    an occupied key, so a caller that has fallen behind cannot displace the current owner no
+    matter how stale its view is.
+
+    The mirror can lapse for reasons that have nothing to do with ownership - a TTL that outran a
+    beat, memory pressure under volatile-lru, a reconnect. Without this, one lapse is permanent:
+    refresh no-ops forever, PostgreSQL keeps reporting perfect health, and the next fenced publish
+    is refused for a supersession that never happened. That threw away a finished 22-minute mesh.
+    """
+    return bool(sync_client().set(fence_key_for(job_id), value,
+                                  ex=max(1, int(ttl_seconds)), nx=True))
+
+
 def revoke(job_id: str, value: str) -> bool:
     return bool(sync_client().eval(_REVOKE_LUA, 1, fence_key_for(job_id), value))
 
@@ -55,4 +73,4 @@ def current(job_id: str) -> str:
     return raw.decode() if isinstance(raw, bytes) else str(raw)
 
 
-__all__ = ["current", "fingerprint", "install", "refresh", "revoke"]
+__all__ = ["current", "fingerprint", "heal", "install", "refresh", "revoke"]

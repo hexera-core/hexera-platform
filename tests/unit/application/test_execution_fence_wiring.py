@@ -227,7 +227,34 @@ def test_renewal_extends_postgresql_before_it_refreshes_the_mirror():
     src = inspect.getsource(LeaseRepository.heartbeat)
     assert src.index("row.lease_expires_at = now") < src.index("refresh"), (
         "the mirror is refreshed before the authoritative lease is extended")
-    assert "install" not in src, "renewal may not install a fence"
+    # `install` is an unconditional SET and would overwrite a newer generation's fence, handing a
+    # superseded worker the authority to publish over the current one. Renewal may restore a
+    # mirror that has LAPSED - see heal() - but it may never displace one that is present.
+    assert "install" not in src, "renewal may not install a fence - it would clobber a live one"
+
+
+def test_renewal_can_restore_a_lapsed_mirror_but_only_by_filling_a_hole():
+    """The invariant is 'never displace', not 'never write'.
+
+    Asserting the absence of one function name was a proxy for that, and a weak one: it passes on
+    a rename. What actually matters is that the only write renewal can make is one that loses
+    every race for an occupied key. Without SOME restore, a single lapse is permanent - refresh
+    no-ops forever, PostgreSQL reports perfect health, and the next fenced publish is refused for
+    a supersession that never happened.
+    """
+    import inspect
+
+    from meshpipeline.persistence.lease import LeaseRepository
+
+    src = inspect.getsource(LeaseRepository.heartbeat)
+    assert "heal" in src, "a lapsed mirror can never come back: refresh alone cannot restore it"
+    assert src.index("refresh") < src.index("heal"), (
+        "renewal must try to extend its own fence before restoring a missing one")
+
+    heal_src = inspect.getsource(F.heal)
+    assert "nx=True" in heal_src, (
+        "heal must be NX - anything else can displace the fence of a newer generation")
+    assert "GET" not in heal_src, "heal must be one atomic write, not a check-then-set"
 
 
 def test_refresh_never_creates_a_missing_fence():
