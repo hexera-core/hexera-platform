@@ -109,6 +109,13 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
 
 def export_volume_vtk(workspace, *, bashrc: str = _DEFAULT_BASHRC, timeout: int = 300) -> str | None:
     ws = Path(workspace)
+    # An export that arrived WITH the mesh wins, for the same reason the quality measurement does:
+    # foamToVTK is an OpenFOAM binary, and on the Cloud Run path the caller runs where there is
+    # none. The failure was silent - nonzero bash, no exception, an empty glob, None returned - so
+    # the manifest went on declaring inspection regions that could never be rendered.
+    existing = sorted(ws.glob("VTK/**/internal.vtu"))
+    if existing:
+        return str(existing[0].relative_to(ws))
     reason = scan_case_dicts(ws)
     if reason:
         logger.warning("export_volume_vtk: %s", reason)

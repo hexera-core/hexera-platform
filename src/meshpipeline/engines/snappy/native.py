@@ -206,6 +206,20 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                     (ws / "mesh_quality.json").write_text(json.dumps(q, default=str))
             except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
                 logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)
+            # THE VOLUME EXPORT, for the same reason and by the same route. The reviewer slices
+            # the mesh to see inside it, and every slice comes from this .vtu. It is written by
+            # foamToVTK - another OpenFOAM binary that exists here and nowhere on the far side -
+            # so calling it there produced nothing, silently: bash exits nonzero, run_guarded
+            # raises nothing, the glob finds no file and returns None without a word. The manifest
+            # then declared five inspection regions the renderer had no volume to cut, and the
+            # reviewer refused a mesh that had passed every other gate.
+            try:
+                from meshpipeline.engines.snappy.foam_exec import export_volume_vtk
+                if export_volume_vtk(ws, bashrc=bashrc):
+                    logger.info("volume VTK exported beside the mesh for review")
+            except Exception:  # noqa: BLE001 - an export must never lose a finished mesh
+                logger.warning("foamToVTK after meshing failed; the reviewer will have no "
+                               "volume to slice", exc_info=True)
         return out
 
     # background grid + feature edges (fast, serial). A pre-parallel failure short-circuits.
