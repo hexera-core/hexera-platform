@@ -305,8 +305,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         logger.error("internal build: needs a CAD SOLID (STEP/IGES), got an STL - job_id=%s", job_id)
         return False
     try:
+        # The coordinate state staging would have supplied. This path tessellates the CAD itself
+        # instead of going through prepare_surface, and cad_tessellate refuses outright without it -
+        # rightly, since the conversion to metres would otherwise be a guess. Omitting it killed
+        # every internal-flow job in 8 seconds, before the mesher was ever reached: the external
+        # path gets the same state from _plan_surface, so take it from there rather than
+        # reconstructing a second opinion about the scale.
+        _prepared = _plan_surface(state, workspace).consumed
         t = await _asyncio.to_thread(R.tessellate_internal, source_path,
-                                     workspace / "_internal_stls")
+                                     workspace / "_internal_stls", prepared=_prepared)
         prep = R.prepare_surface_internal(workspace, surfaces_src=t["stls"])
     except (_fence.StaleWorkerFenced, StaleExecutionPublish):
         raise
