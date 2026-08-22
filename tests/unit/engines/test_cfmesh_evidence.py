@@ -79,7 +79,7 @@ def test_opening_image_alone_cannot_satisfy_a_local_axis():
     d = evaluate_eligibility(_PLAN, L, tuple(findings),
                       obligations=(TargetObligation(TargetKind.PATCH),))
     assert d.outcome is Eligibility.REJECT
-    assert any("RenderTargetRequirement" in r for r in d.reasons)
+    assert any("an inspection of any patch" in r for r in d.reasons), d.reasons
 
 
 @pytest.mark.parametrize("axis", _WEAK)
@@ -104,7 +104,7 @@ def test_a_region_inspection_cannot_satisfy_a_patch_requirement():
     d = evaluate_eligibility(_PLAN, L, findings, obligations=(TargetObligation(TargetKind.PATCH),))
     assert d.outcome is Eligibility.REJECT
     # the PATCH-requiring axes are unsatisfied by a region-only citation
-    assert any("RenderTargetRequirement" in r for r in d.reasons)
+    assert any("an inspection of any patch" in r for r in d.reasons), d.reasons
 
 
 # target-specific evidence satisfies them

@@ -177,6 +177,57 @@ def _req_applicable(req, expected_kinds) -> bool:
     return True
 
 
+# A refusal the recipient cannot act on is a loop, not a gate. The reviewer that reads "does not
+# satisfy required MetricRequirement" is told a rule name: not WHICH metric, and not that the
+# answer is an id already on file rather than another render. Observed in a real review: the axes
+# whose deficits named their targets ("region 'nearwall_x' has no usable inspection") were all
+# repaired in one round, while the axis whose deficit named only a class name was retried - with
+# re-run inspections and a reworded number - until the round budget ran out and the job failed.
+# So every branch here names the thing required, and, where the evidence already exists, the id.
+def _or_cite(have) -> str:
+    """Point at evidence already on file, or ask for it - never ask for what is already there."""
+    ids = [h.evidence_id for h in have if h is not None]
+    if not ids:
+        return " - produce that inspection, then cite the id it returns"
+    if len(ids) == 1:
+        return f" - cite {ids[0]}, which is already on file"
+    return f" - cite one of {', '.join(ids)}, which are already on file"
+
+
+def _requirement_hint(req, ledger: EvidenceLedger) -> str:
+    if isinstance(req, HardGateRequirement):
+        gate = ledger.usable_gate(req.key)
+        if gate is not None:
+            return (f"gate '{req.key}' - cite {gate.evidence_id}, which is already on file; "
+                    "no tool call produces it")
+        return f"gate '{req.key}', which is not on file"
+    if isinstance(req, MetricRequirement):
+        metric = ledger.usable_metric(req.key)
+        if metric is not None:
+            return (f"metric '{req.key}' - cite {metric.evidence_id}, which is already on file. "
+                    "It is a MEASUREMENT: no render, slice or patch inspection can stand in for "
+                    "it, and quoting its number in the prose is not citing it")
+        return f"metric '{req.key}', which is not on file"
+    if isinstance(req, RenderViewRequirement):
+        view = ledger.usable_view(req.view_id)
+        if view is not None:
+            return f"the '{req.view_id}' view - cite {view.evidence_id}, which is already on file"
+        return f"the '{req.view_id}' view, which is not on file"
+    # An inspection the ledger already holds is the commonest case here: the axis cited the wrong
+    # evidence, not none. Telling it to "produce that inspection" then sends it to re-run a tool it
+    # has already run - which is the retry loop this function exists to break, not a repair. So
+    # look first, and only ask for new work when there is genuinely nothing to cite.
+    if isinstance(req, RenderTargetRequirement):
+        if _is_wildcard(req.selector):
+            return f"an inspection of any {req.kind.value}{_or_cite(ledger.usable_inspections_of_kind(req.kind))}"
+        exact = ledger.usable_inspection_of_target(InspectionTargetRef(req.kind, req.selector))
+        return (f"an inspection of {req.kind.value} '{req.selector}'"
+                f"{_or_cite([exact] if exact is not None else [])}")
+    if isinstance(req, SpatialInspectionRequirement):
+        return f"an inspection of any {req.kind.value}{_or_cite(ledger.usable_inspections_of_kind(req.kind))}"
+    return type(req).__name__
+
+
 def _axis_finding_suitable(ax, finding: AxisFinding, ledger: EvidenceLedger,
                            expected_kinds=None) -> tuple[bool, str]:
     if not finding.finding.strip():
@@ -190,8 +241,8 @@ def _axis_finding_suitable(ax, finding: AxisFinding, ledger: EvidenceLedger,
         if not _req_applicable(req, expected_kinds):
             continue
         if not _citation_satisfies(req, records):
-            return False, (f"axis '{finding.axis_key}' evidence does not satisfy required "
-                           f"{type(req).__name__}")
+            return False, (f"axis '{finding.axis_key}' does not cite "
+                           f"{_requirement_hint(req, ledger)}")
     return True, ""
 
 

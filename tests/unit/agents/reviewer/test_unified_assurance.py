@@ -247,7 +247,59 @@ def test_pass_rejects_unknown_and_wrong_kind_evidence_in_a_finding():
             AxisFinding("local_anatomical_fidelity", "layers", (ids["m"], ids["t_layer"])))
     d2 = evaluate_eligibility(plan, L, bad2)
     assert d2.outcome is Eligibility.REJECT
-    assert any("RenderTargetRequirement" in r for r in d2.reasons)
+    # The reason must name the evidence that would satisfy it, not the rule class: a refusal the
+    # reviewer cannot act on is retried until the round budget is gone. Assert the phrase this
+    # branch alone produces - the bare kind name is not enough, because "opening" also occurs in
+    # the axis key, so it would pass on a blank finding or on a different failing requirement.
+    assert any("an inspection of any opening" in r for r in d2.reasons), d2.reasons
+
+
+# A rejection is only a gate if the reviewer can act on it. These two pin the content of the
+# reason, because the reason IS the repair instruction: a real review looped on "does not satisfy
+# required MetricRequirement" - re-running inspections it had already run, then restating the
+# metric to more decimal places - until the round budget was spent and the job failed. The metric
+# it needed was on file the whole time, under an id it was never told to cite.
+def test_an_unsatisfied_metric_names_the_metric_and_the_id_that_would_satisfy_it():
+    plan = _vmtk_like_plan()
+    L, ids = _seed_full_ledger()
+    # the layers axis cites its render target but NOT the measurement its axis requires
+    findings = (_good_findings(ids)[0],
+                AxisFinding("local_anatomical_fidelity", "layers hold", (ids["t_layer"],)))
+    d = evaluate_eligibility(plan, L, findings)
+    assert d.outcome is Eligibility.REJECT
+    reason = " ".join(d.reasons)
+    assert "layer_coverage" in reason, f"the metric must be named: {reason}"
+    assert ids["m"] in reason, f"the id that would satisfy it must be named: {reason}"
+    assert "MetricRequirement" not in reason, f"a rule class is not an instruction: {reason}"
+
+
+def test_an_unsatisfied_inspection_points_at_the_one_on_file_instead_of_ordering_another():
+    # The commonest failure here is an axis citing the WRONG evidence, not none: the inspection it
+    # needed was already taken. Telling it to go produce one sends it to re-run a tool it has
+    # already run, which is the retry loop this message exists to break rather than a repair.
+    plan = _vmtk_like_plan()
+    L, ids = _seed_full_ledger()
+    findings = (AxisFinding("opening_integrity", "caps", (ids["v"], ids["t_layer"])),
+                AxisFinding("local_anatomical_fidelity", "layers", (ids["m"], ids["t_layer"])))
+    d = evaluate_eligibility(plan, L, findings)
+    assert d.outcome is Eligibility.REJECT
+    reason = " ".join(d.reasons)
+    assert ids["t_open"] in reason, f"the inspection already on file must be named: {reason}"
+    assert "produce" not in reason, (
+        f"it must not order a re-render of evidence the ledger already holds: {reason}")
+
+
+def test_an_unsatisfied_metric_says_a_render_cannot_substitute_for_a_measurement():
+    plan = _vmtk_like_plan()
+    L, ids = _seed_full_ledger()
+    # citing MORE renders is the wrong repair, and is exactly what the stuck review kept trying
+    findings = (_good_findings(ids)[0],
+                AxisFinding("local_anatomical_fidelity", "layers hold",
+                            (ids["t_layer"], ids["v"])))
+    d = evaluate_eligibility(plan, L, findings)
+    assert d.outcome is Eligibility.REJECT
+    reason = " ".join(d.reasons).lower()
+    assert "measurement" in reason, f"must say what kind of evidence is wanted: {reason}"
 
 
 def test_pass_rejects_a_duplicate_axis_finding():
