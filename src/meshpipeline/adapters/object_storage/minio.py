@@ -17,11 +17,16 @@ class MinioStore:
     def __init__(self) -> None:
         self._bucket = provcfg.MINIO_BUCKET
 
-    def _client(self):
+    def _client(self, *, endpoint: str | None = None):
         from minio import Minio
         # secure=False: the store is a service on the local stack, reached over plain HTTP.
-        return Minio(provcfg.MINIO_ENDPOINT, access_key=provcfg.MINIO_ACCESS_KEY,
-                     secret_key=provcfg.MINIO_SECRET_KEY, secure=False)
+        # region is explicit: without it minio-py issues a live GetBucketLocation before signing,
+        # which the signing client - built on an address this process may not be able to reach -
+        # cannot complete. See MINIO_REGION. Giving it to BOTH clients keeps one source of truth
+        # and makes a wrong region fail on the first upload instead of only on a download.
+        return Minio(endpoint or provcfg.MINIO_ENDPOINT, access_key=provcfg.MINIO_ACCESS_KEY,
+                     secret_key=provcfg.MINIO_SECRET_KEY, secure=False,
+                     region=provcfg.MINIO_REGION)
 
     def _ensure_bucket(self, client) -> None:
         # local convenience only - a hosted bucket is provisioned by IaC, never by app code
@@ -86,7 +91,12 @@ class MinioStore:
     def create_download_url(self, *, object_key: str, expires_in: timedelta) -> str:
         key = normalize_key(object_key)
         try:
-            return self._client().presigned_get_object(self._bucket, key, expires=expires_in)
+            # Signed against the PUBLIC address, not the one this process dials. The recipient is a
+            # browser, which does not share this process's view of the network, and the host is
+            # part of the signature - so signing with the internal address yields a URL that
+            # cannot be resolved and cannot be repaired by rewriting it. See MINIO_PUBLIC_ENDPOINT.
+            client = self._client(endpoint=provcfg.MINIO_PUBLIC_ENDPOINT)
+            return client.presigned_get_object(self._bucket, key, expires=expires_in)
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"minio signed url failed for {key}: {exc}") from exc
 

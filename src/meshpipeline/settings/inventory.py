@@ -291,7 +291,9 @@ INVENTORY: list[Group] = [
     ]),
     Group("MinIO / S3", vars=[
         EnvVar("MINIO_ENDPOINT", "localhost:9000"),
+        EnvVar("MINIO_PUBLIC_ENDPOINT", "localhost:9000", runtime_default="", help="the address a BROWSER reaches the store on. Signed download URLs are signed FOR their host, so this must be the address the user's browser uses, not the one the container dials. Blank = same as MINIO_ENDPOINT"),
         EnvVar("MINIO_ACCESS_KEY", "minioadmin"),
+        EnvVar("MINIO_REGION", "us-east-1", help="signed into every URL as part of the SigV4 credential scope, and passed explicitly so the client never makes a GetBucketLocation call to discover it. MinIO's default; change only for a store that reports a different region"),
         EnvVar("MINIO_SECRET_KEY", "minioadmin", secret=True, help="MinIO's own local default"),
         EnvVar("MINIO_BUCKET", "mesh-artifacts", help="bucket names must be lowercase; an uppercase value is rejected and the stack never becomes ready"),
         EnvVar("MINIO_SIGNED_URL_TTL", "900"),

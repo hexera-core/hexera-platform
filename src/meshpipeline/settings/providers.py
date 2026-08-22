@@ -73,6 +73,22 @@ def _valid_bucket_name(name: str, *, var: str) -> str:
 MINIO_ENDPOINT: str        = optional_env("MINIO_ENDPOINT",       "localhost:9000")
 MINIO_ACCESS_KEY: str      = optional_env("MINIO_ACCESS_KEY",     "minioadmin")
 MINIO_SECRET_KEY: str      = optional_env("MINIO_SECRET_KEY",     "minioadmin")
+# The address a BROWSER reaches the object store on. A different fact from MINIO_ENDPOINT, which is
+# the address THIS PROCESS reaches it on: under compose they differ (minio:9000 inside the network,
+# localhost:9000 from the host). The distinction matters only for signed URLs, because the host is
+# part of the SigV4 signature: a URL signed for minio:9000 cannot be resolved by a browser, and
+# rewriting its host afterwards invalidates the signature. So a URL handed OUT is signed with this.
+# Blank means "the same address for both", which is the hosted case and the pre-existing behaviour.
+MINIO_PUBLIC_ENDPOINT: str = (optional_env("MINIO_PUBLIC_ENDPOINT", "").strip()
+                              or MINIO_ENDPOINT)
+# Passed to the client explicitly because minio-py otherwise resolves it with a live
+# GetBucketLocation request BEFORE it signs anything. That request is why signing cannot simply be
+# pointed at the public address: the address a browser uses is not necessarily one this process can
+# reach, and the lookup fails there. Given a region up front the client signs locally and dials
+# nothing. us-east-1 is MinIO's own default and the value minio-py itself falls back to; an
+# S3-compatible store in another region sets this, and a wrong value fails loudly on first use
+# rather than silently on the download path.
+MINIO_REGION: str          = optional_env("MINIO_REGION", "us-east-1")
 # The local artifact bucket, created fresh by the stack (minio-init). It is validated below: S3/
 # MinIO bucket names must be lowercase and DNS-compatible, so a coworker who omits MINIO_BUCKET still
 # gets a working default and any invalid value (e.g. a former uppercase codename) fails LOUDLY at

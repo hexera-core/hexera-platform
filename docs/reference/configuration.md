@@ -144,7 +144,9 @@ The pool is per process, so the fleet's peak demand is a fan-out sum, not a sing
 | Key | Default | Notes |
 |---|---|---|
 | `MINIO_ENDPOINT` | `localhost:9000` | the stack overrides this to `minio:9000` |
+| `MINIO_PUBLIC_ENDPOINT` | `localhost:9000` | the address a **browser** reaches the store on. Signed download URLs are signed for their host, so this - not `MINIO_ENDPOINT` - is what a URL handed to a user is signed with. Blank = same as `MINIO_ENDPOINT` |
 | `MINIO_ACCESS_KEY` | `minioadmin` | |
+| `MINIO_REGION` | `us-east-1` | signed into every URL as part of the SigV4 credential scope, and passed explicitly so the client never makes a GetBucketLocation call to discover it |
 | `MINIO_SECRET_KEY` | `minioadmin` | **Secret.** MinIO's own local default |
 | `MINIO_BUCKET` | `mesh-artifacts` | must be lowercase; an uppercase value is rejected and the stack never becomes ready |
 | `MINIO_SIGNED_URL_TTL` | `900` | seconds a download link stays valid |
@@ -398,7 +400,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (199 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (201 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -440,6 +442,8 @@ Every supported setting (199 entries). `template` settings are the ones `.env.ex
 | `MINIO_ACCESS_KEY` | template | app |  |
 | `MINIO_BUCKET` | template | app |  |
 | `MINIO_ENDPOINT` | template | app |  |
+| `MINIO_PUBLIC_ENDPOINT` | template | app |  |
+| `MINIO_REGION` | template | app |  |
 | `MINIO_SECRET_KEY` | template | app | yes |
 | `MINIO_SIGNED_URL_TTL` | template | app |  |
 | `WEB_SEARCH_BASE_URL` | template | app |  |
