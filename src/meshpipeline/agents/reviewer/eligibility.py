@@ -343,7 +343,11 @@ def _objective_defects(plan, ledger: EvidenceLedger) -> list[str]:
             out.append(f"hard gate '{key}' failed")
     for key in sorted(ob.metric_keys):
         m = ledger.usable_metric(key)
-        if m is not None and (m.status.value == "fail" or m.acceptable is False):
+        # An ADVISORY metric that missed its bar is a finding, not a veto. Blocking on one puts the
+        # reviewer somewhere it cannot leave: the metric must be cited, its value is unacceptable,
+        # so no submission can ever be accepted and the review ends with no verdict over a mesh the
+        # engine itself called production-grade. The engine draws this line already - honour it.
+        if m is not None and m.gating and (m.status.value == "fail" or m.acceptable is False):
             out.append(f"required metric '{key}' is not acceptable")
     return out
 

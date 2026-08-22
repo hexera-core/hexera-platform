@@ -222,9 +222,13 @@ def test_complete_hybrid_evidence_passes(engine, monkeypatch, tmp_path):
         f["evidence_ids"] for f in out["reviewer_axis_findings"])
 
 
-# a failed deterministic metric cannot be overridden into PASS
+# A failing ADVISORY metric is reported, not vetoed. Every axis-required metric these engines
+# declare is advisory - max_non_ortho (snappy/cfmesh/multiregion), sicn_low_fraction (gmsh),
+# layer_coverage (vmtk) - and the genuinely gating criteria never reach the reviewer at all: the
+# quality_floor flow gate refuses the mesh first. So a veto here could only ever be a false one, and
+# it was: it destroyed a production-grade Ahmed body mesh whose own manifest said production_grade.
 @pytest.mark.parametrize("engine", sorted(_ENGINE))
-def test_failed_metric_cannot_pass(engine, monkeypatch, tmp_path):
+def test_failing_advisory_metric_does_not_block_pass(engine, monkeypatch, tmp_path):
     m, ep, targets = _ENGINE[engine]
     m = {**m, "quality": {**m["quality"]}}
     # break the engine's required metric so it FAILS its criterion
@@ -238,9 +242,9 @@ def test_failed_metric_cannot_pass(engine, monkeypatch, tmp_path):
     rv = _Reviewer(inspect=_inspect_ids(targets), verdict="PASS", axes=_axes(engine))
     out = _drive(engine, manifest=m, engine_params=ep, targets=targets, reviewer=rv,
                  monkeypatch=monkeypatch, tmp_path=tmp_path)
-    # the model tried PASS; a failed metric blocks it -> truthful non-verdict, never PASS
-    assert out.get("reviewer_verdict") != "PASS"
-    assert out.get("api_failure")
+    # the advisory bar is missed, and the mesh still reaches a verdict rather than dying
+    assert out.get("reviewer_verdict") == "PASS", out
+    assert not out.get("api_failure"), out
 
 
 # missing required target evidence cannot PASS

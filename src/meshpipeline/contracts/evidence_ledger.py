@@ -71,6 +71,13 @@ class MetricEvidence:
     summary: str
     source: str
     usable: bool
+    #: True = failing this metric fails the mesh; False = ADVISORY, worth reporting and not worth
+    #: refusing over. The engine already draws this line (review_types.Criterion.gating) and
+    #: quality_criteria honours it when deciding production_grade. Carrying it here keeps the
+    #: reviewer's judgement consistent with the engine's: without it every required metric reads as
+    #: gating, and a 2.1M-cell mesh was destroyed because max_non_ortho measured 65.0156 against an
+    #: advisory bar of 65.0. Defaults True so an unflagged metric keeps blocking.
+    gating: bool = True
 
     @property
     def passed(self) -> bool:
@@ -154,10 +161,11 @@ class EvidenceLedger:
                                              usable))
 
     def add_metric(self, metric_key: str, value: Any, acceptable: bool | None,
-                   status: EvidenceStatus, summary: str, source: str) -> str:
+                   status: EvidenceStatus, summary: str, source: str,
+                   gating: bool = True) -> str:
         usable = status in (EvidenceStatus.PASS, EvidenceStatus.FAIL)
         return self._append(MetricEvidence(self._mint("m"), metric_key, value, acceptable, status,
-                                           summary, source, usable))
+                                           summary, source, usable, gating))
 
     def add_render_view(self, view_id: str, artifact_key: str, operation: str,
                         image_ok: bool) -> str:

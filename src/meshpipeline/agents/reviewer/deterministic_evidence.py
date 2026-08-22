@@ -70,7 +70,11 @@ def collect_deterministic_evidence(
             status, acceptable, summary = EvidenceStatus.PASS, None, f"{key}={value!r} (no threshold)"
         else:
             status, acceptable, summary = EvidenceStatus.UNAVAILABLE, None, f"{key}: not measured"
-        ledger.add_metric(key, value, acceptable, status, summary, source="criteria")
+        # The criterion knows whether it is gating or advisory; pass that through rather
+        # than letting the reviewer treat every required metric as a blocker.
+        ledger.add_metric(key, value, acceptable, status, summary, source="criteria",
+                          gating=bool(getattr(crit, "gating", True)) if crit is not None
+                          else True)
 
 
 __all__ = ["collect_deterministic_evidence"]

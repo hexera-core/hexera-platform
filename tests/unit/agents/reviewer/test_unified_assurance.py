@@ -302,6 +302,51 @@ def test_an_unsatisfied_metric_says_a_render_cannot_substitute_for_a_measurement
     assert "measurement" in reason, f"must say what kind of evidence is wanted: {reason}"
 
 
+# The veto that remains after advisory metrics stopped blocking. No engine ships a GATING
+# axis-required metric today - every one of them is advisory, and genuinely gating criteria are
+# refused earlier by the quality_floor flow gate - so without this test the guard has no coverage at
+# all and could be deleted silently.
+def test_an_all_pass_submission_may_not_contradict_a_failing_GATING_metric():
+    plan = _vmtk_like_plan()
+    L, ids = _seed_full_ledger()
+    # replace the passing measurement with one the engine declared GATING and that failed
+    L2 = EvidenceLedger()
+    g = L2.add_gate("rc", EvidenceStatus.PASS, "clean", "executor")
+    m = L2.add_metric("layer_coverage", 0.10, False, EvidenceStatus.FAIL, "10%", "criteria",
+                      gating=True)
+    v = L2.add_render_view("iso", "mesh_paths.surface", "open", True)
+    t_open = L2.add_target_inspection(
+        InspectionTargetRef(TargetKind.OPENING, "opening:inlet"), "toggle_patch", True, True)
+    t_layer = L2.add_target_inspection(
+        InspectionTargetRef(TargetKind.LAYER_REGION, "layer_region:wall"), "toggle_patch", True,
+        True)
+    findings = (AxisFinding("opening_integrity", "caps clean", (v, t_open)),
+                AxisFinding("local_anatomical_fidelity", "layers hold", (m, t_layer)))
+    d = evaluate_eligibility(plan, L2, findings)
+    assert d.outcome is Eligibility.REJECT, d
+    assert any("layer_coverage" in r for r in d.reasons), d.reasons
+    assert g and ids  # fixtures referenced so the seeding above reads as deliberate
+
+
+def test_a_failing_ADVISORY_metric_leaves_an_all_pass_submission_admissible():
+    # the counterpart: same shape, gating=False, and the mesh survives to a verdict
+    plan = _vmtk_like_plan()
+    L2 = EvidenceLedger()
+    L2.add_gate("rc", EvidenceStatus.PASS, "clean", "executor")
+    m = L2.add_metric("layer_coverage", 0.10, False, EvidenceStatus.FAIL, "10%", "criteria",
+                      gating=False)
+    v = L2.add_render_view("iso", "mesh_paths.surface", "open", True)
+    t_open = L2.add_target_inspection(
+        InspectionTargetRef(TargetKind.OPENING, "opening:inlet"), "toggle_patch", True, True)
+    t_layer = L2.add_target_inspection(
+        InspectionTargetRef(TargetKind.LAYER_REGION, "layer_region:wall"), "toggle_patch", True,
+        True)
+    findings = (AxisFinding("opening_integrity", "caps clean", (v, t_open)),
+                AxisFinding("local_anatomical_fidelity", "layers hold", (m, t_layer)))
+    d = evaluate_eligibility(plan, L2, findings)
+    assert d.outcome is Eligibility.PASS, d.reasons
+
+
 def test_pass_rejects_a_duplicate_axis_finding():
     plan = _Plan(gates=set(), metrics=set(), axes=(_Ax("a", ()),))
     L = EvidenceLedger()

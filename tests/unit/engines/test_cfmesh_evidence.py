@@ -139,13 +139,17 @@ def test_authored_region_becomes_an_exact_obligation_that_cannot_be_waived():
     assert any("region:wake" in r for r in d.reasons)
 
 
-def test_failed_metric_and_missing_evidence_still_cannot_pass():
-    # failed max_non_ortho -> blocked
+def test_a_failing_advisory_metric_does_not_block_but_missing_evidence_still_does():
+    # max_non_ortho is declared ADVISORY (openfoam_criteria.py, gating=False) and the engine's own
+    # production_grade() already ignores it when failing. Vetoing on it left the reviewer nowhere to
+    # go: an all-pass submission was refused for contradicting the measurement, and marking the axis
+    # failed threw the same mesh away as review_rejected. A 2.1M-cell Ahmed body died that way, over
+    # 65.0156 against a 65.0 bar. An advisory breach is a finding to write down, not a veto.
     L, ids = _seed(patch=True, metric_ok=False)
     d = evaluate_eligibility(_PLAN, L, _all_findings([ids["view"], ids["patch"], ids["metric"]]),
                       obligations=(TargetObligation(TargetKind.PATCH),))
-    assert d.outcome is Eligibility.REJECT
-    # no patch inspected at all -> blocked
+    assert d.outcome is Eligibility.PASS, d.reasons
+    # no patch inspected at all -> still blocked, which is a genuine evidence gap
     L2, ids2 = _seed(patch=False)
     d2 = evaluate_eligibility(_PLAN, L2, _all_findings([ids2["view"], ids2["metric"]]),
                        obligations=(TargetObligation(TargetKind.PATCH),))
