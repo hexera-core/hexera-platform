@@ -199,8 +199,15 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                 engine: str) -> list[_Planned]:
     plan: list[_Planned] = []
 
-    # OPTIONAL: the boundary-surface preview for quick viewing (the solver mesh lives in the bundle).
-    mesh_path = workspace / "mesh.msh"
+    # OPTIONAL: the boundary surface for quick viewing (the solver mesh lives in the bundle).
+    # surface_mesh.msh is the boundary this run PRODUCED. mesh.msh is the CAD the mesher snapped to,
+    # written for the reviewer to navigate by and kept for it. Prefer the produced one: serving the
+    # other handed a user their own upload back - for a 3.3M-cell NACA 0012, 232 facets against the
+    # 170,511 the run generated - under a label that reads as "here is my mesh".
+    from meshpipeline.engines.surface_deliverable import SURFACE_MSH
+    mesh_path = workspace / SURFACE_MSH
+    if not (mesh_path.exists() and mesh_path.stat().st_size > 0):
+        mesh_path = workspace / "mesh.msh"
     if mesh_path.exists() and mesh_path.stat().st_size > 0:
         from meshpipeline.artifact_keys import mesh_artifact_key
         plan.append(_Planned(ArtifactType.mesh, ArtifactType.mesh.value,

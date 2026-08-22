@@ -88,6 +88,15 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         volume_path = R.export_volume_vtk(ws)
     except Exception:
         logger.exception("Executor: foamToVTK volume export failed (non-fatal)")
+    # The DELIVERABLE surface: the faces this run actually produced, converted from the VTK
+    # boundary the export above leaves beside the volume. Distinct from the review mesh built
+    # earlier, which re-exports the CAD the mesher snapped TO - the right thing for the reviewer to
+    # navigate by, and the wrong thing to hand a user, who asked for the surface that was generated.
+    try:
+        from meshpipeline.engines.surface_deliverable import build_surface_msh
+        build_surface_msh(ws)
+    except Exception:
+        logger.exception("Executor: surface deliverable export failed (non-fatal)")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)
