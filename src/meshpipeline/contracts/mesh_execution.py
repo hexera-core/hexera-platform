@@ -5,6 +5,16 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+#: The infrastructure failure the product already speaks. A run whose submission cannot be
+#: resolved is not a mesh verdict and not a success - it is the same class of outcome as the
+#: provider being unreachable, and the builder already knows how to report it.
+#:
+#: It lives HERE, with the other error kinds a caller must tell apart, because both sides of the
+#: exchange need the same number: application/ returns it, and engines/ has to recognise it to
+#: avoid describing an infrastructure fault as a geometry one. engines/ may not import
+#: application/, so a constant only application/ owned forced that edge.
+RC_INFRASTRUCTURE = -3
+
 
 class MeshExecutionError(RuntimeError):
     pass

@@ -2,8 +2,8 @@
 # Boundaries: every command is time-bounded, and parse-time code directives are refused before any mesher starts.
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import re
 from pathlib import Path
 

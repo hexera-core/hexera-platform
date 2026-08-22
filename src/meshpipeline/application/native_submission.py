@@ -9,12 +9,10 @@ import logging
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
+
 logger = logging.getLogger(__name__)
 
-#: The infrastructure failure the product already speaks. A run whose submission cannot be
-#: resolved is not a mesh verdict and not a success - it is the same class of outcome as the
-#: provider being unreachable, and the builder already knows how to report it.
-RC_INFRASTRUCTURE = -3
 
 
 @runtime_checkable

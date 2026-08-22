@@ -33,7 +33,7 @@ def _repair_message(key: str, result: dict, q: dict) -> str:
         # nothing was ever dispatched. Worse, the advice is what sustains the failure: re-planning
         # changes the payload, and it is the payload changing under one operation identity that
         # the submission claim refuses. The only honest instruction is to change NOTHING.
-        from meshpipeline.application.native_submission import RC_INFRASTRUCTURE
+        from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
         if result.get("rc") == RC_INFRASTRUCTURE:
             return ("INFRASTRUCTURE failure - the mesh run never started, so nothing about this "
                     "plan caused it and nothing in it can fix it. Do NOT change the domain, the "
