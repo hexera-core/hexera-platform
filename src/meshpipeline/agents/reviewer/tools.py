@@ -200,13 +200,22 @@ REVIEWER_TOOLS = [
         "type": "function",
         "function": {
             "name": "toggle_patch",
-            "description": "Show or hide a named mesh patch to inspect underlying geometry.",
+            "description": (
+                "Isolate a named boundary patch - hide the ones around it, or show it alone - and "
+                "return the view as an image. THIS IS THE ONLY TOOL THAT PRODUCES EVIDENCE OF A "
+                "PATCH. Judging how the mesh sits on the wall requires it: a slice through the "
+                "interior shows cells, not the boundary surface, and findings about the wall that "
+                "cite only slices are refused as ungrounded no matter how many you take. Hide the "
+                "far-field to see the body, then isolate the wall patch itself. The patch names "
+                "for THIS mesh are listed in your first message - use those, not the ones in the "
+                "parameter example."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "patch_name": {
                         "type": "string",
-                        "description": "Patch name from manifest: wall, inlet, outlet, farfield, symmetry, fluid",
+                        "description": "A patch name from THIS mesh, as listed in your first message. The names are per-job - a wing case names its wall 'airfoil', not 'wall'.",
                     },
                     "visible": {"type": "boolean"},
                 },
