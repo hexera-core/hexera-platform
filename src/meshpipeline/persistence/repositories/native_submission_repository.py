@@ -190,41 +190,49 @@ def _transition(*, job_id, execution_generation: int, worker_token, to: Disposit
 
 
 def mark_accepted(*, job_id, execution_generation: int, worker_token,
-                  provider_reference: str) -> Disposition | None:
+                  provider_reference: str,
+                  semantic_operation: str = NATIVE_MESH_SUBMISSION) -> Disposition | None:
     # ACCEPTED MEANS EVIDENCE. The database refuses the state without a reference, so a caller
     # cannot record an acceptance it cannot point at.
     if not provider_reference:
         raise ValueError("accepted requires the provider's operation reference")
     return _transition(job_id=job_id, execution_generation=execution_generation,
                        worker_token=worker_token, to=Disposition.accepted,
-                       from_states=("claimed",), reference=provider_reference)
+                       from_states=("claimed",), reference=provider_reference,
+                       semantic_operation=semantic_operation)
 
 
 def mark_indeterminate(*, job_id, execution_generation: int, worker_token,
-                       failure_class: str = "acknowledgement_lost") -> Disposition | None:
+                       failure_class: str = "acknowledgement_lost",
+                       semantic_operation: str = NATIVE_MESH_SUBMISSION) -> Disposition | None:
     # The honest state for a call that may have been accepted. Reachable only from `claimed`: an
     # accepted operation is settled, and a failed one was definitively answered.
     return _transition(job_id=job_id, execution_generation=execution_generation,
                        worker_token=worker_token, to=Disposition.indeterminate,
-                       from_states=("claimed",), failure_class=failure_class)
+                       from_states=("claimed",), failure_class=failure_class,
+                       semantic_operation=semantic_operation)
 
 
 def mark_failed(*, job_id, execution_generation: int, worker_token,
-                failure_class: str) -> Disposition | None:
+                failure_class: str,
+                semantic_operation: str = NATIVE_MESH_SUBMISSION) -> Disposition | None:
     return _transition(job_id=job_id, execution_generation=execution_generation,
                        worker_token=worker_token, to=Disposition.failed,
-                       from_states=("claimed",), failure_class=failure_class)
+                       from_states=("claimed",), failure_class=failure_class,
+                       semantic_operation=semantic_operation)
 
 
 def reconcile_accepted(*, job_id, execution_generation: int, worker_token,
-                       provider_reference: str) -> Disposition | None:
+                       provider_reference: str,
+                       semantic_operation: str = NATIVE_MESH_SUBMISSION) -> Disposition | None:
     # The ONLY route out of `indeterminate`, and only into `accepted`: it takes a provider
     # reference, so it can never be used to decide that nothing was submitted.
     if not provider_reference:
         raise ValueError("reconciliation requires the provider's operation reference")
     return _transition(job_id=job_id, execution_generation=execution_generation,
                        worker_token=worker_token, to=Disposition.accepted,
-                       from_states=("indeterminate",), reference=provider_reference)
+                       from_states=("indeterminate",), reference=provider_reference,
+                       semantic_operation=semantic_operation)
 
 
 def current(*, job_id, execution_generation: int,

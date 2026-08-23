@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -41,6 +42,36 @@ def _infrastructure_failure(engine: str, detail: str) -> dict:
             "log_tail": f"[CLOUD_RUN_FAILED] {engine}: {detail}"}
 
 
+def attempt_scoped_operation(workspace: Any) -> str:
+    """The semantic operation for THIS planned attempt.
+
+    The identity used to be job + generation alone, which encodes "one native submission per
+    generation". The builder, meanwhile, re-plans within a generation: a failed gate produces a
+    new plan in a new attempt_N workspace, whose digest no longer matches the claim from attempt
+    one, and the claim answers identity_conflict. Every retry therefore died before dispatch -
+    the whole retry ladder was dead by construction, and it turned each recoverable rejection
+    into a terminal job.
+
+    The attempt index is part of the operation's identity in the same sense the generation is:
+    attempt 2 is attempt 2 on every replay, because the builder numbers attempts itself and a
+    replacement worker never resumes another's - it acquires a new generation. So scoping the
+    identity per attempt keeps every guarantee, per attempt: the same attempt still cannot submit
+    twice (same key, digest compared), a stale worker is still refused by the ownership predicate,
+    and total spend stays bounded by the attempt cap the graph already enforces.
+
+    A workspace that does not name an attempt falls back to the generation-scoped identity -
+    exactly the old behaviour, fail closed.
+    """
+    from meshpipeline.persistence.repositories.native_submission_repository import (
+        NATIVE_MESH_SUBMISSION,
+    )
+
+    m = re.fullmatch(r"attempt_(\d+)", Path(workspace).name)
+    if m is None:
+        return NATIVE_MESH_SUBMISSION
+    return f"{NATIVE_MESH_SUBMISSION}:attempt_{int(m.group(1))}"
+
+
 class ClaimingMeshExecutor:
     # THE SUBMISSION AUTHORITY, wrapped around whichever provider executor is composed. It holds
     # the one rule the crash window needs: a worker may contact the provider only if it created
@@ -69,9 +100,10 @@ class ClaimingMeshExecutor:
                         "identity; it will not be submitted")
 
         digest = workspace_digest(workspace)
+        operation = attempt_scoped_operation(workspace)
         outcome = claims.claim(job_id=own.job_id, execution_generation=own.execution_generation,
                                worker_token=own.worker_token, engine=engine,
-                               payload_digest=digest)
+                               payload_digest=digest, semantic_operation=operation)
 
         if outcome.result is claims.ClaimResult.existing_accepted:
             # ALREADY SUBMITTED, durably. The provider is working under the same deterministic
@@ -107,27 +139,31 @@ class ClaimingMeshExecutor:
                 # a replacement must not decide for itself that nothing was submitted.
                 claims.mark_indeterminate(
                     job_id=own.job_id, execution_generation=own.execution_generation,
-                    worker_token=own.worker_token, failure_class=type(exc).__name__)
+                    worker_token=own.worker_token, failure_class=type(exc).__name__,
+                    semantic_operation=operation)
                 return _infrastructure_failure(
                     engine, "the submission may have been accepted and its acknowledgement was "
                             "lost; it will not be resubmitted automatically")
             claims.mark_failed(job_id=own.job_id,
                                execution_generation=own.execution_generation,
                                worker_token=own.worker_token,
-                               failure_class=type(exc).__name__)
+                               failure_class=type(exc).__name__,
+                               semantic_operation=operation)
             raise
         else:
             reference = str(result.get("provider_reference", "") or "")
             if reference:
                 claims.mark_accepted(
                     job_id=own.job_id, execution_generation=own.execution_generation,
-                    worker_token=own.worker_token, provider_reference=reference)
+                    worker_token=own.worker_token, provider_reference=reference,
+                    semantic_operation=operation)
             else:
                 # The executor completed without naming an operation - a local runner, or a
                 # provider whose reference we could not read. Neither may be recorded as accepted.
                 claims.mark_indeterminate(
                     job_id=own.job_id, execution_generation=own.execution_generation,
-                    worker_token=own.worker_token, failure_class="no_provider_reference")
+                    worker_token=own.worker_token, failure_class="no_provider_reference",
+                    semantic_operation=operation)
             return result
 
 
