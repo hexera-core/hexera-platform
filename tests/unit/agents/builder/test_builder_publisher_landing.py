@@ -16,7 +16,7 @@ SRC = pathlib.Path(agent.__file__).resolve().parents[2]
 #: publish through there. Derived once by static dataflow and by runtime object identity across
 #: all five engines; this table is what the closure looks like after the migration.
 CLOSURE = {
-    "agents/builder/agent.py": {"anote": 3, "aattempt": 1},
+    "agents/builder/agent.py": {"anote": 4, "aattempt": 1},  # 4th: the no-progress stop tells the user WHY the ladder halted
     "agents/builder/loop.py": {"anote": 1},
     "agents/builder/executor.py": {"ameshed": 1, "awarn": 1, "afile": 1, "asearch": 1,
                                   "ameshing": 1},
@@ -139,7 +139,7 @@ def test_each_closure_module_publishes_exactly_its_gated_sites(rel):
 
 def test_the_closure_is_the_size_the_migration_landed():
     total = sum(sum(m.values()) for m in CLOSURE.values())
-    assert total == 36, (
+    assert total == 37, (
         f"the closure is {total} sites, not the 36 it holds since the mesh run's\n"
         "announcement moved out of the tool and onto the executor's async side")
 

@@ -145,7 +145,9 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
     # port also declares a size - agree with the measured area, so a wrong-frame hint cannot
     # override the size evidence silently.
     for p in sorted((q for q in ports if q.near_mm is not None), key=lambda q: q.name):
-        hint_m = tuple(v / 1000.0 for v in p.near_mm)
+        hint = p.near_mm
+        assert hint is not None  # the filter above guarantees it; mypy cannot see through sorted
+        hint_m = tuple(v / 1000.0 for v in hint)
         ranked = sorted(pool.items(), key=lambda kv: _dist(hint_m, kv[1][1]))
         key, (area, centroid) = ranked[0]
         d1 = _dist(hint_m, centroid)
@@ -179,7 +181,11 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
     remaining = [p for p in ports if p.name not in bound]
     classes: dict[float, list[DeclaredPatch]] = {}
     for p in remaining:
-        classes.setdefault(p.declared_area_m2(), []).append(p)
+        declared_class_area = p.declared_area_m2()
+        # rule 0 guaranteed a size or a hint; hinted ports were bound (or refused) in rule 2,
+        # so every remaining port has a size
+        assert declared_class_area is not None
+        classes.setdefault(declared_class_area, []).append(p)
 
     # Rule 3b (binder backstop; intake also refuses earlier): size classes the area test cannot
     # separate at worst-case drift may not coexist without hints - this is exactly how a

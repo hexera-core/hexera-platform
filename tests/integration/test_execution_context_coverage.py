@@ -215,6 +215,8 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
     jobs.append((await step("builder-budget:exhausted-before-start",
                             B._drive(mp, tmp / "budget", engine="cfmesh",
                                      deadline_epoch=time.time() - 5.0)))["job_id"])
+    jobs.append((await step("builder-no-progress:identical-failure-twice",
+                            B._drive_no_progress(mp, tmp / "noprog")))["job_id"])
     for name, kw in (("reject", {}),
                      ("accept", {"body": S._half_model, "native_double": False}),
                      ("exhaust", {"body": S._half_model, "native_double": True}),

@@ -57,6 +57,52 @@ def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     return float(budget), float(actual)
 
 
+def _sibling_plan_memories(workspace: Path):
+    """Plans of earlier sibling attempts, newest first. Same durable memory the overshoot
+    correction reads; retries live in fresh attempt_N workspaces, so cross-attempt knowledge
+    only exists in these files."""
+    import json as _json
+    import re as _re
+
+    m = _re.fullmatch(r"attempt_(\d+)", workspace.name)
+    if m is None:
+        return
+    for n in range(int(m.group(1)) - 1, 0, -1):
+        try:
+            yield _json.loads((workspace.parent / f"attempt_{n}" / ".last_plan.json").read_text())
+        except Exception:  # noqa: BLE001 - a missing or corrupt memory is just not a source
+            continue
+
+
+def _sibling_plan_memory(workspace: Path) -> dict | None:
+    for prev in _sibling_plan_memories(workspace):
+        return prev
+    return None
+
+
+def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
+    """Fields that are FACTS about the request - not per-attempt choices - must survive
+    re-planning. A revised plan that omits reference_length_m silently changes the RULER the
+    domain gate measures with: the heat-sink retries lost it, the gate fell back to the wrong
+    axis, and two production-grade meshes were rejected over a mismeasured wake margin. Walk
+    the sibling attempts newest-first and take the first value each forgotten field ever had;
+    a revision that STATES a value keeps its own."""
+    missing = [k for k in ("reference_length_m", "max_cells") if strategy.get(k) is None]
+    if not missing:
+        return strategy
+    out = dict(strategy)
+    for prev in _sibling_plan_memories(workspace):
+        for k in list(missing):
+            if prev.get(k) is not None:
+                out[k] = prev[k]
+                missing.remove(k)
+                logger.info("revised plan omitted %s - inherited %r from a prior attempt", k,
+                            prev[k])
+        if not missing:
+            break
+    return out
+
+
 def _write_plan_memory(workspace: Path, strategy: dict) -> None:
     import json as _json
     import os as _os
@@ -202,6 +248,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             previous_plan = _json.loads((workspace / ".last_plan.json").read_text())
         except Exception:  # noqa: BLE001
             previous_plan = None
+    if previous_plan is None:
+        # a fresh retry workspace has no memory of its own - revise the SIBLING attempt's plan
+        # rather than re-deriving from nothing (re-derivation is how plan fields get lost)
+        previous_plan = _sibling_plan_memory(workspace)
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400  # per-mesh cap; stays under the Cloud Run Job task-timeout
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
@@ -222,7 +272,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 native_attempt=attempt)
             plan = _po.plan
             run.note_plan_round(_po.round)
-        strategy = plan or {}
+        strategy = _inherit_durable_plan_fields(plan or {}, workspace)
         previous_plan = strategy                       # remember for the next repair
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
@@ -393,6 +443,10 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             previous_plan = _json.loads((workspace / ".last_plan.json").read_text())
         except Exception:  # noqa: BLE001
             previous_plan = None
+    if previous_plan is None:
+        # a fresh retry workspace has no memory of its own - revise the SIBLING attempt's plan
+        # rather than re-deriving from nothing (re-derivation is how plan fields get lost)
+        previous_plan = _sibling_plan_memory(workspace)
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400
     last_valid = False
@@ -409,7 +463,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 publish=publish, attempt=_attempt_of(state))
             plan = _po.plan
             run.note_plan_round(_po.round)
-        strategy = plan or {}
+        strategy = _inherit_durable_plan_fields(plan or {}, workspace)
         previous_plan = strategy
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)

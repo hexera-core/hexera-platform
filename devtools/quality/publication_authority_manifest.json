@@ -355,6 +355,19 @@
   "roots": []
  },
  {
+  "context": "agents/builder/agent.py::node_builder::error#3|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/builder/agent.py::node_builder::note#1|ExecutionEventPublisher|execution-owned|agents/builder/agent.py::execution_publisher",
   "path": "agents/builder/agent.py",
   "qualname": "node_builder",
@@ -391,6 +404,21 @@
   "semantic": "note",
   "method": "anote",
   "ordinal": 3,
+  "receiver": "_publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "agents/builder/agent.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "agents/builder/agent.py::node_builder::note#4|ExecutionEventPublisher|execution-owned|agents/builder/agent.py::execution_publisher",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 4,
   "receiver": "_publish",
   "authority": "ExecutionEventPublisher",
   "lifecycle": "execution-owned",

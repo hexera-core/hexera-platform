@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 # Re-exported so `from meshpipeline.agents.builder.agent import ...` callers/tests keep working after
 # the split (context machinery → builder_context; tool defs → builder_tools).
 from meshpipeline.agents.builder import attempt as attempt_mod
-from meshpipeline.agents.builder import attempt_capture, invoke, turn_patch
+from meshpipeline.agents.builder import attempt_capture, invoke, no_progress, turn_patch
 from meshpipeline.agents.builder import budget as budget_mod
 from meshpipeline.agents.builder import noop as noop_mod
 from meshpipeline.agents.builder.context import (  # noqa: F401
@@ -102,6 +102,24 @@ async def node_builder(state: PipelineState) -> dict:
                              op_id=f"budget-exhausted:{attempt.retry_count}")
         return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
                       noop_count=state.get("builder_noop_count", 0))
+
+    if attempt.is_retry:
+        # No-progress stop: the same gate rejecting for the same reason twice means the last
+        # attempt changed nothing about the outcome - another attempt re-buys the same
+        # rejection (the combining-wye bought four). Record the failure that caused THIS
+        # attempt, and halt truthfully if it is identical to the one that caused the last.
+        _sig = no_progress.failure_signature(state)
+        no_progress.record_failure(attempt.workspace, _sig)
+        if no_progress.repeats_previous(attempt.workspace, _sig):
+            logger.error("Builder no-progress stop: gate '%s' rejected identically on two "
+                         "consecutive attempts - failing truthfully instead of retrying - "
+                         "job_id=%s", (_sig or {}).get("gate"), job_id)
+            await _publish.anote(
+                "Stopping: the last attempt failed the same check, the same way. Retrying "
+                "cannot fix this - the failure needs a different input or a code change.",
+                op_id=f"no-progress:{attempt.retry_count}")
+            return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
+                          noop_count=state.get("builder_noop_count", 0))
 
     authored_before = (noop_mod.authored_digest(attempt.workspace, attempt.engine)
                        if attempt.is_retry else "")

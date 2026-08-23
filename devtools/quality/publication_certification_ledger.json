@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 62,
- "proven": 62,
+ "denominator": 63,
+ "proven": 63,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 1
+  "new_since_reconciliation": 2
  },
  "rows": [
   {
@@ -49,19 +49,28 @@
   },
   {
    "canonical_id": "agents/builder/agent.py::node_builder::note#2",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the retry ladder's no-progress stop tells the user why it halted",
+   "status": "proven",
+   "proof_scenario": "builder-no-progress:identical-failure-twice"
+  },
+  {
+   "canonical_id": "agents/builder/agent.py::node_builder::note#3",
    "historical_alias": "E016",
    "historical_id": "agents/builder/agent.py::node_builder::note#2",
-   "mapping": "unchanged",
-   "mapping_reason": "identity unchanged",
+   "mapping": "renamed",
+   "mapping_reason": "the no-progress stop's note was inserted earlier in node_builder, shifting this site's source ordinal",
    "status": "proven",
    "proof_scenario": "builder-loop:cfmesh"
   },
   {
-   "canonical_id": "agents/builder/agent.py::node_builder::note#3",
+   "canonical_id": "agents/builder/agent.py::node_builder::note#4",
    "historical_alias": "E017",
    "historical_id": "agents/builder/agent.py::node_builder::note#3",
-   "mapping": "unchanged",
-   "mapping_reason": "identity unchanged",
+   "mapping": "renamed",
+   "mapping_reason": "the no-progress stop's note was inserted earlier in node_builder, shifting this site's source ordinal",
    "status": "proven",
    "proof_scenario": "builder-loop:cfmesh"
   },

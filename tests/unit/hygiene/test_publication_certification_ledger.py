@@ -68,7 +68,7 @@ def test_no_identity_appears_twice(ledger):
     aliases = [r["historical_alias"] for r in ledger["rows"] if r["historical_alias"]]
     assert len(set(ids)) == len(ids), "a canonical identity is listed more than once"
     assert len(set(aliases)) == len(aliases), "a historical row is claimed more than once"
-    assert [r["historical_alias"] for r in ledger["rows"] if r["mapping"] == "new"] == [""], \
+    assert all(not r["historical_alias"] for r in ledger["rows"] if r["mapping"] == "new"), \
         "a new site claimed a historical alias"
 
 

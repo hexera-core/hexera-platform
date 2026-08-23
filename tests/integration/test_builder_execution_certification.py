@@ -73,6 +73,33 @@ async def _with_session(fn):
         await engine.dispose()
 
 
+NO_PROGRESS_FAILURE = {"gate": "manifest_valid", "section": "MANIFEST",
+                       "summary": "these patches have zero faces: ['inlet_1']"}
+
+
+async def _drive_no_progress(monkeypatch, tmp_path):
+    """A retry caused by the SAME failure its sibling attempt already recorded: node_builder
+    publishes the halt explanation and routes to the failure sink WITHOUT buying a model
+    round - the combining-wye bought four identical rejections before this stop existed."""
+    from meshpipeline.agents.builder import no_progress as NP
+    from meshpipeline.agents.builder.workspace import _setup_workspace
+
+    def _seed_sibling(job_id):
+        sig = NP.failure_signature({"classifier_result": NO_PROGRESS_FAILURE})
+        # the claimed execution decides the generation; cover both the fresh and claimed values
+        for generation in (0, 1):
+            prev = _setup_workspace(job_id=str(job_id), attempt_num=1, engine="cfmesh",
+                                    generation=generation)
+            NP.record_failure(prev, sig)
+
+    result = await _drive(monkeypatch, tmp_path, engine="cfmesh", mode="retry",
+                          state_extra={"retry_count": 1,
+                                       "classifier_result": dict(NO_PROGRESS_FAILURE)},
+                          before_run=_seed_sibling)
+    assert result["rounds"] == [], "the stop must fire before any model round is bought"
+    return result
+
+
 async def _seed(job_id: uuid.UUID, owner_id: str) -> None:
     async def _q(db):
         db.add(SimulationJob(id=job_id, owner_id=owner_id))
@@ -403,13 +430,16 @@ LOOP_SCRIPT = [
 
 async def _drive(monkeypatch, tmp_path, *, engine: str, mode: str = "initial",
                  deadline_epoch: float | None = None, script=None,
-                 take_over_before: str = "", mesh_result: dict | None = None):
+                 take_over_before: str = "", mesh_result: dict | None = None,
+                 state_extra: dict | None = None, before_run=None):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
 
     job_id = uuid.uuid4()
     owner_id = f"cert-{job_id.hex[:8]}"
     await _seed(job_id, owner_id)
+    if before_run is not None:
+        before_run(job_id)
 
     seen: list = []
     delivered: list = []
@@ -433,7 +463,10 @@ async def _drive(monkeypatch, tmp_path, *, engine: str, mode: str = "initial",
 
     import meshpipeline.pipeline.graph as gm
     root = tmp_path / f"run-{job_id.hex[:8]}"
-    graph = _graph(_state(root, owner_id, engine, mode=mode, deadline_epoch=deadline_epoch))
+    st = _state(root, owner_id, engine, mode=mode, deadline_epoch=deadline_epoch)
+    if state_extra:
+        st.update(state_extra)
+    graph = _graph(st)
     monkeypatch.setattr(gm, "build_graph",
                         lambda checkpointer: graph.compile(checkpointer=checkpointer))
 
