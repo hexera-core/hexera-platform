@@ -39,7 +39,7 @@ Guidance: reference_length_m REPORTS the metres value of ONE of the user's quote
 
 max_cells is YOURS to set and it is a real lever: a large far-field WITH a well-resolved body legitimately needs more cells, so RAISE it when the physics demands (a cramped budget forces either an under-resolved wall or a too-small domain - both get rejected). BUT never exceed max_cells_HARD_CEILING (shown in the metrics - the compute limit); a mesh above it cannot be built. If the ideal job would need more than the ceiling, spend that ceiling wisely - the far-field must be big enough that the reviewer accepts it, so if you must trade, keep the domain adequate and let the far-field cells be coarser rather than cramping the domain.
 
-REVISING: if you are shown your PREVIOUS plan together with a concrete critique of why it failed, you MUST change the offending value(s) by a MEANINGFUL amount - do NOT restate the same numbers. If the far-field was called inadequate, increase the margins substantially (think 2-4x, not a nudge); if the body was under-resolved or the larger domain now needs it, raise max_cells to match. Treat the critique as a measurement of how far off you were, and correct by that much."""
+REVISING: if you are shown your PREVIOUS plan together with a concrete critique of why it failed, you MUST change the offending value(s) by a MEANINGFUL amount - do NOT restate the same numbers. If the mesh EXCEEDED the cell budget, do not shave it - the actual count inflates past max_cells, so set max_cells low enough that the RESULT lands well under the ceiling (aim 15-20% under, scaled by how far over the last attempt measured). If the far-field was called inadequate, increase the margins substantially (think 2-4x, not a nudge); if the body was under-resolved or the larger domain now needs it, raise max_cells to match. Treat the critique as a measurement of how far off you were, and correct by that much."""
 
 
 INTERNAL_PLANNER_SYSTEM = """You are a senior CFD MESH-PLANNING engineer planning an INTERNAL (through-flow) mesh with snappyHexMesh. The fluid VOLUME itself is the domain - there is NO far-field box. The solid has already been split into wall + inlet + outlet patches; you decide how finely to resolve the flow passage and the near-wall prism layers.
@@ -63,6 +63,30 @@ Reply with ONLY a JSON object (no prose, no markdown fences):
 Guidance: cells_across_diameter 16-40 - how many cells span the bore. Use the HIGH end for curved/bending or branching passages (to capture secondary flow), the low end for a plain straight duct. surface_level 1-3 (wall refinement). feature_level = surface_level+1 (sharpens the inlet/outlet rims). n_layers 3-6 - internal wall-bounded flow is MORE layer-critical than external aero (y+ and pressure drop depend on it). first_layer_rel 0.2-0.4. Use quality 'strict' when you expect skew at a tight bend or a junction. max_cells is a lever - raise it when a long or geometrically complex passage at your chosen resolution needs the cells, but NEVER exceed max_cells_HARD_CEILING (the compute limit). There is NO domain_margin here - the part is the domain, so spend every cell inside the passage.
 
 REVISING: if shown your PREVIOUS plan with a concrete critique, change the offending value(s) by a MEANINGFUL amount - do not restate the same numbers. Widespread skew -> quality 'strict' and/or fewer/thinner layers; a timeout or over-budget -> lower cells_across_diameter or surface_level; layers collapsing -> reduce n_layers and thin first_layer_rel. Treat the critique as a measurement of how far off you were."""
+
+
+def overshoot_corrected_budget(prev_budget: object, prev_actual: object, *, ceiling: int,
+                               margin: float = 0.85, floor: int = 200_000) -> int | None:
+    """The budget the NEXT attempt should request, from what the last one measured.
+
+    A plan's max_cells is a request, not a result: the mesher refines around the geometry and
+    lands where it lands - a wall-resolved aerofoil asked for 1.8M and produced 4.32M. When the
+    result exceeds the compute ceiling, the inflation ratio is now a MEASUREMENT, so the correction
+    is arithmetic: request ceiling * (asked/got), minus a margin so the answer lands 15% under the
+    cap instead of kissing it. Left to the model, the corrections decayed - 43%, then 7%, then 7% -
+    and a defect-free mesh 6% over the cap was destroyed on the fifth attempt with nothing
+    delivered.
+
+    None means "no measured overshoot to correct" - first attempts, missing numbers, or a previous
+    result already inside the ceiling - and the caller falls through to the model's own budget.
+    """
+    try:
+        budget, actual = float(prev_budget), float(prev_actual)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0 or actual <= 0 or actual <= ceiling:
+        return None
+    return max(floor, min(ceiling, int(ceiling * (budget / actual) * margin)))
 
 
 def clamp_cell_budget(raw: object, *, ceiling: int, default: int = 4_000_000) -> int:

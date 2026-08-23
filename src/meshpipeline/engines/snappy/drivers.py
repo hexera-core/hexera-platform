@@ -34,6 +34,29 @@ if TYPE_CHECKING:
 
 
 
+def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
+    """(budget_requested, cells_produced) from the SIBLING attempt this retry follows, else None.
+
+    Both numbers are already durable - the plan memory records what was asked, the manifest what
+    came out - so the overshoot ratio costs two file reads and no model call.
+    """
+    import json as _json
+    import re as _re
+
+    m = _re.fullmatch(r"attempt_(\d+)", workspace.name)
+    if m is None or int(m.group(1)) < 2:
+        return None
+    prev = workspace.parent / f"attempt_{int(m.group(1)) - 1}"
+    try:
+        budget = _json.loads((prev / ".last_plan.json").read_text()).get("max_cells")
+        actual = _json.loads((prev / "mesh_manifest.json").read_text()).get("cell_count")
+    except Exception:  # noqa: BLE001 - absent files just mean nothing to correct from
+        return None
+    if not (budget and actual):
+        return None
+    return float(budget), float(actual)
+
+
 def _write_plan_memory(workspace: Path, strategy: dict) -> None:
     import json as _json
     import os as _os
@@ -213,6 +236,21 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # the ceiling, but this guarantees the mesh can't exceed what Cloud Run can build or what
             # the executor accepts, so an over-ambitious budget never wastes a run).
             _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=polcfg.CELL_HARD_LIMIT)
+            # If the LAST attempt measurably overshot the ceiling, the inflation ratio is
+            # known - correct by arithmetic rather than by hoping the model's next guess is
+            # braver. Under a forced 2M ceiling the model's guesses decayed (43%, 7%, 7%) and
+            # five attempts died, the last 6% over; this lands the next one 15% UNDER the cap.
+            _prev = _prev_attempt_overshoot(workspace)
+            if _prev is not None:
+                from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
+                _corr = overshoot_corrected_budget(_prev[0], _prev[1],
+                                                   ceiling=polcfg.CELL_HARD_LIMIT)
+                if _corr is not None and _corr < _budget:
+                    logger.info("budget overshoot correction: prev asked %.0f got %.0f (x%.2f) - "
+                                "requesting %d against ceiling %d",
+                                _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
+                                polcfg.CELL_HARD_LIMIT)
+                    _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry)
@@ -379,6 +417,21 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
 
         # strategy → concrete numbers (internal knobs; tolerant of external-style keys)
         _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=polcfg.CELL_HARD_LIMIT)
+        # If the LAST attempt measurably overshot the ceiling, the inflation ratio is
+        # known - correct by arithmetic rather than by hoping the model's next guess is
+        # braver. Under a forced 2M ceiling the model's guesses decayed (43%, 7%, 7%) and
+        # five attempts died, the last 6% over; this lands the next one 15% UNDER the cap.
+        _prev = _prev_attempt_overshoot(workspace)
+        if _prev is not None:
+            from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
+            _corr = overshoot_corrected_budget(_prev[0], _prev[1],
+                                   ceiling=polcfg.CELL_HARD_LIMIT)
+            if _corr is not None and _corr < _budget:
+                logger.info("budget overshoot correction: prev asked %.0f got %.0f (x%.2f) - "
+                        "requesting %d against ceiling %d",
+                        _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
+                        polcfg.CELL_HARD_LIMIT)
+                _budget = _corr
         _sl = strategy.get("surface_level", 2)
         surface_level = int(_sl[-1] if isinstance(_sl, (list, tuple)) else _sl)
         cells_across = max(8, int(strategy.get("cells_across_diameter", 24)))
