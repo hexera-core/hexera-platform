@@ -275,7 +275,7 @@ INVENTORY: list[Group] = [
         EnvVar("INTAKE_MAX_ROUNDS", "20", help="rounds per intake conversation turn; must be a positive integer"),
         EnvVar("BUILDER_MAX_ROUNDS", "60", help="rounds for a first build attempt"),
         EnvVar("BUILDER_RETRY_MAX_ROUNDS", "45", help="rounds for a rebuild attempt: shorter, because a retry starts from a reviewed failure"),
-        EnvVar("REVIEWER_MAX_ROUNDS", "30", help="rounds for one review invocation"),
+        EnvVar("REVIEWER_MAX_ROUNDS", "60", help="rounds for one review invocation"),
     ]),
     Group("PostgreSQL", note="Addresses on this machine: .env is edited on the host. The stack sets the container names its services answer on.", vars=[
         EnvVar("POSTGRES_HOST", "localhost"),

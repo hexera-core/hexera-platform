@@ -18,7 +18,7 @@ REVIEWER_MAX_TOKENS: int         = int(optional_env("REVIEWER_MAX_TOKENS", "1638
 # It is DELETED, not aliased: reusing the name with a new meaning would silently change an
 # operator's existing value from a round budget into a tool-call budget. runtime.startup
 # rejects the removed name so a stale .env fails loudly instead of being ignored.
-REVIEWER_MAX_ROUNDS: int         = int(optional_env("REVIEWER_MAX_ROUNDS",         "30"))
+REVIEWER_MAX_ROUNDS: int         = int(optional_env("REVIEWER_MAX_ROUNDS",         "60"))
 
 # AGGREGATE budget: the wall-clock ceiling for ONE logical review invocation - a single
 # node_reviewer call reviewing ONE native-build attempt. It is SEPARATE from the provider per-call

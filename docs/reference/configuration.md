@@ -101,7 +101,7 @@ them alone unless you have measured a reason.
 | `INTAKE_MAX_ROUNDS` | `20` | per intake conversation turn; must be a positive integer |
 | `BUILDER_MAX_ROUNDS` | `60` | a first build attempt |
 | `BUILDER_RETRY_MAX_ROUNDS` | `45` | a rebuild: shorter, because a retry starts from a reviewed failure |
-| `REVIEWER_MAX_ROUNDS` | `30` | one review invocation |
+| `REVIEWER_MAX_ROUNDS` | `60` | one review invocation |
 
 ## Data stores
 
