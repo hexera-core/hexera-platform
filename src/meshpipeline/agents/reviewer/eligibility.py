@@ -252,7 +252,13 @@ def _check_obligation(o, ledger: EvidenceLedger) -> list[str]:
     if o.exact_ids:
         for tid in o.exact_ids:
             if ledger.usable_inspection_of_target(InspectionTargetRef(o.kind, tid)) is None:
-                reasons.append(f"expected {o.kind.value} target '{tid}' has no usable inspection{prov}")
+                # Worded as an order, not a state: a reviewer once parsed "target X has no
+                # usable inspection" as "X is not available", declared the review impossible
+                # and stalled out on a production-grade mesh. The region is always inspectable.
+                reasons.append(
+                    f"required {o.kind.value} '{tid}' has not been inspected in this session. "
+                    f"It IS available - inspect it now (for a region: the slice tool with "
+                    f"region '{tid}'), then cite the t- id that inspection returns{prov}")
         return reasons
     have = len(ledger.usable_inspections_of_kind(o.kind))
     need = max(o.min_count, 1)
@@ -414,6 +420,19 @@ def evaluate_eligibility(plan, ledger: EvidenceLedger, findings: tuple[AxisFindi
         outcome=Eligibility.FAIL if failed_axes else Eligibility.PASS, verdict=verdict)
 
 
+def unmet_obligation_reasons(obligations, ledger: EvidenceLedger) -> tuple[str, ...]:
+    """Every obligation deficit, phrased as the eligibility gate states it. The loop's
+    correction messages consult this so they demand the same evidence the gate does instead of
+    contradicting it ("needs a corrected finding, not more evidence" while the gate says
+    "gather the missing evidence")."""
+    if not obligations:
+        return ()
+    out: list[str] = []
+    for o in obligations:
+        out.extend(_check_obligation(o, ledger))
+    return tuple(out)
+
+
 def _correction(reasons: list[str]) -> str:
     return ("SUBMISSION NOT ACCEPTED - " + "; ".join(reasons) +
             ". Gather the missing evidence and cite it, or correct the findings. Do not describe "
@@ -446,4 +465,5 @@ __all__ = [
     "evaluate_eligibility",
     "validate_plan",
     "missing_target_obligations",
+    "unmet_obligation_reasons",
 ]

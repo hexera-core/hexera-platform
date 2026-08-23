@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from meshpipeline.agents.loop.accounting import ToolInvocation
@@ -16,6 +16,7 @@ from meshpipeline.agents.reviewer.eligibility import (
     Eligibility,
     EligibilityDecision,
     evaluate_eligibility,
+    unmet_obligation_reasons,
 )
 from meshpipeline.agents.reviewer.evidence_delta import EvidenceDelta, EvidenceSnapshot, diff
 from meshpipeline.contracts.agent_loop import (
@@ -59,15 +60,20 @@ class AxisDeficits:
     ungrounded: tuple[str, ...] = ()
     covered: tuple[str, ...] = ()
     invalid_evidence: tuple[str, ...] = ()
+    # obligation deficits (uninspected required targets), verbatim from the eligibility gate -
+    # populated by the session, not by compute_deficits, which is axis-level only
+    unmet_obligations: tuple[str, ...] = ()
 
     def signature(self) -> str:
         body = "|".join(",".join(sorted(part)) for part in
-                        (self.missing, self.duplicate, self.ungrounded, self.invalid_evidence))
+                        (self.missing, self.duplicate, self.ungrounded, self.invalid_evidence,
+                         self.unmet_obligations))
         return hashlib.sha256(body.encode()).hexdigest()[:16]
 
     @property
     def clean(self) -> bool:
-        return not (self.missing or self.duplicate or self.ungrounded or self.invalid_evidence)
+        return not (self.missing or self.duplicate or self.ungrounded
+                    or self.invalid_evidence or self.unmet_obligations)
 
 
 def compute_deficits(required_axes: tuple[str, ...], findings: tuple[AxisFinding, ...],
@@ -219,7 +225,9 @@ class ReviewLoopPolicy:
         self.last_submission_changed = bool(self.last_findings_sig) and sig != self.last_findings_sig
         self.last_findings_sig = sig
 
-        deficits = compute_deficits(self.required_axes, findings, self.ledger)
+        deficits = replace(
+            compute_deficits(self.required_axes, findings, self.ledger),
+            unmet_obligations=unmet_obligation_reasons(self.obligations, self.ledger))
         # The typed findings go STRAIGHT to eligibility. Nothing assembles an aggregate verdict
         # string first; the verdict comes back on the decision, or there is none.
         decision = evaluate_eligibility(self.plan, self.ledger, findings,
@@ -357,8 +365,13 @@ class ReviewLoopPolicy:
             lines.append(f"Duplicate axes: {', '.join(deficits.duplicate)}")
         if deficits.invalid_evidence:
             lines.append(f"Unknown evidence ids: {', '.join(deficits.invalid_evidence)}")
-        needs_evidence = bool(deficits.missing or deficits.ungrounded)
-        lines.append("New usable evidence is REQUIRED for the listed axes."
+        if deficits.unmet_obligations:
+            lines.append("Uninspected required targets: "
+                         + "; ".join(deficits.unmet_obligations))
+        needs_evidence = bool(deficits.missing or deficits.ungrounded
+                              or deficits.unmet_obligations)
+        lines.append("New usable evidence is REQUIRED - inspect the targets listed above and "
+                     "cite the ids those inspections return."
                      if needs_evidence else
                      "The listed axes need a corrected finding, not more evidence.")
         if used is not None:
