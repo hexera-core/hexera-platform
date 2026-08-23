@@ -80,7 +80,8 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
                    body_bbox=None, mesh_bounds=None, volume_path: str | None = None,
                    requested_box=None, mesh_units: str,
                    mesh_mode: str = "cfmesh",
-                   engine_params: dict | None = None, flow_topology: str = "") -> dict:
+                   engine_params: dict | None = None, flow_topology: str = "",
+                   reference_length=None) -> dict:
     # STATED, NOT DEFAULTED. `mesh_units` is keyword-only and has no default, so an engine that
     # forgets it fails here - before any deliverable is announced - rather than writing a manifest
     # whose unit each consumer then guessed differently. Validated at the point of writing because
@@ -117,9 +118,15 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         (bx0, by0, bz0), (bx1, by1, bz1) = body_bbox
         geometry["body_box"] = {"xmin": bx0, "xmax": bx1, "ymin": by0,
                                 "ymax": by1, "zmin": bz0, "zmax": bz1}
-        # chord = streamwise (x) body extent - the unit the user's "Nc upstream/
-        # downstream/lateral" requests are expressed in (flow is along +x here).
+        # chord = streamwise (x) body extent - the unit the planner's margins are natively
+        # in (flow is along +x here). The user's "Nc" requests are in THEIR unit, which is
+        # reference_length when they stated one: a CRM brief quotes MACs, and judging those
+        # against body lengths rejected a correct domain twice.
         geometry["chord"] = max(float(bx1) - float(bx0), 1e-9)
+        geometry["reference_length"] = (float(reference_length) if reference_length
+                                        else geometry["chord"])
+        geometry["reference_length_source"] = ("user_stated" if reference_length
+                                               else "body_streamwise_extent")
     # Evidence-backed production-grade report card (engines.quality_criteria):
     # per-criterion threshold vs measured vs verdict, each with rationale + a
     # curated citation - so the reviewer/intake can JUSTIFY quality to the

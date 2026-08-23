@@ -89,7 +89,7 @@ def _feature_extract_dict(surf_file: str, feature_angle: float) -> str:
 def prepare_surface(workspace, *, geometry_file: str,
                     domain_min=None, domain_max=None, wall_patch: str = "body",
                     farfield_patch: str = "farfield", feature_angle: float = 30.0,
-                    mirror_y_half: bool = False,
+                    mirror_y_half: bool = False, reference_length_m: float | None = None,
                     bashrc: str = _DEFAULT_BASHRC) -> dict:
     ws = Path(workspace)
     body_stl = ws / geometry_file
@@ -129,9 +129,16 @@ def prepare_surface(workspace, *, geometry_file: str,
     if domain_min is not None and domain_max is not None:
         # Parity with cfMesh's geom_box.json so the A1 domain-extent gate measures the
         # box the Builder REQUESTED, not snappy's refined mesh bounds.
+        # The ruler travels WITH the box it sized. The margins are in body-lengths, but the
+        # user's request is in THEIR unit (a chord, a MAC); judging the one with the other
+        # rejected a correct CRM domain twice - "requested 20c, mesh has 3.2c" where 3.2
+        # body-lengths WAS 20 MAC. Null means the user quoted no reference, and the gate falls
+        # back to the body length - the old behaviour exactly.
         (ws / "geom_box.json").write_text(json.dumps({
             "domain_min": [float(v) for v in domain_min],
             "domain_max": [float(v) for v in domain_max],
+            "reference_length_m": (float(reference_length_m)
+                                   if reference_length_m else None),
         }))
 
     return {"surface_file": f"constant/triSurface/{surf_file}",

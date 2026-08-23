@@ -407,6 +407,10 @@ MANIFEST_KEYS: dict[str, str] = {
     "geometry.box_zmin":     "actual meshed extent",
     "geometry.box_zmax":     "actual meshed extent",
     "geometry.domain_box":   "REQUESTED far-field box - what the A1 extent gate measures",
+    "geometry.reference_length": "the ruler the extent gate divides by: the USER's stated "
+                                 "reference length in metres, else the streamwise body extent",
+    "geometry.reference_length_source": "user_stated | body_streamwise_extent - which of the "
+                                        "two the ruler is, named so a rejection is actionable",
     "geometry.body_box":     "body bounding box - reviewer scale guidance + viewer",
     "geometry.chord":        "streamwise body extent - unit of 'Nc upstream' requests",
     "patches":               "patch → entity list (engine bookkeeping)",

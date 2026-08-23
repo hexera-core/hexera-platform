@@ -38,7 +38,11 @@ def parse_requested_extents(request_txt: str) -> dict:
 def _applied_multipliers(geom: dict) -> dict | None:
     box  = geom.get("domain_box") or geom.get("box")
     body = geom.get("body_bbox") or geom.get("body_box")
-    chord = geom.get("chord") or geom.get("CHORD")
+    # The DIVISOR is the user's own reference length when they stated one, because their "Nc"
+    # request is in that unit. Dividing by the body length judged a 20-MAC request as 3.2 and
+    # rejected a correct mesh; the fallback (no stated reference) is the body length, which is
+    # both the old behaviour and the unit the planner's margins are natively in.
+    chord = geom.get("reference_length") or geom.get("chord") or geom.get("CHORD")
     if not (isinstance(box, dict) and isinstance(body, dict) and chord):
         return None
     try:
@@ -79,9 +83,12 @@ def check_domain_extents(requested: dict | None, manifest: dict,
             mismatches.append(f"{k}: requested {rv:.3g}c, mesh has {av:.3g}c")
 
     if mismatches:
+        ruler = float(geom.get("reference_length") or geom.get("chord") or 0.0)
+        src = geom.get("reference_length_source") or "body_streamwise_extent"
         diag = (
             "[DOMAIN_EXTENT_MISMATCH] Domain extents do not match the user's request "
-            f"(tolerance {int(tol*100)}%): " + "; ".join(mismatches) + ". "
+            f"(tolerance {int(tol*100)}%, measured in units of the {src} reference length "
+            f"{ruler:.4g} m): " + "; ".join(mismatches) + ". "
             "Recompute the far-field box corners (domain_min/domain_max passed to "
             "prepare_surface) so the box spans EXACTLY the requested chord multiples "
             "around the body - do NOT fall back to a default external-aero prior. "

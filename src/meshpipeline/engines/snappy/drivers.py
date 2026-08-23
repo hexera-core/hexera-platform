@@ -219,7 +219,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             wall = _contract_wall_patch(workspace) or "body"
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
-                wall_patch=wall, farfield_patch="farfield", feature_angle=150)
+                wall_patch=wall, farfield_patch="farfield", feature_angle=150,
+                reference_length_m=strategy.get("reference_length_m"))
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run, attempt)

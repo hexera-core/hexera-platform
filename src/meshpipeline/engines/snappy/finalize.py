@@ -209,12 +209,14 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # The far-field box the builder PREPARED (recorded by prepare_surface) -
     # the A1 domain-extent gate measures this, not the octree-padded mesh bounds.
     requested_box = None
+    reference_length = None
     _gb = ws / "geom_box.json"
     if _gb.exists():
         try:
             import json as _json
             _d = _json.loads(_gb.read_text())
             requested_box = [_d["domain_min"], _d["domain_max"]]
+            reference_length = _d.get("reference_length_m")
         except Exception:
             logger.warning("Executor: could not read geom_box.json (non-fatal)")
     # mesh_mode must record the engine that ACTUALLY built this mesh: the dispute
@@ -225,6 +227,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                      bbox=bbox, quality=q, domain=domain or "",
                      body_bbox=body_bbox, mesh_bounds=q.get("bounds"),
                      requested_box=requested_box, volume_path=volume_path,
+                     reference_length=reference_length,
                      # STATED explicitly. Every engine receives prepared metre geometry and
                      # writes metres; the constant says so rather than a default assuming it.
                      mesh_units=COMPLETED_MESH_UNIT.value,
