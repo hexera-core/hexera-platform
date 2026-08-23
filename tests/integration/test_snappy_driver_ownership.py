@@ -385,7 +385,10 @@ def _install_tessellate_double(monkeypatch, calls: list, *, fail: bool = False) 
                          ("outlet", (0.98, 1.0))):
             stls[name] = str(_box(out / f"{name}.stl", (-0.05, 0.05), (-0.05, 0.05), zr))
         return {"stls": stls,
-                "openings": {"inlet": {"area": 0.00785}, "outlet": {"area": 0.00785}},
+                # area AND centroid: the real tessellate_internal measures both, and the
+                # disclosure note formats the centroid - a double without it hides a crash
+                "openings": {"inlet": {"area": 0.00785, "centroid": [0.0, 0.0, 0.0]},
+                             "outlet": {"area": 0.00785, "centroid": [0.4, 0.0, 0.0]}},
                 "interior_point": [0.0, 0.0, 0.5],
                 "bbox_min": [-0.05, -0.05, 0.0], "bbox_max": [0.05, 0.05, 1.0]}
 
