@@ -131,7 +131,13 @@ def read_mesh(msh_path: str, mesh_units: str) -> LoadedMesh:
             bbox = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax,
                     "zmin": zmin, "zmax": zmax, "units": mesh_units}
             longest = max(xmax - xmin, ymax - ymin, zmax - zmin, 1e-9)
-            pan_step = round(longest * PAN_STEP_FRACTION, 1)
+            # NOT rounded to one decimal: the scene works in metres, so that floor turned any
+            # body shorter than half a metre into pan_step 0.0 and the scene refused to build -
+            # a crash for most real industrial parts, since brackets, manifolds and heat sinks
+            # are centimetre-scale. Every body this ever survived was simply a metre or larger;
+            # the Ahmed body scraped through as round(0.104)=0.1. Four significant figures and a
+            # hard floor instead.
+            pan_step = max(float(f"{longest * PAN_STEP_FRACTION:.4g}"), 1e-6)
             logger.info("render backend: bbox L=%.0f → pan_step=%.0f", longest, pan_step)
         except Exception as exc:  # noqa: BLE001 - a scene without a bbox still renders
             logger.warning("render backend: bbox query failed: %s", exc)
