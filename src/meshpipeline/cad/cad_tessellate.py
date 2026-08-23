@@ -140,8 +140,12 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         ports = list(open_idx) if ca[axis] <= cb[axis] else [open_idx[1], open_idx[0]]
         inlet_i, outlet_ids = ports[0], [ports[1]]
     else:
-        # A manifold: the feed is the largest port and the branches are the rest. Area is the only
-        # signal available here - the brief names patches, but this runs before any of that.
+        # A manifold. Area is the only signal available here - the brief names the patches, but this
+        # runs before any of that reaches us - so the widest opening is taken as the feed. That is a
+        # GUESS and it is wrong whenever the part diffuses or combines: a 40 mm feed into two 60 mm
+        # branches labels a branch the inlet and the feed an outlet, and a solver run on it has the
+        # flow backwards. The caller states the assumption to the user; the real fix is to bind the
+        # brief's declared roles to these ports instead of inferring one.
         inlet_i, outlet_ids = open_idx[0], list(open_idx[1:])
 
     def _write_group(idxs, path):

@@ -327,8 +327,22 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # bore diameter from the inlet port area - the resolution yardstick (D_h), no per-part constant
     _inlet_area = float(t["openings"]["inlet"]["area"]) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
-    await publish.anote(f"Fluid volume identified - wall, inlet and outlet separated; "
-                 f"bore Ø{bore_D * 1000:.1f} mm",
+    # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
+    # and that is wrong for every diffusing or combining part, where the feed is not the widest
+    # port. The geometry alone often cannot settle it: a wye is a wye whether flow splits or joins.
+    # Until the brief's declared roles are bound to the ports, say the assumption out loud with the
+    # evidence behind it, so a reversed inlet is something the user can see rather than discover in
+    # a solver run.
+    _ports = t["openings"]
+    _detail = "; ".join(
+        f"{_nm} at ({', '.join(f'{v:.3f}' for v in _info['centroid'])}) m, "
+        f"{float(_info['area']) * 1e6:.0f} mm²"
+        for _nm, _info in _ports.items())
+    _caveat = ("" if len(_ports) <= 2 else
+               " - the inlet was taken as the LARGEST opening; on a diffuser or a combiner that is "
+               "the wrong end, so check it before running")
+    await publish.anote(f"Fluid volume identified - {len(_ports)} openings separated from the wall: "
+                 f"{_detail}. Bore Ø{bore_D * 1000:.1f} mm{_caveat}",
             op_id="internal:volume-identified")
 
     plan = initial_plan
