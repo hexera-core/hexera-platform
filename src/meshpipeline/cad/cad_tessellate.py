@@ -125,19 +125,24 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             f"internal-flow geometry needs >=2 flat openings (inlet+outlet); found "
             f"{len(open_idx)}. If the walls are planar (box duct), pass opening_faces "
             f"explicitly.")
-    # if a duct has extra planar faces, the ports are the two largest planar faces;
-    # the remainder are flat wall sections.
+    # EVERY flat opening is a port. Keeping only the two largest and folding the rest into the wall
+    # SEALS them, and nothing downstream can tell: a Y-junction manifold came back with one branch
+    # capped shut, meshed 1,659,660 cells, and was reported production-grade. The mesh was
+    # physically wrong - flow could only leave through one branch - and looked fine.
     open_idx.sort(key=lambda i: _face_props(faces[i])[0], reverse=True)
-    ports, extra_walls = open_idx[:2], open_idx[2:]
-    wall_idx += extra_walls
 
-    # inlet vs outlet: order the two ports along the axis of greatest separation
-    ca = _face_props(faces[ports[0]])[1]
-    cb = _face_props(faces[ports[1]])[1]
-    axis = max(range(3), key=lambda k: abs(ca[k] - cb[k]))
-    if ca[axis] > cb[axis]:
-        ports = [ports[1], ports[0]]
-    inlet_i, outlet_i = ports
+    if len(open_idx) == 2:
+        # A plain duct: which end is the inlet is arbitrary by area, so keep the original rule and
+        # order the two ports along the axis of greatest separation.
+        ca = _face_props(faces[open_idx[0]])[1]
+        cb = _face_props(faces[open_idx[1]])[1]
+        axis = max(range(3), key=lambda k: abs(ca[k] - cb[k]))
+        ports = list(open_idx) if ca[axis] <= cb[axis] else [open_idx[1], open_idx[0]]
+        inlet_i, outlet_ids = ports[0], [ports[1]]
+    else:
+        # A manifold: the feed is the largest port and the branches are the rest. Area is the only
+        # signal available here - the brief names patches, but this runs before any of that.
+        inlet_i, outlet_ids = open_idx[0], list(open_idx[1:])
 
     def _write_group(idxs, path):
         comp = TopoDS_Compound(); bld = BRep_Builder(); bld.MakeCompound(comp)
@@ -146,11 +151,16 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         w = StlAPI_Writer(); w.ASCIIMode = False
         w.Write(comp, str(path))
 
-    stls = {"wall": out_dir / "wall.stl", "inlet": out_dir / "inlet.stl",
-            "outlet": out_dir / "outlet.stl"}
+    # one patch per outlet, so a branch can carry its own boundary condition and its own flow split
+    outlet_names = (["outlet"] if len(outlet_ids) == 1
+                    else [f"outlet_{n}" for n in range(1, len(outlet_ids) + 1)])
+    stls = {"wall": out_dir / "wall.stl", "inlet": out_dir / "inlet.stl"}
+    for nm in outlet_names:
+        stls[nm] = out_dir / f"{nm}.stl"
     _write_group(wall_idx, stls["wall"])
     _write_group([inlet_i], stls["inlet"])
-    _write_group([outlet_i], stls["outlet"])
+    for nm, oi in zip(outlet_names, outlet_ids):
+        _write_group([oi], stls[nm])
 
     # verified interior point for locationInMesh. Candidates, cheapest-first:
     # volume centroid, then each port centroid nudged inward along its (oriented) normal.
@@ -162,7 +172,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     gv = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, gv)
     vc = gv.CentreOfMass()
     candidates = [(vc.X(), vc.Y(), vc.Z())]
-    for pi in ports:
+    for pi in (inlet_i, *outlet_ids):
         f = faces[pi]
         area, c = _face_props(f)
         ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
@@ -186,8 +196,9 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         "openings": {
             "inlet": {"area": round(_face_props(faces[inlet_i])[0], 8),
                       "centroid": [round(v, 6) for v in _face_props(faces[inlet_i])[1]]},
-            "outlet": {"area": round(_face_props(faces[outlet_i])[0], 8),
-                       "centroid": [round(v, 6) for v in _face_props(faces[outlet_i])[1]]}},
+            **{nm: {"area": round(_face_props(faces[oi])[0], 8),
+                    "centroid": [round(v, 6) for v in _face_props(faces[oi])[1]]}
+               for nm, oi in zip(outlet_names, outlet_ids)}},
         "n_wall_faces": n_wall_faces,
     }
 
