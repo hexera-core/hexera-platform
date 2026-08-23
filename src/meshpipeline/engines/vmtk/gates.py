@@ -106,8 +106,11 @@ def _gate_vmtk_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
 VMTK_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid",  check=_gate_vmtk_manifest_valid, section="MANIFEST",
              proves="The volume mesh was written and parses back - no fatal defects"),
-    GateSpec(key="patch_contract",  check=_gate_vmtk_patch_contract, section="GROUPS",
-             proves="The wall and every inlet/outlet cap are present, and match what you declared"),
+    # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
+    # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
+    # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="quality_floor",   check=_gate_tet_quality_floor,   section="MESH",
              proves="No inverted or degenerate tetrahedra - the mesh clears the quality floor"),
+    GateSpec(key="patch_contract",  check=_gate_vmtk_patch_contract, section="GROUPS",
+             proves="The wall and every inlet/outlet cap are present, and match what you declared"),
 )

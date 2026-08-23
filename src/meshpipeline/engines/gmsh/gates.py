@@ -82,8 +82,11 @@ def _gate_gmsh_region_contract(ctx: GateCtx) -> tuple[bool, str]:
 GMSH_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid", check=_gate_gmsh_manifest_valid, section="MANIFEST",
              proves="The element deck was written and parses back - no fatal defects"),
-    GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
-             proves="Every named group you asked for exists in the deck"),
+    # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
+    # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
+    # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="sicn_floor",     check=_gate_sicn_floor,          section="MESH",
              proves="No degenerate elements - every element clears the quality floor for FE assembly"),
+    GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
+             proves="Every named group you asked for exists in the deck"),
 )

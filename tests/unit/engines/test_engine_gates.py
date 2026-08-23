@@ -9,10 +9,17 @@ from meshpipeline.engines.registry import get_spec  # noqa: E402
 from meshpipeline.errors import FailureClass, SystemFailure  # noqa: E402
 
 
+def _gate(engine: str, key: str):
+    """The named gate, not whichever one happens to sit at that index."""
+    return next(g for g in get_spec(engine).gates if g.key == key)
+
+
 def test_both_flow_engines_declare_the_same_gate_chain():
     for name in ("cfmesh", "snappy"):
+        # Soundness sits ahead of naming: run_gates stops at the first blocking failure, so with
+        # the floor last a patch-name mismatch refused a run while leaving its quality unmeasured.
         assert [g.key for g in get_spec(name).gates] == [
-            "manifest_valid", "patch_contract", "boundary_types", "quality_floor"]
+            "manifest_valid", "quality_floor", "patch_contract", "boundary_types"]
 
 
 def test_every_engine_gates_its_own_declared_quality_bars():
@@ -59,7 +66,7 @@ def test_manifest_valid_gate_speaks_the_original_vocabulary(tmp_path):
 def test_patch_contract_gate_skips_without_a_contract(tmp_path):
     (tmp_path / "mesh_manifest.json").write_text(json.dumps({"patches": {}}))
     ok, _, _ = run_gates(
-        (get_spec("cfmesh").gates[1],),
+        (_gate("cfmesh", "patch_contract"),),
         GateCtx(workspace=tmp_path, intake_patches=[]))
     assert ok
 
@@ -68,7 +75,7 @@ def test_patch_contract_gate_rejects_mismatch(tmp_path):
     (tmp_path / "mesh_manifest.json").write_text(json.dumps({
         "patches": {"body": []}, "patch_types": {"body": "wall"}}))
     ok, key, fb = run_gates(
-        (get_spec("cfmesh").gates[1],),
+        (_gate("cfmesh", "patch_contract"),),
         GateCtx(workspace=tmp_path,
                 intake_patches=[{"name": "wing", "type": "wall"},
                                 {"name": "farfield", "type": "farfield"}]))

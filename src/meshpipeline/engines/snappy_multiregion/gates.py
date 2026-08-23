@@ -192,6 +192,11 @@ def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
 MULTIREGION_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid",   check=_gate_cht_manifest_valid,     section="MANIFEST",
              proves="The multi-region case is sound - no fatal defects in any region"),
+    # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
+    # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
+    # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
+    GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
+             proves="Every region clears the quality bars this engine requires - skewness is localized across all regions"),
     GateSpec(key="patch_contract",   check=_gate_multiregion_patch_contract, section="GROUPS",
              proves="The delivered mesh carries exactly the boundaries you approved at intake - "
                     "none merged, renamed, dropped, or re-roled"),
@@ -201,6 +206,4 @@ MULTIREGION_GATES: tuple[GateSpec, ...] = (
              proves="The fluid-solid interfaces are conformal - faces match one-to-one across them"),
     GateSpec(key="region_contract",  check=_gate_cht_region_contract,    section="GROUPS",
              proves="Each region carries the boundaries you named for it"),
-    GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
-             proves="Every region clears the quality bars this engine requires - skewness is localized across all regions"),
 )

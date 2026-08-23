@@ -136,10 +136,13 @@ def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
 FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid", check=_gate_manifest_valid, section="MANIFEST",
              proves="The mesh is structurally sound - no negative-volume, open or mis-oriented cells"),
+    # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
+    # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
+    # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
+    GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
+             proves="The mesh clears every quality bar cfMesh requires - no fatal topology defects"),
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
              proves="Every boundary you named exists in the mesh, and carries real faces"),
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
              proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)"),
-    GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
-             proves="The mesh clears every quality bar cfMesh requires - no fatal topology defects"),
 )

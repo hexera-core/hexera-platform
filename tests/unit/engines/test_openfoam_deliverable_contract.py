@@ -158,17 +158,25 @@ def test_a_fabricated_completion_marker_without_deliverables_is_rejected(tmp_pat
 
 @pytest.mark.parametrize("engine", SINGLE_REGION)
 def test_a_declared_role_not_evidenced_by_the_boundary_type_is_rejected(tmp_path, engine):
+    # The mesh carries a real wall, so it clears the quality floor and the run actually reaches the
+    # boundary-type check this test is about. Without one, wall_faces derives to None
+    # (quality_criteria.py:50, `sum(...) or None`) and the mesh is refused earlier and for a better
+    # reason - "the mesh does not contain the body at all" - which is a different test.
     pm = _polymesh(tmp_path)
     (pm / "boundary").write_text(
         "FoamFile{ version 2.0; format ascii; class polyBoundaryMesh; object boundary; }\n"
-        "1\n(\n    side\n    {\n        type patch;\n        nFaces 300;\n"
-        "        startFace 0;\n    }\n)\n")
+        "2\n(\n    body\n    {\n        type wall;\n        nFaces 500;\n"
+        "        startFace 0;\n    }\n    side\n    {\n        type patch;\n"
+        "        nFaces 300;\n        startFace 500;\n    }\n)\n")
     m = _manifest()
-    m["patch_types"] = {"side": "symmetry"}
-    m["patches"] = {"side": []}
-    m["patch_face_counts"] = {"side": 300}
-    m["validation"]["patch_validation"] = {"side": True}
-    out = _gate(tmp_path, engine, m, intake_patches=[{"name": "side", "type": "symmetry"}])
+    # `side` is DECLARED symmetry but the boundary file types it a plain patch - the mismatch
+    m["patch_types"] = {"body": "wall", "side": "symmetry"}
+    m["patches"] = {"body": [], "side": []}
+    m["patch_face_counts"] = {"body": 500, "side": 300}
+    m["validation"]["patch_validation"] = {"body": True, "side": True}
+    out = _gate(tmp_path, engine, m,
+                intake_patches=[{"name": "body", "type": "wall"},
+                                {"name": "side", "type": "symmetry"}])
     _assert_rejected_before_review(out, engine)
     assert "side" in out["feedback"], out["feedback"]
 
