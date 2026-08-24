@@ -43,7 +43,25 @@ async def node_classifier(state: PipelineState) -> dict:
     engine      = state.get("engine", "")
     classifier_result: dict[str, Any]
 
-    if not state.get("executor_success", False):
+    _caveats = state.get("requirement_caveats") or []
+    if state.get("executor_success", False) and _caveats:
+        # QUALITY passed; a stated requirement near-missed. The gate's own measured diagnostic
+        # (already in executor_output) is the summary VERBATIM, so the builder retries for the
+        # miss itself - never against a stale reviewer verdict from an earlier attempt. This
+        # branch can only be reached with retries remaining (the route sends a spent ladder to
+        # review instead), so freshness is structural: caveats are executor-owned per attempt.
+        gate_key = "domain_extent"
+        classifier_result = {
+            "section":      section_for_gate(engine, gate_key),
+            "summary":      state.get("executor_output", "") or "",
+            "failed_gate":  gate_key,
+            "failed_axes":  [],
+            "error_source": "requirements_near_miss",
+        }
+        rebuild = False
+        logger.info("Classifier: requirements NEAR-MISS (quality passed) - %d caveat(s) - "
+                    "job_id=%s", len(_caveats), job_id)
+    elif not state.get("executor_success", False):
  # executor rejected: the GATE names its section and authored the coaching
         gate_key = state.get("executor_failed_gate", "") or ""
         section  = section_for_gate(engine, gate_key)

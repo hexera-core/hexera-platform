@@ -74,6 +74,22 @@ def route_after_executor(
     solvability_failed = state.get("solvability_failed", False)
 
     if success:
+        caveats = state.get("requirement_caveats") or []
+        if caveats and retry_count <= bcfg.MAX_BUILDER_RETRIES:
+            # a QUALITY-passing mesh that near-missed a stated requirement: while attempts
+            # remain, the ladder retries for FULL conformance - delivery-with-caveats is the
+            # floor at exhaustion, never a first-attempt shortcut (invariant I5). The
+            # classifier hands the builder the gate's own measured diagnostic.
+            logger.info(
+                "route_after_executor: quality PASS with %d requirement caveat(s), "
+                "attempt=%d/%d → classifier (retrying for full conformance)",
+                len(caveats), retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS)
+            return "node_classifier"
+        if caveats:
+            logger.warning(
+                "route_after_executor: quality PASS with %d requirement caveat(s) and the "
+                "ladder spent → reviewer (caveated delivery candidate) - job_id=%s",
+                len(caveats), state.get("job_id"))
         return "node_reviewer"
 
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:
