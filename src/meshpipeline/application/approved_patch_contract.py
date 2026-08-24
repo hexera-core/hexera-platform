@@ -156,6 +156,11 @@ def check_admission(req) -> str | None:
             "mesh_fidelity_source": req.mesh_fidelity_source,
             "fidelity_policy_version": req.fidelity_policy_version,
             "request_txt": req.request_txt or "",
+            # the typed domain request is intent v5 - omitting it here refused every correctly
+            # approved run that captured extents (found live on the heat-sink replay, run 8)
+            "requested_extents": getattr(req, "requested_extents", None),
+            "reference_length_m": getattr(req, "reference_length_m", None),
+            "requirements_strict": bool(getattr(req, "requirements_strict", False)),
             "geometry_source": (req.geometry_source.to_payload() if req.geometry_source else None),
             "geometry_interpretation": (req.geometry_interpretation.to_payload()
                                         if req.geometry_interpretation else None),
