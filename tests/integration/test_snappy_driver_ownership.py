@@ -351,8 +351,10 @@ def _internal_state(tmp_path: Path, owner_id: str) -> dict:
         "openfoam_workspace": str(prev),
         "flow_topology": "internal",
         "dimensionality": "3D",
-        "intake_patches": [{"name": "inlet", "type": "inlet"},
-                           {"name": "outlet", "type": "outlet"},
+        # bindable declarations: the binder now runs on every declared internal job, and the
+        # double's two openings are the same size - locations are what tell them apart
+        "intake_patches": [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0]},
+                           {"name": "outlet", "type": "outlet", "near_mm": [400, 0, 0]},
                            {"name": "wall", "type": "wall"}],
         "request_txt": "internal through-flow through a bend",
     }
@@ -396,7 +398,7 @@ def _install_tessellate_double(monkeypatch, calls: list, *, fail: bool = False) 
 
 
 async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=None,
-               internal=False, tessellate_fail=False):
+               internal=False, tessellate_fail=False, unbindable_patches=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
 
@@ -424,8 +426,12 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
 
     import meshpipeline.pipeline.graph as gm
     root = tmp_path / f"run-{job_id.hex[:8]}"
-    graph = _graph(_internal_state(root, owner_id) if internal
-                   else _external_state(root, owner_id, body))
+    st = _internal_state(root, owner_id) if internal else _external_state(root, owner_id, body)
+    if unbindable_patches:
+        # a declaration no measured opening can satisfy: the seam must refuse pre-mesh
+        st["intake_patches"] = [{"name": "wall", "type": "wall"},
+                                {"name": "feed", "type": "inlet", "diameter_mm": 10}]
+    graph = _graph(st)
     monkeypatch.setattr(gm, "build_graph",
                         lambda checkpointer: graph.compile(checkpointer=checkpointer))
 
@@ -451,6 +457,10 @@ def _canonical(rec: dict, *, accepted: bool) -> str:
     if method == "meshed":
         return f"{fn}::meshed#1"
     if method == "error":
+        # two mutually exclusive refusals share the method: binding (declared ports vs the
+        # measured openings) and separability (no closeable openings at all)
+        if op.startswith("internal:port-binding-refused"):
+            return f"{fn}::error#2"
         return f"{fn}::error#1"
     for prefix, name in (("snappy:symmetry-detected", "note#1"),
                          ("snappy:pass-open:", "note#2"),
@@ -1064,6 +1074,12 @@ async def internal_unseparable(monkeypatch, tmp_path):
                       tessellate_fail=True)
 
 
+@pytest.fixture()
+async def internal_binding_refused(monkeypatch, tmp_path):
+    return await _run(monkeypatch, tmp_path, native_double=False, internal=True,
+                      unbindable_patches=True)
+
+
 async def test_the_internal_accepting_run_publishes_exactly_its_six_sites(internal_accepted):
     _job_id, seen, _built, _native, _marks, _rounds, _tess = internal_accepted
     assert _owned_counts(seen, accepted=True) == INTERNAL_ACCEPTED
@@ -1083,11 +1099,19 @@ async def test_an_unseparable_solid_is_refused_at_the_one_internal_error_site(in
     assert rec["op_id"] == "internal:volume-unseparable"
 
 
-async def test_the_internal_union_reaches_all_eight_sites_and_no_external_one(
-        internal_accepted, internal_exhausted, internal_unseparable):
+async def test_a_declaration_no_opening_satisfies_is_refused_before_meshing(
+        internal_binding_refused):
+    _job_id, seen, _built, native, _marks, _rounds, _tess = internal_binding_refused
+    assert _owned_counts(seen, accepted=False) == {f"{INTERNAL_FN}::error#2": 1}
+    assert native == [], "a refused binding must never reach the mesher"
+
+
+async def test_the_internal_union_reaches_all_nine_sites_and_no_external_one(
+        internal_accepted, internal_exhausted, internal_unseparable,
+        internal_binding_refused):
     union: set = set()
     for bundle, acc in ((internal_accepted, True), (internal_exhausted, False),
-                        (internal_unseparable, False)):
+                        (internal_unseparable, False), (internal_binding_refused, False)):
         _j, seen, _b, _n, _m, _r, _t = bundle
         sites = set(_sites(seen, accepted=acc)) - TOOL_SITES
         assert not [s for s in sites if s.startswith("_build_snappy_deterministic")], \
@@ -1095,16 +1119,18 @@ async def test_the_internal_union_reaches_all_eight_sites_and_no_external_one(
         union |= sites
 
     expected = {f"{INTERNAL_FN}::{n}" for n in
-                ("error#1", "note#1", "note#2", "note#3", "note#4", "note#5", "note#6",
-                 "meshed#1")} | {"_run_snappy_timed::meshing#1"}
-    assert union == expected, f"the internal union is not the eight owned sites: {union}"
+                ("error#1", "error#2", "note#1", "note#2", "note#3", "note#4", "note#5",
+                 "note#6", "meshed#1")} | {"_run_snappy_timed::meshing#1"}
+    assert union == expected, f"the internal union is not the nine owned sites: {union}"
 
 
 async def test_every_internal_emission_runs_under_the_claimed_durable_ownership(
-        internal_accepted, internal_exhausted, internal_unseparable):
+        internal_accepted, internal_exhausted, internal_unseparable,
+        internal_binding_refused):
     for label, bundle, acc in (("accepted", internal_accepted, True),
                                ("exhausted", internal_exhausted, False),
-                               ("unseparable", internal_unseparable, False)):
+                               ("unseparable", internal_unseparable, False),
+                               ("binding-refused", internal_binding_refused, False)):
         job_id, seen, built, _n, _m, _r, _t = bundle
         row = await _row(job_id)
         records = [r for r in _driver_records(seen)

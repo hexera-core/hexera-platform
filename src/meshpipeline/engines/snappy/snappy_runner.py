@@ -561,7 +561,10 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
     tri.mkdir(parents=True, exist_ok=True)
     names, feats, body = {}, {}, ""
     for patch, src in surfaces_src.items():
-        tris = drop_degenerate(read_stl_triangles(Path(src)))
+        paths = list(src) if isinstance(src, (list, tuple)) else [src]
+        tris = []
+        for one in paths:
+            tris.extend(drop_degenerate(read_stl_triangles(Path(one))))
         if not tris:
             raise ValueError(f"internal surface '{patch}' tessellated to zero triangles")
         name = re.sub(r"[^A-Za-z0-9_]", "_", patch) or patch
@@ -581,7 +584,8 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
-                         max_cells: int = 8_000_000, quality: str = "balanced") -> dict:
+                         max_cells: int = 8_000_000, quality: str = "balanced",
+                         wall_key: str = "wall") -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -630,11 +634,11 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     geom = "".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
                    for p in names)
     feat_entries = "".join(f'{{ file "{features[p]}"; level {flevel}; }} ' for p in names)
-    wall = names["wall"]
+    wall = names[wall_key]
     refine_surfs = (f"{wall} {{ level ({smin} {smax}); patchInfo {{ type wall; }} }} "
                     + "".join(f"{names[p]} {{ level ({port_level} {port_level}); "
                               f"patchInfo {{ type patch; }} }} "
-                              for p in names if p != "wall"))
+                              for p in names if p != wall_key))
 
     if quality == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3

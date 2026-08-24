@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.engines.port_binding import BindError as _PortBindError
 from meshpipeline.engines.workspace_facts import read_purpose
 
 logger = logging.getLogger(__name__)
@@ -375,6 +376,39 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     return last_valid
 
 
+def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]:
+    """Bind the user's declared patches onto the measured openings: (t re-keyed to user names,
+    wall key, binding-evidence note). No declaration -> t untouched, engine-canonical keys and
+    an empty note, so programmatic submits keep today's behaviour exactly. A BindError
+    propagates to the caller - it is a pre-mesh refusal, not a meshing failure."""
+    declared = [p for p in (intake_patches or []) if isinstance(p, dict)]
+    if not declared:
+        return t, "wall", ""
+    from meshpipeline.engines.port_binding import DeclaredPatch, apply_binding, bind_ports
+    b = bind_ports([DeclaredPatch.from_intake(p) for p in declared], t)
+    out = apply_binding(t, b)
+    rows = "; ".join(
+        f"{p['name']} ({p['role']}) at ({', '.join(f'{v:.3f}' for v in p['centroid'])}) m, "
+        f"{float(p['area_m2']) * 1e6:.0f} mm²"
+        for p in out["binding"]["ports"])
+    note = (f"bound to your declared ports: {rows}; wall = {b.wall_name}"
+            + (f"; {len(b.folded_into_wall)} blind face(s) folded into the wall"
+               if b.folded_into_wall else ""))
+    return out, b.wall_name, note
+
+
+def _bore_area_m2(t: dict) -> float:
+    """The resolution yardstick's area. With a binding: the largest DECLARED-inlet opening -
+    never the engine's largest-opening guess, which is backwards on combiners. Without one:
+    the engine-canonical inlet, as today."""
+    binding = t.get("binding")
+    if binding:
+        inlet = [float(p["area_m2"]) for p in binding["ports"] if p["role"] == "inlet"]
+        pool = inlet or [float(p["area_m2"]) for p in binding["ports"]]
+        return max(pool)
+    return float(t["openings"]["inlet"]["area"])
+
+
 async def _build_internal_deterministic(workspace: Path, state: PipelineState, *, job_id: str,
                                         publish: ExecutionEventPublisher, source_path: str,
                                         initial_plan: dict | None,
@@ -403,9 +437,23 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _prepared = _plan_surface(state, workspace).consumed
         t = await _asyncio.to_thread(R.tessellate_internal, source_path,
                                      workspace / "_internal_stls", prepared=_prepared)
-        prep = R.prepare_surface_internal(workspace, surfaces_src=t["stls"])
+        t, _wall_key, _bound_note = _bind_declared_ports(
+            t, state.get("intake_patches") or [])
+        _srcs = dict(t["stls"])
+        if t.get("folded_stls"):
+            # blind plugs are wall, physically: their triangles join the wall surface
+            _srcs[_wall_key] = [_srcs[_wall_key], *t["folded_stls"].values()]
+        prep = R.prepare_surface_internal(workspace, surfaces_src=_srcs)
     except (_fence.StaleWorkerFenced, StaleExecutionPublish):
         raise
+    except _PortBindError as exc:
+        # a refusal, not a failure: the declaration and the measured geometry disagree, and
+        # only the user can settle it - say exactly what was found and what to state
+        logger.error("internal build: port binding refused - job_id=%s: %s", job_id, exc)
+        await publish.aerror(f"Your declared ports could not be matched to the openings "
+                      f"measured on the geometry. {exc}",
+                op_id="internal:port-binding-refused")
+        return False
     except Exception:  # noqa: BLE001
         logger.exception("internal build: tessellation/prep failed - job_id=%s", job_id)
         await publish.aerror("The fluid volume could not be separated from the solid - the "
@@ -413,8 +461,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 op_id="internal:volume-unseparable")
         return False
 
-    # bore diameter from the inlet port area - the resolution yardstick (D_h), no per-part constant
-    _inlet_area = float(t["openings"]["inlet"]["area"]) or 1e-9
+    # bore diameter from the inlet port area - the resolution yardstick (D_h), no per-part
+    # constant. With a binding it is the DECLARED inlet's area (the guess is dead there).
+    _inlet_area = _bore_area_m2(t) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
     # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
     # and that is wrong for every diffusing or combining part, where the feed is not the widest
@@ -423,16 +472,21 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # evidence behind it, so a reversed inlet is something the user can see rather than discover in
     # a solver run.
     _ports = t["openings"]
-    _detail = "; ".join(
-        f"{_nm} at ({', '.join(f'{v:.3f}' for v in _info['centroid'])}) m, "
-        f"{float(_info['area']) * 1e6:.0f} mm²"
-        for _nm, _info in _ports.items())
-    _caveat = ("" if len(_ports) <= 2 else
-               " - the inlet was taken as the LARGEST opening; on a diffuser or a combiner that is "
-               "the wrong end, so check it before running")
-    await publish.anote(f"Fluid volume identified - {len(_ports)} openings separated from the wall: "
-                 f"{_detail}. Bore Ø{bore_D * 1000:.1f} mm{_caveat}",
-            op_id="internal:volume-identified")
+    if _bound_note:
+        # bound: every name below is the USER'S, matched to measured openings - no guess left
+        _msg = (f"Fluid volume identified - {len(_ports)} openings {_bound_note}. "
+                f"Bore Ø{bore_D * 1000:.1f} mm (from the declared inlet)")
+    else:
+        _detail = "; ".join(
+            f"{_nm} at ({', '.join(f'{v:.3f}' for v in _info['centroid'])}) m, "
+            f"{float(_info['area']) * 1e6:.0f} mm²"
+            for _nm, _info in _ports.items())
+        _caveat = ("" if len(_ports) <= 2 else
+                   " - the inlet was taken as the LARGEST opening; on a diffuser or a combiner that is "
+                   "the wrong end, so check it before running")
+        _msg = (f"Fluid volume identified - {len(_ports)} openings separated from the wall: "
+                f"{_detail}. Bore Ø{bore_D * 1000:.1f} mm{_caveat}")
+    await publish.anote(_msg, op_id="internal:volume-identified")
 
     plan = initial_plan
     feedback = (state.get("classifier_result", {}) or {}).get("summary", "") \
@@ -505,6 +559,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             _spec = await _op_begin(publish, "validate_configuration", run)
             summary = R.render_internal_case(
                 workspace, names=prep["names"], features=prep["features"],
+                wall_key=_wall_key,
                 interior_point=t["interior_point"], bbox_min=t["bbox_min"],
                 bbox_max=t["bbox_max"], base_cell=base_cell, surface_level=surface_level,
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
@@ -520,7 +575,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
-            wall_faces = int(fc.get(prep["names"]["wall"], 0))
+            wall_faces = int(fc.get(prep["names"][_wall_key], 0))
             production, reason = _judge_snappy(result, q, wall_faces)
             last_valid = bool(result.get("rc") == 0 and wall_faces > 0 and not q.get("fatal"))
             run.note_native_run(produced_usable_mesh=last_valid)

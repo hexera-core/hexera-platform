@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 63,
- "proven": 63,
+ "denominator": 64,
+ "proven": 64,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 2
+  "new_since_reconciliation": 3
  },
  "rows": [
   {
@@ -264,11 +264,20 @@
    "proof_scenario": "builder-loop:cfmesh"
   },
   {
-   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#3",
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#4",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the port-binding refusal names what the measured openings disagree about",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-refuse-binding"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#5",
    "historical_alias": "E062",
    "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#1",
    "mapping": "renamed",
-   "mapping_reason": "same site under the current canonical spelling",
+   "mapping_reason": "the port-binding seam's logger and refusal were inserted earlier in the function, shifting this site's mixed-ordinal position",
    "status": "proven",
    "proof_scenario": "snappy-driver:internal-refuse"
   },

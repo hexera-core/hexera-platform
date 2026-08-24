@@ -2290,12 +2290,40 @@
   "roots": []
  },
  {
-  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#3|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#4|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
   "semantic": "error",
   "method": "aerror",
-  "ordinal": 3,
+  "ordinal": 4,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#5|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "error",
+  "method": "aerror",
+  "ordinal": 5,
   "receiver": "publish",
   "authority": "ExecutionEventPublisher",
   "lifecycle": "execution-owned",
