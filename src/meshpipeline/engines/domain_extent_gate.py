@@ -100,3 +100,94 @@ def check_domain_extents(requested: dict | None, manifest: dict,
 
 def extent_gate_for_request(request_txt: str, manifest: dict) -> tuple[bool, str]:
     return check_domain_extents(parse_requested_extents(request_txt), manifest)
+
+
+# #
+# TYPED evaluation (approved intent v5): the request arrives as numbers the user approved, the
+# ruler is the approved reference length - never the manifest's, which a re-plan can lose or
+# change (the heat-sink retries measured a correct box with a wrong-axis ruler and rejected two
+# production-grade meshes). Tri-state: a request that CANNOT be measured is "unmeasured", never
+# a silent pass. One-sided: over-delivering a margin is never a defect. Floored: under half of
+# what was asked - or a box touching the body - is a category error and blocks outright.
+# #
+
+#: below this fraction of the requested margin, a miss is no longer a near-miss
+FLOOR_FRACTION = 0.5
+
+_ALL_DIRECTIONS = ("upstream", "downstream", "lateral", "vertical")
+
+
+class ExtentVerdict:
+    __slots__ = ("status", "caveats", "detail")
+
+    def __init__(self, status: str, caveats: list, detail: str):
+        self.status = status      # "na" | "unmeasured" | "pass" | "miss" | "block"
+        self.caveats = caveats    # [{direction, requested, measured, units, ruler_m, ruler_source}]
+        self.detail = detail
+
+
+def evaluate_domain_extents(requested: dict | None, reference_length_m: float | None,
+                            manifest: dict, tol: float = 0.15) -> ExtentVerdict:
+    if (not isinstance(requested, dict)
+            or not any(v is not None for v in requested.values())
+            or not reference_length_m):
+        return ExtentVerdict("na", [], "")
+    geom = (manifest or {}).get("geometry") or {}
+    box = geom.get("domain_box") or geom.get("box")
+    body = geom.get("body_bbox") or geom.get("body_box")
+    try:
+        r = float(reference_length_m)
+        if r <= 0:
+            raise ValueError("nonpositive ruler")
+        margins = {
+            "upstream":   (float(body["xmin"]) - float(box["xmin"])) / r,
+            "downstream": (float(box["xmax"]) - float(body["xmax"])) / r,
+            "lateral":    min((float(body["ymin"]) - float(box["ymin"])) / r,
+                              (float(box["ymax"]) - float(body["ymax"])) / r),
+            "vertical":   min((float(body["zmin"]) - float(box["zmin"])) / r,
+                              (float(box["zmax"]) - float(body["zmax"])) / r),
+        }
+    except Exception:  # noqa: BLE001 - no measurable box/body: honesty demands "unmeasured"
+        return ExtentVerdict(
+            "unmeasured", [],
+            "[DOMAIN_EXTENT_UNMEASURED] the request declares far-field extents but the mesh "
+            "manifest records no measurable domain/body box - an unmeasured requirement can "
+            "neither pass nor be delivered with a caveat")
+
+    caveats: list = []
+    blocks: list = []
+    for k in _ALL_DIRECTIONS:
+        rv = requested.get(k)
+        if rv is None:
+            continue
+        rv = float(rv)
+        mv = margins[k]
+        if mv <= 0:
+            blocks.append(f"{k}: the domain box touches or clips the body")
+            continue
+        if mv >= rv * (1.0 - tol):
+            continue                        # within tolerance, or over-delivered: never a defect
+        if mv < rv * FLOOR_FRACTION:
+            blocks.append(f"{k}: requested {rv:g}L, mesh has {mv:.3g}L - under half of what "
+                          "was asked, which is a different domain, not a near-miss")
+        else:
+            caveats.append({"direction": k, "requested": rv, "measured": round(mv, 4),
+                            "units": "reference_lengths", "ruler_m": r,
+                            "ruler_source": "user_stated"})
+    if blocks:
+        return ExtentVerdict(
+            "block", [],
+            "[DOMAIN_EXTENT_BLOCK] " + "; ".join(blocks)
+            + f" (measured in units of the approved reference length {r:.4g} m). Recompute the "
+            "far-field box corners so every requested margin is met - do NOT shrink the "
+            "request to fit the box.")
+    if caveats:
+        stated = "; ".join(f"{c['direction']}: requested {c['requested']:g}L, mesh has "
+                           f"{c['measured']:g}L" for c in caveats)
+        return ExtentVerdict(
+            "miss", caveats,
+            f"[DOMAIN_EXTENT_MISMATCH] {stated} (tolerance {int(tol * 100)}%, measured in "
+            f"units of the approved reference length {r:.4g} m). Rebuild with the box spanning "
+            "the requested multiples; if attempts run out, the best quality-passing mesh is "
+            "delivered with this miss stated.")
+    return ExtentVerdict("pass", [], "")
