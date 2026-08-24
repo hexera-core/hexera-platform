@@ -303,6 +303,15 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="qa: the measurement basis for every domain caveat",
     ),
     ContractVar(
+        concept="flow axis",
+        purpose="the declared flow direction (+x/-x/+y/-y/+z/-z) that orients the far-field "
+                "box and the extent measurement - without it a +Y-flow part shipped with its "
+                "wake room on X",
+        intake_field="flow_axis",
+        dispatch_kwarg="flow_axis", state_field="flow_axis",
+        corpus="qa: the direction every domain margin is judged against",
+    ),
+    ContractVar(
         concept="requirements strictness",
         purpose="whether a measured near-miss on a stated requirement may deliver with the "
                 "miss stated (false) or must block (true); pre-v5 approvals execute strict",
@@ -363,6 +372,8 @@ STATE_FIELDS: dict[str, str] = {
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
+    "flow_axis":             "declared flow direction orienting the far-field box and its "
+                             "measurement (contract)",
     "requirement_caveats":   "machine-measured requirement near-misses for the current attempt "
                              "(executor-owned; the delivery surfaces state them verbatim)",
     "executor_output":       "executor stdout/diagnostics for the classifier and reviewer",

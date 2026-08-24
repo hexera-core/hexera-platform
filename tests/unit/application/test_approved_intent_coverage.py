@@ -17,7 +17,7 @@ FINGERPRINTED = {
     "geometry_interpretation",
     # the typed domain request (approved intent v5): the extents, the ruler they multiply and
     # the strictness bit all change what the domain gate accepts, so they are approval-bound
-    "requested_extents", "reference_length_m", "requirements_strict",
+    "requested_extents", "reference_length_m", "requirements_strict", "flow_axis",
 }
 
 # run-determining, but bound by a SEPARATE typed contract that is itself verified

@@ -149,6 +149,7 @@ def recompute_intent_fingerprint(payload: dict) -> str:
         requested_extents=payload.get("requested_extents"),
         reference_length_m=payload.get("reference_length_m"),
         requirements_strict=bool(payload.get("requirements_strict") or False),
+        flow_axis=payload.get("flow_axis"),
         request_txt=payload.get("request_txt", ""),
         source_ref=source_ref_of(payload))
 

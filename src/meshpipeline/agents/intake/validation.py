@@ -374,6 +374,16 @@ def _validate_domain_declaration(args: dict) -> list[str]:
                 "requested_extents needs reference_length_m - extents are multiples of a "
                 "length, and without the ruler they cannot be measured; ask the user what "
                 "one 'body length' is in their units")
+        _ax = args.get("flow_axis")
+        if _ax is None:
+            errors.append(
+                "requested_extents needs flow_axis - upstream and downstream are directions "
+                "along the flow, and without it the wake room can be built on the wrong side "
+                "of the part; ask the user which axis the flow travels along (+x/-x/+y/-y/"
+                "+z/-z)")
+        elif str(_ax).strip().lower() not in ("+x", "-x", "+y", "-y", "+z", "-z"):
+            errors.append(
+                f"flow_axis {_ax!r} is not a direction - use one of +x, -x, +y, -y, +z, -z")
     return errors
 
 

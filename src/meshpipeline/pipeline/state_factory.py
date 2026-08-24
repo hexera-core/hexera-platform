@@ -33,6 +33,7 @@ def make_pipeline_state(
     requested_extents: dict | None = None,
     reference_length_m: float | None = None,
     requirements_strict: bool = True,
+    flow_axis: str | None = None,
     agent_model_configs: dict | None = None,
     user_dispute: dict | None = None,
 ) -> dict:
@@ -83,6 +84,7 @@ def make_pipeline_state(
         "requested_extents":     dict(requested_extents) if requested_extents else None,
         "reference_length_m":    reference_length_m,
         "requirements_strict":   bool(requirements_strict),
+        "flow_axis":             flow_axis,
         "requirement_caveats":   [],
         # mesh-detail preference: the user's own choice (None = never stated), the
         # deterministic operational tier, and which of the two produced it.

@@ -162,7 +162,8 @@ async def node_executor(state: PipelineState) -> dict:
                         evaluate_domain_extents,
                     )
                     try:
-                        _v = evaluate_domain_extents(_typed_req, _typed_ruler, mesh_manifest)
+                        _v = evaluate_domain_extents(_typed_req, _typed_ruler, mesh_manifest,
+                                                     flow_axis=state.get("flow_axis"))
                     except Exception:  # noqa: BLE001
                         logger.exception("Executor: typed extent evaluation crashed - "
                                          "job_id=%s", job_id)

@@ -27,7 +27,7 @@ class TestTypedExtentCapture:
     def test_a_full_declaration_is_accepted(self):
         e = _errs(requested_extents={"upstream": 5, "downstream": 8,
                                      "lateral": 5, "vertical": 5},
-                  reference_length_m=0.06)
+                  reference_length_m=0.06, flow_axis="+y")
         assert not any("extent" in x.lower() or "reference" in x.lower() for x in e), e
 
     def test_omitting_them_is_fine_the_user_never_stated_any(self):
@@ -66,7 +66,7 @@ class TestProseExtentsForceTypedCapture:
         e = _errs(request_txt=("External aero. Far-field: 5 body lengths upstream, 8 "
                                "downstream, 5 lateral. " * 3),
                   requested_extents={"upstream": 5, "downstream": 8, "lateral": 5},
-                  reference_length_m=0.06)
+                  reference_length_m=0.06, flow_axis="+x")
         assert not any("requested_extents" in x for x in e), e
 
 

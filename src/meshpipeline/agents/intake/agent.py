@@ -371,6 +371,16 @@ INTAKE_TOOLS: list[dict] = [
                             "vertical": {"type": "number"},
                         },
                     },
+                    "flow_axis": {
+                        "type": "string",
+                        "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+                        "description": (
+                            "EXTERNAL FLOW: the direction the flow travels, as the user stated "
+                            "it (e.g. 'flow is along +Y' -> '+y'). REQUIRED whenever "
+                            "requested_extents is captured - upstream/downstream are "
+                            "meaningless without it. Never guess it from the geometry."
+                        ),
+                    },
                     "reference_length_m": {
                         "type": "number",
                         "description": (

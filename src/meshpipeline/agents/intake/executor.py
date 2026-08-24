@@ -382,6 +382,7 @@ class IntakeToolExecutor:
             requested_mesh_fidelity=args.get("mesh_fidelity"),
             requested_extents=args.get("requested_extents"),
             reference_length_m=args.get("reference_length_m"),
+            flow_axis=args.get("flow_axis"),
             requirements_strict=bool(args.get("requirements_strict") or False),
             request_txt=args.get("request_txt"), source_ref=st.source_ref)
         st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK

@@ -45,7 +45,9 @@ def _declared_lines(declared: dict) -> list[str]:
         stated = ", ".join(f"{k} {ext[k]:g}L" for k in
                            ("upstream", "downstream", "lateral", "vertical")
                            if ext.get(k) is not None)
-        out.append(f"far-field request: {stated} (L = {ref:g} m)")
+        _ax = declared.get("flow_axis")
+        out.append(f"far-field request: {stated} (L = {ref:g} m"
+                   + (f", flow along {_ax}" if _ax else "") + ")")
     if declared.get("requirements_strict"):
         out.append("requirements: STRICT - near-misses are refused, never delivered with a note")
     patches = declared.get("patches") or []

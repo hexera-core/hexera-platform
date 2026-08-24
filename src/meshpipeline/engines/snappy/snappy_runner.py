@@ -301,11 +301,38 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
-                         symmetry: dict | None = None) -> tuple[list, list]:
+                         symmetry: dict | None = None,
+                         flow_axis: str | None = None) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     m = (strategy or {}).get("domain_margin") or {}
     up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
     side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
+
+    if flow_axis:
+        # The user DECLARED the flow direction - the wake room goes downwind of it, whatever
+        # the CAD's orientation. Run 12 shipped a +Y-flow part with 16L of wake room on X and
+        # 6.67L on Y because this function assumed X; a declaration now binds the box.
+        ax = flow_axis.strip().lower()
+        sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
+        i_s = {"x": 0, "y": 1, "z": 2}[letter]
+        rest = [j for j in range(3) if j != i_s]
+        ref = float((analysis.get("extent") or
+                     [bmax[k] - bmin[k] for k in range(3)])[i_s]) or L
+        dmin, dmax = list(bmin), list(bmax)
+        lo_m, hi_m = (up, dn) if sign == "+" else (dn, up)
+        dmin[i_s], dmax[i_s] = bmin[i_s] - lo_m * ref, bmax[i_s] + hi_m * ref
+        dmin[rest[0]], dmax[rest[0]] = bmin[rest[0]] - side * ref, bmax[rest[0]] + side * ref
+        dmin[rest[1]], dmax[rest[1]] = bmin[rest[1]] - vert * ref, bmax[rest[1]] + vert * ref
+        if symmetry and symmetry.get("slab"):
+            axx = symmetry["axis"]
+            dmin[axx], dmax[axx] = symmetry["pos_lo"], symmetry["pos_hi"]
+        elif symmetry:
+            axx = symmetry["axis"]
+            if symmetry["side"] == "min":
+                dmin[axx] = symmetry["pos"]
+            else:
+                dmax[axx] = symmetry["pos"]
+        return dmin, dmax
 
     roles = axis_roles(analysis, symmetry)
     if roles is None:

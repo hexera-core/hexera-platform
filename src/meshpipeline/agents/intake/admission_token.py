@@ -117,7 +117,8 @@ def approved_intent_canonical(*, engine, purpose, input_kind, dimensionality, pa
                               geometry_revision_id: str | None = None,
                               requested_extents: dict | None = None,
                               reference_length_m: float | None = None,
-                              requirements_strict: bool = False) -> dict:
+                              requirements_strict: bool = False,
+                              flow_axis: str | None = None) -> dict:
     from meshpipeline.application.artifact_policy import ARTIFACT_POLICY_VERSION
     from meshpipeline.pipeline.enums import (
         FIDELITY_POLICY_VERSION,
@@ -156,6 +157,7 @@ def approved_intent_canonical(*, engine, purpose, input_kind, dimensionality, pa
                 x is not None for x in requested_extents.values()) else None),
         "reference_length_m": (None if reference_length_m is None
                                else float(reference_length_m)),
+        "flow_axis": (str(flow_axis).strip().lower() if flow_axis else None),
         "requirements_strict": bool(requirements_strict),
         "port_declaration": sorted(
             ({"name": (p.get("name") or "").strip(),

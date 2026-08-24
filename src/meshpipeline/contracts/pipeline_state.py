@@ -98,6 +98,10 @@ class PipelineState(TypedDict):
     requested_extents:  dict | None
     reference_length_m: float | None
     requirements_strict: bool
+    # the DECLARED flow direction (+x/-x/+y/-y/+z/-z, None = never stated -> legacy
+    # assume-X): orients the far-field box AND the extent measurement, so the wake room
+    # can never again be built or checked on the wrong side of the part
+    flow_axis: str | None
     # machine-measured requirement near-misses for the CURRENT attempt (executor-owned;
     # empty means fully conforming). Deterministic code authors these; no agent may.
     requirement_caveats: list

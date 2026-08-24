@@ -207,7 +207,8 @@ class JobRequest:
                  "user_dispute", "mesh_engine", "domain", "engine_params",
                  "approved_snapshot_id", "approved_patch_contract",
                  "approved_intent_fingerprint", "intake_events",
-                 "requested_extents", "reference_length_m", "requirements_strict")
+                 "requested_extents", "reference_length_m", "requirements_strict",
+                 "flow_axis")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -219,7 +220,7 @@ class JobRequest:
                  approved_snapshot_id="", approved_patch_contract=None,
                  approved_intent_fingerprint="", intake_events=None,
                  requested_extents=None, reference_length_m=None,
-                 requirements_strict=True):
+                 requirements_strict=True, flow_axis=None):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -242,6 +243,7 @@ class JobRequest:
         # default TRUE: a dispatch that never says otherwise keeps the blocking contract -
         # near-miss delivery is opt-out only through an approval that carries the bit
         self.requirements_strict = bool(requirements_strict)
+        self.flow_axis = (str(flow_axis).strip().lower() if flow_axis else None)
         self.review_brief_txt = review_brief_txt
         self.intake_patches   = intake_patches
         self.dimensionality   = dimensionality
@@ -385,6 +387,7 @@ def run_pipeline(
     requested_extents:       dict | None = None,
     reference_length_m:      float | None = None,
     requirements_strict:     bool       = True,
+    flow_axis:               str | None = None,
 ) -> dict:
 
 
@@ -413,6 +416,7 @@ def run_pipeline(
         requested_extents=requested_extents,
         reference_length_m=reference_length_m,
         requirements_strict=requirements_strict,
+        flow_axis=flow_axis,
         requested_mesh_fidelity=requested_mesh_fidelity,
         effective_mesh_fidelity=effective_mesh_fidelity or "",
         mesh_fidelity_source=mesh_fidelity_source or "",
@@ -588,6 +592,7 @@ async def _run_async(req: JobRequest) -> dict:
             requested_extents=req.requested_extents,
             reference_length_m=req.reference_length_m,
             requirements_strict=req.requirements_strict,
+            flow_axis=req.flow_axis,
             agent_model_configs={
                 "builder":    {"model": bcfg.BUILDER_MODEL,  "temperature": bcfg.BUILDER_TEMPERATURE,    "max_tokens": bcfg.BUILDER_MAX_TOKENS},
                 "reviewer":   {"model": rcfg.REVIEWER_MODEL, "temperature": rcfg.REVIEWER_TEMPERATURE,   "max_tokens": rcfg.REVIEWER_MAX_TOKENS},

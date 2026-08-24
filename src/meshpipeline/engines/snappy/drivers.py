@@ -304,7 +304,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                     _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
-            dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry)
+            dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
+                                                flow_axis=state.get("flow_axis"))
             wall = _contract_wall_patch(workspace) or "body"
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,

@@ -126,8 +126,33 @@ class ExtentVerdict:
         self.detail = detail
 
 
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+
+
+def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None) -> dict:
+    """Margins in ruler units, oriented by the DECLARED flow axis. No declaration keeps the
+    legacy assume-X convention byte-for-byte (pre-v5 behaviour, documented). Sign matters:
+    flow -y puts downstream at ymin. Lateral/vertical are the remaining axes in (x, y, z)
+    order, each taken as the SMALLER of its two sides."""
+    ax = (flow_axis or "+x").strip().lower()
+    sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
+    i = _AXIS_INDEX[letter]
+    names = "xyz"
+    lo = (float(body[f"{names[i]}min"]) - float(box[f"{names[i]}min"])) / r
+    hi = (float(box[f"{names[i]}max"]) - float(body[f"{names[i]}max"])) / r
+    up, down = (lo, hi) if sign == "+" else (hi, lo)
+    rest = [j for j in range(3) if j != i]
+    def _min_side(j: int) -> float:
+        n = names[j]
+        return min((float(body[f"{n}min"]) - float(box[f"{n}min"])) / r,
+                   (float(box[f"{n}max"]) - float(body[f"{n}max"])) / r)
+    return {"upstream": up, "downstream": down,
+            "lateral": _min_side(rest[0]), "vertical": _min_side(rest[1])}
+
+
 def evaluate_domain_extents(requested: dict | None, reference_length_m: float | None,
-                            manifest: dict, tol: float = 0.15) -> ExtentVerdict:
+                            manifest: dict, tol: float = 0.15,
+                            flow_axis: str | None = None) -> ExtentVerdict:
     if (not isinstance(requested, dict)
             or not any(v is not None for v in requested.values())
             or not reference_length_m):
@@ -145,14 +170,7 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
         r = float(reference_length_m)
         if r <= 0:
             raise ValueError("nonpositive ruler")
-        margins = {
-            "upstream":   (float(body["xmin"]) - float(box["xmin"])) / r,
-            "downstream": (float(box["xmax"]) - float(body["xmax"])) / r,
-            "lateral":    min((float(body["ymin"]) - float(box["ymin"])) / r,
-                              (float(box["ymax"]) - float(body["ymax"])) / r),
-            "vertical":   min((float(body["zmin"]) - float(box["zmin"])) / r,
-                              (float(box["zmax"]) - float(body["zmax"])) / r),
-        }
+        margins = _axis_margins(box, body, r, flow_axis)
     except Exception:  # noqa: BLE001 - no measurable box/body: honesty demands "unmeasured"
         return ExtentVerdict(
             "unmeasured", [],

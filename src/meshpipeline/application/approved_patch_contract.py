@@ -160,6 +160,7 @@ def check_admission(req) -> str | None:
             # approved run that captured extents (found live on the heat-sink replay, run 8)
             "requested_extents": getattr(req, "requested_extents", None),
             "reference_length_m": getattr(req, "reference_length_m", None),
+            "flow_axis": getattr(req, "flow_axis", None),
             "requirements_strict": bool(getattr(req, "requirements_strict", False)),
             "geometry_source": (req.geometry_source.to_payload() if req.geometry_source else None),
             "geometry_interpretation": (req.geometry_interpretation.to_payload()

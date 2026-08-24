@@ -342,6 +342,7 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
         # a later default can never relax an approval's blocking contract.
         "requested_extents": approved.get("requested_extents"),
         "reference_length_m": approved.get("reference_length_m"),
+        "flow_axis": approved.get("flow_axis"),
         "requirements_strict": (
             bool(approved.get("requirements_strict"))
             if int((intent or {}).get("schema_version") or 0) >= 5 else True),
@@ -383,6 +384,7 @@ def assert_payload_matches_approval(payload: dict, snapshot: dict, source_ref, *
         fidelity_policy_version=payload["fidelity_policy_version"],
         requested_extents=payload.get("requested_extents"),
         reference_length_m=payload.get("reference_length_m"),
+        flow_axis=payload.get("flow_axis"),
         requirements_strict=bool(payload.get("requirements_strict") or False),
         request_txt=payload["request_txt"], source_ref=source_ref)
     if at.fingerprint(run_intent) != stored_fp:
