@@ -377,24 +377,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
 
 
 def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]:
-    """Bind the user's declared patches onto the measured openings: (t re-keyed to user names,
-    wall key, binding-evidence note). No declaration -> t untouched, engine-canonical keys and
-    an empty note, so programmatic submits keep today's behaviour exactly. A BindError
-    propagates to the caller - it is a pre-mesh refusal, not a meshing failure."""
-    declared = [p for p in (intake_patches or []) if isinstance(p, dict)]
-    if not declared:
-        return t, "wall", ""
-    from meshpipeline.engines.port_binding import DeclaredPatch, apply_binding, bind_ports
-    b = bind_ports([DeclaredPatch.from_intake(p) for p in declared], t)
-    out = apply_binding(t, b)
-    rows = "; ".join(
-        f"{p['name']} ({p['role']}) at ({', '.join(f'{v:.3f}' for v in p['centroid'])}) m, "
-        f"{float(p['area_m2']) * 1e6:.0f} mm²"
-        for p in out["binding"]["ports"])
-    note = (f"bound to your declared ports: {rows}; wall = {b.wall_name}"
-            + (f"; {len(b.folded_into_wall)} blind face(s) folded into the wall"
-               if b.folded_into_wall else ""))
-    return out, b.wall_name, note
+    """Engine-shared binding seam - see port_binding.bind_intake (one implementation, so a
+    combiner binds identically whichever engine meshes it)."""
+    from meshpipeline.engines.port_binding import bind_intake
+    return bind_intake(t, intake_patches)
 
 
 def _bore_area_m2(t: dict) -> float:

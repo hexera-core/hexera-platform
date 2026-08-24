@@ -157,7 +157,10 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
     stl_path = ws / "geom.stl"
     with stl_path.open("w") as fh:
         for patch, src in surfaces_src.items():
-            tris = drop_degenerate(read_stl_triangles(Path(src)))
+            paths = list(src) if isinstance(src, (list, tuple)) else [src]
+            tris = []
+            for one in paths:
+                tris.extend(drop_degenerate(read_stl_triangles(Path(one))))
             if not tris:
                 raise ValueError(f"internal surface '{patch}' tessellated to zero triangles")
             _write_solid(fh, patch, tris)
@@ -311,6 +314,11 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             "est_background_cells": est_bg}
 
 
+def _bind_intake_shared(t: dict, declaration: list):
+    from meshpipeline.engines.port_binding import bind_intake
+    return bind_intake(t, declaration)
+
+
 def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                         contract_patches: list, args: dict, cell_budget: int,
                         surface=None) -> dict:
@@ -329,8 +337,25 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
 
     t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
                             opening_faces=args.get("opening_faces") or None)
+    from meshpipeline.engines.port_binding import BindError
+    from meshpipeline.engines.workspace_facts import port_declaration
+    try:
+        t, _wall_key, _bound_note = _bind_intake_shared(t, port_declaration(workspace))
+    except BindError as exc:
+        # a refusal, not a failure: the declaration and the measured geometry disagree, and
+        # only the user can settle it
+        return {"success": False,
+                "error": f"Your declared ports could not be matched to the openings measured "
+                         f"on the geometry. {exc}",
+                "next": "Relay this to the user verbatim - the declaration needs a size, "
+                        "location or interchangeability answer only they can give. Do NOT "
+                        "retry with invented values."}
+    _srcs = dict(t["stls"])
+    if t.get("folded_stls"):
+        # blind plugs are wall, physically: their triangles join the wall surface
+        _srcs[_wall_key] = [_srcs[_wall_key], *t["folded_stls"].values()]
     prep = prepare_surface_internal(
-        workspace, surfaces_src=t["stls"],
+        workspace, surfaces_src=_srcs,
         feature_angle=float(args.get("feature_angle", 30.0)))
 
     _patches = list(contract_patches or [])

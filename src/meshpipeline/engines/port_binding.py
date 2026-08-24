@@ -267,6 +267,28 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
                    folded_into_wall=folded, evidence=evidence)
 
 
+def bind_intake(t: dict, intake_patches: list) -> tuple[dict, str, str]:
+    """Bind intake-declared patches onto the measured openings: (t re-keyed to user names,
+    wall key, binding-evidence note). No declaration -> t untouched, engine-canonical keys and
+    an empty note, so programmatic submits keep today's behaviour exactly. A BindError
+    propagates to the caller - a pre-mesh refusal, not a meshing failure. Shared by every
+    engine that carves internal flow (snappy, cfmesh), so a combiner binds identically
+    whichever engine meshes it."""
+    declared = [p for p in (intake_patches or []) if isinstance(p, dict)]
+    if not declared:
+        return t, "wall", ""
+    b = bind_ports([DeclaredPatch.from_intake(p) for p in declared], t)
+    out = apply_binding(t, b)
+    rows = "; ".join(
+        f"{p['name']} ({p['role']}) at ({', '.join(f'{v:.3f}' for v in p['centroid'])}) m, "
+        f"{float(p['area_m2']) * 1e6:.0f} mm²"
+        for p in out["binding"]["ports"])
+    note = (f"bound to your declared ports: {rows}; wall = {b.wall_name}"
+            + (f"; {len(b.folded_into_wall)} blind face(s) folded into the wall"
+               if b.folded_into_wall else ""))
+    return out, b.wall_name, note
+
+
 def apply_binding(t: dict, b: Binding) -> dict:
     """Re-key the tessellation output so the user's names are the only names downstream.
     Folded openings leave 'openings' and their STLs move to 'folded_stls' for the driver to

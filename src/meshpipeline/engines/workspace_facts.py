@@ -38,6 +38,18 @@ def read_dimensionality(workspace) -> str:
         return ""
 
 
+def port_declaration(workspace) -> list[dict]:
+    """The verbatim intake patch declaration (sizes/locations included), or [] when none was
+    written - programmatic submits have no declaration and keep engine-canonical names."""
+    import json as _json
+    f = Path(workspace) / "port_declaration.json"
+    try:
+        out = _json.loads(f.read_text(encoding="utf-8"))
+        return out if isinstance(out, list) else []
+    except Exception:  # noqa: BLE001 - absent or unreadable means undeclared, never fatal
+        return []
+
+
 def contract_patches(workspace) -> list[dict]:
     cf = Path(workspace) / "patches_contract.txt"
     out: list[dict] = []

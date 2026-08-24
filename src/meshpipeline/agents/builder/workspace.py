@@ -68,6 +68,11 @@ def _write_workspace_context_files(
                         "  • Fully 3D - no spanwise reduction. Do not introduce 'empty' patches.",
                     ]
             (workspace / "patches_contract.txt").write_text("\n".join(_lines), encoding="utf-8")
+            # The text contract above keeps only name/type - the DECLARATION (sizes, locations,
+            # interchangeability) must survive for workspace-only runners (cfMesh's internal
+            # path binds from it), so it travels verbatim as JSON beside the contract.
+            (workspace / "port_declaration.json").write_text(
+                json.dumps(intake_patches), encoding="utf-8")
         # The user's DECLARED engine params, verbatim (engine-native knobs ONLY). Same class
         # as the patch contract: a user declaration the engine must obey, not something to
         # re-derive.
