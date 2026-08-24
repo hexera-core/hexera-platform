@@ -454,6 +454,21 @@ def validate_submission(args: dict) -> list[str]:
 
     _val_errors.extend(_validate_domain_declaration(args))
 
+    # FAIL-CLOSED CAPTURE: the model must not leave far-field statements as prose only. The
+    # legacy prose parser is the detector - if it finds extents in request_txt that the typed
+    # fields do not carry, the submission bounces until they are captured. (A model that skims
+    # the optional fields is exactly how a typed request silently degrades to prose guessing.)
+    if _purpose == "external_cfd" and not args.get("requested_extents"):
+        from meshpipeline.engines.domain_extent_gate import parse_requested_extents
+        _prose = parse_requested_extents(str(args.get("request_txt") or ""))
+        if _prose:
+            _val_errors.append(
+                "the request text states far-field extents ("
+                + ", ".join(f"{k} {v:g}" for k, v in _prose.items())
+                + ") but requested_extents was not filled in - capture them as "
+                "requested_extents plus reference_length_m (the metre length they multiply); "
+                "ask the user for the reference length if they never gave a number")
+
     _dim = args.get("dimensionality")
     if _dim not in set(Dimensionality):
         _val_errors.append(f"dimensionality must be one of: {', '.join(_DIMENSIONALITY_VALUES)}")

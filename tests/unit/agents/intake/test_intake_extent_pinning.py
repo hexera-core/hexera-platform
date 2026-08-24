@@ -56,6 +56,20 @@ class TestTypedExtentCapture:
         assert not any("requirements_strict" in x for x in _errs(requirements_strict=True))
 
 
+class TestProseExtentsForceTypedCapture:
+    def test_prose_margins_without_typed_fields_bounce(self):
+        e = _errs(request_txt=("External aero. Far-field: 5 body lengths upstream, 8 "
+                               "downstream, 5 lateral. " * 3))
+        assert any("requested_extents was not filled in" in x for x in e), e
+
+    def test_typed_capture_satisfies_the_rule(self):
+        e = _errs(request_txt=("External aero. Far-field: 5 body lengths upstream, 8 "
+                               "downstream, 5 lateral. " * 3),
+                  requested_extents={"upstream": 5, "downstream": 8, "lateral": 5},
+                  reference_length_m=0.06)
+        assert not any("requested_extents" in x for x in e), e
+
+
 class TestApprovedIntentBindsTheDeclaration:
     def _canonical(self, **kw):
         from meshpipeline.agents.intake.admission_token import approved_intent_canonical
