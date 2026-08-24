@@ -80,6 +80,7 @@ async def node_executor(state: PipelineState) -> dict:
 
     executor_success = result["success"]
     solvability_failed = False
+    requirement_caveats: list = []
     contract_failed = False
     # WHICH rejection source spoke. The classifier looks the section up from this key
     # (a declared GateSpec, or one of the non-gate seams) instead of regexing the prose.
@@ -147,30 +148,74 @@ async def node_executor(state: PipelineState) -> dict:
                 executor_output += "\n[MANIFEST_LOAD_ERROR] manifest validated but could not be loaded"
 
         if executor_success:
+            _domain_check_failed = False
             if executor_success and not contract_failed and mesh_manifest and polcfg.DOMAIN_EXTENT_GATE_ENABLED:
-                try:
-                    # CASE-level far-field gate reached through the engine seam. Every
-                    # engine delegates to the same cross-engine-neutral gate
-                    # (pipeline/domain_extent_gate.py); applicability is decided by the
-                    # CASE/ARTIFACT - it no-ops unless the request declares far-field
-                    # extents AND the manifest records a domain box - never by engine
-                    # identity. A structural solid mesh records no box, so it passes.
-                    _ext = get_engine(state.get("engine", "")).check_domain_extents(
-                        state.get("request_txt", ""), mesh_manifest)
-                    if _ext is not None and not _ext[0]:
+                _typed_req = state.get("requested_extents")
+                _typed_ruler = state.get("reference_length_m")
+                if _typed_req and _typed_ruler:
+                    # TYPED path (approved intent v5): measured with the APPROVED ruler,
+                    # tri-state, one-sided, floored. A gate CRASH here records "unmeasured"
+                    # rather than passing - an unmeasured requirement can neither pass nor
+                    # be delivered with a caveat.
+                    from meshpipeline.engines.domain_extent_gate import (
+                        ExtentVerdict,
+                        evaluate_domain_extents,
+                    )
+                    try:
+                        _v = evaluate_domain_extents(_typed_req, _typed_ruler, mesh_manifest)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Executor: typed extent evaluation crashed - "
+                                         "job_id=%s", job_id)
+                        _v = ExtentVerdict(
+                            "unmeasured", [],
+                            "[DOMAIN_EXTENT_UNMEASURED] the extent evaluation itself failed - "
+                            "an unmeasured requirement can neither pass nor carry a caveat")
+                    if _v.status == "miss" and not state.get("requirements_strict"):
+                        # a NEAR-miss under a non-strict approval: record the measured
+                        # caveats and CONTINUE - solvability and every later check still
+                        # run, and the ladder still gets its chance to fix the box (the
+                        # classifier routes caveated attempts while retries remain).
+                        requirement_caveats = [dict(c) for c in _v.caveats]
+                        executor_output += f"\n{_v.detail}"
+                        logger.warning(
+                            "Executor: domain-extent NEAR-MISS (caveats recorded, run "
+                            "continues) - job_id=%s - %s", job_id, _v.detail[:160])
+                        _domain_check_failed = True
+                    elif _v.status in ("miss", "block", "unmeasured"):
                         executor_success = False
                         failed_gate = "domain_extent"
                         contract_failed = True
-                        executor_output += f"\n{_ext[1]}"
+                        executor_output += f"\n{_v.detail}"
                         logger.warning(
-                            "Executor: domain-extent gate REJECTED mesh - job_id=%s - %s",
-                            job_id, _ext[1][:160],
-                        )
-                        await _pub.acheck("The far-field domain is the size you asked for", ok=False)
-                except Exception as _de_exc:
-                    # Fail closed on an unexpected gate error would risk false rejects on a
-                    # best-effort check; log loudly and pass (extents are advisory-derived).
-                    logger.exception("Executor: domain-extent gate errored (passing) - job_id=%s: %s", job_id, _de_exc)
+                            "Executor: domain-extent gate REJECTED mesh (%s) - job_id=%s - %s",
+                            _v.status, job_id, _v.detail[:160])
+                        _domain_check_failed = True
+                else:
+                    try:
+                        # LEGACY prose path (pre-v5 approvals): the engine seam parses the
+                        # request text; strict blocking, unchanged. Applicability is decided
+                        # by the CASE/ARTIFACT - it no-ops unless the request declares
+                        # far-field extents AND the manifest records a domain box.
+                        _ext = get_engine(state.get("engine", "")).check_domain_extents(
+                            state.get("request_txt", ""), mesh_manifest)
+                        if _ext is not None and not _ext[0]:
+                            executor_success = False
+                            failed_gate = "domain_extent"
+                            contract_failed = True
+                            executor_output += f"\n{_ext[1]}"
+                            logger.warning(
+                                "Executor: domain-extent gate REJECTED mesh - job_id=%s - %s",
+                                job_id, _ext[1][:160],
+                            )
+                            _domain_check_failed = True
+                    except Exception as _de_exc:
+                        # Fail closed on an unexpected gate error would risk false rejects on a
+                        # best-effort check; log loudly and pass (extents are advisory-derived).
+                        logger.exception("Executor: domain-extent gate errored (passing) - job_id=%s: %s", job_id, _de_exc)
+            if _domain_check_failed:
+                # ONE publication site for every path through the domain gate - the pipeline
+                # execution closure counts sites, and truth does not need three copies
+                await _pub.acheck("The far-field domain is the size you asked for", ok=False)
 
             if (
                 executor_success
@@ -258,4 +303,8 @@ async def node_executor(state: PipelineState) -> dict:
         "executor_failed_gate": "" if executor_success else failed_gate,
         "mesh_manifest":        mesh_manifest,
         "solvability_failed":   solvability_failed,
+        # machine-measured requirement near-misses for THIS attempt ([] when none): the
+        # delivery surfaces state them and the selection machinery reads them; nothing
+        # downstream may add to or waive them
+        "requirement_caveats":  requirement_caveats,
     }

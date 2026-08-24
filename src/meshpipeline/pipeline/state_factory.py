@@ -83,6 +83,7 @@ def make_pipeline_state(
         "requested_extents":     dict(requested_extents) if requested_extents else None,
         "reference_length_m":    reference_length_m,
         "requirements_strict":   bool(requirements_strict),
+        "requirement_caveats":   [],
         # mesh-detail preference: the user's own choice (None = never stated), the
         # deterministic operational tier, and which of the two produced it.
         "requested_mesh_fidelity": requested_mesh_fidelity,

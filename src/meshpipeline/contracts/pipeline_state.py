@@ -98,6 +98,9 @@ class PipelineState(TypedDict):
     requested_extents:  dict | None
     reference_length_m: float | None
     requirements_strict: bool
+    # machine-measured requirement near-misses for the CURRENT attempt (executor-owned;
+    # empty means fully conforming). Deterministic code authors these; no agent may.
+    requirement_caveats: list
 
     builder_noop_count:     int
     # Aggregate Builder budget: epoch deadline covering ALL attempts of one run. Set once on the

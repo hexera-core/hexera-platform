@@ -363,6 +363,8 @@ STATE_FIELDS: dict[str, str] = {
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
     "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
     "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
+    "requirement_caveats":   "machine-measured requirement near-misses for the current attempt "
+                             "(executor-owned; the delivery surfaces state them verbatim)",
     "executor_output":       "executor stdout/diagnostics for the classifier and reviewer",
     "executor_success":      "ground-truth mesh gate: did the executor validate a mesh",
     "mesh_manifest":         "the engine's manifest of the built mesh (reviewer navigation, quality)",
