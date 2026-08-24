@@ -67,7 +67,12 @@ def fingerprint(canonical: dict) -> str:
 #     approved, so the binding the engines perform is provably the binding that was approved.
 #     It binds here, in the approval-time canonical, NEVER in `canonical_payload` (widening the
 #     preview canonical would fail every submission's token verification - see above).
-APPROVED_INTENT_SCHEMA_VERSION = 4
+# v5: the typed DOMAIN REQUEST - `requested_extents` (per-direction multiples), the
+#     `reference_length_m` ruler they multiply, and `requirements_strict`. The domain gate
+#     measures against these approved numbers; prose is provenance, never a measurement. A
+#     pre-v5 approval executes as strict=true - an approval's blocking contract is never
+#     silently relaxed by a later default.
+APPROVED_INTENT_SCHEMA_VERSION = 5
 
 #: Version of the geometry-identity structure, so a later change to how geometry is identified is
 #: detectable rather than silently altering an approved binding.
@@ -109,7 +114,10 @@ def approved_intent_canonical(*, engine, purpose, input_kind, dimensionality, pa
                               mesh_fidelity_source=None,
                               fidelity_policy_version=None,
                               geometry: dict | None = None,
-                              geometry_revision_id: str | None = None) -> dict:
+                              geometry_revision_id: str | None = None,
+                              requested_extents: dict | None = None,
+                              reference_length_m: float | None = None,
+                              requirements_strict: bool = False) -> dict:
     from meshpipeline.application.artifact_policy import ARTIFACT_POLICY_VERSION
     from meshpipeline.pipeline.enums import (
         FIDELITY_POLICY_VERSION,
@@ -141,6 +149,14 @@ def approved_intent_canonical(*, engine, purpose, input_kind, dimensionality, pa
         "required_outputs": required_output_classes(base["engine"]),
         "artifact_policy_version": ARTIFACT_POLICY_VERSION,
         "approved_request_digest": approved_request_digest(request_txt),
+        "requested_extents": (
+            {k: float(requested_extents[k]) for k in sorted(requested_extents)
+             if requested_extents[k] is not None}
+            if isinstance(requested_extents, dict) and any(
+                x is not None for x in requested_extents.values()) else None),
+        "reference_length_m": (None if reference_length_m is None
+                               else float(reference_length_m)),
+        "requirements_strict": bool(requirements_strict),
         "port_declaration": sorted(
             ({"name": (p.get("name") or "").strip(),
               "role": (p.get("role") or p.get("type") or "").strip(),

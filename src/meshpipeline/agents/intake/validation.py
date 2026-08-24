@@ -340,6 +340,43 @@ def _validate_internal_ports(patches: list) -> list[str]:
     return errors
 
 
+_EXTENT_DIRECTIONS = ("upstream", "downstream", "lateral", "vertical")
+
+
+def _validate_domain_declaration(args: dict) -> list[str]:
+    """The typed domain request: extents in reference lengths + the ruler in metres + the
+    strictness bit. The domain gate compares against THESE numbers - so they must be sound
+    here, where fixing them costs one question instead of a meshing run."""
+    errors: list[str] = []
+    ext = args.get("requested_extents")
+    ref = args.get("reference_length_m")
+    strict = args.get("requirements_strict")
+    if strict is not None and not isinstance(strict, bool):
+        errors.append("requirements_strict must be true or false")
+    if ref is not None:
+        if isinstance(ref, bool) or not isinstance(ref, (int, float)) or not ref > 0:
+            errors.append("reference_length_m must be a positive number of metres")
+    if ext is not None:
+        if not isinstance(ext, dict):
+            errors.append("requested_extents must be an object of direction -> multiple")
+            return errors
+        for k, val in ext.items():
+            if k not in _EXTENT_DIRECTIONS:
+                errors.append(
+                    f"requested_extents key {k!r} is not a direction - use "
+                    f"{', '.join(_EXTENT_DIRECTIONS)}")
+            elif val is not None and (isinstance(val, bool)
+                                      or not isinstance(val, (int, float)) or not val > 0):
+                errors.append(f"requested_extents.{k} must be a positive number "
+                              "(the user's stated multiple); omit directions they never stated")
+        if ref is None:
+            errors.append(
+                "requested_extents needs reference_length_m - extents are multiples of a "
+                "length, and without the ruler they cannot be measured; ask the user what "
+                "one 'body length' is in their units")
+    return errors
+
+
 def validate_submission(args: dict) -> list[str]:
     _val_errors: list[str] = []
 
@@ -414,6 +451,8 @@ def validate_submission(args: dict) -> list[str]:
 
     if _purpose == "internal_cfd" and isinstance(_patches, list):
         _val_errors.extend(_validate_internal_ports(_patches))
+
+    _val_errors.extend(_validate_domain_declaration(args))
 
     _dim = args.get("dimensionality")
     if _dim not in set(Dimensionality):

@@ -91,6 +91,13 @@ class PipelineState(TypedDict):
     requested_mesh_fidelity: str | None
     effective_mesh_fidelity: str
     mesh_fidelity_source:    str
+    # THE TYPED DOMAIN REQUEST (approved intent v5): per-direction far-field multiples, the
+    # metre ruler they multiply, and whether near-misses may deliver with the miss stated.
+    # Seeded by the application from the approval; no node may rewrite any of them - the
+    # domain gate MEASURES against these, never against prose or a re-plan's opinion.
+    requested_extents:  dict | None
+    reference_length_m: float | None
+    requirements_strict: bool
 
     builder_noop_count:     int
     # Aggregate Builder budget: epoch deadline covering ALL attempts of one run. Set once on the

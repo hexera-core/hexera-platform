@@ -356,6 +356,38 @@ INTAKE_TOOLS: list[dict] = [
                             "omit it."
                         ),
                     },
+                    "requested_extents": {
+                        "type": "object",
+                        "description": (
+                            "EXTERNAL FLOW ONLY, and only when the user stated far-field "
+                            "margins in body/reference lengths (e.g. '5 lengths upstream, 8 "
+                            "downstream'): capture them VERBATIM as numbers per direction. "
+                            "Never invent margins the user did not state."
+                        ),
+                        "properties": {
+                            "upstream": {"type": "number"},
+                            "downstream": {"type": "number"},
+                            "lateral": {"type": "number"},
+                            "vertical": {"type": "number"},
+                        },
+                    },
+                    "reference_length_m": {
+                        "type": "number",
+                        "description": (
+                            "The reference length IN METRES the user's extents multiply (their "
+                            "stated chord/body length - convert their unit to metres). Required "
+                            "whenever requested_extents is given. Never invent it."
+                        ),
+                    },
+                    "requirements_strict": {
+                        "type": "boolean",
+                        "description": (
+                            "true ONLY if the user explicitly said requirements must be met "
+                            "exactly (no near-miss deliveries). Default false: a measured "
+                            "NEAR-miss on a stated requirement is delivered with the miss "
+                            "stated plainly, rather than refused."
+                        ),
+                    },
                     "mesh_engine": {
                         "type": "string",
                         "enum": _ENGINE_CHOICES,

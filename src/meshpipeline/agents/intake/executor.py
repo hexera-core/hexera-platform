@@ -380,6 +380,9 @@ class IntakeToolExecutor:
             input_kind=args.get("input_kind"), dimensionality=args.get("dimensionality"),
             patches=args.get("patches"), engine_params=args.get("engine_params"),
             requested_mesh_fidelity=args.get("mesh_fidelity"),
+            requested_extents=args.get("requested_extents"),
+            reference_length_m=args.get("reference_length_m"),
+            requirements_strict=bool(args.get("requirements_strict") or False),
             request_txt=args.get("request_txt"), source_ref=st.source_ref)
         st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK
                              + "\n\nShall I proceed with mesh generation?")

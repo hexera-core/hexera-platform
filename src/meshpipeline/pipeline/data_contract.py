@@ -286,6 +286,30 @@ CONTRACT: tuple[ContractVar, ...] = (
         dispatch_kwarg="approved_intent_fingerprint",
         corpus="qa: binds a run to the exact approved intent; not a training signal",
     ),
+    ContractVar(
+        concept="requested far-field extents",
+        purpose="the user's stated per-direction domain multiples, typed at intake so the "
+                "domain gate measures the approved numbers instead of parsing prose",
+        intake_field="requested_extents",
+        dispatch_kwarg="requested_extents", state_field="requested_extents",
+        corpus="training: what the user actually asked the domain to be",
+    ),
+    ContractVar(
+        concept="reference length",
+        purpose="the metre ruler the user's extents multiply - pinned at approval so a "
+                "re-plan can never change the measuring stick between attempts",
+        intake_field="reference_length_m",
+        dispatch_kwarg="reference_length_m", state_field="reference_length_m",
+        corpus="qa: the measurement basis for every domain caveat",
+    ),
+    ContractVar(
+        concept="requirements strictness",
+        purpose="whether a measured near-miss on a stated requirement may deliver with the "
+                "miss stated (false) or must block (true); pre-v5 approvals execute strict",
+        intake_field="requirements_strict",
+        dispatch_kwarg="requirements_strict", state_field="requirements_strict",
+        corpus="qa: the disposition the user consented to",
+    ),
 )
 
 
@@ -336,6 +360,9 @@ STATE_FIELDS: dict[str, str] = {
                                   "the executor short-circuit and the outcome turn",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
+    "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",
+    "reference_length_m":    "the metre ruler the extents multiply, pinned at approval (contract)",
+    "requirements_strict":   "whether near-misses block (true) or deliver with the miss stated",
     "executor_output":       "executor stdout/diagnostics for the classifier and reviewer",
     "executor_success":      "ground-truth mesh gate: did the executor validate a mesh",
     "mesh_manifest":         "the engine's manifest of the built mesh (reviewer navigation, quality)",

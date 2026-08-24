@@ -39,6 +39,15 @@ def _declared_lines(declared: dict) -> list[str]:
         if not value:
             continue
         out.append(f"{label}: {_vocab.display_of_field(field, value)}")
+    ext = declared.get("requested_extents") or {}
+    ref = declared.get("reference_length_m")
+    if any(x is not None for x in ext.values()) and ref:
+        stated = ", ".join(f"{k} {ext[k]:g}L" for k in
+                           ("upstream", "downstream", "lateral", "vertical")
+                           if ext.get(k) is not None)
+        out.append(f"far-field request: {stated} (L = {ref:g} m)")
+    if declared.get("requirements_strict"):
+        out.append("requirements: STRICT - near-misses are refused, never delivered with a note")
     patches = declared.get("patches") or []
     if patches:
         def _one(p: dict) -> str:

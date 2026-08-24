@@ -337,6 +337,14 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
             approved.get("patches") or []).to_dict(),
         # the COMPLETE approved-intent fingerprint from the DURABLE approval record.
         "approved_intent_fingerprint": snapshot.get("intent_fingerprint") or "",
+        # THE TYPED DOMAIN REQUEST the gate measures against. A pre-v5 approval carries no
+        # strictness bit and predates near-miss delivery entirely - it executes as STRICT, so
+        # a later default can never relax an approval's blocking contract.
+        "requested_extents": approved.get("requested_extents"),
+        "reference_length_m": approved.get("reference_length_m"),
+        "requirements_strict": (
+            bool(approved.get("requirements_strict"))
+            if int((intent or {}).get("schema_version") or 0) >= 5 else True),
     })
 
 
@@ -373,6 +381,9 @@ def assert_payload_matches_approval(payload: dict, snapshot: dict, source_ref, *
         effective_mesh_fidelity=payload["effective_mesh_fidelity"],
         mesh_fidelity_source=payload["mesh_fidelity_source"],
         fidelity_policy_version=payload["fidelity_policy_version"],
+        requested_extents=payload.get("requested_extents"),
+        reference_length_m=payload.get("reference_length_m"),
+        requirements_strict=bool(payload.get("requirements_strict") or False),
         request_txt=payload["request_txt"], source_ref=source_ref)
     if at.fingerprint(run_intent) != stored_fp:
         drifted = sorted(k for k in set(run_intent) | set(stored_intent)
