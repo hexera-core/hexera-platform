@@ -135,6 +135,12 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
     geom = (manifest or {}).get("geometry") or {}
     box = geom.get("domain_box") or geom.get("box")
     body = geom.get("body_bbox") or geom.get("body_box")
+    if not isinstance(box, dict) or not isinstance(body, dict):
+        return ExtentVerdict(
+            "unmeasured", [],
+            "[DOMAIN_EXTENT_UNMEASURED] the request declares far-field extents but the mesh "
+            "manifest records no measurable domain/body box - an unmeasured requirement can "
+            "neither pass nor be delivered with a caveat")
     try:
         r = float(reference_length_m)
         if r <= 0:
