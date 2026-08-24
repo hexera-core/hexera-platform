@@ -58,3 +58,39 @@ class TestSchemaRoundTrip:
         d["schema_version"] = 3
         with pytest.raises(ValueError, match="refusing to render"):
             FinalResult.from_dict(d)
+
+
+class TestDispatchRecomputeAgreesWithApproval:
+    def test_a_v5_intent_with_extents_round_trips_the_fingerprint(self):
+        # the live heat-sink replay was refused at dispatch because the contract recompute
+        # omitted the v5 fields - the three calculators must agree forever
+        from meshpipeline.agents.intake.admission_token import approved_intent_fingerprint
+        from meshpipeline.application.dispatch_contract import recompute_intent_fingerprint
+
+        geometry = {"sha256": "0" * 64, "bytes": 10, "schema_version": 1,
+                    "revision_id": None}
+        kw = dict(engine="snappy", purpose="external_cfd", input_kind="body-surface",
+                  dimensionality="3D", patches=[{"name": "body", "type": "wall"}],
+                  engine_params={}, request_txt="r", geometry=geometry,
+                  requested_extents={"downstream": 8.0}, reference_length_m=0.06,
+                  requirements_strict=False)
+        approved = approved_intent_fingerprint(**kw)
+        payload = {"mesh_engine": "snappy", "purpose": "external_cfd",
+                   "input_kind": "body-surface", "dimensionality": "3D",
+                   "intake_patches": [{"name": "body", "type": "wall"}],
+                   "engine_params": {}, "request_txt": "r",
+                   "requested_extents": {"downstream": 8.0},
+                   "reference_length_m": 0.06, "requirements_strict": False,
+                   "geometry_source": None}
+        import meshpipeline.application.dispatch_contract as dc
+        # bypass source-ref plumbing: both sides must hash the same geometry identity
+        orig = dc.source_ref_of
+        dc.source_ref_of = lambda _p: None
+        try:
+            from unittest.mock import patch as _patch
+            with _patch("meshpipeline.agents.intake.admission_token.geometry_identity",
+                        return_value=geometry):
+                recomputed = dc.recompute_intent_fingerprint(payload)
+        finally:
+            dc.source_ref_of = orig
+        assert recomputed == approved

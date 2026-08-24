@@ -143,6 +143,12 @@ def recompute_intent_fingerprint(payload: dict) -> str:
         effective_mesh_fidelity=payload.get("effective_mesh_fidelity"),
         mesh_fidelity_source=payload.get("mesh_fidelity_source"),
         fidelity_policy_version=payload.get("fidelity_policy_version"),
+        # the typed domain request (intent v5) is fingerprinted at approval - a recompute that
+        # omits it disagrees with every approval that captured extents, and the dispatch then
+        # refuses runs that were approved correctly (found live on the heat-sink replay)
+        requested_extents=payload.get("requested_extents"),
+        reference_length_m=payload.get("reference_length_m"),
+        requirements_strict=bool(payload.get("requirements_strict") or False),
         request_txt=payload.get("request_txt", ""),
         source_ref=source_ref_of(payload))
 
