@@ -66,6 +66,25 @@ def _source_basename(state) -> str:
     return os.path.basename(ref.original_filename) if ref and ref.original_filename else "unknown"
 
 
+def _with_adjudicated_deviations(brief: str, caveats: list) -> str:
+    """A caveated delivery candidate reaches review with its requirement near-misses ALREADY
+    adjudicated by deterministic code - they will be stated on delivery. Without saying so,
+    the brief's own conformance language invites the reviewer to FAIL the mesh for the exact
+    deviation being disclosed, and the ladder is already spent. The reviewer judges QUALITY;
+    it can neither waive nor add to this list."""
+    if not caveats:
+        return brief
+    rows = "; ".join(
+        f"{c.get('direction')}: requested {c.get('requested'):g}, "
+        f"measured {c.get('measured'):g} reference-lengths"
+        for c in caveats)
+    return (brief
+            + "\n\nADJUDICATED REQUIREMENT DEVIATIONS (application-owned): " + rows
+            + ". These measured near-misses are accepted for delivery and will be stated to "
+              "the user verbatim - judge the mesh's QUALITY on every axis as normal, but do "
+              "not fail the mesh for these deviations themselves.")
+
+
 async def node_reviewer(state: PipelineState) -> dict:
     job_id    = state.get("job_id", "unknown")
     workspace = Path(state.get("openfoam_workspace", ""))
@@ -125,7 +144,9 @@ async def node_reviewer(state: PipelineState) -> dict:
         manifest=manifest,
         review_save_dir=review_save_dir,
         mesh_units=completed_mesh_unit(manifest).value,
-        review_brief=_read_txt("review_brief.txt") or state.get("review_brief_txt", ""),
+        review_brief=_with_adjudicated_deviations(
+            _read_txt("review_brief.txt") or state.get("review_brief_txt", ""),
+            state.get("requirement_caveats") or []),
         request=_read_txt("request.txt") or state.get("request_txt", ""),
         axis_names=list(plan.axis_names),
         publish=_publish,

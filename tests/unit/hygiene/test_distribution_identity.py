@@ -19,7 +19,7 @@ def test_the_distribution_is_named_meshpipeline():
 def test_the_final_result_schema_version_is_independent():
     from meshpipeline.application.final_result import FINAL_RESULT_SCHEMA_VERSION
     assert isinstance(FINAL_RESULT_SCHEMA_VERSION, int)
-    assert FINAL_RESULT_SCHEMA_VERSION == 4   # v3: the four mesh-detail fields, three tiers
+    assert FINAL_RESULT_SCHEMA_VERSION == 5   # v5: requirement_caveats on delivery
 
 
 def test_the_alembic_baseline_is_one_canonical_revision():

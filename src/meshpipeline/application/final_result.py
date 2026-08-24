@@ -12,7 +12,12 @@ from typing import Any
 from meshpipeline.application.artifact_policy import required_output_classes
 from meshpipeline.contracts.review_outcome import ReviewExecution, ReviewVerdict
 
-FINAL_RESULT_SCHEMA_VERSION = 4
+# v5: `requirement_caveats` - machine-measured requirement near-misses delivered WITH the
+# mesh (empty on every fully conforming run). v4 records predate the field and are read in a
+# DOCUMENTED compat window with caveats=[] - which is true by construction, because a v4 run
+# either conformed fully or was refused outright.
+FINAL_RESULT_SCHEMA_VERSION = 5
+_READABLE_SCHEMA_VERSIONS = frozenset({4, 5})
 
 
 class TerminalStatus(str, enum.Enum):
@@ -93,6 +98,9 @@ class FinalResult:
     attempts_max: int = 0
     required_ready: bool = False
     delivered_types: list[str] = field(default_factory=list)   # logical ready-artifact types
+    # machine-measured requirement near-misses delivered WITH the mesh; authored only by the
+    # executor's typed gate, stated verbatim on every surface, waivable by nobody
+    requirement_caveats: list = field(default_factory=list)
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
     finalized_at: str = ""
@@ -109,14 +117,16 @@ class FinalResult:
         d = asdict(self)
         d["status"] = self.status.value
         d["reviewer_verdict"] = None if self.reviewer_verdict is None else self.reviewer_verdict.value
+        d["requirement_caveats"] = [dict(c) for c in (self.requirement_caveats or [])]
         d["review_execution"] = self.review_execution.value
         return d
 
     @staticmethod
     def from_dict(d: dict) -> FinalResult:
         v = d.get("schema_version")
-        if v != FINAL_RESULT_SCHEMA_VERSION:
-            raise ValueError(f"final_result schema_version {v!r} is not {FINAL_RESULT_SCHEMA_VERSION} "
+        if v not in _READABLE_SCHEMA_VERSIONS:
+            raise ValueError(f"final_result schema_version {v!r} is not readable "
+                             f"(accepted: {sorted(_READABLE_SCHEMA_VERSIONS)}) "
                              "- refusing to render it")
         return FinalResult(
             schema_version=v, job_id=str(d["job_id"]), owner_id=str(d["owner_id"]),
@@ -130,6 +140,7 @@ class FinalResult:
             executor_success=bool(d.get("executor_success", False)),
             reviewer_verdict=(None if d.get("reviewer_verdict") is None
                               else ReviewVerdict(d["reviewer_verdict"])),
+            requirement_caveats=list(d.get("requirement_caveats") or []),
             review_execution=ReviewExecution(d.get("review_execution", "not_reached")),
             failed_gate=d.get("failed_gate", ""),
             patch_contract_ok=d.get("patch_contract_ok"), outcome_code=d.get("outcome_code", ""),
@@ -193,7 +204,8 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        api_failure: str, attempts: int, attempts_max: int,
                        required_ready: bool, delivered_types: list[str],
                        optional_warnings: list[str],
-                       pipeline_timed_out: bool = False) -> FinalResult:
+                       pipeline_timed_out: bool = False,
+                       requirement_caveats: list | None = None) -> FinalResult:
     _verdict = (reviewer_verdict or "").strip().upper()
 
     # REVIEW-COMPLETION INVARIANT.
@@ -233,6 +245,7 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
 
     if status == TerminalStatus.succeeded:
         return FinalResult(
+            requirement_caveats=list(requirement_caveats or []),
             schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id,
             status=status, engine=engine, purpose=purpose, dimensionality=dimensionality,
             requested_mesh_fidelity=requested_mesh_fidelity,
@@ -324,6 +337,18 @@ def _render_fidelity(fr: FinalResult) -> str:
 def render_message(fr: FinalResult) -> str:
     lines: list[str] = []
     if fr.status == TerminalStatus.succeeded:
+        if fr.requirement_caveats:
+            # the caveats come FIRST - before any success language - so a skimmed message
+            # still reads them
+            lines.append("Delivered with stated deviations from your request:")
+            for c in fr.requirement_caveats:
+                lines.append(
+                    f"  - {c.get('direction')} margin: requested {c.get('requested'):g}, "
+                    f"delivered {c.get('measured'):g} reference-lengths "
+                    f"(1 reference-length = {c.get('ruler_m'):g} m)")
+            lines.append("Every mesh-quality check passed; only the margins above fell short "
+                         "of the request. Rebuild with relaxed constraints if they matter for "
+                         "your analysis.")
         lines.append("Mesh generation completed successfully.")
         if fr.engine:
             lines.append(f"Engine: {fr.engine}")

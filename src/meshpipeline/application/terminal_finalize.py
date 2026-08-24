@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,6 +114,8 @@ class TerminalAssembly:
     pipeline_timed_out: bool = False
     #: node_failure_handler's blameless SYSTEM-failure note, honoured only when api_failure is set
     pre_composed_message: str = ""
+    #: machine-measured requirement near-misses for the delivered attempt ([] = fully conforming)
+    requirement_caveats: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         api_failure=assembly.api_failure,
         attempts=assembly.attempts, attempts_max=assembly.attempts_max,
         required_ready=ready, delivered_types=delivered_types, optional_warnings=warnings,
+        requirement_caveats=list(assembly.requirement_caveats or []),
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
         pipeline_timed_out=assembly.pipeline_timed_out)

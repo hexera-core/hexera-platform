@@ -893,6 +893,7 @@ async def _run_async(req: JobRequest) -> dict:
                 attempts=int(final_state.get("retry_count", 0) or 0),
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_pb.is_exhausted(_pipeline_deadline),
+                requirement_caveats=list(final_state.get("requirement_caveats") or []),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:
