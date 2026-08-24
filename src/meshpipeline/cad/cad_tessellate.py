@@ -2,9 +2,12 @@
 # Boundaries: tessellation only; the unit and scale it works in are decided before it runs.
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from meshpipeline.cad.stl_io import read_stl_triangles
+
+logger = logging.getLogger(__name__)
 
 
 def _occ_to_metres(prepared):
@@ -51,9 +54,51 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
     return out_stl
 
 
+def select_declared_openings(candidates: list, declared: list) -> list:
+    """Pick which candidate faces are the DECLARED openings. candidates: (idx, area_m2,
+    centroid) per planar face; declared: {name, area_m2|None, near_m|None} per port. Hints
+    claim the nearest unclaimed face; sizes claim within the +/-25% band (the binder's own
+    tolerance). Deterministic: ports in name order, hinted ports first. A port no face can
+    satisfy refuses with the measured face list - the geometry and the words disagree, and
+    only the user can settle that."""
+    remaining = {int(i): (float(a), tuple(c)) for i, a, c in candidates}
+    chosen: list[int] = []
+
+    def _dist(p, q):
+        return sum((p[k] - q[k]) ** 2 for k in range(3)) ** 0.5
+
+    hinted = sorted((p for p in declared if p.get("near_m")), key=lambda p: str(p.get("name")))
+    sized = sorted((p for p in declared if not p.get("near_m")),
+                   key=lambda p: str(p.get("name")))
+    for port in hinted + sized:
+        best = None
+        for idx, (area, cen) in remaining.items():
+            if port.get("area_m2"):
+                ratio = area / float(port["area_m2"])
+                if not (0.75 <= ratio <= 1.25):
+                    continue
+            if port.get("near_m"):
+                score = _dist(tuple(port["near_m"]), cen)
+            else:
+                score = abs(area - float(port.get("area_m2") or area))
+            if best is None or score < best[1] or (score == best[1] and idx < best[0]):
+                best = (idx, score)
+        if best is None:
+            faces = "; ".join(f"face[{i}]: {a * 1e6:.0f} mm² at ({c[0]:.3f}, {c[1]:.3f}, "
+                              f"{c[2]:.3f}) m" for i, (a, c) in sorted(remaining.items()))
+            raise ValueError(
+                f"declared port {port.get('name')!r} matches none of the remaining flat "
+                f"faces - measured: {faces}. State the port's size or rough location so the "
+                "opening can be identified, or correct the declaration.")
+        chosen.append(best[0])
+        del remaining[best[0]]
+    return chosen
+
+
 def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
-                        opening_faces: list[int] | None = None) -> dict:
+                        opening_faces: list[int] | None = None,
+                        declared_ports: list | None = None) -> dict:
     import math as _m
 
     from OCP.BRep import BRep_Builder
@@ -120,6 +165,18 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             else (BRepAdaptor_Surface(f).GetType() == GeomAbs_Plane)
         (open_idx if is_open else wall_idx).append(i)
 
+    if (declared_ports and opening_faces is None
+            and len(open_idx) > len(declared_ports) >= 2):
+        # More flat faces than declared ports: a box duct's walls are as planar as its ends,
+        # and calling them all openings left the wall with zero triangles. The DECLARATION
+        # says which ones are real - select those, wall the rest.
+        cands = [(i, *_face_props(faces[i])) for i in open_idx]
+        keep = set(select_declared_openings(cands, declared_ports))
+        wall_idx.extend(i for i in open_idx if i not in keep)
+        open_idx = [i for i in open_idx if i in keep]
+        logger.info("tessellate_internal: declaration selected %d of %d planar faces as "
+                    "openings; %d fold to the wall", len(open_idx), len(cands),
+                    len(cands) - len(open_idx))
     if len(open_idx) < 2:
         raise RuntimeError(
             f"internal-flow geometry needs >=2 flat openings (inlet+outlet); found "

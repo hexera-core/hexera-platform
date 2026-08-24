@@ -267,6 +267,19 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
                    folded_into_wall=folded, evidence=evidence)
 
 
+def declaration_targets(intake_patches: list) -> list:
+    """The declaration reduced to what face selection needs: name, target area in m², and the
+    location hint in metres. Ports only; [] when nothing is declared."""
+    out = []
+    for p in (intake_patches or []):
+        if not isinstance(p, dict) or (p.get("type") or "").strip() not in ("inlet", "outlet"):
+            continue
+        dp = DeclaredPatch.from_intake(p)
+        out.append({"name": dp.name, "area_m2": dp.declared_area_m2(),
+                    "near_m": (tuple(v / 1000.0 for v in dp.near_mm) if dp.near_mm else None)})
+    return out
+
+
 def bind_intake(t: dict, intake_patches: list) -> tuple[dict, str, str]:
     """Bind intake-declared patches onto the measured openings: (t re-keyed to user names,
     wall key, binding-evidence note). No declaration -> t untouched, engine-canonical keys and

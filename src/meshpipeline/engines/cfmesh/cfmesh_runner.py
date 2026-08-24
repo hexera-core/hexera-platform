@@ -335,8 +335,11 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                 "next": "Re-submit the fluid domain as a CAD solid (STEP/IGES), or use the "
                         "external topology if you meant flow around this body."}
 
+    from meshpipeline.engines.port_binding import declaration_targets
+    from meshpipeline.engines.workspace_facts import port_declaration as _port_decl
     t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
-                            opening_faces=args.get("opening_faces") or None)
+                            opening_faces=args.get("opening_faces") or None,
+                            declared_ports=declaration_targets(_port_decl(workspace)))
     from meshpipeline.engines.port_binding import BindError
     from meshpipeline.engines.workspace_facts import port_declaration
     try:
