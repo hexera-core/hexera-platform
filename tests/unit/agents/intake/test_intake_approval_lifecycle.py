@@ -30,7 +30,8 @@ _INTERPRETATION = interpretation_ref(
     geometry_source_id=_SOURCE.source_id,
     interpretation_id="dddd1111-3333-4333-b333-dddddddddddd")
 
-_PATCHES = [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"},
+_PATCHES = [{"name": "inlet", "type": "inlet", "diameter_mm": 40},
+            {"name": "outlet", "type": "outlet", "diameter_mm": 60},
             {"name": "wall", "type": "wall"}]
 _DECL = {"purpose": "internal_cfd", "input_kind": "fluid-domain", "dimensionality": "3D",
          "patches": _PATCHES, "engine_params": {"element_order": "2"}}

@@ -336,7 +336,25 @@ INTAKE_TOOLS: list[dict] = [
                                 },
                             },
                             "required": ["name", "type"],
+                            "additionalProperties": True,
                         },
+                    },
+                    "port_details_note": {
+                        "type": "string",
+                        "description": (
+                            "INTERNAL FLOW ONLY, and only when the user stated them: each "
+                            "inlet/outlet patch entry may also carry the user's OWN dimensions "
+                            "and hints as extra fields on the patch object - 'diameter_mm' (a "
+                            "circular bore diameter), OR 'area_mm2', OR 'width_mm' plus "
+                            "'height_mm' (rectangular); 'near_mm' as [x, y, z] in the "
+                            "geometry's millimetre coordinates when the user located the port; "
+                            "'interchangeable_with' as a list of other port names ONLY when the "
+                            "user explicitly confirmed those same-size ports carry no distinct "
+                            "streams. Capture verbatim from the conversation - NEVER invent a "
+                            "dimension, location or interchangeability the user did not state. "
+                            "Set this field to 'captured' when any port carries details, else "
+                            "omit it."
+                        ),
                     },
                     "mesh_engine": {
                         "type": "string",

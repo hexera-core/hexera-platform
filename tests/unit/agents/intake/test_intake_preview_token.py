@@ -13,7 +13,8 @@ import meshpipeline.agents.intake.engine_selection as es
 _MSGS = [{"role": "user", "content": "external CFD, gmsh, fluid-domain, inlet/outlet/wall"}]
 _REV = at.revision_of(_MSGS)
 _CANON = at.canonical_payload("gmsh", "internal_cfd", "fluid-domain", "3D",
-                              [{"name": "in", "type": "inlet"}, {"name": "out", "type": "outlet"},
+                              [{"name": "in", "type": "inlet", "diameter_mm": 40},
+                               {"name": "out", "type": "outlet", "diameter_mm": 60},
                                {"name": "w", "type": "wall"}], {"element_order": "2"})
 
 
@@ -129,7 +130,8 @@ def _run(state, responses):
 _SUBMIT = {"domain": "duct", "request_txt": "x" * 120, "review_brief_txt": "y" * 90,
            "dimensionality": "3D", "purpose": "internal_cfd", "input_kind": "fluid-domain",
            "mesh_engine": "gmsh", "mesh_fidelity": "standard", "engine_source": "user_direct", "engine_params": {"element_order": "2"},
-           "patches": [{"name": "in", "type": "inlet"}, {"name": "out", "type": "outlet"},
+           "patches": [{"name": "in", "type": "inlet", "diameter_mm": 40},
+                       {"name": "out", "type": "outlet", "diameter_mm": 60},
                        {"name": "w", "type": "wall"}]}
 
 

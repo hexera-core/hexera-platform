@@ -67,7 +67,8 @@ def test_external_cfd_vocab_accepts_symmetry_as_a_role_but_capability_gates_it()
 def test_external_cfd_rejects_inlet():
     bad = _errs(mesh_engine="cfmesh", purpose="external_cfd", input_kind="body-surface",
                 engine_params={},
-                patches=[{"name": "body", "type": "wall"}, {"name": "in", "type": "inlet"}])
+                patches=[{"name": "body", "type": "wall"},
+                         {"name": "in", "type": "inlet", "diameter_mm": 40}])
     assert any("'inlet' is invalid" in x for x in bad), bad   # inlet is NOT external CFD
 
 
@@ -123,8 +124,9 @@ def test_capability_flag_would_admit_symmetry_when_an_engine_implements_it(monke
 def test_internal_cfd_vocab_accepts_inlet_outlet_rejects_farfield():
     ok = _errs(mesh_engine="snappy", purpose="internal_cfd", input_kind="body-surface",
                engine_params={},
-               patches=[{"name": "w", "type": "wall"}, {"name": "in", "type": "inlet"},
-                        {"name": "out", "type": "outlet"}])
+               patches=[{"name": "w", "type": "wall"},
+                        {"name": "in", "type": "inlet", "diameter_mm": 40},
+                        {"name": "out", "type": "outlet", "diameter_mm": 60}])
     assert ok == [], ok
     bad = _errs(mesh_engine="snappy", purpose="internal_cfd", input_kind="body-surface",
                 engine_params={},

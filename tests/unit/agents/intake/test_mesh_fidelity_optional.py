@@ -13,7 +13,8 @@ _BASE = {
     "dimensionality": "3D", "purpose": "internal_cfd", "input_kind": "fluid-domain",
     "mesh_engine": "gmsh", "engine_source": "user_direct",
     "engine_params": {"element_order": "2"},
-    "patches": [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"},
+    "patches": [{"name": "inlet", "type": "inlet", "diameter_mm": 40},
+                {"name": "outlet", "type": "outlet", "diameter_mm": 60},
                 {"name": "wall", "type": "wall"}],
 }
 

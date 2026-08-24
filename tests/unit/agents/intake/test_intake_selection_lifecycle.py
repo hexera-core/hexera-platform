@@ -11,7 +11,8 @@ import meshpipeline.agents.intake.admission_token as at
 import meshpipeline.agents.intake.agent as intake
 import meshpipeline.agents.intake.engine_selection as es
 
-_PATCHES = [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"},
+_PATCHES = [{"name": "inlet", "type": "inlet", "diameter_mm": 40},
+            {"name": "outlet", "type": "outlet", "diameter_mm": 60},
             {"name": "wall", "type": "wall"}]
 _DECL = {"purpose": "internal_cfd", "input_kind": "fluid-domain", "dimensionality": "3D",
          "patches": _PATCHES, "engine_params": {"element_order": "2"}}

@@ -217,6 +217,129 @@ def _admission_message(rejection, engine: str, purpose: str, dim: str) -> str:
     return msg
 
 
+# Internal-flow port declarations: the binder downstream matches these names to the openings
+# it MEASURES, by size and location. Anything it would have to guess about is refused HERE,
+# where a refusal costs one question in chat instead of a meshing run. The 5/3 separation is
+# the binder's tolerance band (a +/-25%% area test cannot tell closer sizes apart under
+# normal manufacturing drift - a counterbored 40 measures like a reduced-bore 50).
+_PORT_NAME_RE = None  # initialised lazily below to keep module import light
+_RESERVED_PATCH_NAMES = frozenset({"outer", "FoamFile", "farfield"})
+_MIN_DECLARED_AREA_SEPARATION = 5.0 / 3.0
+
+
+def _declared_area_mm2(p: dict) -> float | None:
+    d, ar, w, h = (p.get("diameter_mm"), p.get("area_mm2"), p.get("width_mm"),
+                   p.get("height_mm"))
+    try:
+        if isinstance(d, (int, float)) and not isinstance(d, bool):
+            return 3.141592653589793 * (float(d) / 2.0) ** 2
+        if isinstance(ar, (int, float)) and not isinstance(ar, bool):
+            return float(ar)
+        if (isinstance(w, (int, float)) and isinstance(h, (int, float))
+                and not isinstance(w, bool) and not isinstance(h, bool)):
+            return float(w) * float(h)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _validate_internal_ports(patches: list) -> list[str]:
+    import math
+    import re as _re
+
+    global _PORT_NAME_RE
+    if _PORT_NAME_RE is None:
+        _PORT_NAME_RE = _re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+    errors: list[str] = []
+    entries = [p for p in patches if isinstance(p, dict)]
+    all_names = {(p.get("name") or "").strip() for p in entries}
+
+    for i, p in enumerate(entries):
+        nm = (p.get("name") or "").strip()
+        if nm and not _PORT_NAME_RE.match(nm):
+            errors.append(
+                f"patches[{i}].name {nm!r} cannot be built verbatim into a mesh - names must "
+                "start with a letter and contain only letters, digits and underscores; ask the "
+                "user for a mesh-safe spelling (e.g. inlet_1)")
+        if nm in _RESERVED_PATCH_NAMES:
+            errors.append(
+                f"patches[{i}].name {nm!r} is reserved by the meshing engines - ask the user "
+                "for a different name")
+
+    ports = [(i, p) for i, p in enumerate(entries)
+             if (p.get("type") or "").strip() in ("inlet", "outlet")]
+    sized: list[tuple[str, str, float, bool]] = []  # (name, role, area, has_location)
+    for i, p in ports:
+        nm = (p.get("name") or "").strip() or f"patches[{i}]"
+        forms = sum((isinstance(p.get("diameter_mm"), (int, float)),
+                     isinstance(p.get("area_mm2"), (int, float)),
+                     isinstance(p.get("width_mm"), (int, float))
+                     or isinstance(p.get("height_mm"), (int, float))))
+        if forms > 1:
+            errors.append(
+                f"port {nm!r} states more than one size form - keep exactly one of "
+                "diameter_mm, area_mm2, or width_mm+height_mm")
+            continue
+        near = p.get("near_mm")
+        has_near = near is not None
+        if has_near and (not isinstance(near, (list, tuple)) or len(near) != 3
+                         or any(isinstance(c, bool) or not isinstance(c, (int, float))
+                                or not math.isfinite(float(c)) for c in near)):
+            errors.append(f"port {nm!r}: near_mm must be [x, y, z] in millimetres")
+            has_near = False
+        for other in (p.get("interchangeable_with") or []):
+            if str(other).strip() not in all_names:
+                errors.append(
+                    f"port {nm!r} claims interchangeability with {other!r}, which is not a "
+                    "declared patch")
+        raw_sizes = [p.get(k) for k in ('diameter_mm', 'area_mm2', 'width_mm', 'height_mm')]
+        if any(isinstance(x, (int, float)) and not isinstance(x, bool) and float(x) <= 0
+               for x in raw_sizes):
+            errors.append(f"port {nm!r}: the stated size must be positive")
+            continue
+        area = _declared_area_mm2(p)
+        if area is None and not has_near:
+            errors.append(
+                f"port {nm!r} has no stated size and no location - ask the user for its "
+                "approximate diameter (or area, or width x height), or roughly where it is "
+                "on the part, so the mesh can bind the name to the right opening")
+            continue
+        if area is not None:
+            sized.append((nm, (p.get("type") or "").strip(), area, has_near))
+
+    def _mutual(a_name: str, b_name: str) -> bool:
+        by = {(p.get("name") or "").strip(): p for _i, p in ports}
+        pa, pb = by.get(a_name) or {}, by.get(b_name) or {}
+        return (b_name in [str(x).strip() for x in (pa.get("interchangeable_with") or [])]
+                and a_name in [str(x).strip() for x in (pb.get("interchangeable_with") or [])])
+
+    for x in range(len(sized)):
+        for y in range(x + 1, len(sized)):
+            an, ar_, aa, aloc = sized[x]
+            bn, br_, ba, bloc = sized[y]
+            lo, hi = min(aa, ba), max(aa, ba)
+            if lo <= 0 or hi / lo >= _MIN_DECLARED_AREA_SEPARATION:
+                continue
+            if ar_ == br_ and _mutual(an, bn):
+                continue                      # confirmed interchangeable twins bind either way
+            if aloc and bloc:
+                continue                      # locations disambiguate whatever the sizes say
+            if ar_ == br_:
+                errors.append(
+                    f"ports {an!r} and {bn!r} state the same size with no way to tell them "
+                    "apart - ask the user whether they are interchangeable (carry no distinct "
+                    "streams), or for each one's rough location (near_mm)")
+            else:
+                da = round(2.0 * (aa / 3.141592653589793) ** 0.5, 1)
+                db = round(2.0 * (ba / 3.141592653589793) ** 0.5, 1)
+                errors.append(
+                    f"ports {an!r} (~{da} mm) and {bn!r} (~{db} mm) are too close in size to "
+                    "match reliably against the measured openings - ask the user for each "
+                    "one's rough location (near_mm)")
+    return errors
+
+
 def validate_submission(args: dict) -> list[str]:
     _val_errors: list[str] = []
 
@@ -288,6 +411,9 @@ def validate_submission(args: dict) -> list[str]:
         # are ENGINE ADMISSIBILITY, not payload shape - they moved to EngineSpec.admit()
         # (the single admission path), evaluated once below with the rest of the declared
         # rules. This block validates only that patches are WELL-FORMED for the purpose.
+
+    if _purpose == "internal_cfd" and isinstance(_patches, list):
+        _val_errors.extend(_validate_internal_ports(_patches))
 
     _dim = args.get("dimensionality")
     if _dim not in set(Dimensionality):

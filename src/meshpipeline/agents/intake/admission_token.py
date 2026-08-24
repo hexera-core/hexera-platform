@@ -63,7 +63,11 @@ def fingerprint(canonical: dict) -> str:
 # against). It never substitutes for a typed field, and it never infers a preference.
 # v2: single `mesh_fidelity` (draft|standard|high|max), flat geometry string.
 # v3: the four fidelity fields (draft|standard|max), structured geometry, artifact_policy_version.
-APPROVED_INTENT_SCHEMA_VERSION = 3
+# v4: `port_declaration` - the internal-flow port sizes/locations/interchangeability the user
+#     approved, so the binding the engines perform is provably the binding that was approved.
+#     It binds here, in the approval-time canonical, NEVER in `canonical_payload` (widening the
+#     preview canonical would fail every submission's token verification - see above).
+APPROVED_INTENT_SCHEMA_VERSION = 4
 
 #: Version of the geometry-identity structure, so a later change to how geometry is identified is
 #: detectable rather than silently altering an approved binding.
@@ -137,6 +141,18 @@ def approved_intent_canonical(*, engine, purpose, input_kind, dimensionality, pa
         "required_outputs": required_output_classes(base["engine"]),
         "artifact_policy_version": ARTIFACT_POLICY_VERSION,
         "approved_request_digest": approved_request_digest(request_txt),
+        "port_declaration": sorted(
+            ({"name": (p.get("name") or "").strip(),
+              "role": (p.get("role") or p.get("type") or "").strip(),
+              "diameter_mm": p.get("diameter_mm"), "area_mm2": p.get("area_mm2"),
+              "width_mm": p.get("width_mm"), "height_mm": p.get("height_mm"),
+              "near_mm": list(p["near_mm"]) if isinstance(p.get("near_mm"), (list, tuple))
+              else None,
+              "interchangeable_with": sorted(str(x).strip()
+                                             for x in (p.get("interchangeable_with") or []))}
+             for p in (patches or []) if isinstance(p, dict)
+             and (p.get("role") or p.get("type") or "").strip() in ("inlet", "outlet")),
+            key=lambda q: q["name"]),
         "geometry": geometry if geometry is not None else geometry_identity(
             source_ref, revision_id=geometry_revision_id,
             interpretation_ref=interpretation_ref),

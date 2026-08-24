@@ -41,7 +41,20 @@ def _declared_lines(declared: dict) -> list[str]:
         out.append(f"{label}: {_vocab.display_of_field(field, value)}")
     patches = declared.get("patches") or []
     if patches:
-        named = ", ".join(f"{p.get('name')} ({p.get('role') or p.get('type')})" for p in patches)
+        def _one(p: dict) -> str:
+            bits = [f"{p.get('name')} ({p.get('role') or p.get('type')})"]
+            if p.get("diameter_mm") is not None:
+                bits.append(f"d={p['diameter_mm']}mm")
+            elif p.get("area_mm2") is not None:
+                bits.append(f"A={p['area_mm2']}mm2")
+            elif p.get("width_mm") is not None and p.get("height_mm") is not None:
+                bits.append(f"{p['width_mm']}x{p['height_mm']}mm")
+            if isinstance(p.get("near_mm"), (list, tuple)):
+                bits.append("near " + "/".join(str(c) for c in p["near_mm"]) + "mm")
+            if p.get("interchangeable_with"):
+                bits.append("interchangeable with " + ", ".join(p["interchangeable_with"]))
+            return " ".join(bits)
+        named = ", ".join(_one(p) for p in patches)
         out.append(f"patches ({len(patches)}): {named}")
     return out
 
