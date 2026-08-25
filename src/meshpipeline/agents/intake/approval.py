@@ -51,6 +51,31 @@ def _normalise(text: str) -> str:
     return " ".join(words)
 
 
+def _phrase_seqs(vocab: set[str]) -> list[tuple[str, ...]]:
+    """The vocabulary as normalised word sequences (deduplicated, empties dropped)."""
+    out = {tuple(_normalise(p).split()) for p in vocab}
+    return sorted(seq for seq in out if seq)
+
+
+_APPROVE_SEQS = _phrase_seqs(_APPROVE)
+_CONSENT_SEQS = _phrase_seqs(_APPROVE | _HEDGE)
+
+
+def _parses_as(words: tuple[str, ...], phrases: list[tuple[str, ...]]) -> bool:
+    """True when the whole word sequence is a concatenation of vocabulary phrases."""
+    n = len(words)
+    ok = [False] * (n + 1)
+    ok[0] = True
+    for i in range(n):
+        if not ok[i]:
+            continue
+        for ph in phrases:
+            j = i + len(ph)
+            if j <= n and words[i:j] == ph:
+                ok[j] = True
+    return ok[n]
+
+
 def classify(message: str) -> str:
     n = _normalise(message)
     if not n:
@@ -58,6 +83,15 @@ def classify(message: str) -> str:
     if n in _APPROVE:
         return APPROVE_INTENT
     if n in _HEDGE:
+        return HEDGE_INTENT
+    # Composition over the SAME closed vocabulary: "Confirmed. Proceed with mesh generation."
+    # is consent phrases end to end, while "yes, but make the far-field 50 chords" contains
+    # words no consent phrase covers and stays a correction. Consent diluted by a hedge
+    # ("maybe. proceed") stays ambiguous - ask, never dispatch.
+    words = tuple(n.split())
+    if _parses_as(words, _APPROVE_SEQS):
+        return APPROVE_INTENT
+    if _parses_as(words, _CONSENT_SEQS):
         return HEDGE_INTENT
     return CORRECTION_INTENT
 

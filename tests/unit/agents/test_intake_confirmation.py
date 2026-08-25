@@ -138,7 +138,8 @@ def test_confirmation_block_shows_the_standing_requirements():
     assert "airfoil(wall)" in block
     assert "Far-field 20 chords" in block
     assert "submit_requirements" in block and "propose_engine_selection" in block
-    assert "APPLICATION dispatches that itself" in block   # the model cannot start a mesh
+    assert "THIS TURN DID NOT DISPATCH" in block   # the model cannot start a mesh
+    assert "never claim it has started or will" in block
 
 
 def test_confirmation_turn_never_force_submits():

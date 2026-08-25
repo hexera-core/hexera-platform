@@ -61,6 +61,25 @@ def test_agreement_with_a_change_is_never_an_approval():
         assert ap.classify(m) == ap.CORRECTION_INTENT, m
 
 
+def test_chained_consent_phrases_still_approve():
+    # composition over the closed vocabulary - "Confirmed. Proceed with mesh generation."
+    # stalled a real corpus run when the whole-message set missed it
+    for m in ("Confirmed. Proceed with mesh generation.", "Confirmed - proceed.",
+              "Yes, confirmed. Go ahead!", "yes yes, proceed", "Approved. Run it."):
+        assert ap.classify(m) == ap.APPROVE_INTENT, m
+
+
+def test_chains_containing_non_consent_words_stay_corrections():
+    for m in ("Confirmed. Proceed with the finer mesh generation.",
+              "Confirmed, but proceed tomorrow", "Proceed with mesh generation on gmsh."):
+        assert ap.classify(m) == ap.CORRECTION_INTENT, m
+
+
+def test_consent_diluted_by_a_hedge_stays_ambiguous():
+    for m in ("maybe. proceed", "yes... I think", "proceed, not sure"):
+        assert ap.classify(m) == ap.HEDGE_INTENT, m
+
+
 def test_hedges_are_ambiguous_and_corrections_are_corrections():
     for m in ("maybe", "not sure", "I think so", "hmm"):
         assert ap.classify(m) == ap.HEDGE_INTENT, m
