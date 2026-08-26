@@ -20,6 +20,7 @@ from tests.integration.test_execution_fence_race import (
     assert_unchanged,
     backlog,
     cleanup,
+    event_keys,
     snapshot,
 )
 
@@ -196,7 +197,7 @@ async def test_f2_a_superseded_worker_cannot_renew_or_keep_publishing(job):
 # F3  PostgreSQL renewal succeeds, Redis CAS refresh fails
 
 
-async def test_f3_a_renewed_lease_never_recreates_a_missing_fence(job):
+async def test_f3_a_renewed_lease_restores_a_lapsed_fence_but_refresh_never_sets(job):
     from meshpipeline.persistence.lease import LeaseRepository
 
     engine, Session = _sessions()
@@ -209,26 +210,37 @@ async def test_f3_a_renewed_lease_never_recreates_a_missing_fence(job):
 
         async with Session() as db:
             renewed = await LeaseRepository().heartbeat(db, claim.ownership)
+            await db.commit()
         assert renewed is True, "the durable lease was not extended"
 
         row = await _row(job)
         assert dt.datetime.fromisoformat(row["lease_expires_at"]) > dt.datetime.now(dt.UTC), (
             "the PostgreSQL lease extension is not durable")
-        assert not F.current(str(job)), "the refresh recreated the fence"
+        # The heartbeat verified generation and token under the row lock, so restoring the
+        # lapsed mirror is SAFE - and refusing to restore it is how a healthy job used to die
+        # (one lapse was permanent; the next fenced publish was refused for a supersession
+        # that never happened).
+        assert F.current(str(job)) == fp, "the verified renewal did not restore the mirror"
+        # bare CAS refresh still never SETs: drop the key again and try it directly
+        _client().delete(fence_key_for(str(job)))
         assert F.refresh(str(job), fp, 60) is False, "refresh performed a SET"
+        assert not F.current(str(job)), "refresh recreated the fence on its own"
 
         from meshpipeline.application import execution_fence as _fence
         with _fence.execution_ownership(claim.ownership, session_factory=Session):
-            with pytest.raises(StaleExecutionPublish):
-                await _gated(str(job)).anote("still owner", op_id="f3:1")
+            await _gated(str(job)).anote("still owner", op_id="f3:1")   # publish-seam heal
+        assert len(backlog(str(job))) == 1, "the live owner's publish did not land"
 
-        await record("F3", "renewal succeeds, CAS refresh fails", barrier="heartbeat",
+        await record("F3", "renewal restores the lapsed mirror; bare refresh never SETs",
+                     barrier="heartbeat",
                      job=job, delivered=True, execution_started=True, attempted=True,
-                     accepted=False, terminal_mutated=False,
-                     observed="heartbeat=True; fence absent; refresh=False; publish refused",
-                     safety="SAFE - no replacement fence written, publication fails closed",
-                     availability="LOST - a live owner cannot publish until it reclaims",
-                     cleanup_result="no fence key created")
+                     accepted=True, terminal_mutated=False,
+                     observed="heartbeat=True healed the fence; bare refresh=False; the "
+                              "publish healed its own lapse and landed",
+                     safety="SAFE - every restore re-verified generation and token under the "
+                            "row lock first; bare refresh still cannot SET",
+                     availability="RESTORED - the live owner heals and continues",
+                     cleanup_result="fence = the verified claim's fingerprint")
     finally:
         await engine.dispose()
 
@@ -299,25 +311,30 @@ async def test_f5_a_rolled_back_takeover_leaves_no_one_able_to_publish(job, monk
         monkeypatch.undo()
         assert observed != "raised"
 
-        # a FRESH read reconciles; nothing is restored blindly
+        # the rolled-back takeover never durably happened: A's generation and token survived
         row = await _row(job)
         assert row["generation"] == before_row["generation"], "the rolled-back claim persisted"
-        assert not F.current(str(job)) or F.current(str(job)) != a_fp, (
-            "A's revoked fence was restored")
 
+        # A is therefore still the ONE verified owner. The publish-seam recovery re-verifies
+        # exactly that under the row lock and heals the mirror the ghost takeover revoked -
+        # the surviving owner continues instead of being stranded by a transaction that never
+        # committed.
         with _fence.execution_ownership(a.ownership, session_factory=Session):
-            with pytest.raises(StaleExecutionPublish):
-                await _gated(str(job)).anote("A after rollback", op_id="f5:1")
-        assert backlog(str(job)) == []
+            await _gated(str(job)).anote("A after rollback", op_id="f5:1")
+        assert len(backlog(str(job))) == 1, "A's post-rollback publish did not land"
+        assert F.current(str(job)) == a_fp, (
+            "the heal did not restore the surviving owner's own fingerprint")
 
         await record("F5", "revocation succeeds, takeover rolls back",
                      barrier="after revoke, before commit", job=job, delivered=False,
-                     execution_started=False, attempted=True, accepted=False,
+                     execution_started=False, attempted=True, accepted=True,
                      terminal_mutated=False,
-                     observed=f"{observed}; A refused through the revoked fence",
-                     safety="SAFE - the old worker cannot publish through a revoked mirror",
-                     availability="LOST - nobody publishes until a claim is retaken",
-                     cleanup_result="fence absent; PostgreSQL row unchanged")
+                     observed=f"{observed}; A healed through the ghost revoke and published",
+                     safety="SAFE - the heal re-verified generation and token under the row "
+                            "lock; the rollback left A the one true owner",
+                     availability="RESTORED - the surviving owner heals its mirror and "
+                                  "continues",
+                     cleanup_result="fence = A's fingerprint; PostgreSQL row unchanged")
     finally:
         await engine.dispose()
 
@@ -493,18 +510,30 @@ async def test_f9_a_claim_that_lapses_before_lua_is_refused_before_replay(job):
         release.set()
         t.join(30)
         assert not t.is_alive()
-        assert_unchanged(before, snapshot(str(job)), "F9 lapsed claim")
-        assert outcome["result"] == "refused", "a lapsed claim published"
-        assert len(backlog(str(job))) == 1, "the backlog changed"
+        after = snapshot(str(job))
+        # The EVENT state must not change - the replay is suppressed, never duplicated. The
+        # fence key legitimately reappears: the lease was expired but UNCLAIMED, so the
+        # recovery re-verified generation and token under the row lock, renewed it and healed
+        # the mirror (the exact lapse that used to kill a finished mesh mid-review).
+        for key in event_keys(str(job)):
+            for field in ("exists", "type", "sha256"):
+                assert after[key][field] == before[key][field], f"F9: {key}.{field} changed"
+        assert outcome["result"] == "published", (
+            "the expired-but-unclaimed owner was refused instead of healed")
+        assert len(backlog(str(job))) == 1, "the healed replay wrote a duplicate"
+        assert F.current(str(job)) == fp, "the heal did not restore the verified fingerprint"
 
         await record("F9", "claim lapses between authorization and Lua", barrier="pre-Lua",
                      job=job, delivered=True, execution_started=True, attempted=True,
                      accepted=False, terminal_mutated=False,
-                     observed="StaleExecutionPublish on a replayed op key",
-                     safety="SAFE - refused before replay detection, so it could not pass as "
-                            "an idempotent retry",
-                     availability="LOST for the lapsed worker",
-                     cleanup_result="no fence; event state unchanged")
+                     observed="lapse healed under the row lock; the replayed op key was "
+                              "suppressed as idempotent",
+                     safety="SAFE - the heal re-verified generation and token under the row "
+                            "lock, and the replay stayed suppressed - nothing new was written",
+                     availability="RESTORED - the surviving owner healed its mirror and "
+                                  "continued",
+                     cleanup_result="fence = the verified claim's fingerprint; event state "
+                                    "unchanged")
     finally:
         await engine.dispose()
 
@@ -613,7 +642,11 @@ def _cross_case_invariants():
     yield
     assert len(MATRIX) == 10, f"only {len(MATRIX)} of the ten cases recorded"
     for e in MATRIX:
-        assert e["publication_accepted"] is False, f"{e['case']} accepted a publication"
+        # A publication is accepted in exactly one shape of case: the writer was re-verified
+        # as the ONE current owner under the claim row lock and its lapsed mirror was healed
+        # (availability RESTORED). A stale or superseded writer is still never accepted.
+        assert e["publication_accepted"] is False or e["availability"].startswith("RESTORED"), (
+            f"{e['case']} accepted a publication without a verified heal")
         assert e["terminal_mutated"] is False, f"{e['case']} mutated terminal state"
         assert e["safety"].startswith("SAFE"), f"{e['case']} is not safe: {e['safety']}"
         assert "token" in e and len(e["token"]) == 12, "the token is not a fingerprint"

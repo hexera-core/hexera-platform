@@ -252,6 +252,9 @@ async def test_a_predecessor_token_cannot_heal_after_same_generation_resume(job)
     try:
         first = await _claim(job, Session, backend_execution_id="exec-resume")
         old_own = first.ownership
+        # a live lease refuses any second claim (active_lease_conflict) - the resume this test
+        # is about happens after the first worker died and its lease aged out
+        await _set_row(job, lease_expires_at=dt.datetime.now(dt.UTC) - dt.timedelta(seconds=5))
         second = await _claim(job, Session, backend_execution_id="exec-resume")
         assert second.ownership.execution_generation == old_own.execution_generation
         assert second.ownership.worker_token != old_own.worker_token

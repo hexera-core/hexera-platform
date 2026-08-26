@@ -121,10 +121,12 @@ def test_run_from_job_releases_the_engine_before_opening_its_second_loop():
 
     def _capture(**kwargs):
         # runs after the first loop has closed - exactly where a stale pool would be waiting
-        seen["engine_after_first_loop"] = sess._engine
+        with sess._engines_lock:
+            seen["engines_after_first_loop"] = len(sess._engines)
         return {"ok": True}
 
     import meshpipeline.application.pipeline_run as pr
+    sess.reset_session_state()
     original = pr.run_pipeline
     pr.run_pipeline = _capture
     try:
@@ -134,9 +136,15 @@ def test_run_from_job_releases_the_engine_before_opening_its_second_loop():
     finally:
         pr.run_pipeline = original
 
-    assert sess._engine is None, (
-        "run_from_job left a pooled connection bound to its first loop; the pipeline's own loop "
-        "would inherit a connection it cannot await")
+    # A missing job exits during the FIRST loop, so the capture may never run; when it does
+    # run, the first loop's engine must already be gone.
+    if "engines_after_first_loop" in seen:
+        assert seen["engines_after_first_loop"] == 0, (
+            "run_from_job left an engine cached for its first loop; the pipeline's own loop "
+            "would inherit a connection it cannot await")
+    with sess._engines_lock:
+        remaining = len(sess._engines)
+    assert remaining == 0, "an engine survived past run_from_job's loops"
 
 
 async def _noop():

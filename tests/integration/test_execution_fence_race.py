@@ -329,14 +329,50 @@ async def test_the_raw_worker_token_never_reaches_redis(job):
         await engine.dispose()
 
 
-# the eight rejection cases
+# the rejection cases - and the lapse cases the publish seam now heals
 
 
-CASES = ["missing fence", "wrong job key", "wrong generation", "wrong worker token",
-         "revoked fence", "expired fence", "stale replay", "old worker after takeover"]
+#: A different claim genuinely exists (or existed): rotated generation or token, or a real
+#: takeover. These MUST refuse, heal or no heal - the recovery re-verifies generation and
+#: token under the row lock and a superseded worker fails that check.
+REFUSED_CASES = ["wrong generation", "wrong worker token", "old worker after takeover"]
+
+#: Mirror-only damage with the durable claim intact. The old absolute rule refused these too -
+#: and that refusal is what killed a finished mesh mid-review (the corpus's benchy run): a
+#: lapse is not a takeover. The publish seam now re-verifies the claim under the row lock and
+#: heals the mirror. "revoked fence" here is a revoke WITHOUT claim rotation - a state no
+#: production path creates (every real revoke runs inside the takeover's locked transaction,
+#: which rotates generation or token first, landing it in REFUSED_CASES above).
+HEALED_CASES = ["missing fence", "wrong job key", "expired fence", "revoked fence"]
 
 
-@pytest.mark.parametrize("case", CASES)
+def _damage(case: str, job, own) -> None:
+    r = _client()
+    try:
+        if case == "missing fence":
+            r.delete(fence_key_for(str(job)))
+        elif case == "wrong job key":
+            # the fence lives under another job's key, so this job's key is absent
+            other = uuid.uuid4()
+            F.install(str(other), F.current(str(job)) or "x" * 32, 60)
+            r.delete(fence_key_for(str(job)))
+            cleanup(str(other))
+        elif case == "wrong generation":
+            F.install(str(job), fence_fingerprint(
+                str(job), own.execution_generation + 1, own.worker_token), 60)
+        elif case == "wrong worker token":
+            F.install(str(job), fence_fingerprint(
+                str(job), own.execution_generation, uuid.uuid4()), 60)
+        elif case in ("revoked fence", "stale replay"):
+            F.revoke(str(job), F.current(str(job)))
+        elif case == "expired fence":
+            # deterministic expiry: remove the key exactly as expiry would, no waiting
+            r.delete(fence_key_for(str(job)))
+    finally:
+        r.close()
+
+
+@pytest.mark.parametrize("case", REFUSED_CASES)
 async def test_a_write_without_the_matching_claim_changes_nothing(job, case):
     from meshpipeline.application import execution_fence as _fence
 
@@ -350,42 +386,17 @@ async def test_a_write_without_the_matching_claim_changes_nothing(job, case):
         with _fence.execution_ownership(own, session_factory=Session):
             await _gated(str(job)).anote("first", op_id="a:1")
 
-        r, use = _client(), own
-        try:
-            if case == "missing fence":
-                r.delete(fence_key_for(str(job)))
-            elif case == "wrong job key":
-                # the fence lives under another job's key, so this job's key is absent
-                other = uuid.uuid4()
-                F.install(str(other), F.current(str(job)) or "x" * 32, 60)
-                r.delete(fence_key_for(str(job)))
-                cleanup(str(other))
-            elif case == "wrong generation":
-                F.install(str(job), fence_fingerprint(
-                    str(job), own.execution_generation + 1, own.worker_token), 60)
-            elif case == "wrong worker token":
-                F.install(str(job), fence_fingerprint(
-                    str(job), own.execution_generation, uuid.uuid4()), 60)
-            elif case == "revoked fence":
-                F.revoke(str(job), F.current(str(job)))
-            elif case == "expired fence":
-                # deterministic expiry: remove the key exactly as expiry would, no waiting
-                r.delete(fence_key_for(str(job)))
-            elif case == "old worker after takeover":
-                await _expire_lease(job)
-                nxt = await _claim(job, Session, backend_execution_id="exec-next")
-                assert isinstance(nxt, _fence.DeliveryClaim), nxt
-            # "stale replay" keeps the same op_id below and revokes the fence
-            if case == "stale replay":
-                F.revoke(str(job), F.current(str(job)))
-        finally:
-            r.close()
+        if case == "old worker after takeover":
+            await _expire_lease(job)
+            nxt = await _claim(job, Session, backend_execution_id="exec-next")
+            assert isinstance(nxt, _fence.DeliveryClaim), nxt
+        else:
+            _damage(case, job, own)
 
-        op = "a:1" if case == "stale replay" else "a:2"
         before = snapshot(str(job))
-        with _fence.execution_ownership(use, session_factory=Session):
+        with _fence.execution_ownership(own, session_factory=Session):
             with pytest.raises(StaleExecutionPublish):
-                await _gated(str(job)).anote("second", op_id=op)
+                await _gated(str(job)).anote("second", op_id="a:2")
         after = snapshot(str(job))
 
         assert_unchanged(before, after, case)
@@ -394,6 +405,53 @@ async def test_a_write_without_the_matching_claim_changes_nothing(job, case):
               + "; ".join(f"{k.split(':')[-1]} exists={v['exists']} type={v['type']} "
                           f"pttl={v['pttl']} sha={v['sha256'][:12] or '-'}"
                           for k, v in after.items()))
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("case", HEALED_CASES)
+async def test_a_lapsed_mirror_with_a_live_claim_heals_and_publishes(job, case):
+    from meshpipeline.application import execution_fence as _fence
+
+    engine, Session = _sessions()
+    try:
+        claim = await _claim(job, Session, backend_execution_id=f"exec-{case[:6]}")
+        own = claim.ownership
+        with _fence.execution_ownership(own, session_factory=Session):
+            await _gated(str(job)).anote("first", op_id="a:1")
+
+        _damage(case, job, own)
+
+        with _fence.execution_ownership(own, session_factory=Session):
+            await _gated(str(job)).anote("second", op_id="a:2")   # heals, then publishes
+
+        assert len(backlog(str(job))) == 2, f"{case}: the healed publish never landed"
+        held = F.current(str(job))
+        assert held == fence_fingerprint(str(job), own.execution_generation,
+                                         own.worker_token), (
+            f"{case}: the healed fence is not this claim's own fingerprint")
+    finally:
+        await engine.dispose()
+
+
+async def test_a_replay_after_a_lapse_is_healed_then_suppressed(job):
+    # the lapse recovery must not turn replay dedup into a duplicate: the healed retry
+    # carries the SAME op key, so the log stays exactly as long as it was
+    from meshpipeline.application import execution_fence as _fence
+
+    engine, Session = _sessions()
+    try:
+        claim = await _claim(job, Session, backend_execution_id="exec-replay2")
+        own = claim.ownership
+        with _fence.execution_ownership(own, session_factory=Session):
+            await _gated(str(job)).anote("first", op_id="a:1")
+
+        _damage("stale replay", job, own)
+
+        with _fence.execution_ownership(own, session_factory=Session):
+            await _gated(str(job)).anote("first again", op_id="a:1")   # healed + suppressed
+
+        assert len(backlog(str(job))) == 1, "the healed replay wrote a duplicate"
     finally:
         await engine.dispose()
 
