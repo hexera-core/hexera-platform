@@ -52,8 +52,10 @@ def _repair_message(key: str, result: dict, q: dict) -> str:
         if "orient" in _fj or "negative" in _fj:
             return (f"fatal {_fatal} - prism LAYERS are inverting cells at the concave "
                     "wing-body junction; this is NOT a resolution problem. REDUCE n_layers "
-                    "(e.g. 5→3) and/or thin first_layer_rel; keep quality='strict'. Do NOT "
-                    "raise max_cells - a finer mesh makes junction layer-inversion WORSE.")
+                    "(e.g. 5→3). If quality is 'strict' and the layers also fail to inflate, "
+                    "switch to 'balanced' - strict's layer mechanics are usually what starves "
+                    "them. Do NOT raise max_cells - a finer mesh makes junction "
+                    "layer-inversion WORSE.")
         return (f"fatal {_fatal} - a topology/carve defect. Set quality='strict'; if it is a "
                 "carve/seal issue, enlarge domain_margin. Not a budget problem.")
     if key == "skew_fraction":

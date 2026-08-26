@@ -442,6 +442,10 @@ RUN_ENTRY = register_run_entry(run_pipeline)
 
 
 async def _run_async(req: JobRequest) -> dict:
+    # Initialized before ANY raise-able statement: the crash handler reads it, and a job that
+    # dies before the checkpointer section (e.g. a dispute whose parent was purged) must
+    # crash-finalize with the intent fallback, not UnboundLocalError inside the handler.
+    _checkpointer_ok = False
     # Unpack once; the body keeps working with the original local names.
     job_id           = req.job_id
     owner_id         = req.owner_id

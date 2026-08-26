@@ -1,352 +1,352 @@
 {
-  "cfmesh": {
-    "axes": [
-      "cut_cell_transition_quality",
-      "local_refinement_presence",
-      "near_wall_layers_generated",
-      "surface_staircasing_adequacy"
-    ],
-    "criteria": [
-      "fatal",
-      "max_non_ortho",
-      "rc",
-      "timed_out"
-    ],
-    "deliverable": [
-      "constant/polyMesh",
-      "geom.fms",
-      "geom.stl",
-      "system/meshDict"
-    ],
-    "deliverable_kind": "Deliverable",
-    "export_formats": [
-      "openfoam_polymesh",
-      "stl_surface"
-    ],
-    "gates": [
-      [
-        "manifest_valid",
-        true,
-        "MANIFEST"
-      ],
-      [
-        "quality_floor",
-        true,
-        "MESH"
-      ],
-      [
-        "patch_contract",
-        true,
-        "GROUPS"
-      ],
-      [
-        "boundary_types",
-        true,
-        "GROUPS"
-      ]
-    ],
-    "input_contract": {
-      "input_kind": "surface",
-      "min_thickness_ratio": 0.0,
-      "rationale": "cfMesh ships BOTH a 3D workflow (cartesianMesh) and a native 2D workflow (cartesian2DMesh - meshes a profile ribbon one cell thick with empty front/back planes); it wraps a surface STL and tolerates non-watertight geometry. Raw thinness is handled by local refinement, so no hard thin-feature floor is set.",
-      "require_no_self_intersection": false
-    },
-    "required_run_files": [
-      "system/meshDict"
-    ],
-    "tools": [
-      "configure_mesh",
-      "geometry_report",
-      "list_directory",
-      "measure_scales",
-      "read_file",
-      "run_mesh",
-      "run_python",
-      "submit_mesh",
-      "web_search"
-    ]
+ "cfmesh": {
+  "axes": [
+   "cut_cell_transition_quality",
+   "local_refinement_presence",
+   "near_wall_layers_generated",
+   "surface_staircasing_adequacy"
+  ],
+  "criteria": [
+   "fatal",
+   "max_non_ortho",
+   "rc",
+   "timed_out"
+  ],
+  "deliverable": [
+   "constant/polyMesh",
+   "geom.fms",
+   "geom.stl",
+   "system/meshDict"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "openfoam_polymesh",
+   "stl_surface"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "boundary_types",
+    true,
+    "GROUPS"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "surface",
+   "min_thickness_ratio": 0.0,
+   "rationale": "cfMesh ships BOTH a 3D workflow (cartesianMesh) and a native 2D workflow (cartesian2DMesh - meshes a profile ribbon one cell thick with empty front/back planes); it wraps a surface STL and tolerates non-watertight geometry. Raw thinness is handled by local refinement, so no hard thin-feature floor is set.",
+   "require_no_self_intersection": false
   },
-  "gmsh": {
-    "axes": [
-      "deck_conformance",
-      "element_order_appropriateness",
-      "element_quality_distribution",
-      "group_completeness"
-    ],
-    "criteria": [
-      "fatal",
-      "min_sicn",
-      "rc",
-      "sicn_low_fraction",
-      "timed_out"
-    ],
-    "deliverable": [
-      "geometry.step",
-      "gmsh_spec.json",
-      "mesh.bdf",
-      "mesh.inp",
-      "mesh.unv"
-    ],
-    "deliverable_kind": "Deliverable",
-    "export_formats": [
-      "abaqus_inp",
-      "nastran_bdf",
-      "gmsh_msh",
-      "unv"
-    ],
-    "gates": [
-      [
-        "manifest_valid",
-        true,
-        "MANIFEST"
-      ],
-      [
-        "sicn_floor",
-        true,
-        "MESH"
-      ],
-      [
-        "patch_contract",
-        true,
-        "GROUPS"
-      ]
-    ],
-    "input_contract": {
-      "input_kind": "solid",
-      "min_thickness_ratio": 0.0,
-      "rationale": "3D: a valid closed CAD solid \u2192 second-order tetrahedra. 2D: a FLAT (planar) face/sheet body \u2192 plane-stress/strain triangles with boundary groups on the curves. Element sizing adapts to thin solids, so no hard thin-feature floor is set.",
-      "require_no_self_intersection": false
-    },
-    "required_run_files": [
-      "gmsh_spec.json"
-    ],
-    "tools": [
-      "geometry_report",
-      "list_directory",
-      "read_file",
-      "run_mesh",
-      "run_python",
-      "submit_mesh",
-      "web_search",
-      "write_file"
-    ]
+  "required_run_files": [
+   "system/meshDict"
+  ],
+  "tools": [
+   "configure_mesh",
+   "geometry_report",
+   "list_directory",
+   "measure_scales",
+   "read_file",
+   "run_mesh",
+   "run_python",
+   "submit_mesh",
+   "web_search"
+  ]
+ },
+ "gmsh": {
+  "axes": [
+   "deck_conformance",
+   "element_order_appropriateness",
+   "element_quality_distribution",
+   "group_completeness"
+  ],
+  "criteria": [
+   "fatal",
+   "min_sicn",
+   "rc",
+   "sicn_low_fraction",
+   "timed_out"
+  ],
+  "deliverable": [
+   "geometry.step",
+   "gmsh_spec.json",
+   "mesh.bdf",
+   "mesh.inp",
+   "mesh.unv"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "abaqus_inp",
+   "nastran_bdf",
+   "gmsh_msh",
+   "unv"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "sicn_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "solid",
+   "min_thickness_ratio": 0.0,
+   "rationale": "3D: a valid closed CAD solid \u2192 second-order tetrahedra. 2D: a FLAT (planar) face/sheet body \u2192 plane-stress/strain triangles with boundary groups on the curves. Element sizing adapts to thin solids, so no hard thin-feature floor is set.",
+   "require_no_self_intersection": false
   },
-  "snappy": {
-    "axes": [
-      "feature_refinement_transition",
-      "prism_layer_coverage",
-      "surface_capture"
-    ],
-    "criteria": [
-      "fatal",
-      "layer_coverage",
-      "max_non_ortho",
-      "rc",
-      "skew_fraction",
-      "timed_out",
-      "wall_faces"
-    ],
-    "deliverable": [
-      "constant/polyMesh",
-      "constant/triSurface",
-      "system/blockMeshDict",
-      "system/snappyHexMeshDict"
-    ],
-    "deliverable_kind": "Deliverable",
-    "export_formats": [
-      "openfoam_polymesh",
-      "stl_surface"
-    ],
-    "gates": [
-      [
-        "manifest_valid",
-        true,
-        "MANIFEST"
-      ],
-      [
-        "quality_floor",
-        true,
-        "MESH"
-      ],
-      [
-        "patch_contract",
-        true,
-        "GROUPS"
-      ],
-      [
-        "boundary_types",
-        true,
-        "GROUPS"
-      ]
-    ],
-    "input_contract": {
-      "input_kind": "surface",
-      "min_thickness_ratio": 0.0,
-      "rationale": "snappyHexMesh is a 3D hex/split-hex mesher - 3D ONLY. It has no 2D mode (true 2D belongs to cfMesh's native cartesian2DMesh), and a thin slab is simply a 3D case with symmetry patches. It body-fits a surface STL and wants cleaner geometry than cfMesh. Thin features are resolved by surface refinement level, so no hard thin-feature floor.",
-      "require_no_self_intersection": false
-    },
-    "required_run_files": [
-      "system/blockMeshDict",
-      "system/snappyHexMeshDict"
-    ],
-    "tools": [
-      "configure_mesh",
-      "geometry_report",
-      "list_directory",
-      "measure_scales",
-      "read_file",
-      "run_mesh",
-      "run_python",
-      "submit_mesh",
-      "web_search"
-    ]
+  "required_run_files": [
+   "gmsh_spec.json"
+  ],
+  "tools": [
+   "geometry_report",
+   "list_directory",
+   "read_file",
+   "run_mesh",
+   "run_python",
+   "submit_mesh",
+   "web_search",
+   "write_file"
+  ]
+ },
+ "snappy": {
+  "axes": [
+   "feature_refinement_transition",
+   "prism_layer_coverage",
+   "surface_capture"
+  ],
+  "criteria": [
+   "fatal",
+   "layer_coverage_pct",
+   "max_non_ortho",
+   "rc",
+   "skew_fraction",
+   "timed_out",
+   "wall_faces"
+  ],
+  "deliverable": [
+   "constant/polyMesh",
+   "constant/triSurface",
+   "system/blockMeshDict",
+   "system/snappyHexMeshDict"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "openfoam_polymesh",
+   "stl_surface"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "boundary_types",
+    true,
+    "GROUPS"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "surface",
+   "min_thickness_ratio": 0.0,
+   "rationale": "snappyHexMesh is a 3D hex/split-hex mesher - 3D ONLY. It has no 2D mode (true 2D belongs to cfMesh's native cartesian2DMesh), and a thin slab is simply a 3D case with symmetry patches. It body-fits a surface STL and wants cleaner geometry than cfMesh. Thin features are resolved by surface refinement level, so no hard thin-feature floor.",
+   "require_no_self_intersection": false
   },
-  "snappy_multiregion": {
-    "axes": [
-      "interface_layer_placement",
-      "per_region_surface_capture"
-    ],
-    "criteria": [
-      "fatal",
-      "interface_ok",
-      "layer_coverage",
-      "max_non_ortho",
-      "rc",
-      "regions_missing",
-      "skew_fraction",
-      "timed_out"
-    ],
-    "deliverable": [
-      "constant",
-      "constant/triSurface",
-      "system/blockMeshDict",
-      "system/snappyHexMeshDict",
-      "system/topoSetDict"
-    ],
-    "deliverable_kind": "Deliverable",
-    "export_formats": [
-      "openfoam_polymesh_multiregion"
-    ],
-    "gates": [
-      [
-        "manifest_valid",
-        true,
-        "MANIFEST"
-      ],
-      [
-        "quality_floor",
-        true,
-        "MESH"
-      ],
-      [
-        "patch_contract",
-        true,
-        "GROUPS"
-      ],
-      [
-        "regions_split",
-        true,
-        "MESH"
-      ],
-      [
-        "interfaces",
-        true,
-        "GEOMETRY"
-      ],
-      [
-        "region_contract",
-        true,
-        "GROUPS"
-      ]
-    ],
-    "input_contract": {
-      "input_kind": "solid",
-      "min_thickness_ratio": 0.0,
-      "rationale": "A coupled multi-region case is inherently 3D and needs a multi-solid CAD assembly (one closed solid per region) whose regions share conformal faces, so splitMeshRegions can cut them apart with matching interfaces. A single solid or a bare surface cannot express the coupling.",
-      "require_no_self_intersection": false
-    },
-    "required_run_files": [
-      "system/blockMeshDict",
-      "system/snappyHexMeshDict"
-    ],
-    "tools": [
-      "configure_mesh",
-      "geometry_report",
-      "list_directory",
-      "measure_scales",
-      "read_file",
-      "run_mesh",
-      "run_python",
-      "submit_mesh",
-      "web_search"
-    ]
+  "required_run_files": [
+   "system/blockMeshDict",
+   "system/snappyHexMeshDict"
+  ],
+  "tools": [
+   "configure_mesh",
+   "geometry_report",
+   "list_directory",
+   "measure_scales",
+   "read_file",
+   "run_mesh",
+   "run_python",
+   "submit_mesh",
+   "web_search"
+  ]
+ },
+ "snappy_multiregion": {
+  "axes": [
+   "interface_layer_placement",
+   "per_region_surface_capture"
+  ],
+  "criteria": [
+   "fatal",
+   "interface_ok",
+   "layer_coverage",
+   "max_non_ortho",
+   "rc",
+   "regions_missing",
+   "skew_fraction",
+   "timed_out"
+  ],
+  "deliverable": [
+   "constant",
+   "constant/triSurface",
+   "system/blockMeshDict",
+   "system/snappyHexMeshDict",
+   "system/topoSetDict"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "openfoam_polymesh_multiregion"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "regions_split",
+    true,
+    "MESH"
+   ],
+   [
+    "interfaces",
+    true,
+    "GEOMETRY"
+   ],
+   [
+    "region_contract",
+    true,
+    "GROUPS"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "solid",
+   "min_thickness_ratio": 0.0,
+   "rationale": "A coupled multi-region case is inherently 3D and needs a multi-solid CAD assembly (one closed solid per region) whose regions share conformal faces, so splitMeshRegions can cut them apart with matching interfaces. A single solid or a bare surface cannot express the coupling.",
+   "require_no_self_intersection": false
   },
-  "vmtk": {
-    "axes": [
-      "connectivity",
-      "local_anatomical_fidelity",
-      "lumen_fidelity",
-      "opening_integrity"
-    ],
-    "criteria": [
-      "cells",
-      "fatal",
-      "layer_coverage",
-      "min_quality",
-      "rc",
-      "timed_out"
-    ],
-    "deliverable": [
-      "centerlines.vtp",
-      "lumen.vtp",
-      "mesh.msh",
-      "mesh.vtu",
-      "surface_remeshed.vtp",
-      "vmtk_spec.json"
-    ],
-    "deliverable_kind": "Deliverable",
-    "export_formats": [
-      "vtu",
-      "vtp",
-      "gmsh_msh",
-      "stl_surface"
-    ],
-    "gates": [
-      [
-        "manifest_valid",
-        true,
-        "MANIFEST"
-      ],
-      [
-        "quality_floor",
-        true,
-        "MESH"
-      ],
-      [
-        "patch_contract",
-        true,
-        "GROUPS"
-      ]
-    ],
-    "input_contract": {
-      "input_kind": "surface",
-      "min_thickness_ratio": 0.0,
-      "rationale": "vmtk fills the interior of a CLOSED 3D surface and sizes cells from the centerline radius, so it needs a watertight tubular/branching surface, not a solid or a 2D section. Thin branches are resolved by the radius-adaptive edge length, so no hard thin-feature floor is set.",
-      "require_no_self_intersection": true
-    },
-    "required_run_files": [
-      "vmtk_spec.json"
-    ],
-    "tools": [
-      "configure_mesh",
-      "geometry_report",
-      "list_directory",
-      "measure_scales",
-      "read_file",
-      "run_mesh",
-      "run_python",
-      "submit_mesh",
-      "web_search"
-    ]
-  }
+  "required_run_files": [
+   "system/blockMeshDict",
+   "system/snappyHexMeshDict"
+  ],
+  "tools": [
+   "configure_mesh",
+   "geometry_report",
+   "list_directory",
+   "measure_scales",
+   "read_file",
+   "run_mesh",
+   "run_python",
+   "submit_mesh",
+   "web_search"
+  ]
+ },
+ "vmtk": {
+  "axes": [
+   "connectivity",
+   "local_anatomical_fidelity",
+   "lumen_fidelity",
+   "opening_integrity"
+  ],
+  "criteria": [
+   "cells",
+   "fatal",
+   "layer_coverage",
+   "min_quality",
+   "rc",
+   "timed_out"
+  ],
+  "deliverable": [
+   "centerlines.vtp",
+   "lumen.vtp",
+   "mesh.msh",
+   "mesh.vtu",
+   "surface_remeshed.vtp",
+   "vmtk_spec.json"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "vtu",
+   "vtp",
+   "gmsh_msh",
+   "stl_surface"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "surface",
+   "min_thickness_ratio": 0.0,
+   "rationale": "vmtk fills the interior of a CLOSED 3D surface and sizes cells from the centerline radius, so it needs a watertight tubular/branching surface, not a solid or a 2D section. Thin branches are resolved by the radius-adaptive edge length, so no hard thin-feature floor is set.",
+   "require_no_self_intersection": true
+  },
+  "required_run_files": [
+   "vmtk_spec.json"
+  ],
+  "tools": [
+   "configure_mesh",
+   "geometry_report",
+   "list_directory",
+   "measure_scales",
+   "read_file",
+   "run_mesh",
+   "run_python",
+   "submit_mesh",
+   "web_search"
+  ]
+ }
 }

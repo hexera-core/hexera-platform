@@ -58,7 +58,14 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         ),
         _MAX_NON_ORTHO,
         Criterion(
-            key="layer_coverage", label="Prism boundary layers inflated", op=">", threshold=0.0,
+            # The manifest reports this as layer_coverage_pct (engines/snappy/finalize.py);
+            # the key MUST match or the row never evaluates - which is exactly what happened:
+            # with the old key "layer_coverage" the measured value was always None, the
+            # advisory silently skipped, and the layer call fell entirely to the LLM
+            # reviewer's judgment (whose improvised thresholds failed 41.9% while passing
+            # 46.1% on same-purpose parts).
+            key="layer_coverage_pct", label="Prism boundary layers inflated", op=">",
+            threshold=0.0,
             gating=False,
             rationale=(
                 "addLayersControls inflates prism layers off the wall for near-wall "
