@@ -39,8 +39,7 @@ def _sha256(p) -> str:
 def _reset_process_caches():
     import meshpipeline.adapters.event_stream.redis as _redis
     import meshpipeline.persistence.session as _sess
-    _sess._engine = None
-    _sess._session_factory = None
+    _sess.reset_session_state()
     _redis._async_redis = None
 
 

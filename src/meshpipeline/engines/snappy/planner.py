@@ -144,6 +144,7 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
                                publish: ExecutionEventPublisher | None = None,
                                attempt: int = 1,
                                native_attempt: int = 1,
+                               plan_call: int = 0,
                                surface=None) -> PlanOutcome:
     stl = Path(workspace) / "input.stl"
     if not stl.exists():
@@ -222,7 +223,8 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
                                      "api_failure": round_result.failure_marker,
                                      "system_snapshot": _system,
                                      "user_message": user},
-                            op_id=f"planner:{attempt}:{native_attempt}", attempt=attempt)
+                            op_id=f"planner:{attempt}:{native_attempt}:{plan_call}",
+                            attempt=attempt)
             return PlanOutcome(None, round_result, round_result.failure_marker)
         await _plan_trace_end(publish, _rid, _t0, round_result)
         content = round_result.assistant_text
@@ -240,7 +242,11 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
             "usage": {"prompt_tokens": round_result.input_tokens,
                       "completion_tokens": round_result.output_tokens}
             if _had_usage else None,
-        }, op_id=f"planner:{attempt}:{native_attempt}", attempt=attempt)
+            # The op identity carries WHICH planner round of this node execution this is
+            # (plan_call, from the driver run's own control flow): the initial plan and a
+            # repair re-plan are separate operations, not one operation arriving twice with
+            # two payloads (that spelling was quarantined as a CONFLICTING replay).
+        }, op_id=f"planner:{attempt}:{native_attempt}:{plan_call}", attempt=attempt)
         if plan:
             logger.info("Planner: plan for %s - approach=%r quality=%s n_layers=%s max_cells=%s",
                         job_id, str(plan.get("approach"))[:60], plan.get("quality"),

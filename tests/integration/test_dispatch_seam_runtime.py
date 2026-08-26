@@ -114,13 +114,11 @@ def _in_fresh_process_like_thread(fn, *args, **kwargs):
     import meshpipeline.persistence.session as _sess
 
     def _runner():
-        _sess._engine = None
-        _sess._session_factory = None
+        _sess.reset_session_state()
         try:
             return fn(*args, **kwargs)
         finally:
-            _sess._engine = None
-            _sess._session_factory = None
+            _sess.reset_session_state()
     return asyncio.to_thread(_runner)
 
 

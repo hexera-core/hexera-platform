@@ -270,7 +270,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 # WHICH re-plan this is. Each meshing pass plans against its own failure, so the
                 # pass number is what makes these separate operations rather than one operation
                 # arriving three times with three different payloads.
-                native_attempt=attempt)
+                native_attempt=attempt, plan_call=run.plan_call_index)
             plan = _po.plan
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
@@ -504,7 +504,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
                 prior_feedback=feedback, previous_plan=previous_plan,
                 flow_regime="internal",
-                publish=publish, attempt=_attempt_of(state))
+                publish=publish, attempt=_attempt_of(state),
+                native_attempt=attempt, plan_call=run.plan_call_index)
             plan = _po.plan
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
@@ -686,7 +687,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             flow_regime="internal" if state.get("flow_topology") == "internal" else "external",
             # the first plan is a real model round too, and omitting the publisher traces
             # nothing: the plan still succeeds, so the only symptom is a silent card
-            publish=publish, attempt=_attempt_of(state))
+            publish=publish, attempt=_attempt_of(state), plan_call=run.plan_call_index)
         plan = _po.plan
         run.note_plan_round(_po.round)
     if state.get("flow_topology") == "internal":

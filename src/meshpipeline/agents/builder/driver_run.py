@@ -65,6 +65,14 @@ class BuilderDriverRun:
         await _fence.assert_current_owner(f"builder driver {phase}")
 
     # accounting
+    @property
+    def plan_call_index(self) -> int:
+        """1-based index of the NEXT planner call, derived purely from this run's control
+        flow. BuilderDriverRun is rebuilt per node execution, so a crash-resume re-execution
+        replays the same sequence and regenerates byte-identical planner op_ids - replays
+        dedupe, genuine disagreements still quarantine."""
+        return self._plan_calls + 1
+
     def note_plan_round(self, round_result: Any) -> None:
         if round_result is None:
             return

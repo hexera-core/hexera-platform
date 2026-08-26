@@ -959,11 +959,19 @@ async def _run_async(req: JobRequest) -> dict:
             approved=_approved_payload_for_crash,
             graph=locals().get("graph"), graph_config=locals().get("graph_config"),
             ownership=locals().get("ownership"), lease_repo=locals().get("lease_repo"),
-            job_repo=job_repo, jlog=jlog, publish=_direct_closing)
+            job_repo=job_repo, jlog=jlog, publish=_direct_closing,
+            used_durable_checkpointer=_checkpointer_ok)
         # The crash must still reach Celery and monitoring.
         raise
     finally:
         await _worker_engine.dispose()
+        # Eager per-loop cleanup of the GLOBAL engine: any surface that fell back to
+        # persistence.session.get_db during this task (orphan persistence, geometry
+        # materialization, fence fallback) cached an engine keyed to THIS loop. Dispose it
+        # while the loop is still alive so its connections close properly; the sweep in
+        # session._get_bundle is only the backstop for paths that never reach this finally.
+        from meshpipeline.persistence.session import dispose_engine as _dispose_global
+        await _dispose_global()
 
     return {"job_id": job_id, "status": final_status.value, "verdict": verdict}
 

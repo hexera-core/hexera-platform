@@ -156,6 +156,12 @@ class LeaseRepository:
         if (row.execution_generation != own.execution_generation
                 or row.active_worker_token != own.worker_token):
             return False                                       # fenced: an old token/generation
+        deadline = _aware(row.pipeline_deadline_at)
+        if deadline is not None and now > deadline:
+            # Past the whole-pipeline deadline nothing may extend ownership - neither the
+            # periodic beat nor the publish-seam recovery. A worker wedged past 6 hours is a
+            # zombie; letting it renew would let it hold the job forever.
+            return False
         row.lease_heartbeat_at = now
         row.lease_expires_at = now + timedelta(seconds=lease_seconds)
         await db.flush()

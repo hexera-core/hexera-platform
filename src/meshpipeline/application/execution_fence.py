@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from typing import NamedTuple
 
 from meshpipeline.contracts import execution_guard as _guard
+from meshpipeline.contracts.event_stream import StaleExecutionPublish
 from meshpipeline.persistence.lease import ExecutionOwnership, LeaseRepository
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,43 @@ async def assert_current_owner(where: str, *, session_factory=None) -> None:
                                 own.token_hash())
 
 
+async def reverify_and_heal_fence(own: ExecutionOwnership, *, what: str = "publish",
+                                  session_factory=None) -> None:
+    """One out-of-band claim re-verification after the Redis fence gate refused (-2).
+
+    The mirror can lapse while the PostgreSQL claim is intact (heartbeats starved during a
+    long synchronous stretch - the failure mode that killed a finished tugboat mesh mid-
+    review). LeaseRepository.heartbeat is the ONE safe primitive for this: it re-verifies
+    generation and token under the row lock, refuses past the pipeline deadline, renews the
+    lease, and restores the fence via refresh-then-NX-heal - which cannot resurrect a fence a
+    takeover revoked, because the takeover's row lock already rotated generation or token and
+    the verify fails first. If the claim is truly gone, the original refusal stands.
+    """
+    if session_factory is None:
+        session_factory = _SESSIONS.get()
+    if session_factory is None:
+        from meshpipeline.persistence.session import get_db as session_factory  # noqa: N813
+    repo = LeaseRepository()
+    try:
+        async with session_factory() as db:
+            ok = await repo.heartbeat(db, own)
+            if ok:
+                await db.commit()
+    except Exception as exc:  # noqa: BLE001 - ambiguous ownership fails closed
+        logger.error("fence recovery for job_id=%s could not re-verify the claim (%s) - "
+                     "failing CLOSED", own.job_id, type(exc).__name__)
+        raise StaleExecutionPublish(
+            f"{what}: fence recovery could not re-verify the claim for job {own.job_id} - "
+            "refusing to publish") from exc
+    if not ok:
+        raise StaleExecutionPublish(
+            f"{what}: the claim for job {own.job_id} (generation {own.execution_generation}) "
+            "no longer holds after a fence lapse - refusing to publish")
+    logger.warning("execution fence for job_id=%s generation=%d healed at the publish seam - "
+                   "the mirror had lapsed while the PostgreSQL claim was intact; lease renewed",
+                   own.job_id, own.execution_generation)
+
+
 async def remaining_pipeline_time(*, now: float | None = None) -> float:
     own = _OWNERSHIP.get()
     if own is None or own.pipeline_deadline_at is None:
@@ -95,7 +133,7 @@ async def _check(own: ExecutionOwnership, *, session_factory=None, _repo=LeaseRe
 
 
 __all__ = ["StaleWorkerFenced", "assert_current_owner", "is_current_owner", "current_ownership",
-           "execution_ownership", "remaining_pipeline_time"]
+           "execution_ownership", "remaining_pipeline_time", "reverify_and_heal_fence"]
 
 
 # #

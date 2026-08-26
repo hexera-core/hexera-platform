@@ -1371,6 +1371,19 @@
   ]
  },
  {
+  "context": "application/execution_fence.py::reverify_and_heal_fence::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/execution_fence.py",
+  "qualname": "reverify_and_heal_fence",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/execution_publisher.py::OwnershipCheckedPublisher.aaction::action#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
   "path": "application/execution_publisher.py",
   "qualname": "OwnershipCheckedPublisher.aaction",

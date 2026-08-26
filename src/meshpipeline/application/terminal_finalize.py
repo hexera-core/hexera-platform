@@ -264,7 +264,8 @@ def classify_crash(exc: BaseException) -> CrashClassification:
 
 
 async def durable_facts_after_crash(session_factory, *, job_id: str, approved: dict,
-                                    graph, graph_config, job_repo, jlog) -> dict:
+                                    graph, graph_config, job_repo, jlog,
+                                    used_durable_checkpointer: bool = False) -> dict:
     from meshpipeline.application.final_result import merge_durable_facts
 
     checkpoint_state: dict = {}
@@ -273,8 +274,27 @@ async def durable_facts_after_crash(session_factory, *, job_id: str, approved: d
             snap = await graph.aget_state(graph_config)
             checkpoint_state = dict(getattr(snap, "values", None) or {})
     except Exception as exc:                       # noqa: BLE001 - never depends on a read
-        jlog.warning("crash finalize: durable checkpoint unreadable (%s) - reporting only the "
-                     "approved intent", exc)
+        # On the durable path this read ALWAYS fails: the crash unwound the graph's own
+        # async-with first, closing its saver's connection before the handler ever ran. The
+        # facts are still in PostgreSQL - fall through to a fresh saver below. (MemorySaver
+        # runs keep their live binding, so a rung-1 success is the dev path's only source.)
+        jlog.warning("crash finalize: checkpoint unreadable through the run's own graph (%s) - "
+                     "trying a fresh saver", exc)
+    if not checkpoint_state and used_durable_checkpointer and graph_config is not None:
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            import meshpipeline.settings.providers as provcfg
+            from meshpipeline.pipeline.graph import build_graph
+            dsn = provcfg.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
+            # No cp.setup() in the crash path: mid-incident is no time for migration DDL,
+            # and if the tables are missing the read just falls into the intent fallback.
+            async with AsyncPostgresSaver.from_conn_string(dsn) as cp:
+                snap = await build_graph(checkpointer=cp).aget_state(graph_config)
+                checkpoint_state = dict(getattr(snap, "values", None) or {})
+        except Exception as exc:                   # noqa: BLE001 - never depends on a read
+            jlog.warning("crash finalize: durable checkpoint unreadable (%s) - reporting only "
+                         "the approved intent", exc)
     db_attempt = None
     try:
         async with session_factory() as db:
@@ -301,7 +321,7 @@ class CrashOutcome:
 async def finalize_crash(session_factory, exc: BaseException, *, job_id: str, owner_id: str,
                          assembly_defaults: TerminalAssembly, approved: dict,
                          graph, graph_config, ownership, lease_repo, job_repo,
-                         jlog, publish) -> CrashOutcome:
+                         jlog, publish, used_durable_checkpointer: bool = False) -> CrashOutcome:
     cls = classify_crash(exc)
     jlog.error("Job failed - system failure [%s] %s: %s", cls.failure_class.value,
                cls.dependency, exc)
@@ -325,7 +345,8 @@ async def finalize_crash(session_factory, exc: BaseException, *, job_id: str, ow
     try:
         facts = await durable_facts_after_crash(
             session_factory, job_id=job_id, approved=approved, graph=graph,
-            graph_config=graph_config, job_repo=job_repo, jlog=jlog)
+            graph_config=graph_config, job_repo=job_repo, jlog=jlog,
+            used_durable_checkpointer=used_durable_checkpointer)
         from dataclasses import replace
         assembly = replace(
             assembly_defaults, job_id=job_id, owner_id=owner_id, status=JobStatus.failed,
