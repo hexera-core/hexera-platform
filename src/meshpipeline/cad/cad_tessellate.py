@@ -55,44 +55,144 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
     return out_stl
 
 
+# The declaration-vs-face tolerance of opening selection: the same symmetric 25% area band
+# the engine binder uses, applied to BOTH size measures a candidate offers (its own face
+# area, and - for an annular ring face - the area its inner wire encloses).
+_AREA_BAND_LO = 0.75
+_AREA_BAND_HI = 1.25
+# Per-dimension band for shape agreement (declared bore diameter / W x H against a ring's
+# inner-wire extents): the linear equivalent of the area band.
+_LIN_BAND_LO = _AREA_BAND_LO ** 0.5
+_LIN_BAND_HI = _AREA_BAND_HI ** 0.5
+# Candidates whose relative size disagreement lands within the same 1% are EQUALLY matching -
+# the difference is rim-discretization/manufacturing noise, not evidence - and among equals
+# the SMALLEST face wins: the thin end ring hugging the bore, never the broad flange annulus
+# around the very same hole. 1% sits an order above rim-discretization drift (~0.1% at the
+# default deflection) and well below the 25% band.
+_SIZE_ERR_QUANTUM = 0.01
+# Centroid distances within a micrometre are ONE location: concentric ring faces (a duct
+# wall's end ring inside its stacked flange annuli) differ there only by float noise.
+_DIST_QUANTUM_M = 1e-6
+
+
+def _band_ok(measured: float, declared: float) -> bool:
+    ratio = measured / declared
+    return _AREA_BAND_LO <= ratio <= _AREA_BAND_HI
+
+
+# How much of its own W x H box an opening fills: pi/4 for a circle, 1 for a rectangle.
+# The fill factors sit 0.215 apart, so +/-0.1 tells the shapes apart while forgiving
+# rounded rectangle corners and chamfered bores.
+_FILL_CIRCLE = math.pi / 4.0
+_FILL_RECT = 1.0
+_FILL_TOL = 0.1
+
+
+def _shape_agrees(opening: dict, port: dict) -> bool:
+    """Dimension-level agreement between a declared shape and a ring candidate's inner-wire
+    opening: circles by bore diameter, rectangles by W x H (order-free), each backed by the
+    opening's fill factor - an equal-area square is only 11% narrower than the circle (the
+    linear band alone cannot reject it) but fills its box 27% fuller. A port declaring only
+    an area has no shape to check; an opening without measured extents cannot disagree."""
+    wh = opening.get("wh_m")
+    if not wh or not (wh[0] > 0.0 and wh[1] > 0.0):
+        return True
+    if port.get("d_m"):
+        want = (float(port["d_m"]), float(port["d_m"]))
+        fill_want = _FILL_CIRCLE
+    elif port.get("wh_m"):
+        want = (float(port["wh_m"][0]), float(port["wh_m"][1]))
+        fill_want = _FILL_RECT
+    else:
+        return True
+    (a, b), (p, q) = sorted(wh), sorted(want)
+    if not (_LIN_BAND_LO <= a / p <= _LIN_BAND_HI
+            and _LIN_BAND_LO <= b / q <= _LIN_BAND_HI):
+        return False
+    fill = float(opening.get("area_m2") or 0.0) / (wh[0] * wh[1])
+    return abs(fill - fill_want) <= _FILL_TOL
+
+
 def select_declared_openings(candidates: list, declared: list) -> list:
     """Pick which candidate faces are the DECLARED openings. candidates: (idx, area_m2,
-    centroid) per planar face; declared: {name, area_m2|None, near_m|None} per port. Hints
-    claim the nearest unclaimed face; sizes claim within the +/-25% band (the binder's own
-    tolerance). Deterministic: ports in name order, hinted ports first. A port no face can
-    satisfy refuses with the measured face list - the geometry and the words disagree, and
-    only the user can settle that."""
-    remaining = {int(i): (float(a), tuple(c)) for i, a, c in candidates}
+    centroid[, opening]) per planar face, where the optional opening describes what an
+    ANNULAR (ring) face's largest inner wire encloses: {area_m2, centroid, wh_m}.
+    declared: {name, area_m2|None, near_m|None[, d_m, wh_m]} per port.
+
+    A declared size may match a candidate by EITHER measure, inside the same +/-25% band
+    (the binder's own tolerance): the face's own area (a solid-model disc IS its opening),
+    or the area a ring face's inner wire encloses - a thin-walled duct's end ring is a few
+    thousand mm² of metal around a half-metre bore, and the declaration talks about the
+    bore. An inner-wire match must also agree in shape (bore diameter for circles, W x H
+    for rectangles) when the declaration states one.
+
+    Hints claim the nearest unclaimed face; among faces at one location (a concentric ring
+    stack: the duct end ring inside its flange annuli) the best size agreement wins, and
+    within noise-equal agreement the smallest face - the ring hugging the opening, never
+    the flange annulus around it. Deterministic: ports in name order, hinted ports first.
+    A port no face can satisfy refuses with the measured face list - the geometry and the
+    words disagree, and only the user can settle that."""
+    remaining: dict = {}
+    for cand in candidates:
+        opening = cand[3] if len(cand) > 3 else None
+        remaining[int(cand[0])] = (float(cand[1]), tuple(cand[2]), opening)
     chosen: list[int] = []
 
     def _dist(p, q):
         return sum((p[k] - q[k]) ** 2 for k in range(3)) ** 0.5
+
+    def _size_err(area, opening, port):
+        # the smallest relative disagreement any admissible measure achieves inside the
+        # band, or None when the declared size fits by neither measure
+        declared_area = float(port["area_m2"])
+        errs = []
+        if _band_ok(area, declared_area):
+            errs.append(abs(area / declared_area - 1.0))
+        if (opening is not None and opening.get("area_m2")
+                and _shape_agrees(opening, port)
+                and _band_ok(float(opening["area_m2"]), declared_area)):
+            errs.append(abs(float(opening["area_m2"]) / declared_area - 1.0))
+        return min(errs) if errs else None
 
     hinted = sorted((p for p in declared if p.get("near_m")), key=lambda p: str(p.get("name")))
     sized = sorted((p for p in declared if not p.get("near_m")),
                    key=lambda p: str(p.get("name")))
     for port in hinted + sized:
         best = None
-        for idx, (area, cen) in remaining.items():
+        for idx, (area, cen, opening) in remaining.items():
             if port.get("area_m2"):
-                ratio = area / float(port["area_m2"])
-                if not (0.75 <= ratio <= 1.25):
+                err = _size_err(area, opening, port)
+                if err is None:
                     continue
-            if port.get("near_m"):
-                score = _dist(tuple(port["near_m"]), cen)
+                err_bucket = int(err / _SIZE_ERR_QUANTUM)
+                tie_area = area
             else:
-                score = abs(area - float(port.get("area_m2") or area))
-            if best is None or score < best[1] or (score == best[1] and idx < best[0]):
-                best = (idx, score)
+                err_bucket, tie_area = 0, 0.0   # no declared size: hint alone decides
+            if port.get("near_m"):
+                d = _dist(tuple(port["near_m"]), cen)
+                score = (round(d / _DIST_QUANTUM_M), err_bucket, tie_area, idx)
+            else:
+                score = (0, err_bucket, tie_area, idx)
+            if best is None or score < best[0]:
+                best = (score, idx)
         if best is None:
-            faces = "; ".join(f"face[{i}]: {a * 1e6:.0f} mm² at ({c[0]:.3f}, {c[1]:.3f}, "
-                              f"{c[2]:.3f}) m" for i, (a, c) in sorted(remaining.items()))
+            rows = []
+            for i, (a, c, opening) in sorted(remaining.items()):
+                row = (f"face[{i}]: {a * 1e6:.0f} mm² at ({c[0]:.3f}, {c[1]:.3f}, "
+                       f"{c[2]:.3f}) m")
+                if opening is not None and opening.get("area_m2"):
+                    w, h = opening.get("wh_m") or (0.0, 0.0)
+                    row += (f" (ring face; inner opening "
+                            f"{float(opening['area_m2']) * 1e6:.0f} mm²"
+                            + (f", {w * 1e3:.0f} x {h * 1e3:.0f} mm" if w and h else "")
+                            + ")")
+                rows.append(row)
             raise ValueError(
                 f"declared port {port.get('name')!r} matches none of the remaining flat "
-                f"faces - measured: {faces}. State the port's size or rough location so the "
-                "opening can be identified, or correct the declaration.")
-        chosen.append(best[0])
-        del remaining[best[0]]
+                f"faces - measured: {'; '.join(rows)}. State the port's size or rough "
+                "location so the opening can be identified, or correct the declaration.")
+        chosen.append(best[1])
+        del remaining[best[1]]
     return chosen
 
 
@@ -120,6 +220,82 @@ def _newell_frame(pts: list) -> tuple | None:
         return None
     c = tuple(sum(p[k] for p in pts) / m for k in range(3))
     return (nx / norm, ny / norm, nz / norm), c
+
+
+def _convex_hull_2d(pts: list) -> list:
+    """Convex hull of 2D points (Andrew monotone chain), counter-clockwise, no
+    duplicates. Degenerate inputs (all collinear) return the chain itself."""
+    pts = sorted(set(pts))
+    if len(pts) < 3:
+        return pts
+
+    def _half(seq):
+        out: list = []
+        for p in seq:
+            while len(out) > 1 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                    - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out[:-1]
+
+    return _half(pts) + _half(list(reversed(pts)))
+
+
+def _min_rect_wh(p2: list) -> tuple:
+    """(short, long) side lengths of the minimum-area rectangle enclosing 2D points
+    (convex hull + rotating calipers). Rotation-independent, which is what a declared
+    opening needs: a rectangle measures its true sides at any in-plane orientation and a
+    circle measures d x d, where axis-aligned extents would inflate a rotated rectangle."""
+    hull = _convex_hull_2d([tuple(p) for p in p2])
+    if len(hull) < 3:
+        xs = [p[0] for p in p2] or [0.0]
+        ys = [p[1] for p in p2] or [0.0]
+        return tuple(sorted((max(xs) - min(xs), max(ys) - min(ys))))
+    best: tuple | None = None
+    for i in range(len(hull)):
+        ex = hull[(i + 1) % len(hull)][0] - hull[i][0]
+        ey = hull[(i + 1) % len(hull)][1] - hull[i][1]
+        el = math.hypot(ex, ey)
+        if el <= 0.0:
+            continue
+        ux, uy = ex / el, ey / el
+        us = [p[0] * ux + p[1] * uy for p in hull]
+        vs = [-p[0] * uy + p[1] * ux for p in hull]
+        w, h = max(us) - min(us), max(vs) - min(vs)
+        if best is None or w * h < best[0] * best[1]:
+            best = (w, h)
+    return tuple(sorted(best)) if best else (0.0, 0.0)
+
+
+def _rim_measure(pts: list) -> dict | None:
+    """What a closed planar rim polyline encloses: {"area_m2", "centroid", "wh_m"}, or
+    None when degenerate. The area is half the Newell normal's magnitude - exact for a
+    planar polygon - and wh_m are the minimum enclosing rectangle's sides in the rim's
+    own plane, shortest first."""
+    nx = ny = nz = 0.0
+    m = len(pts)
+    if m < 3:
+        return None
+    for i in range(m):
+        px, py, pz = pts[i]
+        qx, qy, qz = pts[(i + 1) % m]
+        nx += (py - qy) * (pz + qz)
+        ny += (pz - qz) * (px + qx)
+        nz += (px - qx) * (py + qy)
+    norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if norm <= 0.0:
+        return None
+    n = (nx / norm, ny / norm, nz / norm)
+    c = tuple(sum(p[k] for p in pts) / m for k in range(3))
+    ax = (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0)
+    ux, uy, uz = (n[1] * ax[2] - n[2] * ax[1], n[2] * ax[0] - n[0] * ax[2],
+                  n[0] * ax[1] - n[1] * ax[0])
+    un = math.sqrt(ux * ux + uy * uy + uz * uz)
+    ux, uy, uz = ux / un, uy / un, uz / un
+    vx, vy, vz = (n[1] * uz - n[2] * uy, n[2] * ux - n[0] * uz, n[0] * uy - n[1] * ux)
+    p2 = [((p[0] - c[0]) * ux + (p[1] - c[1]) * uy + (p[2] - c[2]) * uz,
+           (p[0] - c[0]) * vx + (p[1] - c[1]) * vy + (p[2] - c[2]) * vz) for p in pts]
+    return {"area_m2": 0.5 * norm, "centroid": c, "wh_m": _min_rect_wh(p2)}
 
 
 def _ring_membrane(ring: list) -> list:
@@ -350,6 +526,63 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         c = g.CentreOfMass()
         return g.Mass(), (c.X(), c.Y(), c.Z())
 
+    def _wires_of(f):
+        wires = []
+        we = TopExp_Explorer(f, TopAbs_WIRE)
+        while we.More():
+            wires.append(TopoDS.Wire_s(we.Current())); we.Next()
+        return wires
+
+    def _rim_polyline(f, wire):
+        # the wire's discretization inside f's own triangulation, so any membrane built
+        # on these points is vertex-identical with the surrounding surface triangles
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(f, loc)
+        if tri is None:
+            return []
+        trsf = loc.Transformation()
+        pts: list = []
+        wexp = BRepTools_WireExplorer(wire, f)
+        while wexp.More():
+            edge = wexp.Current()
+            pol = BRep_Tool.PolygonOnTriangulation_s(edge, tri, loc)
+            if pol is None:
+                return []
+            nodes = pol.Nodes()
+            seq = [tri.Node(nodes.Value(k)).Transformed(trsf)
+                   for k in range(nodes.Lower(), nodes.Upper() + 1)]
+            if edge.Orientation() == TopAbs_REVERSED:
+                seq.reverse()
+            for p in seq:
+                q = (p.X(), p.Y(), p.Z())
+                if not pts or pts[-1] != q:
+                    pts.append(q)
+            wexp.Next()
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        return pts
+
+    def _inner_opening(f):
+        """What the largest inner wire of a planar face encloses - the OPENING an
+        annular (ring) face rims: {"area_m2", "centroid", "wh_m"}. None for a
+        single-wire face (a solid-model disc IS its own opening) and when no inner rim
+        is measurable on the triangulation. Largest wins because the biggest hole of a
+        flanged end face is the bore; the small ones around it are bolt holes."""
+        wires = _wires_of(f)
+        if len(wires) < 2:
+            return None
+        outer_w = BRepTools.OuterWire_s(f)
+        best = None
+        for wire in wires:
+            if wire.IsSame(outer_w):
+                continue
+            measured = _rim_measure(_rim_polyline(f, wire))
+            if measured is None:
+                continue
+            if best is None or measured["area_m2"] > best["area_m2"]:
+                best = measured
+        return best
+
     wall_idx: list[int] = []
     open_idx: list[int] = []
     for i, f in enumerate(faces):
@@ -362,7 +595,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         # More flat faces than declared ports: a box duct's walls are as planar as its ends,
         # and calling them all openings left the wall with zero triangles. The DECLARATION
         # says which ones are real - select those, wall the rest.
-        cands = [(i, *_face_props(faces[i])) for i in open_idx]
+        cands = [(i, *_face_props(faces[i]), _inner_opening(faces[i])) for i in open_idx]
         keep = set(select_declared_openings(cands, declared_ports))
         wall_idx.extend(i for i in open_idx if i not in keep)
         open_idx = [i for i in open_idx if i in keep]
@@ -405,13 +638,6 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             bld.Add(comp, xf)
         w = StlAPI_Writer(); w.ASCIIMode = False
         w.Write(comp, str(path))
-
-    def _wires_of(f):
-        wires = []
-        we = TopExp_Explorer(f, TopAbs_WIRE)
-        while we.More():
-            wires.append(TopoDS.Wire_s(we.Current())); we.Next()
-        return wires
 
     def _cap_for_wire(pln, wire):
         # the host orients its hole wire so material lies OUTSIDE it; a face built
@@ -483,35 +709,6 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     # leaves the part without re-entering it (a perforated internal baffle fails this
     # and is left alone; its holes join fluid to fluid, not fluid to exterior).
     # #
-    def _rim_polyline(f, wire):
-        # the wire's discretization inside f's own triangulation, so any membrane built
-        # on these points is vertex-identical with the surrounding surface triangles
-        loc = TopLoc_Location()
-        tri = BRep_Tool.Triangulation_s(f, loc)
-        if tri is None:
-            return []
-        trsf = loc.Transformation()
-        pts: list = []
-        wexp = BRepTools_WireExplorer(wire, f)
-        while wexp.More():
-            edge = wexp.Current()
-            pol = BRep_Tool.PolygonOnTriangulation_s(edge, tri, loc)
-            if pol is None:
-                return []
-            nodes = pol.Nodes()
-            seq = [tri.Node(nodes.Value(k)).Transformed(trsf)
-                   for k in range(nodes.Lower(), nodes.Upper() + 1)]
-            if edge.Orientation() == TopAbs_REVERSED:
-                seq.reverse()
-            for p in seq:
-                q = (p.X(), p.Y(), p.Z())
-                if not pts or pts[-1] != q:
-                    pts.append(q)
-            wexp.Next()
-        if len(pts) > 1 and pts[0] == pts[-1]:
-            pts.pop()
-        return pts
-
     def _gap_is_void(pts, c, n, eps):
         # nothing fills the hole: just off BOTH sides of its span there is no material.
         # Near-rim samples matter - a plug (fused stub/boss) always has material right
@@ -541,6 +738,46 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                 return True
         return False
 
+    # #
+    # PORT-MOUTH NEIGHBOURHOOD. A flanged mouth is rimmed by SEVERAL coaxial ring faces:
+    # the duct wall's end ring (the chosen port face) plus flange annuli around and just
+    # behind the very same hole. Once the port face is chosen the flange faces are wall,
+    # and each one's inner wire still reads as an opening to the probes below - nothing
+    # fills it and it sees the exterior, because it IS the port's own mouth seen through
+    # the flange stack. Sealing it would cap the declared opening into the wall: flow
+    # shut at its own inlet. A wall-face hole belongs to a mouth, not to an undeclared
+    # opening, when its plane is parallel to the port's, it sits on the port's axis
+    # within a quarter mouth radius (axially and laterally), and it is mouth-sized
+    # (>= 3/4 of the mouth radius). A bolt hole beside the bore fails the lateral test
+    # and a small tap at the mouth fails the size test - both stay sealable.
+    # #
+    mouth_frames: list = []
+    for pi in (inlet_i, *outlet_ids):
+        pf = faces[pi]
+        prof = _inner_opening(pf)
+        if prof is not None:
+            m_c, m_area = prof["centroid"], prof["area_m2"]
+        else:
+            m_area, m_c = _face_props(pf)
+        m_ax = BRepAdaptor_Surface(pf).Plane().Axis().Direction()
+        mouth_frames.append((tuple(m_c), (m_ax.X(), m_ax.Y(), m_ax.Z()),
+                             _m.sqrt(max(m_area, 0.0) / _m.pi)))
+
+    def _is_port_mouth(c, n, hole_area) -> bool:
+        r_hole = _m.sqrt(max(hole_area, 0.0) / _m.pi)
+        for pc, pn, pr in mouth_frames:
+            if pr <= 0.0:
+                continue
+            if abs(sum(n[k] * pn[k] for k in range(3))) < 0.99:
+                continue
+            off = [c[k] - pc[k] for k in range(3)]
+            axial = sum(off[k] * pn[k] for k in range(3))
+            lateral = _m.sqrt(max(sum(v * v for v in off) - axial * axial, 0.0))
+            if (abs(axial) <= 0.25 * pr and lateral <= 0.25 * pr
+                    and r_hole >= 0.75 * pr):
+                return True
+        return False
+
     undeclared_caps: list = []        # OCC cap faces (planar hosts) -> the wall group
     undeclared_membranes: list = []   # raw membrane triangles (curved hosts) -> wall.stl
     sealed_openings: list[dict] = []
@@ -562,6 +799,14 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             if frame is None:
                 continue
             n, c = frame
+            hole = _rim_measure(pts)
+            if hole is not None and _is_port_mouth(c, n, hole["area_m2"]):
+                logger.info(
+                    "tessellate_internal: face %d's inner wire (%.0f mm^2 at "
+                    "(%.3f, %.3f, %.3f) m) rims a declared port mouth - it is the "
+                    "port's to cap, not an undeclared opening", wi,
+                    hole["area_m2"] * 1e6, *c)
+                continue
             perim = sum(_m.dist(pts[i], pts[(i + 1) % len(pts)])
                         for i in range(len(pts)))
             eps = 0.1 * perim / (2.0 * _m.pi)       # a tenth of the hole's own radius
@@ -684,17 +929,28 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                            "locationInMesh (geometry may not be a closed volume)")
 
     n_wall_faces = sum(len(read_stl_triangles(stls["wall"])) for _ in [0])
+
+    def _opening_record(pi):
+        # the face's own measure, plus - for an annular (ring) port face - what its inner
+        # wire encloses: the OPENING the declaration talks about, which downstream size
+        # matching may use where the ring's metal area cannot (engines/port_binding)
+        rec = {"area": round(_face_props(faces[pi])[0], 8),
+               "centroid": [round(v, 6) for v in _face_props(faces[pi])[1]]}
+        prof = _inner_opening(faces[pi])
+        if prof is not None:
+            rec["opening"] = {"area": round(prof["area_m2"], 8),
+                              "centroid": [round(v, 6) for v in prof["centroid"]],
+                              "wh": [round(v, 6) for v in prof["wh_m"]]}
+        return rec
+
     return {
         "stls": {k: str(v) for k, v in stls.items()},
         "interior_point": [round(v, 6) for v in interior],
         "bbox_min": [round(v, 6) for v in (x0, y0, z0)],
         "bbox_max": [round(v, 6) for v in (x1, y1, z1)],
         "openings": {
-            "inlet": {"area": round(_face_props(faces[inlet_i])[0], 8),
-                      "centroid": [round(v, 6) for v in _face_props(faces[inlet_i])[1]]},
-            **{nm: {"area": round(_face_props(faces[oi])[0], 8),
-                    "centroid": [round(v, 6) for v in _face_props(faces[oi])[1]]}
-               for nm, oi in zip(outlet_names, outlet_ids)}},
+            "inlet": _opening_record(inlet_i),
+            **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}},
         "n_wall_faces": n_wall_faces,
         # what was sealed into the wall beyond the declared ports, for manifests and
         # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
