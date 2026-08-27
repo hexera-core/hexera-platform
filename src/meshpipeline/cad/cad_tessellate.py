@@ -245,6 +245,36 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
     interior = next((p for p in candidates if _inside(p)), None)
     if interior is None:
+        # HOLLOW-WALL FALLBACK. Everything above assumes the input solid IS the fluid
+        # volume (a duct modeled as a solid rod), where inside-the-solid means inside the
+        # flow. A real machined part - a rocket nozzle - is METAL with a channel through
+        # it: the channel is NOT inside the solid, so every rod-semantics candidate is
+        # correctly rejected and the old code died here. For a hollow part the right test
+        # inverts: a point IN the channel is NOT in the metal. Direction is what makes it
+        # safe - nudging a port centroid TOWARD THE OTHER PORT walks down the channel by
+        # construction (an annular mouth's centroid sits in the void at the channel mouth),
+        # so a not-in-metal point found this way is in the flow region, never in the
+        # exterior void around the part.
+        pc_in = _face_props(faces[inlet_i])[1]
+        for oi in outlet_ids:
+            pc_out = _face_props(faces[oi])[1]
+            seg = [pc_out[k] - pc_in[k] for k in range(3)]
+            seg_len = _m.sqrt(sum(v * v for v in seg)) or 1.0
+            u = [v / seg_len for v in seg]
+            r_in = _m.sqrt(_face_props(faces[inlet_i])[0] / _m.pi)
+            r_out = _m.sqrt(_face_props(faces[oi])[0] / _m.pi)
+            hollow = []
+            for base, direction, radius in ((pc_in, 1.0, r_in), (pc_out, -1.0, r_out)):
+                step = min(0.5 * radius, 0.1 * seg_len)
+                hollow.append(tuple(base[k] + direction * step * u[k] for k in range(3)))
+            hollow.append(tuple(pc_in[k] + 0.5 * seg_len * u[k] for k in range(3)))
+            interior = next((p for p in hollow if not _inside(p)), None)
+            if interior is not None:
+                logger.info("tessellate_internal: hollow-wall fluid point found on the "
+                            "inlet-outlet segment (rod-semantics candidates were all "
+                            "inside the metal's complement)")
+                break
+    if interior is None:
         raise RuntimeError("could not locate a point inside the fluid solid for "
                            "locationInMesh (geometry may not be a closed volume)")
 
