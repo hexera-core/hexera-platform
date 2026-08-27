@@ -16,6 +16,36 @@ from typing import Any, Protocol, runtime_checkable
 RC_INFRASTRUCTURE = -3
 
 
+#: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
+#: submission belongs to. An engine driver runs several plan->mesh->judge passes inside one
+#: attempt, all in the attempt's one workspace, and the submission authority sees nothing but
+#: that workspace - so the pass index crosses the seam the same way the attempt does: recorded
+#: in the workspace, read back where the operation identity is composed. It lives HERE for the
+#: same reason RC_INFRASTRUCTURE does: engines/ writes it and application/ reads it, engines/
+#: may not import application/, and two spellings of one file name is how the two sides stop
+#: describing the same pass.
+NATIVE_PASS_FACT = ".native_pass"  # noqa: S105 - a workspace file name, not a credential
+
+
+def note_native_pass(workspace: Any, pass_index: int) -> None:
+    # Recorded BEFORE dispatch, overwritten per pass. The driver numbers its passes from its own
+    # control flow, so a re-executed node re-derives the same number for the same pass - which is
+    # exactly what lets a replay deduplicate while a revised pass claims a run of its own.
+    from pathlib import Path
+    Path(workspace, NATIVE_PASS_FACT).write_text(str(int(pass_index)), encoding="utf-8")
+
+
+def read_native_pass(workspace: Any) -> int | None:
+    # Fail closed: an absent or unreadable fact means "no pass recorded", never a guessed one -
+    # the caller then keeps the identity it composed without it, exactly the old behaviour.
+    from pathlib import Path
+    try:
+        text = Path(workspace, NATIVE_PASS_FACT).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
 class MeshExecutionError(RuntimeError):
     pass
 
