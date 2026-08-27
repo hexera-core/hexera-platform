@@ -74,3 +74,67 @@ async def test_failing_rounds_get_distinct_op_ids(tmp_path, monkeypatch):
 
     assert len(seen) == 3 and len(set(seen)) == 3, seen
     assert seen == ["planner:2:1:1", "planner:2:1:2", "planner:2:1:3"]
+
+
+def test_attempt_of_reads_the_state_key_the_pipeline_actually_carries():
+    # `_attempt_of` used to read `current_attempt`, a key PipelineState never carries, so EVERY
+    # invocation reported attempt 1 - and a retried builder invocation replayed the previous
+    # one's planner op_ids (planner:1:N:N) with revised payloads, which the durable authority
+    # quarantined as a CONFLICTING replay. The attempt comes from `retry_count`, 1-based to
+    # match the attempt_N workspace naming (attempt.prepare: retry_count + 1).
+    import meshpipeline.engines.snappy.drivers as drv
+
+    assert drv._attempt_of({"retry_count": 0}) == 1
+    assert drv._attempt_of({"retry_count": 2}) == 3
+    assert drv._attempt_of({"retry_count": "1"}) == 2
+    # fail closed: an absent or unusable count is attempt 1, exactly the old fallback
+    assert drv._attempt_of({}) == 1
+    assert drv._attempt_of(None) == 1
+    assert drv._attempt_of({"retry_count": "x"}) == 1
+
+
+def test_retried_invocations_write_distinct_planner_identities(capture_authority, monkeypatch):
+    # THE observed quarantine (op planner:1:3:3, twice, two payloads): invocation 1 and its
+    # pipeline retry each logged pass 3's planner record under attempt 1. With the attempt read
+    # from the state's real key, the retry's records are its own - both survive as trusted.
+    from tests.capture_authority import CAPTURE_OWNER
+    from tests.product_modes import set_modes
+
+    import meshpipeline.engines.snappy.drivers as drv
+    from meshpipeline.capture.logger import TrainingLogger
+
+    set_modes(monkeypatch, collection=True)
+    att1 = drv._attempt_of({"retry_count": 0})
+    att2 = drv._attempt_of({"retry_count": 1})
+    assert att1 != att2
+    TrainingLogger("j-retry").log("planner_run", {"plan": {"quality": "balanced"}},
+                                  attempt=att1, op_id=f"planner:{att1}:3:3")
+    TrainingLogger("j-retry").log("planner_run", {"plan": {"quality": "strict"}},
+                                  attempt=att2, op_id=f"planner:{att2}:3:3")
+
+    rows = capture_authority.trusted_operations(owner_id=CAPTURE_OWNER, job_id="j-retry")
+    assert [r["name"] for r in rows] == ["planner_run", "planner_run"]
+    assert {r["attempt"] for r in rows} == {att1, att2}
+    assert not capture_authority.conflicted_operations(owner_id=CAPTURE_OWNER, job_id="j-retry")
+
+
+def test_the_same_occurrence_with_a_revised_payload_is_still_quarantined(capture_authority,
+                                                                         monkeypatch):
+    # Fail-closed is untouched: ONE occurrence arriving twice with two payloads is
+    # nondeterminism or a real replay disagreement, and neither payload may be exported -
+    # while a byte-identical replay stays a plain duplicate.
+    from tests.capture_authority import CAPTURE_OWNER
+    from tests.product_modes import set_modes
+
+    from meshpipeline.capture.logger import TrainingLogger
+
+    set_modes(monkeypatch, collection=True)
+    TrainingLogger("j-q").log("planner_run", {"plan": 1}, attempt=1, op_id="planner:1:3:3")
+    TrainingLogger("j-q").log("planner_run", {"plan": 1}, attempt=1, op_id="planner:1:3:3")
+    (row,) = capture_authority.trusted_operations(owner_id=CAPTURE_OWNER, job_id="j-q")
+    assert row["payload"] == {"plan": 1}, "an exact replay deduplicates"
+
+    TrainingLogger("j-q").log("planner_run", {"plan": 2}, attempt=1, op_id="planner:1:3:3")
+    assert capture_authority.trusted_operations(owner_id=CAPTURE_OWNER, job_id="j-q") == []
+    (conflict,) = capture_authority.conflicted_operations(owner_id=CAPTURE_OWNER, job_id="j-q")
+    assert conflict["conflict_evidence"], "the competing digest is kept as evidence"

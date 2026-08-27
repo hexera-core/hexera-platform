@@ -125,6 +125,13 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     # FENCE FIRST. The trace opens only where ownership permits: a superseded
     # generation must not tell a reader it started a mesh it does not own.
     await run.fence("start native mesh")
+    # THE PASS IS PART OF THE SUBMISSION IDENTITY. Recorded in the workspace because the
+    # workspace is all that crosses the executor seam: the submission authority reads it back
+    # (native_submission.attempt_scoped_operation), so pass 2's revised case claims a native
+    # run of its own instead of being refused as a conflicting replay of pass 1's claim -
+    # which is what left every pass after the first stillborn ("the mesh run never started").
+    from meshpipeline.contracts.mesh_execution import note_native_pass
+    note_native_pass(workspace, native_attempt)
     _op = await _op_begin(publish, "run_native_mesher", run, native_attempt)
     try:
         from meshpipeline.engines.mesh_history import estimate as _est
@@ -707,9 +714,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
 
 
 def _attempt_of(state) -> int:
-    raw = (state or {}).get("current_attempt")
+    # The 1-based pipeline attempt, numbered exactly as the attempt_N workspace is
+    # (agents/builder/attempt.prepare: retry_count + 1). This used to read `current_attempt`,
+    # a key PipelineState never carries, so EVERY builder invocation reported attempt 1 - and a
+    # retried invocation then replayed the previous one's capture op_ids (planner:1:N:N) with
+    # revised payloads, which the durable authority rightly quarantined as a CONFLICTING replay.
+    # The attempt is part of the identity only when it is the real attempt.
+    raw = (state or {}).get("retry_count")
     try:
-        return int(raw) if isinstance(raw, (int, str)) else 1
+        return int(raw) + 1 if isinstance(raw, (int, str)) else 1
     except (TypeError, ValueError):
         return 1
 
@@ -720,8 +733,10 @@ async def _op_begin(publish: ExecutionEventPublisher, op: str, run,
     try:
         # The MESHING PASS is part of the identity. Every pass authors its own configuration and
         # runs its own mesher, so without it three separate operations arrive under one event id
-        # and a reader keyed by that id sees one operation changing its mind.
-        cid = (f"op:{getattr(run, 'job_id', '') or 'job'}:{getattr(run, 'attempt', 0)}"
+        # and a reader keyed by that id sees one operation changing its mind. The run object
+        # carries the pipeline attempt as `pipeline_attempt` - the old spelling read `attempt`,
+        # an attribute BuilderDriverRun never had, so every invocation stamped 0 here.
+        cid = (f"op:{getattr(run, 'job_id', '') or 'job'}:{getattr(run, 'pipeline_attempt', 0)}"
                f":{int(native_attempt)}:{op}")
         await publish.atool_call(cid, op, None, "started", op_id=cid)
         return cid

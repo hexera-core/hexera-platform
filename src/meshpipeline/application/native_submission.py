@@ -43,7 +43,8 @@ def _infrastructure_failure(engine: str, detail: str) -> dict:
 
 
 def attempt_scoped_operation(workspace: Any) -> str:
-    """The semantic operation for THIS planned attempt.
+    """The semantic operation for THIS planned attempt - and THIS meshing pass of it, when the
+    workspace records one.
 
     The identity used to be job + generation alone, which encodes "one native submission per
     generation". The builder, meanwhile, re-plans within a generation: a failed gate produces a
@@ -59,17 +60,34 @@ def attempt_scoped_operation(workspace: Any) -> str:
     twice (same key, digest compared), a stale worker is still refused by the ownership predicate,
     and total spend stays bounded by the attempt cap the graph already enforces.
 
-    A workspace that does not name an attempt falls back to the generation-scoped identity -
+    The SAME collapse then re-appeared one level down. The deterministic snappy driver runs
+    several planned meshing passes inside one attempt - plan, mesh, judge, re-plan - all in the
+    attempt's single workspace, so the attempt-scoped identity made pass 2's revised case a
+    "different payload" for pass 1's claim: every pass after the first was refused before
+    dispatch as an identity conflict, and the driver's whole repair ladder was dead by
+    construction again. The pass index therefore joins the identity by the same argument the
+    attempt did: the driver numbers passes from its own control flow, so a re-executed node
+    re-derives the same number for the same pass - a replay of pass 2 is pass 2 and
+    deduplicates, while a revised plan is pass 3 and claims a run of its own, still bounded by
+    the pass cap the driver already enforces. The driver records the pass in the workspace
+    (contracts.mesh_execution.note_native_pass) because the workspace is the only thing that
+    crosses this seam.
+
+    A workspace that names no attempt and records no pass keeps the generation-scoped identity -
     exactly the old behaviour, fail closed.
     """
+    from meshpipeline.contracts.mesh_execution import read_native_pass
     from meshpipeline.persistence.repositories.native_submission_repository import (
         NATIVE_MESH_SUBMISSION,
     )
 
     m = re.fullmatch(r"attempt_(\d+)", Path(workspace).name)
-    if m is None:
-        return NATIVE_MESH_SUBMISSION
-    return f"{NATIVE_MESH_SUBMISSION}:attempt_{int(m.group(1))}"
+    operation = (NATIVE_MESH_SUBMISSION if m is None
+                 else f"{NATIVE_MESH_SUBMISSION}:attempt_{int(m.group(1))}")
+    pass_index = read_native_pass(workspace)
+    if pass_index is None:
+        return operation
+    return f"{operation}:pass_{pass_index}"
 
 
 class ClaimingMeshExecutor:

@@ -411,3 +411,28 @@ def test_every_plan_round_is_handed_the_publisher():
     assert unpublished == [], (
         f"plan_with_accounting is called without `publish` at line(s) {unpublished} - "
         "that round will stream its reasoning into nothing")
+
+
+# submission identity: the pass fact
+def test_each_native_dispatch_records_its_pass_before_the_workspace_is_read(
+        trace, tmp_path, monkeypatch):
+    # The submission authority derives the operation identity from the workspace alone, so the
+    # pass fact must be ON DISK when the executor reads the workspace - otherwise pass 2's
+    # revised case is a conflicting replay of pass 1's claim and dies before dispatch.
+    import meshpipeline.engines.snappy.snappy_runner as _sr
+    from meshpipeline.contracts.mesh_execution import NATIVE_PASS_FACT
+
+    seen: list[str] = []
+
+    def _snap(workspace, **_kw):
+        seen.append((Path(workspace) / NATIVE_PASS_FACT).read_text())
+        return {"rc": 0}
+
+    monkeypatch.setattr(_sr, "run_snappy", _snap)
+    monkeypatch.setattr(drv.scfg, "MAX_SNAPPY_ATTEMPTS", 2, raising=False)
+    trace.mesh_good = False                     # every pass falls short, so the driver re-plans
+    _run_for(trace, tmp_path, monkeypatch, plan_rounds=2)
+
+    assert seen == ["1", "2"], (
+        "each planned pass must record its own index for the submission identity; "
+        f"the dispatches saw {seen}")
