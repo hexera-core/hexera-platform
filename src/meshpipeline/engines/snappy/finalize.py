@@ -110,10 +110,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                 _per = _lc.get("per_patch", {}) or {}
                 # coverage on the WALL patches (exclude the box faces that carry no layers)
                 _walls = {n: v for n, v in _per.items() if n not in ("farfield", "symmetry")}
+                # PROVENANCE travels with the number: 'overall' is the AREAL cells-added
+                # headline; 'per_patch_min' is a THICKNESS-percent fallback measuring a
+                # different thing. Downstream policy (layer-coverage caveat eligibility)
+                # accepts only the areal figure and fails closed on the fallback or an
+                # absent key - so the source is stated, never inferred.
                 if _lc.get("overall_pct") is not None:
                     q["layer_coverage_pct"] = _lc["overall_pct"]
+                    q["layer_coverage_source"] = "overall"
+                    if _lc.get("cells_with_layers") is not None:
+                        q["layer_cells_with"] = _lc["cells_with_layers"]
+                        q["layer_cells_targeted"] = _lc["cells_targeted"]
                 elif _walls:
                     q["layer_coverage_pct"] = min(v["coverage_pct"] for v in _walls.values())
+                    q["layer_coverage_source"] = "per_patch_min"
                 if _walls:
                     q["per_patch_layers"] = {
                         n: {"layers": v.get("layers"), "target": v.get("layers_target"),

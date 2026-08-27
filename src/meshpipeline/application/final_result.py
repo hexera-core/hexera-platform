@@ -244,6 +244,16 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         patch_ok = True
 
     if status == TerminalStatus.succeeded:
+        # CONSTRUCTION-TIME INVARIANT: succeeded beside a FAIL review verdict is lawful in
+        # exactly one shape - a caveated layer delivery, provable by its typed caveat. Any
+        # other path that derives succeeded with a failed review is a bug, caught here
+        # rather than shipped as a silent contradiction.
+        if verdict is ReviewVerdict.failed and not any(
+                isinstance(c, dict) and c.get("kind") == "layer_coverage"
+                for c in (requirement_caveats or [])):
+            raise ValueError(
+                "succeeded with a FAIL review verdict requires a kind='layer_coverage' "
+                "caveat - refusing to build a contradictory FinalResult")
         return FinalResult(
             requirement_caveats=list(requirement_caveats or []),
             schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id,
@@ -339,16 +349,60 @@ def render_message(fr: FinalResult) -> str:
     if fr.status == TerminalStatus.succeeded:
         if fr.requirement_caveats:
             # the caveats come FIRST - before any success language - so a skimmed message
-            # still reads them
-            lines.append("Delivered with stated deviations from your request:")
+            # still reads them. Caveats are typed by 'kind'; a record without one predates
+            # the discriminator and is a domain-extent caveat (v5 back-compat).
+            kinds = {(c or {}).get("kind") or "domain_extent"
+                     for c in fr.requirement_caveats}
+            lines.append("Delivered with stated deviations from your request:"
+                         if kinds == {"domain_extent"} else
+                         "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
-                lines.append(
-                    f"  - {c.get('direction')} margin: requested {c.get('requested'):g}, "
-                    f"delivered {c.get('measured'):g} reference-lengths "
-                    f"(1 reference-length = {c.get('ruler_m'):g} m)")
-            lines.append("Every mesh-quality check passed; only the margins above fell short "
-                         "of the request. Rebuild with relaxed constraints if they matter for "
-                         "your analysis.")
+                kind = (c or {}).get("kind") or "domain_extent"
+                if kind == "domain_extent":
+                    req, meas, ruler = c.get("requested"), c.get("measured"), c.get("ruler_m")
+                    if all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           for v in (req, meas, ruler)):
+                        lines.append(
+                            f"  - {c.get('direction')} margin: requested {req:g}, "
+                            f"delivered {meas:g} reference-lengths "
+                            f"(1 reference-length = {ruler:g} m)")
+                    else:   # a malformed record must degrade to prose, never crash terminal
+                        lines.append(f"  - {c.get('direction') or 'a domain'} margin fell "
+                                     "short of the request (see the result record)")
+                elif kind == "layer_coverage":
+                    cov = c.get("coverage_pct")
+                    cw, ct = c.get("cells_with"), c.get("cells_targeted")
+                    counts = (f" ({cw} of {ct} targeted wall cells)"
+                              if isinstance(cw, int) and isinstance(ct, int) else "")
+                    lines.append(
+                        f"  - near-wall prism layers were added on {cov:.1f}% of the "
+                        f"targeted wall cells{counts}. Skin friction and y+ are unreliable "
+                        "on the uncovered wall area, and integrated force coefficients "
+                        "(drag, lift) will be biased by it.")
+                    per = c.get("per_patch") or {}
+                    if len(per) > 1:
+                        for n, v in per.items():
+                            lines.append(
+                                f"    - patch {n}: reached {v.get('layers')} of "
+                                f"{v.get('target')} target layers "
+                                f"({v.get('coverage_pct')}% of target thickness)")
+                    if c.get("finding"):
+                        lines.append(f"    Reviewer's finding: {c['finding']}")
+                else:
+                    lines.append("  - a stated deviation of an unrecognized kind "
+                                 "(see the result record)")
+            if kinds == {"domain_extent"}:
+                lines.append("Every mesh-quality check passed; only the margins above fell "
+                             "short of the request. Rebuild with relaxed constraints if "
+                             "they matter for your analysis.")
+            else:
+                # NEVER claim every check passed when a layer caveat exists: the pipeline's
+                # own quality review judged layer coverage short of its bar. 'Solver-ready'
+                # is scoped to what was actually measured.
+                lines.append("The mesh passes all structural quality gates and a "
+                             "pressure-operator solvability check - the case will run. The "
+                             "quality review judged near-wall layer coverage short of its "
+                             "bar; treat near-wall quantities accordingly.")
         lines.append("Mesh generation completed successfully.")
         if fr.engine:
             lines.append(f"Engine: {fr.engine}")
@@ -400,16 +454,112 @@ class RunOutcome:
     reviewer_verdict: str = ""
     executor_success: bool = False
     retry_count: int = 0
+    # Durable facts the layer-coverage caveat eligibility re-verifies at terminal time.
+    # Defaults FAIL CLOSED: an absent strictness flag reads strict, absent findings/quality
+    # make the predicate refuse - a state that never carried these fields cannot caveat.
+    failed_gate: str = ""
+    reviewer_rebuild_required: bool = False
+    requirements_strict: bool = True
+    engine: str = ""
+    flow_topology: str = ""
+    is_dispute: bool = False
+    axis_findings: tuple = ()
+    quality: Any = None
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
         raw = state.get("api_failure", "") or ""
         if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
             raw = raw[len("<<API_FAILURE:"):-2]
+        manifest = state.get("mesh_manifest") or {}
         return cls(api_failure=raw,
                    reviewer_verdict=state.get("reviewer_verdict", "") or "",
                    executor_success=bool(state.get("executor_success", False)),
-                   retry_count=int(state.get("retry_count", 0) or 0))
+                   retry_count=int(state.get("retry_count", 0) or 0),
+                   failed_gate=str(state.get("executor_failed_gate", "") or ""),
+                   reviewer_rebuild_required=bool(
+                       state.get("reviewer_rebuild_required", False)),
+                   requirements_strict=bool(state.get("requirements_strict", True)),
+                   engine=str(state.get("engine", "") or ""),
+                   flow_topology=str(state.get("flow_topology", "") or ""),
+                   is_dispute=bool(state.get("user_dispute") or {}),
+                   axis_findings=tuple(state.get("reviewer_axis_findings") or ()),
+                   quality=dict((manifest.get("quality") or {})
+                                if isinstance(manifest, Mapping) else {}))
+
+
+def layer_coverage_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for caveated layer delivery - used by derive_terminal_status to
+    grant `succeeded` and by terminal assembly to author the caveat, so the two can never
+    disagree. Every conjunct re-verifies a DURABLE fact; any missing fact refuses
+    (adversarially reviewed 2026-08-26 - see the review record for why each clause exists):
+    the final attempt passed every machine gate and solvability; its OWN concluded review
+    (all findings graded, attempt-stamped to this retry) failed prism_layer_coverage and
+    nothing else; no rebuild order; non-strict request; snappy external only; not a dispute;
+    AREAL coverage provenance at or above the policy floor; no effectively-bare wall patch;
+    surface deviation measured and within the one-cell band. Exhaustion needs no counter:
+    a fresh concluded FAIL only reaches terminal derivation after every retry (including
+    the reviewer-feedback bonus) was consumed - FAIL-at-terminal IS the exhaustion proof."""
+    from meshpipeline.settings import policy as polcfg
+    floor = polcfg.LAYER_CAVEAT_FLOOR_PCT.get(outcome.flow_topology)
+    if floor is None:
+        return None
+    if outcome.api_failure or not outcome.executor_success or outcome.failed_gate:
+        return None
+    if outcome.reviewer_verdict != "FAIL" or outcome.reviewer_rebuild_required:
+        return None
+    if outcome.requirements_strict or outcome.is_dispute:
+        return None
+    # Engine capability THROUGH the registry, never a name conditional: eligibility requires
+    # the engine to DECLARE the areal layer-coverage criterion this predicate reads. Snappy
+    # declares it; engines that do not measure it (cfmesh, vmtk's thickness-keyed row,
+    # multiregion's unwired row) can never caveat here.
+    from meshpipeline.engines.quality_criteria import criteria_for
+    if not any(c.key == "layer_coverage_pct" for c in criteria_for(outcome.engine)):
+        return None
+    findings = [f for f in outcome.axis_findings if isinstance(f, Mapping)]
+    if not findings or len(findings) != len(outcome.axis_findings):
+        return None
+    if any("passed" not in f for f in findings):
+        return None
+    try:
+        if any(int(f.get("attempt", -1)) != outcome.retry_count for f in findings):
+            return None                     # a retained earlier-attempt verdict never caveats
+    except (TypeError, ValueError):
+        return None
+    failed = [f for f in findings if f.get("passed") is False]
+    if len(failed) != 1 or failed[0].get("axis_key") != "prism_layer_coverage":
+        return None
+    q = outcome.quality if isinstance(outcome.quality, Mapping) else {}
+    if q.get("layer_coverage_source") != "overall":
+        return None                         # areal headline only; thickness fallback refuses
+    cov = q.get("layer_coverage_pct")
+    if isinstance(cov, bool) or not isinstance(cov, (int, float)) or cov < floor:
+        return None
+    per = q.get("per_patch_layers") or {}
+    walls = {n: v for n, v in per.items()
+             if isinstance(v, Mapping) and (v.get("target") or 0) > 0}
+    if not walls:
+        return None
+    pmin = polcfg.LAYER_CAVEAT_PATCH_MIN_THICKNESS_PCT
+    for v in walls.values():
+        t = v.get("coverage_pct")
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or t < pmin:
+            return None                     # one effectively-bare wall patch stays a failure
+    sd = q.get("surface_deviation")
+    p95 = sd.get("p95") if isinstance(sd, Mapping) else None
+    if isinstance(p95, bool) or not isinstance(p95, (int, float)) or p95 > 1.0:
+        return None
+    return {
+        "kind": "layer_coverage",
+        "coverage_pct": float(cov),
+        "cells_with": q.get("layer_cells_with"),
+        "cells_targeted": q.get("layer_cells_targeted"),
+        "per_patch": {n: {"layers": v.get("layers"), "target": v.get("target"),
+                          "coverage_pct": v.get("coverage_pct")}
+                      for n, v in walls.items()},
+        "finding": str(failed[0].get("finding", ""))[:600],
+    }
 
 
 @dataclass(frozen=True)
@@ -456,6 +606,21 @@ def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusD
         # executor_success guard a mesh that failed every gate but reached the reviewer (a degraded
         # text-only review) could ship. This is the last line of defence: never deliver an
         # un-validated mesh.
+        return StatusDecision(JobStatus.succeeded, None)
+
+    if layer_coverage_caveat(outcome) is not None:
+        # CAVEATED LAYER DELIVERY: the mesh passed every machine gate and solvability, and its
+        # own concluded review failed ONLY prism-layer coverage, above the policy floor, on a
+        # non-strict external snappy request. The mesh is solver-ready with a known, measured,
+        # stated near-wall weakness - delivering it with the caveat (terminal assembly authors
+        # the dict from this same predicate) serves the user better than a bare refusal.
+        jlog.info("terminal status: caveated layer delivery - review FAIL waived by the "
+                  "layer-coverage eligibility predicate (job_id=%s)", job_id)
+        try:
+            from meshpipeline.metrics import inc as _minc
+            _minc("caveated_layer_delivery", "pipeline")
+        except Exception:                      # noqa: BLE001 - metrics never change a verdict
+            pass
         return StatusDecision(JobStatus.succeeded, None)
 
     return StatusDecision(

@@ -176,7 +176,10 @@ async def node_executor(state: PipelineState) -> dict:
                         # caveats and CONTINUE - solvability and every later check still
                         # run, and the ladder still gets its chance to fix the box (the
                         # classifier routes caveated attempts while retries remain).
-                        requirement_caveats = [dict(c) for c in _v.caveats]
+                        # kind discriminator: this author site produces domain-extent
+                        # caveats; stamping it keeps kind-less dicts a strictly legacy shape
+                        requirement_caveats = [{**dict(c), "kind": "domain_extent"}
+                                               for c in _v.caveats]
                         executor_output += f"\n{_v.detail}"
                         logger.warning(
                             "Executor: domain-extent NEAR-MISS (caveats recorded, run "

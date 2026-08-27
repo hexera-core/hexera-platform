@@ -381,6 +381,12 @@ INVENTORY: list[Group] = [
         EnvVar("MESH_SCRIPT_SCAN_ENABLED", "true", kind="bool"),
         EnvVar("RUN_PYTHON_REQUIRE_SANDBOX", "true", kind="bool", help="refuse to run generated Python outside the seccomp/Landlock jail"),
         EnvVar("CELL_HARD_LIMIT", "8000000", kind="int", help="compute-feasibility cap on mesh size: the only cell-count gate"),
+        EnvVar("LAYER_CAVEAT_FLOOR_PCT_EXTERNAL", "40", kind="int",
+               help="areal prism-layer coverage floor for caveated delivery of external-aero "
+                    "snappy meshes; below it a layers-only review FAIL stays a failure"),
+        EnvVar("LAYER_CAVEAT_PATCH_MIN_THICKNESS_PCT", "10", kind="int",
+               help="per-wall-patch thickness floor for caveated delivery: one effectively "
+                    "bare wall patch keeps the failure a failure"),
     ]),
 
     Group("Workspace archive limits", note="Bounds on the workspace archive a remote mesh returns: a decompression bomb, a traversal entry or a runaway member is refused before anything is written.", vars=[

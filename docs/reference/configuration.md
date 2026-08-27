@@ -400,7 +400,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (201 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (203 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -491,6 +491,8 @@ Every supported setting (201 entries). `template` settings are the ones `.env.ex
 | `WORKER_LEASE_SECONDS` | template | app |  |
 | `CELL_HARD_LIMIT` | template | app |  |
 | `DOMAIN_EXTENT_GATE_ENABLED` | template | app |  |
+| `LAYER_CAVEAT_FLOOR_PCT_EXTERNAL` | template | app |  |
+| `LAYER_CAVEAT_PATCH_MIN_THICKNESS_PCT` | template | app |  |
 | `MESH_SCRIPT_SCAN_ENABLED` | template | app |  |
 | `RUN_PYTHON_REQUIRE_SANDBOX` | template | app |  |
 | `SOLVABILITY_GATE_ENABLED` | template | app |  |

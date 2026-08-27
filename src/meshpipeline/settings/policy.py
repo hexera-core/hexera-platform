@@ -87,6 +87,20 @@ if requires_hardened_runtime(ENV):
 else:
     REQUIRE_DURABLE_CHECKPOINTER = _require_ck_raw in ("true", "1", "yes", "on")
 
+# LAYER-COVERAGE CAVEAT DELIVERY (reviewer-fairness follow-on, adversarially reviewed
+# 2026-08-26): a solver-ready mesh whose ONLY review miss is prism-layer coverage may deliver
+# with a stated caveat instead of a terminal failure. The floor is AREAL coverage percent
+# (the snappy 'Added N out of M cells' headline) keyed by flow topology - an ABSENT key means
+# the caveat path is CLOSED for that topology (only external ships in v1; internal flow is
+# more layer-critical and needs its own reviewed floor). The per-patch minimum is achieved
+# THICKNESS percent - one effectively-bare wall patch keeps the failure a failure. These
+# constants must never leak into prompt-rendered text (the criteria row threshold stays 0.0).
+LAYER_CAVEAT_FLOOR_PCT: dict = {
+    "external": float(optional_env("LAYER_CAVEAT_FLOOR_PCT_EXTERNAL", "40")),
+}
+LAYER_CAVEAT_PATCH_MIN_THICKNESS_PCT: float = float(
+    optional_env("LAYER_CAVEAT_PATCH_MIN_THICKNESS_PCT", "10"))
+
 # PRODUCT MODES - built once, by the one authority that also refuses an unsupported combination.
 # Retention (collection) and publication (disclosure) are separate questions and are not allowed
 # to imply one another; settings/modes.py is where both are declared and validated together.

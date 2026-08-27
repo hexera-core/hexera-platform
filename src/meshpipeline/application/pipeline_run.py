@@ -800,8 +800,17 @@ async def _run_async(req: JobRequest) -> dict:
         # THE OUTCOME the graph produced, reduced to the facts a terminal status depends on, and
         # the status it is entitled to. Both rules live in final_result: each exists because a
         # specific way of over-claiming success was possible, and they are policy, not sequencing.
-        from meshpipeline.application.final_result import RunOutcome, derive_terminal_status
+        from meshpipeline.application.final_result import (
+            RunOutcome,
+            derive_terminal_status,
+            layer_coverage_caveat,
+        )
         _run_outcome = RunOutcome.from_graph_state(final_state)
+        # Authored HERE and only here, from the SAME predicate that grants the status - the
+        # graph state's requirement_caveats never carries it, so mid-run routing (the
+        # executor caveat branch, the classifier near-miss branch, the reviewer's
+        # adjudicated-deviations block) is never exposed to a layer caveat.
+        _layer_caveat = layer_coverage_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -902,7 +911,8 @@ async def _run_async(req: JobRequest) -> dict:
                 attempts=int(final_state.get("retry_count", 0) or 0),
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_pb.is_exhausted(_pipeline_deadline),
-                requirement_caveats=list(final_state.get("requirement_caveats") or []),
+                requirement_caveats=(list(final_state.get("requirement_caveats") or [])
+                                     + ([_layer_caveat] if _layer_caveat else [])),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:
