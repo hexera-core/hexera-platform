@@ -241,6 +241,81 @@ def test_finalization_has_exactly_one_implementation():
     assert "finalize" not in names, "the runner carries a second finalization path"
 
 
+# 14+: the INTERNAL CARVE LEAK audit - an internal-flow mesh may only deliver the
+# patches the engine staged as triSurface STLs; a surviving blockMesh-skin patch
+# ('outer') with faces means the channel leaked to the exterior void (a hollow part
+# whose port mouths were not sealed - jobs 95bd0197, 0de57541) and must be flagged
+# loudly in the quality report and the builder output.
+_LEAKY_INTERNAL_BOUNDARY = """FoamFile { version 2.0; format ascii; class polyBoundaryMesh; object boundary; }
+4
+(
+wall { type wall; nFaces 5000; startFace 0; }
+inlet { type patch; nFaces 200; startFace 5000; }
+outlet { type patch; nFaces 200; startFace 5200; }
+outer { type patch; nFaces 999; startFace 5400; }
+)
+"""
+
+_SEALED_INTERNAL_BOUNDARY = _LEAKY_INTERNAL_BOUNDARY.replace(
+    "outer { type patch; nFaces 999;", "outer { type patch; nFaces 0;")
+
+
+class _InternalEngine(_Engine):
+    def review_geometry_stls(self, ws, internal_flow=False):
+        return sorted((Path(ws) / "constant" / "triSurface").glob("*.stl"))
+
+
+def _internal_case(root: Path, boundary: str) -> Path:
+    _complete_case(root)
+    (root / "constant" / "polyMesh" / "boundary").write_text(boundary)
+    tri = root / "constant" / "triSurface"
+    tri.mkdir(parents=True)
+    for name in ("wall", "inlet", "outlet"):
+        (tri / f"{name}.stl").write_text(f"solid {name}\nendsolid {name}\n")
+    return root
+
+
+def _finalize_internal(ws, engine, monkeypatch, *, internal_flow=True):
+    import meshpipeline.engines.runtime as runtime
+    monkeypatch.setattr(runtime, "get_engine", lambda name: engine)
+    return F.finalize(str(ws), [], "snappy", internal_flow=internal_flow)
+
+
+def test_a_surviving_outer_patch_on_an_internal_mesh_is_flagged_loudly(tmp_path, monkeypatch):
+    _internal_case(tmp_path, _LEAKY_INTERNAL_BOUNDARY)
+    eng = _InternalEngine({"cells": 1000, "fatal": []})
+    res = _finalize_internal(tmp_path, eng, monkeypatch)
+    assert "[INTERNAL_CARVE_LEAK]" in res["output"], res["output"]
+    assert "outer=999" in res["output"]
+    assert eng.manifests[0]["quality"]["internal_unexpected_patches"] == {"outer": 999}
+
+
+def test_a_sealed_internal_mesh_carries_no_leak_flag(tmp_path, monkeypatch):
+    _internal_case(tmp_path, _SEALED_INTERNAL_BOUNDARY)
+    eng = _InternalEngine({"cells": 1000, "fatal": []})
+    res = _finalize_internal(tmp_path, eng, monkeypatch)
+    assert "[INTERNAL_CARVE_LEAK]" not in res["output"]
+    assert "internal_unexpected_patches" not in eng.manifests[0]["quality"]
+
+
+def test_the_leak_audit_does_not_run_on_external_flow(tmp_path, monkeypatch):
+    # an external snappy case legitimately delivers blockMesh patches (farfield lives in
+    # the blockMesh boundary, not the triSurface) - the audit is internal-only
+    _internal_case(tmp_path, _LEAKY_INTERNAL_BOUNDARY)
+    eng = _InternalEngine({"cells": 1000, "fatal": []})
+    res = _finalize_internal(tmp_path, eng, monkeypatch, internal_flow=False)
+    assert "[INTERNAL_CARVE_LEAK]" not in res["output"]
+    assert "internal_unexpected_patches" not in eng.manifests[0]["quality"]
+
+
+def test_the_leak_flag_does_not_flip_delivery_success(tmp_path, monkeypatch):
+    # the flag is defense in depth for the reviewer and the builder judge; delivery
+    # success stays owned by the fatal-defect gate
+    _internal_case(tmp_path, _LEAKY_INTERNAL_BOUNDARY)
+    eng = _InternalEngine({"cells": 1000, "fatal": []})
+    assert _finalize_internal(tmp_path, eng, monkeypatch)["success"] is True
+
+
 def test_snappy_reaches_no_other_engines_internals_for_this_gate():
     import ast
 

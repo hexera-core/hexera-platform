@@ -17,7 +17,10 @@ try:
 except Exception:  # noqa: BLE001
     pytest.skip("OCP not available", allow_module_level=True)
 
+from pathlib import Path
+
 from meshpipeline.cad.cad_tessellate import tessellate_internal
+from meshpipeline.cad.stl_io import read_stl_triangles
 from meshpipeline.contracts.coordinate_state import from_occ_transfer
 from meshpipeline.contracts.geometry_units import (
     GeometryInterpretation,
@@ -88,3 +91,82 @@ def test_solid_rod_keeps_the_old_inside_the_solid_semantics(tmp_path):
     p = out["interior_point"]
     assert _classify(rod, [v * 1000.0 for v in p]) == TopAbs_IN, (
         "a fluid-volume (solid rod) input must still yield an inside-the-solid point")
+
+
+# #
+# PORT-MOUTH SEALING. A hollow part's declared port face is the metal's ANNULAR end
+# ring; writing only the ring leaves the bore hole open, the channel connects to the
+# exterior void through the mouths, and the snappy carve keeps channel+exterior as ONE
+# region (jobs 95bd0197 and 0de57541 delivered meshes with a spurious 'outer' patch).
+# The port STL must span the WHOLE opening: ring + a cap over the bore hole.
+# #
+
+def _stl_area(path) -> float:
+    total = 0.0
+    for a, b, c in read_stl_triangles(Path(path)):
+        u = [b[i] - a[i] for i in range(3)]
+        v = [c[i] - a[i] for i in range(3)]
+        cx = u[1] * v[2] - u[2] * v[1]
+        cy = u[2] * v[0] - u[0] * v[2]
+        cz = u[0] * v[1] - u[1] * v[0]
+        total += 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
+    return total
+
+
+def test_hollow_tube_port_stls_seal_the_full_mouth(tmp_path):
+    step = tmp_path / "tube.step"
+    _make_hollow_tube(step)                      # r_out=30mm, r_in=20mm → metres below
+    out = tessellate_internal(step, tmp_path / "stls", prepared=_prepared())
+    full_mouth = math.pi * 0.030 ** 2            # ring + bore cap = the FULL end disc
+    ring_only = math.pi * (0.030 ** 2 - 0.020 ** 2)
+    for port in ("inlet", "outlet"):
+        area = _stl_area(out["stls"][port])
+        assert area > ring_only * 1.5, (
+            f"{port}.stl covers only the annular ring ({area:.6f} m²) - the bore hole "
+            "is open and the channel leaks to the exterior void")
+        assert area == pytest.approx(full_mouth, rel=0.02), (
+            f"{port}.stl area {area:.6f} m² should approximate the full end cap "
+            f"{full_mouth:.6f} m² (annular ring + bore cap)")
+
+
+def test_solid_rod_port_stls_are_unchanged_single_disc(tmp_path):
+    step = tmp_path / "rod.step"
+    _make_solid_rod(step)                        # r=25mm
+    out = tessellate_internal(step, tmp_path / "stls", prepared=_prepared())
+    disc = math.pi * 0.025 ** 2
+    for port in ("inlet", "outlet"):
+        area = _stl_area(out["stls"][port])
+        assert area == pytest.approx(disc, rel=0.02), (
+            f"{port}.stl area {area:.6f} m² must stay the single-wire disc "
+            f"{disc:.6f} m² - a solid-model port face already spans the opening and "
+            "must NOT grow a cap")
+
+
+def test_hollow_tube_wall_plus_ports_bound_a_closed_region(tmp_path):
+    # WATERTIGHTNESS: with the mouths sealed, wall+inlet+outlet triangles leave NO
+    # boundary edge (an edge used by exactly one triangle). The cap is built from the
+    # ring face's own inner wire, so its rim discretization must match the ring's and
+    # the bore wall's - a cap meshed off-grid (a T-junction crack) or a missing cap rim
+    # shows up as count-1 edges. The bore-rim circles legitimately carry a count of
+    # THREE (ring + cap + bore wall meet there - the ring is a flange on the channel's
+    # closed boundary of bore wall + caps), so the assertion is no-count-1, not
+    # everywhere-count-2. The caps' presence itself is pinned by the area test above.
+    step = tmp_path / "tube.step"
+    _make_hollow_tube(step)
+    out = tessellate_internal(step, tmp_path / "stls", prepared=_prepared())
+    edges: dict = {}
+    for name in ("wall", "inlet", "outlet"):
+        for tri in read_stl_triangles(Path(out["stls"][name])):
+            keys = [tuple(round(c, 9) for c in v) for v in tri]
+            for i in range(3):
+                e = frozenset((keys[i], keys[(i + 1) % 3]))
+                edges[e] = edges.get(e, 0) + 1
+    boundary = [e for e, n in edges.items() if n == 1]
+    assert not boundary, (
+        f"{len(boundary)} boundary edge(s) used by only one triangle - the combined "
+        "wall+inlet+outlet surface has a crack or an open mouth and does not bound a "
+        "closed region")
+    rim_flange = [e for e, n in edges.items() if n == 3]
+    assert rim_flange, (
+        "no ring+cap+bore-wall flange edges found on the bore rims - the cap did not "
+        "land on the ring's inner wire discretization")

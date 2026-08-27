@@ -152,6 +152,37 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             patch_entities, bbox = R.build_review_msh(ws, _solids)
         except Exception:
             logger.exception("Executor: review-mesh build failed (non-fatal)")
+    # INTERNAL CARVE LEAK AUDIT - defense in depth behind the port-mouth seal in
+    # cad_tessellate.tessellate_internal. An internal carve may only deliver the patches
+    # the engine itself staged as triSurface STLs (inlet/outlet*/wall, under whatever
+    # names port binding chose). Any OTHER patch with faces is the blockMesh
+    # background-box skin ('outer') surviving the carve: the channel leaked to the
+    # exterior void - a hollow part whose annular port mouths were not sealed - and the
+    # delivered mesh contains a spurious outside region (jobs 95bd0197 and 0de57541
+    # shipped 'outer' patches of 58,348 and 5,827 faces beside inlet/outlet/wall).
+    # Recorded as a QUALITY KEY (not a criteria row: gate_declared_criteria fails closed
+    # on any gating key absent from the quality report, so a new row would demand this
+    # measurement of every snappy job, external aero included) and shouted in the builder
+    # output - re-planning cannot fix a leak born in tessellation.
+    internal_leak_msg = ""
+    if internal_flow:
+        from meshpipeline.engines.manifest import _patch_face_counts
+        _staged = {Path(_s).stem for _s in _stls if Path(_s).exists()}
+        _leaked = {n: c for n, c in _patch_face_counts(ws).items()
+                   if c > 0 and n not in _staged} if _staged else {}
+        if _leaked:
+            q["internal_unexpected_patches"] = _leaked
+            _detail = ", ".join(f"{n}={c}" for n, c in sorted(_leaked.items()))
+            internal_leak_msg = (
+                f" [INTERNAL_CARVE_LEAK] boundary patch(es) beyond the staged "
+                f"inlet/outlet/wall set carry faces: {_detail} - the carve kept the "
+                f"exterior void (a hollow part's port mouths were not sealed), so the "
+                f"mesh includes a spurious outside region and is physically wrong for "
+                f"internal flow. This is a geometry-prep defect, not a plan problem - "
+                f"do not re-plan; the port STLs must seal the mouths.")
+            logger.error("finalize: internal-flow mesh delivered unexpected boundary "
+                         "patch(es) with faces (%s) - carve leaked to the exterior void",
+                         _detail)
     # When an engine's review surface covers only the BODY (snappy: the far-field / symmetry
     # patches live in the blockMesh boundary, not the triSurface), declare the mesh's real
     # patches so the manifest matches the mesh AND the contract (the added ones carry no
@@ -245,5 +276,6 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                      engine_params=engine_params or {}, flow_topology=flow_topology)
     fatal = q.get("fatal", [])
     out = (f"[CFMESH] polyMesh cells={q.get('cells')} fatal={fatal} "
-           f"non_ortho={q.get('max_non_ortho')} skew={q.get('max_skewness')}")
+           f"non_ortho={q.get('max_non_ortho')} skew={q.get('max_skewness')}"
+           + internal_leak_msg)
     return {"success": not fatal, "output": out, "stdout": out, "stderr": ""}

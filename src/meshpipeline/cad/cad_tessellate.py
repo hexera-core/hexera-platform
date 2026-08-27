@@ -103,16 +103,23 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
 
     from OCP.BRep import BRep_Builder
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Transform
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepGProp import BRepGProp
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.gp import gp_Pnt
     from OCP.GProp import GProp_GProps
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.StlAPI import StlAPI_Writer
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_IN, TopAbs_REVERSED, TopAbs_SOLID
+    from OCP.TopAbs import (
+        TopAbs_FACE,
+        TopAbs_IN,
+        TopAbs_REVERSED,
+        TopAbs_SOLID,
+        TopAbs_WIRE,
+    )
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS, TopoDS_Compound
 
@@ -205,12 +212,69 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         # brief's declared roles to these ports instead of inferring one.
         inlet_i, outlet_ids = open_idx[0], list(open_idx[1:])
 
-    def _write_group(idxs, path):
+    def _write_group(idxs, path, extra_faces=()):
         comp = TopoDS_Compound(); bld = BRep_Builder(); bld.MakeCompound(comp)
         for i in idxs:
             bld.Add(comp, faces[i])
+        for xf in extra_faces:
+            bld.Add(comp, xf)
         w = StlAPI_Writer(); w.ASCIIMode = False
         w.Write(comp, str(path))
+
+    def _mouth_caps(port_i):
+        """Cap face(s) that SEAL a hollow part's port mouth.
+
+        A solid-model duct's port face is a single-wire disc that already spans the
+        opening. A HOLLOW part's (thin-shell wall) declared port face is the metal's
+        ANNULAR end ring: its inner wire bounds the bore hole, and writing only the ring
+        leaves that hole OPEN in the port STL - the channel then connects to the exterior
+        void through the mouth, the snappy carve keeps channel+exterior as ONE region,
+        and the delivered mesh grows a spurious 'outer' (blockMesh-skin) patch (jobs
+        95bd0197, 0de57541). Every inner wire is closed with a planar face built on the
+        ring's own plane and tessellated like the rest, so the port STL spans the whole
+        opening. A single-wire face yields no caps - solid-model inputs (the y_duct
+        class) come out byte-identical.
+        """
+        f = faces[port_i]
+        wires = []
+        we = TopExp_Explorer(f, TopAbs_WIRE)
+        while we.More():
+            wires.append(TopoDS.Wire_s(we.Current())); we.Next()
+        if len(wires) < 2:
+            return []
+        outer_w = BRepTools.OuterWire_s(f)
+        pln = BRepAdaptor_Surface(f).Plane()
+        caps = []
+        for wire in wires:
+            if wire.IsSame(outer_w):
+                continue
+            cap = None
+            # the ring orients its hole wire so material lies OUTSIDE it; a face built
+            # from that orientation can come out empty, so fall back to the reversal
+            for cand_wire in (wire, TopoDS.Wire_s(wire.Reversed())):
+                mk = BRepBuilderAPI_MakeFace(pln, cand_wire, True)
+                if not mk.IsDone():
+                    continue
+                cand = mk.Face()
+                g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cand, g)
+                if g.Mass() <= 0:
+                    continue
+                BRepMesh_IncrementalMesh(cand, lin, False, angular_deflection, True)
+                if _triangles_of(cand):
+                    cap = cand
+                    break
+            if cap is None:
+                logger.error(
+                    "tessellate_internal: could not build a sealing cap for an inner "
+                    "wire of port face %d - the port STL leaves the mouth open and the "
+                    "internal carve may keep the exterior void (finalize flags it)",
+                    port_i)
+                continue
+            caps.append(cap)
+        if caps:
+            logger.info("tessellate_internal: annular port face %d - sealed %d bore "
+                        "hole(s) so the port STL closes the full mouth", port_i, len(caps))
+        return caps
 
     # one patch per outlet, so a branch can carry its own boundary condition and its own flow split
     outlet_names = (["outlet"] if len(outlet_ids) == 1
@@ -219,9 +283,9 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     for nm in outlet_names:
         stls[nm] = out_dir / f"{nm}.stl"
     _write_group(wall_idx, stls["wall"])
-    _write_group([inlet_i], stls["inlet"])
+    _write_group([inlet_i], stls["inlet"], extra_faces=_mouth_caps(inlet_i))
     for nm, oi in zip(outlet_names, outlet_ids):
-        _write_group([oi], stls[nm])
+        _write_group([oi], stls[nm], extra_faces=_mouth_caps(oi))
 
     # verified interior point for locationInMesh. Candidates, cheapest-first:
     # volume centroid, then each port centroid nudged inward along its (oriented) normal.
