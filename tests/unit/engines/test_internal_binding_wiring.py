@@ -66,6 +66,41 @@ class TestTheBindingSeam:
         assert _bore_area_m2(WYE_T) == pytest.approx(circle_area(60))
 
 
+class TestRingPortBoreSizing:
+    # Job 11b50253 follow-up: a thin-walled duct's bound port face is ~5014 mm2 of ring
+    # metal around a 497,059 mm2 bore. The resolution yardstick must follow the BORE the
+    # evidence row's opening_area_m2 carries - sizing from the metal ring re-runs the
+    # mesh ~10x over-refined into the cell budget. Rows without an opening (solid-disc
+    # ports) must size by area_m2 exactly as before.
+    def _t(self, ports):
+        return {"binding": {"wall_name": "duct_wall", "ports": ports,
+                            "folded_into_wall": []}}
+
+    def test_a_ring_port_sizes_by_the_opening_its_inner_wire_encloses(self):
+        t = self._t([{"name": "inlet", "role": "inlet", "engine_key": "outlet",
+                      "centroid": [0.0, 0.0, 0.0],
+                      "area_m2": 5014e-6, "opening_area_m2": 0.497059}])
+        assert _bore_area_m2(t) == 0.497059
+
+    def test_a_disc_port_without_an_opening_sizes_exactly_as_before(self):
+        t = self._t([{"name": "inlet", "role": "inlet", "engine_key": "inlet",
+                      "centroid": [0.0, 0.0, 0.0], "area_m2": 0.004}])
+        assert _bore_area_m2(t) == 0.004          # the pre-ring behaviour, byte-exact
+
+    def test_the_largest_declared_inlet_still_wins_across_mixed_rows(self):
+        # a ring inlet's true bore competes against a disc inlet's face area; outlets
+        # stay out of the pool while any inlet exists - both rules unchanged
+        t = self._t([
+            {"name": "feed_a", "role": "inlet", "engine_key": "inlet",
+             "centroid": [0.0, 0.0, 0.0], "area_m2": 5014e-6,
+             "opening_area_m2": 0.497059},
+            {"name": "feed_b", "role": "inlet", "engine_key": "outlet_1",
+             "centroid": [0.1, 0.0, 0.0], "area_m2": 0.004},
+            {"name": "drain", "role": "outlet", "engine_key": "outlet_2",
+             "centroid": [0.2, 0.0, 0.0], "area_m2": 0.9}])
+        assert _bore_area_m2(t) == 0.497059
+
+
 class TestRendererWallKeyThreading:
     def _render(self, tmp_path, wall_key, names):
         from meshpipeline.engines.snappy.snappy_runner import render_internal_case

@@ -393,12 +393,19 @@ def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]
 
 def _bore_area_m2(t: dict) -> float:
     """The resolution yardstick's area. With a binding: the largest DECLARED-inlet opening -
-    never the engine's largest-opening guess, which is backwards on combiners. Without one:
-    the engine-canonical inlet, as today."""
+    never the engine's largest-opening guess, which is backwards on combiners. A ring
+    (annular) port face sizes by what its inner wire encloses (opening_area_m2: the true
+    bore), never by the ring's own metal area - on a thin-walled duct the metal ring is
+    ~100x smaller than the bore, and sizing from it re-runs the mesh ~10x over-refined
+    into the cell budget. Rows without an opening (solid-disc ports) size by area_m2
+    exactly as before. Without a binding: the engine-canonical inlet, as today."""
+    def _opening(p: dict) -> float:
+        v = p.get("opening_area_m2")
+        return float(v) if v is not None else float(p["area_m2"])
     binding = t.get("binding")
     if binding:
-        inlet = [float(p["area_m2"]) for p in binding["ports"] if p["role"] == "inlet"]
-        pool = inlet or [float(p["area_m2"]) for p in binding["ports"]]
+        inlet = [_opening(p) for p in binding["ports"] if p["role"] == "inlet"]
+        pool = inlet or [_opening(p) for p in binding["ports"]]
         return max(pool)
     return float(t["openings"]["inlet"]["area"])
 
