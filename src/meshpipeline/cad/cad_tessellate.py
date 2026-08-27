@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 from meshpipeline.cad.stl_io import read_stl_triangles
@@ -95,21 +96,197 @@ def select_declared_openings(candidates: list, declared: list) -> list:
     return chosen
 
 
+def _tri_area(tri: tuple) -> float:
+    a, b, c = tri
+    ux, uy, uz = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    vx, vy, vz = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    cx, cy, cz = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+    return 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
+
+
+def _newell_frame(pts: list) -> tuple | None:
+    """Best-fit plane of a closed 3D polyline: ((unit normal), (centroid)), or None when
+    the polyline is degenerate (no measurable enclosed area in any projection)."""
+    nx = ny = nz = 0.0
+    m = len(pts)
+    for i in range(m):
+        px, py, pz = pts[i]
+        qx, qy, qz = pts[(i + 1) % m]
+        nx += (py - qy) * (pz + qz)
+        ny += (pz - qz) * (px + qx)
+        nz += (px - qx) * (py + qy)
+    norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if norm <= 0.0:
+        return None
+    c = tuple(sum(p[k] for p in pts) / m for k in range(3))
+    return (nx / norm, ny / norm, nz / norm), c
+
+
+def _ring_membrane(ring: list) -> list:
+    """Membrane triangles spanning one closed rim ring.
+
+    Ear clipping in the ring's best-fit plane, so a long thin rim (a sliver face's
+    boundary) is filled by triangles that hug the rim instead of a centroid fan whose
+    chords cut far off the surface; whatever a self-crossing projection leaves over is
+    closed with a centroid fan - topologically sealed even where the membrane is not
+    pretty. Rim VERTICES are reused verbatim, so the membrane's rim edges coincide
+    exactly with the surrounding surface's triangle edges (no new cracks)."""
+    m = len(ring)
+    if m < 3:
+        return []
+    frame = _newell_frame(ring)
+    if frame is None:
+        return []
+    (nx, ny, nz), c = frame
+    ax = (1.0, 0.0, 0.0) if abs(nx) < 0.9 else (0.0, 1.0, 0.0)
+    ux, uy, uz = (ny * ax[2] - nz * ax[1], nz * ax[0] - nx * ax[2], nx * ax[1] - ny * ax[0])
+    un = math.sqrt(ux * ux + uy * uy + uz * uz)
+    ux, uy, uz = ux / un, uy / un, uz / un
+    vx, vy, vz = (ny * uz - nz * uy, nz * ux - nx * uz, nx * uy - ny * ux)
+    p2 = [((p[0] - c[0]) * ux + (p[1] - c[1]) * uy + (p[2] - c[2]) * uz,
+           (p[0] - c[0]) * vx + (p[1] - c[1]) * vy + (p[2] - c[2]) * vz) for p in ring]
+    signed2 = sum(p2[i][0] * p2[(i + 1) % m][1] - p2[(i + 1) % m][0] * p2[i][1]
+                  for i in range(m))
+    idx = list(range(m))
+    if signed2 < 0:
+        idx.reverse()
+    scale = max((abs(x) for xy in p2 for x in xy), default=0.0)
+    eps2 = 1e-12 * (scale * scale if scale > 0 else 1.0)
+
+    def _cross(i: int, j: int, k: int) -> float:
+        (x1, y1), (x2, y2), (x3, y3) = p2[i], p2[j], p2[k]
+        return (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+
+    def _contains(i: int, j: int, k: int, w: int) -> bool:
+        return (_cross(i, j, w) >= -eps2 and _cross(j, k, w) >= -eps2
+                and _cross(k, i, w) >= -eps2)
+
+    tris: list = []
+    while len(idx) > 3:
+        n_now = len(idx)
+        best: tuple | None = None       # (3D diagonal length, position) - the SHORTEST
+        for s in range(n_now):          # diagonal keeps the membrane hugging the rim
+            i, j, k = idx[s - 1], idx[s], idx[(s + 1) % n_now]
+            if _cross(i, j, k) < -eps2:
+                continue                                    # reflex corner, not an ear
+            if any(_contains(i, j, k, w) for w in idx if w not in (i, j, k)):
+                continue
+            diag3 = math.dist(ring[i], ring[k])
+            if best is None or diag3 < best[0]:
+                best = (diag3, s)
+        if best is None:
+            break
+        s = best[1]
+        i, j, k = idx[s - 1], idx[s], idx[(s + 1) % len(idx)]
+        tris.append((ring[i], ring[j], ring[k]))
+        idx.pop(s)
+    if len(idx) == 3:
+        tris.append((ring[idx[0]], ring[idx[1]], ring[idx[2]]))
+    elif len(idx) > 3:
+        cc = tuple(sum(ring[i][k] for i in idx) / len(idx) for k in range(3))
+        for s in range(len(idx)):
+            tris.append((cc, ring[idx[s]], ring[idx[(s + 1) % len(idx)]]))
+    return [t for t in tris if t[0] != t[1] and t[1] != t[2] and t[0] != t[2]]
+
+
+def _open_rim_rings(tris: list) -> tuple[list, list]:
+    """(closed rings, tangled components) of the boundary edges - edges used by exactly
+    one triangle - of a triangle soup. Vertices compare exactly: the right equality for
+    triangles that came off one shared tessellation, and for STL float32 round-trips of
+    it. A component that is an open CHAIN with exactly two loose ends is returned as a
+    ring too, closed across the tiny gap between the ends (neighbouring faces can
+    discretize a sharp sliver tip a few microns apart); a component with any other
+    degree structure cannot be walked as a ring and is returned as tangled."""
+    use: dict = {}
+    for a, b, c in tris:
+        ta, tb, tc = tuple(a), tuple(b), tuple(c)
+        for p, q in ((ta, tb), (tb, tc), (tc, ta)):
+            if p == q:
+                continue
+            key = frozenset((p, q))
+            use[key] = use.get(key, 0) + 1
+    adj: dict = {}
+    for e, n in use.items():
+        if n != 1:
+            continue
+        p, q = tuple(e)
+        adj.setdefault(p, []).append(q)
+        adj.setdefault(q, []).append(p)
+    rings: list = []
+    tangled: list = []
+    seen: set = set()
+    for start in adj:
+        if start in seen:
+            continue
+        comp = {start}
+        queue = [start]
+        while queue:
+            v = queue.pop()
+            for w in adj[v]:
+                if w not in comp:
+                    comp.add(w)
+                    queue.append(w)
+        seen |= comp
+        loose = [v for v in comp if len(adj[v]) == 1]
+        if any(len(adj[v]) > 2 for v in comp) or len(loose) not in (0, 2):
+            tangled.append(sorted(comp))
+            continue
+        first = loose[0] if loose else start
+        ring = [first, adj[first][0]]
+        while True:
+            nbs = adj[ring[-1]]
+            nxt = [w for w in nbs if w != ring[-2]]
+            if not nxt:
+                break                       # the other loose end - the chain is done
+            if nxt[0] == first:
+                break                       # closed back to the start
+            ring.append(nxt[0])
+        rings.append(ring)
+    return rings, tangled
+
+
+def seal_open_rims(tris: list) -> tuple[list, list[dict]]:
+    """Membrane triangles closing every open rim ring of a triangle soup, plus a per-rim
+    report. An internal-flow staged surface must be CLOSED - the carve floods from a
+    point inside the fluid and keeps everything it can reach, so any gap (a face OCC
+    skipped with null triangulation, an open shell) hands it the exterior void. Rings
+    are sealed unconditionally: a boundary edge in the staged soup is never legitimate
+    here. A tangled boundary component (vertices without exactly two boundary
+    neighbours) cannot be sealed and is reported with sealed=False."""
+    rings, tangled = _open_rim_rings(tris)
+    membranes: list = []
+    report: list[dict] = []
+    for ring in rings:
+        tri_m = _ring_membrane(ring)
+        membranes.extend(tri_m)
+        length = sum(math.dist(ring[i], ring[(i + 1) % len(ring)])
+                     for i in range(len(ring)))
+        c = [round(sum(p[k] for p in ring) / len(ring), 6) for k in range(3)]
+        report.append({"edges": len(ring), "length": round(length, 6), "centroid": c,
+                       "sealed": bool(tri_m)})
+    for comp in tangled:
+        c = [round(sum(p[k] for p in comp) / len(comp), 6) for k in range(3)]
+        report.append({"edges": len(comp), "length": None, "centroid": c,
+                       "sealed": False})
+    return membranes, report
+
+
 def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
                         declared_ports: list | None = None) -> dict:
     import math as _m
 
-    from OCP.BRep import BRep_Builder
+    from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Transform
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepGProp import BRepGProp
+    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
-    from OCP.BRepTools import BRepTools
+    from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
     from OCP.GeomAbs import GeomAbs_Plane
-    from OCP.gp import gp_Pnt
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
     from OCP.GProp import GProp_GProps
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.StlAPI import StlAPI_Writer
@@ -121,7 +298,10 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         TopAbs_WIRE,
     )
     from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    from meshpipeline.cad.stl_io import write_stl_binary
 
     geom_path = Path(geom_path)
     out_dir = Path(out_dir)
@@ -144,6 +324,11 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             "internal-flow input is not a watertight SOLID - the fluid volume must be a "
             "closed solid (a loose surface/shell is the pipe skin, not the flow passage)")
     solid = TopoDS.Solid_s(solid_exp.Current())
+
+    def _inside(p) -> bool:
+        cls = BRepClass3d_SolidClassifier(solid)
+        cls.Perform(gp_Pnt(*p), 1e-9)
+        return cls.State() == TopAbs_IN
 
     diag = 0.0
     from OCP.Bnd import Bnd_Box
@@ -221,6 +406,29 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         w = StlAPI_Writer(); w.ASCIIMode = False
         w.Write(comp, str(path))
 
+    def _wires_of(f):
+        wires = []
+        we = TopExp_Explorer(f, TopAbs_WIRE)
+        while we.More():
+            wires.append(TopoDS.Wire_s(we.Current())); we.Next()
+        return wires
+
+    def _cap_for_wire(pln, wire):
+        # the host orients its hole wire so material lies OUTSIDE it; a face built
+        # from that orientation can come out empty, so fall back to the reversal
+        for cand_wire in (wire, TopoDS.Wire_s(wire.Reversed())):
+            mk = BRepBuilderAPI_MakeFace(pln, cand_wire, True)
+            if not mk.IsDone():
+                continue
+            cand = mk.Face()
+            g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cand, g)
+            if g.Mass() <= 0:
+                continue
+            BRepMesh_IncrementalMesh(cand, lin, False, angular_deflection, True)
+            if _triangles_of(cand):
+                return cand
+        return None
+
     def _mouth_caps(port_i):
         """Cap face(s) that SEAL a hollow part's port mouth.
 
@@ -236,10 +444,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         class) come out byte-identical.
         """
         f = faces[port_i]
-        wires = []
-        we = TopExp_Explorer(f, TopAbs_WIRE)
-        while we.More():
-            wires.append(TopoDS.Wire_s(we.Current())); we.Next()
+        wires = _wires_of(f)
         if len(wires) < 2:
             return []
         outer_w = BRepTools.OuterWire_s(f)
@@ -248,21 +453,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         for wire in wires:
             if wire.IsSame(outer_w):
                 continue
-            cap = None
-            # the ring orients its hole wire so material lies OUTSIDE it; a face built
-            # from that orientation can come out empty, so fall back to the reversal
-            for cand_wire in (wire, TopoDS.Wire_s(wire.Reversed())):
-                mk = BRepBuilderAPI_MakeFace(pln, cand_wire, True)
-                if not mk.IsDone():
-                    continue
-                cand = mk.Face()
-                g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cand, g)
-                if g.Mass() <= 0:
-                    continue
-                BRepMesh_IncrementalMesh(cand, lin, False, angular_deflection, True)
-                if _triangles_of(cand):
-                    cap = cand
-                    break
+            cap = _cap_for_wire(pln, wire)
             if cap is None:
                 logger.error(
                     "tessellate_internal: could not build a sealing cap for an inner "
@@ -276,24 +467,174 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                         "hole(s) so the port STL closes the full mouth", port_i, len(caps))
         return caps
 
+    # #
+    # UNDECLARED OPENINGS. The mouth caps above seal the DECLARED ports' bore holes.
+    # A part can hold MORE openings than the declaration names - a pump housing's rotor
+    # bore left open with the rotor removed, a stubbed side port nobody declared, a
+    # plain hole drilled through the wall. For an internal-flow carve the fluid may
+    # exit ONLY through declared ports, so every other opening of the shell must be
+    # sealed, and its seal belongs to the WALL patch (the fluid sees a wall there),
+    # never to a port. Detection is geometry-property-based, per inner wire of every
+    # wall face: it is an opening only when (a) nothing fills the gap - points just off
+    # both sides of the hole's span are outside the solid (a protruding boss/stub fused
+    # over the hole fails this and is left alone: capping a filled junction would wall
+    # off a live passage, the sealed-branch failure the manifold work documents), and
+    # (b) the gap sees the exterior - a straight ray from the hole along its normal
+    # leaves the part without re-entering it (a perforated internal baffle fails this
+    # and is left alone; its holes join fluid to fluid, not fluid to exterior).
+    # #
+    def _rim_polyline(f, wire):
+        # the wire's discretization inside f's own triangulation, so any membrane built
+        # on these points is vertex-identical with the surrounding surface triangles
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(f, loc)
+        if tri is None:
+            return []
+        trsf = loc.Transformation()
+        pts: list = []
+        wexp = BRepTools_WireExplorer(wire, f)
+        while wexp.More():
+            edge = wexp.Current()
+            pol = BRep_Tool.PolygonOnTriangulation_s(edge, tri, loc)
+            if pol is None:
+                return []
+            nodes = pol.Nodes()
+            seq = [tri.Node(nodes.Value(k)).Transformed(trsf)
+                   for k in range(nodes.Lower(), nodes.Upper() + 1)]
+            if edge.Orientation() == TopAbs_REVERSED:
+                seq.reverse()
+            for p in seq:
+                q = (p.X(), p.Y(), p.Z())
+                if not pts or pts[-1] != q:
+                    pts.append(q)
+            wexp.Next()
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        return pts
+
+    def _gap_is_void(pts, c, n, eps):
+        # nothing fills the hole: just off BOTH sides of its span there is no material.
+        # Near-rim samples matter - a plug (fused stub/boss) always has material right
+        # inside the rim on its side, whatever its bore leaves open at the centre.
+        step = max(1, len(pts) // 12)
+        samples = [c] + [tuple(p[k] + 0.15 * (c[k] - p[k]) for k in range(3))
+                         for p in pts[::step]]
+        return not any(
+            _inside(tuple(s[k] + sign * eps * n[k] for k in range(3)))
+            for s in samples for sign in (1.0, -1.0))
+
+    def _sees_exterior(c, n, eps):
+        # a straight all-void ray from the hole to past the part, along either normal
+        for sign in (1.0, -1.0):
+            start = gp_Pnt(c[0] + sign * eps * n[0], c[1] + sign * eps * n[1],
+                           c[2] + sign * eps * n[2])
+            ray = BRepIntCurveSurface_Inter()
+            ray.Init(shape, gp_Lin(start, gp_Dir(sign * n[0], sign * n[1], sign * n[2])),
+                     1e-9)
+            blocked = False
+            while ray.More():
+                if ray.W() > 0.1 * eps:      # a forward hit; behind-the-start hits are
+                    blocked = True           # the hole's own host surface
+                    break
+                ray.Next()
+            if not blocked:
+                return True
+        return False
+
+    undeclared_caps: list = []        # OCC cap faces (planar hosts) -> the wall group
+    undeclared_membranes: list = []   # raw membrane triangles (curved hosts) -> wall.stl
+    sealed_openings: list[dict] = []
+    for wi in wall_idx:
+        wf = faces[wi]
+        wires = _wires_of(wf)
+        if len(wires) < 2:
+            continue                  # no holes - the overwhelmingly common wall face
+        outer_w = BRepTools.OuterWire_s(wf)
+        host = BRepAdaptor_Surface(wf)
+        host_planar = host.GetType() == GeomAbs_Plane
+        for wire in wires:
+            if wire.IsSame(outer_w):
+                continue
+            pts = _rim_polyline(wf, wire)
+            if len(pts) < 3:
+                continue
+            frame = _newell_frame(pts)
+            if frame is None:
+                continue
+            n, c = frame
+            perim = sum(_m.dist(pts[i], pts[(i + 1) % len(pts)])
+                        for i in range(len(pts)))
+            eps = 0.1 * perim / (2.0 * _m.pi)       # a tenth of the hole's own radius
+            if not (_gap_is_void(pts, c, n, eps) and _sees_exterior(c, n, eps)):
+                continue
+            cap = _cap_for_wire(host.Plane(), wire) if host_planar else None
+            if cap is not None:
+                g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cap, g)
+                area = g.Mass()
+                undeclared_caps.append(cap)
+            else:
+                membrane = _ring_membrane(pts)
+                if not membrane:
+                    logger.error(
+                        "tessellate_internal: face %d holds an undeclared opening whose "
+                        "rim could not be sealed - the internal carve may keep the "
+                        "exterior void (finalize flags it)", wi)
+                    continue
+                area = sum(_tri_area(t) for t in membrane)
+                undeclared_membranes.extend(membrane)
+            sealed_openings.append({
+                "face": wi, "area": round(area, 8),
+                "centroid": [round(v, 6) for v in c]})
+            logger.warning(
+                "tessellate_internal: face %d holds an opening that is no declared port "
+                "(%.0f mm^2 at (%.3f, %.3f, %.3f) m) - sealed into the WALL: an "
+                "internal-flow fluid may exit only through declared ports",
+                wi, area * 1e6, *c)
+
     # one patch per outlet, so a branch can carry its own boundary condition and its own flow split
     outlet_names = (["outlet"] if len(outlet_ids) == 1
                     else [f"outlet_{n}" for n in range(1, len(outlet_ids) + 1)])
     stls = {"wall": out_dir / "wall.stl", "inlet": out_dir / "inlet.stl"}
     for nm in outlet_names:
         stls[nm] = out_dir / f"{nm}.stl"
-    _write_group(wall_idx, stls["wall"])
+    _write_group(wall_idx, stls["wall"], extra_faces=undeclared_caps)
     _write_group([inlet_i], stls["inlet"], extra_faces=_mouth_caps(inlet_i))
     for nm, oi in zip(outlet_names, outlet_ids):
         _write_group([oi], stls[nm], extra_faces=_mouth_caps(oi))
+    if undeclared_membranes:
+        write_stl_binary(stls["wall"],
+                         read_stl_triangles(stls["wall"]) + undeclared_membranes)
+
+    # RIM AUDIT - the staged surface as a whole must be closed. A face OCC skipped
+    # ("null triangulation": the fda pump housing's 0.5 mm blend sliver) leaves a gap no
+    # B-rep wire scan can see: the B-rep is watertight, the TRIANGLES are not, and the
+    # carve leaks through the gap into the exterior void. Read back what was written
+    # (file space, so vertices compare exactly), seal every open rim ring into the wall.
+    staged = {nm: read_stl_triangles(p) for nm, p in stls.items()}
+    for nm in stls:
+        if nm != "wall" and not staged[nm]:
+            raise RuntimeError(
+                f"internal-flow port {nm!r} tessellated to zero triangles - its face "
+                f"cannot become a boundary patch (geometry too degenerate to mesh?)")
+    rim_membranes, open_rims = seal_open_rims(
+        [t for ts in staged.values() for t in ts])
+    if rim_membranes:
+        logger.error(
+            "tessellate_internal: staged surface has %d open rim ring(s) - a face the "
+            "tessellator skipped left a gap; sealed into the WALL so the carve cannot "
+            "reach the exterior void: %s",
+            sum(1 for r in open_rims if r["sealed"]),
+            "; ".join(f"{r['edges']} edges at {tuple(r['centroid'])} m"
+                      for r in open_rims))
+        write_stl_binary(stls["wall"], staged["wall"] + rim_membranes)
+    if any(not r["sealed"] for r in open_rims):
+        logger.error(
+            "tessellate_internal: %d boundary component(s) could not be sealed - the "
+            "internal carve may keep the exterior void (finalize flags it)",
+            sum(1 for r in open_rims if not r["sealed"]))
 
     # verified interior point for locationInMesh. Candidates, cheapest-first:
     # volume centroid, then each port centroid nudged inward along its (oriented) normal.
-    def _inside(p) -> bool:
-        cls = BRepClass3d_SolidClassifier(solid)
-        cls.Perform(gp_Pnt(*p), 1e-9)
-        return cls.State() == TopAbs_IN
-
     gv = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, gv)
     vc = gv.CentreOfMass()
     candidates = [(vc.X(), vc.Y(), vc.Z())]
@@ -355,6 +696,10 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                     "centroid": [round(v, 6) for v in _face_props(faces[oi])[1]]}
                for nm, oi in zip(outlet_names, outlet_ids)}},
         "n_wall_faces": n_wall_faces,
+        # what was sealed into the wall beyond the declared ports, for manifests and
+        # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
+        # and open rim rings (gaps the tessellator itself left in the staged surface)
+        "sealed": {"undeclared_openings": sealed_openings, "open_rims": open_rims},
     }
 
 

@@ -28,6 +28,17 @@ def read_stl_triangles(path: Path) -> list[tuple]:
     return tris
 
 
+def write_stl_binary(path: Path, tris: list[tuple]) -> None:
+    # Plain binary STL (the format StlAPI_Writer emits): 80-byte header, zeroed normals.
+    # Coordinates round to float32 exactly as OCC's writer does, so triangles written here
+    # stay vertex-identical with triangles that went through an OCC write of the same nodes.
+    with Path(path).open("wb") as fh:
+        fh.write(b"\0" * 80)
+        fh.write(struct.pack("<I", len(tris)))
+        for a, b, c in tris:
+            fh.write(struct.pack("<12fH", 0.0, 0.0, 0.0, *a[:3], *b[:3], *c[:3], 0))
+
+
 def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
     p = Path(workspace) / geometry_file
     if not p.exists():
