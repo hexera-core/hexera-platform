@@ -209,7 +209,7 @@
   "criteria": [
    "fatal",
    "interface_ok",
-   "layer_coverage",
+   "layer_coverage_pct",
    "max_non_ortho",
    "rc",
    "regions_missing",
