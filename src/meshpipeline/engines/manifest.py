@@ -63,6 +63,27 @@ def _delivered_mesh_exists(ws: Path, mesh_mode: str) -> bool:
     return (ws / marker).exists()
 
 
+def _engine_serves_region_slices(mesh_mode: str) -> bool:
+    """Whether this engine's declared review surface can REDEEM an interior-slice promise.
+
+    `inspection_regions` is a promise to the reviewer: the review context renders it as
+    "call inspect_region(<name>)". The runtime kind-gates that tool on the session's
+    REGION inspection targets, so on an engine that declares none (gmsh, vmtk) every call
+    is refused - and a reviewer sent to a tool that never produces evidence stalls the
+    review into a no-progress non-verdict (job 63ff3d42: 8 rounds, 0 submissions,
+    reviewer_evidence_missing). The promise is published ONLY when the engine's own spec
+    declares a REGION target. Fail closed: an unknown engine promises nothing.
+    """
+    try:
+        from meshpipeline.contracts.review_evidence import TargetKind
+        from meshpipeline.engines.registry import get_spec
+
+        return any(t.kind is TargetKind.REGION
+                   for t in get_spec(mesh_mode).inspection_targets)
+    except Exception:  # noqa: BLE001 - an unregistered engine must not crash manifest writing
+        return False
+
+
 def _validation_block(types: set, owner: bool, fc: dict, roles: dict) -> dict:
     return {
         "has_wall": "wall" in types,
@@ -158,7 +179,9 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         "patch_types": roles,
         "patch_face_counts": fc, "quality": quality,
         "mesh_paths": {"surface": str((ws / "mesh.msh").resolve()), "volume": volume_path},
-        "inspection_regions": _inspection_regions(body_bbox) if body_bbox else [],
+        "inspection_regions": (_inspection_regions(body_bbox)
+                               if body_bbox and _engine_serves_region_slices(mesh_mode)
+                               else []),
         "validation": _validation_block(types, owner, fc, roles),
     }
     (ws / "mesh_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))

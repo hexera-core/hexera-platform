@@ -54,9 +54,13 @@ def _review_renderer():
     return RENDERER
 
 
-# LATENT: gmsh renders, but its composed axes request no render, so its verdict stays
-# metric-only and NOTHING here is required yet. Declaring the targets now records what the
-# renderer would be held to; activation belongs to the quality-closure phase, with fixtures.
+# ACTIVE: the gmsh review is hybrid. The composed axes require the iso opening view plus a
+# named-group inspection (criteria.REVIEW_AXES), and _target_obligations below holds the
+# reviewer to inspecting every declared physical group. Everything required here is served by
+# the gmsh render session (open screenshot + toggle_patch group isolation) - and NOTHING more
+# may be required: the session exposes no REGION/slice targets, so no axis, obligation or
+# manifest promise on this engine may demand interior-slice evidence
+# (tests/unit/engines/test_gmsh_review_evidence_contract.py pins this satisfiability).
 
 
 def _target_obligations(manifest, engine_params, purpose):
@@ -182,10 +186,12 @@ SPEC = EngineSpec(
                 "the deck must expose the contracted named groups (structural: fixed/load/contact/free; a supplied fluid domain: wall/farfield); the far-field domain-extent check is CASE-level - it runs only when the case declares far-field extents AND the manifest records a domain box, so a solid-body mesh (which records none) simply no-ops. Applicability is decided by the case/artifact, never by the engine name.", ),
         ),
         review_rationale=(
-            "metric-only: a solid tetrahedral FEA mesh has no surface-visible "
-            "defect class - element quality is INTERIOR and numeric (SICN / "
-            "low-SICN fraction), which the reviewer judges directly. A screenshot "
-            "of the outer surface would add cost and noise, not signal."
+            "metrics + group views: element quality is INTERIOR and numeric (SICN / "
+            "low-SICN fraction) and is judged directly from the measured report - there "
+            "are no interior slice views on this engine, so do not look for them. The "
+            "render lane answers the one question numbers cannot: whether each named "
+            "physical group landed on the intended geometry, checked from the overview "
+            "and by isolating groups (toggle_patch)."
         ),
         _load_gates=_gates,
         _load_viewer_surface=_viewer_surface,
