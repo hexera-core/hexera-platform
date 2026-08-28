@@ -130,6 +130,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                             "coverage_pct": v.get("coverage_pct")} for n, v in _walls.items()}
             except Exception:
                 logger.exception("finalize: layer-coverage parse failed (non-fatal)")
+    # THE HONEST LAYER-POLICY RECORD (engines/snappy/layer_policy.py). When the thin-feature
+    # classifier locally reduced or dropped prism layers, the delivered quality data must SAY so
+    # - per class: the layer count and the wall-area fraction it covers - so the reviewer and the
+    # caveat machinery judge the measured coverage against the policy that was actually authored,
+    # not against the global request it deliberately replaced.
+    _lp = ws / "layer_policy.json"
+    if _lp.exists():
+        try:
+            import json as _json
+            _pol = _json.loads(_lp.read_text())
+            if isinstance(_pol, dict):
+                q["layer_policy"] = _pol
+        except Exception:
+            logger.exception("finalize: layer-policy record unreadable (non-fatal)")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -230,6 +244,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     elif not patch_types:
         patch_types = {n: ("wall" if i == 0 else "farfield")
                        for i, n in enumerate(patch_entities.keys())}
+    # Synthetic thin/razor class patches ARE the wall - the layer policy split one declared wall
+    # into class regions, and the manifest must role every one of them as wall (the index fallback
+    # above would otherwise call them 'farfield' and the manifest-derived wall_faces would lie).
+    _pol_regions = (q.get("layer_policy") or {}).get("region_patches") or {}
+    for _rp in _pol_regions:
+        if _rp not in patch_types or patch_types.get(_rp) == "farfield":
+            patch_types[_rp] = "wall"
     # SURFACE-CAPTURE ANCHOR - the OBJECTIVE 'surface capture' number (a vision reviewer
     # cannot read snap quality from a render; it confabulates 'good' from face counts or
     # 'staircased' from a blur). The ENGINE DECLARES which surfaces to compare - its snapped

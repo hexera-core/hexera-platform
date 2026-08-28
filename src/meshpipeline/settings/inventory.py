@@ -458,6 +458,14 @@ INVENTORY: list[Group] = [
         EnvVar("INTAKE_GREETING_ON_UPLOAD", "true", kind="bool", exposure="internal"),
     ]),
 
+    # INTERNAL: the snappy engine's thin-feature layer policy (engines/snappy/layer_policy.py).
+    Group("Advanced: snappy thin-feature layer policy", note="INTERNAL. Geometry-adaptive local prism layers: the classifier measures local thickness/sharpness on the tessellated surface and locally reduces layer counts at thin/razor features instead of letting one global count fold cells or collapse everywhere.", vars=[
+        EnvVar("SNAPPY_THIN_LAYER_POLICY", "true", kind="bool", exposure="internal", help="master switch for the thin-feature classifier and its local layer policy"),
+        EnvVar("SNAPPY_THIN_AREA_FLOOR", "0.002", kind="float", exposure="internal", help="act only when thin+razor classes cover at least this wetted-area fraction"),
+        EnvVar("SNAPPY_RAZOR_CELL_FACTOR", "1.0", kind="float", exposure="internal", help="razor threshold: locally thinner than this many wall cells"),
+        EnvVar("SNAPPY_THIN_STACK_FACTOR", "2.0", kind="float", exposure="internal", help="thin threshold: locally thinner than this many two-sided prism stacks"),
+    ]),
+
     # EXTERNAL: nobody edits these in .env; a platform or a library supplies them.
     Group("Platform-supplied", note="EXTERNAL. Declared so the catalogue accounts for every name the code reads, but set by Cloud Run, Compose, the dispatcher or a library: not by editing .env.", vars=[
         EnvVar("CLOUD_RUN_EXECUTION", "", exposure="external", consumer="app", help="injected by Cloud Run; the execution this process belongs to"),

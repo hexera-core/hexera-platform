@@ -218,12 +218,19 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # The staged surface is metres; this states which conversion produced it so the domain
     # bounds, refinement sizes and cell targets derived below are physical.
     from meshpipeline.cad.staging import staged_surface
+    from meshpipeline.engines.snappy import layer_policy as LP
     from meshpipeline.engines.snappy import snappy_runner as R
     from meshpipeline.engines.snappy.planner import clamp_cell_budget, plan_with_accounting
     from meshpipeline.engines.workspace_facts import contract_wall_patch as _contract_wall_patch
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
     _surface = staged_surface(_materialized(state), workspace / "input.stl")
     analysis = analyze_surface(_surface)
+    # THIN-FEATURE FIELD - measured once per build (the geometry is fixed across passes; only
+    # the strategy changes). None disables the local layer policy for this whole build.
+    _thin_field = LP.measure_field(_surface)
+    # the escalation ladder's durable stage: 0 on a fresh geometry, advanced by layer-fatal
+    # passes below, carried across pipeline retries via the sibling attempt's fact
+    _esc_stage = LP.read_escalation(workspace)
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
     # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
@@ -307,6 +314,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
         previous_plan = strategy                       # remember for the next repair
+        _policy = None                                 # this pass's local layer policy, if any
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
@@ -339,18 +347,35 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"))
             wall = _contract_wall_patch(workspace) or "body"
+            # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
+            # (no thin features, policy off, no layers requested) authors the historical case
+            # exactly; otherwise razor/thin regions get locally fewer, thinner layers instead
+            # of one global count that folds at the sharp features or collapses everywhere.
+            _policy = LP.plan_layer_policy(_thin_field, rec=rec, strategy=strategy,
+                                           wall_name=wall, stage=_esc_stage)
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
                 wall_patch=wall, farfield_patch="farfield", feature_angle=150,
-                reference_length_m=strategy.get("reference_length_m"))
+                reference_length_m=strategy.get("reference_length_m"),
+                region_labeler=LP.make_region_labeler(_policy, wall) if _policy else None)
+            _policy = LP.reconcile_policy(_policy, prep.get("surface_regions") or [], wall)
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run, attempt)
+            # regions reach the dict ONLY for the policy's own synthetic split - a multi-solid
+            # input keeps rendering the single flattened wall entry it always has here
+            _dict_regions = (prep.get("surface_regions")
+                             if _policy is not None and _policy.mode == "split" else None)
             summary = R.render_snappy_case(
                 workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
                 analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
                 strategy=strategy, dimensionality=state.get("dimensionality", "3D"),
-                symmetry=symmetry)
+                symmetry=symmetry, surface_regions=_dict_regions,
+                layer_counts=LP.layer_counts_for(_policy),
+                layer_overrides=LP.overrides_for(_policy))
+            # the honest record travels with the case: the manifest reports the per-region
+            # layer decisions this pass actually authored (stale records are removed)
+            LP.write_layer_policy(workspace, _policy)
             # The case is authored, so the operation this pass opened is CLOSED. Without this the
             # reader was left with a validation that started every pass and never finished.
             await _op_end(publish, _spec, "validate_configuration",
@@ -385,6 +410,22 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         logger.info("snappy attempt %d - cells=%s wall_faces=%s skew_faces=%s -> %s (job_id=%s)",
                     attempt, q.get("cells"), wall_faces, q.get("skew_faces"),
                     "PRODUCTION-GRADE" if production else reason[:50], job_id)
+        # THE ESCALATION LADDER. A layer-fatal pass (negative-volume / mis-oriented cells -
+        # folding prisms) on a geometry with a MEASURED thin-feature policy escalates that
+        # policy deterministically - reduce layers at the classified thin regions first, then
+        # thin them, then drop the razor regions to zero - keeping the SAME plan. The planner's
+        # freeform re-plan stays the answer for every other failure, and for this one once the
+        # ladder is exhausted.
+        _esc_note = ""
+        if not production and _policy is not None and LP.is_layer_fatal(q):
+            _nxt = LP.escalate(_esc_stage)
+            if _nxt is not None:
+                _esc_stage = _nxt
+                LP.write_escalation(workspace, _nxt)
+                _esc_note = (f"escalating the thin-feature layer policy to stage {_nxt} "
+                             "(locally fewer/thinner layers at the thin and razor regions)")
+                logger.info("layer-fatal pass with a thin-feature policy - escalation stage %d "
+                            "(same plan) - job_id=%s", _nxt, job_id)
         # the JUDGEMENT, in the engineer's language. `reason` is the driver's own re-plan
         # note (not another agent's private feedback), so it may be shown.
         _shape = _pass_shape(q, wall_faces)
@@ -392,11 +433,15 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await publish.anote(f"Pass {attempt} produced a production-grade mesh - {_shape}",
                     op_id=f"snappy:pass-outcome:{attempt}")
         else:
-            await publish.anote(f"Pass {attempt} fell short - {_shape}; re-planning ({reason[:60]})",
+            await publish.anote(f"Pass {attempt} fell short - {_shape}; "
+                    + (_esc_note if _esc_note else f"re-planning ({reason[:60]})"),
                     op_id=f"snappy:pass-outcome:{attempt}")
         if production:
             return True                    # valid mesh is in the workspace; executor takes over
-        feedback, plan = reason, None      # re-plan against the concrete failure next attempt
+        if _esc_note:
+            feedback, plan = reason, strategy   # deterministic retry: same plan, escalated policy
+        else:
+            feedback, plan = reason, None  # re-plan against the concrete failure next attempt
 
     # Exhausted the attempts. Hand a best-effort VALID mesh to the executor/reviewer (they make the
     # final delivery call); only a genuinely invalid last mesh (no body captured) is a hard fail.
