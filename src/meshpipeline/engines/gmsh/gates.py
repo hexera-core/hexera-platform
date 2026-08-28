@@ -60,6 +60,23 @@ def _gate_sicn_floor(ctx: GateCtx) -> tuple[bool, str]:
     return True, ""
 
 
+def _gate_fv_quality(ctx: GateCtx) -> tuple[bool, str]:
+    # The finite-volume quality bars (engines/gmsh/settings.py), measured by the driver with
+    # the checkMesh-matched formulas (fv_metrics.py). HARD for a fluid-volume deliverable -
+    # fail-closed, so an UNMEASURED fluid mesh is rejected too; advisory-but-logged for a
+    # structural deck (the FE solver does not integrate over face non-orthogonality, and the
+    # criteria report still shows the numbers to the reviewer); not applicable to 2D planar.
+    from meshpipeline.engines.gmsh.gmsh_runner import fv_quality_check
+    q = (ctx.manifest_or_load().get("quality") or {})
+    mode, ok, why = fv_quality_check(q, ctx.workspace)
+    if ok or mode == "not_applicable":
+        return True, ""
+    if mode == "advisory":
+        logger.warning("gmsh fv_quality (advisory for this non-fluid case): %s", why)
+        return True, ""
+    return False, f"[QUALITY] {why}"
+
+
 def _gate_gmsh_region_contract(ctx: GateCtx) -> tuple[bool, str]:
     manifest = ctx.manifest_or_load()
     if not (manifest and ctx.intake_patches):
@@ -87,6 +104,9 @@ GMSH_GATES: tuple[GateSpec, ...] = (
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="sicn_floor",     check=_gate_sicn_floor,          section="MESH",
              proves="No degenerate elements - every element clears the quality floor for FE assembly"),
+    GateSpec(key="fv_quality",     check=_gate_fv_quality,          section="MESH",
+             proves="A fluid domain clears the finite-volume quality bars - "
+                    "non-orthogonality and skewness measured as checkMesh measures them"),
     GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
              proves="Every named group you asked for exists in the deck"),
 )

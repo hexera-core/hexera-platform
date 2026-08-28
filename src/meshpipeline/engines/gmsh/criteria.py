@@ -55,6 +55,59 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         ),
 )
 
+
+def _fv_rows() -> tuple[Criterion, ...]:
+    """The finite-volume quality bars, built at call time from the declared settings.
+
+    Advisory rows, matching how snappy declares MAX_NON_ORTHO: a 2D planar or structural
+    quality report may legitimately lack these keys, and gate_declared_criteria fails
+    closed on any absent GATING key - so the HARD enforcement is the engine's own
+    fv_quality gate (engines/gmsh/gates.py), which knows when the bars apply. The rows
+    exist so the reviewer and the manifest report card see the measured numbers beside
+    the bar, in checkMesh's own conventions (formulas vendored from the calibrated
+    scorer in fv_metrics.py).
+    """
+    import meshpipeline.engines.gmsh.settings as gq
+    from meshpipeline.engines.openfoam_criteria import OF_SNAPPY_GUIDE
+    return (
+        Criterion(
+            key="max_non_ortho", label="Max face non-orthogonality within FV solver tolerance",
+            op="<=", threshold=gq.GMSH_FV_NONORTHO_WARN, gating=False,
+            rationale=(
+                f"{gq.GMSH_FV_NONORTHO_WARN:g} deg is the standard meshQualityControls bar "
+                "(maxNonOrtho): above it, gradient/laplacian discretisation degrades and "
+                "needs non-orthogonal correctors. Measured on the delivered tets with the "
+                "checkMesh formula. Advisory here; a fluid domain FAILS the build outright "
+                f"above {gq.GMSH_FV_NONORTHO_HARD:g} deg (checkMesh's severe line) via the "
+                "fv_quality gate."),
+            evidence_url=OF_SNAPPY_GUIDE,
+        ),
+        Criterion(
+            key="max_skewness_internal", label="Internal-face skewness within solver tolerance",
+            op="<=", threshold=gq.GMSH_FV_SKEW_INTERNAL_HARD, gating=False,
+            rationale=(
+                "checkMesh's maxInternalSkewness bar: a face this skewed mis-centres the "
+                "face flux and degrades interpolation accuracy. Measured with the checkMesh "
+                "formula (normalisation floored at 0.2|d|). A fluid domain FAILS the build "
+                "outright above this bar via the fv_quality gate."),
+            evidence_url=OF_SNAPPY_GUIDE,
+        ),
+        Criterion(
+            key="max_skewness_boundary", label="Boundary-face skewness within solver tolerance",
+            op="<=", threshold=gq.GMSH_FV_SKEW_BOUNDARY_HARD, gating=False,
+            rationale=(
+                "checkMesh's maxBoundarySkewness bar, with the boundary half-cell distance "
+                "convention (normalisation floored at 0.4|d|). A fluid domain FAILS the "
+                "build outright above this bar via the fv_quality gate."),
+            evidence_url=OF_SNAPPY_GUIDE,
+        ),
+    )
+
+
+def criteria_rows() -> tuple[Criterion, ...]:
+    """Everything a gmsh mesh is measured against: the FE bars + the FV bars."""
+    return CRITERIA_ROWS + _fv_rows()
+
 # The SEMANTIC review layer - mesh-class concerns a metric report cannot settle by
 # threshold alone (they need the group summary, the brief, and quality interpretation).
 # The gmsh review is HYBRID: measured metrics carry element quality, and the render lane

@@ -75,6 +75,9 @@
   ],
   "criteria": [
    "fatal",
+   "max_non_ortho",
+   "max_skewness_boundary",
+   "max_skewness_internal",
    "min_sicn",
    "rc",
    "sicn_low_fraction",
@@ -102,6 +105,11 @@
    ],
    [
     "sicn_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "fv_quality",
     true,
     "MESH"
    ],

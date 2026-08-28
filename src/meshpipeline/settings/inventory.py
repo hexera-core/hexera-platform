@@ -389,6 +389,14 @@ INVENTORY: list[Group] = [
                     "bare wall patch keeps the failure a failure"),
     ]),
 
+    Group("Gmsh finite-volume quality gate", note="The finite-volume quality bars the gmsh path measures with OpenFOAM checkMesh's own formulas. The hard bars BLOCK a fluid-domain mesh (fail-closed: an unmeasured fluid mesh is rejected too); the warn bar is the advisory criteria row and the driver's optimizer-ladder target. Defaults are checkMesh's own conventions - change them only with a measured reason.", vars=[
+        EnvVar("GMSH_FV_NONORTHO_HARD", "70", kind="float", help="max face non-orthogonality (degrees) a gmsh fluid-domain mesh may deliver; checkMesh's severe line"),
+        EnvVar("GMSH_FV_NONORTHO_WARN", "65", kind="float", help="advisory bar and optimizer-ladder target; the standard meshQualityControls maxNonOrtho"),
+        EnvVar("GMSH_FV_SKEW_INTERNAL_HARD", "4.0", kind="float", help="max internal-face skewness; checkMesh's maxInternalSkewness"),
+        EnvVar("GMSH_FV_SKEW_BOUNDARY_HARD", "20.0", kind="float", help="max boundary-face skewness; checkMesh's maxBoundarySkewness"),
+        EnvVar("GMSH_FV_OPTIMIZE_MAX_PASSES", "5", kind="int", help="optimizer passes the gmsh driver may spend after 3D meshing before reporting the metrics as they stand"),
+    ]),
+
     Group("Workspace archive limits", note="Bounds on the workspace archive a remote mesh returns: a decompression bomb, a traversal entry or a runaway member is refused before anything is written.", vars=[
         EnvVar("WORKSPACE_ARCHIVE_MAX_BYTES", "536870912", kind="int", help="compressed archive ceiling"),
         EnvVar("WORKSPACE_ARCHIVE_MAX_ENTRIES", "20000", kind="int"),

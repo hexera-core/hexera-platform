@@ -90,8 +90,13 @@ def _review_rubric():
 
 
 def _criteria():
-    from meshpipeline.engines.gmsh.criteria import CRITERIA_ROWS
-    return CRITERIA_ROWS
+    from meshpipeline.engines.gmsh.criteria import criteria_rows
+    return criteria_rows()
+
+
+def _run_enricher():
+    from meshpipeline.engines.gmsh.gmsh_runner import run_enricher
+    return run_enricher
 
 
 SPEC = EngineSpec(
@@ -201,6 +206,7 @@ SPEC = EngineSpec(
         _load_target_obligations=lambda: _target_obligations,
         _load_review_rubric=_review_rubric,
         _load_criteria=_criteria,
+        _load_run_enricher=_run_enricher,
         briefing=BRIEFING,
         deliverable=Deliverable(
             marker="mesh.inp",

@@ -23,6 +23,140 @@ _GROUP_FIELDS = {"name", "role", "surface_tags", "curve_tags"}
 _EXPORTS = {"bdf", "unv"}
 _DIMS = {"2D", "3D"}
 
+#: The deterministic optimizer ladder for the 3D FV metrics: gmsh's tet optimizer (""),
+#: Netgen, then node relocation, cycled up to the configured pass budget. Applied only
+#: while the measured metrics still miss the WARN targets - the sequence is fixed, so a
+#: re-run of the same spec walks the same passes.
+_FV_LADDER_CYCLE = ("", "Netgen", "Relocate3D")
+
+#: gmsh element types -> element order, per meshed dimension (setOrder is asked for an
+#: order; these read back what the mesh actually contains).
+_ORDER_BY_TYPE = {3: {4: 1, 11: 2},    # tet4 / tet10
+                  2: {2: 1, 9: 2}}     # tri3 / tri6
+
+
+def _fv():
+    """The FV metrics module, under either invocation of this driver.
+
+    Production runs the driver as meshpipeline.engines.gmsh.driver (the installed
+    distribution); the standalone tests run it as engines.gmsh.driver with cwd inside the
+    package (same fallback _allowed_roles uses).
+    """
+    try:
+        from meshpipeline.engines.gmsh import fv_metrics
+    except ImportError:
+        from engines.gmsh import fv_metrics
+    return fv_metrics
+
+
+def _fv_thresholds() -> dict:
+    """The FV bars: from the declared settings when the package is importable, else the
+    catalogue defaults verbatim (settings/inventory.py is the authority on the values)."""
+    try:
+        from meshpipeline.engines.gmsh import settings as gq
+        return {"nonortho_hard": gq.GMSH_FV_NONORTHO_HARD,
+                "nonortho_warn": gq.GMSH_FV_NONORTHO_WARN,
+                "skew_internal_hard": gq.GMSH_FV_SKEW_INTERNAL_HARD,
+                "skew_boundary_hard": gq.GMSH_FV_SKEW_BOUNDARY_HARD,
+                "max_passes": gq.GMSH_FV_OPTIMIZE_MAX_PASSES}
+    except ImportError:
+        return {"nonortho_hard": 70.0, "nonortho_warn": 65.0,
+                "skew_internal_hard": 4.0, "skew_boundary_hard": 20.0,
+                "max_passes": 5}
+
+
+def _fv_targets_met(m: dict, th: dict) -> bool:
+    # The ladder polishes to the WARN bar (meshQualityControls maxNonOrtho 65), not merely
+    # under the hard bar - stopping at 69.9 would ship a mesh the advisory still flags.
+    return (m["max_non_ortho"] <= th["nonortho_warn"]
+            and m["max_skewness_internal"] <= th["skew_internal_hard"]
+            and m["max_skewness_boundary"] <= th["skew_boundary_hard"])
+
+
+def _fv_measure_and_optimize(gmsh) -> tuple[dict | None, list]:
+    """Measure the 3D mesh's FV metrics; while they miss the targets, walk the ladder.
+
+    Returns (final metrics or None on measurement failure, the pass-by-pass history).
+    Fail-closed by construction: on None the FV keys never reach quality.json, and the
+    fv_quality gate then rejects a fluid-domain mesh as unmeasured.
+    """
+    fv = _fv()
+    th = _fv_thresholds()
+    n = int(th["max_passes"])
+    ladder = [_FV_LADDER_CYCLE[i % len(_FV_LADDER_CYCLE)] for i in range(n)]
+    history: list[dict] = []
+
+    def _snap(label: str, m: dict) -> dict:
+        return {"pass": label, "max_non_ortho": m["max_non_ortho"],
+                "max_skewness_internal": m["max_skewness_internal"],
+                "max_skewness_boundary": m["max_skewness_boundary"]}
+
+    try:
+        m = fv.measure_model(gmsh)
+    except Exception as exc:  # noqa: BLE001 - a measurement crash must not kill the build
+        print(f"[GMSH] FV quality measurement failed: {exc}", file=sys.stderr)
+        return None, [{"pass": "initial", "error": str(exc)}]
+    history.append(_snap("initial", m))
+    for name in ladder:
+        if _fv_targets_met(m, th):
+            break
+        gmsh.model.mesh.optimize(name)
+        try:
+            m = fv.measure_model(gmsh)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[GMSH] FV quality measurement failed after optimize({name!r}): {exc}",
+                  file=sys.stderr)
+            history.append({"pass": name or "tet", "error": str(exc)})
+            return None, history
+        history.append(_snap(name or "tet", m))
+    return m, history
+
+
+def _delivered_order(gmsh, dim: int) -> int | None:
+    """The element order the mesh ACTUALLY contains (None = mixed/unrecognized types)."""
+    etypes, _, _ = gmsh.model.mesh.getElements(dim)
+    orders = {_ORDER_BY_TYPE[dim].get(int(t)) for t in etypes}
+    if len(orders) != 1 or None in orders:
+        return None
+    return orders.pop()
+
+
+def _resolve_element_order(ws: Path, spec: dict) -> tuple[str, int]:
+    """Enforce the INTAKE-DECLARED element_order (engine_params.json) end-to-end.
+
+    The user's declared param is authoritative, exactly like the `dimensionality` file: a
+    spec that contradicts it REJECTS, a spec that omits it inherits it. Only without an
+    intake declaration does the spec (or the order-2 default) decide. Returns
+    (source, rc): rc 0 = resolved into spec["element_order"], else the driver exit code.
+    The audit that forced this: intake stored element_order=1, the builder-authored spec
+    said 2 (the prompt's example value), and the delivered .msh files were tet10.
+    """
+    ep = ws / "engine_params.json"
+    declared: str | None = None
+    if ep.exists():
+        try:
+            raw = json.loads(ep.read_text()).get("element_order")
+            declared = None if raw is None else str(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[GMSH] engine_params.json could not be read: {exc} - the user's "
+                  "declared params are unreadable, refusing to mesh with guessed defaults",
+                  file=sys.stderr)
+            return "intake", 2
+    if declared is None:
+        return ("spec" if "element_order" in spec else "default"), 0
+    if declared not in ("1", "2"):
+        print(f"[GMSH] engine_params.json declares element_order {declared!r} - not a "
+              "supported order (1 or 2); refusing to mesh with a guessed default",
+              file=sys.stderr)
+        return "intake", 2
+    spec_order = spec.get("element_order")
+    if spec_order is not None and str(spec_order) != declared:
+        print(f"[GMSH] gmsh_spec.json REJECTED - element_order {spec_order!r} contradicts "
+              f"the user's declared element_order {declared!r} (the intake declaration is "
+              "enforced; omit the key or match it).", file=sys.stderr)
+        return "intake", 6
+    spec["element_order"] = int(declared)
+    return "intake", 0
 
 
 def _final_node_bounds(gmsh) -> list[float]:
@@ -125,7 +259,7 @@ def _validate_spec(spec) -> list[str]:
     return errs
 
 
-def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
+def _mesh_planar(ws: Path, spec: dict, h: float, order_source: str = "default") -> int:
     import gmsh
     faces = [t for _, t in gmsh.model.getEntities(2)]
     if not faces:
@@ -184,6 +318,11 @@ def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
         fatal.append("no surface elements generated")
     if min_sicn <= 0.0:
         fatal.append("degenerate elements (SICN <= 0)")
+    # the DELIVERED order, read back from the mesh - never an echo of the request
+    delivered = _delivered_order(gmsh, 2) if n_elem else None
+    if n_elem and delivered != order:
+        fatal.append(f"delivered element order {delivered} does not match the requested "
+                     f"order {order} ({order_source})")
 
     gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)   # *NSET per group (BC targets)
     gmsh.write(str(ws / "mesh.inp"))
@@ -198,7 +337,10 @@ def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
     _actual_group_names = [gmsh.model.getPhysicalName(dim, tag)
                            for dim, tag in gmsh.model.getPhysicalGroups(1)]
     (ws / "quality.json").write_text(json.dumps({
-        "cells": n_elem, "nodes": n_nodes, "element_order": order,
+        "cells": n_elem, "nodes": n_nodes,
+        "element_order": delivered if delivered is not None else order,
+        "element_order_requested": order,
+        "element_order_source": order_source,
         "dimensionality": "2D",
         "min_sicn": round(min_sicn, 4),
         "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
@@ -210,7 +352,7 @@ def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
         "default_group_used": bool(leftover),
     }, indent=1))
     print(f"[GMSH] 2D elements={n_elem} nodes={n_nodes} order={order} "
-          f"min_sicn={min_sicn:.3f} low_frac={low / max(n_elem, 1):.4f}")
+          f"({order_source}) min_sicn={min_sicn:.3f} low_frac={low / max(n_elem, 1):.4f}")
     return 0 if not fatal else 4
 
 
@@ -244,6 +386,11 @@ def main(workspace: str) -> int:
                   f"contradicts the case's declared {_decl!r}.", file=sys.stderr)
             return 6
         spec["dimensionality"] = _decl
+    # The INTAKE-DECLARED element_order (engine_params.json) is likewise authoritative:
+    # the spec may not contradict it, and omitting it inherits it (never the default).
+    _order_source, _order_rc = _resolve_element_order(ws, spec)
+    if _order_rc:
+        return _order_rc
 
     import gmsh
     gmsh.initialize(interruptible=False)
@@ -266,7 +413,7 @@ def main(workspace: str) -> int:
 
         _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
         if _is2d:
-            return _mesh_planar(ws, spec, h)
+            return _mesh_planar(ws, spec, h, order_source=_order_source)
 
         # Physical groups: every volume is the solid; surfaces per the spec's
         # contracted names; unassigned surfaces land in the default group so
@@ -303,6 +450,11 @@ def main(workspace: str) -> int:
         gmsh.model.mesh.generate(3)
         if spec.get("optimize", True):
             gmsh.model.mesh.optimize("Netgen")
+        # FV quality pass: measure the finite-volume metrics (checkMesh formulas, vendored
+        # from the calibrated scorer) and, while they miss the targets, walk the
+        # deterministic optimizer ladder. Runs on the LINEAR mesh - the optimizers move
+        # corner nodes, which is the geometry a finite-volume solver sees.
+        _fv_m, _fv_history = _fv_measure_and_optimize(gmsh)
         order = int(spec.get("element_order", 2))
         if order > 1:
             gmsh.model.mesh.setOrder(order)
@@ -322,6 +474,12 @@ def main(workspace: str) -> int:
             fatal.append("no volume elements generated")
         if min_sicn <= 0.0:
             fatal.append("degenerate elements (SICN <= 0)")
+        # the DELIVERED order, read back from the mesh - never an echo of the request.
+        # (The audit's contract deviation: order 1 was declared, tet10 was delivered.)
+        delivered = _delivered_order(gmsh, 3) if n_elem else None
+        if n_elem and delivered != order:
+            fatal.append(f"delivered element order {delivered} does not match the "
+                         f"requested order {order} ({_order_source})")
 
         gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)   # *NSET per group (BC targets)
         gmsh.write(str(ws / "mesh.inp"))
@@ -335,9 +493,17 @@ def main(workspace: str) -> int:
         _actual_group_names = [gmsh.model.getPhysicalName(dim, tag)
                                for dim, tag in gmsh.model.getPhysicalGroups(2)]
         (ws / "quality.json").write_text(json.dumps({
-            "cells": n_elem, "nodes": n_nodes, "element_order": order,
+            "cells": n_elem, "nodes": n_nodes,
+            "element_order": delivered if delivered is not None else order,
+            "element_order_requested": order,
+            "element_order_source": _order_source,
             "min_sicn": round(min_sicn, 4),
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
+            # the FV metrics (checkMesh conventions) + the optimizer-ladder history.
+            # ABSENT keys (measurement failed) are deliberate: the fv_quality gate
+            # fail-closes on a fluid domain that was never measured.
+            **(_fv_m or {}),
+            "fv_optimization": _fv_history,
             "fatal": fatal, "size_h": h,
             "bounds": _final_node_bounds(gmsh),
             # groups = the ACTUAL physical groups present in the meshed model (read back),
@@ -351,8 +517,13 @@ def main(workspace: str) -> int:
             # a phantom entry fails the patch contract as an undeclared extra.
             "default_group_used": bool(leftover),
         }, indent=1))
+        _fv_note = (f" max_non_ortho={_fv_m['max_non_ortho']:.1f} "
+                    f"max_skew_int={_fv_m['max_skewness_internal']:.2f} "
+                    f"fv_passes={max(len(_fv_history) - 1, 0)}"
+                    if _fv_m else " fv_metrics=UNMEASURED")
         print(f"[GMSH] elements={n_elem} nodes={n_nodes} order={order} "
-              f"min_sicn={min_sicn:.3f} low_frac={low / max(n_elem, 1):.4f}")
+              f"({_order_source}) min_sicn={min_sicn:.3f} "
+              f"low_frac={low / max(n_elem, 1):.4f}{_fv_note}")
         return 0 if not fatal else 4
     finally:
         gmsh.finalize()

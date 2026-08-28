@@ -152,6 +152,78 @@ def check_mesh(workspace) -> dict:
     return q
 
 
+# finite-volume quality bars (the fleet-audit follow-up: gmsh fluid domains shipped at
+# 73.9 deg max non-orthogonality past checkMesh's 70 deg severe line, while every snappy
+# mesh respected its own 65 deg gate)
+
+def fv_applicability(quality: dict, workspace) -> str:
+    """Whether the FV bars BLOCK this mesh: "hard" | "advisory" | "not_applicable".
+
+    The metrics judge finite-volume solvability, so they block a FLUID-VOLUME deliverable
+    (the case declares a flow topology, or a purpose that requires a fluid volume) and stay
+    advisory-but-reported for a structural FE deck; a 2D planar FEA triangle mesh has no FV
+    face metrics at all. Applicability is decided by the CASE, never by the engine name
+    (the same rule the spec's conformance coverage states for the domain-extent check).
+    """
+    if str((quality or {}).get("dimensionality", "3D")).upper() == "2D":
+        return "not_applicable"
+    from meshpipeline.engines.workspace_facts import read_flow_topology, read_purpose
+    if read_flow_topology(workspace):
+        return "hard"
+    purpose = read_purpose(workspace)
+    if purpose:
+        from meshpipeline.engines.purposes import PURPOSES
+        p = PURPOSES.get(purpose)
+        req = p.requires_mesh_kind if p is not None else ""
+        kinds = {req} if isinstance(req, str) else set(req)
+        if "fluid-volume" in kinds:
+            return "hard"
+    return "advisory"
+
+
+def fv_quality_check(quality: dict, workspace) -> tuple[str, bool, str]:
+    """(mode, ok, why) against the declared hard FV bars (engines/gmsh/settings.py).
+
+    Fail-closed where it applies: a fluid-volume mesh whose quality report lacks the FV
+    metrics FAILS as unmeasured rather than passing unjudged.
+    """
+    mode = fv_applicability(quality, workspace)
+    if mode == "not_applicable":
+        return mode, True, ""
+    import meshpipeline.engines.gmsh.settings as gq
+    from meshpipeline.engines.gmsh.fv_metrics import fv_verdict
+    ok, why = fv_verdict(quality or {},
+                         nonortho_hard=gq.GMSH_FV_NONORTHO_HARD,
+                         skew_internal_hard=gq.GMSH_FV_SKEW_INTERNAL_HARD,
+                         skew_boundary_hard=gq.GMSH_FV_SKEW_BOUNDARY_HARD)
+    return mode, ok, why
+
+
+def run_enricher(R, workspace, res: dict, q: dict, out: dict) -> None:
+    """run_mesh guidance: fold the FV verdict in so the builder iterates BEFORE submitting
+    into a gate bounce (spec._load_run_enricher; same seam snappy and vmtk use)."""
+    from meshpipeline.engines.registry import get_spec
+    policy = get_spec("gmsh").run_policy
+    if policy is None:  # pragma: no cover - the gmsh spec always declares a run policy
+        return
+    fatal = out.get("fatal_defects") or []
+    if not out.get("success"):
+        out["guidance"] = f"Not valid ({fatal or policy.fail_label}). {policy.fail_hint}"
+        return
+    mode, fv_ok, why = fv_quality_check(q, workspace)
+    if mode == "hard" and not fv_ok:
+        out["success"] = False
+        out["mesh_ok"] = False
+        out["guidance"] = ("MESH VALID BUT OVER THE FINITE-VOLUME QUALITY BARS - do not "
+                           "submit. " + why)
+        return
+    if mode == "advisory" and not fv_ok:
+        out["guidance"] = (policy.ok_guidance
+                           + f" (FV-metric note, advisory for a structural deck: {why})")
+        return
+    out["guidance"] = policy.ok_guidance
+
+
 # finalize: manifest + deliverable check (executor seam)
 
 def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
@@ -189,5 +261,19 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     )
     out = (f"[GMSH] elements={q.get('cells')} nodes={q.get('nodes')} "
            f"order={q.get('element_order')} min_sicn={q.get('min_sicn')} "
+           f"max_non_ortho={q.get('max_non_ortho')} "
+           f"max_skewness={q.get('max_skewness')} "
            f"fatal={q.get('fatal', [])}")
+    # ELEMENT-ORDER CONTRACT (defence in depth behind the driver's own enforcement): the
+    # DELIVERED order in the quality report must be the user's declared param. Catches a
+    # stale mesh surviving from before the declaration changed - the audit's finding was
+    # order-1 declarations delivered as tet10.
+    _declared = str((engine_params or {}).get("element_order") or "")
+    _delivered_order = q.get("element_order")
+    if _declared in ("1", "2") and _delivered_order is not None \
+            and str(_delivered_order) != _declared:
+        msg = (f"[GMSH] delivered element order {_delivered_order} does not match the "
+               f"user's declared element_order {_declared} - the deck violates the intake "
+               "contract. Run run_mesh again (the driver enforces the declared order).")
+        return {"success": False, "stdout": out, "stderr": "", "output": f"{out}\n{msg}"}
     return {"success": not q.get("fatal"), "stdout": out, "stderr": "", "output": out}
