@@ -28,10 +28,22 @@ def workspace_digest(workspace: Any) -> str:
     # THE BUNDLE, not the path: sorted relative names and their content hashes. Stored with the
     # claim so a replay that would upload different content is refused as an identity conflict
     # rather than quietly overwriting the accepted operation's input.
+    #
+    # "The bundle" is what is UPLOADED, so when the workspace declares its submission payload
+    # (contracts.mesh_execution.NATIVE_PAYLOAD_FACT) the digest covers exactly the files the
+    # executor's archive carries - resolved by the same enumerator, so the two scopes cannot
+    # drift. That is also what makes a replayed pass deterministic: hashing every file in the
+    # attempt's shared workspace made the digest depend on the PREVIOUS pass's collected
+    # outputs and on anything written after dispatch, content the submission never uploads -
+    # an honest replay would have been refused as an identity conflict over bytes the provider
+    # never saw. No declaration means every file, exactly the old behaviour.
+    from meshpipeline.contracts.mesh_execution import submission_payload_files
     root = Path(workspace)
+    payload = submission_payload_files(root)
+    files = payload if payload is not None else sorted(p for p in root.rglob("*") if p.is_file())
     parts = [
         f"{path.relative_to(root)}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
-        for path in sorted(p for p in root.rglob("*") if p.is_file())
+        for path in files
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 

@@ -118,6 +118,27 @@ def _write_plan_memory(workspace: Path, strategy: dict) -> None:
             pass
 
 
+def _native_payload_members(workspace) -> list[str]:
+    """What THIS engine's remote run consumes: the case dicts and the staged triSurface STLs.
+
+    Everything else in the attempt's workspace is either local-only (input.stl feeds the
+    planner here, plan memory and gate facts feed the judge here) or a PRIOR pass's collected
+    output - the built polyMesh, extendedFeatureEdgeMesh, VTK exports, converted meshes and
+    logs that a completed pass writes back into this same directory. Shipping those to the
+    mesher is what ballooned a retry pass's submission from tens of MB to most of a GB and
+    timed the upload out before the run ever started. The remote regenerates every derived
+    surface artifact itself (surfaceFeatureExtract rebuilds the eMesh from the STL), so the
+    STLs under constant/triSurface - which only this driver writes - plus system/ are the
+    whole case. Declared HERE because only the driver knows which workspace entries are its
+    case; the executor seam just reads the fact.
+    """
+    ws = Path(workspace)
+    members = ["system"]
+    members += sorted(p.relative_to(ws).as_posix()
+                      for p in (ws / "constant" / "triSurface").glob("*.stl"))
+    return members
+
+
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
                             engine, purpose, *, run,
                             native_attempt: int = 1):
@@ -130,8 +151,12 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     # (native_submission.attempt_scoped_operation), so pass 2's revised case claims a native
     # run of its own instead of being refused as a conflicting replay of pass 1's claim -
     # which is what left every pass after the first stillborn ("the mesh run never started").
-    from meshpipeline.contracts.mesh_execution import note_native_pass
+    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
     note_native_pass(workspace, native_attempt)
+    # WHAT the submission carries, declared beside WHICH pass it is. The attempt's workspace
+    # holds the previous pass's collected outputs too; without this fact the executor tars
+    # them all into the upload (see _native_payload_members).
+    note_native_payload(workspace, _native_payload_members(workspace))
     _op = await _op_begin(publish, "run_native_mesher", run, native_attempt)
     try:
         from meshpipeline.engines.mesh_history import estimate as _est
