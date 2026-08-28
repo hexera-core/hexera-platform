@@ -68,7 +68,87 @@ def geometry_report(ctx: BuilderToolContext) -> dict:
     # engine reports PHYSICAL facts rather than whatever the file's numbers happen to be.
     from meshpipeline.engines.runtime import get_engine
     ctx.require_geometry()
-    return get_engine(ctx.engine).inspect_stl(ctx.workspace, context=ctx)
+    report = get_engine(ctx.engine).inspect_stl(ctx.workspace, context=ctx)
+    import meshpipeline.settings.runtime as rtcfg
+    return _bounded_report(report, rtcfg.MAX_TOOL_OUTPUT_CHARS)
+
+
+def _serialized_len(report: dict) -> int:
+    import json
+    return len(json.dumps(report))
+
+
+#: Headroom under the tool cap. The registry's `_serialized` measures its OWN json.dumps of the
+#: result against the cap; this module aims a comfortable margin below it so an innocent
+#: serializer difference (key added downstream, separator change) can never turn "fits by one
+#: char" back into the over-cap notice this function exists to prevent.
+_CAP_MARGIN = 512
+
+
+def _bounded_report(report: dict, cap: int) -> dict:
+    """Degrade an oversized geometry report DETERMINISTICALLY instead of losing it whole.
+
+    `geometry_report` takes no arguments, so the model cannot make the engine "return a smaller
+    result" - yet the registry's output cap replaces any oversized result with exactly that
+    instruction. On a 57-face pump volute the full report (16821 chars) exceeded the 16000-char
+    cap on every call; the builder never learned one surface tag, burned every round of two
+    attempts on STEP archaeology, and the job died at finalize with "no mesh.inp"
+    (job d0fc1033-c2dc-474a-affc-dcc316237668, 2026-08-28). This function is the tool-side
+    guarantee that the report ALWAYS arrives, shedding detail in declared steps:
+
+      1. fits - returned untouched (the overwhelmingly common case);
+      2. a solid model's curve table is dropped (3D groups bind surface tags, never curves);
+      3. per-surface dicts are compacted to arrays (same tags, same numbers, ~half the chars);
+      4. last resort: smallest-area surfaces are elided, loudly counted - never silently.
+
+    Every step stamps what it did, so the model reads a degraded report as degraded rather
+    than as the geometry's whole truth.
+    """
+    if not isinstance(report, dict) or _serialized_len(report) <= cap - _CAP_MARGIN:
+        return report
+    budget = cap - _CAP_MARGIN
+    out = dict(report)
+
+    curves = out.get("curves")
+    if isinstance(curves, list) and curves and out.get("volumes"):
+        # A SOLID model's groups bind surface tags; its curve table informs nothing the
+        # builder can author with, and on real volutes it was most of the report.
+        out["curves"] = []
+        out["curves_omitted"] = len(curves)
+        if _serialized_len(out) <= budget:
+            return out
+
+    surfaces = out.get("surfaces")
+    if isinstance(surfaces, list) and surfaces and all(
+            isinstance(s, dict) and "tag" in s for s in surfaces):
+        compact = [[s.get("tag"), s.get("area")] + list(s.get("centroid") or [])
+                   for s in surfaces]
+        out["surfaces"] = compact
+        out["surfaces_format"] = "[tag, area, cx, cy, cz]"
+        if _serialized_len(out) <= budget:
+            return out
+
+        # LAST RESORT - elide the smallest faces, keeping every large one, and say so. The
+        # note matters: an elided tag still exists in the engine, and a group listing "every
+        # surface" from this report would silently miss it. (The keys are total even for a
+        # row missing its number - two Nones must sort, not raise.)
+        def _by_area(row: list) -> tuple:
+            return (row[1] is None, row[1] or 0.0)
+
+        def _by_tag(row: list) -> tuple:
+            return (row[0] is None, row[0] or 0)
+
+        by_area = sorted(out["surfaces"], key=_by_area)
+        total = len(by_area)
+        while len(by_area) > 1 and _serialized_len(out) > budget:
+            by_area.pop(0)
+            out["surfaces"] = sorted(by_area, key=_by_tag)
+            out["surfaces_omitted"] = total - len(by_area)
+            out["surfaces_note"] = (
+                f"the {total - len(by_area)} SMALLEST-area surfaces were elided to fit the "
+                "tool output cap - their tags still exist in the engine; do not treat the "
+                "listed tags as the complete surface set")
+    return out
 
 
 def measure_scales(ctx: BuilderToolContext, args: dict) -> dict:
