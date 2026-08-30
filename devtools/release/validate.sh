@@ -229,7 +229,12 @@ PY
 then record "wheel inspect" passed 1 "$(cat "${WORK}/wheel-inspect.txt")"
 else record "wheel inspect" failed 1 "$(cat "${WORK}/wheel-inspect.txt")"; fi
 
-python3 -m venv "${WORK}/venv" >/dev/null 2>&1
+# Built by GATE_PY, not by whatever `python3` the host happens to resolve to. The wheel declares
+# requires-python >=3.11, so a host whose python3 is older cannot install the project's own
+# distribution and this check fails for a reason that has nothing to do with the artifact - on
+# Ubuntu 22.04 (python3 = 3.10) every release would be unpromotable. GATE_PY is already the
+# interpreter that built the wheel, which is the one whose install proves anything.
+"${GATE_PY}" -m venv "${WORK}/venv" >/dev/null 2>&1
 if "${WORK}/venv/bin/pip" install --no-cache-dir -c "${REPO_ROOT}/requirements/constraints.txt" "${WHEEL}" >"${WORK}/install.log" 2>&1; then
   record "clean non-editable install" passed 1 "throwaway venv (wheel declares no runtime pins by design)"
 else
