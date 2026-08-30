@@ -647,9 +647,16 @@ PY
 )"; then record "native terminal coverage (5 engines + 4 scenarios)" passed 1 "${COV}"
     else record "native terminal coverage (5 engines + 4 scenarios)" failed 1 "${COV}"; KEEP_WORK=1; fi
 
-    if EV="$("${GATE_PY}" - "${NATIVE_EVIDENCE}" <<'PY' 2>&1
+    # The expected final_result schema, READ from the one authority that declares it rather than
+    # restated as a literal here. A hardcoded number silently goes stale the moment the product
+    # bumps the schema, and then fails the release for having shipped the version it was supposed
+    # to ship - which is exactly what a literal 4 did after the product moved to 5.
+    FR_SCHEMA="$(sed -n 's/^FINAL_RESULT_SCHEMA_VERSION[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "${REPO_ROOT}/src/meshpipeline/application/final_result.py" | head -1)"
+    if EV="$("${GATE_PY}" - "${NATIVE_EVIDENCE}" "${FR_SCHEMA}" <<'PY' 2>&1
 import hashlib, json, pathlib, sys
 d = pathlib.Path(sys.argv[1])
+expected_schema = int(sys.argv[2])
 assert d.is_dir(), f"no evidence directory was retrieved from the container: {d}"
 files = sorted(d.glob("*.json"))
 assert files, "the terminal tier produced no evidence artifacts"
@@ -659,18 +666,20 @@ jobs, rows = set(), []
 for f in terminals:
     r = json.loads(f.read_text())
     fr = r["final_result"]
-    assert fr["schema_version"] == 4, f"{f.name}: final_result schema_version {fr['schema_version']}"
+    assert fr["schema_version"] == expected_schema, (
+        f"{f.name}: final_result schema_version {fr['schema_version']}, "
+        f"expected {expected_schema}")
     assert fr["status"] == "succeeded", f"{f.name}: status {fr['status']}"
     assert r["native_marker_sha256"], f"{f.name}: no native marker - the binary did not run"
     jobs.add(r["job_id"])
     rows.append(f"{f.name}[{f.stat().st_size}B "
                 f"sha256:{hashlib.sha256(f.read_bytes()).hexdigest()[:12]}]")
 assert len(jobs) == len(terminals), "job ids repeated - evidence was reused, not regenerated"
-print(f"{len(files)} artifacts, {len(jobs)} fresh job ids, final_result schema 4 :: "
-      + " ".join(rows))
+print(f"{len(files)} artifacts, {len(jobs)} fresh job ids, "
+      f"final_result schema {expected_schema} :: " + " ".join(rows))
 PY
-)"; then record "native terminal evidence (fresh, schema 4, native marker)" passed 1 "${EV}"
-    else record "native terminal evidence (fresh, schema 4, native marker)" failed 1 "${EV}"; KEEP_WORK=1; fi
+)"; then record "native terminal evidence (fresh, declared schema, native marker)" passed 1 "${EV}"
+    else record "native terminal evidence (fresh, declared schema, native marker)" failed 1 "${EV}"; KEEP_WORK=1; fi
   fi
 fi
 
