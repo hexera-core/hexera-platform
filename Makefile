@@ -20,6 +20,18 @@ COMPOSE_QUIET ?= --quiet
 SHELL := /bin/bash
 .SHELLFLAGS := -eo pipefail -c
 
+# THE image architecture, declared once rather than inherited from whoever runs the build.
+# Every image this repository produces is amd64 BY CONSTRUCTION: the Dockerfile fetches the
+# OpenFOAM .deb from binary-amd64, adds the Docker CE apt repo with arch=amd64, and installs an
+# amd64 Chrome. Several pinned wheels (gmsh ships manylinux x86_64 only) have no aarch64 build at
+# all. Left unset, Docker targets the HOST architecture, so the same commit builds on an x86_64
+# CI runner and fails on an Apple Silicon laptop at the first wheel with no aarch64 distribution -
+# an accident of hardware, reported as a dependency conflict. amd64 is also what Cloud Run and the
+# worker VMs execute, so this is the artifact the deployment actually needs. Building it on
+# Apple Silicon goes through emulation and is slow; it is correct, which the alternative is not.
+DOCKER_DEFAULT_PLATFORM ?= linux/amd64
+export DOCKER_DEFAULT_PLATFORM
+
 VENV := .venv
 PY   := $(if $(wildcard $(VENV)/bin/python),$(VENV)/bin/python,python3)
 RUFF := $(if $(wildcard $(VENV)/bin/ruff),$(VENV)/bin/ruff,ruff)
