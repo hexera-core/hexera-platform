@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, JobStatus_
-from meshpipeline.api.security import owner_dep
+from meshpipeline.api.security import owner_dep, plan_dep
 from meshpipeline.application.job_service import JobService
 from meshpipeline.persistence.models import ArtifactType
 from meshpipeline.persistence.session import get_db
@@ -192,7 +192,8 @@ _DISPATCH_FAILED = "Failed to enqueue dispute job"
 
 
 @router.post("/{job_id}/dispute", response_model=DisputeOut, status_code=202)
-async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depends(owner_dep)):
+async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depends(owner_dep),
+                      plan: str = Depends(plan_dep)):
     from meshpipeline.application import dispute_operation
     from meshpipeline.persistence.models import JobStatus as _JS
     from meshpipeline.persistence.repositories.job_repository import JobRepository
@@ -258,7 +259,7 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
             return DisputeOut(job_id=_replay.job_id, dispute_of=job_id, flags=len(body.flags))
 
         try:
-            await svc.check_quotas(db, owner_id)
+            await svc.check_quotas(db, owner_id, plan=plan)
         except ValueError as exc:
             raise HTTPException(429, str(exc)) from exc
 

@@ -58,16 +58,18 @@ def _root_revision_file() -> Path:
     return roots[0]
 
 
-# THE MIGRATION GRAPH. This project ships ONE revision. The development-era chain was deleted
-# rather than superseded: it is a pre-release baseline, no deployment exists whose data has to
-# survive, and there is deliberately no upgrade path from any former revision. A stray file or a
-# leftover autogenerate shows up here as a second revision, which is the failure this is for.
-def test_the_migration_history_is_exactly_one_baseline_revision():
+# THE MIGRATION GRAPH. This project has ONE baseline. The development-era chain was deleted rather
+# than superseded: it is a pre-release baseline, no deployment exists whose data has to survive, and
+# there is deliberately no upgrade path from any former revision. Revisions AFTER the baseline are
+# ordinary additive migrations and are expected; what must never reappear is a second root, which is
+# what a stray file or a leftover autogenerate produces.
+def test_the_migration_history_has_exactly_one_baseline_revision():
     files = [f for f in VERSIONS_DIR.glob("*.py") if not f.name.startswith("__")]
-    assert len(files) == 1, (
-        f"this project ships exactly one revision, found {sorted(f.name for f in files)}")
-    rev, down = _revision_of(files[0])
-    assert down is None, f"the only revision must be the root, its down_revision is {down!r}"
+    assert files, "no revision files found - this scan read nothing"
+    roots = [(f, *_revision_of(f)) for f in files if _revision_of(f)[1] is None]
+    assert len(roots) == 1, (
+        f"exactly one baseline (root) revision expected, found {sorted(f.name for f, _, _ in roots)}")
+    _file, rev, _down = roots[0]
     assert rev == BASELINE, f"unexpected baseline identifier {rev!r}"
 
 
@@ -119,7 +121,7 @@ def test_no_superseded_revision_identifier_is_selectable():
     known = {s.revision for s in ScriptDirectory.from_config(cfg).walk_revisions()}
     # Every development-era identifier was retired with the history cut and must never resolve
     # again. A database stamped with one is refused by runtime/migrate.py, never adopted.
-    assert known == {BASELINE}, sorted(known)
+    assert BASELINE in known, sorted(known)
     for retired in RETIRED_REVISIONS:
         assert retired not in known, f"{retired} is selectable again"
 

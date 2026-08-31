@@ -188,7 +188,10 @@ New table `api_keys`:
 | `created_at`, `last_used_at` | lifecycle and staleness |
 | `revoked_at`, `expires_at` | revocation and expiry, both nullable |
 
-Format: `hxa_<env>_<32 random bytes, base62>`. Verification looks the row up by prefix, then compares
+Format: `hx_live_<id>_<secret>`, as implemented — the id is 12 base62 characters (no `_`, so the
+public part can be split off unambiguously even though the secret's alphabet contains one) and the
+secret is `secrets.token_urlsafe(32)`. An earlier draft of this section said `hxa_<env>_<…>`; the
+build-out plan's spelling won, and this records the one that shipped. Verification looks the row up by prefix, then compares
 the hash with `hmac.compare_digest` — the same constant-time discipline `api/security.py` already
 uses. Presented as `Authorization: Bearer <key>`.
 

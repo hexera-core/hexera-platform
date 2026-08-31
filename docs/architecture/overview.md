@@ -294,9 +294,11 @@ stack down with it.
 
 ### The database baseline
 
-The migration history is one revision, `0001_schema_baseline`, which creates the entire schema
-directly: every table, index, constraint, PostgreSQL enum type and the `chat_sessions` updated-at
-trigger. There is no chain, no branch and no merge point. It is applied automatically when the
+The history begins at one baseline revision, `0001_schema_baseline`, which creates the entire
+pre-release schema directly: every table, index, constraint, PostgreSQL enum type and the
+`chat_sessions` updated-at trigger. Revisions after it are ordinary additive migrations, each
+reversing exactly what it created — `0002_api_keys` creates the `api_keys` table. The chain is
+linear: one base, one head, no branch and no merge point. It is applied automatically when the
 stack starts.
 
 This is a pre-release baseline and it supports **fresh databases only**. No deployment exists whose

@@ -16,12 +16,12 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import meshpipeline.settings.policy as polcfg
 import meshpipeline.settings.providers as provcfg
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 from meshpipeline.persistence.repositories.job_repository import JobRepository
+from meshpipeline.settings import plans
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def final_attempt_workspace(job_id: str):
 
 class JobService:
 
-    async def check_quotas(self, db: AsyncSession, owner_id: str) -> None:
+    async def check_quotas(self, db: AsyncSession, owner_id: str, *, plan: str = "") -> None:
         # Serialize the count-then-create per owner. Without this, two
         # concurrent submissions both pass the count and exceed the quota (the
         # count and the subsequent job/session insert happen in this same
@@ -70,15 +70,21 @@ class JobService:
         except Exception as _exc:
             logger.warning("check_quotas: advisory lock unavailable (%s) - proceeding", _exc)
 
+        # The plan is the caller's, carried from the credential that proved them. Absent - which is
+        # every caller today - settings/plans.py answers with this deployment's configured values,
+        # so the numbers enforced here are exactly the ones enforced before plans existed. Read
+        # INSIDE the lock, so a limit change cannot land between the count and the decision.
+        limits = plans.limits_for(plan)
+
         user_active = await job_repo.count_active_for_owner(db, owner_id)
-        if user_active >= polcfg.MAX_JOBS_PER_OWNER:
+        if user_active >= limits.max_jobs_per_owner:
             raise ValueError(
                 f"You already have {user_active} active job(s). "
                 f"Wait for one to complete before submitting a new one "
-                f"(limit: {polcfg.MAX_JOBS_PER_OWNER} per user)."
+                f"(limit: {limits.max_jobs_per_owner} per user)."
             )
         total_active = await job_repo.count_total_active(db)
-        if total_active >= polcfg.MAX_CONCURRENT_JOBS:
+        if total_active >= limits.max_concurrent_jobs:
             raise ValueError(
                 f"The system is at capacity ({total_active} active jobs). "
                 f"Please try again in a few minutes."
