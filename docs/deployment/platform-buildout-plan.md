@@ -427,16 +427,33 @@ Item 1, which needs a credential path that is not a JSON key in a GitHub secret.
 
 ---
 
-## Open questions
+## Decisions
 
-These need answers before the items that depend on them can be scoped properly.
+Answered 2026-08-31. Each is recorded with what it changes, because several of them move work
+that the items above had scoped differently.
 
-1. **`hexera-prod` is an empty project.** When does it get stood up, and does dev keep its
-   current "public, wide open, spends real money" posture once it exists?
-2. **Single-tenant users or teams/organisations?** Item 4's schema depends on it and retrofitting
-   a tenant boundary is expensive.
-3. **Pricing model** — measured resource cost or flat per-job tiers?
-4. **Scale-to-zero for the worker fleet**, yes or no? It changes who publishes the queue-depth
-   metric (item 6).
-5. **Bundler for the frontend**, yes or no? It changes the vendored-asset checksum gate (item 2).
-6. **SSO at launch or later?** (item 7)
+1. **`hexera-prod` is stood up on the first release.** Not before. Until then dev keeps its
+   current posture, which means the "public, wide open, spends real money" properties in item 7
+   are a dev-only concession with an expiry date rather than a permanent state.
+2. **Teams / organisations, not single-tenant users.** The tenant boundary therefore has to be
+   in the schema before data accumulates. `owner_id` stays authoritative for now and is not
+   re-threaded across the codebase in one move; new tables carry an organisation column from the
+   start, and credential resolution goes through a single named seam that widens from "an owner"
+   to "an owner within an organisation" when the organisations tables land.
+3. **Pricing is measured resource cost**, not flat per-job tiers. This promotes cost telemetry
+   from an observability nicety to a billing input: the per-call `InferenceCall` record already
+   carries tokens and an estimated cost but is discarded because no sink is bound, and the
+   reviewer's model is absent from the price table and meters at $0.00. Both are now correctness
+   bugs in the revenue path, not gaps in a dashboard. Mesh vCPU-seconds and worker occupancy,
+   which nothing captures today, become required rather than desirable.
+4. **Scale-to-zero in dev, a warm pool in prod.** This breaks item 6's current arrangement: the
+   queue-depth metric is published by the workers themselves, so at zero instances there is
+   nobody left to report the depth that would cause a scale-up. The publisher has to move off
+   the fleet — a scheduled job is the obvious home — before dev can scale to zero.
+5. **The frontend migrates to Next.js.** So item 2's "bundler or no bundler" is settled by the
+   framework, and item 3 is a rebuild rather than a restyle. The vendored, checksum-pinned
+   `vtk.js` under `ui/vendor/` and the release gate that verifies those checksums inside the app
+   image both need a new home in that world.
+6. **SSO comes later.** Email + password first. Item 7 should still model identity so that a
+   later Google Workspace identity can be reconciled onto an existing account rather than
+   creating a second one.
