@@ -73,6 +73,11 @@ jobs:
       - name: Dependency-drift check - BLOCKING on a second dependency list
         run: python devtools/quality/check_dependency_drift.py
 
+      # A secret VALUE in a deployment spec is readable by anyone who can describe the resource and
+      # is echoed into every deploy log. The rule is only real because this step enforces it.
+      - name: Plaintext-secret check - BLOCKING on a credential value in a deploy spec
+        run: python devtools/quality/check_deploy_secrets.py
+
   images:
     name: Docker image targets (api / pipeline / mesh)
     runs-on: ubuntu-latest
