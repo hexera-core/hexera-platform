@@ -3274,6 +3274,21 @@
   "roots": []
  },
  {
+  "context": "pipeline/graph.py::node_infra_retry::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
+  "path": "pipeline/graph.py",
+  "qualname": "node_infra_retry",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "execution_publisher(job_id, agent='builder')",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/graph.py::execution_publisher"
+  ]
+ },
+ {
   "context": "runtime/observability/sentry.py::setup_sentry::error#1|NotAPublisher|not-a-publisher|",
   "path": "runtime/observability/sentry.py",
   "qualname": "setup_sentry",

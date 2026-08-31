@@ -44,8 +44,48 @@ async def node_failure_handler(state: PipelineState) -> dict:
 
 
 
-def route_after_builder(state: PipelineState) -> Literal["node_executor", "node_failure_handler"]:
-    if state.get("api_failure"):
+async def node_infra_retry(state: PipelineState) -> dict:
+    """A TRANSIENT system failure (provider brownout, dependency blip) killed the builder
+    attempt before any mesh was judged. Wait out the brownout and replay the SAME attempt:
+    retry_count steps back one so the builder re-prepares the same attempt number - an
+    infra replay is not a new mesh attempt and spends none of the mesh-retry ladder.
+    Admission is the route's job: retryable class and replay budget remaining."""
+    job_id = state.get("job_id", "unknown")
+    replay = int(state.get("infra_retry_count", 0) or 0) + 1
+    logger.warning(
+        "node_infra_retry: transient system failure '%s' - replay %d/%d after %ds backoff "
+        "- job_id=%s", state.get("api_failure", ""), replay, bcfg.BUILDER_INFRA_RETRY_MAX,
+        bcfg.BUILDER_INFRA_RETRY_BACKOFF_S, job_id)
+    try:
+        # Best-effort narration only: the very dependency that browned out may be the
+        # publisher's transport, and a failed note must never cost the replay.
+        from meshpipeline.application.execution_publisher import execution_publisher
+        await execution_publisher(job_id, agent="builder").anote(
+            "A temporary service issue interrupted this attempt - waiting briefly, then retrying",
+            op_id=f"infra-retry:{replay}")
+    except Exception:  # noqa: BLE001
+        pass
+    import asyncio
+    await asyncio.sleep(bcfg.BUILDER_INFRA_RETRY_BACKOFF_S)
+    return {"api_failure": "",
+            "infra_retry_count": replay,
+            "retry_count": max(0, int(state.get("retry_count", 1) or 1) - 1)}
+
+
+def route_after_builder(
+    state: PipelineState,
+) -> Literal["node_executor", "node_failure_handler", "node_infra_retry"]:
+    api_failure = state.get("api_failure")
+    if api_failure:
+        from meshpipeline.errors import classify_api_failure
+        fc = classify_api_failure(api_failure)
+        if (fc.is_retryable
+                and int(state.get("infra_retry_count", 0) or 0) < bcfg.BUILDER_INFRA_RETRY_MAX):
+            # The corpus's largest recoverable failure class: 23 baseline episodes died on
+            # exactly this signature (transient marker, attempt 1, no gate reached) while a
+            # 60-90s wait would have outlived the brownout. Deterministic failures still go
+            # to the sink: is_retryable excludes them by class.
+            return "node_infra_retry"
         return "node_failure_handler"
     return "node_executor"
 
@@ -205,6 +245,7 @@ def build_graph(checkpointer):
     b.add_node("node_classifier",      _fenced("node_classifier", node_classifier))
     b.add_node("node_reviewer",        _fenced("node_reviewer", node_reviewer))
     b.add_node("node_failure_handler", _fenced("node_failure_handler", node_failure_handler))
+    b.add_node("node_infra_retry",     _fenced("node_infra_retry", node_infra_retry))
 
     b.add_edge(START, "node_intake")
     b.add_conditional_edges(
@@ -226,8 +267,10 @@ def build_graph(checkpointer):
     b.add_conditional_edges(
         "node_builder",
         route_after_builder,
-        {"node_executor": "node_executor", "node_failure_handler": "node_failure_handler"},
+        {"node_executor": "node_executor", "node_failure_handler": "node_failure_handler",
+         "node_infra_retry": "node_infra_retry"},
     )
+    b.add_edge("node_infra_retry", "node_builder")
     b.add_conditional_edges(
         "node_executor",
         route_after_executor,

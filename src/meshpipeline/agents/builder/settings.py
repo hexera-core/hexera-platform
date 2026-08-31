@@ -41,6 +41,15 @@ if BUILDER_TOTAL_TIMEOUT_SECONDS <= 0:
 BUILDER_AUTO_SUBMIT_AFTER: int = int(optional_env("BUILDER_AUTO_SUBMIT_AFTER", "2"))
 
 MAX_BUILDER_RETRIES: int = int(optional_env("MAX_BUILDER_RETRIES", "3"))
+
+# INFRA replays: a builder attempt killed by a TRANSIENT system failure (provider brownout,
+# dependency blip) is replayed after a long backoff instead of ending the job. Distinct from
+# MAX_BUILDER_RETRIES, which buys new MESH attempts after a quality judgement - an infra replay
+# re-runs the SAME attempt that never got judged. The backoff is deliberately much longer than
+# the HTTP layer's in-call retries (seconds): the corpus's crash-window deaths were brownouts
+# that outlasted those but not a minute-scale wait. Kill switch: BUILDER_INFRA_RETRY_MAX=0.
+BUILDER_INFRA_RETRY_MAX: int = int(optional_env("BUILDER_INFRA_RETRY_MAX", "2"))
+BUILDER_INFRA_RETRY_BACKOFF_S: int = int(optional_env("BUILDER_INFRA_RETRY_BACKOFF_S", "90"))
 # The TRUE ceiling on build attempts shown to the user: 1 initial + MAX_BUILDER_RETRIES normal
 # + 1 reviewer-feedback bonus (route_after_reviewer). Display/logging only.
 BUILDER_MAX_TOTAL_ATTEMPTS: int = MAX_BUILDER_RETRIES + 2

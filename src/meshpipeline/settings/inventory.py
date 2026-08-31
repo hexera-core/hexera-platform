@@ -414,6 +414,10 @@ INVENTORY: list[Group] = [
         EnvVar("DEEPINFRA_WRITE_TIMEOUT", "30", kind="int"),
         EnvVar("MAX_BUILDER_RETRIES", "3", kind="int", help="rebuild attempts after a reviewer rejection"),
         EnvVar("MAX_SNAPPY_ATTEMPTS", "3", kind="int"),
+        EnvVar("BUILDER_INFRA_RETRY_MAX", "2", kind="int",
+               help="replays of a builder attempt killed by a TRANSIENT system failure; 0 disables"),
+        EnvVar("BUILDER_INFRA_RETRY_BACKOFF_S", "90", kind="int",
+               help="wait before an infra replay - long enough to outlive a provider brownout"),
     ]),
 
     Group("Web search sizing", vars=[
