@@ -127,9 +127,13 @@ if ! gc run jobs execute "${QD_JOB}" --region "${GCP_REGION}" --wait; then
      gcloud run jobs executions list --job ${QD_JOB} --region ${GCP_REGION} --project ${GCP_PROJECT_ID}"
 fi
 
-# 6) the schedule. A minute is the finest cadence Cloud Scheduler offers and comfortably finer than
-#    the autoscaler's cooldown, so the group never acts on a depth it has already outgrown.
-SCHEDULE="${QUEUE_DEPTH_SCHEDULE:-* * * * *}"
+# 6) the schedule. TWO minutes, not the one Cloud Scheduler could offer: measured against
+#    hexera-dev, an execution takes ~75 s end to end, nearly all of it pulling the multi-gigabyte
+#    application image. At a one-minute cadence the publisher overlaps itself, which costs a
+#    continuously-running container and lets two writes to the same series arrive out of order -
+#    which Cloud Monitoring rejects. Two minutes plus the 180 s cooldown bounds how long a fleet at
+#    its floor takes to notice a backlog; for jobs budgeted in hours that is not the slow part.
+SCHEDULE="${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}"
 RUN_URI="https://${GCP_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/${QD_JOB}:run"
 scheduler_args=(
   --location "${GCP_REGION}"

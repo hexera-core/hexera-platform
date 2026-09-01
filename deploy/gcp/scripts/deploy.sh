@@ -147,7 +147,7 @@ else
   SCHEMA_STATE="no hosted database declared - the API migrates itself on start"
 fi
 if [ -n "${WORKER_MIG:-}" ]; then
-  QUEUE_SIGNAL="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOYMENT_ID}-queue-depth} on '${QUEUE_DEPTH_SCHEDULE:-* * * * *}' -> autoscaler ${WORKER_MIG}"
+  QUEUE_SIGNAL="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOYMENT_ID}-queue-depth} on '${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}' -> autoscaler ${WORKER_MIG}"
 else
   QUEUE_SIGNAL="no worker fleet declared"
 fi

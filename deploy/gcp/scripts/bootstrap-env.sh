@@ -194,10 +194,12 @@ POSTGRES_PASSWORD_SECRET=${POSTGRES_PASSWORD_SECRET:-}
 # The thresholds are STATED (build-out plan, item 6): the autoscaler runs one instance per
 # WORKER_JOBS_PER_INSTANCE queued jobs, between MIN and MAX, no faster than COOLDOWN allows. MAX is
 # the cost ceiling. WORKER_JOBS_PER_INSTANCE is 1 because the worker runs celery at concurrency 1.
+# The SCHEDULE is every two minutes because one publish takes ~75 s on the application image - at
+# one minute the publisher overlaps itself and its writes can arrive out of order.
 CLOUDRUN_QUEUE_DEPTH_JOB=${QUEUE_DEPTH_JOB}
 QUEUE_DEPTH_SERVICE_ACCOUNT=${QUEUE_DEPTH_SA}
 QUEUE_DEPTH_SCHEDULER_JOB=${QUEUE_DEPTH_SCHEDULER}
-QUEUE_DEPTH_SCHEDULE="${QUEUE_DEPTH_SCHEDULE:-* * * * *}"
+QUEUE_DEPTH_SCHEDULE="${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}"
 QUEUE_NAME=${QUEUE_NAME:-simulation_jobs}
 REDIS_URL=${REDIS_URL:-}
 WORKER_MIG=${WORKER_MIG:-}
