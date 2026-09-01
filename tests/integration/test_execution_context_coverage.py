@@ -259,6 +259,21 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                                      lambda j: {**N._VMTK, "job_id": str(j),
                                                 "geometry": geometry})))["job_id"])
 
+    # The infra-retry node's user-facing note, through the same execution-owned boundary a real
+    # replay uses. The backoff is zeroed for certification only - the wait is policy, not what
+    # this scenario proves.
+    import meshpipeline.agents.builder.settings as _bcfg
+
+    from meshpipeline.pipeline.graph import node_infra_retry
+
+    mp.setattr(_bcfg, "BUILDER_INFRA_RETRY_BACKOFF_S", 0, raising=True)
+    jobs.append((await step("infra-retry:transient-replay",
+                            N._owned(mp, nodes, node_infra_retry,
+                                     lambda j: {"job_id": str(j),
+                                                "api_failure": "builder_transient",
+                                                "retry_count": 1,
+                                                "infra_retry_count": 0})))["job_id"])
+
     # The builder policy's own close-out: two valid meshes, no submission, so the loop ends with
     # the policy making the submission and announcing it.
     jobs.append((await step("builder-policy:auto-submit-close-out",
