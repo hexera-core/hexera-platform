@@ -61,11 +61,39 @@ def _tar_dir(path: Path) -> bytes:
     # an empty name - so the archive this produced could never be opened by the extractor on the
     # other side. Adding the children yields "case", "case/geom.stl" with no root entry, which is
     # the same content the extractor already expects to see once it has stripped a leading "./".
+    #
+    # When the workspace DECLARES its submission payload (contracts.mesh_execution's
+    # NATIVE_PAYLOAD_FACT), the archive carries exactly the files that declaration resolves to.
+    # A retry pass shares its attempt's workspace with the pass before it, whose collected
+    # outputs (polyMesh, VTK, feature-edge meshes, logs) live right beside the revised case -
+    # tarring every child shipped a built mesh back to the mesher and ballooned the upload past
+    # what the transport survives. The same enumerator scopes the claim's payload digest, so
+    # what is hashed and what is uploaded stay one set by construction. No declaration means
+    # every child, exactly as before.
+    from meshpipeline.contracts.mesh_execution import submission_payload_files
+    root = Path(path)
+    payload = submission_payload_files(root)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for child in sorted(Path(path).iterdir()):
-            tf.add(str(child), arcname=child.name)
+        if payload is None:
+            for child in sorted(root.iterdir()):
+                tf.add(str(child), arcname=child.name)
+        else:
+            for f in payload:
+                tf.add(str(f), arcname=f.relative_to(root).as_posix())
     return buf.getvalue()
+
+
+#: Upload transport for the submission archive. Without an explicit chunk size the storage SDK
+#: sends the whole archive as ONE resumable request whose sockets carry its default 60-second
+#: timeout - a deadline on the entire payload, which a legitimately large case on a slow uplink
+#: cannot meet ("The write operation timed out", killing every big submission at the same
+#: moment). A chunked resumable upload turns that into a deadline PER CHUNK, so the permitted
+#: time scales with the payload instead of racing it, and a transient stall costs one chunk,
+#: not the upload. 16 MiB is a multiple of the SDK's required 256 KiB granule; 300s/chunk
+#: clears a sub-1 Mbps uplink with margin.
+_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
+_UPLOAD_TIMEOUT_S = 300
 
 
 def _poll_gcs_json(bucket, key: str, deadline_s: float) -> dict | None:
@@ -208,8 +236,9 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         ws = Path(workspace)
         bucket = storage_client().bucket(bucket_name)
         if submit:
-            bucket.blob(in_key).upload_from_string(_tar_dir(ws),
-                                                   content_type="application/gzip")
+            in_blob = bucket.blob(in_key, chunk_size=_UPLOAD_CHUNK_BYTES)
+            in_blob.upload_from_string(_tar_dir(ws), content_type="application/gzip",
+                                       timeout=_UPLOAD_TIMEOUT_S)
             operation = _trigger_job(
                 input_uri=f"gs://{bucket_name}/{in_key}",
                 output_uri=f"gs://{bucket_name}/{out_key}",

@@ -57,7 +57,11 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
 
 # The SEMANTIC review layer - mesh-class concerns a metric report cannot settle by
 # threshold alone (they need the group summary, the brief, and quality interpretation).
-# gmsh reviews metric-only, so these axes are walked against measured evidence.
+# The gmsh review is HYBRID: measured metrics carry element quality, and the render lane
+# serves exactly two visual evidence classes - the iso overview and named-group isolation
+# (toggle_patch). There are NO interior slices on this engine (its deliverable deck is not
+# sliceable), so no axis here may demand region/slice evidence: every `requires` below must
+# stay satisfiable by the opening view, a group inspection, or a metric finalize measures.
 REVIEW_AXES: tuple[ReviewAxis, ...] = (
     ReviewAxis(
         name="group_completeness", validation_axis="conformance",
@@ -96,7 +100,10 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
         concern="Distorted elements will degrade the accuracy of the solution",
         failure_signals=("low-quality elements spread across the body, not just at features",
                          "quality degradation that tracks the sizing strategy rather than geometry"),
-        evidence=("quality_metrics", "sicn_low_fraction", "render_not_available"),
+        # "render" (the iso overview this axis requires), not the retired "render_not_available"
+        # token: that stale hint told the reviewer no render existed while the axis's own
+        # `requires` demanded one - a contradiction that invited hunting for other visual tools.
+        evidence=("quality_metrics", "sicn_low_fraction", "render"),
         evidence_url=_GMSH_DOC,
         # The pass/fail floor is a metric; whether low-quality elements are LOCALISED or WIDESPREAD
         # is read from the mesh - metric plus overview render.

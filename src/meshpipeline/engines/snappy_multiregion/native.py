@@ -100,7 +100,9 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
     layer = parse_layer_coverage(snappy_log)
     result = describe_native_result(returncode=0, args=["bash", "-lc", "splitMeshRegions"],
                                     stage="splitMeshRegions", output="\n".join(logs))
-    result.update({"layer_coverage": layer.get("coverage"),
+    # parse_layer_coverage reports the areal headline as "overall_pct" (the old read of a
+    # "coverage" key matched nothing, so the build result's layer figure was always None).
+    result.update({"layer_coverage": layer.get("overall_pct"),
                    "per_patch_layers": layer.get("per_patch")})
     return result
 

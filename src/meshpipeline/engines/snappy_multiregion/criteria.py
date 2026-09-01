@@ -62,7 +62,13 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
     ),
     _MAX_NON_ORTHO,
     Criterion(
-        key="layer_coverage", label="Prism layers inflated on the fluid walls", op=">", threshold=0.0,
+        # The manifest reports this as layer_coverage_pct (multiregion_runner.attach_layer_coverage
+        # threads the carve log's figure into the check_mesh quality dict); the key MUST match or
+        # the row never evaluates - with the old key "layer_coverage" the measured value was always
+        # None and the advisory silently skipped, exactly the dark-row bug the snappy engine fixed
+        # (tests/unit/engines/test_multiregion_layer_coverage_criterion_evaluates.py pins this).
+        key="layer_coverage_pct", label="Prism layers inflated on the fluid walls", op=">",
+        threshold=0.0,
         gating=False,
         rationale=("Prism layers off the fluid-side walls (including the fluid face of each "
                    "interface) resolve the near-wall gradient; coverage % reports how much of the "

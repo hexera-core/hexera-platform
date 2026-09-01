@@ -118,6 +118,27 @@ def _write_plan_memory(workspace: Path, strategy: dict) -> None:
             pass
 
 
+def _native_payload_members(workspace) -> list[str]:
+    """What THIS engine's remote run consumes: the case dicts and the staged triSurface STLs.
+
+    Everything else in the attempt's workspace is either local-only (input.stl feeds the
+    planner here, plan memory and gate facts feed the judge here) or a PRIOR pass's collected
+    output - the built polyMesh, extendedFeatureEdgeMesh, VTK exports, converted meshes and
+    logs that a completed pass writes back into this same directory. Shipping those to the
+    mesher is what ballooned a retry pass's submission from tens of MB to most of a GB and
+    timed the upload out before the run ever started. The remote regenerates every derived
+    surface artifact itself (surfaceFeatureExtract rebuilds the eMesh from the STL), so the
+    STLs under constant/triSurface - which only this driver writes - plus system/ are the
+    whole case. Declared HERE because only the driver knows which workspace entries are its
+    case; the executor seam just reads the fact.
+    """
+    ws = Path(workspace)
+    members = ["system"]
+    members += sorted(p.relative_to(ws).as_posix()
+                      for p in (ws / "constant" / "triSurface").glob("*.stl"))
+    return members
+
+
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
                             engine, purpose, *, run,
                             native_attempt: int = 1):
@@ -125,6 +146,17 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     # FENCE FIRST. The trace opens only where ownership permits: a superseded
     # generation must not tell a reader it started a mesh it does not own.
     await run.fence("start native mesh")
+    # THE PASS IS PART OF THE SUBMISSION IDENTITY. Recorded in the workspace because the
+    # workspace is all that crosses the executor seam: the submission authority reads it back
+    # (native_submission.attempt_scoped_operation), so pass 2's revised case claims a native
+    # run of its own instead of being refused as a conflicting replay of pass 1's claim -
+    # which is what left every pass after the first stillborn ("the mesh run never started").
+    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    note_native_pass(workspace, native_attempt)
+    # WHAT the submission carries, declared beside WHICH pass it is. The attempt's workspace
+    # holds the previous pass's collected outputs too; without this fact the executor tars
+    # them all into the upload (see _native_payload_members).
+    note_native_payload(workspace, _native_payload_members(workspace))
     _op = await _op_begin(publish, "run_native_mesher", run, native_attempt)
     try:
         from meshpipeline.engines.mesh_history import estimate as _est
@@ -386,12 +418,19 @@ def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]
 
 def _bore_area_m2(t: dict) -> float:
     """The resolution yardstick's area. With a binding: the largest DECLARED-inlet opening -
-    never the engine's largest-opening guess, which is backwards on combiners. Without one:
-    the engine-canonical inlet, as today."""
+    never the engine's largest-opening guess, which is backwards on combiners. A ring
+    (annular) port face sizes by what its inner wire encloses (opening_area_m2: the true
+    bore), never by the ring's own metal area - on a thin-walled duct the metal ring is
+    ~100x smaller than the bore, and sizing from it re-runs the mesh ~10x over-refined
+    into the cell budget. Rows without an opening (solid-disc ports) size by area_m2
+    exactly as before. Without a binding: the engine-canonical inlet, as today."""
+    def _opening(p: dict) -> float:
+        v = p.get("opening_area_m2")
+        return float(v) if v is not None else float(p["area_m2"])
     binding = t.get("binding")
     if binding:
-        inlet = [float(p["area_m2"]) for p in binding["ports"] if p["role"] == "inlet"]
-        pool = inlet or [float(p["area_m2"]) for p in binding["ports"]]
+        inlet = [_opening(p) for p in binding["ports"] if p["role"] == "inlet"]
+        pool = inlet or [_opening(p) for p in binding["ports"]]
         return max(pool)
     return float(t["openings"]["inlet"]["area"])
 
@@ -707,9 +746,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
 
 
 def _attempt_of(state) -> int:
-    raw = (state or {}).get("current_attempt")
+    # The 1-based pipeline attempt, numbered exactly as the attempt_N workspace is
+    # (agents/builder/attempt.prepare: retry_count + 1). This used to read `current_attempt`,
+    # a key PipelineState never carries, so EVERY builder invocation reported attempt 1 - and a
+    # retried invocation then replayed the previous one's capture op_ids (planner:1:N:N) with
+    # revised payloads, which the durable authority rightly quarantined as a CONFLICTING replay.
+    # The attempt is part of the identity only when it is the real attempt.
+    raw = (state or {}).get("retry_count")
     try:
-        return int(raw) if isinstance(raw, (int, str)) else 1
+        return int(raw) + 1 if isinstance(raw, (int, str)) else 1
     except (TypeError, ValueError):
         return 1
 
@@ -720,8 +765,10 @@ async def _op_begin(publish: ExecutionEventPublisher, op: str, run,
     try:
         # The MESHING PASS is part of the identity. Every pass authors its own configuration and
         # runs its own mesher, so without it three separate operations arrive under one event id
-        # and a reader keyed by that id sees one operation changing its mind.
-        cid = (f"op:{getattr(run, 'job_id', '') or 'job'}:{getattr(run, 'attempt', 0)}"
+        # and a reader keyed by that id sees one operation changing its mind. The run object
+        # carries the pipeline attempt as `pipeline_attempt` - the old spelling read `attempt`,
+        # an attribute BuilderDriverRun never had, so every invocation stamped 0 here.
+        cid = (f"op:{getattr(run, 'job_id', '') or 'job'}:{getattr(run, 'pipeline_attempt', 0)}"
                f":{int(native_attempt)}:{op}")
         await publish.atool_call(cid, op, None, "started", op_id=cid)
         return cid

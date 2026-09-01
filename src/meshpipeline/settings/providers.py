@@ -89,6 +89,11 @@ MINIO_PUBLIC_ENDPOINT: str = (optional_env("MINIO_PUBLIC_ENDPOINT", "").strip()
 # S3-compatible store in another region sets this, and a wrong value fails loudly on first use
 # rather than silently on the download path.
 MINIO_REGION: str          = optional_env("MINIO_REGION", "us-east-1")
+# Whether the object store is reached over TLS. False for the local compose stack, which serves
+# plain HTTP on the same host. A hosted S3-compatible endpoint - Google Cloud Storage through its
+# S3-interoperability API among them - serves TLS only and refuses a plain-HTTP request, so the
+# transport is a deployment fact rather than a constant.
+MINIO_SECURE: bool         = optional_env("MINIO_SECURE", "false").strip().lower() == "true"
 # The local artifact bucket, created fresh by the stack (minio-init). It is validated below: S3/
 # MinIO bucket names must be lowercase and DNS-compatible, so a coworker who omits MINIO_BUCKET still
 # gets a working default and any invalid value (e.g. a former uppercase codename) fails LOUDLY at

@@ -729,6 +729,50 @@ def check_mesh(workspace) -> dict:
     }
 
 
+#: The carve-stage snappyHexMesh log (native.py's run_stage writes log.<stage>). The ONLY record
+#: of prism-layer coverage in a multi-region case: layers are added during the background carve,
+#: BEFORE splitMeshRegions, and per-region checkMesh knows nothing about them.
+LAYER_LOG = "log.snappyHexMesh"
+
+
+def attach_layer_coverage(ws: Path, q: dict) -> dict:
+    """Thread the carve log's prism-layer coverage into the manifest quality dict.
+
+    check_mesh() aggregates per-region checkMesh output, which carries NO layer key - so
+    without this the layer_coverage_pct criterion reads measured=None and silently never
+    evaluates. Same evidence pattern as engines/snappy/finalize.py: layer_coverage_pct plus
+    a layer_coverage_source provenance key ('overall' is the AREAL cells-added headline;
+    'per_patch_min' is a THICKNESS-percent fallback measuring a different thing - downstream
+    policy accepts only the areal figure and fails closed on the fallback or an absent key).
+    """
+    log = ws / LAYER_LOG
+    if not log.exists():
+        return q
+    try:
+        lc = parse_layer_coverage(log.read_text(errors="replace"))
+        per = lc.get("per_patch", {}) or {}
+        # coverage on the LAYERED patches only - the fluid-side interface walls. Rows whose
+        # layer target is 0 (the background box faces, solid-side patches) carry no layers
+        # by design, so they must not drag the per-patch minimum to zero.
+        walls = {n: v for n, v in per.items() if (v.get("layers_target") or 0) > 0}
+        if lc.get("overall_pct") is not None:
+            q["layer_coverage_pct"] = lc["overall_pct"]
+            q["layer_coverage_source"] = "overall"
+            if lc.get("cells_with_layers") is not None:
+                q["layer_cells_with"] = lc["cells_with_layers"]
+                q["layer_cells_targeted"] = lc["cells_targeted"]
+        elif walls:
+            q["layer_coverage_pct"] = min(v["coverage_pct"] for v in walls.values())
+            q["layer_coverage_source"] = "per_patch_min"
+        if walls:
+            q["per_patch_layers"] = {
+                n: {"layers": v.get("layers"), "target": v.get("layers_target"),
+                    "coverage_pct": v.get("coverage_pct")} for n, v in walls.items()}
+    except Exception:
+        logger.exception("multiregion finalize: layer-coverage parse failed (non-fatal)")
+    return q
+
+
 # finalize: manifest (executor seam)
 
 def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
@@ -745,6 +789,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         return {"success": False, "stdout": "", "stderr": "",
                 "output": f"[SNAPPY_MULTIREGION] {exc}"}
     q = check_mesh(ws)
+    # LAYER EVIDENCE: checkMesh carries no layer key - thread the carve log's coverage into the
+    # quality dict, or the layer_coverage_pct criterion never evaluates (see attach_layer_coverage).
+    attach_layer_coverage(ws, q)
     # DELIVERED USER BOUNDARIES (the user-contract surface): external, non-interface patches across
     # every region, each carrying the role the mesh actually evidences. See
     # delivered_user_boundary_types - extracted so the interface exclusion and role derivation are

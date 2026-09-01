@@ -19,13 +19,16 @@ class MinioStore:
 
     def _client(self, *, endpoint: str | None = None):
         from minio import Minio
-        # secure=False: the store is a service on the local stack, reached over plain HTTP.
+        # secure follows MINIO_SECURE, defaulting to plain HTTP because the local stack's store is
+        # a compose service on the same host. A hosted S3-compatible endpoint - Google Cloud
+        # Storage through its S3-interoperability API, for instance - serves TLS only and refuses
+        # a plain-HTTP request, so this cannot be a constant.
         # region is explicit: without it minio-py issues a live GetBucketLocation before signing,
         # which the signing client - built on an address this process may not be able to reach -
         # cannot complete. See MINIO_REGION. Giving it to BOTH clients keeps one source of truth
         # and makes a wrong region fail on the first upload instead of only on a download.
         return Minio(endpoint or provcfg.MINIO_ENDPOINT, access_key=provcfg.MINIO_ACCESS_KEY,
-                     secret_key=provcfg.MINIO_SECRET_KEY, secure=False,
+                     secret_key=provcfg.MINIO_SECRET_KEY, secure=provcfg.MINIO_SECURE,
                      region=provcfg.MINIO_REGION)
 
     def _ensure_bucket(self, client) -> None:

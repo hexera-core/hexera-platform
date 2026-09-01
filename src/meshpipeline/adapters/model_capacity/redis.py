@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
+import weakref
+from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import async_client
 from meshpipeline.contracts.model_capacity import Lease
@@ -40,17 +43,40 @@ def _key(domain_key: str) -> str:
 class RedisCapacityController:
 
     def __init__(self, *, lease_ttl_s: float = 1900.0, poll_interval_s: float = 0.25) -> None:
-        self._redis = None
+        # ONE CLIENT PER EVENT LOOP. A redis.asyncio pool binds every connection to the loop
+        # that opened it, and this controller is a process-wide singleton serving MANY loops:
+        # the API admits on the uvicorn serving loop while the intake and builder web_search
+        # tools each admit their summarizer call from an asyncio.run() loop on a side thread,
+        # and the worker runs a fresh loop per job. A single instance-cached client, created
+        # on whichever loop admitted first, made every OTHER loop's admission die with
+        # "attached to a different loop" - which acquire()'s fail-closed guard then reported
+        # as an unreachable store, refusing calls a healthy Redis was ready to admit.
+        # Same cache as persistence/session.py's per-loop engines: keyed by the loop OBJECT
+        # in a WeakKeyDictionary behind a threading.Lock (side-thread loops create clients
+        # concurrently with the serving loop). Stale entries are dropped without aclose(),
+        # for event_stream/redis.py's reason: the owning loop is gone, so nothing about the
+        # old client can be awaited, and its sockets died with that loop.
+        self._clients: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any] = (
+            weakref.WeakKeyDictionary())
+        self._clients_lock = threading.Lock()
         self._lease_ttl_s = float(lease_ttl_s)
         self._poll_interval_s = float(poll_interval_s)
 
-    def _client(self):
-        if self._redis is None:
-            # Short socket timeouts: admission sits in front of every model call, so a sick
-            # Redis must surface as a fast, classifiable failure rather than a hang that turns
-            # into the very saturation this is meant to prevent.
-            self._redis = async_client(socket_connect_timeout=2, socket_timeout=2)
-        return self._redis
+    def _client(self) -> Any:
+        # No running loop is a LOUD error (get_running_loop raises), never a shared fallback
+        # client - a sync caller holding a cross-loop client is exactly the bug this prevents.
+        loop = asyncio.get_running_loop()
+        with self._clients_lock:
+            client = self._clients.get(loop)
+            if client is None:
+                for dead in [l for l in list(self._clients) if l.is_closed()]:
+                    self._clients.pop(dead, None)
+                # Short socket timeouts: admission sits in front of every model call, so a sick
+                # Redis must surface as a fast, classifiable failure rather than a hang that
+                # turns into the very saturation this is meant to prevent.
+                client = async_client(socket_connect_timeout=2, socket_timeout=2)
+                self._clients[loop] = client
+        return client
 
     async def acquire(self, domain_key: str, limit: int, deadline_s: float) -> Lease | None:
         started = time.monotonic()

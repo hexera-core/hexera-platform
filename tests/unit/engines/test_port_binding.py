@@ -250,6 +250,78 @@ class TestLocationHints:
             bind_ports(declared, t)
 
 
+class TestRingFaceOpenings:
+    # The thin-ring failure, job 11b50253 (duct_circ_bend_red): the tessellation reports a
+    # flanged duct's port faces as ANNULAR rings - 5014 mm² of metal around a 497,059 mm²
+    # bore. The declaration talks about the bore, so the ring record carries what its inner
+    # wire encloses and the size test accepts EITHER measure.
+    def make_ring_t(self):
+        def rec(c, ring_mm2=5014.0, bore_mm2=497059.0):
+            return {"area": ring_mm2 * 1e-6, "centroid": list(c),
+                    "opening": {"area": bore_mm2 * 1e-6, "centroid": list(c),
+                                "wh": [0.7957, 0.7958]}}
+        return {
+            "stls": {"wall": "/w/wall.stl", "inlet": "/w/inlet.stl",
+                     "outlet": "/w/outlet.stl"},
+            "interior_point": [0.3, -0.1, 0.0],
+            "bbox_min": [0.0, -0.6, -0.43], "bbox_max": [1.11, 0.51, 0.43],
+            "openings": {"inlet": rec((0.0, 0.0, 0.0)),
+                         "outlet": rec((0.6, -0.6, 0.0))},
+            "n_wall_faces": 1000,
+        }
+
+    DECLARED = [
+        DeclaredPatch("duct_wall", "wall"),
+        DeclaredPatch("inlet", "inlet", diameter_mm=796, near_mm=(0, 0, 0)),
+        DeclaredPatch("outlet", "outlet", diameter_mm=796, near_mm=(600, -600, 0)),
+    ]
+
+    def test_a_declared_bore_binds_a_thin_ring_via_its_inner_opening(self):
+        b = bind_ports(self.DECLARED, self.make_ring_t())
+        assert b.port_map == {"inlet": "inlet", "outlet": "outlet"}
+        assert b.folded_into_wall == ()
+
+    def test_the_evidence_reports_both_the_ring_and_its_opening(self):
+        b = bind_ports(self.DECLARED, self.make_ring_t())
+        for row in b.evidence:
+            assert row["area_m2"] == pytest.approx(5014e-6)
+            assert row["opening_area_m2"] == pytest.approx(497059e-6)
+
+    def test_disc_port_evidence_carries_no_opening_key(self):
+        b = bind_ports(WYE_DECLARED, WYE_T)
+        assert all("opening_area_m2" not in row for row in b.evidence)
+
+    def test_a_bore_matching_neither_measure_is_still_refused(self):
+        declared = [
+            DeclaredPatch("duct_wall", "wall"),
+            DeclaredPatch("inlet", "inlet", diameter_mm=200, near_mm=(0, 0, 0)),
+            DeclaredPatch("outlet", "outlet", diameter_mm=796, near_mm=(600, -600, 0)),
+        ]
+        with pytest.raises(BindError, match="the location and the size disagree"):
+            bind_ports(declared, self.make_ring_t())
+
+    def test_a_ring_matching_two_classes_by_different_measures_is_ambiguous(self):
+        # ring metal 5014 mm² fits one declared size, its bore fits the other: the area
+        # test cannot assign the opening to ONE class, and that must refuse, not guess
+        t = self.make_ring_t()
+        declared = [
+            DeclaredPatch("duct_wall", "wall"),
+            DeclaredPatch("small", "inlet", area_mm2=5014.0),
+            DeclaredPatch("big", "outlet", diameter_mm=796),
+        ]
+        with pytest.raises(BindError, match="matches more than one declared size"):
+            bind_ports(declared, t)
+
+    def test_the_refusal_listing_names_the_inner_opening(self):
+        declared = [
+            DeclaredPatch("duct_wall", "wall"),
+            DeclaredPatch("feed", "inlet", diameter_mm=3000),   # matches nothing
+        ]
+        with pytest.raises(BindError) as e:
+            bind_ports(declared, self.make_ring_t())
+        assert "ring face; inner opening" in str(e.value)
+
+
 class TestToleranceBoundaries:
     @pytest.mark.parametrize("measured_mm2, binds", [
         (750.0, True),     # exactly 0.75 - inclusive

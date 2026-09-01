@@ -90,16 +90,38 @@ def _ratio_ok(measured: float, declared: float) -> bool:
     return (AREA_RATIO_LO - _EPS) <= r <= (AREA_RATIO_HI + _EPS)
 
 
+def _measures(area: float, opening: dict | None) -> list[float]:
+    """Every size measure an opening offers: its face area and, when the tessellation
+    reports the port face as annular (a ring), the area its inner wire encloses. A
+    thin-walled duct's end ring is a few thousand mm² of metal rimming a half-metre
+    bore - the declaration talks about the bore, so the ring's metal area alone must
+    not be the only thing the declared size is held against."""
+    out = [float(area)]
+    if opening and opening.get("area") is not None:
+        out.append(float(opening["area"]))
+    return out
+
+
+def _size_agrees(area: float, opening: dict | None, declared: float) -> bool:
+    return any(_ratio_ok(m, declared) for m in _measures(area, opening))
+
+
 def _frame(t: dict) -> str:
     return (f"engine frame (metres): bbox_min={t['bbox_min']} bbox_max={t['bbox_max']} - "
             f"state locations in these coordinates")
 
 
-def _listing(openings: list[tuple[str, float, tuple]]) -> str:
-    return "\n".join(
-        f"  {key}: centroid=({c[0]:.4f}, {c[1]:.4f}, {c[2]:.4f}) m, "
-        f"area={a * 1e6:.1f} mm2, equivalent diameter={_equiv_d_mm(a):.1f} mm"
-        for key, a, c in openings)
+def _listing(openings: list[tuple]) -> str:
+    rows = []
+    for key, a, c, opening in openings:
+        row = (f"  {key}: centroid=({c[0]:.4f}, {c[1]:.4f}, {c[2]:.4f}) m, "
+               f"area={a * 1e6:.1f} mm2, equivalent diameter={_equiv_d_mm(a):.1f} mm")
+        if opening and opening.get("area") is not None:
+            oa = float(opening["area"])
+            row += (f" (ring face; inner opening {oa * 1e6:.1f} mm2, "
+                    f"equivalent diameter {_equiv_d_mm(oa):.1f} mm)")
+        rows.append(row)
+    return "\n".join(rows)
 
 
 def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
@@ -112,7 +134,7 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
     if unknown:
         raise BindError(f"unknown roles for patches {unknown}; expected wall, inlet or outlet")
 
-    openings = [(key, rec["area"], tuple(rec["centroid"]))
+    openings = [(key, rec["area"], tuple(rec["centroid"]), rec.get("opening"))
                 for key, rec in sorted(t["openings"].items())]
     frame = _frame(t)
 
@@ -136,7 +158,7 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
             f"If a real opening is missing its face may be modelled as a B-spline rather than "
             f"a plane - pass opening_faces to identify the opening faces explicitly.")
 
-    pool: dict[str, tuple[float, tuple]] = {k: (a, c) for k, a, c in openings}
+    pool: dict[str, tuple] = {k: (a, c, o) for k, a, c, o in openings}
     bound: dict[str, str] = {}
     diag = _dist(t["bbox_min"], t["bbox_max"])
 
@@ -149,7 +171,7 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
         assert hint is not None  # the filter above guarantees it; mypy cannot see through sorted
         hint_m = tuple(v / 1000.0 for v in hint)
         ranked = sorted(pool.items(), key=lambda kv: _dist(hint_m, kv[1][1]))
-        key, (area, centroid) = ranked[0]
+        key, (area, centroid, opening) = ranked[0]
         d1 = _dist(hint_m, centroid)
         d2 = _dist(hint_m, ranked[1][1][1]) if len(ranked) > 1 else math.inf
         if d1 > HINT_MAX_BBOX_FRACTION * diag:
@@ -159,7 +181,7 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
                 f"the hint does not plausibly refer to any opening.\n"
                 f"Detected openings:\n{_listing(openings)}\n{frame}")
         if d1 > HINT_MARGIN * d2:
-            k2, (a2, c2) = ranked[1]
+            k2, (a2, c2, _o2) = ranked[1]
             raise BindError(
                 f"port '{p.name}' states a location {p.near_mm} mm that does not decisively "
                 f"pick one opening: {key} at ({centroid[0]:.4f}, {centroid[1]:.4f}, "
@@ -167,7 +189,7 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
                 f"{c2[1]:.4f}, {c2[2]:.4f}) m is {d2:.4f} m away - state a location nearer "
                 f"the intended opening.\n{frame}")
         declared_area = p.declared_area_m2()
-        if declared_area is not None and not _ratio_ok(area, declared_area):
+        if declared_area is not None and not _size_agrees(area, opening, declared_area):
             raise BindError(
                 f"port '{p.name}' points at opening {key} by location, but that opening "
                 f"measures {area * 1e6:.1f} mm2 (equivalent diameter "
@@ -204,8 +226,8 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
 
     # Band-uniqueness: an opening the area test cannot assign to ONE class is fatal.
     matches: dict[str, list[float]] = {}
-    for key, (area, _c) in pool.items():
-        matches[key] = [a for a in classes if _ratio_ok(area, a)]
+    for key, (area, _c, opening) in pool.items():
+        matches[key] = [a for a in classes if _size_agrees(area, opening, a)]
         if len(matches[key]) > 1:
             raise BindError(
                 f"detected opening {key} ({area * 1e6:.1f} mm2, equivalent diameter "
@@ -261,7 +283,12 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
     evidence = tuple(
         {"name": name, "role": by_name[name].role, "engine_key": key,
          "centroid": list(t["openings"][key]["centroid"]),
-         "area_m2": t["openings"][key]["area"]}
+         "area_m2": t["openings"][key]["area"],
+         # only ring (annular) port faces carry it: the area the inner wire encloses -
+         # the size the user's declaration matched when the metal ring's own area could
+         # not (a thin-walled duct's end ring around a large bore)
+         **({"opening_area_m2": t["openings"][key]["opening"]["area"]}
+            if t["openings"][key].get("opening") else {})}
         for name, key in sorted(bound.items()))
     return Binding(wall_name=walls[0].name, port_map=dict(sorted(bound.items())),
                    folded_into_wall=folded, evidence=evidence)
@@ -276,7 +303,13 @@ def declaration_targets(intake_patches: list) -> list:
             continue
         dp = DeclaredPatch.from_intake(p)
         out.append({"name": dp.name, "area_m2": dp.declared_area_m2(),
-                    "near_m": (tuple(v / 1000.0 for v in dp.near_mm) if dp.near_mm else None)})
+                    "near_m": (tuple(v / 1000.0 for v in dp.near_mm) if dp.near_mm else None),
+                    # the declared SHAPE, for candidates whose opening is an inner wire:
+                    # circles are matched by bore diameter, rectangles by W x H
+                    "d_m": (dp.diameter_mm / 1000.0 if dp.diameter_mm is not None else None),
+                    "wh_m": ((dp.width_mm / 1000.0, dp.height_mm / 1000.0)
+                             if dp.width_mm is not None and dp.height_mm is not None
+                             else None)})
     return out
 
 
@@ -295,6 +328,8 @@ def bind_intake(t: dict, intake_patches: list) -> tuple[dict, str, str]:
     rows = "; ".join(
         f"{p['name']} ({p['role']}) at ({', '.join(f'{v:.3f}' for v in p['centroid'])}) m, "
         f"{float(p['area_m2']) * 1e6:.0f} mm²"
+        + (f" (ring face; opening {float(p['opening_area_m2']) * 1e6:.0f} mm²)"
+           if p.get("opening_area_m2") is not None else "")
         for p in out["binding"]["ports"])
     note = (f"bound to your declared ports: {rows}; wall = {b.wall_name}"
             + (f"; {len(b.folded_into_wall)} blind face(s) folded into the wall"

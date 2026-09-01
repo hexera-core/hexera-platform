@@ -133,6 +133,28 @@ def human_feedback_axis(phase: str):
     )
 
 
+def _drop_unservable_evidence_hints(ax, spec):
+    """Strip evidence hints that name a tool this engine's review surface cannot serve.
+
+    "inspect_region" is the interior-slice tool, and the reviewer runtime kind-gates it on
+    the session's REGION inspection targets. A purpose axis composed onto an engine that
+    declares no REGION target (gmsh, vmtk) would render "evidence to weigh: inspect_region"
+    into the brief and send the reviewer to a tool every call of which is refused - the
+    no-progress death of job 63ff3d42. An axis must never demand evidence its engine cannot
+    supply, so composition drops the hint; engines that serve slices keep it verbatim.
+    """
+    import dataclasses
+
+    from meshpipeline.contracts.review_evidence import TargetKind
+
+    if any(t.kind is TargetKind.REGION for t in spec.inspection_targets):
+        return ax
+    kept = tuple(e for e in (ax.evidence or ()) if e != "inspect_region")
+    if kept == tuple(ax.evidence or ()):
+        return ax
+    return dataclasses.replace(ax, evidence=kept)
+
+
 def compose_review_rubric(engine: str, purpose_key: str = "", user_dispute=None,
                           phase: str = "") -> tuple:
     import dataclasses
@@ -140,7 +162,8 @@ def compose_review_rubric(engine: str, purpose_key: str = "", user_dispute=None,
     from meshpipeline.engines.purposes import PURPOSES
 
     eng = (engine or "").lower()
-    eng_axes = tuple(get_spec(eng).review_rubric)
+    _spec = get_spec(eng)
+    eng_axes = tuple(_spec.review_rubric)
     _pur = PURPOSES.get(purpose_key or "")
     pur_axes = tuple(_pur.review_axes) if _pur else ()
 
@@ -150,12 +173,13 @@ def compose_review_rubric(engine: str, purpose_key: str = "", user_dispute=None,
         if ax.name in seen:
             continue
         seen.add(ax.name)
-        out.append(dataclasses.replace(ax, owner=owner))
+        out.append(dataclasses.replace(_drop_unservable_evidence_hints(ax, _spec), owner=owner))
     for ax in pur_axes:
         if ax.name in seen:   # an engine axis of the same name wins (more specific to the mesh)
             continue
         seen.add(ax.name)
-        out.append(dataclasses.replace(ax, owner=f"purpose:{purpose_key}"))
+        out.append(dataclasses.replace(_drop_unservable_evidence_hints(ax, _spec),
+                                       owner=f"purpose:{purpose_key}"))
 
     # APPENDED LAST, and only when a human actually raised flags. Absent a dispute the composed
     # rubric is byte-for-byte what it always was, so no ordinary run changes shape.

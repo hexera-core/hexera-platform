@@ -80,22 +80,28 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
         gmsh.model.occ.importShapes(str(geom))
         gmsh.model.occ.synchronize()
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+        n_volumes = len(gmsh.model.getEntities(3))
         surfaces = []
         for _, tag in gmsh.model.getEntities(2):
             area = gmsh.model.occ.getMass(2, tag)
             cx, cy, cz = gmsh.model.occ.getCenterOfMass(2, tag)
             surfaces.append({"tag": tag, "area": round(area, 8),
                              "centroid": [round(cx, 6), round(cy, 6), round(cz, 6)]})
-        # curves too: a 2D planar case maps its contracted boundary groups onto
-        # CURVE tags (curve_tags), the way 3D maps onto surface_tags
+        # curves too - but ONLY for a model with no solids: a 2D planar case maps its
+        # contracted boundary groups onto CURVE tags (curve_tags), the way 3D maps onto
+        # surface_tags. For a SOLID model the curve table binds nothing and is pure bulk:
+        # on a 57-face pump volute it was 73% of the report and pushed it past the builder's
+        # tool-output cap, which replaced the whole report with an error the model could not
+        # act on - the builder never learned a single surface tag (job d0fc1033, 2026-08-28).
         curves = []
-        for _, tag in gmsh.model.getEntities(1):
-            ln = gmsh.model.occ.getMass(1, tag)
-            mx, my, mz = gmsh.model.occ.getCenterOfMass(1, tag)
-            curves.append({"tag": tag, "length": round(ln, 8),
-                           "midpoint": [round(mx, 6), round(my, 6), round(mz, 6)]})
+        if n_volumes == 0:
+            for _, tag in gmsh.model.getEntities(1):
+                ln = gmsh.model.occ.getMass(1, tag)
+                mx, my, mz = gmsh.model.occ.getCenterOfMass(1, tag)
+                curves.append({"tag": tag, "length": round(ln, 8),
+                               "midpoint": [round(mx, 6), round(my, 6), round(mz, 6)]})
         out = {
-            "volumes": len(gmsh.model.getEntities(3)),
+            "volumes": n_volumes,
             "surfaces": surfaces,
             "curves": curves,
             "bbox": [xmin, ymin, zmin, xmax, ymax, zmax],

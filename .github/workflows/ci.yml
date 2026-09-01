@@ -77,7 +77,7 @@ jobs:
     name: Docker image targets (api / pipeline / mesh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # One wheel, three runtime images - each target must build (see deploy/IMAGE_BUILD.md).
       # The product version is read from its one authority and transported into the build; the
       # Dockerfile refuses to produce an image whose label disagrees with the installed package.
