@@ -233,6 +233,9 @@ services:
       # import the same package host execution does, never a second copy.
       # Run: make test-integration
       - ./tests:/srv/tests:ro
+      # The certification coverage tier reads the publication-authority manifest and ledger;
+      # without this mount the tier silently SKIPS instead of certifying (read-only, data only).
+      - ./devtools/quality:/srv/devtools/quality:ro
     restart: unless-stopped
     # Workers are CPU/RAM heavy - resource limits prevent runaway jobs.
     # No GPU - reviewer sandbox renders in software (Mesa EGL/llvmpipe), set in code.
