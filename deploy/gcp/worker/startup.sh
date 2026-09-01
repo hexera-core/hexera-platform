@@ -14,6 +14,9 @@
 set -euxo pipefail
 
 md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
+# The project this instance runs in, asked of the metadata server rather than passed in: it is a
+# fact about where we are, and a template that restated it could disagree with reality.
+md_project() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/project/project-id"; }
 
 WORKER_IMAGE="$(md worker-image)"
 REDIS_URL="$(md redis-url)"
@@ -39,7 +42,10 @@ fi
 gcloud auth configure-docker "$(echo "${WORKER_IMAGE}" | cut -d/ -f1)" --quiet
 docker pull "${WORKER_IMAGE}"
 
-# The application's own settings (model keys, policy) come from the deployment's env object.
+# The application's NON-SECRET settings (policy, model routing, limits) come from the deployment's
+# env object. It carries no credential: a bucket object and instance metadata are both readable by
+# anyone who can describe the instance, which is how the four credentials in the live audit came to
+# be published in the first place.
 mkdir -p /etc/hexera
 gcloud storage cp "${ENV_URI}" /etc/hexera/worker.env --quiet
 chmod 600 /etc/hexera/worker.env
@@ -51,6 +57,34 @@ chmod 600 /etc/hexera/worker.env
   echo "CELERY_BROKER_URL=${REDIS_URL}"
   echo "CELERY_RESULT_BACKEND=${REDIS_URL}"
 } >> /etc/hexera/worker.env
+
+# CREDENTIALS are fetched by NAME, under this instance's own identity, and only ever exist in a
+# root-owned file on the instance. Metadata carries the secret's name; the value is never in the
+# template, never in an object in a bucket, and never in `gcloud compute instances describe`.
+# Rotating a credential is then a new secret version plus an instance roll, with nothing to edit.
+#
+# TRACING OFF for this block, and it must stay off. This script runs under `set -x`, which echoes
+# every expanded command to the startup log and the serial console - so the assignment below would
+# print each secret in full, republishing exactly what moving it into Secret Manager removed. The
+# guard against a plaintext credential in a spec would still pass while the log carried the value.
+set +x
+for pair in "POSTGRES_PASSWORD:postgres-password-secret" \
+            "MINIO_SECRET_KEY:minio-secret-key-secret" \
+            "DEEPINFRA_API_KEY:deepinfra-api-key-secret" \
+            "DEEPSEEK_API_KEY:deepseek-api-key-secret"; do
+  var="${pair%%:*}"; key="${pair##*:}"
+  name="$(md "${key}" || true)"
+  [ -n "${name}" ] || continue          # a credential this deployment does not use
+  # --secret= names it; the value goes straight to the file and is never an argument or a log line.
+  if value="$(gcloud secrets versions access latest --secret="${name}" --project="$(md_project)" 2>/dev/null)"; then
+    printf '%s=%s\n' "${var}" "${value}" >> /etc/hexera/worker.env
+  else
+    echo "FATAL: cannot read secret ${name} for ${var} - refusing to start with a missing credential" >&2
+    exit 1
+  fi
+done
+unset value
+set -x
 
 docker rm -f hexera-worker >/dev/null 2>&1 || true
 docker run -d --name hexera-worker --restart always \
