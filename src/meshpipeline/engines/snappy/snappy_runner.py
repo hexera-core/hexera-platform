@@ -666,25 +666,40 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # DOUBLED the base cell. ceil would add a phantom +1 level from mere div-rounding (base_actual
     # marginally > base_cell), needlessly doubling wall resolution on every internal build.
     deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base_cell, 1e-30), 1.0)) + 1e-9)))
+    # THE OTHER DIRECTION, which was missing and detonated the internal cluster: when the
+    # min-8 division clamp makes the background FINER than base_cell (a high planner
+    # surface_level inflates base_cell = wall_cell * 2^level far past the domain), keeping
+    # the planned level over-refines every band by the same factor. The autopsied
+    # mini_housing ended with EVERY cell at level 8: the whole budget burned before the
+    # fluid volume was covered, and the ports farthest from the seed simply never got
+    # cells - the true mechanism behind the zero-face-port cluster. Rounding to nearest
+    # holds the ABSOLUTE wall cell closest to the planner's intent.
+    surplus = max(0, int(round(math.log2(max(max(base_cell, 1e-30) / max(base_actual, 1e-30),
+                                             1.0)))))
     _HARD_MAX_LEVEL = 10
 
-    smin = smax = min(_HARD_MAX_LEVEL, int(surface_level) + deficit)
-    flevel = min(_HARD_MAX_LEVEL, max(smax, int(feature_level) + deficit))
+    smin = smax = max(1, min(_HARD_MAX_LEVEL, int(surface_level) + deficit - surplus))
+    flevel = min(_HARD_MAX_LEVEL, max(smax, int(feature_level) + deficit - surplus))
     port_level = max(1, smin - 1)                 # ports resolved, one below the wall
     # ... except where a port's OWN opening is too small for that: each port's level is
-    # sized from its own diameter so castellation cannot seal it (the 21-episode cluster).
-    port_lvls = _port_levels(base_cell=base_cell, default_level=port_level, smin=smin,
+    # sized from its own diameter so castellation cannot seal it. Sized against the
+    # background cell the mesher will ACTUALLY use, not the pre-clamp intent.
+    port_lvls = _port_levels(base_cell=base_actual, default_level=port_level, smin=smin,
                              port_sizes=port_sizes, sealed_before=sealed_before,
                              hard_max=_HARD_MAX_LEVEL)
-    near_dist = max(3.0 * base_cell, 0.08 * maxext)
+    # The near-wall band exists to give the wall a few FINE cells of depth. Scaling it by
+    # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
+    # the domain at max level (the same detonation). Scale by the actual WALL cell.
+    wall_cell_actual = base_actual / (2 ** smin)
+    near_dist = max(8.0 * wall_cell_actual, 0.02 * maxext)
     near_level = min(_HARD_MAX_LEVEL, smax + 1)
     max_cells = int(max_cells)
     n_layers = max(0, int(n_layers))
     first_rel = float(first_layer_rel)
-    if deficit:
-        logger.info("render_internal_case: clamp deficit=%d → levels bumped (base_actual=%.4g "
-                    "surf=%d feat=%d) to hold absolute wall resolution", deficit, base_actual,
-                    smax, flevel)
+    if deficit or surplus:
+        logger.info("render_internal_case: clamp correction deficit=%d surplus=%d "
+                    "(base_cell=%.4g base_actual=%.4g) → surf=%d feat=%d wall_cell=%.4g",
+                    deficit, surplus, base_cell, base_actual, smax, flevel, wall_cell_actual)
 
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
@@ -722,7 +737,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
             continue
         lvl = port_lvls.get(p, port_level)
         if lvl > port_level:
-            band = max(4.0 * base_cell / (2 ** lvl), 0.5 * float((port_sizes or {}).get(p) or 0))
+            band = max(4.0 * base_actual / (2 ** lvl), 0.5 * float((port_sizes or {}).get(p) or 0))
             port_regions += (f"{names[p]} {{ mode distance; "
                              f"levels (({band:.6g} {lvl})); }} ")
 

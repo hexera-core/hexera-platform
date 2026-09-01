@@ -80,6 +80,43 @@ def test_render_authors_per_port_levels_and_a_refinement_band(tmp_path):
     assert summary["port_levels"] == {"inlet": 1, "outlet_2": 4}
 
 
+def test_surplus_correction_steps_levels_down_when_the_clamp_refines_the_background(tmp_path):
+    # The autopsied detonation: a 0.3 m part, planner surface_level 7 -> base_cell
+    # inflated to 0.25 m; the min-8 division clamp makes the ACTUAL background finer
+    # (~0.16 m), and keeping level 7 over-refined everything - every cell in the real
+    # failure ended at level 8 and the budget died before the fluid volume was covered.
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    names = {"wall": "wall", "inlet": "inlet"}
+    feats = {k: f"{k}.eMesh" for k in names}
+    summary = render_internal_case(
+        ws, names=names, features=feats, interior_point=(0, 0, 0),
+        bbox_min=(-0.15, -0.15, -0.15), bbox_max=(0.15, 0.15, 0.15),
+        base_cell=0.25, surface_level=7, feature_level=8, n_layers=3,
+        wall_key="wall")
+    assert summary["surface_level"] == [6, 6]          # 7 - surplus(1)
+    text = (ws / "system" / "snappyHexMeshDict").read_text()
+    # the near-wall band is a few WALL cells deep, not most of the domain: the old
+    # 3*base_cell rule authored a 0.75 m band here
+    import re
+    band = float(re.search(r"wall \{ mode distance; levels \(\((\S+) ", text).group(1))
+    assert band < 0.05, f"near-wall band {band} m still domain-scale"
+
+
+def test_no_clamp_means_no_correction(tmp_path):
+    # a well-proportioned case: divisions land unclamped, levels pass through untouched
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    names = {"wall": "wall", "inlet": "inlet"}
+    feats = {k: f"{k}.eMesh" for k in names}
+    summary = render_internal_case(
+        ws, names=names, features=feats, interior_point=(0, 0, 0),
+        bbox_min=(-0.1, -0.1, -0.1), bbox_max=(0.1, 0.1, 0.1),
+        base_cell=0.01, surface_level=2, feature_level=3, n_layers=3,
+        wall_key="wall")
+    assert summary["surface_level"] == [2, 2]
+
+
 def test_render_without_port_sizes_is_unchanged_legacy_behaviour(tmp_path):
     ws, summary = _render(tmp_path)
     text = (ws / "system" / "snappyHexMeshDict").read_text()
