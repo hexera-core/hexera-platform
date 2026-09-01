@@ -715,8 +715,18 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         "boundary (outer { type patch; faces "
         "((0 3 2 1)(4 5 6 7)(0 1 5 4)(2 3 7 6)(1 2 6 5)(0 4 7 3)); });\nmergePatchPairs ();\n")
 
-    geom = "".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
-                   for p in names)
+    # THE SEED BUBBLE. locationInMesh decides which region survives; interior cells far
+    # from any surface stay at the BACKGROUND size, and a background cell containing the
+    # seed can physically straddle a nearby port disc or wall (the autopsied leak: seed
+    # 15 mm from an outlet disc, interior cells ~170 mm - the kept region flooded out
+    # around the disc, the `outer` box patch survived into the final mesh, and every
+    # submerged port ended with zero faces). A small refinement sphere around the seed
+    # guarantees its cell is wall-cell-sized and unambiguously inside.
+    seed_r = 16.0 * wall_cell_actual
+    geom = ("".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
+                    for p in names)
+            + f"seedZone {{ type searchableSphere; centre {'(%.6g %.6g %.6g)' % tuple(interior_point)}; "
+              f"radius {seed_r:.6g}; }} ")
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -752,7 +762,7 @@ geometry {{ {geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
-  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}}}
+  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
   locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}

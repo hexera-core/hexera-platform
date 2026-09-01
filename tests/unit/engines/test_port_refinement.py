@@ -117,6 +117,24 @@ def test_no_clamp_means_no_correction(tmp_path):
     assert summary["surface_level"] == [2, 2]
 
 
+def test_seed_bubble_guarantees_a_fine_unambiguous_seed_cell(tmp_path):
+    # The autopsied leak: the seed's cell was a BACKGROUND cell (~170 mm) that straddled
+    # an outlet disc 15 mm away, so region-keep flooded outside and every submerged port
+    # got zero faces. The renderer must author a refinement sphere at the seed.
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    names = {"wall": "wall", "inlet": "inlet"}
+    feats = {k: f"{k}.eMesh" for k in names}
+    render_internal_case(
+        ws, names=names, features=feats, interior_point=(0.01, -0.03, 0.09),
+        bbox_min=(-0.15, -0.15, -0.15), bbox_max=(0.15, 0.15, 0.15),
+        base_cell=0.25, surface_level=7, feature_level=8, n_layers=3,
+        wall_key="wall")
+    text = (ws / "system" / "snappyHexMeshDict").read_text()
+    assert "seedZone { type searchableSphere; centre (0.01 -0.03 0.09);" in text
+    assert "seedZone { mode inside; levels ((1e15 6)); }" in text  # refined to wall level
+
+
 def test_render_without_port_sizes_is_unchanged_legacy_behaviour(tmp_path):
     ws, summary = _render(tmp_path)
     text = (ws / "system" / "snappyHexMeshDict").read_text()
