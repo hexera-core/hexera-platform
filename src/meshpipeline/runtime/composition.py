@@ -52,6 +52,7 @@ def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
     from meshpipeline.adapters.event_stream.redis import JobPublisher, RedisEventSubscription
+    from meshpipeline.adapters.inference_telemetry.redis import RedisInferenceTelemetrySink
     from meshpipeline.adapters.mesh_timing.redis import RedisMeshTimingStore
     from meshpipeline.adapters.model_capacity.redis import RedisCapacityController
     from meshpipeline.adapters.model_inference import router
@@ -63,6 +64,7 @@ def install_adapters() -> None:
         dead_letter,
         delivery_guard,
         event_stream,
+        inference_telemetry,
         mesh_execution,
         mesh_timing,
         model_capacity,
@@ -88,6 +90,10 @@ def install_adapters() -> None:
     rate_limit.set_rate_limit_store(RedisRateLimitStore())
     dead_letter.set_dead_letter_sink(RedisDeadLetterSink())
     mesh_timing.set_mesh_timing_store(RedisMeshTimingStore())
+    # The router builds a fully costed InferenceCall for EVERY model call, and with no sink bound
+    # the contract's recorder returns immediately and discards each one. Pricing is measured
+    # resource cost, so an unbound sink is lost revenue, not a missing graph.
+    inference_telemetry.set_inference_telemetry(RedisInferenceTelemetrySink())
     ws_ticket.set_ws_ticket_store(RedisWsTicketStore())
     # Model-call admission sits in front of EVERY model call (routing.execute -> acquire), so
     # a process that composes adapters without it fails on its first Intake/Builder/Reviewer

@@ -9,8 +9,11 @@
 #
 #     make mesh-deploy     (from the repository root)
 #
-# It deploys nothing else. The API, the pipeline, PostgreSQL, Redis, MinIO and SearXNG run on the
-# operator's machine and are configured through the application's own .env.
+# Beyond that it deploys only what this deployment DECLARES it has: the schema of a hosted database
+# (MIGRATE_DB_HOST) and the queue-depth publisher a worker fleet scales on (WORKER_MIG). Both stages
+# state that they were skipped when those are unset, which is the mesh-only case this started as -
+# there the API, the pipeline, PostgreSQL, Redis, MinIO and SearXNG all run on the operator's
+# machine and are configured through the application's own .env.
 #
 # Every stage is idempotent and safe to rerun after a partial failure: existing resources are
 # reconciled rather than duplicated, and a supplied mesh job or bucket is validated and reused,
@@ -117,12 +120,37 @@ bash "${S}/create-mesh-tier.sh"
 stage "IAM (least privilege: invoke the mesh job, exchange objects)"
 bash "${S}/apply-iam.sh"
 
+stage "Schema (migrations applied ONCE, before anything runs the promoted image)"
+# The API container still migrates itself under an advisory lock, and that stays - it is the safety
+# net for every path that is not a deploy. But a deploy must not DEPEND on N cold-starting instances
+# racing for a lock on a service that is already public: the schema reaches head here, once, with
+# the exit code attributed to the deploy, and a refusal stops it with the database untouched.
+bash "${S}/run-migrations.sh"
+
+stage "Worker fleet signal (the one queue-depth publisher, and the autoscaler that reads it)"
+# The publisher runs OFF the fleet - a scheduled Cloud Run job - because the workers used to be the
+# only writers of the number that wakes the workers. Scale-to-zero is unreachable while the metric
+# is published by the instances it scales (build-out plan, Decision 4).
+bash "${S}/create-queue-depth-publisher.sh"
+
 # Record the machine-readable deployment-state manifest (ownership + digests; no secret values).
 bash "${S}/write-deployment-state.sh" || warn "deployment-state manifest could not be written (non-fatal)"
 
 # final summary
 load_env
 MESH_DIGEST="$(resolve_digest "${MESH_IMAGE:-}" 2>/dev/null || printf '%s' "${MESH_IMAGE:-}")"
+
+# The two conditional stages report what they actually did, so a skip is never read as a success.
+if [ -n "${MIGRATE_DB_HOST:-}" ] && [ "${MIGRATE_SKIP:-0}" != "1" ]; then
+  SCHEMA_STATE="at head on ${MIGRATE_DB_HOST}/${MIGRATE_DB_NAME:-meshpipeline}  (job ${CLOUDRUN_MIGRATE_JOB:-${DEPLOYMENT_ID}-migrate})"
+else
+  SCHEMA_STATE="no hosted database declared - the API migrates itself on start"
+fi
+if [ -n "${WORKER_MIG:-}" ]; then
+  QUEUE_SIGNAL="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOYMENT_ID}-queue-depth} on '${QUEUE_DEPTH_SCHEDULE:-* * * * *}' -> autoscaler ${WORKER_MIG}"
+else
+  QUEUE_SIGNAL="no worker fleet declared"
+fi
 
 printf '\n\033[1m━━━ mesh executor ready ━━━\033[0m\n'
 cat <<SUMMARY
@@ -133,6 +161,8 @@ cat <<SUMMARY
   Mesh identity     ${MESH_SA_EMAIL}                (${MESH_SA_DISPOSITION})
   Mesh image        ${MESH_DIGEST}
   Mesh exchange     gs://${GCP_MESH_BUCKET}         (${MESH_BUCKET_DISPOSITION})
+  Schema            ${SCHEMA_STATE}
+  Queue depth       ${QUEUE_SIGNAL}
   Deployment state  deploy/output/deployment.json   (ownership + digests; no secret values)
 
   Point the local application at it: set GCP_PROJECT_ID, GCP_REGION,

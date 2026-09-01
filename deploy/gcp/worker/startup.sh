@@ -1,6 +1,6 @@
 #!/bin/bash
-# Responsibility: Bring one worker instance up - the pipeline container plus the queue-depth exporter.
-# Owns: docker install, registry auth, the worker container's run arguments, and the exporter service.
+# Responsibility: Bring one worker instance up - the pipeline container, and nothing else.
+# Owns: docker install, registry auth, and the worker container's run arguments.
 # Boundaries: it runs what it is told to run; the image digest and every endpoint arrive as instance metadata.
 #
 # This is the MIG instance startup script. It is deliberately free of configuration: the image
@@ -26,7 +26,7 @@ ENV_URI="$(md env-uri)"
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v docker >/dev/null 2>&1; then
   apt-get update -qq
-  apt-get install -y ca-certificates curl gnupg python3-pip
+  apt-get install -y ca-certificates curl gnupg
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
@@ -95,23 +95,9 @@ docker run -d --name hexera-worker --restart always \
   celery -A meshpipeline.runtime.celery_worker worker \
     --queues simulation_jobs --concurrency 1 --loglevel info
 
-# The queue-depth exporter the autoscaler reads. It runs on the host rather than in the worker
-# container so that a worker restart never interrupts the metric the group is scaling on.
-pip3 install --quiet redis google-cloud-monitoring
-gcloud storage cp "$(dirname "${ENV_URI}")/queue_depth_exporter.py" /usr/local/bin/queue_depth_exporter.py --quiet
-cat > /etc/systemd/system/hexera-queue-exporter.service <<EOS
-[Unit]
-Description=Hexera queue depth exporter
-After=network-online.target
-
-[Service]
-Environment=REDIS_URL=${REDIS_URL}
-ExecStart=/usr/bin/python3 /usr/local/bin/queue_depth_exporter.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOS
-systemctl daemon-reload
-systemctl enable --now hexera-queue-exporter
+# NOTHING ELSE RUNS HERE. The queue-depth exporter used to: a systemd unit beside every worker,
+# publishing the group-wide backlog against this instance's own resource. That made the fleet the
+# only writer of the number that wakes the fleet, so a group at zero instances could never come
+# back - the reason its minimum is 1. Publication moved to a scheduled Cloud Run job
+# (deploy/gcp/scripts/create-queue-depth-publisher.sh), which reports the depth whether or not any
+# instance exists.

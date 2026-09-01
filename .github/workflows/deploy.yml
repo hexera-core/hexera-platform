@@ -49,6 +49,16 @@ jobs:
       registry: ${{ steps.pick.outputs.registry }}
       wif_provider: ${{ steps.pick.outputs.wif_provider }}
       deployer_sa: ${{ steps.pick.outputs.deployer_sa }}
+      # The two tiers the deploy touches beyond the mesh executor: the database whose schema it
+      # migrates before anything runs the new image, and the worker fleet whose queue depth it
+      # publishes. Both are pinned here for the same reason every other target is.
+      migrate_db_host: ${{ steps.pick.outputs.migrate_db_host }}
+      migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
+      migrate_db_user: ${{ steps.pick.outputs.migrate_db_user }}
+      postgres_password_secret: ${{ steps.pick.outputs.postgres_password_secret }}
+      redis_url: ${{ steps.pick.outputs.redis_url }}
+      worker_mig: ${{ steps.pick.outputs.worker_mig }}
+      worker_mig_zone: ${{ steps.pick.outputs.worker_mig_zone }}
     steps:
       - id: pick
         # The one repository variable this workflow reads is passed through the environment, never
@@ -74,6 +84,17 @@ jobs:
               echo "registry=us-central1-docker.pkg.dev/hexera-dev/mesh"
               echo "wif_provider=projects/224734058693/locations/global/workloadIdentityPools/github-actions/providers/github"
               echo "deployer_sa=github-deployer@hexera-dev.iam.gserviceaccount.com"
+              # Cloud SQL on its PRIVATE address - the migration job reaches it over Direct VPC
+              # egress, so the public IP is not, and should not become, a deploy dependency. The
+              # password is a Secret Manager CONTAINER NAME: no credential appears in this file.
+              echo "migrate_db_host=10.66.0.3"
+              echo "migrate_db_name=meshpipeline"
+              echo "migrate_db_user=meshpipeline"
+              echo "postgres_password_secret=postgres-password"
+              # Memorystore, and the group the published depth scales.
+              echo "redis_url=redis://10.108.144.235:6379/0"
+              echo "worker_mig=hexera-dev-workers"
+              echo "worker_mig_zone=us-central1-a"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -99,6 +120,17 @@ jobs:
             echo "registry=us-central1-docker.pkg.dev/hexera-prod/mesh"
             echo "wif_provider=projects/688073002171/locations/global/workloadIdentityPools/github-actions/providers/github"
             echo "deployer_sa=github-deployer@hexera-prod.iam.gserviceaccount.com"
+            # DELIBERATELY EMPTY. hexera-prod has no database, no broker and no worker fleet yet,
+            # and inventing addresses for them here would be a guess a deploy then acts on. Empty
+            # is not a silent skip: run-migrations.sh refuses to skip the schema step under
+            # DEPLOY_NONINTERACTIVE, so the first prod deploy stops until these are stated.
+            echo "migrate_db_host="
+            echo "migrate_db_name="
+            echo "migrate_db_user="
+            echo "postgres_password_secret="
+            echo "redis_url="
+            echo "worker_mig="
+            echo "worker_mig_zone="
           } >> "$GITHUB_OUTPUT"
 
   deploy:
@@ -127,6 +159,19 @@ jobs:
       # deployment-id=dev labels that a derived `hexera-dev` would silently rewrite.
       DEPLOYMENT_ID: ${{ needs.target.outputs.deployment_id }}
       ARTIFACT_REGISTRY_REPOSITORY: ${{ needs.target.outputs.ar_repository }}
+      # THE SCHEMA STEP. Migrations run once, from the deploy, against the promoted application
+      # digest - before anything serves it. The API container still migrates itself under an
+      # advisory lock, and that stays as the safety net, but a deploy no longer depends on N
+      # cold-starting instances racing for a lock on a service that is already public.
+      MIGRATE_DB_HOST: ${{ needs.target.outputs.migrate_db_host }}
+      MIGRATE_DB_NAME: ${{ needs.target.outputs.migrate_db_name }}
+      MIGRATE_DB_USER: ${{ needs.target.outputs.migrate_db_user }}
+      POSTGRES_PASSWORD_SECRET: ${{ needs.target.outputs.postgres_password_secret }}
+      # THE FLEET'S SCALING SIGNAL. Published by one scheduled job off the fleet, so a group at
+      # zero instances can still be woken (platform-buildout-plan.md, Decisions 4).
+      REDIS_URL: ${{ needs.target.outputs.redis_url }}
+      WORKER_MIG: ${{ needs.target.outputs.worker_mig }}
+      WORKER_MIG_ZONE: ${{ needs.target.outputs.worker_mig_zone }}
     steps:
       # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
       # that exact commit to stage the native fixtures. Full history so the worktree and the

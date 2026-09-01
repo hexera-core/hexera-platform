@@ -10,7 +10,10 @@ import yaml
 REPO = Path(__file__).resolve().parents[3]
 MANIFESTS = REPO / "deploy" / "gcp" / "cloud-run"
 
-# The variables deploy.sh exports before envsubst renders a manifest.
+# The variables the deploy scripts export before envsubst renders a manifest. A manifest that
+# names one that is NOT here fails the first test below - which is the point: envsubst substitutes
+# an unset variable with the empty string, so the only place a typo'd or unexported variable can be
+# caught is here, before a deploy applies a spec with a hole in it.
 _VARS = {
     "DEPLOYMENT_ID": "amp-dev",
     "GCP_PROJECT_ID": "fake-proj", "GCP_REGION": "us-central1",
@@ -18,12 +21,27 @@ _VARS = {
     "MESH_IMAGE": "us-central1-docker.pkg.dev/fake-proj/mesh/mesh@sha256:dead",
     "MESH_SA_EMAIL": "amp-dev-mesh@fake-proj.iam.gserviceaccount.com",
     "MESH_CPU": "4", "MESH_MEMORY": "8Gi", "MESH_TIMEOUT_SECONDS": "14400",
+    # the application image, and the two jobs that run application code from it
+    "APP_IMAGE": "us-central1-docker.pkg.dev/fake-proj/mesh/app@sha256:beef",
+    "VPC_NETWORK": "default", "VPC_SUBNET": "default",
+    "CLOUDRUN_MIGRATE_JOB": "amp-dev-migrate",
+    "MIGRATE_SA_EMAIL": "amp-dev-migrate@fake-proj.iam.gserviceaccount.com",
+    "MIGRATE_DB_HOST": "10.66.0.3", "MIGRATE_DB_PORT": "5432",
+    "MIGRATE_DB_NAME": "meshpipeline", "MIGRATE_DB_USER": "meshpipeline",
+    "POSTGRES_PASSWORD_SECRET": "postgres-password",
+    "CLOUDRUN_QUEUE_DEPTH_JOB": "amp-dev-queue-depth",
+    "QUEUE_DEPTH_SA_EMAIL": "amp-dev-queue-depth@fake-proj.iam.gserviceaccount.com",
+    "QUEUE_DEPTH_PROGRAM_B64": "cHJpbnQoMCk=",
+    "REDIS_URL": "redis://10.108.144.235:6379/0", "QUEUE_NAME": "simulation_jobs",
+    "WORKER_MIG_ZONE": "us-central1-a",
 }
 _TOKEN = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 
 
 def _render(text: str) -> str:
-    return _TOKEN.sub(lambda m: _VARS.get(m.group(1) or m.group(2), ""), text)
+    # An UNKNOWN variable is left as it was written, so the assertion below can see it. Rendering it
+    # to "" instead - which is what envsubst would do - made that assertion unfalsifiable.
+    return _TOKEN.sub(lambda m: _VARS.get(m.group(1) or m.group(2), m.group(0)), text)
 
 
 def _manifests() -> list[Path]:

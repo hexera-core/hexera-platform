@@ -1,0 +1,81 @@
+# Responsibility: Declare the pre-deploy MIGRATION job - the shipped schema applied once, before anything serves it.
+# Owns: the database this deployment migrates, named in the clear; only the password is a reference.
+# Boundaries: rendered by scripts/run-migrations.sh; it runs the same command the API entrypoint does, first.
+
+# Cloud Run MIGRATION JOB (Knative run.googleapis.com/v1). Rendered by scripts/run-migrations.sh
+# (envsubst) then applied with `gcloud run jobs replace` and executed to completion before the
+# deploy returns.
+#
+# WHY A JOB AND NOT THE API'S OWN START-UP. deploy/docker/entrypoint.sh runs the same command under
+# a Postgres advisory lock, so N cold-starting instances converge - one migrates, the rest wait and
+# no-op. That is a safety net, not a deploy step: it makes the schema move a property of whichever
+# instance won a race, at the moment a public service is already taking traffic, and a refusal
+# surfaces as instances failing to start rather than as a deploy that stopped. Running it here makes
+# the schema reach head ONCE, before any workload starts on the promoted image, with the exit code
+# attributed to the deploy. The entrypoint keeps its lock and its refusals for every path that does
+# not come through this one.
+#
+# The IMAGE IS THE APPLICATION IMAGE, by digest - the same bytes the API will run. Migrations
+# applied from a different build than the code that will read the schema is the drift this whole
+# deploy path exists to remove.
+#
+# ONE credential and it is a REFERENCE. The database is named in the clear - host, port, database,
+# user - because a spec that cannot say which database it migrated is not reviewable; the password
+# arrives as a Secret Manager reference, so the value never enters the spec, `gcloud` output, or a
+# deploy log (devtools/quality/check_deploy_secrets.py enforces exactly this).
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: ${CLOUDRUN_MIGRATE_JOB}
+  labels:
+    app: hexera
+    component: migrate
+    version: "0-0-1"
+    deployment-id: ${DEPLOYMENT_ID}
+    managed-by: deploy
+spec:
+  template:               # ExecutionTemplate
+    metadata:
+      labels:
+        app: hexera
+        component: migrate
+        deployment-id: ${DEPLOYMENT_ID}
+      annotations:
+        # Cloud SQL is reached on its PRIVATE address, which exists only inside the VPC. Direct VPC
+        # egress puts the task on that network; `private-ranges-only` keeps everything else - there
+        # is no public dependency in a migration - off it.
+        run.googleapis.com/network-interfaces: '[{"network":"${VPC_NETWORK}","subnetwork":"${VPC_SUBNET}"}]'
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+    spec:
+      parallelism: 1
+      taskCount: 1
+      template:           # TaskTemplate
+        spec:
+          serviceAccountName: ${MIGRATE_SA_EMAIL}
+          # ONE retry, unlike the mesh job's zero. The upgrade is advisory-locked and idempotent, so
+          # a retry is safe, and the failure it buys back is the transient one - a connection lost
+          # to a database that was mid-maintenance. A real refusal (unmanaged schema, unknown
+          # revision, incomplete schema) is deterministic and fails identically the second time.
+          maxRetries: 1
+          timeoutSeconds: 900
+          containers:
+            - image: ${APP_IMAGE}
+              command: ["python", "-m", "meshpipeline.runtime.migrate"]
+              env:
+                - name: POSTGRES_HOST
+                  value: "${MIGRATE_DB_HOST}"
+                - name: POSTGRES_PORT
+                  value: "${MIGRATE_DB_PORT}"
+                - name: POSTGRES_DB
+                  value: "${MIGRATE_DB_NAME}"
+                - name: POSTGRES_USER
+                  value: "${MIGRATE_DB_USER}"
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${POSTGRES_PASSWORD_SECRET}
+                      key: latest
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 1Gi

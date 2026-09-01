@@ -82,11 +82,21 @@ ambiguous target pinned explicitly. That design is already CI-shaped; nothing ca
 - **Untagged-image cleanup**, as an Artifact Registry policy. One day of builds produced six
   untagged digests and 2.4 GB.
 
-### Decision needed
+### Decided 2026-08-31
 
-Whether `main` auto-deploys to dev on every merge (fast, matches the current one-developer
-reality) or whether dev deploys are also gated on a tag. Recommend auto on merge for dev,
-tag-triggered plus approval for prod.
+Neither. Dev deploys are **manual and selective**: a `workflow_dispatch` where the operator picks
+which stacks go to the shared `hexera-dev` - the API, the worker fleet, the mesh job, migrations -
+rather than every merge shipping everything. The recommendation above was auto-on-merge; it was
+declined, and the reason is worth keeping: `hexera-dev` is shared, so an automatic deploy on merge
+takes a stack out from under whoever is using it, and most merges do not touch most stacks.
+
+Prod is **tag-triggered plus manual approval**, now enforceable rather than aspirational: the
+organisation moved to a GitHub Enterprise trial, so the `prod` environment carries a
+`required_reviewers` rule and a deployment branch policy restricted to `v*` tags. The earlier note
+that the plan's billing tier rejected protection rules (`422 ... billing plan supports the required
+reviewers protection rule`) no longer applies, and the `PROD_DEPLOY_ENABLED` repository variable
+that stood in for approval is retired - a variable an org admin can flip unreviewed is not an
+approval gate.
 
 ### Blocks
 

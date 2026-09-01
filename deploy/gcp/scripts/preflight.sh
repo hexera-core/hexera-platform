@@ -148,6 +148,20 @@ else
   pend "mesh image will be built and pushed from this repo"
 fi
 
+# The two OPTIONAL tiers, reported from configuration alone - no gcloud call, because what matters
+# here is whether this deployment DECLARED them. An undeclared tier is skipped by its stage, and a
+# skip an operator did not expect is the failure mode worth surfacing before the mutation gate.
+if [ -n "${MIGRATE_DB_HOST:-}" ]; then
+  ok "schema will be migrated on ${MIGRATE_DB_HOST}/${MIGRATE_DB_NAME:-meshpipeline} before anything runs the new image"
+else
+  pend "no hosted database declared - the pre-deploy migration is skipped (the API still migrates itself on start)"
+fi
+if [ -n "${WORKER_MIG:-}" ]; then
+  ok "queue depth will be published for ${WORKER_MIG} (${WORKER_MIG_ZONE:-zone unset})"
+else
+  pend "no worker fleet declared - the queue-depth publisher is skipped"
+fi
+
 echo
 info "Deployment summary"
 cat <<SUMMARY
@@ -156,7 +170,10 @@ cat <<SUMMARY
   Mesh job:               ${CLOUDRUN_MESH_JOB}      (private; the only deployed workload)
   Mesh exchange bucket:   gs://${GCP_MESH_BUCKET}
   Mesh runtime identity:  ${MESH_SA_EMAIL}
-  The API, the pipeline and every data store run locally and are not deployed.
+  Schema migration:       ${MIGRATE_DB_HOST:-not declared - skipped}
+  Queue-depth publisher:  ${WORKER_MIG:-not declared - skipped}
+  The API, the pipeline and every data store run wherever this deployment says they do; only
+  what is named above is provisioned here.
 SUMMARY
 
 [ "${FAIL}" -eq 0 ] || die "preflight found blocking problems - fix them before deploying"

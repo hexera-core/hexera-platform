@@ -1,0 +1,71 @@
+# Responsibility: Declare the scheduled QUEUE-DEPTH publisher - the one writer of the metric the fleet scales on.
+# Owns: the network path to the broker and the labels that identify the published series.
+# Boundaries: rendered by scripts/create-queue-depth-publisher.sh; it publishes a number and scales nothing.
+
+# Cloud Run QUEUE-DEPTH JOB (Knative run.googleapis.com/v1). Rendered by
+# scripts/create-queue-depth-publisher.sh (envsubst) then applied with `gcloud run jobs replace`.
+# Cloud Scheduler executes it on a fixed cadence; nothing else invokes it.
+#
+# WHY THIS EXISTS OFF THE FLEET. The metric was published by the workers themselves, so the fleet
+# was the only writer of the number that wakes the fleet - at zero instances there is nobody to
+# report a backlog, which is why the group's minimum is 1 today. Decision 4 of the build-out plan
+# is scale-to-zero in dev; this job is what makes a minimum of 0 recoverable.
+#
+# THE PROGRAM TRAVELS IN THE SPEC. Deployment promotes the validated application image and never
+# builds one, so a publisher that is not already inside that image cannot become a file in it. It is
+# base64-encoded into the args instead, from deploy/gcp/worker/queue_depth_publisher.py - which
+# stays the one authority for what runs, and whose sha256 the provisioning script logs. The program
+# uses only what the image ships: python, the redis client, and urllib.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: ${CLOUDRUN_QUEUE_DEPTH_JOB}
+  labels:
+    app: hexera
+    component: queue-depth
+    version: "0-0-1"
+    deployment-id: ${DEPLOYMENT_ID}
+    managed-by: deploy
+spec:
+  template:               # ExecutionTemplate
+    metadata:
+      labels:
+        app: hexera
+        component: queue-depth
+        deployment-id: ${DEPLOYMENT_ID}
+      annotations:
+        # Memorystore answers on a private address only. Direct VPC egress puts the task on the
+        # network the broker lives on; the Monitoring API it writes to is a Google API, reached
+        # without leaving `private-ranges-only`.
+        run.googleapis.com/network-interfaces: '[{"network":"${VPC_NETWORK}","subnetwork":"${VPC_SUBNET}"}]'
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+    spec:
+      parallelism: 1
+      taskCount: 1
+      template:           # TaskTemplate
+        spec:
+          serviceAccountName: ${QUEUE_DEPTH_SA_EMAIL}
+          # NO retry. The next scheduled invocation is a minute away and publishes a fresher number
+          # than a retry of this one would; the autoscaler wants the current depth, not a replay of
+          # a stale one. A failed execution is visible as a failed execution, which is the point.
+          maxRetries: 0
+          timeoutSeconds: 60
+          containers:
+            - image: ${APP_IMAGE}
+              command: ["python", "-c"]
+              args: ["import base64;exec(base64.b64decode('${QUEUE_DEPTH_PROGRAM_B64}').decode())"]
+              env:
+                - name: REDIS_URL
+                  value: "${REDIS_URL}"
+                - name: QUEUE_NAME
+                  value: "${QUEUE_NAME}"
+                # The two labels that make the published series findable by exactly one autoscaler
+                # filter. They are deployment identity, not tuning.
+                - name: METRIC_NAMESPACE
+                  value: "${DEPLOYMENT_ID}"
+                - name: METRIC_LOCATION
+                  value: "${WORKER_MIG_ZONE}"
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 512Mi

@@ -7,7 +7,10 @@
 # tooling OWNS (created) versus REUSES (supplied), so diagnostics, reruns and upgrades act on
 # recorded ownership rather than on a guessed prefix or operator memory.
 #
-# It describes the mesh executor only. The application runs locally and has no deployed state.
+# It describes what THIS tooling provisioned: the mesh executor, and the two tiers a deployment may
+# declare beside it - the migration job that moved the schema, and the queue-depth publisher the
+# worker fleet scales on. A tier this deployment does not declare is absent from the manifest rather
+# than recorded as empty.
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -21,6 +24,7 @@ mkdir -p "${OUT_DIR}"
 OUT="${OUT_DIR}/deployment.json"
 
 MESH_DIGEST="$(resolve_digest "${MESH_IMAGE:-}" 2>/dev/null || printf '%s' "${MESH_IMAGE:-}")"
+APP_DIGEST="$(resolve_digest "${APP_IMAGE:-}" 2>/dev/null || printf '%s' "${APP_IMAGE:-}")"
 
 python3 - "${OUT}" <<PY
 import datetime, json, sys
@@ -39,8 +43,24 @@ doc = {
     "exchange_bucket":      {"name": "${GCP_MESH_BUCKET}",    "disposition": "${MESH_BUCKET_DISPOSITION}"},
     "mesh_service_account": {"name": "${MESH_SA_EMAIL}",      "disposition": "${MESH_SA_DISPOSITION}"},
   },
-  "images": {"mesh": "${MESH_DIGEST}"},
+  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}"},
 }
+if "${MIGRATE_DB_HOST:-}":
+  doc["resources"]["migration_job"] = {
+    "name": "${CLOUDRUN_MIGRATE_JOB:-}", "disposition": "created",
+    # The database is recorded by ADDRESS and never by URL: a DSN would carry the credential this
+    # manifest exists to prove it does not hold.
+    "database": "${MIGRATE_DB_HOST:-}:${MIGRATE_DB_PORT:-5432}/${MIGRATE_DB_NAME:-}",
+    "password_secret": "${POSTGRES_PASSWORD_SECRET:-}",
+  }
+if "${WORKER_MIG:-}":
+  doc["resources"]["queue_depth_job"] = {
+    "name": "${CLOUDRUN_QUEUE_DEPTH_JOB:-}", "disposition": "created",
+    "schedule": "${QUEUE_DEPTH_SCHEDULE:-}", "queue": "${QUEUE_NAME:-}",
+    "scales": "${WORKER_MIG:-}", "zone": "${WORKER_MIG_ZONE:-}",
+    "replicas": "${WORKER_MIG_MIN_REPLICAS:-}..${WORKER_MIG_MAX_REPLICAS:-}",
+    "jobs_per_instance": "${WORKER_JOBS_PER_INSTANCE:-}",
+  }
 json.dump(doc, open(out, "w"), indent=2)
 print(out)
 PY

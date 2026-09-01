@@ -25,6 +25,8 @@ _PRICES: dict[str, tuple[float, float, float]] = {
 # price could not be confirmed on DeepInfra's catalogue during the Gate-1 audit (only the
 # -Instruct variant was listed). Guessing it would fabricate cost evidence. It prices at 0.0 and
 # logs a warning until the id and price are confirmed - see the Gate-1 open item.
+# unpriced_route_models() below answers which configured models this affects, so the omission is
+# a listable fact rather than a log line somebody has to be watching for.
 
 _warned: set[str] = set()
 
@@ -34,14 +36,34 @@ _warned: set[str] = set()
 _OVERRIDE_SETTING = "MODEL_PRICE_OVERRIDES"
 
 
-def price_for(provider: str, model: str) -> tuple[float, float, float]:
+def _declared_price(provider: str, model: str) -> tuple[float, float, float] | None:
+    # The lookup WITHOUT the warning, so asking "is this model priced?" is not itself a report
+    # that it is unpriced. None means no confirmed price exists - never (0.0, 0.0, 0.0), which is
+    # a real answer for a free model and must stay distinguishable from the absence of one.
     from meshpipeline.settings.inference_overrides import price_overrides
     key = f"{provider}:{model}"
     override = price_overrides().get(key)
     if override is not None:
         return override
-    if key in _PRICES:
-        return _PRICES[key]
+    return _PRICES.get(key)
+
+
+def unpriced_route_models() -> list[str]:
+    # THE machine-detectable form of the gap. An unpriced model does not fail: it meters at $0.00,
+    # so the deployment under-bills silently and the telemetry looks healthy. Pricing is measured
+    # resource cost, so a caller - an operator, a release gate, a test - has to be able to ask
+    # which configured models are metering at zero before that number reaches an invoice.
+    from meshpipeline.settings.routes import configured_route_targets
+    return sorted({f"{provider}:{model}"
+                   for _, _, provider, model in configured_route_targets()
+                   if _declared_price(provider, model) is None})
+
+
+def price_for(provider: str, model: str) -> tuple[float, float, float]:
+    key = f"{provider}:{model}"
+    declared = _declared_price(provider, model)
+    if declared is not None:
+        return declared
     if key not in _warned:
         _warned.add(key)
         logger.warning(
