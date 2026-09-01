@@ -55,11 +55,44 @@ if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/de
     "https://cloudresourcemanager.googleapis.com/v1/projects/${GCP_PROJECT_ID}:testIamPermissions" \
     -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
     -d "{\"permissions\":[${PERM_LIST}]}" 2>/dev/null || true)"
+  # WHICH permissions this run actually needs. A permission to CREATE something is required only
+  # when this run will create it, and discovery has already decided that: bootstrap-env.sh records
+  # a disposition of `created` or `reused` per resource. Asserting the create permissions
+  # unconditionally demanded effective project-ownership from every caller, including an automation
+  # identity whose whole point is to hold less than that - and it failed a reuse-run for a
+  # permission the run would never exercise. Required-ness is derived, not listed.
+  _needed() {  # _needed <permission> -> 0 if this run needs it
+    case "$1" in
+      # Always: the deploy updates the service and its IAM, and acts as the runtime identity.
+      run.services.setIamPolicy|run.services.create|run.services.update|iam.serviceAccounts.actAs) return 0 ;;
+      # enable-apis.sh runs every time and is idempotent, but only mutates when one is off.
+      serviceusage.services.enable) [ -n "${_APIS_MISSING:-}" ] && return 0 || return 1 ;;
+      run.jobs.create)                       [ "${MESH_JOB_DISPOSITION:-created}"    = created ] ;;
+      storage.buckets.create)                [ "${MESH_BUCKET_DISPOSITION:-created}" = created ] ;;
+      iam.serviceAccounts.create)            [ "${MESH_SA_DISPOSITION:-created}"     = created ] ;;
+      artifactregistry.repositories.create)  [ -z "${_AR_EXISTS:-}" ] ;;
+      # apply-iam.sh grants project-level bindings only when it has an invoker to bind.
+      resourcemanager.projects.setIamPolicy) [ -n "${MESH_INVOKER:-}" ] ;;
+      *) return 0 ;;
+    esac
+  }
+  # Facts the derivation above reads, gathered once.
+  _AR_EXISTS="$(gc artifacts repositories describe "${ARTIFACT_REGISTRY_REPOSITORY:-mesh}" \
+      --location "${GCP_REGION}" --format='value(name)' 2>/dev/null || true)"
+  _APIS_MISSING=""
+  for _api in run.googleapis.com artifactregistry.googleapis.com storage.googleapis.com \
+              iam.googleapis.com iamcredentials.googleapis.com; do
+    gc services list --enabled --filter="config.name=${_api}" --format='value(config.name)' \
+      2>/dev/null | grep -q "${_api}" || _APIS_MISSING="yes"
+  done
+
   for perm in run.services.setIamPolicy run.services.create run.jobs.create \
-              artifactregistry.repositories.create secretmanager.secrets.create \
+              artifactregistry.repositories.create \
               storage.buckets.create serviceusage.services.enable \
               resourcemanager.projects.setIamPolicy iam.serviceAccounts.create; do
-    if printf '%s' "${GRANTED}" | grep -q "\"${perm}\""; then
+    if ! _needed "${perm}"; then
+      pend "permission not required for this run: ${perm}"
+    elif printf '%s' "${GRANTED}" | grep -q "\"${perm}\""; then
       ok "permission: ${perm}"
     elif [ "${perm}" = "run.services.setIamPolicy" ]; then
       bad "permission MISSING: ${perm} - without it the API service cannot be made public. Grant roles/run.admin to ${ACCOUNT} (roles/editor does NOT include setIamPolicy)."

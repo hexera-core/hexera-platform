@@ -1,0 +1,226 @@
+# Responsibility: Ship what landed on main - Gate C on the merge commit, publish those exact images, then provision by digest.
+# Owns: the pinned action digests, the federated identity each environment deploys as, and every deployment target it pins.
+# Boundaries: it builds nothing of its own and touches no cloud resource directly; deploy/gcp/scripts/deploy.sh owns every mutation.
+
+name: Deploy
+
+# THE WHOLE CREDENTIAL STORY. GitHub mints a short-lived OIDC token (id-token: write), Google
+# exchanges it for a short-lived access token through Workload Identity Federation, and the
+# repository holds NO service-account key: there is nothing here to leak and nothing to rotate.
+# `contents: read` is the checkout, and nothing beyond it - a deploy has no reason to write to
+# the repository. Item 9 of the build-out plan blocks this item precisely because a JSON key in
+# a GitHub secret was the alternative.
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  push:
+    # dev auto-deploys on merge to main; prod is tag-triggered AND gated on the `prod`
+    # environment's manual approval, so a tag alone never ships (platform-buildout-plan.md,
+    # section 1 "Decision needed" and the Decisions section).
+    branches: [main]
+    tags: ["v*"]
+
+# A deploy MUTATES a cloud project through a 12-stage provisioner. Cancelling one mid-flight
+# leaves the project half-reconciled - the stages are individually idempotent, the sequence is
+# not resumable from an arbitrary point - so runs QUEUE behind each other instead of replacing
+# each other. This is deliberately the opposite of ci.yml, where cancelling a superseded run of
+# a read-only gate costs nothing.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Which environment this ref deploys to, and every target that environment is pinned to.
+  # Split out from the deploy job so the answer is computed ONCE and the deploy job can name the
+  # GitHub environment it runs under - which is what applies the environment's protection rules.
+  target:
+    name: Resolve the deployment target
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.pick.outputs.environment }}
+      deployment_id: ${{ steps.pick.outputs.deployment_id }}
+      project: ${{ steps.pick.outputs.project }}
+      region: ${{ steps.pick.outputs.region }}
+      mesh_job: ${{ steps.pick.outputs.mesh_job }}
+      mesh_bucket: ${{ steps.pick.outputs.mesh_bucket }}
+      ar_repository: ${{ steps.pick.outputs.ar_repository }}
+      registry: ${{ steps.pick.outputs.registry }}
+      wif_provider: ${{ steps.pick.outputs.wif_provider }}
+      deployer_sa: ${{ steps.pick.outputs.deployer_sa }}
+    steps:
+      - id: pick
+        # The one repository variable this workflow reads is passed through the environment, never
+        # interpolated into the script body: a `${{ }}` expansion inside a shell line is a value
+        # that becomes code.
+        env:
+          PROD_DEPLOY_ENABLED: ${{ vars.PROD_DEPLOY_ENABLED }}
+        # Every target is a LITERAL here rather than a repository variable. deploy.sh under
+        # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
+        # value editable in the GitHub settings UI without a review IS ambient configuration -
+        # it just lives somewhere else. Reviewing a deploy target then means reviewing a diff.
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            {
+              echo "environment=dev"
+              echo "deployment_id=dev"
+              echo "project=hexera-dev"
+              echo "region=us-central1"
+              echo "mesh_job=dev-mesh"
+              echo "mesh_bucket=dev-exchange-224734058693"
+              echo "ar_repository=mesh"
+              echo "registry=us-central1-docker.pkg.dev/hexera-dev/mesh"
+              echo "wif_provider=projects/224734058693/locations/global/workloadIdentityPools/github-actions/providers/github"
+              echo "deployer_sa=github-deployer@hexera-dev.iam.gserviceaccount.com"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A release tag. hexera-prod is stood up ON THE FIRST RELEASE and not before
+          # (platform-buildout-plan.md, Decisions 1). The project today has no workload identity
+          # pool, no deployer identity, no Artifact Registry repository and no mesh job, so a run
+          # here would not be a deploy - it would be a first provisioning run under an identity
+          # that does not exist. The target is STATED so the shape is reviewable, and refuses
+          # until someone stands prod up and sets the repository variable PROD_DEPLOY_ENABLED.
+          if [ "${PROD_DEPLOY_ENABLED:-}" != "true" ]; then
+            echo "::error::hexera-prod is not stood up yet (platform-buildout-plan.md, Decisions 1). Provision the prod WIF pool, provider and github-deployer service account, then set the repository variable PROD_DEPLOY_ENABLED=true. Nothing was deployed."
+            exit 1
+          fi
+          {
+            echo "environment=prod"
+            echo "deployment_id=prod"
+            echo "project=hexera-prod"
+            echo "region=us-central1"
+            echo "mesh_job=prod-mesh"
+            echo "mesh_bucket=prod-exchange-688073002171"
+            echo "ar_repository=mesh"
+            echo "registry=us-central1-docker.pkg.dev/hexera-prod/mesh"
+            echo "wif_provider=projects/688073002171/locations/global/workloadIdentityPools/github-actions/providers/github"
+            echo "deployer_sa=github-deployer@hexera-prod.iam.gserviceaccount.com"
+          } >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Gate C, publish, provision (${{ needs.target.outputs.environment }})
+    needs: target
+    runs-on: ubuntu-latest
+    # The GitHub environment is what carries the protection rules: `dev` is branch-restricted to
+    # main and deploys without approval; `prod` is where the required reviewers live. Naming it
+    # here is what makes a run wait for them.
+    environment:
+      name: ${{ needs.target.outputs.environment }}
+    # Gate C builds the app image AND the mesh image (OpenFOAM + vmtk + gmsh), then runs the
+    # five-engine native terminal matrix against real Postgres/Redis/MinIO. It is measured in
+    # tens of minutes, not minutes; the default 360 is left as the ceiling this stays under.
+    timeout-minutes: 300
+    env:
+      # The pinned deployment targets, exported for the whole job because discovery
+      # (deploy/gcp/scripts/bootstrap-env.sh) reads them from the environment and DEPLOY_NONINTERACTIVE
+      # refuses to proceed without all four.
+      GCP_PROJECT_ID: ${{ needs.target.outputs.project }}
+      GCP_REGION: ${{ needs.target.outputs.region }}
+      CLOUDRUN_MESH_JOB: ${{ needs.target.outputs.mesh_job }}
+      GCP_MESH_BUCKET: ${{ needs.target.outputs.mesh_bucket }}
+      # Not required by the non-interactive guard, but pinned for the same reason: left to their
+      # defaults they are derived from the project id, and the live resources carry
+      # deployment-id=dev labels that a derived `hexera-dev` would silently rewrite.
+      DEPLOYMENT_ID: ${{ needs.target.outputs.deployment_id }}
+      ARTIFACT_REGISTRY_REPOSITORY: ${{ needs.target.outputs.ar_repository }}
+    steps:
+      # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
+      # that exact commit to stage the native fixtures. Full history so the worktree and the
+      # record's commit/tree assertions have everything they name.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          fetch-depth: 0
+
+      # A stock runner has ~14 GB free; the mesh image alone (OpenFOAM 2412 + vmtk + gmsh) is
+      # several of them, and Gate C builds the app image beside it. These four toolchains are
+      # preinstalled on the image and are used by nothing in this repository.
+      - name: Reclaim runner disk for the image builds
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      # envsubst (gettext-base) is a hard requirement of deploy.sh - it stops with one instruction
+      # without it, three stages in. Installed up front so the run fails on the runner image, not
+      # on the deploy.
+      - name: Install the deploy driver's host tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gettext-base
+
+      - id: python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      # The same single pinned environment ci.yml installs. Gate C runs the UI suite on the host
+      # against the containerised app image, so the host needs the test dependencies; no version
+      # is named here, for the same reason ci.yml names none.
+      - run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+      - name: Install the meshpipeline distribution (editable)
+        run: pip install -e . --no-deps
+
+      # WORKLOAD IDENTITY FEDERATION. No `credentials_json`, no key file, no long-lived secret:
+      # the provider below only accepts tokens whose `repository` claim is this repository, and
+      # the service account only accepts impersonation from that same principal set.
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: ${{ needs.target.outputs.wif_provider }}
+          service_account: ${{ needs.target.outputs.deployer_sa }}
+      # deploy.sh is a gcloud program; the auth step above only produces the credentials it uses.
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+
+      # release-publish pushes with `docker push`, which needs the credential helper for this
+      # registry host. create-artifact-registry.sh configures it too, but that runs INSIDE the
+      # deploy - after publication - so the helper has to exist before Gate C's push, not after.
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      # GATE C, part 1. Builds the deployable images ONCE from this commit and validates THOSE
+      # artifacts - wheel provenance, both app entrypoints, the mesh toolchain, the vendored
+      # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
+      # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
+      # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
+      - name: Gate C - release-validate (build once, validate the artifact)
+        env:
+          RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: make release-validate
+
+      # GATE C, part 2. Pushes the exact image objects that were just validated - never a rebuild -
+      # and folds the immutable registry digest each push produced into deploy/output/release.json.
+      # The registry is pinned rather than discovered: discovery writes deploy/gcp/generated.env,
+      # which does not exist yet on a fresh runner (the deploy step below is what creates it).
+      - name: Gate C - release-publish (push those exact images, record their digests)
+        env:
+          RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+          RELEASE_REGISTRY: ${{ needs.target.outputs.registry }}
+        run: make release-publish
+
+      # THE ONLY CLOUD MUTATION. deploy.sh is interactive by default - it prints a plan and makes
+      # the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its documented automation
+      # path, which then requires every ambiguous target pinned explicitly (the four exported at
+      # job level). It promotes the digest release-publish just recorded; it never builds.
+      #
+      # MESH_INVOKER is deliberately unset: the invoker binding names the principal that SUBMITS
+      # mesh jobs, which is the application's runtime identity, not this deployer. Setting it here
+      # would grant the CI identity a standing right to execute jobs it only exists to provision.
+      - name: Provision the deployment (deploy/gcp/scripts/deploy.sh, non-interactive)
+        env:
+          DEPLOY_NONINTERACTIVE: "1"
+        run: bash deploy/gcp/scripts/deploy.sh
+
+      # The two records that say what was validated and what is actually deployed, kept as build
+      # outputs. Both are gitignored machine state, and the live drift they exist to prevent is
+      # already documented: deployment.json names one mesh digest while the job runs another.
+      - name: Publish the release and deployment records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: deploy-records-${{ needs.target.outputs.environment }}-${{ github.sha }}
+          path: |
+            deploy/output/release.json
+            deploy/output/deployment.json
+          if-no-files-found: warn
+          retention-days: 90
