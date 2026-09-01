@@ -608,11 +608,48 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
     return {"names": names, "features": feats}
 
 
+#: Minimum castellation cells across a port opening. Below ~4 the octree can seal the
+#: opening entirely (the corpus's biggest failure cluster - 21 episodes died at the
+#: manifest gate with a zero-face port); 6 leaves margin for snapping to eat one each side.
+PORT_MIN_CELLS_ACROSS = 6
+
+
+def _port_levels(*, base_cell: float, default_level: int, smin: int,
+                 port_sizes: dict[str, float] | None,
+                 sealed_before: frozenset[str] | set[str] = frozenset(),
+                 hard_max: int = 10) -> dict[str, int]:
+    """Per-port refinement levels sized from EACH port's own opening diameter.
+
+    The base cell is sized from the inlet bore, so a part whose other ports are much
+    smaller gets port cells bigger than those openings - castellation then seals them.
+    Each port's level is raised until its local cell (base_cell / 2^level) puts at least
+    PORT_MIN_CELLS_ACROSS cells across ITS diameter. A port that still sealed on the
+    previous attempt in this workspace gets one level more. Clamped to smin+4 so a
+    pinhole cannot detonate the cell budget - the clamp is logged as unmet need.
+    """
+    ceiling = min(hard_max, smin + 4)
+    out: dict[str, int] = {}
+    for key, dia in (port_sizes or {}).items():
+        lvl = default_level
+        if dia and dia > 0:
+            needed = math.ceil(math.log2(max(base_cell * PORT_MIN_CELLS_ACROSS / dia, 1.0)))
+            lvl = max(default_level, needed)
+        if key in sealed_before:
+            lvl += 1
+        clamped = max(1, min(ceiling, lvl))
+        if clamped < lvl:
+            logger.warning("_port_levels: port '%s' (Ø%.2g m) needs level %d but is clamped "
+                           "to %d - the opening may still be under-resolved", key, dia, lvl, clamped)
+        out[key] = clamped
+    return out
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
                          max_cells: int = 8_000_000, quality: str = "balanced",
-                         wall_key: str = "wall") -> dict:
+                         wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
+                         sealed_before: frozenset[str] | set[str] = frozenset()) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -634,6 +671,11 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     smin = smax = min(_HARD_MAX_LEVEL, int(surface_level) + deficit)
     flevel = min(_HARD_MAX_LEVEL, max(smax, int(feature_level) + deficit))
     port_level = max(1, smin - 1)                 # ports resolved, one below the wall
+    # ... except where a port's OWN opening is too small for that: each port's level is
+    # sized from its own diameter so castellation cannot seal it (the 21-episode cluster).
+    port_lvls = _port_levels(base_cell=base_cell, default_level=port_level, smin=smin,
+                             port_sizes=port_sizes, sealed_before=sealed_before,
+                             hard_max=_HARD_MAX_LEVEL)
     near_dist = max(3.0 * base_cell, 0.08 * maxext)
     near_level = min(_HARD_MAX_LEVEL, smax + 1)
     max_cells = int(max_cells)
@@ -660,12 +702,29 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
 
     geom = "".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
                    for p in names)
-    feat_entries = "".join(f'{{ file "{features[p]}"; level {flevel}; }} ' for p in names)
+    # a small port's rim must be feature-snapped at least as finely as its surface is
+    # refined, or snapping re-opens the very cells the refinement just won
+    feat_entries = "".join(
+        f'{{ file "{features[p]}"; level {max(flevel, port_lvls.get(p, 0))}; }} '
+        for p in names)
     wall = names[wall_key]
     refine_surfs = (f"{wall} {{ level ({smin} {smax}); patchInfo {{ type wall; }} }} "
-                    + "".join(f"{names[p]} {{ level ({port_level} {port_level}); "
+                    + "".join(f"{names[p]} {{ level ({port_lvls.get(p, port_level)} "
+                              f"{port_lvls.get(p, port_level)}); "
                               f"patchInfo {{ type patch; }} }} "
                               for p in names if p != wall_key))
+    # volume refinement near each SMALL port: surface levels alone act at the surface, but
+    # the cells that decide whether the opening survives castellation live in a band around
+    # it - refine within a few port-cells of any port raised above the default level
+    port_regions = ""
+    for p in names:
+        if p == wall_key:
+            continue
+        lvl = port_lvls.get(p, port_level)
+        if lvl > port_level:
+            band = max(4.0 * base_cell / (2 ** lvl), 0.5 * float((port_sizes or {}).get(p) or 0))
+            port_regions += (f"{names[p]} {{ mode distance; "
+                             f"levels (({band:.6g} {lvl})); }} ")
 
     if quality == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
@@ -678,7 +737,7 @@ geometry {{ {geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
-  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} }}
+  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}}}
   locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -696,4 +755,5 @@ mergeTolerance 1e-6; debug 0;
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
             "location_in_mesh": [round(x, 5) for x in interior_point], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
-            "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values())}
+            "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
+            "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names}}

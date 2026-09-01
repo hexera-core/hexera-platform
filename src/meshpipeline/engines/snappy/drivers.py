@@ -494,6 +494,14 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # constant. With a binding it is the DECLARED inlet's area (the guess is dead there).
     _inlet_area = _bore_area_m2(t) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
+    # EVERY port's own diameter, for per-port refinement: the base cell is sized from the
+    # inlet bore, and a much smaller side port seals over at that size (the corpus's
+    # biggest failure cluster). Ring ports size by their inner opening, not the metal.
+    _port_sizes: dict = {}
+    for _nm, _rec in (t.get("openings") or {}).items():
+        _a = float((_rec.get("opening") or {}).get("area") or _rec.get("area") or 0.0)
+        if _a > 0:
+            _port_sizes[_nm] = 2.0 * _math.sqrt(_a / _math.pi)
     # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
     # and that is wrong for every diffusing or combining part, where the feed is not the widest
     # port. The geometry alone often cannot settle it: a wye is a wye whether flow splits or joins.
@@ -587,13 +595,19 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run)
+            try:
+                _sealed_before = set(_json.loads(
+                    (workspace / ".sealed_ports.json").read_text()))
+            except Exception:  # noqa: BLE001 - absent on a clean first attempt
+                _sealed_before = set()
             summary = R.render_internal_case(
                 workspace, names=prep["names"], features=prep["features"],
                 wall_key=_wall_key,
                 interior_point=t["interior_point"], bbox_min=t["bbox_min"],
                 bbox_max=t["bbox_max"], base_cell=base_cell, surface_level=surface_level,
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
-                max_cells=_budget, quality=quality)
+                max_cells=_budget, quality=quality,
+                port_sizes=_port_sizes, sealed_before=_sealed_before)
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers",
@@ -608,6 +622,32 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             wall_faces = int(fc.get(prep["names"][_wall_key], 0))
             production, reason = _judge_snappy(result, q, wall_faces)
             last_valid = bool(result.get("rc") == 0 and wall_faces > 0 and not q.get("fatal"))
+            # A mesh that carved over a declared port is NOT usable - it dies later at the
+            # manifest gate ("zero faces") after burning review budget, and it must never be
+            # the exhausted-path submission. Judge it HERE, name the port, and record it so
+            # the next pass raises that port's local refinement. Only judged when a mesh
+            # actually exists - on a crashed run every count is zero and says nothing.
+            if result.get("rc") == 0 and (q.get("cells") or 0) > 0:
+                _sealed_now = [p for p in prep["names"] if p != _wall_key
+                               and int(fc.get(prep["names"][p], 0)) == 0]
+                if _sealed_now:
+                    try:
+                        _prev_sealed = set(_json.loads(
+                            (workspace / ".sealed_ports.json").read_text()))
+                    except Exception:  # noqa: BLE001
+                        _prev_sealed = set()
+                    (workspace / ".sealed_ports.json").write_text(
+                        _json.dumps(sorted(_prev_sealed | set(_sealed_now))))
+                    _dias = ", ".join(
+                        f"{p} (Ø{_port_sizes.get(p, 0.0) * 1000:.1f} mm)"
+                        for p in _sealed_now)
+                    production = False
+                    last_valid = False
+                    reason = (f"port(s) sealed over during castellation - zero faces on "
+                              f"{_dias}. The opening is smaller than the local cells; "
+                              f"its refinement is raised for the next pass")
+                else:
+                    (workspace / ".sealed_ports.json").unlink(missing_ok=True)
             run.note_native_run(produced_usable_mesh=last_valid)
         except (_fence.StaleWorkerFenced, StaleExecutionPublish):
             raise                      # supersession stops the invocation; see the external build
