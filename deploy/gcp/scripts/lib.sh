@@ -30,10 +30,29 @@ export DEPLOY_DIR REPO_ROOT   # used by every sourcing script
 load_env() {
   local file="${DEPLOY_ENV_FILE:-${DEPLOY_DIR}/generated.env}"
   [ -f "${file}" ] || die "generated config '${file}' not found - it is created by discovery; run: make bootstrap"
+  # What the CALLER asked for, captured before the file can overwrite it. `set -a; . file` makes
+  # every assignment in the file win over the environment, so exporting GCP_PROJECT_ID and running
+  # a provisioner silently operated on whichever project the file was generated for. That is not a
+  # cosmetic mix-up: standing up prod while generated.env still describes dev pointed every step at
+  # dev, and the run reported success.
+  local _requested="${GCP_PROJECT_ID:-}"
   set -a
   # shellcheck disable=SC1090
   . "${file}"
   set +a
+  # A DISAGREEMENT IS AN ERROR, not something to resolve by preferring one side. The file's other
+  # values - bucket, job, service-account and registry names - were all discovered for its own
+  # project, so honouring an overriding GCP_PROJECT_ID would build a deployment out of one
+  # project's identity and another's resource names. Regenerating is the supported way to move.
+  if [ -n "${_requested}" ] && [ "${_requested}" != "${GCP_PROJECT_ID}" ]; then
+    die "GCP_PROJECT_ID=${_requested} was requested, but $(basename "${file}") describes ${GCP_PROJECT_ID}.
+  Every other name in that file - bucket, job, service account, registry - belongs to
+  ${GCP_PROJECT_ID}, so this run would mix one project's identity with another's resources.
+  Point at the other project with its own file:
+    DEPLOY_ENV_FILE=<path> ...
+  or rediscover for ${_requested}:
+    GCP_PROJECT_ID=${_requested} bash scripts/bootstrap-env.sh --force"
+  fi
   # derived values used across scripts
   MESH_SA_EMAIL="${MESH_SERVICE_ACCOUNT}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   export MESH_SA_EMAIL

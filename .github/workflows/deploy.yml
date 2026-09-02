@@ -62,11 +62,6 @@ jobs:
       worker_mig_zone: ${{ steps.pick.outputs.worker_mig_zone }}
     steps:
       - id: pick
-        # The one repository variable this workflow reads is passed through the environment, never
-        # interpolated into the script body: a `${{ }}` expansion inside a shell line is a value
-        # that becomes code.
-        env:
-          PROD_DEPLOY_ENABLED: ${{ vars.PROD_DEPLOY_ENABLED }}
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
         # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
         # value editable in the GitHub settings UI without a review IS ambient configuration -
@@ -105,11 +100,12 @@ jobs:
           # pool, no deployer identity, no Artifact Registry repository and no mesh job, so a run
           # here would not be a deploy - it would be a first provisioning run under an identity
           # that does not exist. The target is STATED so the shape is reviewable, and refuses
-          # until someone stands prod up and sets the repository variable PROD_DEPLOY_ENABLED.
-          if [ "${PROD_DEPLOY_ENABLED:-}" != "true" ]; then
-            echo "::error::hexera-prod is not stood up yet (platform-buildout-plan.md, Decisions 1). Provision the prod WIF pool, provider and github-deployer service account, then set the repository variable PROD_DEPLOY_ENABLED=true. Nothing was deployed."
-            exit 1
-          fi
+          # until prod is stood up. What ENFORCES that is the `prod` GitHub environment: it carries
+          # a required-reviewers rule and a deployment branch policy restricted to v* tags, so a run
+          # reaching this point waits for a human before it touches anything. The repository
+          # variable that used to stand in for approval is gone - an org admin could flip it
+          # unreviewed, which is not an approval gate (platform-buildout-plan.md, Decided
+          # 2026-08-31).
           {
             echo "environment=prod"
             echo "deployment_id=prod"
