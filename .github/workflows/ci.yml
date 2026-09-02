@@ -11,11 +11,11 @@ name: CI
 
 # Least privilege, stated. security-events is what lets CodeQL upload its SARIF; nothing here
 # writes contents, packages or statuses.
+# Default for EVERY lane: read the repository and nothing else. The two lanes that upload code
+# scanning results ask for security-events themselves - granting it workflow-wide would hand
+# twelve jobs, most of which run third-party actions, a token that can write security findings.
 permissions:
   contents: read
-  actions: read
-  security-events: write
-  pull-requests: read
 
 on:
   push:
@@ -118,6 +118,9 @@ jobs:
   workflow-audit:
     name: Workflow audit
     needs: [preflight]
+    permissions:
+      contents: read
+      security-events: write
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -236,11 +239,17 @@ jobs:
           pip install pip-audit
           # --skip-editable: meshpipeline is installed from this checkout and is not published,
           # so auditing it is a PyPI lookup that cannot succeed. Its dependencies still are.
-          pip-audit --strict --skip-editable --progress-spinner off
+          # No --strict: it fails on any distribution that could not be audited, which
+          # includes the editable meshpipeline that --skip-editable deliberately skips.
+          # A real advisory still fails this lane on its own exit code.
+          pip-audit --skip-editable --progress-spinner off
 
   codeql:
     name: CodeQL
     needs: [preflight]
+    permissions:
+      contents: read
+      security-events: write
     if: needs.preflight.outputs.run_python == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
