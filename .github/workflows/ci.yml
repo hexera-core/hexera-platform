@@ -323,86 +323,17 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
-      - name: Resolve the authoritative product version
-        run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
-      # Only the pipeline target: this tier never touches the mesh image, and building OpenFOAM
-      # to run a database test would be the slowest thing in CI for no coverage.
-      - name: Build pipeline target
-        run: docker build --target pipeline --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-pipeline:ci .
-      # The integration tier runs the REAL graph/celery/pyvista + a REAL Redis + a REAL Postgres
-      # + a REAL MinIO - the boundary the hermetic unit tier stubs. It runs INSIDE the pipeline
-      # image just built above (no second build) with the suite bind-mounted (the wheel ships the
-      # package, not the tests), as its own pytest session (the tier conftest fails loudly on
-      # unit-stub contamination). Redis, Postgres AND MinIO are PROVISIONED, not skipped: the
-      # migration wrapper test drives the real production run_migrations() against Postgres and the
-      # artifact-delivery test drives real fault-injected uploads against MinIO - both FAIL (never
-      # skip) if their service is unavailable. A skipped DB test is exactly what let an unbootable
-      # API through, and a skipped MinIO test is exactly what let a false artifact success through.
-      # Any skip other than the one test that needs licensed 3D CAD a clean clone never has FAILS
-      # the job.
-      - name: Integration tier (real Redis + real Postgres + real MinIO, inside the pipeline image) - BLOCKING
-        run: |
-          set -euo pipefail
-          docker network create ci-net
-          docker run -d --name ci-redis --network ci-net redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
-          docker run -d --name ci-postgres --network ci-net \
-            -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh postgres:16-alpine
-          # MinIO: the SAME pinned image the local stack uses. Deterministic test-only credentials.
-          docker run -d --name ci-minio --network ci-net \
-            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
-          for _ in $(seq 1 20); do
-            if docker run --rm --network ci-net redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99 redis-cli -h ci-redis ping 2>/dev/null | grep -q PONG; then break; fi
-            sleep 1
-          done
-          for _ in $(seq 1 30); do
-            if docker exec ci-postgres pg_isready -U mesh >/dev/null 2>&1; then break; fi
-            sleep 1
-          done
-          # Health-check MinIO on its S3 endpoint before tests begin; FAIL if it never comes up.
-          minio_ok=""
-          for _ in $(seq 1 30); do
-            if docker run --rm --network ci-net --entrypoint curl curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 \
-                 -sf http://ci-minio:9000/minio/health/ready >/dev/null 2>&1; then minio_ok=1; break; fi
-            sleep 1
-          done
-          if [ -z "$minio_ok" ]; then
-            echo "::error::MinIO did not become healthy - the artifact-delivery integration tests cannot run"
-            docker logs ci-minio || true
-            docker rm -f ci-redis ci-postgres ci-minio >/dev/null 2>&1 || true
-            docker network rm ci-net >/dev/null 2>&1 || true
-            exit 1
-          fi
-          # PROVISION a disposable database for this run. The tier drops and rebuilds the public
-          # schema on every test, so it refuses any database that cannot PROVE it belongs to this
-          # run - tests/disposable_database.py stamps a marker inside the storage itself. This step
-          # used to hand the suite a plain `mesh` database with no marker and no MESH_TEST_RUN_ID,
-          # so every one of those tests errored on NotDisposableError and the tier has never
-          # actually run in CI. run_disposable.sh does this locally through compose; here the same
-          # provision() call runs inside the image that already has SQLAlchemy.
-          RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
-          TASK_DB="$(docker run --rm --network ci-net \
-            -e MESH_TEST_RUN_ID="$RUN_ID" \
-            -v "$PWD/tests:/srv/tests:ro" -w /srv --entrypoint python meshpipeline-pipeline:ci \
-            -c "import sys; sys.path.insert(0, '/srv'); from tests.disposable_database import provision; print(provision('postgresql://mesh:x@ci-postgres:5432/mesh', '$RUN_ID').database)")"
-          echo "provisioned disposable database: $TASK_DB (run $RUN_ID)"
-          docker run --rm --network ci-net \
-            -e REDIS_URL=redis://ci-redis:6379/0 \
-            -e MESH_TEST_RUN_ID="$RUN_ID" \
-            -e POSTGRES_HOST=ci-postgres -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB="$TASK_DB" \
-            -e MINIO_ENDPOINT=ci-minio:9000 -e MINIO_ACCESS_KEY=minioadmin -e MINIO_SECRET_KEY=minioadmin \
-            -e MINIO_BUCKET=ci-test-jobs \
-            -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x \
-            -v "$PWD/tests:/srv/tests:ro" --entrypoint python meshpipeline-pipeline:ci \
-            -m pytest -q -rs -o asyncio_mode=auto -p no:cacheprovider /srv/tests/integration | tee integ.log
-          # Silent-skip guard: the ONLY acceptable skip is the one test that needs licensed 3D CAD
-          # (real STEP not staged). A Redis/Postgres/MinIO/service skip must FAIL, not pass green.
-          if grep -E "^SKIPPED" integ.log | grep -v "real STEP not staged" ; then
-            echo "::error::an integration test skipped for a reason other than the licensed-CAD fixture - a required service was not provisioned"
-            exit 1
-          fi
-          docker rm -f ci-redis ci-postgres ci-minio >/dev/null 2>&1 || true
-          docker network rm ci-net >/dev/null 2>&1 || true
+      # THE SUPPORTED RUNNER, not a second implementation of it. CI used to orchestrate the three
+      # services itself and hand the suite a plain `mesh` database. That database carried no
+      # disposable marker and the run set no MESH_TEST_RUN_ID, so the integration conftest never
+      # established its authority and all ~168 destructive tests ERRORED at setup - a tier that
+      # has never actually run, in CI or anywhere, while looking like it did.
+      #
+      # tests/integration/run_in_container.sh already provisions a per-run database stamped with
+      # that marker, unsets any ambient DATABASE_URL, health-checks Postgres, Redis and MinIO, and
+      # tears the stack down from a trap. Developers run it through `make test-container-integration`;
+      # CI running the same command is what keeps the two from diverging again.
+      - run: make test-container-integration
 
   ui:
     name: UI in a real browser
