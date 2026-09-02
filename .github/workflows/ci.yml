@@ -121,6 +121,10 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # actions: read is what lets a code-scanning upload read the run it belongs to. Without it
+      # the analysis completes and then fails on "Resource not accessible by integration" - the
+      # findings are produced and thrown away, which looks like a scanner fault and is a grant.
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -236,6 +240,10 @@ jobs:
       - name: pip-audit the installed environment
         run: |
           set -euo pipefail
+          # The runner's own pip and setuptools are part of the audited environment. They are
+          # not this project's pins, so a stale one reports an advisory nobody here can fix
+          # by editing requirements. Bring the tooling current, then audit.
+          pip install --upgrade pip setuptools
           pip install pip-audit
           # --skip-editable: meshpipeline is installed from this checkout and is not published,
           # so auditing it is a PyPI lookup that cannot succeed. Its dependencies still are.
@@ -250,6 +258,10 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # actions: read is what lets a code-scanning upload read the run it belongs to. Without it
+      # the analysis completes and then fails on "Resource not accessible by integration" - the
+      # findings are produced and thrown away, which looks like a scanner fault and is a grant.
+      actions: read
     if: needs.preflight.outputs.run_python == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
