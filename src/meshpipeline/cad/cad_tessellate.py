@@ -763,6 +763,23 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         mouth_frames.append((tuple(m_c), (m_ax.X(), m_ax.Y(), m_ax.Z()),
                              _m.sqrt(max(m_area, 0.0) / _m.pi)))
 
+    def _clear_line(a, b) -> bool:
+        # The straight segment between two points crosses no material - the two holes
+        # are joined by an unobstructed void passage (a bore). Endpoints excluded:
+        # each sits on its own host surface.
+        d = [b[k] - a[k] for k in range(3)]
+        length = _m.sqrt(sum(v * v for v in d))
+        if length <= 0.0:
+            return True
+        dn = [v / length for v in d]
+        ray = BRepIntCurveSurface_Inter()
+        ray.Init(shape, gp_Lin(gp_Pnt(*a), gp_Dir(*dn)), 1e-9)
+        while ray.More():
+            if 1e-6 * length < ray.W() < length * (1.0 - 1e-3):
+                return False
+            ray.Next()
+        return True
+
     def _is_port_mouth(c, n, hole_area) -> bool:
         r_hole = _m.sqrt(max(hole_area, 0.0) / _m.pi)
         for pc, pn, pr in mouth_frames:
@@ -773,8 +790,20 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             off = [c[k] - pc[k] for k in range(3)]
             axial = sum(off[k] * pn[k] for k in range(3))
             lateral = _m.sqrt(max(sum(v * v for v in off) - axial * axial, 0.0))
-            if (abs(axial) <= 0.25 * pr and lateral <= 0.25 * pr
-                    and r_hole >= 0.75 * pr):
+            if lateral > 0.25 * pr or r_hole < 0.75 * pr:
+                continue
+            # Same axis, mouth-sized. The flange-ring case sits within a quarter radius
+            # of the mouth. The JUNCTION case does not: a ported chamber's inner wall
+            # has this hole a whole tube-length behind the mouth (mini_housing - eleven
+            # baseline episodes died with every chamber-to-bore junction sealed as an
+            # "undeclared opening"; the void/exterior probes cannot tell, because a
+            # bore is void rather than material and its exit ray leaves through the
+            # declared mouth itself). The discriminator is the PASSAGE: when the
+            # segment from this hole to the mouth is pure void, the hole opens into
+            # the declared port's own bore and is never sealable. A bolt hole fails
+            # the lateral test, a small tap fails the size test, and an unrelated
+            # coaxial hole is separated from the mouth by material.
+            if abs(axial) <= 0.25 * pr or _clear_line(c, pc):
                 return True
         return False
 
