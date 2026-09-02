@@ -1,0 +1,41 @@
+# Responsibility: Put a lane on the one pinned Python environment this project supports.
+# Owns: the interpreter, the native libraries the pinned wheels dlopen, and the install order.
+# Boundaries: it sets a lane up; it checks nothing and decides nothing about what a lane then runs.
+
+# Every CI lane needs the same environment and none of them should restate it. A version pinned
+# in a workflow AND in requirements/ is two lists that drift apart silently, which is the whole
+# reason devtools/quality/check_dependency_drift.py exists - so nothing here pins a version.
+name: Set up the Hexera Python environment
+description: Install the pinned runtime + dev environment and the meshpipeline distribution.
+
+inputs:
+  python-version:
+    description: The interpreter to install. Defaults to the project floor.
+    required: false
+    default: "3.11"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    # gmsh's wheel dlopen()s its GUI shared libraries AT IMPORT even headless, and
+    # pytest.importorskip does not catch the resulting OSError - without these the gmsh engine
+    # tests do not skip, they ERROR at collection. Same list the pipeline image ships;
+    # libgl1/libegl1 additionally back the pyvista render stack.
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
+          libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6
+
+    - shell: bash
+      run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+
+    # The suites run against the INSTALLED package (PyPA src layout), never a path hack.
+    - shell: bash
+      run: pip install -e . --no-deps
