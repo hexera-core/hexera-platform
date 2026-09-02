@@ -185,7 +185,7 @@ MIGRATE_DB_HOST=${MIGRATE_DB_HOST:-}
 MIGRATE_DB_PORT=${MIGRATE_DB_PORT:-5432}
 MIGRATE_DB_NAME=${MIGRATE_DB_NAME:-meshpipeline}
 MIGRATE_DB_USER=${MIGRATE_DB_USER:-meshpipeline}
-POSTGRES_PASSWORD_SECRET=${POSTGRES_PASSWORD_SECRET:-}
+POSTGRES_PASSWORD_SECRET=${POSTGRES_PASSWORD_SECRET:-postgres-password}
 
 # QUEUE-DEPTH PUBLISHER (scripts/create-queue-depth-publisher.sh). One scheduled writer of the
 # metric the worker fleet scales on, off the fleet itself so a group at zero instances can still be
@@ -208,6 +208,52 @@ WORKER_MIG_MIN_REPLICAS=${WORKER_MIG_MIN_REPLICAS:-1}
 WORKER_MIG_MAX_REPLICAS=${WORKER_MIG_MAX_REPLICAS:-5}
 WORKER_MIG_COOLDOWN_SECONDS=${WORKER_MIG_COOLDOWN_SECONDS:-180}
 WORKER_JOBS_PER_INSTANCE=${WORKER_JOBS_PER_INSTANCE:-1}
+
+# DATA TIER (scripts/create-data-tier.sh). Discovered or created there, recorded here so the stages
+# that consume them - migrations, the API service, the worker fleet - read one source.
+CLOUDSQL_INSTANCE=${CLOUDSQL_INSTANCE:-}
+CLOUDSQL_CONNECTION_NAME=${CLOUDSQL_CONNECTION_NAME:-}
+CLOUDSQL_TIER=${CLOUDSQL_TIER:-}
+REDIS_INSTANCE=${REDIS_INSTANCE:-}
+REDIS_TIER=${REDIS_TIER:-}
+
+# OBJECT STORE (scripts/create-object-storage.sh). MINIO_ACCESS_KEY is the HMAC key's PUBLIC id and
+# MUST round-trip: it is what the provisioner tests to decide whether a usable key already exists.
+# Dropping it here made every deploy believe there was none and mint another - GCP allows five per
+# account, so the fifth deploy failed and the four before it had each left a live S3 credential
+# behind. The SECRET half is a Secret Manager container name; the value never appears here.
+GCP_ARTIFACTS_BUCKET=${GCP_ARTIFACTS_BUCKET:-}
+OBJECT_STORE_SERVICE_ACCOUNT=${OBJECT_STORE_SERVICE_ACCOUNT:-}
+MINIO_BUCKET=${MINIO_BUCKET:-}
+MINIO_ENDPOINT=${MINIO_ENDPOINT:-}
+MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-}
+MINIO_REGION=${MINIO_REGION:-}
+MINIO_SECURE=${MINIO_SECURE:-}
+MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-}
+MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-minio-secret-key}
+
+# API SERVICE and WORKER FLEET identities (scripts/create-api-service.sh, create-worker-fleet.sh).
+# EMPTY CLOUDRUN_API_SERVICE means this deployment serves no API and that stage is skipped.
+CLOUDRUN_API_SERVICE=${CLOUDRUN_API_SERVICE:-}
+API_SERVICE_ACCOUNT=${API_SERVICE_ACCOUNT:-}
+API_MIN_INSTANCES=${API_MIN_INSTANCES:-0}
+API_MAX_INSTANCES=${API_MAX_INSTANCES:-5}
+API_ALLOW_UNAUTHENTICATED=${API_ALLOW_UNAUTHENTICATED:-0}
+WORKER_SERVICE_ACCOUNT=${WORKER_SERVICE_ACCOUNT:-}
+WORKER_ENV_URI=${WORKER_ENV_URI:-}
+
+# SECRET CONTAINER NAMES (scripts/create-secrets.sh). Names only, never values - the guard in
+# devtools/quality/check_deploy_secrets.py fails the build on a value here.
+DEEPINFRA_API_KEY_SECRET=${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}
+DEEPSEEK_API_KEY_SECRET=${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}
+MESH_API_KEY_SECRET=${MESH_API_KEY_SECRET:-mesh-api-key}
+USER_TOKEN_SECRET_SECRET=${USER_TOKEN_SECRET_SECRET:-user-token-secret}
+
+# WORKLOAD IDENTITY FEDERATION (scripts/create-workload-identity.sh). Owner-run bootstrap, not a
+# deploy stage: creating service accounts and setting project IAM is outside the deployer's roles.
+WIF_POOL=${WIF_POOL:-github-actions}
+WIF_PROVIDER=${WIF_PROVIDER:-github}
+DEPLOYER_SERVICE_ACCOUNT=${DEPLOYER_SERVICE_ACCOUNT:-github-deployer}
 ENVFILE
 }
 
