@@ -263,9 +263,19 @@ def test_ci_runs_the_gate_as_a_blocking_step():
     text = CI.read_text(encoding="utf-8")
     assert "python devtools/quality/check_deploy_secrets.py" in text, (
         "the rule is only real if something enforces it; CI does not run the gate")
-    step = next(ln for ln in text.splitlines()
-                if ln.strip().startswith("- name:") and "secret" in ln.lower())
-    assert "BLOCKING" in step, f"the CI step does not declare itself blocking: {step.strip()}"
+    # "Blocking" is now a STRUCTURAL fact rather than a word in a step name: CI runs one concern
+    # per lane and ci-gate aggregates them, so a lane blocks exactly when the gate waits on it.
+    # Asserting the job is in ci-gate's needs is the property; a name could say BLOCKING and be
+    # wired to nothing.
+    import yaml
+    wf = yaml.safe_load(text)
+    owning = [name for name, job in wf["jobs"].items()
+              if "check_deploy_secrets.py" in yaml.dump(job)]
+    assert owning, "no CI job runs the gate"
+    gated = set(wf["jobs"]["ci-gate"]["needs"])
+    assert set(owning) & gated, (
+        f"the job(s) running the gate {owning} are not in ci-gate's needs {sorted(gated)}, "
+        "so a failure there would not block the merge")
 
 
 def test_gate_d_asks_this_checker_rather_than_grepping_for_itself():

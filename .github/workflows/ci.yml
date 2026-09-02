@@ -234,7 +234,9 @@ jobs:
         run: |
           set -euo pipefail
           pip install pip-audit
-          pip-audit --strict --progress-spinner off
+          # --skip-editable: meshpipeline is installed from this checkout and is not published,
+          # so auditing it is a PyPI lookup that cannot succeed. Its dependencies still are.
+          pip-audit --strict --skip-editable --progress-spinner off
 
   codeql:
     name: CodeQL
@@ -285,8 +287,9 @@ jobs:
             -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
       - name: Smoke - mesh image carries the native toolchain
         run: |
-          docker run --rm --entrypoint bash meshpipeline-mesh:ci -lc \
-            'test -f "$OPENFOAM_BASHRC" && python -c "import meshpipeline.runtime.mesh_runner"'
+          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+            meshpipeline-mesh:ci bash -lc \
+            'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
 
   integration:
     name: Integration tier (real Redis + Postgres + MinIO)
@@ -349,9 +352,23 @@ jobs:
             docker network rm ci-net >/dev/null 2>&1 || true
             exit 1
           fi
+          # PROVISION a disposable database for this run. The tier drops and rebuilds the public
+          # schema on every test, so it refuses any database that cannot PROVE it belongs to this
+          # run - tests/disposable_database.py stamps a marker inside the storage itself. This step
+          # used to hand the suite a plain `mesh` database with no marker and no MESH_TEST_RUN_ID,
+          # so every one of those tests errored on NotDisposableError and the tier has never
+          # actually run in CI. run_disposable.sh does this locally through compose; here the same
+          # provision() call runs inside the image that already has SQLAlchemy.
+          RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
+          TASK_DB="$(docker run --rm --network ci-net \
+            -e MESH_TEST_RUN_ID="$RUN_ID" \
+            -v "$PWD/tests:/srv/tests:ro" -w /srv --entrypoint python meshpipeline-pipeline:ci \
+            -c "import sys; sys.path.insert(0, '/srv'); from tests.disposable_database import provision; print(provision('postgresql://mesh:x@ci-postgres:5432/mesh', '$RUN_ID').database)")"
+          echo "provisioned disposable database: $TASK_DB (run $RUN_ID)"
           docker run --rm --network ci-net \
             -e REDIS_URL=redis://ci-redis:6379/0 \
-            -e POSTGRES_HOST=ci-postgres -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh \
+            -e MESH_TEST_RUN_ID="$RUN_ID" \
+            -e POSTGRES_HOST=ci-postgres -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB="$TASK_DB" \
             -e MINIO_ENDPOINT=ci-minio:9000 -e MINIO_ACCESS_KEY=minioadmin -e MINIO_SECRET_KEY=minioadmin \
             -e MINIO_BUCKET=ci-test-jobs \
             -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x \
