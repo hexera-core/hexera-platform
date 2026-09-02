@@ -185,7 +185,7 @@ MIGRATE_DB_HOST=${MIGRATE_DB_HOST:-}
 MIGRATE_DB_PORT=${MIGRATE_DB_PORT:-5432}
 MIGRATE_DB_NAME=${MIGRATE_DB_NAME:-meshpipeline}
 MIGRATE_DB_USER=${MIGRATE_DB_USER:-meshpipeline}
-POSTGRES_PASSWORD_SECRET=${POSTGRES_PASSWORD_SECRET:-postgres-password}
+POSTGRES_PASSWORD_SECRET=${POSTGRES_PASSWORD_SECRET:-}
 
 # QUEUE-DEPTH PUBLISHER (scripts/create-queue-depth-publisher.sh). One scheduled writer of the
 # metric the worker fleet scales on, off the fleet itself so a group at zero instances can still be
@@ -230,7 +230,7 @@ MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-}
 MINIO_REGION=${MINIO_REGION:-}
 MINIO_SECURE=${MINIO_SECURE:-}
 MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-}
-MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-minio-secret-key}
+MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-}
 
 # API SERVICE and WORKER FLEET identities (scripts/create-api-service.sh, create-worker-fleet.sh).
 # EMPTY CLOUDRUN_API_SERVICE means this deployment serves no API and that stage is skipped.

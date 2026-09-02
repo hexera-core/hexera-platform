@@ -26,7 +26,11 @@ source "$(dirname "$0")/lib.sh"
 
 S="$(cd "$(dirname "$0")" && pwd)"
 STAGE=0
-stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\033[0m\n' "${STAGE}" 12 "$1"; }
+# The total is COUNTED, not restated. It was the literal 12, so adding a stage printed [13/12] -
+# a number that has to be remembered is a number that goes stale. Only call sites match `^stage "`;
+# this definition begins `stage()` and is not counted.
+STAGE_TOTAL="$(grep -c '^stage "' "${BASH_SOURCE[0]}")"
+stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\033[0m\n' "${STAGE}" "${STAGE_TOTAL}" "$1"; }
 
 # confirmation policy
 # INTERACTIVE BY DEFAULT. A cloud-mutating deploy requires a deliberate go-ahead: after the
@@ -105,6 +109,19 @@ stage "Artifact Registry + the mesh runtime identity"
 bash "${S}/create-artifact-registry.sh"
 bash "${S}/create-service-accounts.sh"
 
+stage "Data tier (Cloud SQL and Memorystore on private addresses)"
+# BEFORE the schema, the API and the fleet, all of which consume MIGRATE_DB_HOST and REDIS_URL.
+# Reconciling: an existing instance is reused untouched and its durability settings are REPORTED
+# rather than patched - changing backups or deletion protection on the instance a deploy is about
+# to migrate is not something a deploy should decide.
+bash "${S}/create-data-tier.sh"
+
+stage "Object store (artifacts bucket and the S3-interoperability credential)"
+# BEFORE the API and the fleet, which read MINIO_*. The HMAC key is REUSED when one already
+# exists: GCP allows five per account, and minting one per deploy both leaks credentials and
+# fails outright on the fifth run.
+bash "${S}/create-object-storage.sh"
+
 stage "Promote the validated release artifact (no build - see docs/development/gates.md)"
 # Deployment does NOT build. It promotes the exact images Gate C validated and release-publish
 # pushed, identified by immutable registry digests read from deploy/output/release.json. The
@@ -132,6 +149,19 @@ stage "Worker fleet signal (the one queue-depth publisher, and the autoscaler th
 # only writers of the number that wakes the workers. Scale-to-zero is unreachable while the metric
 # is published by the instances it scales (build-out plan, Decision 4).
 bash "${S}/create-queue-depth-publisher.sh"
+
+stage "API service (the promoted image, by digest, reaching the private data tier)"
+# AFTER the schema: a service that starts before its database is at head serves errors while the
+# migration it needs is still running. Credentials reach it as Secret Manager REFERENCES, never as
+# literal values - the four that were once inline in this service's own spec are why.
+bash "${S}/create-api-service.sh"
+
+stage "Worker fleet (template pinned to the digest, and the rolling update onto it)"
+# LAST, because a worker that starts before the schema, the queue signal and the object store are
+# in place fails on its first job rather than at deploy time. A digest change makes a NEW template
+# and rolls the group onto it with surge 1 / unavailable 0, so a warm pool is never below its floor
+# mid-rotation (build-out plan, Decision 4).
+bash "${S}/create-worker-fleet.sh"
 
 # Record the machine-readable deployment-state manifest (ownership + digests; no secret values).
 bash "${S}/write-deployment-state.sh" || warn "deployment-state manifest could not be written (non-fatal)"

@@ -72,6 +72,37 @@ if [ -n "${WORKER_MIG:-}" ] || [ -n "${WORKER_MIG_ZONE:-}" ]; then
     || add "WORKER_JOBS_PER_INSTANCE is 0 - the autoscaler divides the queue depth by it"
 fi
 
+# THE API SERVICE. Empty CLOUDRUN_API_SERVICE means this deployment serves no API and the stage is
+# skipped, so nothing below applies.
+if [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
+  if [[ "${API_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${API_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
+    [ "${API_MIN_INSTANCES}" -le "${API_MAX_INSTANCES}" ] \
+      || add "API_MIN_INSTANCES (${API_MIN_INSTANCES}) exceeds API_MAX_INSTANCES (${API_MAX_INSTANCES})"
+  fi
+  # A service reaching a private Cloud SQL and Memorystore needs the network it egresses into.
+  [ -n "${VPC_NETWORK:-}" ] && [ -n "${VPC_SUBNET:-}" ] \
+    || add "CLOUDRUN_API_SERVICE is set but VPC_NETWORK/VPC_SUBNET are not - the service could not reach the private data tier"
+fi
+
+# THE OBJECT STORE. The access key is the PUBLIC half; its secret is a container name. Both or
+# neither - a half-configured store fails at the first upload rather than here.
+if [ -n "${MINIO_ACCESS_KEY:-}" ] || [ -n "${MINIO_BUCKET:-}" ]; then
+  [ -n "${MINIO_BUCKET:-}" ]            || add "MINIO_ACCESS_KEY is set but MINIO_BUCKET is not"
+  [ -n "${MINIO_SECRET_KEY_SECRET:-}" ] || add "the object store is configured but MINIO_SECRET_KEY_SECRET names no Secret Manager container"
+  # Google Cloud Storage's S3 endpoint serves TLS only; MINIO_SECURE=false against it fails every
+  # request, and the adapter defaults to false for the local plain-HTTP stack.
+  if [ "${MINIO_ENDPOINT:-}" = "storage.googleapis.com" ] && [ "${MINIO_SECURE:-}" != "true" ]; then
+    add "MINIO_ENDPOINT is Google Cloud Storage but MINIO_SECURE is '${MINIO_SECURE:-unset}' - that endpoint refuses plain HTTP"
+  fi
+fi
+
+# THE DATA TIER. A declared database must name the container its password lives in; the value is
+# never here. The reverse - a container named with no host - is a leftover, not a configuration.
+if [ -n "${MIGRATE_DB_HOST:-}" ]; then
+  [ -n "${POSTGRES_PASSWORD_SECRET:-}" ] \
+    || add "MIGRATE_DB_HOST is set but POSTGRES_PASSWORD_SECRET names no Secret Manager container"
+fi
+
 if [ ${#errs[@]} -gt 0 ]; then
   warn "configuration is invalid:"
   for e in "${errs[@]}"; do printf '    - %s\n' "${e}" >&2; done

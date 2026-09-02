@@ -47,7 +47,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
 
 .PHONY: help help-all setup check test test-fast logs clean \
         dev-doctor dev-up dev-down dev-logs dev-reset \
-        mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy dev-images \
+        mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy dev-images env-bootstrap \
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
@@ -290,6 +290,15 @@ mesh-setup: ## FIRST developer in a blank GCP project: build, validate, publish 
 
 mesh-deploy: ## Provision or update the Cloud Run MESH JOB and its exchange bucket (idempotent)
 	@bash deploy/gcp/scripts/deploy.sh
+
+env-bootstrap: ##! ONCE PER PROJECT, as an OWNER: the federation and secret containers a deploy cannot create itself
+	@# NOT a deploy stage, deliberately. Creating service accounts, setting project IAM and
+	@# administering Secret Manager are outside the four roles the federated deployer holds
+	@# (run.admin, artifactregistry.writer, iam.serviceAccountUser, compute.instanceAdmin), and
+	@# widening them so CI could do this would hand a CI identity the ability to grant itself
+	@# anything. So it is run by a human with owner rights, once, before the first deploy.
+	@bash deploy/gcp/scripts/create-workload-identity.sh
+	@bash deploy/gcp/scripts/create-secrets.sh
 
 mesh-destroy: ## Remove ONLY the cloud resources the deployment record says mesh-setup created (dry run by default)
 	@# Local uninstall is `make dev-uninstall`; this is the cloud half, and they are deliberately

@@ -61,6 +61,43 @@ if "${WORKER_MIG:-}":
     "replicas": "${WORKER_MIG_MIN_REPLICAS:-}..${WORKER_MIG_MAX_REPLICAS:-}",
     "jobs_per_instance": "${WORKER_JOBS_PER_INSTANCE:-}",
   }
+if "${CLOUDSQL_INSTANCE:-}":
+  # By ADDRESS and tier, never by URL - the same reason the migration job records a host: a DSN
+  # would carry the credential this manifest exists to prove it does not hold.
+  doc["resources"]["cloud_sql"] = {
+    "name": "${CLOUDSQL_INSTANCE:-}", "disposition": "${CLOUDSQL_DISPOSITION:-created}",
+    "connection_name": "${CLOUDSQL_CONNECTION_NAME:-}", "tier": "${CLOUDSQL_TIER:-}",
+  }
+if "${REDIS_INSTANCE:-}":
+  doc["resources"]["memorystore"] = {
+    "name": "${REDIS_INSTANCE:-}", "disposition": "${REDIS_DISPOSITION:-created}",
+    "tier": "${REDIS_TIER:-}",
+  }
+if "${MINIO_BUCKET:-}":
+  # The access key is the PUBLIC half and is recorded so a later run can prove which credential
+  # this deployment uses without minting another. The secret half is a container NAME.
+  doc["resources"]["object_store"] = {
+    "bucket": "${MINIO_BUCKET:-}", "disposition": "${ARTIFACTS_BUCKET_DISPOSITION:-created}",
+    "endpoint": "${MINIO_ENDPOINT:-}", "access_key": "${MINIO_ACCESS_KEY:-}",
+    "secret_container": "${MINIO_SECRET_KEY_SECRET:-}",
+    "service_account": "${OBJECT_STORE_SERVICE_ACCOUNT:-}",
+  }
+if "${CLOUDRUN_API_SERVICE:-}":
+  doc["resources"]["api_service"] = {
+    "name": "${CLOUDRUN_API_SERVICE:-}", "disposition": "${API_SERVICE_DISPOSITION:-created}",
+    "service_account": "${API_SERVICE_ACCOUNT:-}",
+    "instances": "${API_MIN_INSTANCES:-}..${API_MAX_INSTANCES:-}",
+    "public": "${API_ALLOW_UNAUTHENTICATED:-0}" == "1",
+  }
+if "${WORKER_MIG:-}":
+  # The TEMPLATE is the rotation record: a digest change makes a new template and the group rolls
+  # onto it, so the template name is what says which bytes the fleet is actually running.
+  doc["resources"]["worker_fleet"] = {
+    "name": "${WORKER_MIG:-}", "disposition": "${WORKER_MIG_DISPOSITION:-created}",
+    "zone": "${WORKER_MIG_ZONE:-}", "template": "${WORKER_TEMPLATE_NAME:-}",
+    "service_account": "${WORKER_SERVICE_ACCOUNT:-}",
+    "warm_floor": "${WORKER_MIG_MIN_REPLICAS:-}",
+  }
 json.dump(doc, open(out, "w"), indent=2)
 print(out)
 PY
