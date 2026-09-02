@@ -36,6 +36,15 @@ load_env() {
   # cosmetic mix-up: standing up prod while generated.env still describes dev pointed every step at
   # dev, and the run reported success.
   local _requested="${GCP_PROJECT_ID:-}"
+  # RESOURCE NAMES the caller pinned, captured for the same reason and restored below. `set -a`
+  # makes the file win over the environment, so exporting CLOUDSQL_INSTANCE and running a
+  # provisioner used the file's name instead - and a provisioner told to reconcile a name that
+  # does not exist CREATES it. That is how a duplicate, dev-sized Cloud SQL instance and a
+  # duplicate Redis appeared beside the prod-sized ones they were meant to adopt. Unlike the
+  # project, a pinned resource name is not a contradiction: it is the caller saying which existing
+  # resource to reconcile, so it is honoured rather than refused.
+  local _pinned_sql="${CLOUDSQL_INSTANCE:-}" _pinned_redis="${REDIS_INSTANCE:-}"
+  local _pinned_bucket="${GCP_ARTIFACTS_BUCKET:-}" _pinned_mig="${WORKER_MIG:-}"
   set -a
   # shellcheck disable=SC1090
   . "${file}"
@@ -44,6 +53,10 @@ load_env() {
   # values - bucket, job, service-account and registry names - were all discovered for its own
   # project, so honouring an overriding GCP_PROJECT_ID would build a deployment out of one
   # project's identity and another's resource names. Regenerating is the supported way to move.
+  [ -z "${_pinned_sql}" ]    || export CLOUDSQL_INSTANCE="${_pinned_sql}"
+  [ -z "${_pinned_redis}" ]  || export REDIS_INSTANCE="${_pinned_redis}"
+  [ -z "${_pinned_bucket}" ] || export GCP_ARTIFACTS_BUCKET="${_pinned_bucket}"
+  [ -z "${_pinned_mig}" ]    || export WORKER_MIG="${_pinned_mig}"
   if [ -n "${_requested}" ] && [ "${_requested}" != "${GCP_PROJECT_ID}" ]; then
     die "GCP_PROJECT_ID=${_requested} was requested, but $(basename "${file}") describes ${GCP_PROJECT_ID}.
   Every other name in that file - bucket, job, service account, registry - belongs to

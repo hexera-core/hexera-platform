@@ -78,6 +78,10 @@ DB_PASSWORD_SECRET="${POSTGRES_PASSWORD_SECRET:-postgres-password}"
 
 REDIS_INSTANCE="${REDIS_INSTANCE:-${DEPLOYMENT_ID}-redis}"
 REDIS_SIZE_GB="${REDIS_SIZE_GB:-1}"
+# Redis is asymmetric about case, in both directions: `instances create --redis-version` accepts
+# only the lowercase spelling, while `instances describe` reports the uppercase one. The default
+# here is the spelling a describe returns, so a value copied out of gcloud round-trips, and the
+# create call lowercases it at the point of use.
 REDIS_VERSION="${REDIS_VERSION:-REDIS_7_0}"
 REDIS_DB_INDEX="${REDIS_DB_INDEX:-0}"
 # BASIC/STANDARD_HA are the API's spelling and basic/standard are the flag's. Both are accepted
@@ -347,7 +351,7 @@ else
     --connect-mode=private-service-access \
     --tier "${REDIS_TIER_FLAG}" \
     --size "${REDIS_SIZE_GB}" \
-    --redis-version "${REDIS_VERSION}" \
+    --redis-version "$(printf '%s' "${REDIS_VERSION}" | tr '[:upper:]' '[:lower:]')" \
     --display-name "Hexera broker (${DEPLOYMENT_ID})" \
     --labels "app=hexera,deployment-id=${DEPLOYMENT_ID},managed-by=deploy"
   log "redis           ${REDIS_INSTANCE}  ${REDIS_TIER_FLAG}  (created)"

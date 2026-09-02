@@ -273,9 +273,22 @@ for role in "${DEPLOYER_ROLES[@]}"; do
   # --condition=None is explicit rather than implied: on a project that already carries a
   # conditional binding for this member, gcloud otherwise has to ask which one is meant, and
   # these scripts run with prompts disabled.
-  gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
-    --member "serviceAccount:${DEPLOYER_SA_EMAIL}" \
-    --role "${role}" --condition=None >/dev/null
+  # RETRIED, because a service account is not immediately visible to IAM after it is created.
+  # On a fresh project this loop runs seconds after `service-accounts create` and the first
+  # binding fails with "Service account ... does not exist" - a propagation delay reported as a
+  # missing resource, which reads like a bug in the script and is not. Observed on hexera-prod.
+  _bound=0
+  for _attempt in 1 2 3 4 5 6; do
+    if gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+         --member "serviceAccount:${DEPLOYER_SA_EMAIL}" \
+         --role "${role}" --condition=None >/dev/null 2>&1; then
+      _bound=1; break
+    fi
+    sleep $(( _attempt * 5 ))
+  done
+  [ "${_bound}" = "1" ] || die "could not grant ${role} to ${DEPLOYER_SA_EMAIL} after 6 attempts.
+  If this is a freshly created account the delay is normally under a minute - rerun this script;
+  it is idempotent and will reconcile what already exists."
   log "project += ${role} -> ${DEPLOYER_SA_EMAIL}"
 done
 
