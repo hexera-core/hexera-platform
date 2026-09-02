@@ -71,7 +71,10 @@ def _sibling_plan_memories(workspace: Path):
     for n in range(int(m.group(1)) - 1, 0, -1):
         try:
             yield _json.loads((workspace.parent / f"attempt_{n}" / ".last_plan.json").read_text())
-        except Exception:  # noqa: BLE001 - a missing or corrupt memory is just not a source
+        # S112 asks for logging here. An absent file is the ORDINARY case - attempt_1 has no
+        # siblings, and every attempt walks the whole range - so logging each miss would be
+        # noise proportional to the retry count, describing nothing that went wrong.
+        except Exception:  # noqa: BLE001,S112 - a missing or corrupt memory is just not a source
             continue
 
 
