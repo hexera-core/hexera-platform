@@ -181,8 +181,15 @@ for pass in $(seq 1 "$PASSES"); do
     -e MINIO_ENDPOINT="$MN:9000" -e MINIO_ACCESS_KEY=minioadmin -e MINIO_SECRET_KEY=minioadmin \
     -e MINIO_BUCKET=ci-test-jobs \
     -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x \
+    -e HEXERA_CONTAINER_TIER=1 \
     -v "$PWD/tests:/srv/tests:ro" \
     -v "$PWD/devtools/quality:/srv/devtools/quality:ro" \
+    `# The TRACKED .env.example, mounted where the suite looks for it (parents[2] of a test file,
+     # i.e. /srv). It is not in the image - the image ships the source, not the repository - so the
+     # test that pins "the code default and the template a clone starts from agree" skipped here
+     # forever and the guard counted that skip as a coverage hole. It is a repo file, not an
+     # optional fixture, so the runner supplies it rather than the test tolerating its absence.` \
+    -v "$PWD/.env.example:/srv/.env.example:ro" \
     -v "$API_ROOT_HOST:/srv/api-root" \
     -v "$RUNDIR:/srv/report" \
     `# -w /srv: the tier image is now the validation target, whose WORKDIR is /repo. The tier has

@@ -47,7 +47,16 @@ def limits_for(plan: str | None) -> PlanLimits:
     # revision does not declare is a rollback or a half-finished product change, and neither is a
     # reason to stop serving a paying caller.
     base = default_limits()
-    override = PLANS.get((plan or "").strip().lower())
+    # A NON-STRING plan is treated as no plan, deliberately. A route declares
+    # `plan: str = Depends(plan_dep)`, and that default is a FastAPI SENTINEL which only the
+    # framework replaces - so every caller that invokes a route function DIRECTLY (the integration
+    # tier does, and so does any script) hands the sentinel straight through to here. Calling
+    # .strip() on it raised AttributeError and the route answered 500, which read as a broken
+    # upload rather than a plan that was never resolved. Defaults are the right answer for a
+    # caller that never had a plan to begin with.
+    if not isinstance(plan, str):
+        return base
+    override = PLANS.get(plan.strip().lower())
     if override is None:
         return base
     return PlanLimits(
