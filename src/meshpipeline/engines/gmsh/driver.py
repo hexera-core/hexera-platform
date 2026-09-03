@@ -7,6 +7,11 @@ import sys
 from pathlib import Path
 
 SICN_FLOOR = 0.1   # shared with the executor gate + quality criteria
+# Minimum elements across the narrowest bbox extent. The clamp aims for 8; the
+# resolution_floor gate (gmsh/gates.py) rejects below 6, so a clamped mesh clears
+# the gate with margin. Kept a local literal on purpose: this driver runs as a
+# standalone script inside the mesh image, decoupled from the settings inventory.
+MIN_CELLS_ACROSS = 8
 
 # VALIDATED JSON SCRATCH. The model may author a rich gmsh_spec.json, but the driver
 # is the authority on what it supports - it REJECTS unknown/misspelled keys and
@@ -125,7 +130,7 @@ def _validate_spec(spec) -> list[str]:
     return errs
 
 
-def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
+def _mesh_planar(ws: Path, spec: dict, h: float, resolution: dict | None = None) -> int:
     import gmsh
     faces = [t for _, t in gmsh.model.getEntities(2)]
     if not faces:
@@ -203,6 +208,7 @@ def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
         "min_sicn": round(min_sicn, 4),
         "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
         "fatal": fatal, "size_h": h,
+        **(resolution or {}),
         "bounds": _final_node_bounds(gmsh),
         "groups": {name: str(_role_by_name.get(name, "free"))
                    for name in _actual_group_names},
@@ -256,17 +262,32 @@ def main(workspace: str) -> int:
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
         diag = ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
         size_spec = spec.get("size") or {"mode": "factor", "value": 0.04}
-        h = (float(size_spec["value"]) * diag
-             if size_spec.get("mode", "factor") == "factor"
-             else float(size_spec["value"]))
+        h_req = (float(size_spec["value"]) * diag
+                 if size_spec.get("mode", "factor") == "factor"
+                 else float(size_spec["value"]))
+        # RESOLUTION CLAMP. gmsh sizes from a factor of the DIAGONAL, but a duct's
+        # diagonal is its length - 4% of it can exceed the bore, leaving a handful of
+        # cells across the flow (the corpus's 6,455-cell "passes"). Force at least
+        # MIN_CELLS_ACROSS elements across the narrowest bbox extent, whatever the
+        # factor gives. Only ever tightens h; never coarsens an already-fine request.
+        ext = [xmax - xmin, ymax - ymin, zmax - zmin]
+        min_ext = min([e for e in ext if e > 0], default=diag)
+        h = min(h_req, min_ext / MIN_CELLS_ACROSS)
+        if h < h_req:
+            print(f"[GMSH] resolution clamp: element size {h_req:.4g} m would put only "
+                  f"{min_ext / h_req:.1f} cells across the {min_ext:.4g} m narrow dimension; "
+                  f"tightened to {h:.4g} m ({MIN_CELLS_ACROSS} across).", file=sys.stderr)
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
         gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature",
                               int(spec.get("curvature_nodes", 24)))
+        _resolution = {"size_h_requested": round(h_req, 8),
+                       "min_extent": round(min_ext, 8),
+                       "cells_across_min": round(min_ext / h, 3) if h > 0 else 0.0}
 
         _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
         if _is2d:
-            return _mesh_planar(ws, spec, h)
+            return _mesh_planar(ws, spec, h, resolution=_resolution)
 
         # Physical groups: every volume is the solid; surfaces per the spec's
         # contracted names; unassigned surfaces land in the default group so
@@ -339,6 +360,7 @@ def main(workspace: str) -> int:
             "min_sicn": round(min_sicn, 4),
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": h,
+            **_resolution,
             "bounds": _final_node_bounds(gmsh),
             # groups = the ACTUAL physical groups present in the meshed model (read back),
             # role-annotated from the spec - the manifest must reflect the artifact, not
