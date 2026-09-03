@@ -52,6 +52,26 @@ ARTIFACTS_BUCKET="${GCP_ARTIFACTS_BUCKET:-${DEPLOYMENT_ID}-artifacts-${GCP_PROJE
 # the exchange bucket - a property create-service-accounts.sh and apply-iam.sh exist to preserve.
 OBJECT_STORE_SA="${OBJECT_STORE_SERVICE_ACCOUNT:-${API_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-api}}"
 OBJECT_STORE_SA_EMAIL="${OBJECT_STORE_SA}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+# CREATED HERE IF ABSENT, because this stage runs BEFORE the API stage that otherwise owns this
+# identity - the object store has to exist before a service that reads it, and granting a bucket
+# role to an account that does not exist yet fails with "Service account ... does not exist" on a
+# first deploy. Creating it is safe and idempotent: the API stage reconciles the same name rather
+# than making a second one, and an account with no bindings can do nothing.
+if ! sa_exists "${OBJECT_STORE_SA_EMAIL}"; then
+  info "Creating ${OBJECT_STORE_SA_EMAIL} (the identity the object-store key belongs to)"
+  gc iam service-accounts create "${OBJECT_STORE_SA}" \
+    --display-name "Hexera ${DEPLOYMENT_ID} API" \
+    --description "Runtime identity for the ${DEPLOYMENT_ID} API service; owns the object-store HMAC key" \
+    >/dev/null 2>&1 || true
+  # IAM reports a just-created account as missing for a few seconds. Wait for it to be readable
+  # rather than letting the first binding below fail on a propagation delay.
+  for _ in 1 2 3 4 5 6; do sa_exists "${OBJECT_STORE_SA_EMAIL}" && break; sleep 5; done
+  sa_exists "${OBJECT_STORE_SA_EMAIL}" \
+    || die "could not create or see ${OBJECT_STORE_SA_EMAIL}. Creating a service account needs
+  iam.serviceAccounts.create, which a federated deploy identity does not hold - run
+  'make env-bootstrap' as an owner once per project, or create this account by hand."
+  log "identity ${OBJECT_STORE_SA_EMAIL}  (created)"
+fi
 # The same default create-secrets.sh uses, so the container this fills and the container that one
 # creates and grants to the API and the worker are the same container.
 HMAC_SECRET_NAME="${MINIO_SECRET_KEY_SECRET:-minio-secret-key}"
