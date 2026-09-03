@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 import types
@@ -84,7 +85,10 @@ def test_restoring_the_leak_makes_the_ordered_pair_fail_again():
         r = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "no:randomly",
              "--no-header", "tests/unit/engines/test_consolidated_matrix.py"],
-            cwd=REPO, capture_output=True, text=True)
+            # PYTEST_ADDOPTS removed for the same reason the plugin is disabled above: CI sets it
+            # to --randomly-seed=<n>, which a child running -p no:randomly cannot parse.
+            cwd=REPO, capture_output=True, text=True,
+            env={k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"})
     finally:
         conftest.write_bytes(original)
     assert conftest.read_bytes() == original, "the mutation was not restored byte-for-byte"

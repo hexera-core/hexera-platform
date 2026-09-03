@@ -9,8 +9,11 @@
 #
 #     make mesh-deploy     (from the repository root)
 #
-# It deploys nothing else. The API, the pipeline, PostgreSQL, Redis, MinIO and SearXNG run on the
-# operator's machine and are configured through the application's own .env.
+# Beyond that it deploys only what this deployment DECLARES it has: the schema of a hosted database
+# (MIGRATE_DB_HOST) and the queue-depth publisher a worker fleet scales on (WORKER_MIG). Both stages
+# state that they were skipped when those are unset, which is the mesh-only case this started as -
+# there the API, the pipeline, PostgreSQL, Redis, MinIO and SearXNG all run on the operator's
+# machine and are configured through the application's own .env.
 #
 # Every stage is idempotent and safe to rerun after a partial failure: existing resources are
 # reconciled rather than duplicated, and a supplied mesh job or bucket is validated and reused,
@@ -23,7 +26,11 @@ source "$(dirname "$0")/lib.sh"
 
 S="$(cd "$(dirname "$0")" && pwd)"
 STAGE=0
-stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\033[0m\n' "${STAGE}" 12 "$1"; }
+# The total is COUNTED, not restated. It was the literal 12, so adding a stage printed [13/12] -
+# a number that has to be remembered is a number that goes stale. Only call sites match `^stage "`;
+# this definition begins `stage()` and is not counted.
+STAGE_TOTAL="$(grep -c '^stage "' "${BASH_SOURCE[0]}")"
+stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\033[0m\n' "${STAGE}" "${STAGE_TOTAL}" "$1"; }
 
 # confirmation policy
 # INTERACTIVE BY DEFAULT. A cloud-mutating deploy requires a deliberate go-ahead: after the
@@ -102,6 +109,19 @@ stage "Artifact Registry + the mesh runtime identity"
 bash "${S}/create-artifact-registry.sh"
 bash "${S}/create-service-accounts.sh"
 
+stage "Data tier (Cloud SQL and Memorystore on private addresses)"
+# BEFORE the schema, the API and the fleet, all of which consume MIGRATE_DB_HOST and REDIS_URL.
+# Reconciling: an existing instance is reused untouched and its durability settings are REPORTED
+# rather than patched - changing backups or deletion protection on the instance a deploy is about
+# to migrate is not something a deploy should decide.
+bash "${S}/create-data-tier.sh"
+
+stage "Object store (artifacts bucket and the S3-interoperability credential)"
+# BEFORE the API and the fleet, which read MINIO_*. The HMAC key is REUSED when one already
+# exists: GCP allows five per account, and minting one per deploy both leaks credentials and
+# fails outright on the fifth run.
+bash "${S}/create-object-storage.sh"
+
 stage "Promote the validated release artifact (no build - see docs/development/gates.md)"
 # Deployment does NOT build. It promotes the exact images Gate C validated and release-publish
 # pushed, identified by immutable registry digests read from deploy/output/release.json. The
@@ -117,12 +137,50 @@ bash "${S}/create-mesh-tier.sh"
 stage "IAM (least privilege: invoke the mesh job, exchange objects)"
 bash "${S}/apply-iam.sh"
 
+stage "Schema (migrations applied ONCE, before anything runs the promoted image)"
+# The API container still migrates itself under an advisory lock, and that stays - it is the safety
+# net for every path that is not a deploy. But a deploy must not DEPEND on N cold-starting instances
+# racing for a lock on a service that is already public: the schema reaches head here, once, with
+# the exit code attributed to the deploy, and a refusal stops it with the database untouched.
+bash "${S}/run-migrations.sh"
+
+stage "Worker fleet signal (the one queue-depth publisher, and the autoscaler that reads it)"
+# The publisher runs OFF the fleet - a scheduled Cloud Run job - because the workers used to be the
+# only writers of the number that wakes the workers. Scale-to-zero is unreachable while the metric
+# is published by the instances it scales (build-out plan, Decision 4).
+bash "${S}/create-queue-depth-publisher.sh"
+
+stage "API service (the promoted image, by digest, reaching the private data tier)"
+# AFTER the schema: a service that starts before its database is at head serves errors while the
+# migration it needs is still running. Credentials reach it as Secret Manager REFERENCES, never as
+# literal values - the four that were once inline in this service's own spec are why.
+bash "${S}/create-api-service.sh"
+
+stage "Worker fleet (template pinned to the digest, and the rolling update onto it)"
+# LAST, because a worker that starts before the schema, the queue signal and the object store are
+# in place fails on its first job rather than at deploy time. A digest change makes a NEW template
+# and rolls the group onto it with surge 1 / unavailable 0, so a warm pool is never below its floor
+# mid-rotation (build-out plan, Decision 4).
+bash "${S}/create-worker-fleet.sh"
+
 # Record the machine-readable deployment-state manifest (ownership + digests; no secret values).
 bash "${S}/write-deployment-state.sh" || warn "deployment-state manifest could not be written (non-fatal)"
 
 # final summary
 load_env
 MESH_DIGEST="$(resolve_digest "${MESH_IMAGE:-}" 2>/dev/null || printf '%s' "${MESH_IMAGE:-}")"
+
+# The two conditional stages report what they actually did, so a skip is never read as a success.
+if [ -n "${MIGRATE_DB_HOST:-}" ] && [ "${MIGRATE_SKIP:-0}" != "1" ]; then
+  SCHEMA_STATE="at head on ${MIGRATE_DB_HOST}/${MIGRATE_DB_NAME:-meshpipeline}  (job ${CLOUDRUN_MIGRATE_JOB:-${DEPLOYMENT_ID}-migrate})"
+else
+  SCHEMA_STATE="no hosted database declared - the API migrates itself on start"
+fi
+if [ -n "${WORKER_MIG:-}" ]; then
+  QUEUE_SIGNAL="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOYMENT_ID}-queue-depth} on '${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}' -> autoscaler ${WORKER_MIG}"
+else
+  QUEUE_SIGNAL="no worker fleet declared"
+fi
 
 printf '\n\033[1m━━━ mesh executor ready ━━━\033[0m\n'
 cat <<SUMMARY
@@ -133,6 +191,8 @@ cat <<SUMMARY
   Mesh identity     ${MESH_SA_EMAIL}                (${MESH_SA_DISPOSITION})
   Mesh image        ${MESH_DIGEST}
   Mesh exchange     gs://${GCP_MESH_BUCKET}         (${MESH_BUCKET_DISPOSITION})
+  Schema            ${SCHEMA_STATE}
+  Queue depth       ${QUEUE_SIGNAL}
   Deployment state  deploy/output/deployment.json   (ownership + digests; no secret values)
 
   Point the local application at it: set GCP_PROJECT_ID, GCP_REGION,

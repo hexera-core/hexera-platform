@@ -30,6 +30,11 @@ _HOSTILE = {
 def _run(extra_env: dict[str, str]) -> subprocess.CompletedProcess:
     env = {**os.environ, **extra_env}
     env["PYTHONPATH"] = str(_REPO / "src")
+    # PYTEST_ADDOPTS carries this run's own options, and CI sets it to --randomly-seed=<n>. The
+    # child below disables pytest-randomly (-p no:randomly), so inheriting that flag hands it an
+    # option nothing can parse and the child dies on its command line rather than on the thing
+    # under test - reporting a hermeticity failure that never ran.
+    env.pop("PYTEST_ADDOPTS", None)
     return subprocess.run(
         [sys.executable, "-m", "pytest", *_AFFECTED, "-q", "-p", "no:randomly"],
         cwd=_REPO, capture_output=True, text=True, timeout=300, env=env)

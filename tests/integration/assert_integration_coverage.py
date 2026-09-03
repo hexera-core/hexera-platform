@@ -25,6 +25,11 @@ REQUIRED = {
 ALLOWED_SKIP_SUBSTRINGS = (
     "real STEP not staged",
     "restricted MinIO identity not provisioned",
+    # A compose stack brought up INSIDE the containerised tier would be a container nested in a
+    # container, which is not the isolation these tests describe. This string is emitted only when
+    # the runner marks the tier; a host run with no daemon still says "docker is unavailable here"
+    # and still fails here, which is the case worth catching.
+    "compose stacks are a host-tier concern",
 )
 
 #: A floor, not a target. The database-backed modules contribute far more than this; the point is

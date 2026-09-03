@@ -34,7 +34,10 @@ def test_the_installer_scan_is_not_vacuous():
     assert len(resolvers) >= 4, (
         f"only {len(resolvers)} project-dependency installers found - the scan has stopped seeing them")
     files = {r[0] for r in resolvers}
-    for expected in (".github/workflows/ci.yml", "devtools/env/setup.sh", "Dockerfile"):
+    # CI installs through the composite action every lane shares, not in the workflow: one
+    # environment definition rather than twelve that drift. The scan walks tracked files, so
+    # it follows automatically - this list only has to name where the installer now lives.
+    for expected in (".github/actions/setup-hexera/action.yml", "devtools/env/setup.sh", "Dockerfile"):
         assert expected in files, f"{expected} is no longer discovered as an installer"
 
 

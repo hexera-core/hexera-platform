@@ -51,7 +51,15 @@ def image_references() -> list[tuple[str, str]]:
     for m in re.finditer(r"^\s*image:\s*['\"]?(\S+?)['\"]?\s*$", read(COMPOSE), re.M):
         refs.append(("docker-compose.yml", m.group(1)))
 
-    for m in re.finditer(r"docker\s+run\s+(?:[-\w=.]+\s+)*([\w./-]+:[\w.@:-]+)", read(CI)):
+    # Images the workflow BUILT earlier in the same job are not third-party inputs: there is no
+    # upstream to pin them to, and their content is this commit. Collect them from the build steps
+    # and exclude them, rather than relying on a `docker run` being formatted so the scan misses it
+    # - which is how these went unnoticed until the smoke steps were reflowed onto one line.
+    ci_text = read(CI)
+    locally_built = set(re.findall(r"docker\s+build\s+[^\n]*?-t\s+(\S+)", ci_text))
+    for m in re.finditer(r"docker\s+run\s+(?:[-\w=.]+\s+)*([\w./-]+:[\w.@:-]+)", ci_text):
+        if m.group(1) in locally_built:
+            continue
         refs.append((".github/workflows/ci.yml", m.group(1)))
 
     assert refs, "no image references discovered - the scan subject is empty"
@@ -260,6 +268,10 @@ def test_ci_actions_are_pinned_to_full_commit_shas():
     uses = re.findall(r"^\s*(?:-\s*)?uses:\s*(\S+)", read(CI), re.M)
     assert uses, "no CI actions found - the scan subject is empty"
     for ref in uses:
+        # A path-based action (./.github/actions/...) is versioned BY this commit - there is no
+        # upstream to pin and no @sha to give it. Third-party actions are the risk this guards.
+        if ref.startswith("./"):
+            continue
         assert "@" in ref, f"CI action without a pinned ref: {ref}"
         sha = ref.split("@", 1)[1]
         assert FULL_SHA.match(sha), (

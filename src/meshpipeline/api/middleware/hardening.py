@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 import time
 
-import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.rate_limit import incr_window
+from meshpipeline.settings import plans
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,11 @@ class RateLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        limit = rtcfg.RATE_LIMIT_PER_MINUTE
+        # The DEFAULT plan's rate, from the same authority a keyed caller's plan is read from -
+        # this middleware runs before any credential has been examined, so the plan is not knowable
+        # here. A caller presenting an API key is additionally held to its own plan's rate, where
+        # that plan IS known (api/security.py).
+        limit = plans.limits_for(None).rate_limit_per_minute
         if scope["type"] != "http" or limit <= 0:
             return await self.app(scope, receive, send)
         path = scope.get("path", "")

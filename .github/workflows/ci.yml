@@ -1,165 +1,420 @@
-# Responsibility: Run the blocking checks for every push and pull request: source gates, image builds, integration.
-# Owns: the pinned action digests, the fixed test seed, and the guard that fails a silently skipped integration test.
-# Boundaries: it only reads the repository; every version it installs comes from requirements/.
+# Responsibility: Run every blocking check for a change, one concern per lane, behind a single gate.
+# Owns: the lane split, the pinned action digests, the fixed test seed, and the aggregate verdict.
+# Boundaries: it reads the repository and builds images; it deploys nothing and publishes nothing.
 
+# WHY LANES. This used to be two jobs, and `make check` inside one of them meant lint, types and
+# 6900 tests shared a single red X: you could not see which concern broke without opening the log,
+# a lint typo cost a full test run, and nothing ran in parallel. Each lane below is one question
+# with one answer. `ci-gate` is the only check worth marking required - it is the aggregate, so new
+# lanes join it without anyone editing branch protection.
 name: CI
 
-# The workflow only reads the repository; nothing here writes contents, packages, or
-# statuses beyond the default check reporting. Least privilege, stated explicitly.
+# Least privilege, stated. security-events is what lets CodeQL upload its SARIF; nothing here
+# writes contents, packages or statuses.
+# Default for EVERY lane: read the repository and nothing else. The two lanes that upload code
+# scanning results ask for security-events themselves - granting it workflow-wide would hand
+# twelve jobs, most of which run third-party actions, a token that can write security findings.
 permissions:
   contents: read
 
 on:
   push:
+    branches: [main]
   pull_request:
+  # Weekly, because a dependency advisory lands on nobody's commit: CodeQL and the dependency
+  # audit go stale against a repository that simply was not touched that week.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Optional branch, tag or full commit SHA to validate instead of the workflow ref
+        required: false
+        default: ""
+        type: string
 
+# A manual run is never cancelled by a later one - somebody is watching it. Pull requests and
+# branches cancel their own supersedes.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && format('{0}-manual-{1}', github.workflow, github.run_id) || (github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}', github.workflow, github.ref)) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  # The blocking suites run in a DETERMINISTIC randomised order (pytest-randomly): a fixed seed so
+  # a run reproduces, a shuffled order so inter-test state leakage surfaces. pytest-randomly echoes
+  # the seed, so any failure replays with --randomly-seed=<n>.
+  PYTEST_ADDOPTS: "--randomly-seed=8675309"
+  # Settings validation refuses to import without these. They are not credentials and reach nothing.
+  DEEPSEEK_API_KEY: test
+  DEEPINFRA_API_KEY: test
+  POSTGRES_PASSWORD: test
 
 jobs:
-  check:
-    name: make check (ruff + mypy ratchet + unit) & boundary suites
-    runs-on: ubuntu-latest
-    env:
-      DEEPSEEK_API_KEY: test
-      DEEPINFRA_API_KEY: test
-      POSTGRES_PASSWORD: test
-      # Run the blocking unit suites in a DETERMINISTIC randomised order (pytest-randomly): a fixed
-      # seed so the run is reproducible, but a shuffled order that surfaces inter-test state leakage
-      # a fixed order would hide. `make test-random` sweeps more seeds locally. The seed is echoed by
-      # pytest-randomly on every run, so a failure is reproducible with --randomly-seed=<n>.
-      PYTEST_ADDOPTS: "--randomly-seed=8675309"
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      checkout_ref: ${{ steps.checkout-ref.outputs.ref }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+      run_python: ${{ steps.scope.outputs.run_python }}
+      run_images: ${{ steps.scope.outputs.run_images }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - name: Resolve checkout ref
+        id: checkout-ref
+        env:
+          TARGET_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || '' }}
+        run: |
+          set -euo pipefail
+          echo "ref=${TARGET_REF:-$GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.11"
-          cache: pip
-      # gmsh's Python wheel dlopen()s its GUI shared libs AT IMPORT even headless, and
-      # pytest.importorskip does not catch the resulting OSError - without these the gmsh
-      # engine tests do not skip, they ERROR at collection and fail the job. Same list the
-      # pipeline image ships. libgl1/libegl1 additionally back the pyvista render stack.
-      - run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-            libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
-            libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6
-      # The single pinned environment + the toolchain. No inline pins: a version pinned here
-      # AND in a requirements file is two lists that drift apart silently (enforced by
-      # devtools/quality/check_dependency_drift.py below).
-      - run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
-      # The suite runs against the INSTALLED package (PyPA src layout) - not a path hack.
-      - name: Install the meshpipeline distribution (editable)
-        run: pip install -e . --no-deps
+          ref: ${{ steps.checkout-ref.outputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
 
-      # `make check` = ruff (src/tests/alembic/devtools) + the mypy ratchet + the unit suite.
-      - name: make check - BLOCKING
-        run: make check
+      # A documentation-only change should not build three container images. Anything the scope
+      # cannot establish - a manual run, a first push, a missing base - runs EVERYTHING: the
+      # failure mode of guessing wrong here is a change that shipped unchecked.
+      - name: Detect changed scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
+          PR_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          docs_only=false
+          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "push" ]; then
+            base="$PR_BASE"
+            [ "$EVENT_NAME" = "push" ] && base="$PUSH_BASE"
+            if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ]; then
+              git cat-file -e "${base}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$base"
+              mapfile -t changed < <(git diff --name-only "$base" HEAD)
+              if [ "${#changed[@]}" -gt 0 ]; then
+                docs_only=true
+                for path in "${changed[@]}"; do
+                  case "$path" in
+                    *.md|docs/*) ;;
+                    *) docs_only=false ;;
+                  esac
+                done
+              fi
+            fi
+          fi
+          run_python=true
+          run_images=true
+          if [ "$docs_only" = "true" ]; then
+            run_python=false
+            run_images=false
+          fi
+          {
+            echo "docs_only=$docs_only"
+            echo "run_python=$run_python"
+            echo "run_images=$run_images"
+          } >> "$GITHUB_OUTPUT"
 
-      # Called out as their own steps so a boundary/provider regression is legible in CI,
-      # not buried inside the unit run.
-      - name: Architecture boundary tests - BLOCKING
+  workflow-audit:
+    name: Workflow audit
+    needs: [preflight]
+    permissions:
+      contents: read
+      security-events: write
+      # actions: read is what lets a code-scanning upload read the run it belongs to. Without it
+      # the analysis completes and then fails on "Resource not accessible by integration" - the
+      # findings are produced and thrown away, which looks like a scanner fault and is a grant.
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      # actionlint catches the shell and expression errors; zizmor catches the security ones
+      # (unpinned actions, injectable expressions, over-broad permissions). A workflow is code
+      # that runs with a token, and nothing else in this repository reviews it.
+      - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+
+  lint:
+    name: Lint (ruff)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      - run: make lint
+
+  typecheck:
+    name: Typecheck (mypy ratchet)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      # A ratchet, not a clean bill: it fails on any NEW error against the checked-in baseline.
+      - run: python devtools/quality/mypy_ratchet.py
+
+  contracts:
+    name: Repository contracts
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      - name: One dependency list, not two
+        run: python devtools/quality/check_dependency_drift.py
+      - name: No credential VALUE in any deployment spec
+        run: python devtools/quality/check_deploy_secrets.py
+      # The deploy scripts are the release path; a parse error in one is found here or in prod.
+      - name: Deploy and release shell parses
+        run: |
+          set -euo pipefail
+          for f in deploy/gcp/scripts/*.sh deploy/gcp/worker/*.sh devtools/release/*.sh devtools/env/*.sh; do
+            bash -n "$f" || { echo "::error file=$f::does not parse"; exit 1; }
+          done
+
+  unit:
+    name: Unit suite
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      - run: make test-fast
+
+  boundary:
+    name: Architecture and provider contracts
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      # Their own lane so a boundary or provider-seam regression is legible, not buried in 6900 tests.
+      - name: Architecture boundaries
         run: python -m pytest -q -p no:cacheprovider tests/unit/hygiene
-
-      # Runs the contract for BOTH shipped backends of every seam. The provider SDKs come
-      # from requirements/runtime.txt above (google-cloud-storage / google-auth / minio) and the
-      # suite FAILS if one is missing - it must never quietly cover only the local backend.
-      - name: Provider-contract tests (both backends of every seam) - BLOCKING
+      - name: Both backends of every declared seam
         run: python -m pytest -q -p no:cacheprovider -rs tests/unit/platform
 
-      - name: mypy ratchet (explicit) - BLOCKING on any NEW type error
-        run: python devtools/quality/mypy_ratchet.py
+  dependency-scan:
+    name: Dependency audit
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      # Audits the RESOLVED environment rather than the pin file, so a vulnerable transitive
+      # dependency nobody pinned is still reported.
+      - name: pip-audit the installed environment
+        run: |
+          set -euo pipefail
+          # The runner's own pip and setuptools are part of the audited environment. They are
+          # not this project's pins, so a stale one reports an advisory nobody here can fix
+          # by editing requirements. Bring the tooling current, then audit.
+          pip install --upgrade pip setuptools
+          pip install pip-audit
+          # --skip-editable: meshpipeline is installed from this checkout and is not published,
+          # so auditing it is a PyPI lookup that cannot succeed. Its dependencies still are.
+          # No --strict: it fails on any distribution that could not be audited, which
+          # includes the editable meshpipeline that --skip-editable deliberately skips.
+          # A real advisory still fails this lane on its own exit code.
+          pip-audit --skip-editable --progress-spinner off
 
-      - name: Dependency-drift check - BLOCKING on a second dependency list
-        run: python devtools/quality/check_dependency_drift.py
+  codeql:
+    name: CodeQL
+    needs: [preflight]
+    permissions:
+      contents: read
+      security-events: write
+      # actions: read is what lets a code-scanning upload read the run it belongs to. Without it
+      # the analysis completes and then fails on "Resource not accessible by integration" - the
+      # findings are produced and thrown away, which looks like a scanner fault and is a grant.
+      actions: read
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        with:
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        with:
+          category: /language:python
 
   images:
-    name: Docker image targets (api / pipeline / mesh)
-    runs-on: ubuntu-latest
+    name: Image targets (api / pipeline / mesh)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_images == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      # One wheel, three runtime images - each target must build (see deploy/IMAGE_BUILD.md).
-      # The product version is read from its one authority and transported into the build; the
-      # Dockerfile refuses to produce an image whose label disagrees with the installed package.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
       - name: Resolve the authoritative product version
         run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
-      - name: Build api target (light - FastAPI + beat + maintenance)
+      - name: Build api target (FastAPI + beat + maintenance)
         run: docker build --target api --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-api:ci .
       - name: Build pipeline target (Celery worker + render stack)
         run: docker build --target pipeline --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-pipeline:ci .
       - name: Build mesh target (OpenFOAM + vmtk + OCC)
         run: docker build --target mesh --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-mesh:ci .
+      # An image that builds and cannot import is a green build and a broken deploy.
+      - name: Smoke - api entrypoint imports the ASGI app
+        run: |
+          docker run --rm --entrypoint python meshpipeline-api:ci \
+            -c "import meshpipeline.runtime.api_server as m; assert m.app"
+      - name: Smoke - pipeline entrypoint imports celery and the render stack
+        run: |
+          docker run --rm --entrypoint python meshpipeline-pipeline:ci \
+            -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
+      - name: Smoke - mesh image carries the native toolchain
+        run: |
+          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+            meshpipeline-mesh:ci bash -lc \
+            'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
 
-      - name: Smoke - api imports
-        run: |
-          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-            --entrypoint python meshpipeline-api:ci -c "import meshpipeline.runtime.api_server as m; assert m.app; print('api OK')"
-      - name: Smoke - pipeline imports (celery app + render stack)
-        run: |
-          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-            --entrypoint python meshpipeline-pipeline:ci -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w.celery_app; print('pipeline OK')"
-      - name: Smoke - mesh toolchain (OpenFOAM bashrc + vmtk shim + runner import)
-        run: |
-          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-            meshpipeline-mesh:ci bash -lc "test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c 'import meshpipeline.runtime.mesh_runner; print(\"mesh OK\")'"
+  integration:
+    name: Integration tier (real Redis + Postgres + MinIO)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_images == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      # THE SUPPORTED RUNNER, not a second implementation of it. CI used to orchestrate the three
+      # services itself and hand the suite a plain `mesh` database. That database carried no
+      # disposable marker and the run set no MESH_TEST_RUN_ID, so the integration conftest never
+      # established its authority and all ~168 destructive tests ERRORED at setup - a tier that
+      # has never actually run, in CI or anywhere, while looking like it did.
+      #
+      # tests/integration/run_in_container.sh already provisions a per-run database stamped with
+      # that marker, unsets any ambient DATABASE_URL, health-checks Postgres, Redis and MinIO, and
+      # tears the stack down from a trap. Developers run it through `make test-container-integration`;
+      # CI running the same command is what keeps the two from diverging again.
+      - run: make test-container-integration
 
-      # The integration tier runs the REAL graph/celery/pyvista + a REAL Redis + a REAL Postgres
-      # + a REAL MinIO - the boundary the hermetic unit tier stubs. It runs INSIDE the pipeline
-      # image just built above (no second build) with the suite bind-mounted (the wheel ships the
-      # package, not the tests), as its own pytest session (the tier conftest fails loudly on
-      # unit-stub contamination). Redis, Postgres AND MinIO are PROVISIONED, not skipped: the
-      # migration wrapper test drives the real production run_migrations() against Postgres and the
-      # artifact-delivery test drives real fault-injected uploads against MinIO - both FAIL (never
-      # skip) if their service is unavailable. A skipped DB test is exactly what let an unbootable
-      # API through, and a skipped MinIO test is exactly what let a false artifact success through.
-      # Any skip other than the one test that needs licensed 3D CAD a clean clone never has FAILS
-      # the job.
-      - name: Integration tier (real Redis + real Postgres + real MinIO, inside the pipeline image) - BLOCKING
+  ui:
+    name: UI in a real browser
+    needs: [preflight]
+    if: needs.preflight.outputs.run_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-hexera
+      # The shipped page, driven in a real headless Chrome. It asserts the vendored browser assets
+      # and the page's own behaviour, which no Python-level test reaches. The runner image ships
+      # Chrome; the suite fails loudly rather than skipping when it cannot find one, which is the
+      # property that makes this lane worth having.
+      - run: make test-ui
+
+  ci-gate:
+    name: hexera/ci-gate
+    needs:
+      - preflight
+      - workflow-audit
+      - lint
+      - typecheck
+      - contracts
+      - unit
+      - boundary
+      - dependency-scan
+      - codeql
+      - images
+      - integration
+      - ui
+    # `always()` would also fire for a run the concurrency group cancelled, posting a red required
+    # check nobody is waiting on. `!cancelled()` still runs the gate when a lane genuinely fails,
+    # which is the entire point of it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify every selected lane
+        env:
+          # These run for every change, including a documentation-only one.
+          REQUIRED_RESULTS: |
+            preflight=${{ needs.preflight.result }}
+            workflow-audit=${{ needs.workflow-audit.result }}
+          # These are scope-selected: `skipped` is a legitimate outcome, `failure` never is.
+          SELECTED_RESULTS: |
+            lint=${{ needs.lint.result }}
+            typecheck=${{ needs.typecheck.result }}
+            contracts=${{ needs.contracts.result }}
+            unit=${{ needs.unit.result }}
+            boundary=${{ needs.boundary.result }}
+            dependency-scan=${{ needs.dependency-scan.result }}
+            codeql=${{ needs.codeql.result }}
+            images=${{ needs.images.result }}
+            integration=${{ needs.integration.result }}
+            ui=${{ needs.ui.result }}
         run: |
           set -euo pipefail
-          docker network create ci-net
-          docker run -d --name ci-redis --network ci-net redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
-          docker run -d --name ci-postgres --network ci-net \
-            -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh postgres:16-alpine
-          # MinIO: the SAME pinned image the local stack uses. Deterministic test-only credentials.
-          docker run -d --name ci-minio --network ci-net \
-            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
-          for i in $(seq 1 20); do
-            if docker run --rm --network ci-net redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99 redis-cli -h ci-redis ping 2>/dev/null | grep -q PONG; then break; fi
-            sleep 1
-          done
-          for i in $(seq 1 30); do
-            if docker exec ci-postgres pg_isready -U mesh >/dev/null 2>&1; then break; fi
-            sleep 1
-          done
-          # Health-check MinIO on its S3 endpoint before tests begin; FAIL if it never comes up.
-          minio_ok=""
-          for i in $(seq 1 30); do
-            if docker run --rm --network ci-net --entrypoint curl curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 \
-                 -sf http://ci-minio:9000/minio/health/ready >/dev/null 2>&1; then minio_ok=1; break; fi
-            sleep 1
-          done
-          if [ -z "$minio_ok" ]; then
-            echo "::error::MinIO did not become healthy - the artifact-delivery integration tests cannot run"
-            docker logs ci-minio || true
-            docker rm -f ci-redis ci-postgres ci-minio >/dev/null 2>&1 || true
-            docker network rm ci-net >/dev/null 2>&1 || true
-            exit 1
-          fi
-          docker run --rm --network ci-net \
-            -e REDIS_URL=redis://ci-redis:6379/0 \
-            -e POSTGRES_HOST=ci-postgres -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh \
-            -e MINIO_ENDPOINT=ci-minio:9000 -e MINIO_ACCESS_KEY=minioadmin -e MINIO_SECRET_KEY=minioadmin \
-            -e MINIO_BUCKET=ci-test-jobs \
-            -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x \
-            -v "$PWD/tests:/srv/tests:ro" --entrypoint python meshpipeline-pipeline:ci \
-            -m pytest -q -rs -o asyncio_mode=auto -p no:cacheprovider /srv/tests/integration | tee integ.log
-          # Silent-skip guard: the ONLY acceptable skip is the one test that needs licensed 3D CAD
-          # (real STEP not staged). A Redis/Postgres/MinIO/service skip must FAIL, not pass green.
-          if grep -E "^SKIPPED" integ.log | grep -v "real STEP not staged" ; then
-            echo "::error::an integration test skipped for a reason other than the licensed-CAD fixture - a required service was not provisioned"
-            exit 1
-          fi
-          docker rm -f ci-redis ci-postgres ci-minio >/dev/null 2>&1 || true
-          docker network rm ci-net >/dev/null 2>&1 || true
+          failures=0
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            name="${entry%%=*}"; result="${entry#*=}"
+            echo "${name}: ${result}"
+            if [ "$result" != "success" ]; then
+              echo "::error title=Required CI lane did not succeed::${name} finished with ${result}"
+              failures=1
+            fi
+          done <<< "$REQUIRED_RESULTS"
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            name="${entry%%=*}"; result="${entry#*=}"
+            echo "${name}: ${result}"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error title=Selected CI lane did not succeed::${name} finished with ${result}"
+                failures=1
+                ;;
+            esac
+          done <<< "$SELECTED_RESULTS"
+          exit "$failures"

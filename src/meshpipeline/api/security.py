@@ -1,17 +1,27 @@
-# Responsibility: Establish who is calling, and refuse a caller who cannot prove it.
-# Boundaries: identity only.
+# Responsibility: Establish who is calling, refuse a caller who cannot prove it, and hold a keyed caller to its plan's rate.
+# Boundaries: identity and the limits that identity carries; what it may then do is the route's question.
 from __future__ import annotations
 
 import hmac
 import logging
+import time
 from hashlib import sha256
 from typing import Annotated
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.contracts import api_key
+from meshpipeline.contracts.identity import Credential, Principal
+from meshpipeline.contracts.rate_limit import incr_window
+from meshpipeline.persistence.session import get_db
+from meshpipeline.settings import plans
 
 logger = logging.getLogger(__name__)
+
+_BEARER_SCHEME = "bearer"
+#: > one 60s window, so a window outlives its own counting (as in middleware/hardening.py)
+_WINDOW_TTL_SECONDS = 90
 
 
 def expected_user_sig(user_id: str) -> str:
@@ -39,9 +49,91 @@ def verify_identity(x_api_key: str | None, x_user_id: str | None,
     return user_id or (x_api_key or "dev-user")
 
 
+def _bearer_credential(authorization: str | None) -> str:
+    scheme, _, value = (authorization or "").strip().partition(" ")
+    return value.strip() if scheme.lower() == _BEARER_SCHEME else ""
+
+
+async def resolve_principal(authorization: str | None, x_api_key: str | None,
+                            x_user_id: str | None, x_user_sig: str | None) -> Principal:
+    # THE ONE SEAM. Every credential this product accepts becomes a Principal here and nowhere
+    # else, so the rest of the system knows only "who is calling", never which header proved it.
+    # The indirection is what makes the tenant boundary cheap to widen: when organisations arrive,
+    # this function starts filling in `organization_id` and every call site is already reading the
+    # answer from a Principal instead of pulling an owner id out of a header.
+    presented = _bearer_credential(authorization)
+    if presented:
+        return await _principal_from_key(presented)
+
+    owner_id = verify_identity(x_api_key, x_user_id, x_user_sig)
+    return Principal(owner_id=owner_id,
+                     credential=Credential.signed_header if polcfg.USER_TOKEN_SECRET
+                     else Credential.self_asserted)
+
+
+async def _principal_from_key(presented: str) -> Principal:
+    from meshpipeline.application import api_key_service
+
+    # Shape first, and refuse on shape alone. A bearer token that is not one of ours must not cost
+    # a database session: anyone may send an Authorization header, so that would be a free way to
+    # exhaust the connection pool. The service checks the shape again for its own callers.
+    if api_key.parse(presented) is None:
+        raise HTTPException(status_code=401, detail="Invalid, revoked or expired API key")
+
+    async with get_db() as db:
+        principal = await api_key_service.authenticate(db, presented)
+    if principal is None:
+        # One refusal for every cause. A caller learns that this credential does not work, not
+        # which part of it was wrong.
+        raise HTTPException(status_code=401, detail="Invalid, revoked or expired API key")
+    await _enforce_plan_rate(principal)
+    return principal
+
+
+async def _enforce_plan_rate(principal: Principal) -> None:
+    # Applied HERE because this is the first point at which the plan is known - the transport
+    # middleware limits by header or client address, before any credential has been read. A
+    # keyed caller is therefore held to its own plan's rate rather than to whatever it shares
+    # an egress address with.
+    limit = plans.limits_for(principal.plan).rate_limit_per_minute
+    if limit <= 0:
+        return
+    window = int(time.time() // 60)
+    try:
+        used = await incr_window(f"plan:{principal.owner_id}", window, _WINDOW_TTL_SECONDS)
+    except Exception as exc:
+        # Fail open, exactly as the transport limiter does: an unavailable counter must not turn
+        # into an outage for callers who have proven who they are.
+        logger.warning("plan rate limiter unavailable - failing open: %s", exc)
+        return
+    if used > limit:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded, retry shortly",
+                            headers={"Retry-After": str(60 - int(time.time() % 60))})
+
+
+async def principal_dep(
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header()] = None,
+    x_user_id: Annotated[str | None, Header()] = None,
+    x_user_sig: Annotated[str | None, Header()] = None,
+) -> Principal:
+    return await resolve_principal(authorization, x_api_key, x_user_id, x_user_sig)
+
+
 async def owner_dep(
+    # FastAPI resolves this ONCE per request and shares it with every other dependency that asks
+    # for it, so a route taking both the owner and the plan verifies the key once - one database
+    # read, one recorded use, one rate-limit unit. It is optional only so that an in-process
+    # caller with headers in hand can still resolve an identity without an ASGI request.
+    principal: Annotated[Principal | None, Depends(principal_dep)] = None,
     x_api_key: Annotated[str | None, Header()] = None,
     x_user_id: Annotated[str | None, Header()] = None,
     x_user_sig: Annotated[str | None, Header()] = None,
 ) -> str:
-    return verify_identity(x_api_key, x_user_id, x_user_sig)
+    if principal is None:
+        principal = await resolve_principal(None, x_api_key, x_user_id, x_user_sig)
+    return principal.owner_id
+
+
+async def plan_dep(principal: Annotated[Principal, Depends(principal_dep)]) -> str:
+    return principal.plan

@@ -3,7 +3,7 @@
 # safe primitive). A worker wedged past the deadline is a zombie; renewal would let it hold
 # the job forever.
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -21,7 +21,7 @@ class _Result:
 
 
 def _fixture(deadline_delta_s: int):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     token = uuid.uuid4()
     job = uuid.uuid4()
     row = SimpleNamespace(

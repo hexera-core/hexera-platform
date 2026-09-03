@@ -174,10 +174,26 @@ if [ -f "${ENV_FILE}" ]; then
   done
   [ ${#missing[@]} -eq 0 ] && ok "every required deployment variable is set" \
                            || no "unset deployment variables: ${missing[*]}"
-  if grep -qE '^(DEEPSEEK_API_KEY|DEEPINFRA_API_KEY|MESH_API_KEY|TAVILY_API_KEY)=' "${ENV_FILE}"; then
-    no "${ENV_LABEL} carries a credential VALUE - the deployment environment holds names only"
+  # WHICH names are credentials is not decided here. devtools/quality/check_deploy_secrets.py reads
+  # the `secret=True` flag off settings/inventory.py, so this gate and the CI step refuse exactly
+  # the same set. The hand-written list this replaced named four of them and missed both
+  # POSTGRES_PASSWORD and MINIO_SECRET_KEY - the two a live audit then found published as literal
+  # values in a Cloud Run service spec. A second list is how that happens.
+  SECRET_GATE="${REPO_ROOT}/devtools/quality/check_deploy_secrets.py"
+  if [ ! -f "${SECRET_GATE}" ]; then
+    skip "credential-value check not run - ${SECRET_GATE#"${REPO_ROOT}/"} is absent"
   else
-    ok "no credential values in ${ENV_LABEL} (names only)"
+    gate_out="$("${PY}" "${SECRET_GATE}" "${ENV_FILE}" 2>&1)"; gate_rc=$?
+    case "${gate_rc}" in
+      0) ok "no credential values in ${ENV_LABEL} (names only)" ;;
+      1) no "${ENV_LABEL} carries a credential VALUE - the deployment environment holds names only"
+         # Only the offending NAMES. The gate never prints a value it found, and neither does this.
+         printf '%s\n' "${gate_out}" | sed -n 's/^  - /       /p'
+         printf '       full report: %s %s\n' "${PY}" "${SECRET_GATE#"${REPO_ROOT}/"} ${ENV_LABEL}" ;;
+      # An interpreter that cannot import the settings catalogue tells us nothing about the file.
+      # Unrun, not clean: it still blocks DEPLOYMENT READY rather than reading as a pass.
+      *) skip "credential-value check not run - ${PY} could not run it: $(printf '%s\n' "${gate_out}" | tail -1)" ;;
+    esac
   fi
   # The image variables the manifests render from must be the RECORDED digest references.
   for pair in "MESH_IMAGE:mesh"; do

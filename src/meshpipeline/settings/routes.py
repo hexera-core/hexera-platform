@@ -39,6 +39,25 @@ def _value(role: str, suffix: str) -> str:
     return declared_value(inventory.get(inventory.route_setting_name(_prefix_for(role), suffix)))
 
 
+def configured_route_targets() -> list[tuple[str, str, str, str]]:
+    # (role, target, provider, model) for every model this deployment can send a call to. Read
+    # through the same declared entries route construction reads, so an operator's override
+    # counts and a role added to ROUTE_MATRIX is covered the moment it is declared. A caller that
+    # needs to reason about the whole configured fleet - what it costs, what it can reach - asks
+    # here instead of importing five agent settings modules and their import-time side effects.
+    out: list[tuple[str, str, str, str]] = []
+    for row in inventory.ROUTE_MATRIX:
+        role = row[0]
+        out.append((role, "primary", _value(role, "PROVIDER"), _value(role, "MODEL")))
+        sb_provider = _value(role, "STANDBY_PROVIDER").strip()
+        sb_model = _value(role, "STANDBY_MODEL").strip()
+        # A half-configured standby is refused where the route is BUILT; listing it here would
+        # report a target no call can reach, and duplicating the refusal would give it two homes.
+        if sb_provider and sb_model:
+            out.append((role, "standby", sb_provider, sb_model))
+    return out
+
+
 def route_from_catalogue(
     role: str,
     *,

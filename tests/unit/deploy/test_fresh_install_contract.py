@@ -226,7 +226,7 @@ def test_image_tagging_works_without_git_history(tmp_path):
     assert p2.stdout.strip() == "v9"
 
 
-# deployment-state manifest: mesh resources, their ownership, and never a credential
+# deployment-state manifest: what was provisioned, its ownership, and never a credential
 def test_deployment_state_manifest_records_mesh_ownership_only(tmp_path):
     env_file = _write_env(tmp_path)
     p, _ = _run("write-deployment-state.sh", tmp_path, env_file)
@@ -236,12 +236,42 @@ def test_deployment_state_manifest_records_mesh_ownership_only(tmp_path):
     doc = json.loads(state.read_text())
     assert doc["deployment_id"] == "isolated-deploy"
     assert doc["resources"]["mesh_job"]["disposition"] == "created"
-    # ONLY mesh resources: the application is local and has no deployed state to record
+    # A deployment that declares no database and no worker fleet provisions neither, so neither is
+    # recorded: the manifest states what exists, and an empty entry would read as one that does.
     assert set(doc["resources"]) == {"artifact_registry", "mesh_job", "exchange_bucket",
                                      "mesh_service_account"}
-    assert set(doc["images"]) == {"mesh"}
+    # BOTH images. The app digest is deployed state now - the pre-deploy migration and the
+    # queue-depth publisher run application code, and a record that named only the mesh image could
+    # not say which build migrated the schema.
+    assert set(doc["images"]) == {"mesh", "app"}
     blob = json.dumps(doc)
     for leak in ("postgres://", "postgresql://", "rediss://", "sk-", "BEGIN ", "secret_names"):
+        assert leak not in blob, f"deployment manifest leaked {leak}"
+
+
+def test_deployment_state_manifest_records_a_declared_database_by_address_not_by_url(tmp_path):
+    # The other half: a deployment that DOES declare the two optional tiers records them - and the
+    # database still appears as an address plus a secret NAME, never as a DSN carrying a password.
+    env_file = _write_env(tmp_path, {
+        "MIGRATE_DB_HOST": "10.66.0.3", "MIGRATE_DB_NAME": "meshpipeline",
+        "POSTGRES_PASSWORD_SECRET": "postgres-password",
+        "CLOUDRUN_MIGRATE_JOB": "isolated-deploy-migrate",
+        "WORKER_MIG": "isolated-workers", "WORKER_MIG_ZONE": "europe-west1-b",
+        "CLOUDRUN_QUEUE_DEPTH_JOB": "isolated-deploy-queue-depth",
+        # QUOTED, the way bootstrap-env.sh writes it: a cron expression is the one value in this
+        # file that would otherwise be glob-expanded by the shell that sources it.
+        "QUEUE_DEPTH_SCHEDULE": '"* * * * *"', "QUEUE_NAME": "simulation_jobs",
+    })
+    p, _ = _run("write-deployment-state.sh", tmp_path, env_file)
+    import json
+    state = tmp_path / "deploy-output" / "deployment.json"
+    assert state.exists(), p.stderr
+    doc = json.loads(state.read_text())
+    assert doc["resources"]["migration_job"]["database"] == "10.66.0.3:5432/meshpipeline"
+    assert doc["resources"]["migration_job"]["password_secret"] == "postgres-password"
+    assert doc["resources"]["queue_depth_job"]["scales"] == "isolated-workers"
+    blob = json.dumps(doc)
+    for leak in ("postgres://", "postgresql://", "rediss://", "password="):
         assert leak not in blob, f"deployment manifest leaked {leak}"
 
 

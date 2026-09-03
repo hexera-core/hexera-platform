@@ -85,6 +85,16 @@ discover() {
   # the exchange bucket must be GLOBALLY unique - suffix with the project number (stable per project)
   MESH_BUCKET="${GCP_MESH_BUCKET:-${DEPLOY_ID}-exchange-${PROJECT_NUMBER}}"
 
+  # The two OPTIONAL tiers. Their NAMES are derived here like every other resource this tooling
+  # owns; what they point AT - a database, a broker, a worker group - is never guessed. Discovery
+  # asks the project what exists; a database is not something to find by resemblance and attach a
+  # migration to, so those stay empty until a deployment states them.
+  MIGRATE_JOB="${CLOUDRUN_MIGRATE_JOB:-${DEPLOY_ID}-migrate}"
+  MIGRATE_SA="${MIGRATE_SERVICE_ACCOUNT:-${DEPLOY_ID}-migrate}"
+  QUEUE_DEPTH_JOB="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOY_ID}-queue-depth}"
+  QUEUE_DEPTH_SA="${QUEUE_DEPTH_SERVICE_ACCOUNT:-${DEPLOY_ID}-queue-depth}"
+  QUEUE_DEPTH_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOY_ID}-queue-depth}"
+
   if gcloud run jobs describe "${MESH_JOB}" --region "${REGION}" >/dev/null 2>&1; then
     MESH_JOB_DISPOSITION=reused
     # Read the job's REAL runtime identity off the job itself; a job that declares none genuinely
@@ -154,6 +164,96 @@ MESH_SERVICE_ACCOUNT=${MESH_SA}
 MESH_CPU=4
 MESH_MEMORY=8Gi
 MESH_TIMEOUT_SECONDS=14400
+
+# The APPLICATION image, written by scripts/promote-release.sh as the validated digest. The API
+# runs it; the migration job and the queue-depth publisher run application code from the same bytes.
+APP_IMAGE=${APP_IMAGE:-}
+
+# the network the private-address tiers below are reached over (Cloud SQL, Memorystore)
+VPC_NETWORK=${VPC_NETWORK:-default}
+VPC_SUBNET=${VPC_SUBNET:-default}
+
+# PRE-DEPLOY MIGRATION (scripts/run-migrations.sh). Migrations run ONCE from the deploy, before
+# anything serves the promoted image; the API entrypoint keeps its advisory-locked self-migration as
+# the safety net. EMPTY MIGRATE_DB_HOST means this deployment declares no hosted database and the
+# stage is skipped - except under DEPLOY_NONINTERACTIVE, where automation may not skip a schema step.
+# POSTGRES_PASSWORD_SECRET is a Secret Manager CONTAINER NAME; the value never appears here or in
+# the job spec.
+CLOUDRUN_MIGRATE_JOB=${MIGRATE_JOB}
+MIGRATE_SERVICE_ACCOUNT=${MIGRATE_SA}
+MIGRATE_DB_HOST=${MIGRATE_DB_HOST:-}
+MIGRATE_DB_PORT=${MIGRATE_DB_PORT:-5432}
+MIGRATE_DB_NAME=${MIGRATE_DB_NAME:-meshpipeline}
+MIGRATE_DB_USER=${MIGRATE_DB_USER:-meshpipeline}
+POSTGRES_PASSWORD_SECRET=${POSTGRES_PASSWORD_SECRET:-}
+
+# QUEUE-DEPTH PUBLISHER (scripts/create-queue-depth-publisher.sh). One scheduled writer of the
+# metric the worker fleet scales on, off the fleet itself so a group at zero instances can still be
+# woken. EMPTY WORKER_MIG means this deployment declares no worker fleet and the stage is skipped.
+#
+# The thresholds are STATED (build-out plan, item 6): the autoscaler runs one instance per
+# WORKER_JOBS_PER_INSTANCE queued jobs, between MIN and MAX, no faster than COOLDOWN allows. MAX is
+# the cost ceiling. WORKER_JOBS_PER_INSTANCE is 1 because the worker runs celery at concurrency 1.
+# The SCHEDULE is every two minutes because one publish takes ~75 s on the application image - at
+# one minute the publisher overlaps itself and its writes can arrive out of order.
+CLOUDRUN_QUEUE_DEPTH_JOB=${QUEUE_DEPTH_JOB}
+QUEUE_DEPTH_SERVICE_ACCOUNT=${QUEUE_DEPTH_SA}
+QUEUE_DEPTH_SCHEDULER_JOB=${QUEUE_DEPTH_SCHEDULER}
+QUEUE_DEPTH_SCHEDULE="${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}"
+QUEUE_NAME=${QUEUE_NAME:-simulation_jobs}
+REDIS_URL=${REDIS_URL:-}
+WORKER_MIG=${WORKER_MIG:-}
+WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}
+WORKER_MIG_MIN_REPLICAS=${WORKER_MIG_MIN_REPLICAS:-1}
+WORKER_MIG_MAX_REPLICAS=${WORKER_MIG_MAX_REPLICAS:-5}
+WORKER_MIG_COOLDOWN_SECONDS=${WORKER_MIG_COOLDOWN_SECONDS:-180}
+WORKER_JOBS_PER_INSTANCE=${WORKER_JOBS_PER_INSTANCE:-1}
+
+# DATA TIER (scripts/create-data-tier.sh). Discovered or created there, recorded here so the stages
+# that consume them - migrations, the API service, the worker fleet - read one source.
+CLOUDSQL_INSTANCE=${CLOUDSQL_INSTANCE:-}
+CLOUDSQL_CONNECTION_NAME=${CLOUDSQL_CONNECTION_NAME:-}
+CLOUDSQL_TIER=${CLOUDSQL_TIER:-}
+REDIS_INSTANCE=${REDIS_INSTANCE:-}
+REDIS_TIER=${REDIS_TIER:-}
+
+# OBJECT STORE (scripts/create-object-storage.sh). MINIO_ACCESS_KEY is the HMAC key's PUBLIC id and
+# MUST round-trip: it is what the provisioner tests to decide whether a usable key already exists.
+# Dropping it here made every deploy believe there was none and mint another - GCP allows five per
+# account, so the fifth deploy failed and the four before it had each left a live S3 credential
+# behind. The SECRET half is a Secret Manager container name; the value never appears here.
+GCP_ARTIFACTS_BUCKET=${GCP_ARTIFACTS_BUCKET:-}
+OBJECT_STORE_SERVICE_ACCOUNT=${OBJECT_STORE_SERVICE_ACCOUNT:-}
+MINIO_BUCKET=${MINIO_BUCKET:-}
+MINIO_ENDPOINT=${MINIO_ENDPOINT:-}
+MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-}
+MINIO_REGION=${MINIO_REGION:-}
+MINIO_SECURE=${MINIO_SECURE:-}
+MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-}
+MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-}
+
+# API SERVICE and WORKER FLEET identities (scripts/create-api-service.sh, create-worker-fleet.sh).
+# EMPTY CLOUDRUN_API_SERVICE means this deployment serves no API and that stage is skipped.
+CLOUDRUN_API_SERVICE=${CLOUDRUN_API_SERVICE:-}
+API_SERVICE_ACCOUNT=${API_SERVICE_ACCOUNT:-}
+API_MIN_INSTANCES=${API_MIN_INSTANCES:-0}
+API_MAX_INSTANCES=${API_MAX_INSTANCES:-5}
+API_ALLOW_UNAUTHENTICATED=${API_ALLOW_UNAUTHENTICATED:-0}
+WORKER_SERVICE_ACCOUNT=${WORKER_SERVICE_ACCOUNT:-}
+WORKER_ENV_URI=${WORKER_ENV_URI:-}
+
+# SECRET CONTAINER NAMES (scripts/create-secrets.sh). Names only, never values - the guard in
+# devtools/quality/check_deploy_secrets.py fails the build on a value here.
+DEEPINFRA_API_KEY_SECRET=${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}
+DEEPSEEK_API_KEY_SECRET=${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}
+MESH_API_KEY_SECRET=${MESH_API_KEY_SECRET:-mesh-api-key}
+USER_TOKEN_SECRET_SECRET=${USER_TOKEN_SECRET_SECRET:-user-token-secret}
+
+# WORKLOAD IDENTITY FEDERATION (scripts/create-workload-identity.sh). Owner-run bootstrap, not a
+# deploy stage: creating service accounts and setting project IAM is outside the deployer's roles.
+WIF_POOL=${WIF_POOL:-github-actions}
+WIF_PROVIDER=${WIF_PROVIDER:-github}
+DEPLOYER_SERVICE_ACCOUNT=${DEPLOYER_SERVICE_ACCOUNT:-github-deployer}
 ENVFILE
 }
 
@@ -216,3 +316,5 @@ log "region         ${REGION}"
 log "mesh job       ${MESH_JOB}  (${MESH_JOB_DISPOSITION})"
 log "mesh SA        ${MESH_SA}   (${MESH_SA_DISPOSITION})"
 log "mesh bucket    gs://${MESH_BUCKET}  (${MESH_BUCKET_DISPOSITION})"
+log "migration      ${MIGRATE_JOB}  (${MIGRATE_DB_HOST:-no hosted database declared})"
+log "queue depth    ${QUEUE_DEPTH_JOB}  (${WORKER_MIG:-no worker fleet declared})"

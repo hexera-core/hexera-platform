@@ -52,9 +52,9 @@ def test_the_rejection_names_the_ruler_it_measured_with():
 
 
 def test_manifest_records_the_ruler_beside_the_chord(tmp_path):
-    from tests.engine_workspaces import build_workspace  # noqa: PLC0415
-
     import json
+
+    from tests.engine_workspaces import build_workspace  # noqa: PLC0415
 
     from meshpipeline.engines.manifest import write_manifest
 

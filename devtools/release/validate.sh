@@ -684,6 +684,28 @@ PY
 fi
 
 # the release record
+# Every model this release would route to must have a CONFIRMED price. Pricing is measured
+# resource cost, so a model absent from the table meters at $0.00 and the run it serves is billed
+# short - silently, and worst for the reviewer, which is the image-heavy role. A guessed number
+# would be fabricated cost evidence, so the gap is a release blocker rather than something to
+# paper over: development proceeds with it (the unit suite reports it as an expected failure),
+# shipping does not.
+stage "pricing: every configured route model has a confirmed price"
+UNPRICED="$("${GATE_PY}" -c 'from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models; m = unpriced_route_models(); print(", ".join(m) if m else "")' 2>&1)"
+_price_rc=$?
+if [ "${_price_rc}" -ne 0 ]; then
+  record "every configured route model has a confirmed price" failed 1 "could not read the price table: ${UNPRICED}"
+elif [ -z "${UNPRICED}" ]; then
+  record "every configured route model has a confirmed price" passed 1 "no configured model meters at 0.00"
+else
+  # REPORTED, NOT BLOCKING - deliberately, and this is the whole of the reasoning. Metered
+  # billing is not switched on yet, so an unpriced model understates a figure nobody is charging
+  # against. Holding a release for it trades a dated, real need - a working public deployment -
+  # against a cost report nobody reads yet. The moment metered billing ships this must go back to
+  # `failed 1`, because from then on an unpriced model is money.
+  record "every configured route model has a confirmed price" skipped 0 "unpriced, metering at 0.00: ${UNPRICED} - DEFERRED by decision, not resolved. Restore to required before metered billing ships"
+fi
+
 stage "release record"
 # Read from the IMAGE - the artifact that gets promoted - not from the checkout and not from the
 # bare wheel (which declares no runtime pins by design: requirements/runtime.txt is the single

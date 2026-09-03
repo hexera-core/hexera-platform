@@ -57,8 +57,11 @@ Everything runs in **`us-central1`**, zone **`us-central1-a`** where zonal.
   `https://hexera-dev-api-224734058693.us-central1.run.app`. `GET /health` returns
   `{"status":"ok","version":"0.1"}` in ~180 ms.
 - Created 2026-08-30 10:04 UTC, generation 1, single revision `hexera-dev-api-00001-tmr` (Ready).
-- Image: `us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:9175191354ce…` — an **untagged**
-  digest from the 03:01 build batch, not either of the two tagged app images.
+- Image: `us-central1-docker.pkg.dev/hexera-dev/mesh/app@sha256:5a1c68f40387…`, tagged
+  `1445b8b71902` — the digest Gate C validated and `release-publish` recorded.
+  **Corrected 2026-08-31:** this section previously named the untagged `9175191354ce…`. That was
+  wrong. Re-read from `gcloud run services describe` twice since, the service has always run the
+  tagged, release-recorded digest. The untagged digest exists in the registry but is not deployed.
 - Entrypoint `/srv/entrypoint.sh uvicorn meshpipeline.runtime.api_server:app --host 0.0.0.0 --port 8000`.
 - Scaling: `minScale 1`, `maxScale 5` on the revision (the service annotation still says
   `maxScale: 20`), container concurrency 160, startup CPU boost on.
@@ -152,7 +155,8 @@ Repository `mesh` (DOCKER, standard, us-central1, Google-managed key, **2.4 GB**
 | `mesh/mesh` | `a368459179ea` | `sha256:e6f8b3f024f6…` |
 | `mesh/mesh` | — | `1d85ff17a003…`, `851f8078ed1d…`, `a7efcaf033da…` |
 
-Six untagged digests are accumulating with no cleanup policy on the repository.
+Six untagged digests accumulated in one day. A cleanup policy now keeps tagged images and deletes
+untagged ones after seven days.
 
 ### Networking
 
@@ -221,8 +225,11 @@ no Filestore instances, no Secret Manager secrets, no DNS zones.**
    registry, the mesh job, the exchange bucket and the mesh SA. `hexera-dev-api`, the MIG, the
    autoscaler, Cloud SQL, Redis, the router/NAT and two of the three buckets were created
    outside that record.
-3. **The deployed API image is untagged** (`9175191354ce…`), so it maps to no release record —
-   `release.json` only knows `a368459179ea`.
+3. ~~The deployed API image is untagged.~~ **Withdrawn 2026-08-31** — it is
+   `sha256:5a1c68f40387…`, tagged `1445b8b71902` and recorded in `release.json`. The original
+   reading was a mistake, and it mattered: the Artifact Registry cleanup policy deletes untagged
+   digests, so an untagged running image would have expired underneath the service. It is tagged,
+   so the policy keeps it.
 4. **`release.json` describes commit `a368459179ea` as published**, but the images actually
    running come from the later `1445b8b71902` build.
 
@@ -252,8 +259,8 @@ Ordered by how much they would hurt.
 - **Two untracked builder VMs** (`dev-gatec-builder`, `dev-builder-2`, c2-standard-8 each) are
   running continuously and are not reproducible from `deploy/`. They are the largest steady
   cost in the project.
-- **No Artifact Registry cleanup policy**; the repo is at 2.4 GB with six untagged digests
-  after one day of builds.
+- ~~No Artifact Registry cleanup policy.~~ **Resolved 2026-08-31**: tagged images are kept,
+  untagged are deleted after seven days.
 - **`dev-transfer-…` holds source tarballs** (`hexera-clone.tgz`, `hx2-4.tgz`) and `env.txt`
   with no lifecycle rule and public access prevention merely "inherited".
 
