@@ -260,7 +260,11 @@ if gc compute instance-templates describe "${TEMPLATE}" >/dev/null 2>&1; then
   log "template        ${TEMPLATE}  (reused - the specification is unchanged)"
 else
   TEMPLATE_DISPOSITION=created
-  info "Creating instance template ${TEMPLATE}"
+  # REGION-QUALIFIED SUBNET. An instance template is a global resource, so a bare subnet name is
+# ambiguous - every region has a `default` - and gcloud refuses it with "Underspecified resource
+# [default]". The fleet's subnet is the one in the deployment's own region.
+WORKER_SUBNET_REF="projects/${GCP_PROJECT_ID}/regions/${GCP_REGION}/subnetworks/${VPC_SUBNET}"
+info "Creating instance template ${TEMPLATE}"
   # --no-address: a worker has no public address and reaches Artifact Registry, Secret Manager and
   # the model providers through Cloud NAT, which is what the live fleet already does.
   gc compute instance-templates create "${TEMPLATE}" \
@@ -270,7 +274,7 @@ else
     --boot-disk-size "${WORKER_BOOT_DISK_GB}GB" \
     --boot-disk-type "${WORKER_BOOT_DISK_TYPE}" \
     --network "${VPC_NETWORK}" \
-    --subnet "${VPC_SUBNET}" \
+    --subnet "${WORKER_SUBNET_REF}" \
     --no-address \
     --service-account "${WORKER_SA_EMAIL}" \
     --scopes "${WORKER_SCOPES}" \
