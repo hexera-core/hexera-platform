@@ -201,6 +201,23 @@ if [ -n "${REDIS_URL:-}" ]; then
     "CELERY_RESULT_BACKEND=${REDIS_URL}"
   )
 fi
+# THE OBJECT STORE'S NON-SECRET HALF. The secret is mounted as a reference below, but a credential
+# on its own addresses nothing: without these the adapter falls back to its local-stack defaults
+# and dials localhost:9000, which on Cloud Run is the container itself. That failure is silent
+# until the first upload, and it presents as "Storage is unavailable" rather than as a missing
+# setting - which is exactly how it was found, on a deployed prod API.
+if [ -n "${MINIO_ENDPOINT:-}" ]; then
+  API_ENV_PAIRS+=(
+    "MINIO_ENDPOINT=${MINIO_ENDPOINT}"
+    "MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-${MINIO_ENDPOINT}}"
+    "MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}"
+    "MINIO_BUCKET=${MINIO_BUCKET}"
+    "MINIO_REGION=${MINIO_REGION}"
+    # Google Cloud Storage's S3 endpoint serves TLS only; the adapter defaults to plain HTTP for
+    # the local stack, so this must be stated or every request fails.
+    "MINIO_SECURE=${MINIO_SECURE:-true}"
+  )
+fi
 
 # API_EXTRA_ENV carries whatever else this deployment states - the agent model routing, the token
 # budgets, the feature flags. It is '|'-SEPARATED, and the separator is neither of the two obvious
