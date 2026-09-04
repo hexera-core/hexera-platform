@@ -248,25 +248,39 @@ else
   log "deployer ${DEPLOYER_SA_EMAIL}  (created)"
 fi
 
-# 4) THE FOUR ROLES, and nothing else at project level (build-out plan, item 1). Each is here
-#    because a named stage of deploy.sh cannot run without it; there is no role in this list that
-#    exists "in case".
+# 4) THE ROLES, and nothing else at project level. Each is here because a NAMED STAGE of
+#    deploy.sh cannot run without it; there is no role in this list that exists "in case".
 #
-#    compute.instanceAdmin.v1 is the role the plan calls compute.instanceAdmin: the legacy,
-#    non-v1 spelling covers instances only, and what the deploy actually touches is the worker
-#    MIG and its autoscaling policy (create-queue-depth-publisher.sh, step 7).
+#    THIS LIST GREW ON 2026-09-03, DELIBERATELY, and the trade it makes should be read before it
+#    is copied. It used to be four roles, on the principle that a CI identity should not be able
+#    to create infrastructure. The consequence was a deploy that could not complete: stage 7
+#    (data tier) needs serviceusage to turn its APIs on, servicenetworking to establish the
+#    private-services peering, and cloudsql/redis admin to reconcile the two instances - and each
+#    refusal surfaced as an opaque gcloud error rather than as the design decision it was. The
+#    first hexera-dev release died there, and the first hexera-prod release died one stage later
+#    on storage.buckets.create for an exchange bucket that did not exist yet.
 #
-#    WHAT IS DELIBERATELY ABSENT is as much of the design as what is present. No
-#    resourcemanager.projectIamAdmin, no iam.serviceAccountAdmin, no secretmanager.admin, no
-#    serviceusage - so a compromised workflow run cannot grant itself anything, mint an identity,
-#    read a credential, or turn on an API. run-migrations.sh and create-queue-depth-publisher.sh
-#    already expect this: each attempts its identity/IAM step, reports the exact command an owner
-#    must run when it is refused, and lets the execution that follows be the verdict.
+#    So the deploy identity now provisions the environment it deploys to, end to end. WHAT THAT
+#    COSTS, stated plainly: a compromised workflow run can delete this project's database and its
+#    broker. What contains it is not the role list any more - it is the `prod` GitHub environment's
+#    required reviewers, the provider's repository attribute condition, and Cloud SQL deletion
+#    protection (set by create-data-tier.sh on every instance it creates).
+#
+#    WHAT IS STILL DELIBERATELY ABSENT: no roles/owner, no resourcemanager.projectIamAdmin and no
+#    iam.serviceAccountAdmin - so a compromised run still cannot grant itself anything further,
+#    mint a new identity, or widen the provider that admitted it.
 DEPLOYER_ROLES=(
-  roles/run.admin                  # replace the mesh, migrate and queue-depth jobs, and the API service
-  roles/artifactregistry.writer    # release-publish pushes the images Gate C validated
-  roles/iam.serviceAccountUser     # actAs the runtime identities those jobs are deployed to run as
-  roles/compute.instanceAdmin.v1   # the worker MIG and the autoscaling policy that scales it
+  roles/run.admin                        # the mesh, migrate and queue-depth jobs, and the API service
+  roles/artifactregistry.writer          # release-publish pushes the images validation proved
+  roles/iam.serviceAccountUser           # actAs the runtime identities those workloads run as
+  roles/compute.instanceAdmin.v1         # the worker MIG and the autoscaling policy that scales it
+  roles/compute.networkAdmin             # the private-services range the data tier is addressed from
+  roles/servicenetworking.networksAdmin  # the servicenetworking peering that carries that range
+  roles/serviceusage.serviceUsageAdmin   # stage 5 and stage 7 turn on the APIs they then call
+  roles/cloudsql.admin                   # the Postgres instance, its database and its user
+  roles/redis.admin                      # the Memorystore broker
+  roles/storage.admin                    # the exchange and artifact buckets, and their lifecycle
+  roles/secretmanager.admin              # the database password container the runtimes read
 )
 info "Project roles for ${DEPLOYER_SA_EMAIL} (${#DEPLOYER_ROLES[@]}, and nothing else)"
 for role in "${DEPLOYER_ROLES[@]}"; do
@@ -296,12 +310,19 @@ done
 # operator added deliberately is not this script's decision, and a silent revocation during a
 # reconcile is how a deploy breaks at 2am. hexera-dev's deployer was made by hand, so this is the
 # only place the difference between "narrow by design" and "narrow in fact" is visible.
+# The exclusion list is DERIVED from DEPLOYER_ROLES rather than restated: a second copy of the
+# list is a copy that stops matching the first time one is edited, and this whole block exists to
+# report a difference accurately.
+_expected_args=(); for _r in "${DEPLOYER_ROLES[@]}"; do _expected_args+=(-e "${_r}"); done
+# The legacy, non-v1 spelling of the instance-admin role is the SAME grant by another name;
+# hexera-dev carries it because its deployer was made by hand. Reporting it as unexpected would
+# be reporting the naming, not an over-grant.
+_expected_args+=(-e roles/compute.instanceAdmin)
 EXTRA_ROLES="$(gcloud projects get-iam-policy "${GCP_PROJECT_ID}" \
   --flatten='bindings[].members' \
   --filter="bindings.members:serviceAccount:${DEPLOYER_SA_EMAIL}" \
   --format='value(bindings.role)' 2>/dev/null \
-  | grep -vxF -e roles/run.admin -e roles/artifactregistry.writer \
-              -e roles/iam.serviceAccountUser -e roles/compute.instanceAdmin.v1 || true)"
+  | grep -vxF "${_expected_args[@]}" || true)"
 if [ -n "${EXTRA_ROLES}" ]; then
   warn "${DEPLOYER_SA_EMAIL} holds project roles beyond the four above:"
   while IFS= read -r r; do
@@ -333,8 +354,7 @@ cat <<SUMMARY
   Issuer               ${GITHUB_ISSUER}
   Attribute condition  ${CONDITION_SHOWN}
   Deployer             ${DEPLOYER_SA_EMAIL}
-  Project roles        run.admin, artifactregistry.writer, iam.serviceAccountUser,
-                       compute.instanceAdmin.v1 - and nothing else
+  Project roles        ${#DEPLOYER_ROLES[@]}, listed in this script - and nothing else
 
   What .github/workflows/deploy.yml passes to google-github-actions/auth:
 
