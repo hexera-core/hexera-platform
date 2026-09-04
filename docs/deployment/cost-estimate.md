@@ -127,6 +127,19 @@ The lesson generalises: the expensive line was never a workload, it was a machin
 the reason it was created. Anything in `hexera-dev` that `deploy/` cannot recreate deserves the
 same question.
 
+**The heavy CI lane is on standard runners for now.** `ci.yml`'s image and integration jobs and
+the deploy job read `vars.HEXERA_RUNNER_HEAVY` and fall back to `ubuntu-24.04` when it is unset,
+which it is. Checked 2026-09-04 with an `admin:org` token: every
+`/orgs/hexera-core/actions/hosted-runners` call — list, machine-sizes, and an actual create —
+returns `404 GitHub hosted runners are not supported for this organization`. The feature is not
+available to the org; enabling it is an enterprise billing change, not an API call.
+
+Standard runners are billing at the included rate today — September's usage was 860 Actions Linux
+minutes with `netAmount 0.00`, entirely inside the plan's allowance. Larger runners never are:
+they bill from the first minute. So the trade when that variable is finally set is real CI minutes
+against wall-clock on a ~13-minute integration tier and a ~24-minute deploy, and it should be
+made deliberately rather than because the variable exists.
+
 ---
 
 ## What is not counted
