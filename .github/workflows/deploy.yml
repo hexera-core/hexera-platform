@@ -142,9 +142,68 @@ jobs:
             echo "worker_mig_zone=us-central1-a"
           } >> "$GITHUB_OUTPUT"
 
+  # THE MISSING HALF OF "CI/CD". Until this existed, ci.yml and deploy.yml both triggered on a
+  # push to main and raced: a red CI could not stop a deploy, because nothing connected them. The
+  # deploy runs its own release-artifact validation, which is the heaviest gate in the repository,
+  # but it is not a superset - ruff, the mypy ratchet, CodeQL, the dependency audit and the
+  # repository contracts run only in ci.yml, and every one of them could have been failing while a
+  # deploy shipped.
+  #
+  # This waits for the `hexera/ci-gate` CHECK RUN on THIS COMMIT rather than for a workflow run,
+  # so it is indifferent to whether CI ran on the push, on the pull request that merged it, or on
+  # a manual dispatch of the same SHA. ci-gate is `if: !cancelled()`, so it reports for every
+  # change including a documentation-only one, and it is already the required status check on
+  # main - this makes a deploy respect the same verdict a merge does.
+  #
+  # A TAG THAT NAMES A COMMIT CI NEVER SAW WILL TIME OUT HERE, and that is the intended outcome:
+  # ci.yml runs on pushes to main, not on tags, so a release tag is expected to point at a commit
+  # main already validated. Tagging something else is the case this refuses to ship.
+  await-ci:
+    name: Wait for CI on this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Require hexera/ci-gate to have passed for ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Polled rather than awaited, because the check may not have been CREATED yet: on a push
+          # to main both workflows start together and this job can reach the API first. "Not there"
+          # and "not finished" are therefore the same state - keep waiting - and only a concluded
+          # check is a verdict.
+          deadline=$(( SECONDS + 40 * 60 ))
+          while :; do
+            read -r status conclusion <<<"$(
+              gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
+                      | sort_by(.started_at) | last
+                      | "\(.status // "absent") \(.conclusion // "none")"' 2>/dev/null || echo "absent none"
+            )"
+            case "${status}:${conclusion}" in
+              completed:success)
+                echo "hexera/ci-gate passed for ${SHA} - proceeding"; exit 0 ;;
+              completed:*)
+                echo "::error::hexera/ci-gate concluded '${conclusion}' for ${SHA}. Nothing is deployed from a commit CI rejected."
+                exit 1 ;;
+            esac
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (last seen: ${status}/${conclusion})."
+              echo "If this is a release tag, it names a commit CI never validated - tag a commit from main instead."
+              exit 1
+            fi
+            echo "  hexera/ci-gate is ${status}/${conclusion} - waiting"
+            sleep 30
+          done
+
   deploy:
     name: Release and deploy (${{ needs.target.outputs.environment }})
-    needs: target
+    needs: [target, await-ci]
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
