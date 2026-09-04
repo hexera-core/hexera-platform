@@ -248,6 +248,52 @@ else
   log "deployer ${DEPLOYER_SA_EMAIL}  (created)"
 fi
 
+# 4a) THE SECRET-MANAGER ROLE, which is a CUSTOM one because no stock role fits.
+#
+#    The deploy has to CREATE secret containers and ADD versions to them, and the only stock role
+#    that can create a secret is roles/secretmanager.admin - which also carries
+#    `secretmanager.versions.access` over every secret in the project. That is how a deploy
+#    identity ends up able to read the provider API keys in one call, which is more authority than
+#    any stage of deploy.sh uses.
+#
+#    WHAT IS OMITTED, and why each omission is safe:
+#      versions.access   - the ONLY caller is one recovery branch of create-data-tier.sh (a secret
+#                          that holds a version whose database user is missing), and that branch
+#                          already dies with the exact owner command. The ordinary path never
+#                          reads a payload: it asks `versions list` whether one EXISTS.
+#      secrets.delete    - nothing in deploy/ deletes a secret.
+#      versions.destroy  - nothing in deploy/ destroys a version. A compromised run should not be
+#                          able to make a credential unrecoverable.
+#
+#    WHAT THIS DOES NOT CLAIM. `secrets.setIamPolicy` is kept, because create-secrets.sh grants
+#    the runtime identities their accessor bindings - and an identity that may rewrite a secret's
+#    IAM policy can grant ITSELF access. This is therefore defence in depth, not a boundary: it
+#    turns a silent one-call bulk read into a policy change that is logged and attributable, and
+#    it removes destruction outright. The boundary is still the prod environment's reviewers.
+SECRET_ROLE_ID="${SECRET_ROLE_ID:-hexeraDeploySecrets}"
+SECRET_ROLE_PERMISSIONS="secretmanager.secrets.create,secretmanager.secrets.get,secretmanager.secrets.list,secretmanager.secrets.update,secretmanager.secrets.getIamPolicy,secretmanager.secrets.setIamPolicy,secretmanager.versions.add,secretmanager.versions.get,secretmanager.versions.list,secretmanager.versions.enable,secretmanager.versions.disable"
+if _role_state="$(gcloud iam roles describe "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+                    --format='value(deleted)' 2>/dev/null)"; then
+  # A role deleted earlier still occupies the id for 7 days and cannot be re-created over.
+  if [ "${_role_state}" = "True" ]; then
+    info "Undeleting the custom role ${SECRET_ROLE_ID}"
+    gcloud iam roles undelete "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" >/dev/null \
+      || die "could not undelete ${SECRET_ROLE_ID} - this needs iam.roles.undelete (an owner's act)"
+  fi
+  gcloud iam roles update "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+    --permissions "${SECRET_ROLE_PERMISSIONS}" --stage GA >/dev/null \
+    || die "could not reconcile the custom role ${SECRET_ROLE_ID} - this needs iam.roles.update (an owner's act)"
+  log "secret role     ${SECRET_ROLE_ID}  (reconciled)"
+else
+  info "Creating the custom role ${SECRET_ROLE_ID} (secret containers, no payload reads)"
+  gcloud iam roles create "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+    --title "Hexera deploy - Secret Manager containers" \
+    --description "Create secret containers and add versions. Deliberately excludes versions.access, secrets.delete and versions.destroy." \
+    --permissions "${SECRET_ROLE_PERMISSIONS}" --stage GA >/dev/null \
+    || die "could not create the custom role ${SECRET_ROLE_ID} - this needs iam.roles.create (an owner's act)"
+  log "secret role     ${SECRET_ROLE_ID}  (created)"
+fi
+
 # 4) THE ROLES, and nothing else at project level. Each is here because a NAMED STAGE of
 #    deploy.sh cannot run without it; there is no role in this list that exists "in case".
 #
@@ -280,7 +326,8 @@ DEPLOYER_ROLES=(
   roles/cloudsql.admin                   # the Postgres instance, its database and its user
   roles/redis.admin                      # the Memorystore broker
   roles/storage.admin                    # the exchange and artifact buckets, and their lifecycle
-  roles/secretmanager.admin              # the database password container the runtimes read
+  # Secret Manager is NOT roles/secretmanager.admin - see SECRET_ROLE_ID below.
+  "projects/${GCP_PROJECT_ID}/roles/${SECRET_ROLE_ID}"
 )
 info "Project roles for ${DEPLOYER_SA_EMAIL} (${#DEPLOYER_ROLES[@]}, and nothing else)"
 for role in "${DEPLOYER_ROLES[@]}"; do
@@ -324,13 +371,21 @@ EXTRA_ROLES="$(gcloud projects get-iam-policy "${GCP_PROJECT_ID}" \
   --format='value(bindings.role)' 2>/dev/null \
   | grep -vxF "${_expected_args[@]}" || true)"
 if [ -n "${EXTRA_ROLES}" ]; then
-  warn "${DEPLOYER_SA_EMAIL} holds project roles beyond the four above:"
+  warn "${DEPLOYER_SA_EMAIL} holds project roles beyond the ${#DEPLOYER_ROLES[@]} above:"
   while IFS= read -r r; do
     if [ -n "${r}" ]; then printf '       %s\n' "${r}" >&2; fi
   done <<<"${EXTRA_ROLES}"
   warn "nothing was removed. Each is authority a compromised workflow run would inherit:
          gcloud projects remove-iam-policy-binding ${GCP_PROJECT_ID} \\
            --member serviceAccount:${DEPLOYER_SA_EMAIL} --role <role>"
+  # Named explicitly, because this one is not merely extra - it REVERSES the narrowing above.
+  # roles/secretmanager.admin carries versions.access over every secret in the project, so while
+  # it stays bound the custom role is decorative and the provider API keys are one call away.
+  if printf '%s\\n' "${EXTRA_ROLES}" | grep -qx roles/secretmanager.admin; then
+    warn "roles/secretmanager.admin is among them, and it DEFEATS ${SECRET_ROLE_ID}:
+         gcloud projects remove-iam-policy-binding ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${DEPLOYER_SA_EMAIL} --role roles/secretmanager.admin"
+  fi
 fi
 
 # 5) THE IMPERSONATION BINDING, granted to ONE repository's principal set rather than to the pool.

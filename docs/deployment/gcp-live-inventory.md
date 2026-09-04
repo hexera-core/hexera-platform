@@ -219,6 +219,38 @@ Service Management / Networking / Usage, Telemetry.
 Several of these are enabled but unused: **no Pub/Sub topics or subscriptions, no GKE clusters,
 no Filestore instances, no Secret Manager secrets, no DNS zones.**
 
+## The naming cutover (2026-09-03)
+
+Live GCP ran two conventions at once. Hand-made resources were `hexera-dev-*`; everything
+`deploy/` creates is `<deployment-id>-*`. The project is already called `hexera-dev`, so the
+longer prefix says the same word twice — and the split was not cosmetic. `deploy.yml` pinned
+`worker_mig=hexera-dev-workers` while `create-data-tier.sh` defaulted to `dev-pg`, so a dev deploy
+reaching stage 7 would have created a **second** Cloud SQL instance beside the first.
+
+Everything is now `<deployment-id>-<role>`. **`deploy.sh` reconciles BY EXACT NAME, so this
+renames nothing** — it makes every lookup miss, and the provisioner creates the new stack beside
+the old one. That is the intended cutover, because the old stack was hand-made and drifted, but it
+means the environment briefly runs two of everything:
+
+| Legacy (hand-made) | Replacement (from `deploy/`) |
+| --- | --- |
+| `hexera-dev-api` | `dev-api` |
+| `hexera-dev-pg` | `dev-pg` |
+| `hexera-dev-redis` | `dev-redis` |
+| `hexera-dev-workers` | `dev-workers` |
+
+**Both halves must be run.** Until the second one is, the old stack keeps billing and
+`hexera-dev-api` keeps serving — publicly, on an image no release record names, against a database
+the new deploy is not migrating.
+
+1. Deploy. The `dev-*` stack is created and migrated.
+2. `make mesh-decommission-legacy` — reports only. Then `DECOMMISSION_ARGS=--delete`, and
+   `--delete-database` for Cloud SQL, which is deliberately separate because it is the one
+   resource here that `deploy/` cannot recreate. Take an export first.
+
+The script refuses to retire anything whose replacement it cannot see running, so a failed or
+partial deploy cannot be followed by a decommission that leaves the environment with neither.
+
 ## Drift against the repo's recorded state
 
 1. **`deploy/output/deployment.json` names a stale mesh image.** It records

@@ -179,25 +179,30 @@ jobs:
           # check is a verdict.
           deadline=$(( SECONDS + 40 * 60 ))
           while :; do
-            read -r status conclusion <<<"$(
+            # EVERY ci-gate run for this commit must have concluded, and all of them must have
+            # passed. Reading only the latest was wrong: a manual workflow_dispatch of the same
+            # SHA starts a SECOND ci-gate, and if it finished first its success would release the
+            # deploy while the push's own run was still going - and might still fail. So a
+            # still-running sibling keeps this waiting, and one failed sibling fails the deploy.
+            read -r total done_ok failed pending <<<"$(
               gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
                 --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
-                      | sort_by(.started_at) | last
-                      | "\(.status // "absent") \(.conclusion // "none")"' 2>/dev/null || echo "absent none"
+                      | "\(length) \([.[] | select(.status == "completed" and .conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0"
             )"
-            case "${status}:${conclusion}" in
-              completed:success)
-                echo "hexera/ci-gate passed for ${SHA} - proceeding"; exit 0 ;;
-              completed:*)
-                echo "::error::hexera/ci-gate concluded '${conclusion}' for ${SHA}. Nothing is deployed from a commit CI rejected."
-                exit 1 ;;
-            esac
+            if [ "${failed}" -gt 0 ]; then
+              echo "::error::${failed} of ${total} hexera/ci-gate runs for ${SHA} did not pass. Nothing is deployed from a commit CI rejected."
+              exit 1
+            fi
+            if [ "${total}" -gt 0 ] && [ "${pending}" -eq 0 ] && [ "${done_ok}" -eq "${total}" ]; then
+              echo "all ${total} hexera/ci-gate run(s) passed for ${SHA} - proceeding"
+              exit 0
+            fi
             if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (last seen: ${status}/${conclusion})."
+              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (${done_ok} passed, ${pending} still running, of ${total})."
               echo "If this is a release tag, it names a commit CI never validated - tag a commit from main instead."
               exit 1
             fi
-            echo "  hexera/ci-gate is ${status}/${conclusion} - waiting"
+            echo "  hexera/ci-gate: ${done_ok} passed, ${pending} running, of ${total} - waiting"
             sleep 30
           done
 
