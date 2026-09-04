@@ -169,8 +169,15 @@ jobs:
             # blank while hexera-prod had no data tier and the deploy identity could not create
             # one; it can now, so the first release provisions what it names.
             echo "api_service=prod-api"
-            echo "cloudsql_instance=prod-pg"
-            echo "redis_instance=prod-redis"
+            # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
+            # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
+            # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
+            # cannot be renamed in place, and deploy.sh reconciles BY EXACT NAME, so pinning the
+            # tidier name here would not rename anything: it would build a SECOND database beside
+            # the live one on the next release tag. Renaming them is a data migration, not a
+            # config edit, and it is tracked as its own decision.
+            echo "cloudsql_instance=hexera-prod-pg"
+            echo "redis_instance=hexera-prod-redis"
             echo "migrate_db_name=meshpipeline"
             echo "migrate_db_user=meshpipeline"
             echo "postgres_password_secret=postgres-password"
