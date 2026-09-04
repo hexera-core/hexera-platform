@@ -32,6 +32,58 @@ STAGE=0
 STAGE_TOTAL="$(grep -c '^stage "' "${BASH_SOURCE[0]}")"
 stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\033[0m\n' "${STAGE}" "${STAGE_TOTAL}" "$1"; }
 
+# component selection
+# WHICH TIERS THIS RUN TOUCHES. A deploy that reconciles all twelve stages is the right default and
+# the wrong routine: most changes are a new application image, and rebuilding the fleet, re-reading
+# Cloud SQL and re-minting the object-store credential to ship one costs minutes and money for
+# resources nothing in the change affected.
+#
+# DEPLOY_COMPONENTS is a comma-separated list, or `all` (the default - an unset variable NEVER
+# means "less"). The always-on stages are absent from it deliberately: discovery, validation,
+# preflight, the plan, API enablement, the registry, the runtime identities, release promotion and
+# IAM are either read-only or cheap and idempotent, and skipping them is how a run ends up
+# deploying against configuration it never checked.
+#
+#   images   the mesh job and the API service - the two workloads that carry an application digest
+#   data     Cloud SQL and Memorystore
+#   storage  the artifacts bucket and its S3-interoperability credential
+#   migrate  the schema, applied once before anything serves the new image
+#   queue    the queue-depth publisher and the autoscaling policy that reads it
+#   workers  the managed instance group and the rolling update onto a new template
+#
+# A SKIPPED STAGE IS STATED, never silent: each prints what it did not do and why, so a summary
+# that says "reused" and a summary that says "not selected" are never read as the same thing.
+DEPLOY_COMPONENTS="${DEPLOY_COMPONENTS:-all}"
+want() {
+  case ",${DEPLOY_COMPONENTS}," in
+    *,all,*) return 0 ;;
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# A typo must not quietly deploy less than the operator asked for. `images` is not `image`, and a
+# run that silently skipped the API service because of a missing 's' is a bad afternoon.
+if [ "${DEPLOY_COMPONENTS}" != "all" ]; then
+  _known="images data storage migrate queue workers"
+  _bad=""
+  _good=0
+  IFS=',' read -r -a _requested <<< "${DEPLOY_COMPONENTS}"
+  for _c in "${_requested[@]}"; do
+    [ -n "${_c}" ] || continue
+    case " ${_known} " in *" ${_c} "*) _good=$((_good + 1)) ;; *) _bad="${_bad} ${_c}" ;; esac
+  done
+  [ -z "${_bad}" ] || die "DEPLOY_COMPONENTS names something this deploy has no stage for:${_bad}
+   Known components: ${_known}  (or 'all')"
+  # COUNTED, not merely non-empty. A value of "," or ",," splits into nothing but empty fields,
+  # each skipped by the loop above, and every stage would then report itself as unselected - a
+  # deploy that mutates nothing, exits 0, and reads as a success.
+  [ "${_good}" -gt 0 ] || die "DEPLOY_COMPONENTS ('${DEPLOY_COMPONENTS}') selects no stage at all.
+   Use 'all' to deploy everything, or name at least one of: ${_known}"
+fi
+
+# skipped <component> <what would have happened> - one shape for every unselected stage.
+skipped() { log "SKIPPED - '$1' is not in DEPLOY_COMPONENTS (${DEPLOY_COMPONENTS}); $2"; }
+
 # confirmation policy
 # INTERACTIVE BY DEFAULT. A cloud-mutating deploy requires a deliberate go-ahead: after the
 # read-only plan is shown, the operator types the exact project ID. Automation opts out ONLY with
@@ -114,13 +166,25 @@ stage "Data tier (Cloud SQL and Memorystore on private addresses)"
 # Reconciling: an existing instance is reused untouched and its durability settings are REPORTED
 # rather than patched - changing backups or deletion protection on the instance a deploy is about
 # to migrate is not something a deploy should decide.
-bash "${S}/create-data-tier.sh"
+if want data; then
+  bash "${S}/create-data-tier.sh"
+else
+  # The addresses the later stages read come from the env file this stage would refresh. Skipping
+  # it is therefore only safe because the instances already exist and their private IPs do not
+  # move; bootstrap-env.sh loads the recorded values, and run-migrations.sh refuses to run against
+  # an address it cannot resolve rather than guessing one.
+  skipped data "Cloud SQL and Memorystore are left exactly as they are"
+fi
 
 stage "Object store (artifacts bucket and the S3-interoperability credential)"
 # BEFORE the API and the fleet, which read MINIO_*. The HMAC key is REUSED when one already
 # exists: GCP allows five per account, and minting one per deploy both leaks credentials and
 # fails outright on the fifth run.
-bash "${S}/create-object-storage.sh"
+if want storage; then
+  bash "${S}/create-object-storage.sh"
+else
+  skipped storage "the artifacts bucket and its HMAC credential are left as they are"
+fi
 
 stage "Promote the validated release artifact (no build - see docs/development/gates.md)"
 # Deployment does NOT build. It promotes the exact images Gate C validated and release-publish
@@ -132,7 +196,11 @@ bash "${S}/promote-release.sh"
 stage "Mesh tier (exchange bucket + mesh job; the mesh IMAGE is promoted, never built here)"
 # The mesh job MUST exist before IAM - the local caller is granted invoke ON it, and the mesh
 # identity is granted exchange access - so this runs AFTER the identity, BEFORE IAM.
-bash "${S}/create-mesh-tier.sh"
+if want images; then
+  bash "${S}/create-mesh-tier.sh"
+else
+  skipped images "the mesh job keeps running whichever digest it already has"
+fi
 
 stage "IAM (least privilege: invoke the mesh job, exchange objects)"
 bash "${S}/apply-iam.sh"
@@ -142,26 +210,46 @@ stage "Schema (migrations applied ONCE, before anything runs the promoted image)
 # net for every path that is not a deploy. But a deploy must not DEPEND on N cold-starting instances
 # racing for a lock on a service that is already public: the schema reaches head here, once, with
 # the exit code attributed to the deploy, and a refusal stops it with the database untouched.
-bash "${S}/run-migrations.sh"
+if want migrate; then
+  bash "${S}/run-migrations.sh"
+else
+  # DELIBERATELY SKIPPABLE, and the safety net is real: the API container still migrates itself
+  # under an advisory lock on start. What is lost is the guarantee that the schema reached head
+  # BEFORE the new image serves, which is why 'migrate' belongs in any deploy that ships a
+  # revision whose model changed.
+  skipped migrate "the schema is untouched; the API still migrates itself on start"
+fi
 
 stage "Worker fleet signal (the one queue-depth publisher, and the autoscaler that reads it)"
 # The publisher runs OFF the fleet - a scheduled Cloud Run job - because the workers used to be the
 # only writers of the number that wakes the workers. Scale-to-zero is unreachable while the metric
 # is published by the instances it scales (build-out plan, Decision 4).
-bash "${S}/create-queue-depth-publisher.sh"
+if want queue; then
+  bash "${S}/create-queue-depth-publisher.sh"
+else
+  skipped queue "the existing publisher and autoscaling policy keep running"
+fi
 
 stage "API service (the promoted image, by digest, reaching the private data tier)"
 # AFTER the schema: a service that starts before its database is at head serves errors while the
 # migration it needs is still running. Credentials reach it as Secret Manager REFERENCES, never as
 # literal values - the four that were once inline in this service's own spec are why.
-bash "${S}/create-api-service.sh"
+if want images; then
+  bash "${S}/create-api-service.sh"
+else
+  skipped images "the API service keeps serving whichever digest it already has"
+fi
 
 stage "Worker fleet (template pinned to the digest, and the rolling update onto it)"
 # LAST, because a worker that starts before the schema, the queue signal and the object store are
 # in place fails on its first job rather than at deploy time. A digest change makes a NEW template
 # and rolls the group onto it with surge 1 / unavailable 0, so a warm pool is never below its floor
 # mid-rotation (build-out plan, Decision 4).
-bash "${S}/create-worker-fleet.sh"
+if want workers; then
+  bash "${S}/create-worker-fleet.sh"
+else
+  skipped workers "the fleet keeps its current template; no rolling update is started"
+fi
 
 # Record the machine-readable deployment-state manifest (ownership + digests; no secret values).
 bash "${S}/write-deployment-state.sh" || warn "deployment-state manifest could not be written (non-fatal)"
@@ -170,16 +258,28 @@ bash "${S}/write-deployment-state.sh" || warn "deployment-state manifest could n
 load_env
 MESH_DIGEST="$(resolve_digest "${MESH_IMAGE:-}" 2>/dev/null || printf '%s' "${MESH_IMAGE:-}")"
 
-# The two conditional stages report what they actually did, so a skip is never read as a success.
-if [ -n "${MIGRATE_DB_HOST:-}" ] && [ "${MIGRATE_SKIP:-0}" != "1" ]; then
+# The conditional stages report what they actually did, so a skip is never read as a success -
+# and THREE outcomes are distinguished, not two: the tier was reconciled, the deployment declares
+# no such tier, or this run was asked not to touch it. A summary that said "at head" after
+# DEPLOY_COMPONENTS excluded `migrate` would be the single most misleading line this script prints.
+if ! want migrate; then
+  SCHEMA_STATE="NOT RECONCILED - 'migrate' was not selected. Whatever was there is still there."
+elif [ -n "${MIGRATE_DB_HOST:-}" ] && [ "${MIGRATE_SKIP:-0}" != "1" ]; then
   SCHEMA_STATE="at head on ${MIGRATE_DB_HOST}/${MIGRATE_DB_NAME:-meshpipeline}  (job ${CLOUDRUN_MIGRATE_JOB:-${DEPLOYMENT_ID}-migrate})"
 else
   SCHEMA_STATE="no hosted database declared - the API migrates itself on start"
 fi
-if [ -n "${WORKER_MIG:-}" ]; then
+if ! want queue; then
+  QUEUE_SIGNAL="NOT RECONCILED - 'queue' was not selected"
+elif [ -n "${WORKER_MIG:-}" ]; then
   QUEUE_SIGNAL="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOYMENT_ID}-queue-depth} on '${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}' -> autoscaler ${WORKER_MIG}"
 else
   QUEUE_SIGNAL="no worker fleet declared"
+fi
+if want images; then
+  MESH_JOB_STATE="[private, ${MESH_JOB_DISPOSITION}]"
+else
+  MESH_JOB_STATE="[private, NOT RECONCILED - 'images' was not selected]"
 fi
 
 printf '\n\033[1m━━━ mesh executor ready ━━━\033[0m\n'
@@ -187,7 +287,8 @@ cat <<SUMMARY
 
   Deployment id     ${DEPLOYMENT_ID}
   Project / region  ${GCP_PROJECT_ID} / ${GCP_REGION}
-  Mesh job          ${CLOUDRUN_MESH_JOB}            [private, ${MESH_JOB_DISPOSITION}]
+  Components        ${DEPLOY_COMPONENTS}
+  Mesh job          ${CLOUDRUN_MESH_JOB}            ${MESH_JOB_STATE}
   Mesh identity     ${MESH_SA_EMAIL}                (${MESH_SA_DISPOSITION})
   Mesh image        ${MESH_DIGEST}
   Mesh exchange     gs://${GCP_MESH_BUCKET}         (${MESH_BUCKET_DISPOSITION})
