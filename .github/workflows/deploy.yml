@@ -152,8 +152,13 @@ jobs:
   # This waits for the `hexera/ci-gate` CHECK RUN on THIS COMMIT rather than for a workflow run,
   # so it is indifferent to whether CI ran on the push, on the pull request that merged it, or on
   # a manual dispatch of the same SHA. ci-gate is `if: !cancelled()`, so it reports for every
-  # change including a documentation-only one, and it is already the required status check on
-  # main - this makes a deploy respect the same verdict a merge does.
+  # change including a documentation-only one.
+  #
+  # IT IS NOT REDUNDANT WITH BRANCH PROTECTION, which was the original justification here and was
+  # simply wrong. Checked 2026-09-04: the `main` ruleset carries creation/update/deletion and
+  # non-fast-forward rules only - no `required_status_checks` rule and no `pull_request` rule - so
+  # nothing on the repository side stops a red commit reaching main. Until that changes this job
+  # is the ONLY thing standing between a failing suite and a deployed artifact.
   #
   # A TAG THAT NAMES A COMMIT CI NEVER SAW WILL TIME OUT HERE, and that is the intended outcome:
   # ci.yml runs on pushes to main, not on tags, so a release tag is expected to point at a commit
