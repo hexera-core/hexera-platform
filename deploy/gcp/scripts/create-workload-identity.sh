@@ -248,25 +248,86 @@ else
   log "deployer ${DEPLOYER_SA_EMAIL}  (created)"
 fi
 
-# 4) THE FOUR ROLES, and nothing else at project level (build-out plan, item 1). Each is here
-#    because a named stage of deploy.sh cannot run without it; there is no role in this list that
-#    exists "in case".
+# 4a) THE SECRET-MANAGER ROLE, which is a CUSTOM one because no stock role fits.
 #
-#    compute.instanceAdmin.v1 is the role the plan calls compute.instanceAdmin: the legacy,
-#    non-v1 spelling covers instances only, and what the deploy actually touches is the worker
-#    MIG and its autoscaling policy (create-queue-depth-publisher.sh, step 7).
+#    The deploy has to CREATE secret containers and ADD versions to them, and the only stock role
+#    that can create a secret is roles/secretmanager.admin - which also carries
+#    `secretmanager.versions.access` over every secret in the project. That is how a deploy
+#    identity ends up able to read the provider API keys in one call, which is more authority than
+#    any stage of deploy.sh uses.
 #
-#    WHAT IS DELIBERATELY ABSENT is as much of the design as what is present. No
-#    resourcemanager.projectIamAdmin, no iam.serviceAccountAdmin, no secretmanager.admin, no
-#    serviceusage - so a compromised workflow run cannot grant itself anything, mint an identity,
-#    read a credential, or turn on an API. run-migrations.sh and create-queue-depth-publisher.sh
-#    already expect this: each attempts its identity/IAM step, reports the exact command an owner
-#    must run when it is refused, and lets the execution that follows be the verdict.
+#    WHAT IS OMITTED, and why each omission is safe:
+#      versions.access   - the ONLY caller is one recovery branch of create-data-tier.sh (a secret
+#                          that holds a version whose database user is missing), and that branch
+#                          already dies with the exact owner command. The ordinary path never
+#                          reads a payload: it asks `versions list` whether one EXISTS.
+#      secrets.delete    - nothing in deploy/ deletes a secret.
+#      versions.destroy  - nothing in deploy/ destroys a version. A compromised run should not be
+#                          able to make a credential unrecoverable.
+#
+#    WHAT THIS DOES NOT CLAIM. `secrets.setIamPolicy` is kept, because create-secrets.sh grants
+#    the runtime identities their accessor bindings - and an identity that may rewrite a secret's
+#    IAM policy can grant ITSELF access. This is therefore defence in depth, not a boundary: it
+#    turns a silent one-call bulk read into a policy change that is logged and attributable, and
+#    it removes destruction outright. The boundary is still the prod environment's reviewers.
+SECRET_ROLE_ID="${SECRET_ROLE_ID:-hexeraDeploySecrets}"
+SECRET_ROLE_PERMISSIONS="secretmanager.secrets.create,secretmanager.secrets.get,secretmanager.secrets.list,secretmanager.secrets.update,secretmanager.secrets.getIamPolicy,secretmanager.secrets.setIamPolicy,secretmanager.versions.add,secretmanager.versions.get,secretmanager.versions.list,secretmanager.versions.enable,secretmanager.versions.disable"
+if _role_state="$(gcloud iam roles describe "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+                    --format='value(deleted)' 2>/dev/null)"; then
+  # A role deleted earlier still occupies the id for 7 days and cannot be re-created over.
+  if [ "${_role_state}" = "True" ]; then
+    info "Undeleting the custom role ${SECRET_ROLE_ID}"
+    gcloud iam roles undelete "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" >/dev/null \
+      || die "could not undelete ${SECRET_ROLE_ID} - this needs iam.roles.undelete (an owner's act)"
+  fi
+  gcloud iam roles update "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+    --permissions "${SECRET_ROLE_PERMISSIONS}" --stage GA >/dev/null \
+    || die "could not reconcile the custom role ${SECRET_ROLE_ID} - this needs iam.roles.update (an owner's act)"
+  log "secret role     ${SECRET_ROLE_ID}  (reconciled)"
+else
+  info "Creating the custom role ${SECRET_ROLE_ID} (secret containers, no payload reads)"
+  gcloud iam roles create "${SECRET_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+    --title "Hexera deploy - Secret Manager containers" \
+    --description "Create secret containers and add versions. Deliberately excludes versions.access, secrets.delete and versions.destroy." \
+    --permissions "${SECRET_ROLE_PERMISSIONS}" --stage GA >/dev/null \
+    || die "could not create the custom role ${SECRET_ROLE_ID} - this needs iam.roles.create (an owner's act)"
+  log "secret role     ${SECRET_ROLE_ID}  (created)"
+fi
+
+# 4) THE ROLES, and nothing else at project level. Each is here because a NAMED STAGE of
+#    deploy.sh cannot run without it; there is no role in this list that exists "in case".
+#
+#    THIS LIST GREW ON 2026-09-03, DELIBERATELY, and the trade it makes should be read before it
+#    is copied. It used to be four roles, on the principle that a CI identity should not be able
+#    to create infrastructure. The consequence was a deploy that could not complete: stage 7
+#    (data tier) needs serviceusage to turn its APIs on, servicenetworking to establish the
+#    private-services peering, and cloudsql/redis admin to reconcile the two instances - and each
+#    refusal surfaced as an opaque gcloud error rather than as the design decision it was. The
+#    first hexera-dev release died there, and the first hexera-prod release died one stage later
+#    on storage.buckets.create for an exchange bucket that did not exist yet.
+#
+#    So the deploy identity now provisions the environment it deploys to, end to end. WHAT THAT
+#    COSTS, stated plainly: a compromised workflow run can delete this project's database and its
+#    broker. What contains it is not the role list any more - it is the `prod` GitHub environment's
+#    required reviewers, the provider's repository attribute condition, and Cloud SQL deletion
+#    protection (set by create-data-tier.sh on every instance it creates).
+#
+#    WHAT IS STILL DELIBERATELY ABSENT: no roles/owner, no resourcemanager.projectIamAdmin and no
+#    iam.serviceAccountAdmin - so a compromised run still cannot grant itself anything further,
+#    mint a new identity, or widen the provider that admitted it.
 DEPLOYER_ROLES=(
-  roles/run.admin                  # replace the mesh, migrate and queue-depth jobs, and the API service
-  roles/artifactregistry.writer    # release-publish pushes the images Gate C validated
-  roles/iam.serviceAccountUser     # actAs the runtime identities those jobs are deployed to run as
-  roles/compute.instanceAdmin.v1   # the worker MIG and the autoscaling policy that scales it
+  roles/run.admin                        # the mesh, migrate and queue-depth jobs, and the API service
+  roles/artifactregistry.writer          # release-publish pushes the images validation proved
+  roles/iam.serviceAccountUser           # actAs the runtime identities those workloads run as
+  roles/compute.instanceAdmin.v1         # the worker MIG and the autoscaling policy that scales it
+  roles/compute.networkAdmin             # the private-services range the data tier is addressed from
+  roles/servicenetworking.networksAdmin  # the servicenetworking peering that carries that range
+  roles/serviceusage.serviceUsageAdmin   # stage 5 and stage 7 turn on the APIs they then call
+  roles/cloudsql.admin                   # the Postgres instance, its database and its user
+  roles/redis.admin                      # the Memorystore broker
+  roles/storage.admin                    # the exchange and artifact buckets, and their lifecycle
+  # Secret Manager is NOT roles/secretmanager.admin - see SECRET_ROLE_ID below.
+  "projects/${GCP_PROJECT_ID}/roles/${SECRET_ROLE_ID}"
 )
 info "Project roles for ${DEPLOYER_SA_EMAIL} (${#DEPLOYER_ROLES[@]}, and nothing else)"
 for role in "${DEPLOYER_ROLES[@]}"; do
@@ -296,20 +357,35 @@ done
 # operator added deliberately is not this script's decision, and a silent revocation during a
 # reconcile is how a deploy breaks at 2am. hexera-dev's deployer was made by hand, so this is the
 # only place the difference between "narrow by design" and "narrow in fact" is visible.
+# The exclusion list is DERIVED from DEPLOYER_ROLES rather than restated: a second copy of the
+# list is a copy that stops matching the first time one is edited, and this whole block exists to
+# report a difference accurately.
+_expected_args=(); for _r in "${DEPLOYER_ROLES[@]}"; do _expected_args+=(-e "${_r}"); done
+# The legacy, non-v1 spelling of the instance-admin role is the SAME grant by another name;
+# hexera-dev carries it because its deployer was made by hand. Reporting it as unexpected would
+# be reporting the naming, not an over-grant.
+_expected_args+=(-e roles/compute.instanceAdmin)
 EXTRA_ROLES="$(gcloud projects get-iam-policy "${GCP_PROJECT_ID}" \
   --flatten='bindings[].members' \
   --filter="bindings.members:serviceAccount:${DEPLOYER_SA_EMAIL}" \
   --format='value(bindings.role)' 2>/dev/null \
-  | grep -vxF -e roles/run.admin -e roles/artifactregistry.writer \
-              -e roles/iam.serviceAccountUser -e roles/compute.instanceAdmin.v1 || true)"
+  | grep -vxF "${_expected_args[@]}" || true)"
 if [ -n "${EXTRA_ROLES}" ]; then
-  warn "${DEPLOYER_SA_EMAIL} holds project roles beyond the four above:"
+  warn "${DEPLOYER_SA_EMAIL} holds project roles beyond the ${#DEPLOYER_ROLES[@]} above:"
   while IFS= read -r r; do
     if [ -n "${r}" ]; then printf '       %s\n' "${r}" >&2; fi
   done <<<"${EXTRA_ROLES}"
   warn "nothing was removed. Each is authority a compromised workflow run would inherit:
          gcloud projects remove-iam-policy-binding ${GCP_PROJECT_ID} \\
            --member serviceAccount:${DEPLOYER_SA_EMAIL} --role <role>"
+  # Named explicitly, because this one is not merely extra - it REVERSES the narrowing above.
+  # roles/secretmanager.admin carries versions.access over every secret in the project, so while
+  # it stays bound the custom role is decorative and the provider API keys are one call away.
+  if printf '%s\\n' "${EXTRA_ROLES}" | grep -qx roles/secretmanager.admin; then
+    warn "roles/secretmanager.admin is among them, and it DEFEATS ${SECRET_ROLE_ID}:
+         gcloud projects remove-iam-policy-binding ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${DEPLOYER_SA_EMAIL} --role roles/secretmanager.admin"
+  fi
 fi
 
 # 5) THE IMPERSONATION BINDING, granted to ONE repository's principal set rather than to the pool.
@@ -333,8 +409,7 @@ cat <<SUMMARY
   Issuer               ${GITHUB_ISSUER}
   Attribute condition  ${CONDITION_SHOWN}
   Deployer             ${DEPLOYER_SA_EMAIL}
-  Project roles        run.admin, artifactregistry.writer, iam.serviceAccountUser,
-                       compute.instanceAdmin.v1 - and nothing else
+  Project roles        ${#DEPLOYER_ROLES[@]}, listed in this script - and nothing else
 
   What .github/workflows/deploy.yml passes to google-github-actions/auth:
 

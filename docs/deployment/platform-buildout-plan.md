@@ -64,9 +64,23 @@ ambiguous target pinned explicitly. That design is already CI-shaped; nothing ca
 ### What has to exist
 
 - **Workload Identity Federation** between GitHub Actions and `hexera-dev` (and later
-  `hexera-prod`). No service-account JSON keys. A dedicated deployer SA per environment with
-  the narrow set: `run.admin`, `artifactregistry.writer`, `iam.serviceAccountUser`,
-  `compute.instanceAdmin` for the MIG, and nothing else.
+  `hexera-prod`). No service-account JSON keys. A dedicated deployer SA per environment.
+
+  **Revised 2026-09-03.** This originally specified four roles — `run.admin`,
+  `artifactregistry.writer`, `iam.serviceAccountUser`, `compute.instanceAdmin` — on the
+  principle that a CI identity should not be able to create infrastructure. The first real
+  release proved the shape does not close: stage 7 (data tier) needs `serviceusage` to enable
+  the APIs it then calls, `servicenetworking` to establish the private-services peering, and
+  `cloudsql`/`redis` admin to reconcile the two instances; the `hexera-dev` run died there and
+  the `hexera-prod` run died one stage later on `storage.buckets.create`. A provisioner that
+  cannot provision is not a security control, it is a broken deploy that fails late and opaquely.
+
+  The deployer now holds eleven roles (the list lives in `create-workload-identity.sh`, which is
+  the only authority). **What that costs, stated plainly: a compromised workflow run can delete
+  the project's database and broker.** What contains it is no longer the role list — it is the
+  `prod` environment's required reviewers, the provider's repository attribute condition, and
+  Cloud SQL deletion protection. `roles/owner`, `resourcemanager.projectIamAdmin` and
+  `iam.serviceAccountAdmin` remain absent, so a compromised run still cannot widen itself.
 - **A `deploy.yml` workflow** that runs Gate C on the merge commit, pushes the validated
   digests, then runs `deploy.sh` with `DEPLOY_NONINTERACTIVE=1` and every target pinned.
 - **GitHub Environments** — `dev` auto-deploys on merge to `main`; `prod` requires a manual

@@ -50,16 +50,23 @@ jobs:
       registry: ${{ steps.pick.outputs.registry }}
       wif_provider: ${{ steps.pick.outputs.wif_provider }}
       deployer_sa: ${{ steps.pick.outputs.deployer_sa }}
-      # The two tiers the deploy touches beyond the mesh executor: the database whose schema it
-      # migrates before anything runs the new image, and the worker fleet whose queue depth it
-      # publishes. Both are pinned here for the same reason every other target is.
-      migrate_db_host: ${{ steps.pick.outputs.migrate_db_host }}
+      # Every workload beyond the mesh executor, named the same way in both environments:
+      # <deployment-id>-<role>. The project is already called hexera-dev / hexera-prod, so a
+      # `hexera-dev-` prefix INSIDE it says the same word twice; the hand-made resources that
+      # carried one are what made two conventions look like two systems.
+      api_service: ${{ steps.pick.outputs.api_service }}
+      cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
+      redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
       migrate_db_user: ${{ steps.pick.outputs.migrate_db_user }}
       postgres_password_secret: ${{ steps.pick.outputs.postgres_password_secret }}
-      redis_url: ${{ steps.pick.outputs.redis_url }}
       worker_mig: ${{ steps.pick.outputs.worker_mig }}
       worker_mig_zone: ${{ steps.pick.outputs.worker_mig_zone }}
+      # NOT pinned, and deliberately: MIGRATE_DB_HOST and REDIS_URL are ADDRESSES, allocated by
+      # Google when the instances above are created. create-data-tier.sh resolves them from the
+      # live instances and writes them back into the deployment env for the stages that consume
+      # them. A literal here is a value that is right until the instance is ever replaced - the
+      # 10.66.0.3 that used to live in this file belonged to an instance that no longer exists.
     steps:
       - id: pick
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
@@ -80,16 +87,20 @@ jobs:
               echo "registry=us-central1-docker.pkg.dev/hexera-dev/mesh"
               echo "wif_provider=projects/224734058693/locations/global/workloadIdentityPools/github-actions/providers/github"
               echo "deployer_sa=github-deployer@hexera-dev.iam.gserviceaccount.com"
-              # Cloud SQL on its PRIVATE address - the migration job reaches it over Direct VPC
-              # egress, so the public IP is not, and should not become, a deploy dependency. The
-              # password is a Secret Manager CONTAINER NAME: no credential appears in this file.
-              echo "migrate_db_host=10.66.0.3"
+              # The API service. Until this was pinned the deploy provisioned every tier EXCEPT
+              # the one users reach: hexera-dev-api was created by hand, ran an image no release
+              # record named, and no workflow could roll it forward.
+              echo "api_service=dev-api"
+              # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
+              # instances themselves - see the outputs block above.
+              echo "cloudsql_instance=dev-pg"
+              echo "redis_instance=dev-redis"
               echo "migrate_db_name=meshpipeline"
               echo "migrate_db_user=meshpipeline"
+              # A Secret Manager CONTAINER NAME. No credential value appears in this file.
               echo "postgres_password_secret=postgres-password"
-              # Memorystore, and the group the published depth scales.
-              echo "redis_url=redis://10.108.144.235:6379/0"
-              echo "worker_mig=hexera-dev-workers"
+              # The fleet the published queue depth scales.
+              echo "worker_mig=dev-workers"
               echo "worker_mig_zone=us-central1-a"
             } >> "$GITHUB_OUTPUT"
             exit 0
@@ -117,23 +128,105 @@ jobs:
             echo "registry=us-central1-docker.pkg.dev/hexera-prod/mesh"
             echo "wif_provider=projects/688073002171/locations/global/workloadIdentityPools/github-actions/providers/github"
             echo "deployer_sa=github-deployer@hexera-prod.iam.gserviceaccount.com"
-            # DELIBERATELY EMPTY. hexera-prod has no database, no broker and no worker fleet yet,
-            # and inventing addresses for them here would be a guess a deploy then acts on. Empty
-            # is not a silent skip: run-migrations.sh refuses to skip the schema step under
-            # DEPLOY_NONINTERACTIVE, so the first prod deploy stops until these are stated.
-            echo "migrate_db_host="
-            echo "migrate_db_name="
-            echo "migrate_db_user="
-            echo "postgres_password_secret="
-            echo "redis_url="
-            echo "worker_mig="
-            echo "worker_mig_zone="
+            # The same shape as dev, one prefix apart, because an environment that differs from
+            # the one it is validated against is an environment nothing validated. These were
+            # blank while hexera-prod had no data tier and the deploy identity could not create
+            # one; it can now, so the first release provisions what it names.
+            echo "api_service=prod-api"
+            echo "cloudsql_instance=prod-pg"
+            echo "redis_instance=prod-redis"
+            echo "migrate_db_name=meshpipeline"
+            echo "migrate_db_user=meshpipeline"
+            echo "postgres_password_secret=postgres-password"
+            echo "worker_mig=prod-workers"
+            echo "worker_mig_zone=us-central1-a"
           } >> "$GITHUB_OUTPUT"
 
-  deploy:
-    name: Gate C, publish, provision (${{ needs.target.outputs.environment }})
-    needs: target
+  # THE MISSING HALF OF "CI/CD". Until this existed, ci.yml and deploy.yml both triggered on a
+  # push to main and raced: a red CI could not stop a deploy, because nothing connected them. The
+  # deploy runs its own release-artifact validation, which is the heaviest gate in the repository,
+  # but it is not a superset - ruff, the mypy ratchet, CodeQL, the dependency audit and the
+  # repository contracts run only in ci.yml, and every one of them could have been failing while a
+  # deploy shipped.
+  #
+  # This waits for the `hexera/ci-gate` CHECK RUN on THIS COMMIT rather than for a workflow run,
+  # so it is indifferent to whether CI ran on the push, on the pull request that merged it, or on
+  # a manual dispatch of the same SHA. ci-gate is `if: !cancelled()`, so it reports for every
+  # change including a documentation-only one.
+  #
+  # IT IS NOT REDUNDANT WITH BRANCH PROTECTION, which was the original justification here and was
+  # simply wrong. Checked 2026-09-04: the `main` ruleset carries creation/update/deletion and
+  # non-fast-forward rules only - no `required_status_checks` rule and no `pull_request` rule - so
+  # nothing on the repository side stops a red commit reaching main. Until that changes this job
+  # is the ONLY thing standing between a failing suite and a deployed artifact.
+  #
+  # A TAG THAT NAMES A COMMIT CI NEVER SAW WILL TIME OUT HERE, and that is the intended outcome:
+  # ci.yml runs on pushes to main, not on tags, so a release tag is expected to point at a commit
+  # main already validated. Tagging something else is the case this refuses to ship.
+  await-ci:
+    name: Wait for CI on this commit
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Require hexera/ci-gate to have passed for ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Polled rather than awaited, because the check may not have been CREATED yet: on a push
+          # to main both workflows start together and this job can reach the API first. "Not there"
+          # and "not finished" are therefore the same state - keep waiting - and only a concluded
+          # check is a verdict.
+          deadline=$(( SECONDS + 40 * 60 ))
+          while :; do
+            # EVERY ci-gate run for this commit must have concluded, and all of them must have
+            # passed. Reading only the latest was wrong: a manual workflow_dispatch of the same
+            # SHA starts a SECOND ci-gate, and if it finished first its success would release the
+            # deploy while the push's own run was still going - and might still fail. So a
+            # still-running sibling keeps this waiting, and one failed sibling fails the deploy.
+            read -r total done_ok failed pending <<<"$(
+              gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
+                      | "\(length) \([.[] | select(.status == "completed" and .conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0"
+            )"
+            if [ "${failed}" -gt 0 ]; then
+              echo "::error::${failed} of ${total} hexera/ci-gate runs for ${SHA} did not pass. Nothing is deployed from a commit CI rejected."
+              exit 1
+            fi
+            if [ "${total}" -gt 0 ] && [ "${pending}" -eq 0 ] && [ "${done_ok}" -eq "${total}" ]; then
+              echo "all ${total} hexera/ci-gate run(s) passed for ${SHA} - proceeding"
+              exit 0
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (${done_ok} passed, ${pending} still running, of ${total})."
+              echo "If this is a release tag, it names a commit CI never validated - tag a commit from main instead."
+              exit 1
+            fi
+            echo "  hexera/ci-gate: ${done_ok} passed, ${pending} running, of ${total} - waiting"
+            sleep 30
+          done
+
+  deploy:
+    name: Release and deploy (${{ needs.target.outputs.environment }})
+    needs: [target, await-ci]
+    # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
+    # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
+    # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
+    # larger runner; UNSET IT AND THIS FALLS BACK to the standard image, so the workflow is valid
+    # either way and no job can ever queue forever against a label nobody created.
+    #
+    # UNSET TODAY, and not by oversight. Checked 2026-09-04 with an admin:org token: every
+    # `/orgs/hexera-core/actions/hosted-runners` call - list, machine-sizes, and a real create -
+    # returns `404 GitHub hosted runners are not supported for this organization`. That is the
+    # feature being unavailable to the org, not a permission error (every other org-admin
+    # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
+    # billing change; when it lands, set the variable and nothing here changes.
+    runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-latest' }}
     # id-token lives HERE and nowhere else: this is the only job that exchanges an OIDC token for
     # Google credentials, and a workflow-wide grant would let the target-selection job mint one too.
     permissions:
@@ -144,7 +237,7 @@ jobs:
     # here is what makes a run wait for them.
     environment:
       name: ${{ needs.target.outputs.environment }}
-    # Gate C builds the app image AND the mesh image (OpenFOAM + vmtk + gmsh), then runs the
+    # Artifact validation builds the app image AND the mesh image (OpenFOAM + vmtk + gmsh), then runs the
     # five-engine native terminal matrix against real Postgres/Redis/MinIO. It is measured in
     # tens of minutes, not minutes; the default 360 is left as the ceiling this stays under.
     timeout-minutes: 300
@@ -161,17 +254,23 @@ jobs:
       # deployment-id=dev labels that a derived `hexera-dev` would silently rewrite.
       DEPLOYMENT_ID: ${{ needs.target.outputs.deployment_id }}
       ARTIFACT_REGISTRY_REPOSITORY: ${{ needs.target.outputs.ar_repository }}
+      # THE PUBLIC SURFACE. Without this the deploy provisioned every tier except the one users
+      # reach, and the API service stayed whatever a human last clicked into existence.
+      CLOUDRUN_API_SERVICE: ${{ needs.target.outputs.api_service }}
+      # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
+      # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
+      # REDIS_URL are outputs of this run rather than literals that go stale in this file.
+      CLOUDSQL_INSTANCE: ${{ needs.target.outputs.cloudsql_instance }}
+      REDIS_INSTANCE: ${{ needs.target.outputs.redis_instance }}
       # THE SCHEMA STEP. Migrations run once, from the deploy, against the promoted application
       # digest - before anything serves it. The API container still migrates itself under an
       # advisory lock, and that stays as the safety net, but a deploy no longer depends on N
       # cold-starting instances racing for a lock on a service that is already public.
-      MIGRATE_DB_HOST: ${{ needs.target.outputs.migrate_db_host }}
       MIGRATE_DB_NAME: ${{ needs.target.outputs.migrate_db_name }}
       MIGRATE_DB_USER: ${{ needs.target.outputs.migrate_db_user }}
       POSTGRES_PASSWORD_SECRET: ${{ needs.target.outputs.postgres_password_secret }}
       # THE FLEET'S SCALING SIGNAL. Published by one scheduled job off the fleet, so a group at
       # zero instances can still be woken (platform-buildout-plan.md, Decisions 4).
-      REDIS_URL: ${{ needs.target.outputs.redis_url }}
       WORKER_MIG: ${{ needs.target.outputs.worker_mig }}
       WORKER_MIG_ZONE: ${{ needs.target.outputs.worker_mig_zone }}
     steps:
@@ -236,16 +335,16 @@ jobs:
       # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
       # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
       # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
-      - name: Gate C - release-validate (build once, validate the artifact)
+      - name: Validate the release artifact (build the images once, test those exact bytes)
         env:
           RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: make release-validate
 
-      # GATE C, part 2. Pushes the exact image objects that were just validated - never a rebuild -
+      # ARTIFACT VALIDATION, part 2. Pushes the exact image objects just validated - never a rebuild -
       # and folds the immutable registry digest each push produced into deploy/output/release.json.
       # The registry is pinned rather than discovered: discovery writes deploy/gcp/generated.env,
       # which does not exist yet on a fresh runner (the deploy step below is what creates it).
-      - name: Gate C - release-publish (push those exact images, record their digests)
+      - name: Publish the validated images (push, then record their immutable digests)
         env:
           RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
           RELEASE_REGISTRY: ${{ needs.target.outputs.registry }}

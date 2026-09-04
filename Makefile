@@ -47,7 +47,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
 
 .PHONY: help help-all setup check test test-fast logs clean \
         dev-doctor dev-up dev-down dev-logs dev-reset \
-        mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy dev-images env-bootstrap \
+        mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy mesh-decommission-legacy dev-images env-bootstrap \
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
@@ -304,6 +304,12 @@ mesh-destroy: ## Remove ONLY the cloud resources the deployment record says mesh
 	@# Local uninstall is `make dev-uninstall`; this is the cloud half, and they are deliberately
 	@# separate commands. Ownership comes from the deployment record, never from a name pattern.
 	@bash deploy/gcp/scripts/mesh-destroy.sh $(DESTROY_ARGS)
+
+mesh-decommission-legacy: ## Retire the hand-made hexera-<env>-* stack once its <env>-* replacement is live (report only by default)
+	@# The second half of the naming cutover. deploy.sh reconciles BY EXACT NAME, so renaming a
+	@# deployment's targets creates a parallel stack rather than renaming the old one; this retires
+	@# the old one, and refuses to touch anything whose replacement it cannot see running.
+	@bash deploy/gcp/scripts/decommission-legacy.sh $(DECOMMISSION_ARGS)
 
 mesh-doctor: ## Diagnose mesh-executor configuration (read-only; reveals no values)
 	@bash deploy/gcp/scripts/deploy-doctor.sh

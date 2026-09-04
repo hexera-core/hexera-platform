@@ -59,6 +59,20 @@ API_ROOT_HOST="$RUNDIR/api-root"
 mkdir -p "$API_ROOT_HOST"
 # The image's pytest process is not necessarily this host uid.
 chmod 777 "$RUNDIR" "$API_ROOT_HOST"
+# ...AND MODE ALONE IS NOT ENOUGH. 0777 lets the container WRITE into these directories, but
+# `chmod(2)` needs OWNERSHIP, not write permission, and one integration test chmods `API_ROOT`
+# to 0000 to prove a pipeline process reconstructs geometry without reading the API's tree. On
+# macOS the bind mount presents every file as the container user, so the test owned the directory
+# and passed; on a Linux runner the directory is owned by the host uid that mktemp'd it (1001 on
+# GitHub's images) and the container is uid 1000, so the same call raised
+# `PermissionError: [Errno 1] Operation not permitted: '/srv/api-root'`. The ownership is handed
+# over below, once the image exists - and taken back the same way at teardown, which is the other
+# half of the same bug ("rm: cannot remove .../duct.step: Permission denied" on the host's rm -rf).
+chown_scratch_to() {   # chown_scratch_to <uid>:<gid> - runs as root INSIDE the image, so the host
+  [ -d "${RUNDIR:-}" ] || return 0   # needs no sudo and macOS behaves the same as Linux.
+  docker run --rm -u 0:0 -v "${RUNDIR:?}:/scratch" --entrypoint chown "$IMG" -R "$1" /scratch \
+    >/dev/null 2>&1
+}
 
 # Teardown removes ONLY the exact names created above, with -v so each container's anonymous
 # volume goes with it rather than accumulating on the host. No prune, no dangling sweep, no
@@ -82,7 +96,14 @@ docker_cleanup() {
 # An unset RUNDIR must never become `rm -rf /`.
 cleanup() {
   docker_cleanup
-  [ -n "${RUNDIR:-}" ] && [ -d "${RUNDIR:-}" ] && rm -rf "${RUNDIR:?}" || true
+  if [ -n "${RUNDIR:-}" ] && [ -d "${RUNDIR:-}" ]; then
+    # The suite left files owned by the image's uid inside directories owned by the image's uid,
+    # and unlinking a file needs write permission on its PARENT - which the host does not have.
+    # Give the tree back to the host before removing it; if the image is unavailable (an exit
+    # before the build, or a build that failed) the rm below still clears whatever the host owns.
+    chown_scratch_to "$(id -u):$(id -g)" || true
+    rm -rf "${RUNDIR:?}" || true
+  fi
 }
 trap cleanup EXIT
 
@@ -90,6 +111,21 @@ trap cleanup EXIT
 # builds its own image can turn a stale one current inside its own preflight, and the tier would
 # then describe whatever it just built. The stamp is checked BEFORE any task resource exists.
 bash tests/native/assert_mesh_image_current.sh "$IMG"
+
+# Hand the scratch tree to the identity the suite actually runs as. READ FROM THE IMAGE rather
+# than hard-coded: the tier image's user is a Dockerfile decision, and a literal 1000 here would
+# silently stop matching the day that changes.
+TIER_UID="$(docker run --rm --entrypoint id "$IMG" -u)"
+TIER_GID="$(docker run --rm --entrypoint id "$IMG" -g)"
+# NOT FATAL when it is refused. A Docker Desktop bind mount already presents every file as the
+# container's own user, so a macOS host reaches the right end state without this call succeeding.
+# The test that needs the ownership asserts it itself - it chmods API_ROOT and fails loudly if it
+# may not - so a silent wrong answer is not among the outcomes here.
+if chown_scratch_to "${TIER_UID}:${TIER_GID}"; then
+  echo "── scratch $RUNDIR given to ${TIER_UID}:${TIER_GID} (the tier image's user) ──"
+else
+  echo "── scratch $RUNDIR could not be chowned to ${TIER_UID}:${TIER_GID}; relying on the mount's own uid mapping ──"
+fi
 
 docker_cleanup
 docker network create --label "$LABEL=1" "$NET" >/dev/null

@@ -24,8 +24,9 @@ A month is 730 hours throughout.
 | **One shared dev** (`hexera-dev`) | **~$95/mo** | **~$120/mo** | scale-to-zero worker fleet |
 | **A personal dev** | **~$0/mo** | **~$5/mo** | local control plane; cloud mesh job only |
 
-The two builder VMs currently running in `hexera-dev` add **~$430/mo** on top and are not part
-of either steady state. They are the single largest line in the project. See *Not steady state*.
+~~The two builder VMs currently running in `hexera-dev` add ~$430/mo on top.~~ **Deleted
+2026-09-03** — heavy CI moved to GitHub-hosted larger runners, so that line is gone. The dev
+figures above are now the whole of `hexera-dev`. See *Not steady state*.
 
 ---
 
@@ -109,20 +110,35 @@ personal environment that idles at zero can be created per developer without a b
 
 ## Not steady state
 
-**Two `c2-standard-8` builder VMs are running continuously in `hexera-dev`:**
-`dev-gatec-builder` and `dev-builder-2`, at ~$0.294/h each.
+**Resolved 2026-09-03.** Two `c2-standard-8` builder VMs — `dev-gatec-builder` and
+`dev-builder-2`, ~$0.294/h each, ~$215/mo each, **~$430/mo together** — ran continuously in
+`hexera-dev` and cost more than `hexera-dev` and `hexera-prod` combined. They were hand-made,
+reproducible from nothing in `deploy/`, and existed because release-artifact validation cannot
+run on macOS (bash 3.2).
 
-| | |
-|---|---|
-| Per VM | ~$215/mo |
-| Both | **~$430/mo** |
+Both are deleted. That gate runs in CI, and its heavy jobs now run on GitHub-hosted larger
+runners, which bill per minute of use rather than per hour of existence. **This is the single
+largest saving available in the project and it has been taken.**
 
-They are hand-made, reproducible from nothing in `deploy/`, and were created to run Gate C and to
-host the demo — Gate C cannot run on macOS (bash 3.2), which is why they exist at all. **They cost
-more than `hexera-dev` and `hexera-prod` combined.**
+Final disk snapshots are retained (`*-final-20260903`) at a few cents a month; delete them once
+nobody wants them.
 
-They should be deleted and recreated per release, or replaced by a CI runner. Until then they are
-the first thing to look at on any invoice.
+The lesson generalises: the expensive line was never a workload, it was a machine that outlived
+the reason it was created. Anything in `hexera-dev` that `deploy/` cannot recreate deserves the
+same question.
+
+**The heavy CI lane is on standard runners for now.** `ci.yml`'s image and integration jobs and
+the deploy job read `vars.HEXERA_RUNNER_HEAVY` and fall back to `ubuntu-24.04` when it is unset,
+which it is. Checked 2026-09-04 with an `admin:org` token: every
+`/orgs/hexera-core/actions/hosted-runners` call — list, machine-sizes, and an actual create —
+returns `404 GitHub hosted runners are not supported for this organization`. The feature is not
+available to the org; enabling it is an enterprise billing change, not an API call.
+
+Standard runners are billing at the included rate today — September's usage was 860 Actions Linux
+minutes with `netAmount 0.00`, entirely inside the plan's allowance. Larger runners never are:
+they bill from the first minute. So the trade when that variable is finally set is real CI minutes
+against wall-clock on a ~13-minute integration tier and a ~24-minute deploy, and it should be
+made deliberately rather than because the variable exists.
 
 ---
 

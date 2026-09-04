@@ -133,8 +133,25 @@ fi
 # the peering is probed first. The probe asks whether ANY servicenetworking connection exists rather
 # than which ranges it carries: a connection is per network-and-service, and connecting a second
 # time to add a range is `update`, which is not this script's to do.
-if gc services vpc-peerings list --network="${VPC_NETWORK}" \
-     --service=servicenetworking.googleapis.com --format='value(peering)' 2>/dev/null | grep -q .; then
+#
+# TWO PROBES, BECAUSE A REFUSED READ IS NOT AN ABSENT RESOURCE. `services vpc-peerings list` needs
+# servicenetworking.services.get, which the federated deploy identity does not hold; discarding its
+# stderr turned "you may not ask" into "there is none", and the run went on to `connect` a peering
+# that had been ACTIVE on hexera-dev since 2026-08-30. That failed with `Permission denied to add
+# peering`, which names neither the real problem nor the account. So the second probe reads the
+# peering from the NETWORK side - `compute.networks.get`, which the deployer does hold as part of
+# compute.instanceAdmin.v1 - and only a network that genuinely carries no servicenetworking peering
+# reaches the connect below.
+peerings_seen=""
+if peerings_seen="$(gc services vpc-peerings list --network="${VPC_NETWORK}" \
+     --service=servicenetworking.googleapis.com --format='value(peering)' 2>/dev/null)"; then
+  :
+else
+  peerings_seen="$(gc compute networks describe "${VPC_NETWORK}" \
+    --format='value(peerings[].name)' 2>/dev/null | tr ';,' '\n' \
+    | grep -i servicenetworking || true)"
+fi
+if printf '%s' "${peerings_seen}" | grep -q .; then
   PEERING_DISPOSITION=reused
   log "peering         servicenetworking <-> ${VPC_NETWORK}  (reused - untouched)"
 else
