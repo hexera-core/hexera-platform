@@ -88,17 +88,21 @@ Everything runs in **`us-central1`**, zone **`us-central1-a`** where zonal.
 
 | Name | Type | Zone | IPs | Notes |
 | --- | --- | --- | --- | --- |
-| `dev-gatec-builder` | c2-standard-8 | us-central1-a | 10.128.0.2 / 34.41.226.43 | Ubuntu 22.04, tag `hexera-ui`, startup-script metadata. External IP is the reserved static `hexera-dev-console`. Created 2026-08-29 23:56 PDT. |
-| `dev-builder-2` | c2-standard-8 | us-central1-a | 10.128.0.3 / 34.170.203.15 | Ubuntu 22.04, no tags, startup-script metadata. Created 2026-08-30 02:47 PDT. |
-| `hexera-dev-worker-hxjh` | e2-standard-4 | us-central1-a | 10.128.0.4, no external | MIG member. Metadata carries `worker-image`, `env-uri`, `database-url`, `redis-url`, `startup-script`. |
+| `hexera-dev-worker-hgj6` | e2-standard-4 | us-central1-a | 10.128.0.5, no external | MIG member. Metadata carries `worker-image`, `env-uri`, `database-url`, `redis-url`, `startup-script`. |
 
-All three run on the **default compute service account**
+**Deleted 2026-09-03: `dev-gatec-builder` and `dev-builder-2`.** Two c2-standard-8 boxes,
+~$430/mo between them and the largest steady cost in the project. Both carried the identical
+"install Docker" startup script and nothing bespoke; they existed because release-artifact
+validation cannot run on macOS (bash 3.2), and predate that gate running in CI. Final disk
+snapshots `dev-gatec-builder-final-20260903` and `dev-builder-2-final-20260903` are retained and
+can be deleted once nobody wants them. The reserved static address `hexera-dev-console`
+(34.41.226.43) went with them. Heavy CI now runs on GitHub-hosted larger runners
+(`vars.HEXERA_RUNNER_HEAVY`).
+
+The remaining instance runs on the **default compute service account**
 (`224734058693-compute@developer.gserviceaccount.com`) with the `cloud-platform` scope, Secure
 Boot off, vTPM and integrity monitoring on. Disks: 200 GB pd-balanced for each builder, 100 GB
 for the worker.
-
-The two builders are hand-made dev boxes, not part of any managed group or template — nothing
-in `deploy/` recreates them.
 
 ### Worker fleet (MIG + autoscaler)
 
@@ -256,9 +260,8 @@ Ordered by how much they would hurt.
   `dev-mesh` already does.
 - **No alerting of any kind.** No uptime check on the public API, no alert on job failures,
   Cloud SQL disk, or the queue-depth metric the autoscaler depends on.
-- **Two untracked builder VMs** (`dev-gatec-builder`, `dev-builder-2`, c2-standard-8 each) are
-  running continuously and are not reproducible from `deploy/`. They are the largest steady
-  cost in the project.
+- ~~Two untracked builder VMs.~~ **Resolved 2026-09-03**: both deleted, snapshots retained,
+  ~$430/mo recovered. Heavy CI moved to GitHub-hosted larger runners.
 - ~~No Artifact Registry cleanup policy.~~ **Resolved 2026-08-31**: tagged images are kept,
   untagged are deleted after seven days.
 - **`dev-transfer-…` holds source tarballs** (`hexera-clone.tgz`, `hx2-4.tgz`) and `env.txt`

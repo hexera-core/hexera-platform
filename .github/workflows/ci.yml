@@ -282,7 +282,13 @@ jobs:
     name: Image targets (api / pipeline / mesh)
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true'
-    runs-on: ubuntu-24.04
+    # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
+    # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
+    # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
+    # GitHub-hosted larger runner created in the org's Actions settings (Enterprise plan);
+    # UNSET IT AND THIS FALLS BACK to the standard image, so the workflow is valid either way and
+    # no job can ever queue forever against a label nobody created.
+    runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -316,7 +322,13 @@ jobs:
     name: Integration tier (real Redis + Postgres + MinIO)
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true'
-    runs-on: ubuntu-24.04
+    # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
+    # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
+    # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
+    # GitHub-hosted larger runner created in the org's Actions settings (Enterprise plan);
+    # UNSET IT AND THIS FALLS BACK to the standard image, so the workflow is valid either way and
+    # no job can ever queue forever against a label nobody created.
+    runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
