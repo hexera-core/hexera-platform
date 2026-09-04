@@ -90,6 +90,7 @@ def prepare_surface(workspace, *, geometry_file: str,
                     domain_min=None, domain_max=None, wall_patch: str = "body",
                     farfield_patch: str = "farfield", feature_angle: float = 30.0,
                     mirror_y_half: bool = False, reference_length_m: float | None = None,
+                    region_labeler=None,
                     bashrc: str = _DEFAULT_BASHRC) -> dict:
     ws = Path(workspace)
     body_stl = ws / geometry_file
@@ -106,6 +107,20 @@ def prepare_surface(workspace, *, geometry_file: str,
     if mirror_y_half:
         body = body + mirror_y(body)
         regions = {n: v + mirror_y(v) for n, v in regions.items()}
+    # SYNTHETIC CLASS REGIONS (thin-feature layer policy). Only a MONOLITHIC wall may be split:
+    # named CAD solids are the user's own patches and keep their names untouched. The labeller
+    # returns one region name per triangle; the class that keeps the declared wall name is what
+    # keeps the patch contract satisfied. A labeller that yields a single group changes nothing.
+    if region_labeler is not None and not regions:
+        _labels = region_labeler(body)
+        _groups: dict[str, list] = {}
+        for _lab, _tri in zip(_labels, body):
+            _groups.setdefault(str(_lab), []).append(_tri)
+        if len(_groups) > 1:
+            _wall_key = re.sub(r"[^A-Za-z0-9_]", "_", wall_patch) or "body"
+            _order = ([_wall_key] if _wall_key in _groups else []) \
+                + sorted(k for k in _groups if k != _wall_key)
+            regions = {k: _groups[k] for k in _order}
     bb_min = [min(v[i] for t in body for v in t) for i in range(3)]
     bb_max = [max(v[i] for t in body for v in t) for i in range(3)]
 
@@ -381,7 +396,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
                        symmetry: dict | None = None,
-                       surface_regions: list | None = None) -> dict:
+                       surface_regions: list | None = None,
+                       layer_counts: dict | None = None,
+                       layer_overrides: dict | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -497,8 +514,16 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
 
     # layers - survival settings baked in (nRelaxedIter + relaxed quality + tet veto off), so
     # layers don't roll back to 0% on sharp edges. The builder only chooses count/thickness.
+    # The thin-feature layer policy may LOCALLY override the count per class region
+    # (layer_counts) and relax the termination knobs (layer_overrides); with neither given the
+    # authored dict is byte-identical to the historical one - pinned by regression test.
     n_layers = max(0, int(strategy.get("n_layers", 3)))
     first_rel = float(strategy.get("first_layer_rel", 0.35))
+    layer_counts = {str(k): max(0, int(v)) for k, v in (layer_counts or {}).items()}
+
+    def _n_for(patch: str) -> int:
+        return layer_counts.get(patch, n_layers)
+    _min_thick = float((layer_overrides or {}).get("min_thickness_rel", 0.05))
     (b0d, b0l), (b1d, b1l) = bands
     near_band_level = min(int(b0l) + deficit, smax + 2)   # bumped with the surface (see deficit above)
 
@@ -509,6 +534,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
     else:
         min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+    _med_override = (layer_overrides or {}).get("max_thickness_to_medial")
+    if _med_override is not None:
+        medial = float(_med_override)
     # REGION-WISE DECLARATION. Named solids in the surface become named patches: snappyHexMesh
     # emits <surface>_<region> for each, so the layer entry becomes a pattern covering them all.
     # With no regions every fragment is empty and the dict is exactly what it has always been.
@@ -523,11 +551,15 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would
     # come back silently without its boundary layer.
-    _layers = (" ".join(f"{r} {{ nSurfaceLayers {n_layers}; }}" for r in _names)
-               if _names else f"{surface_name} {{ nSurfaceLayers {n_layers}; }}")
+    _layers = (" ".join(f"{r} {{ nSurfaceLayers {_n_for(r)}; }}" for r in _names)
+               if _names else f"{surface_name} {{ nSurfaceLayers {_n_for(surface_name)}; }}")
+    # addLayers reflects what is actually REQUESTED somewhere: a policy that zeroes every
+    # region's count must not leave the layer stage running against an all-zero table.
+    _any_layers = (any(_n_for(r) > 0 for r in _names) if _names
+                   else _n_for(surface_name) > 0)
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
-castellatedMesh true; snap true; addLayers {'true' if n_layers > 0 else 'false'};
+castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
 geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
@@ -537,7 +569,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
-  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
+  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
@@ -547,10 +579,13 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
 """)
-    return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
-            "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
-            "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
-            "domain_max": [round(x, 3) for x in domain_max]}
+    out = {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
+           "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
+           "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
+           "domain_max": [round(x, 3) for x in domain_max]}
+    if layer_counts:
+        out["layer_counts"] = dict(layer_counts)
+    return out
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,

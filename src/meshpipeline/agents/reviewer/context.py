@@ -206,6 +206,21 @@ def build_review_prompt(
             f"conclude 'no layers' from a slice where the near-wall looks like a dense/black region "
             f"- judge coverage from THIS number. (Rough guide: >=70% is good, 40-70% partial, <40% "
             f"poor; weigh it against the workflow's y+ target.)")
+    _lpol = _q.get("layer_policy")
+    if isinstance(_lpol, dict) and _lpol.get("classes"):
+        _cls = "; ".join(
+            f"{_cn}: {_cv.get('n_layers')} layers over {round((_cv.get('area_frac') or 0) * 100, 1)}%"
+            f" of the wall area"
+            for _cn, _cv in (_lpol.get("classes") or {}).items())
+        _meta.append(
+            f"Local layer policy (thin-feature classifier, mode {_lpol.get('mode')}, escalation "
+            f"stage {_lpol.get('escalation_stage', 0)}): the requested "
+            f"{_lpol.get('requested_layers')} layers were kept on well-proportioned surface and "
+            f"DELIBERATELY reduced where the geometry is locally thin or razor-sharp - {_cls}. "
+            f"Judge the layer axis AGAINST this declared policy: an area classified thin/razor "
+            f"carrying its reduced count is a reported engineering trade (folding full-height "
+            f"prisms there inverts cells), not a silent collapse. Coverage missing OUTSIDE the "
+            f"declared thin/razor fraction is still a real finding.")
     mesh_meta = "  " + "\n  ".join(_meta)
 
     _gb = (manifest.get("geometry", {}) or {}).get("body_box")
