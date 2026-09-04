@@ -73,7 +73,9 @@ async def _with_session(fn):
         await engine.dispose()
 
 
-NO_PROGRESS_FAILURE = {"gate": "manifest_valid", "section": "MANIFEST",
+# "failed_gate" is the key the classifier writes (pipeline/classifier.py); using "gate"
+# here masked the reader/writer mismatch that kept the no-progress stop from ever firing.
+NO_PROGRESS_FAILURE = {"failed_gate": "manifest_valid", "section": "MANIFEST",
                        "summary": "these patches have zero faces: ['inlet_1']"}
 
 

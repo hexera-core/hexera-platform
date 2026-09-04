@@ -40,7 +40,12 @@ if BUILDER_TOTAL_TIMEOUT_SECONDS <= 0:
 # auto-submits (the reviewer judges quality downstream).
 BUILDER_AUTO_SUBMIT_AFTER: int = int(optional_env("BUILDER_AUTO_SUBMIT_AFTER", "2"))
 
-MAX_BUILDER_RETRIES: int = int(optional_env("MAX_BUILDER_RETRIES", "3"))
+# 1 => a hard ceiling of 3 total build attempts (1 initial + 1 mesh retry + 1 reviewer-
+# feedback bonus). Cut from 3 (which gave 5 total): a deterministically-repeating failure
+# cannot be fixed by more attempts, and the corpus's known multi-attempt recoveries (a
+# real 2-attempt case, a reviewer recovery that delivered on attempt 3) both still fit
+# inside 3. Fewer attempts = fewer paid Cloud Run meshes on a doomed run.
+MAX_BUILDER_RETRIES: int = int(optional_env("MAX_BUILDER_RETRIES", "1"))
 
 # INFRA replays: a builder attempt killed by a TRANSIENT system failure (provider brownout,
 # dependency blip) is replayed after a long backoff instead of ending the job. Distinct from
