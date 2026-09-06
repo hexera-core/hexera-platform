@@ -632,6 +632,33 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         feature_level = int(strategy.get("feature_level", surface_level + 1))
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
+        # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
+        # than it is never captured by castellation - an orifice plate (3-9 mm) inside a
+        # 106-290 mm pipe vanishes, its faces never become patches, and the run dies at the
+        # manifest gate (every kind=orifice shape failed at baseline; every kind=venturi,
+        # which carries no plate, passed). Measure the STAGED wall - the exact file the
+        # mesher reads - and refine locally where it is too thin: a global refinement fine
+        # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
+        # measurement failure degrades to "no thin features", never to a guess.
+        _wall_cell = bore_D / cells_across
+        _thin_regions: list = []
+        try:
+            from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
+            from meshpipeline.cad.thin_features import thin_refinement_boxes as _thin_boxes
+            _wall_stl = (Path(workspace) / "constant" / "triSurface"
+                         / f"{prep['names'][_wall_key]}.stl")
+            if _wall_stl.exists():
+                _thin_regions = _thin_boxes(_read_tris(_wall_stl), cell_m=_wall_cell)
+        except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+            logger.exception("internal build: thin-feature probe failed - continuing without "
+                             "local thin refinement - job_id=%s", job_id)
+            _thin_regions = []
+        if _thin_regions:
+            _t0 = _thin_regions[0]
+            await publish.anote(
+                f"Thin feature detected - {_t0['thinnest_m'] * 1000:.1f} mm across, finer "
+                f"than the {_wall_cell * 1000:.1f} mm wall cell; refining locally so it is "
+                f"captured", op_id=f"internal:thin-feature:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}",
@@ -652,7 +679,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 bbox_max=t["bbox_max"], base_cell=base_cell, surface_level=surface_level,
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
                 max_cells=_budget, quality=quality,
-                port_sizes=_port_sizes, sealed_before=_sealed_before)
+                port_sizes=_port_sizes, sealed_before=_sealed_before,
+                thin_regions=_thin_regions)
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers",

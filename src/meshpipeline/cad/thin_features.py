@@ -150,3 +150,51 @@ def class_area_fractions(labels: np.ndarray, area_m2: np.ndarray) -> dict[str, f
         a = float(np.asarray(area_m2)[np.asarray(labels) == code].sum())
         out[name] = (a / total) if total > 0 else 0.0
     return out
+
+
+# ------------------------------------------------------------------ refinement ----
+
+def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
+                          pad_frac: float = 0.6, max_level_bump: int = 4) -> list[dict]:
+    """Boxes enclosing surface regions too THIN for the planned cell, and the extra
+    refinement level each needs.
+
+    The orifice plate is the case this exists for: a 3 mm disc inside a 106 mm pipe. An
+    internal plan sizes its wall cell from the BORE (bore / cells_across), so the cell
+    lands near 4.4 mm - wider than the plate itself - castellation never captures the
+    plate, its faces never become patches, and the run dies at the manifest gate.
+    Refining globally to 3 mm would detonate the cell budget across a 400 mm pipe, so
+    the correction is LOCAL: find the thin triangles, box them, refine only inside.
+
+    cell_m is the cell size the plan will actually use at the wall. A feature needs
+    cells_across cells over its thickness, so its target cell is thickness/cells_across
+    and the extra level is log2(cell_m / target), clamped by max_level_bump so a pinhole
+    cannot buy unbounded refinement. Returns an empty list when nothing is too thin or
+    when the probe could not run - a caller gets no guess, only a measurement.
+    """
+    import math as _math
+
+    field = measure_from_triangles(tris)
+    if not field.measured:
+        return []
+    thickness = np.asarray(field.thickness_m, dtype=float)
+    # "too thin" = the planned cell cannot fit cells_across of itself across the feature
+    too_thin = np.isfinite(thickness) & (thickness > 0.0) & (
+        thickness < cell_m * float(cells_across))
+    if not bool(too_thin.any()):
+        return []
+    verts = np.asarray(tris, dtype=float)[too_thin].reshape(-1, 3)
+    thinnest = float(thickness[too_thin].min())
+    target = thinnest / float(cells_across)
+    if target <= 0.0:
+        return []
+    bump = int(_math.ceil(_math.log2(max(cell_m / target, 1.0) + 1e-12)))
+    bump = max(1, min(int(max_level_bump), bump))
+    lo, hi = verts.min(axis=0), verts.max(axis=0)
+    pad = cell_m * float(pad_frac)
+    logger.info("thin_refinement_boxes: thinnest feature %.4g m vs cell %.4g m -> "
+                "+%d level(s) over %d triangle(s)", thinnest, cell_m, bump,
+                int(too_thin.sum()))
+    return [{"min": (lo - pad).tolist(), "max": (hi + pad).tolist(),
+             "level_bump": bump, "thinnest_m": thinnest,
+             "n_triangles": int(too_thin.sum())}]

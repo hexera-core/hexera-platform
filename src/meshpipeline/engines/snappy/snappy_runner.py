@@ -684,7 +684,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
                          max_cells: int = 8_000_000, quality: str = "balanced",
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
-                         sealed_before: frozenset[str] | set[str] = frozenset()) -> dict:
+                         sealed_before: frozenset[str] | set[str] = frozenset(),
+                         thin_regions: list | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -762,6 +763,19 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                     for p in names)
             + f"seedZone {{ type searchableSphere; centre {'(%.6g %.6g %.6g)' % tuple(interior_point)}; "
               f"radius {seed_r:.6g}; }} ")
+    # THIN FEATURES. A plate thinner than the wall cell is never captured by castellation
+    # (the orifice class: a 3 mm disc inside a 106 mm pipe). Refining globally to reach it
+    # would detonate the budget, so each MEASURED thin region gets its own box, refined
+    # locally to put cells across the plate.
+    _thin = list(thin_regions or [])
+    thin_refine = ""
+    for _i, _tr in enumerate(_thin):
+        _lvl = min(_HARD_MAX_LEVEL, smin + int(_tr.get("level_bump", 1)))
+        _lo, _hi = _tr["min"], _tr["max"]
+        geom += (f"thinZone{_i} {{ type searchableBox; "
+                 f"min ({_lo[0]:.6g} {_lo[1]:.6g} {_lo[2]:.6g}); "
+                 f"max ({_hi[0]:.6g} {_hi[1]:.6g} {_hi[2]:.6g}); }} ")
+        thin_refine += f"thinZone{_i} {{ mode inside; levels ((1e15 {_lvl})); }} "
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -797,7 +811,7 @@ geometry {{ {geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
-  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
+  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
   locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -816,4 +830,8 @@ mergeTolerance 1e-6; debug 0;
             "location_in_mesh": [round(x, 5) for x in interior_point], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
-            "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names}}
+            "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
+            "thin_regions": [{"level": min(_HARD_MAX_LEVEL,
+                                           smin + int(r.get("level_bump", 1))),
+                              "thinnest_m": r.get("thinnest_m"),
+                              "n_triangles": r.get("n_triangles")} for r in _thin]}
