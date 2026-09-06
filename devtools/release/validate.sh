@@ -351,6 +351,9 @@ UI_BROWSER_C="amp-rel-${STAMP}-browser"
 UI_BROWSER_IMAGE="zenika/alpine-chrome:124"
 UI_CDP=""
 UI_BROWSER_NOTE=""
+# Set ONLY by the published-port fallback below: the address the browser container must use to
+# reach the UI container, because 127.0.0.1 inside its own namespace is not this host.
+UI_BROWSER_HOST=""
 
 _resolve_browser() {
   # A browser on PATH is not a browser that RUNS. This host ships Chrome 148, which dies with
@@ -404,7 +407,35 @@ PY
     fi
     sleep 1
   done
-  UI_BROWSER_NOTE="host browser unusable (${why}); ${UI_BROWSER_IMAGE} never opened a DevTools port"
+  # Docker Desktop (WSL2) ships with host networking OFF: `--network host` then binds the
+  # DevTools port inside the engine VM, never on this loopback, so the poll above never sees it.
+  # Fallback: publish the port instead. That needs OLD headless - new headless ignores
+  # --remote-debugging-address and listens only on the container's own 127.0.0.1, which a
+  # published port cannot reach. And with no shared namespace the browser cannot use this
+  # host's loopback to reach the UI container either, so the UI is published on this host's
+  # address and the browser is pointed there (UI_BROWSER_HOST, consumed below). Same suite,
+  # same CDP protocol, same assertions - only the plumbing between the two containers differs.
+  docker rm -f -v "${UI_BROWSER_C}" >/dev/null 2>&1
+  local host_addr
+  host_addr="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -n "${host_addr}" ] && docker run -d --name "${UI_BROWSER_C}" --label "amp-release=${STAMP}" \
+       -p "127.0.0.1:${port}:${port}" \
+       --entrypoint chromium-browser "${UI_BROWSER_IMAGE}" \
+       --headless=old --no-sandbox --disable-gpu --disable-dev-shm-usage \
+       --enable-unsafe-swiftshader --remote-debugging-address=0.0.0.0 \
+       --remote-debugging-port="${port}" about:blank \
+       >/dev/null 2>&1; then
+    for i in $(seq 1 45); do
+      if curl -sf "http://127.0.0.1:${port}/json/version" >/dev/null 2>&1; then
+        UI_CDP="http://127.0.0.1:${port}"
+        UI_BROWSER_HOST="${host_addr}"
+        UI_BROWSER_NOTE="pinned ${UI_BROWSER_IMAGE}, published DevTools port, UI reached at ${host_addr} (host browser unusable: ${why}; docker host networking not in effect)"
+        return 0
+      fi
+      sleep 1
+    done
+  fi
+  UI_BROWSER_NOTE="host browser unusable (${why}); ${UI_BROWSER_IMAGE} never opened a DevTools port (neither --network host nor a published port)"
   return 1
 }
 
@@ -418,9 +449,13 @@ else
   UI_PORT="$("${GATE_PY}" -c \
     "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()")"
   docker rm -f -v "${UI_C}" >/dev/null 2>&1
+  # Loopback only, unless the browser runs in its own network namespace (fallback above) and
+  # must reach the UI on this host's address. Placeholder credentials either way, for the
+  # seconds this container lives.
+  if [ -n "${UI_BROWSER_HOST}" ]; then UI_PUBLISH="${UI_PORT}:8000"; else UI_PUBLISH="127.0.0.1:${UI_PORT}:8000"; fi
   # No -v anywhere: the page under test is the one baked into the image.
   docker run -d --name "${UI_C}" --label "amp-release=${STAMP}" \
-    -p "127.0.0.1:${UI_PORT}:8000" \
+    -p "${UI_PUBLISH}" \
     -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
     --entrypoint python "${IMAGE_TAG[app]}" \
     -m uvicorn meshpipeline.runtime.api_server:app --host 0.0.0.0 --port 8000 \
@@ -458,7 +493,7 @@ PY
 have compared the artifact's browser against the checkout's backend"
     KEEP_WORK=1
     docker rm -f -v "${UI_C}" >/dev/null 2>&1
-  elif UI_BROWSER_BASE_URL="http://127.0.0.1:${UI_PORT}" UI_EVENT_VOCABULARY="${UI_VOCAB}" \
+  elif UI_BROWSER_BASE_URL="http://${UI_BROWSER_HOST:-127.0.0.1}:${UI_PORT}" UI_EVENT_VOCABULARY="${UI_VOCAB}" \
        CHROME_CDP_URL="${UI_CDP}" \
        "${GATE_PY}" -m pytest -q -rs -p no:cacheprovider tests/ui \
          >"${WORK}/ui-browser.log" 2>&1; then
