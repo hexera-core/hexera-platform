@@ -43,9 +43,7 @@ class TestObligationAwareCorrections:
 class TestTheDeficitReadsAsAnOrder:
     def test_uninspected_target_message_is_imperative_and_names_the_tool(self):
         from meshpipeline.agents.reviewer.eligibility import _check_obligation
-        from meshpipeline.contracts.evidence_ledger import EvidenceLedger
-
-        from meshpipeline.contracts.evidence_ledger import TargetKind
+        from meshpipeline.contracts.evidence_ledger import EvidenceLedger, TargetKind
 
         class Obligation:
             kind = TargetKind.REGION

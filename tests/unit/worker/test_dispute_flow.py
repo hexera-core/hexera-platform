@@ -329,7 +329,7 @@ def _client(monkeypatch, parent_job, quota_error: str = ""):
         return parent_job
     monkeypatch.setattr(sim.svc, "get_job", fake_get_job)
 
-    async def fake_quota(db, owner_id):
+    async def fake_quota(db, owner_id, *, plan=""):
         if quota_error:
             raise ValueError(quota_error)
     monkeypatch.setattr(sim.svc, "check_quotas", fake_quota)

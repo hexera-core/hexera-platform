@@ -342,9 +342,15 @@ async def test_a_routed_model_call_no_longer_fails_for_want_of_composition(monke
 def test_each_port_names_a_capability_not_a_transport():
     import inspect
 
-    from meshpipeline.contracts import dead_letter, delivery_guard, mesh_timing, rate_limit
+    from meshpipeline.contracts import (
+        dead_letter,
+        delivery_guard,
+        inference_telemetry,
+        mesh_timing,
+        rate_limit,
+    )
 
-    for mod in (delivery_guard, rate_limit, dead_letter, mesh_timing):
+    for mod in (delivery_guard, rate_limit, dead_letter, mesh_timing, inference_telemetry):
         src = inspect.getsource(mod)
         for banned in ("import redis", "aioredis", "REDIS_URL", "lpush", "ltrim", "pubsub"):
             assert banned not in src, f"{mod.__name__} leaks transport vocabulary: {banned!r}"

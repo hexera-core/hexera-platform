@@ -11,7 +11,7 @@ inventory: individual modules carry their own architectural headers.
 | `tests/` | the test suite, in tiers (`unit`, `integration`, `native`, `ui`) |
 | `devtools/` | tools that create, inspect or validate this software, never anything a user's job depends on |
 | `deploy/` | deployment automation and container entrypoints |
-| `alembic/` | the migration authority: one revision, `0001_schema_baseline` |
+| `alembic/` | the migration authority: a linear chain from `0001_schema_baseline` |
 | `ui/` | the browser client shipped by the API |
 | `docs/` | this manual |
 | `requirements/` | the pinned dependency sets |

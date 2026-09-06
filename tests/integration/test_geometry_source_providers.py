@@ -251,6 +251,12 @@ async def test_reconstruction_succeeds_in_a_process_with_no_access_to_the_api_ro
     geom = await _make_source(db, store, owner="tenant-a", marker="cross-process", size=8192)
 
     api_root = Path(os.environ["API_ROOT"])
+    # Restore the mode this directory ARRIVED with, not a plausible-looking 0o755. API_ROOT is a
+    # bind mount from the host, and the containerised tier writes into it as a different uid than
+    # the one that cleans it up afterwards; handing it back with narrower bits than it had left the
+    # host unable to delete its own scratch tree ("rm: cannot remove ...: Permission denied") long
+    # after this test had passed.
+    api_root_mode = api_root.stat().st_mode & 0o7777
     os.chmod(api_root, 0o000)                              # deny the child process entirely
     try:
         pipeline_root = tmp_path / "pipeline-root"
@@ -289,7 +295,7 @@ async def test_reconstruction_succeeds_in_a_process_with_no_access_to_the_api_ro
         assert proc.returncode == 0, proc.stderr[-2000:]
         out = json.loads(proc.stdout.strip().splitlines()[-1])
     finally:
-        os.chmod(api_root, 0o755)
+        os.chmod(api_root, api_root_mode)
 
     assert out["pid"] != os.getpid()                       # genuinely another process
     assert Path(out["cwd"]).resolve() == pipeline_root.resolve()

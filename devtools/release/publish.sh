@@ -38,8 +38,17 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${REPO_ROOT}"
 REC="${RELEASE_RECORD:-${REPO_ROOT}/deploy/output/release.json}"
-PY="${REPO_ROOT}/.venv/bin/python"
-[ -x "${PY}" ] || PY=python3
+# Same interpreter contract as Gate C (devtools/release/validate.sh): RELEASE_PYTHON wins, then
+# the repository virtualenv, then whatever python3 the host resolves to. Without the override this
+# fell through to a host python3 that can be older than the project floor - record.py uses
+# datetime.UTC (3.11+), so publishing a validated release died with
+# "module 'datetime' has no attribute 'UTC'" AFTER both images had already been pushed, leaving
+# the record unwritten and the release unpromotable.
+PY="${RELEASE_PYTHON:-}"
+if [ -z "${PY}" ]; then
+  PY="${REPO_ROOT}/.venv/bin/python"
+  [ -x "${PY}" ] || PY=python3
+fi
 
 c_bold=$'\033[1m'; c_red=$'\033[31m'; c_grn=$'\033[32m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 stage(){ printf '\n%s── %s ──%s\n' "${c_bold}" "$1" "${c_off}"; }

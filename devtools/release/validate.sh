@@ -229,7 +229,12 @@ PY
 then record "wheel inspect" passed 1 "$(cat "${WORK}/wheel-inspect.txt")"
 else record "wheel inspect" failed 1 "$(cat "${WORK}/wheel-inspect.txt")"; fi
 
-python3 -m venv "${WORK}/venv" >/dev/null 2>&1
+# Built by GATE_PY, not by whatever `python3` the host happens to resolve to. The wheel declares
+# requires-python >=3.11, so a host whose python3 is older cannot install the project's own
+# distribution and this check fails for a reason that has nothing to do with the artifact - on
+# Ubuntu 22.04 (python3 = 3.10) every release would be unpromotable. GATE_PY is already the
+# interpreter that built the wheel, which is the one whose install proves anything.
+"${GATE_PY}" -m venv "${WORK}/venv" >/dev/null 2>&1
 if "${WORK}/venv/bin/pip" install --no-cache-dir -c "${REPO_ROOT}/requirements/constraints.txt" "${WHEEL}" >"${WORK}/install.log" 2>&1; then
   record "clean non-editable install" passed 1 "throwaway venv (wheel declares no runtime pins by design)"
 else
@@ -642,9 +647,16 @@ PY
 )"; then record "native terminal coverage (5 engines + 4 scenarios)" passed 1 "${COV}"
     else record "native terminal coverage (5 engines + 4 scenarios)" failed 1 "${COV}"; KEEP_WORK=1; fi
 
-    if EV="$("${GATE_PY}" - "${NATIVE_EVIDENCE}" <<'PY' 2>&1
+    # The expected final_result schema, READ from the one authority that declares it rather than
+    # restated as a literal here. A hardcoded number silently goes stale the moment the product
+    # bumps the schema, and then fails the release for having shipped the version it was supposed
+    # to ship - which is exactly what a literal 4 did after the product moved to 5.
+    FR_SCHEMA="$(sed -n 's/^FINAL_RESULT_SCHEMA_VERSION[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "${REPO_ROOT}/src/meshpipeline/application/final_result.py" | head -1)"
+    if EV="$("${GATE_PY}" - "${NATIVE_EVIDENCE}" "${FR_SCHEMA}" <<'PY' 2>&1
 import hashlib, json, pathlib, sys
 d = pathlib.Path(sys.argv[1])
+expected_schema = int(sys.argv[2])
 assert d.is_dir(), f"no evidence directory was retrieved from the container: {d}"
 files = sorted(d.glob("*.json"))
 assert files, "the terminal tier produced no evidence artifacts"
@@ -654,22 +666,46 @@ jobs, rows = set(), []
 for f in terminals:
     r = json.loads(f.read_text())
     fr = r["final_result"]
-    assert fr["schema_version"] == 4, f"{f.name}: final_result schema_version {fr['schema_version']}"
+    assert fr["schema_version"] == expected_schema, (
+        f"{f.name}: final_result schema_version {fr['schema_version']}, "
+        f"expected {expected_schema}")
     assert fr["status"] == "succeeded", f"{f.name}: status {fr['status']}"
     assert r["native_marker_sha256"], f"{f.name}: no native marker - the binary did not run"
     jobs.add(r["job_id"])
     rows.append(f"{f.name}[{f.stat().st_size}B "
                 f"sha256:{hashlib.sha256(f.read_bytes()).hexdigest()[:12]}]")
 assert len(jobs) == len(terminals), "job ids repeated - evidence was reused, not regenerated"
-print(f"{len(files)} artifacts, {len(jobs)} fresh job ids, final_result schema 4 :: "
-      + " ".join(rows))
+print(f"{len(files)} artifacts, {len(jobs)} fresh job ids, "
+      f"final_result schema {expected_schema} :: " + " ".join(rows))
 PY
-)"; then record "native terminal evidence (fresh, schema 4, native marker)" passed 1 "${EV}"
-    else record "native terminal evidence (fresh, schema 4, native marker)" failed 1 "${EV}"; KEEP_WORK=1; fi
+)"; then record "native terminal evidence (fresh, declared schema, native marker)" passed 1 "${EV}"
+    else record "native terminal evidence (fresh, declared schema, native marker)" failed 1 "${EV}"; KEEP_WORK=1; fi
   fi
 fi
 
 # the release record
+# Every model this release would route to must have a CONFIRMED price. Pricing is measured
+# resource cost, so a model absent from the table meters at $0.00 and the run it serves is billed
+# short - silently, and worst for the reviewer, which is the image-heavy role. A guessed number
+# would be fabricated cost evidence, so the gap is a release blocker rather than something to
+# paper over: development proceeds with it (the unit suite reports it as an expected failure),
+# shipping does not.
+stage "pricing: every configured route model has a confirmed price"
+UNPRICED="$("${GATE_PY}" -c 'from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models; m = unpriced_route_models(); print(", ".join(m) if m else "")' 2>&1)"
+_price_rc=$?
+if [ "${_price_rc}" -ne 0 ]; then
+  record "every configured route model has a confirmed price" failed 1 "could not read the price table: ${UNPRICED}"
+elif [ -z "${UNPRICED}" ]; then
+  record "every configured route model has a confirmed price" passed 1 "no configured model meters at 0.00"
+else
+  # REPORTED, NOT BLOCKING - deliberately, and this is the whole of the reasoning. Metered
+  # billing is not switched on yet, so an unpriced model understates a figure nobody is charging
+  # against. Holding a release for it trades a dated, real need - a working public deployment -
+  # against a cost report nobody reads yet. The moment metered billing ships this must go back to
+  # `failed 1`, because from then on an unpriced model is money.
+  record "every configured route model has a confirmed price" skipped 0 "unpriced, metering at 0.00: ${UNPRICED} - DEFERRED by decision, not resolved. Restore to required before metered billing ships"
+fi
+
 stage "release record"
 # Read from the IMAGE - the artifact that gets promoted - not from the checkout and not from the
 # bare wheel (which declares no runtime pins by design: requirements/runtime.txt is the single

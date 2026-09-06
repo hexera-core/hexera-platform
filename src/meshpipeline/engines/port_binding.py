@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # The symmetric ratio bound of the area test: measured/declared must land in [LO, HI]. A 25%
 # band either way separates standard adjacent bores by a full band (40 vs 60 mm differs 2.25x
@@ -41,7 +41,7 @@ class DeclaredPatch:
     interchangeable_with: tuple[str, ...] = ()
 
     @classmethod
-    def from_intake(cls, entry: dict) -> "DeclaredPatch":
+    def from_intake(cls, entry: dict) -> DeclaredPatch:
         near = entry.get("near_mm")
         return cls(
             name=entry["name"],

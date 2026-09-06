@@ -8,6 +8,7 @@
 # image during what a developer had been told was the fast in-process suite.
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import uuid
@@ -34,7 +35,22 @@ def _docker_available() -> bool:
     return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
 
 
-pytestmark = pytest.mark.skipif(not _docker_available(), reason="docker is unavailable here")
+def _skip_reason() -> str | None:
+    if _docker_available():
+        return None
+    # WHY docker is missing decides whether this is a hole or a boundary, and the two must not
+    # share a reason string. Inside the containerised tier there is no daemon BY DESIGN - the tier
+    # is itself a container, these tests bring up a compose stack, and nesting one in the other is
+    # not what they verify. On a host run, an absent daemon is a real gap in what was proven, and
+    # the coverage guard is meant to fail on it. One reason for both cases meant allowing the
+    # honest skip would also have silently allowed the dishonest one.
+    if os.environ.get("HEXERA_CONTAINER_TIER"):
+        return "compose stacks are a host-tier concern, not run inside the container tier"
+    return "docker is unavailable here"
+
+
+_SKIP = _skip_reason()
+pytestmark = pytest.mark.skipif(_SKIP is not None, reason=_SKIP or "")
 
 
 def _run(*args: str, check: bool = True) -> str:

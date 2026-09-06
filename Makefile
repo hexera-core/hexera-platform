@@ -20,6 +20,18 @@ COMPOSE_QUIET ?= --quiet
 SHELL := /bin/bash
 .SHELLFLAGS := -eo pipefail -c
 
+# THE image architecture, declared once rather than inherited from whoever runs the build.
+# Every image this repository produces is amd64 BY CONSTRUCTION: the Dockerfile fetches the
+# OpenFOAM .deb from binary-amd64, adds the Docker CE apt repo with arch=amd64, and installs an
+# amd64 Chrome. Several pinned wheels (gmsh ships manylinux x86_64 only) have no aarch64 build at
+# all. Left unset, Docker targets the HOST architecture, so the same commit builds on an x86_64
+# CI runner and fails on an Apple Silicon laptop at the first wheel with no aarch64 distribution -
+# an accident of hardware, reported as a dependency conflict. amd64 is also what Cloud Run and the
+# worker VMs execute, so this is the artifact the deployment actually needs. Building it on
+# Apple Silicon goes through emulation and is slow; it is correct, which the alternative is not.
+DOCKER_DEFAULT_PLATFORM ?= linux/amd64
+export DOCKER_DEFAULT_PLATFORM
+
 VENV := .venv
 PY   := $(if $(wildcard $(VENV)/bin/python),$(VENV)/bin/python,python3)
 RUFF := $(if $(wildcard $(VENV)/bin/ruff),$(VENV)/bin/ruff,ruff)
@@ -35,7 +47,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
 
 .PHONY: help help-all setup check test test-fast logs clean \
         dev-doctor dev-up dev-down dev-logs dev-reset \
-        mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy dev-images \
+        mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy mesh-decommission-legacy dev-images env-bootstrap \
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
@@ -279,10 +291,25 @@ mesh-setup: ## FIRST developer in a blank GCP project: build, validate, publish 
 mesh-deploy: ## Provision or update the Cloud Run MESH JOB and its exchange bucket (idempotent)
 	@bash deploy/gcp/scripts/deploy.sh
 
+env-bootstrap: ##! ONCE PER PROJECT, as an OWNER: the federation and secret containers a deploy cannot create itself
+	@# NOT a deploy stage, deliberately. Creating service accounts, setting project IAM and
+	@# administering Secret Manager are outside the four roles the federated deployer holds
+	@# (run.admin, artifactregistry.writer, iam.serviceAccountUser, compute.instanceAdmin), and
+	@# widening them so CI could do this would hand a CI identity the ability to grant itself
+	@# anything. So it is run by a human with owner rights, once, before the first deploy.
+	@bash deploy/gcp/scripts/create-workload-identity.sh
+	@bash deploy/gcp/scripts/create-secrets.sh
+
 mesh-destroy: ## Remove ONLY the cloud resources the deployment record says mesh-setup created (dry run by default)
 	@# Local uninstall is `make dev-uninstall`; this is the cloud half, and they are deliberately
 	@# separate commands. Ownership comes from the deployment record, never from a name pattern.
 	@bash deploy/gcp/scripts/mesh-destroy.sh $(DESTROY_ARGS)
+
+mesh-decommission-legacy: ## Retire the hand-made hexera-<env>-* stack once its <env>-* replacement is live (report only by default)
+	@# The second half of the naming cutover. deploy.sh reconciles BY EXACT NAME, so renaming a
+	@# deployment's targets creates a parallel stack rather than renaming the old one; this retires
+	@# the old one, and refuses to touch anything whose replacement it cannot see running.
+	@bash deploy/gcp/scripts/decommission-legacy.sh $(DECOMMISSION_ARGS)
 
 mesh-doctor: ## Diagnose mesh-executor configuration (read-only; reveals no values)
 	@bash deploy/gcp/scripts/deploy-doctor.sh

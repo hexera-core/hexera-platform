@@ -73,12 +73,12 @@ class TestProseExtentsForceTypedCapture:
 class TestApprovedIntentBindsTheDeclaration:
     def _canonical(self, **kw):
         from meshpipeline.agents.intake.admission_token import approved_intent_canonical
-        base = dict(engine="snappy", purpose="external_cfd", input_kind="body-surface",
-                    dimensionality="3D",
-                    patches=[{"name": "body", "type": "wall"}],
-                    engine_params={}, request_txt="the request",
-                    geometry={"sha256": "0" * 64, "bytes": 10,
-                              "schema_version": 1, "revision_id": None})
+        base = {"engine": "snappy", "purpose": "external_cfd", "input_kind": "body-surface",
+                    "dimensionality": "3D",
+                    "patches": [{"name": "body", "type": "wall"}],
+                    "engine_params": {}, "request_txt": "the request",
+                    "geometry": {"sha256": "0" * 64, "bytes": 10,
+                              "schema_version": 1, "revision_id": None}}
         base.update(kw)
         return approved_intent_canonical(**base)
 

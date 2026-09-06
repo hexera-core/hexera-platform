@@ -30,10 +30,42 @@ export DEPLOY_DIR REPO_ROOT   # used by every sourcing script
 load_env() {
   local file="${DEPLOY_ENV_FILE:-${DEPLOY_DIR}/generated.env}"
   [ -f "${file}" ] || die "generated config '${file}' not found - it is created by discovery; run: make bootstrap"
+  # What the CALLER asked for, captured before the file can overwrite it. `set -a; . file` makes
+  # every assignment in the file win over the environment, so exporting GCP_PROJECT_ID and running
+  # a provisioner silently operated on whichever project the file was generated for. That is not a
+  # cosmetic mix-up: standing up prod while generated.env still describes dev pointed every step at
+  # dev, and the run reported success.
+  local _requested="${GCP_PROJECT_ID:-}"
+  # RESOURCE NAMES the caller pinned, captured for the same reason and restored below. `set -a`
+  # makes the file win over the environment, so exporting CLOUDSQL_INSTANCE and running a
+  # provisioner used the file's name instead - and a provisioner told to reconcile a name that
+  # does not exist CREATES it. That is how a duplicate, dev-sized Cloud SQL instance and a
+  # duplicate Redis appeared beside the prod-sized ones they were meant to adopt. Unlike the
+  # project, a pinned resource name is not a contradiction: it is the caller saying which existing
+  # resource to reconcile, so it is honoured rather than refused.
+  local _pinned_sql="${CLOUDSQL_INSTANCE:-}" _pinned_redis="${REDIS_INSTANCE:-}"
+  local _pinned_bucket="${GCP_ARTIFACTS_BUCKET:-}" _pinned_mig="${WORKER_MIG:-}"
   set -a
   # shellcheck disable=SC1090
   . "${file}"
   set +a
+  # A DISAGREEMENT IS AN ERROR, not something to resolve by preferring one side. The file's other
+  # values - bucket, job, service-account and registry names - were all discovered for its own
+  # project, so honouring an overriding GCP_PROJECT_ID would build a deployment out of one
+  # project's identity and another's resource names. Regenerating is the supported way to move.
+  [ -z "${_pinned_sql}" ]    || export CLOUDSQL_INSTANCE="${_pinned_sql}"
+  [ -z "${_pinned_redis}" ]  || export REDIS_INSTANCE="${_pinned_redis}"
+  [ -z "${_pinned_bucket}" ] || export GCP_ARTIFACTS_BUCKET="${_pinned_bucket}"
+  [ -z "${_pinned_mig}" ]    || export WORKER_MIG="${_pinned_mig}"
+  if [ -n "${_requested}" ] && [ "${_requested}" != "${GCP_PROJECT_ID}" ]; then
+    die "GCP_PROJECT_ID=${_requested} was requested, but $(basename "${file}") describes ${GCP_PROJECT_ID}.
+  Every other name in that file - bucket, job, service account, registry - belongs to
+  ${GCP_PROJECT_ID}, so this run would mix one project's identity with another's resources.
+  Point at the other project with its own file:
+    DEPLOY_ENV_FILE=<path> ...
+  or rediscover for ${_requested}:
+    GCP_PROJECT_ID=${_requested} bash scripts/bootstrap-env.sh --force"
+  fi
   # derived values used across scripts
   MESH_SA_EMAIL="${MESH_SERVICE_ACCOUNT}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   export MESH_SA_EMAIL

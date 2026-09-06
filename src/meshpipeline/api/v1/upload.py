@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.settings.runtime as rtcfg
-from meshpipeline.api.security import owner_dep
+from meshpipeline.api.security import owner_dep, plan_dep
 from meshpipeline.contracts.intake_formats import (
     ACCEPTED_SUFFIXES,
     staged_name_for,
@@ -53,6 +53,7 @@ class StepFileOut(BaseModel):
 async def upload_step_file(
     file:     UploadFile = File(..., description="Geometry file - a surface (.stl, .vtp) or CAD (.step/.stp, .iges/.igs). The selected engine's staging seam converts it to what that engine meshes."),
     owner_id: str        = Depends(owner_dep),
+    plan:     str        = Depends(plan_dep),
 ):
     filename = file.filename or ""
     import re as _re
@@ -67,7 +68,7 @@ async def upload_step_file(
         from meshpipeline.persistence.session import get_db
         _svc = JobService()
         async with get_db() as db:
-            await _svc.check_quotas(db, owner_id)
+            await _svc.check_quotas(db, owner_id, plan=plan)
             session_id = await _svc.create_session(db, owner_id)
             await db.commit()
     except ValueError as exc:

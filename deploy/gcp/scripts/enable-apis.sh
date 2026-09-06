@@ -32,5 +32,28 @@ APIS=(
 )
 
 info "Enabling ${#APIS[@]} APIs on ${GCP_PROJECT_ID} (idempotent)"
-gc services enable "${APIS[@]}"
-log "done"
+# ATTEMPT, then VERIFY - rather than assume the attempt was permitted. Enabling a service needs
+# serviceusage.services.enable, which the federated deploy identity deliberately does not hold:
+# its four roles are run.admin, artifactregistry.writer, iam.serviceAccountUser and
+# compute.instanceAdmin, and widening them to cover this one call would hand a CI identity the
+# ability to turn on any Google service in the project. So a refusal here is EXPECTED under
+# automation and is not, by itself, a failure.
+#
+# What matters is the end state, not who reached it. If every API is already on - the ordinary
+# case, because an owner enables them once per project - the deploy proceeds. Only an API that is
+# genuinely off, and that this caller could not turn on, stops the run.
+if ! gc services enable "${APIS[@]}" 2>/dev/null; then
+  warn "could not enable APIs as $(gcloud config get-value account 2>/dev/null) - checking whether they are already on"
+fi
+
+enabled="$(gc services list --enabled --format='value(config.name)' 2>/dev/null || true)"
+missing=()
+for api in "${APIS[@]}"; do
+  printf '%s\n' "${enabled}" | grep -qx "${api}" || missing+=("${api}")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  die "these APIs are not enabled on ${GCP_PROJECT_ID} and this account could not enable them:
+    $(printf '%s ' "${missing[@]}")
+  Run once as a project owner:  gcloud services enable ${missing[*]} --project=${GCP_PROJECT_ID}"
+fi
+log "done - all ${#APIS[@]} APIs enabled"

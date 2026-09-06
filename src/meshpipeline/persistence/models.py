@@ -1,4 +1,4 @@
-# Responsibility: Declare the durable schema: jobs, sessions, artifacts, geometry, capture and the terminal outbox.
+# Responsibility: Declare the durable schema: jobs, sessions, artifacts, geometry, capture, API keys and the terminal outbox.
 # Boundaries: the ORM declaration, kept in step with the one migration baseline.
 
 from __future__ import annotations
@@ -476,6 +476,56 @@ class SourceObjectCleanup(Base):
         # The sweep only ever reads pending rows, and a resolved history should not slow it down.
         Index("ix_source_object_cleanups_pending", "created_at",
               postgresql_where=text("state = 'pending'")),
+    )
+
+
+class ApiKey(Base):
+    # ONE programmatic credential. The row is what a presented key is checked against, and the
+    # ONLY durable trace of it: the secret half is shown once, at creation, and is not recoverable
+    # from here. Losing it costs a new key, which is a per-key operation - unlike USER_TOKEN_SECRET,
+    # whose rotation invalidates every identity at once.
+
+    __tablename__ = "api_keys"
+
+    id:        Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                 default=uuid.uuid4)
+    # THE TENANT this key authenticates as, in the same String(256) shape every other table scopes
+    # on. A key resolves to an owner_id and everything downstream is unchanged.
+    owner_id:  Mapped[str]       = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION that owner belongs to. Nullable and unconstrained because organisations do
+    # not exist yet; indexed because it becomes the tenant filter when they do. The foreign key
+    # arrives with the organisations migration - declaring one now would require inventing the
+    # table it points at. Nothing reads this column today; owner_id remains authoritative.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True,
+                                                              index=True)
+    #: what the holder calls it. Display only - never used to find a key, never trusted.
+    name:      Mapped[str]       = mapped_column(String(128), nullable=False, server_default="")
+    # THE LOOKUP KEY: the public "hx_live_<identifier>" half. Unique because two rows sharing it
+    # would make one presented key resolve to two owners, and indexed because every authenticated
+    # request reads exactly one row by this value.
+    key_prefix: Mapped[str]      = mapped_column(String(64), nullable=False, unique=True, index=True)
+    #: SHA-256 of the secret half, lowercase hex. The secret itself is never stored.
+    key_hash:  Mapped[str]       = mapped_column(String(64), nullable=False)
+    # WHICH PLAN's limits this key is held to. Empty is the normal state and means "the limits this
+    # deployment configures" - see settings/plans.py.
+    plan:      Mapped[str]       = mapped_column(String(32), nullable=False, server_default="")
+    created_at:   Mapped[datetime]        = mapped_column(DateTime(timezone=True),
+                                                          server_default=func.now(), nullable=False)
+    # STALENESS, at a coarse resolution: advanced at most once a minute, because a per-request
+    # UPDATE on the row every request already reads is a write amplification with no reader.
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # THE TWO WAYS A KEY STOPS WORKING, both nullable because a live key has neither. Revocation is
+    # an act (recorded when it happens); expiry is a term set at issuance. They are separate columns
+    # so a revoked key never looks merely expired in an audit.
+    revoked_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__: tuple = (
+        # Listing an owner's keys, newest first - the management view's only query.
+        Index("ix_api_keys_owner_created", "owner_id", "created_at"),
+        # The stored value is a hex digest and nothing else. A row whose hash is a secret, a
+        # truncation or an empty string cannot authenticate anything, and must not be storable.
+        CheckConstraint("key_hash ~ '^[0-9a-f]{64}$'", name="ck_api_keys_key_hash_shape"),
     )
 
 
