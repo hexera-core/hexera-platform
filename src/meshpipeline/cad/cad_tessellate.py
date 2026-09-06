@@ -707,7 +707,13 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     # off a live passage, the sealed-branch failure the manifold work documents), and
     # (b) the gap sees the exterior - a straight ray from the hole along its normal
     # leaves the part without re-entering it (a perforated internal baffle fails this
-    # and is left alone; its holes join fluid to fluid, not fluid to exterior).
+    # and is left alone; its holes join fluid to fluid, not fluid to exterior) - and
+    # (c) it sees the exterior DIRECTLY, not through a declared port's mouth. An orifice
+    # plate's bore is a hole in a wall face whose axial ray runs down the pipe and out
+    # of the open end: void all the way, so (a) and (b) both pass, and every orifice
+    # shape in the corpus had its bore capped shut (jobs 848d9dba, 6edbafb2, 1b20782b -
+    # mesh a 7 mm slab, real ports sealed over). A ray that exits by crossing a mouth
+    # disc is the passage the fluid is meant to take; the mouth is a patch, not a leak.
     # #
     def _gap_is_void(pts, c, n, eps):
         # nothing fills the hole: just off BOTH sides of its span there is no material.
@@ -721,20 +727,41 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             for s in samples for sign in (1.0, -1.0))
 
     def _sees_exterior(c, n, eps):
-        # a straight all-void ray from the hole to past the part, along either normal
+        # a straight all-void ray from the hole to past the part, along either normal -
+        # and past the part DIRECTLY, not out through a declared mouth (see (c) above)
         for sign in (1.0, -1.0):
-            start = gp_Pnt(c[0] + sign * eps * n[0], c[1] + sign * eps * n[1],
-                           c[2] + sign * eps * n[2])
+            origin = (c[0] + sign * eps * n[0], c[1] + sign * eps * n[1],
+                      c[2] + sign * eps * n[2])
+            direction = (sign * n[0], sign * n[1], sign * n[2])
             ray = BRepIntCurveSurface_Inter()
-            ray.Init(shape, gp_Lin(start, gp_Dir(sign * n[0], sign * n[1], sign * n[2])),
-                     1e-9)
+            ray.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
             blocked = False
             while ray.More():
                 if ray.W() > 0.1 * eps:      # a forward hit; behind-the-start hits are
                     blocked = True           # the hole's own host surface
                     break
                 ray.Next()
-            if not blocked:
+            if not blocked and not _exits_through_mouth(origin, direction):
+                return True
+        return False
+
+    def _exits_through_mouth(origin, direction) -> bool:
+        # The ray leaves the part by crossing a declared port's own mouth disc. That is
+        # the fluid's passage, and the mouth is capped as a patch downstream - so what the
+        # hole "sees" is the port, never the exterior. The frames are built once the ports
+        # are chosen (mouth_frames below); this runs only from the sealing pass after that.
+        for pc, pn, pr in mouth_frames:
+            if pr <= 0.0:
+                continue
+            denom = sum(direction[k] * pn[k] for k in range(3))
+            if abs(denom) < 1e-9:
+                continue                     # travelling along the mouth plane
+            t = sum((pc[k] - origin[k]) * pn[k] for k in range(3)) / denom
+            if t <= 0.0:
+                continue                     # the mouth is behind the ray
+            hit = [origin[k] + t * direction[k] for k in range(3)]
+            lateral = _m.sqrt(sum((hit[k] - pc[k]) ** 2 for k in range(3)))
+            if lateral <= 1.05 * pr:
                 return True
         return False
 
