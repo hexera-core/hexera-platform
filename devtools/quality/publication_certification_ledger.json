@@ -1,8 +1,8 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
  "denominator": 66,
- "proven": 65,
- "unproven": 1,
+ "proven": 66,
+ "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
   "historical_result": "50 proven / 13 unproven / 63 rows",
@@ -620,7 +620,7 @@
    "historical_id": "",
    "mapping": "new",
    "mapping_reason": "the internal driver tells the user a plate thinner than the wall cell was found and is being refined locally instead of vanishing from the mesh (fix #4, the orifice cluster)",
-   "status": "unproven",
+   "status": "proven",
    "proof_scenario": "snappy-driver:internal-thin-feature"
   }
  ]
