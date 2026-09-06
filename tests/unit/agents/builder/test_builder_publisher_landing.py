@@ -21,7 +21,8 @@ CLOSURE = {
     "agents/builder/executor.py": {"ameshed": 1, "awarn": 1, "afile": 1, "asearch": 1,
                                   "ameshing": 1},
     "agents/loop/tracing.py": {"atool_call": 1, "atool_result": 1, "areasoning": 2},
-    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 3, "anote": 12, "ameshed": 2,
+    # 13th note: the internal driver discloses a plate thinner than the wall cell (fix #4)
+    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 3, "anote": 13, "ameshed": 2,
                                   "atool_call": 1, "atool_result": 1},
     "engines/snappy/planner.py": {"areasoning": 2},
     "contracts/rationale.py": {"arationale": 1},
@@ -139,9 +140,10 @@ def test_each_closure_module_publishes_exactly_its_gated_sites(rel):
 
 def test_the_closure_is_the_size_the_migration_landed():
     total = sum(sum(m.values()) for m in CLOSURE.values())
-    assert total == 38, (
-        f"the closure is {total} sites, not the 38 it holds since the no-progress\n"
-        "stop and the port-binding refusal joined the user-facing narration")
+    assert total == 39, (
+        f"the closure is {total} sites, not the 39 it holds since the no-progress\n"
+        "stop, the port-binding refusal and the thin-feature disclosure joined the "
+        "user-facing narration")
 
 
 @pytest.mark.parametrize("rel", sorted(CLOSURE))
