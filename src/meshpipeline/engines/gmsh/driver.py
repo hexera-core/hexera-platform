@@ -13,6 +13,24 @@ SICN_FLOOR = 0.1   # shared with the executor gate + quality criteria
 # standalone script inside the mesh image, decoupled from the settings inventory.
 MIN_CELLS_ACROSS = 8
 
+#: A bounding-box extent below this fraction of the diagonal is noise, not a dimension of
+#: the part: a planar face reports a thickness of ~1e-9 m, and clamping to eight cells
+#: across THAT is a mesh that never finishes (the committed 2D fixture ran past its 300 s
+#: budget). The corpus's thinnest real features sit near 2.5e-4 of the diagonal.
+EXTENT_NOISE_FRACTION = 1e-6
+
+
+def narrowest_extent(ext, diag: float, *, planar: bool = False) -> float:
+    """The narrowest REAL dimension the resolution clamp must put cells across.
+
+    Noise extents are dropped. A planar (2D) case has no thickness at all - its clamp
+    spans the in-plane extents, so a tilted face whose box shows three real extents
+    still drops the smallest. With nothing real left, the diagonal (no clamp)."""
+    real = sorted(e for e in ext if e > EXTENT_NOISE_FRACTION * diag)
+    if planar and len(real) == 3:
+        real = real[1:]
+    return real[0] if real else diag
+
 # VALIDATED JSON SCRATCH. The model may author a rich gmsh_spec.json, but the driver
 # is the authority on what it supports - it REJECTS unknown/misspelled keys and
 # malformed values instead of silently dropping them (which would run to completion
@@ -271,7 +289,8 @@ def main(workspace: str) -> int:
         # MIN_CELLS_ACROSS elements across the narrowest bbox extent, whatever the
         # factor gives. Only ever tightens h; never coarsens an already-fine request.
         ext = [xmax - xmin, ymax - ymin, zmax - zmin]
-        min_ext = min([e for e in ext if e > 0], default=diag)
+        _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
+        min_ext = narrowest_extent(ext, diag, planar=_is2d)
         h = min(h_req, min_ext / MIN_CELLS_ACROSS)
         if h < h_req:
             print(f"[GMSH] resolution clamp: element size {h_req:.4g} m would put only "
@@ -285,7 +304,6 @@ def main(workspace: str) -> int:
                        "min_extent": round(min_ext, 8),
                        "cells_across_min": round(min_ext / h, 3) if h > 0 else 0.0}
 
-        _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
         if _is2d:
             return _mesh_planar(ws, spec, h, resolution=_resolution)
 

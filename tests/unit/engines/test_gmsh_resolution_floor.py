@@ -61,14 +61,45 @@ def test_the_floor_is_wired_into_the_gmsh_chain():
     assert keys.index("resolution_floor") < keys.index("patch_contract")
 
 
-def test_driver_clamp_math_forces_min_cells_across_the_narrow_dimension():
-    # mirror of driver.py's clamp: a factor-of-diagonal size that under-resolves the
-    # bore is tightened so MIN_CELLS_ACROSS elements span the narrowest extent
-    from meshpipeline.engines.gmsh.driver import MIN_CELLS_ACROSS
+def _diag(ext):
+    return sum(e * e for e in ext) ** 0.5
+
+
+def test_driver_clamp_forces_min_cells_across_the_narrow_dimension():
+    # the driver's own extent rule: a factor-of-diagonal size that under-resolves the
+    # bore is tightened so MIN_CELLS_ACROSS elements span the narrowest real extent
+    from meshpipeline.engines.gmsh.driver import MIN_CELLS_ACROSS, narrowest_extent
     ext = [1.0, 0.05, 0.05]          # 1 m duct, 50 mm bore
-    diag = sum(e * e for e in ext) ** 0.5
+    diag = _diag(ext)
     h_req = 0.04 * diag             # gmsh default factor of the diagonal
-    min_ext = min(e for e in ext if e > 0)
+    min_ext = narrowest_extent(ext, diag)
+    assert min_ext == 0.05
     h = min(h_req, min_ext / MIN_CELLS_ACROSS)
     assert h < h_req                                   # the clamp engaged
     assert min_ext / h >= MIN_CELLS_ACROSS - 1e-9      # enough cells across the bore
+
+
+def test_a_planar_case_has_no_thickness_to_clamp_against():
+    # The 2D fixture's box is 0.2 x 0.1 x ~1e-9. The old rule clamped to eight cells
+    # across the 1e-9 "thickness" and the mesh never finished. A planar case spans its
+    # in-plane extents.
+    from meshpipeline.engines.gmsh.driver import narrowest_extent
+    ext = [0.2, 0.1, 1e-9]
+    assert narrowest_extent(ext, _diag(ext), planar=True) == 0.1
+    # a tilted planar face shows three real box extents: still no thickness
+    tilted = [0.2, 0.1, 0.03]
+    assert narrowest_extent(tilted, _diag(tilted), planar=True) == 0.1
+
+
+def test_bbox_noise_is_not_a_dimension_even_in_3d():
+    from meshpipeline.engines.gmsh.driver import narrowest_extent
+    ext = [1.0, 1.0, 1e-9]
+    assert narrowest_extent(ext, _diag(ext)) == 1.0
+
+
+def test_a_genuinely_thin_3d_part_still_counts_its_thickness():
+    # a 0.5 mm plate in a 2 m box is 2.5e-4 of the diagonal - real, and the clamp
+    # must still put cells across it
+    from meshpipeline.engines.gmsh.driver import narrowest_extent
+    ext = [2.0, 0.5, 0.0005]
+    assert narrowest_extent(ext, _diag(ext)) == 0.0005
