@@ -347,8 +347,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                     _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
+            # the approved ruler travels with the box it sizes - the same length the extent
+            # gate will judge the delivered box in (see domain_from_strategy)
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
-                                                flow_axis=state.get("flow_axis"))
+                                                flow_axis=state.get("flow_axis"),
+                                                ruler_m=state.get("reference_length_m"))
             wall = _contract_wall_patch(workspace) or "body"
             # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
             # (no thin features, policy off, no layers requested) authors the historical case

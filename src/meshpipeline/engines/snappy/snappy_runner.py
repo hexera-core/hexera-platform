@@ -317,11 +317,23 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          symmetry: dict | None = None,
-                         flow_axis: str | None = None) -> tuple[list, list]:
+                         flow_axis: str | None = None,
+                         ruler_m: float | None = None) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     m = (strategy or {}).get("domain_margin") or {}
     up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
     side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
+    # THE RULER the margins multiply. When the approved intent carries a reference length -
+    # the unit the user quoted the far-field in, and the unit the extent gate judges the
+    # delivered box in - the margins are multiples of THAT, so the number in the request is
+    # the number in the plan is the number the judge measures. Sized in streamwise extent
+    # and judged in the reference length, a rotor (hub thickness an eighth of the diameter
+    # it was quoted in) came out at 0.5-0.6 of every margin asked and seven blocked at
+    # domain_extent on every attempt. Without a stated ruler the streamwise extent - a
+    # wing's chord - stays the unit the planner is briefed in, exactly as before.
+    ruler = float(ruler_m or (strategy or {}).get("reference_length_m") or 0.0) or None
+    if ruler:
+        L = ruler
 
     if flow_axis:
         # The user DECLARED the flow direction - the wake room goes downwind of it, whatever
@@ -331,8 +343,8 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
         i_s = {"x": 0, "y": 1, "z": 2}[letter]
         rest = [j for j in range(3) if j != i_s]
-        ref = float((analysis.get("extent") or
-                     [bmax[k] - bmin[k] for k in range(3)])[i_s]) or L
+        ref = ruler or float((analysis.get("extent") or
+                              [bmax[k] - bmin[k] for k in range(3)])[i_s]) or L
         dmin, dmax = list(bmin), list(bmax)
         lo_m, hi_m = (up, dn) if sign == "+" else (dn, up)
         dmin[i_s], dmax[i_s] = bmin[i_s] - lo_m * ref, bmax[i_s] + hi_m * ref
@@ -373,7 +385,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                            "flow - raising it. A zero here puts the far-field on the body's own "
                            "surface; only the SPANWISE margin may be zero.", vert, _VERT_FLOOR)
             vert = _VERT_FLOOR
-        ref = float(_extent_of(analysis)[i_s]) or L
+        ref = ruler or float(_extent_of(analysis)[i_s]) or L
         dmin, dmax = list(bmin), list(bmax)
         dmin[i_s], dmax[i_s] = bmin[i_s] - up * ref,   bmax[i_s] + dn * ref
         dmin[i_v], dmax[i_v] = bmin[i_v] - vert * ref, bmax[i_v] + vert * ref
