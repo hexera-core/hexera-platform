@@ -1138,9 +1138,10 @@ async def test_a_thin_feature_is_disclosed_once_at_its_own_site(internal_thin_fe
     _job_id, seen, _built, native, _marks, _rounds, _tess = internal_thin_feature
     assert _owned_counts(seen, accepted=True) == INTERNAL_THIN_FEATURE
     assert len(native) == 1, "the thin-feature disclosure must not cost a meshing pass"
-    rec = next(r for r in _driver_records(seen)
-               if r["method"] == "note" and r["op_id"].startswith("internal:thin-feature:"))
-    assert "3.0 mm" in rec["text"] and "refining locally" in rec["text"], rec["text"]
+    # attempt-scoped like every other internal operation identity, and published once
+    recs = [r for r in _driver_records(seen)
+            if r["method"] == "note" and r["op_id"].startswith("internal:thin-feature:")]
+    assert [r["op_id"] for r in recs] == ["internal:thin-feature:1"], recs
 
 
 async def test_the_internal_union_reaches_all_ten_sites_and_no_external_one(
