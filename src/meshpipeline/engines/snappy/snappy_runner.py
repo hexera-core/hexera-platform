@@ -591,12 +591,33 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
 """)
+    # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
+    # a monolithic wall into <wall>_thin / <wall>_razor so each class can carry its own layer
+    # count, and snappyHexMesh makes every region its own PATCH. The user declared exactly one
+    # wall, and the patch contract refuses extras - five corpus rotors were rejected at
+    # patch_contract with a perfectly good mesh whose boundary read body / body_thin / body_razor.
+    # So the split lives only as long as the layers need it: after snappyHexMesh, createPatch
+    # folds the class patches back into the declared wall, and the mesh that reaches the
+    # manifest carries the boundary the user signed. Real CAD-named solids are never merged -
+    # they are the user's own patches.
+    _synthetic = [r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor")]
+    _cp = ws / "system" / "createPatchDict"
+    if _synthetic:
+        _cp.write_text(
+            _HDR.format(cls="dictionary", obj="createPatchDict")
+            + "pointSync false;\n"
+            + f"patches ( {{ name {surface_name}; patchInfo {{ type wall; }} constructFrom patches; "
+            + f"patches ({surface_name} {' '.join(_synthetic)}); }} );\n")
+    elif _cp.exists():
+        _cp.unlink()                      # a re-plan without a split leaves no stale merge behind
     out = {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
            "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
            "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
            "domain_max": [round(x, 3) for x in domain_max]}
     if layer_counts:
         out["layer_counts"] = dict(layer_counts)
+    if _synthetic:
+        out["merged_regions"] = list(_synthetic)
     return out
 
 
