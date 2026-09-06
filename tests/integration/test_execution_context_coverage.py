@@ -225,7 +225,9 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                      ("internal-refuse", {"internal": True, "native_double": False,
                                           "tessellate_fail": True}),
                      ("internal-refuse-binding", {"internal": True, "native_double": False,
-                                                  "unbindable_patches": True})):
+                                                  "unbindable_patches": True}),
+                     ("internal-thin-feature", {"internal": True, "native_double": False,
+                                                "thin_feature": True})):
         jobs.append((await step(f"snappy-driver:{name}",
                                 S._run(mp, tmp / f"snappy-{name}", **kw)))[0])
 

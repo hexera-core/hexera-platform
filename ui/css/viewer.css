@@ -75,3 +75,31 @@
 .f-edit{width:100%;margin-top:5px;padding:7px 9px;border:1px solid #3a4657;border-radius:8px;
   background:#12161d;color:#e6ebf2;font:inherit;font-size:12.5px;line-height:1.5;resize:vertical}
 .f-edit:focus{outline:none;border-color:#3b82f6}
+
+/* QUALITY HEATMAP - the figures are the controls; the legend and the probe live on the canvas.
+   The interface stays grey: the only colour on screen is the data on the mesh. */
+.mx-c.live{cursor:pointer;border-radius:8px;transition:background .12s,box-shadow .12s}
+.mx-c.live:hover{background:#1d232d}
+.mx-c.live.on{background:#1f2633;box-shadow:inset 0 -2px 0 #9aa4b4}
+.mx-c.live .mx-k::after{content:' · colour';color:#5b6b83;font-size:10px;letter-spacing:.02em}
+.v-heatctl{position:absolute;left:10px;top:10px;font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.62);padding:4px 10px;border-radius:7px;z-index:5}
+.v-heatctl a{cursor:pointer;color:#dfe5ee;text-decoration:underline dotted #5b6b83}
+.v-heatctl a.on{color:#fff;text-decoration:underline solid #cfd8e3}
+.v-legend{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;
+  font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.74);padding:6px 12px;border-radius:9px;z-index:6;white-space:nowrap}
+.v-legend b{color:#fff;font-weight:600}
+.v-legend .bar{position:relative;width:150px;height:8px;border-radius:4px;flex:none}
+.v-legend .bar i{position:absolute;top:-3px;width:2px;height:14px;background:#fff;border-radius:1px}
+.v-legend .sep{color:#5b6b83}
+.v-legend .over{color:#f87171}
+.v-legend .ok{color:#34d399}
+.v-legend .x{cursor:pointer;color:#8fa3bd;padding:0 2px}
+.v-legend .x:hover{color:#fff}
+.v-probe{position:absolute;right:10px;top:10px;max-width:310px;background:rgba(8,12,20,.88);color:#dfe5ee;
+  font-size:12px;line-height:1.55;padding:10px 12px;border-radius:10px;z-index:7;border:1px solid #2a3240}
+.v-probe .pk{color:#8b96a7;font-family:var(--mono);font-size:11px;margin-bottom:3px}
+.v-probe b{color:#fff;font-weight:600}
+.v-probe .over{color:#f87171;font-weight:600}
+.v-probe .ok{color:#34d399}
+.v-probe .why{margin-top:6px;color:#c9bba6}
+.v-probe .acts{display:flex;gap:8px;margin-top:8px}

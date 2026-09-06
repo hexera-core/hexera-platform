@@ -397,8 +397,22 @@ def _install_tessellate_double(monkeypatch, calls: list, *, fail: bool = False) 
     monkeypatch.setattr(R, "tessellate_internal", tessellate_internal)
 
 
+# The thin-feature probe, answering "yes, there is a plate thinner than the wall cell". The real
+# probe measures the staged wall's triangles (cad/thin_features.py); the double's box is 100 mm
+# across, so only a stand-in can put the driver on the branch that discloses a thin feature.
+def _install_thin_feature_double(monkeypatch) -> None:
+    from meshpipeline.cad import thin_features as TF
+
+    def thin_refinement_boxes(tris, *, cell_m, **_k):
+        return [{"min": [-0.02, -0.02, 0.48], "max": [0.02, 0.02, 0.52],
+                 "level_bump": 2, "thinnest_m": 0.003, "n_triangles": 24}]
+
+    monkeypatch.setattr(TF, "thin_refinement_boxes", thin_refinement_boxes)
+
+
 async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=None,
-               internal=False, tessellate_fail=False, unbindable_patches=False):
+               internal=False, tessellate_fail=False, unbindable_patches=False,
+               thin_feature=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
 
@@ -423,6 +437,8 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
         _install_provider_double(monkeypatch, rounds)
     if internal:
         _install_tessellate_double(monkeypatch, tessellate, fail=tessellate_fail)
+    if internal and thin_feature:
+        _install_thin_feature_double(monkeypatch)
 
     import meshpipeline.pipeline.graph as gm
     root = tmp_path / f"run-{job_id.hex[:8]}"
@@ -469,7 +485,8 @@ def _canonical(rec: dict, *, accepted: bool) -> str:
                          ("internal:volume-identified", "note#1"),
                          ("internal:pass-open:", "note#2"),
                          ("internal:filling:", "note#4"),
-                         ("internal:passes-exhausted", "note#3")):
+                         ("internal:passes-exhausted", "note#3"),
+                         ("internal:thin-feature:", "note#7")):
         if op.startswith(prefix):
             return f"{fn}::{name}"
     if op.startswith(("snappy:pass-outcome:", "internal:pass-outcome:")):
@@ -1057,10 +1074,21 @@ INTERNAL_EXHAUSTED = {
     f"{INTERNAL_FN}::note#3": 1,       # passes exhausted, best mesh submitted
 }
 
+# An accepting run on a solid with a plate thinner than the wall cell: the same six sites, plus
+# the one disclosure that the plate was found and is being refined locally (fix #4, the orifice
+# cluster). It fires once per pass, before the case is rendered.
+INTERNAL_THIN_FEATURE = {**INTERNAL_ACCEPTED, f"{INTERNAL_FN}::note#7": 1}
+
 
 @pytest.fixture()
 async def internal_accepted(monkeypatch, tmp_path):
     return await _run(monkeypatch, tmp_path, native_double=False, internal=True)
+
+
+@pytest.fixture()
+async def internal_thin_feature(monkeypatch, tmp_path):
+    return await _run(monkeypatch, tmp_path, native_double=False, internal=True,
+                      thin_feature=True)
 
 
 @pytest.fixture()
@@ -1106,12 +1134,22 @@ async def test_a_declaration_no_opening_satisfies_is_refused_before_meshing(
     assert native == [], "a refused binding must never reach the mesher"
 
 
-async def test_the_internal_union_reaches_all_nine_sites_and_no_external_one(
+async def test_a_thin_feature_is_disclosed_once_at_its_own_site(internal_thin_feature):
+    _job_id, seen, _built, native, _marks, _rounds, _tess = internal_thin_feature
+    assert _owned_counts(seen, accepted=True) == INTERNAL_THIN_FEATURE
+    assert len(native) == 1, "the thin-feature disclosure must not cost a meshing pass"
+    rec = next(r for r in _driver_records(seen)
+               if r["method"] == "note" and r["op_id"].startswith("internal:thin-feature:"))
+    assert "3.0 mm" in rec["text"] and "refining locally" in rec["text"], rec["text"]
+
+
+async def test_the_internal_union_reaches_all_ten_sites_and_no_external_one(
         internal_accepted, internal_exhausted, internal_unseparable,
-        internal_binding_refused):
+        internal_binding_refused, internal_thin_feature):
     union: set = set()
     for bundle, acc in ((internal_accepted, True), (internal_exhausted, False),
-                        (internal_unseparable, False), (internal_binding_refused, False)):
+                        (internal_unseparable, False), (internal_binding_refused, False),
+                        (internal_thin_feature, True)):
         _j, seen, _b, _n, _m, _r, _t = bundle
         sites = set(_sites(seen, accepted=acc)) - TOOL_SITES
         assert not [s for s in sites if s.startswith("_build_snappy_deterministic")], \
@@ -1120,17 +1158,18 @@ async def test_the_internal_union_reaches_all_nine_sites_and_no_external_one(
 
     expected = {f"{INTERNAL_FN}::{n}" for n in
                 ("error#1", "error#2", "note#1", "note#2", "note#3", "note#4", "note#5",
-                 "note#6", "meshed#1")} | {"_run_snappy_timed::meshing#1"}
-    assert union == expected, f"the internal union is not the nine owned sites: {union}"
+                 "note#6", "note#7", "meshed#1")} | {"_run_snappy_timed::meshing#1"}
+    assert union == expected, f"the internal union is not the ten owned sites: {union}"
 
 
 async def test_every_internal_emission_runs_under_the_claimed_durable_ownership(
         internal_accepted, internal_exhausted, internal_unseparable,
-        internal_binding_refused):
+        internal_binding_refused, internal_thin_feature):
     for label, bundle, acc in (("accepted", internal_accepted, True),
                                ("exhausted", internal_exhausted, False),
                                ("unseparable", internal_unseparable, False),
-                               ("binding-refused", internal_binding_refused, False)):
+                               ("binding-refused", internal_binding_refused, False),
+                               ("thin-feature", internal_thin_feature, True)):
         job_id, seen, built, _n, _m, _r, _t = bundle
         row = await _row(job_id)
         records = [r for r in _driver_records(seen)

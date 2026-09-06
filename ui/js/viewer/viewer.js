@@ -694,7 +694,7 @@ function initViewer(job,surf,uiCfg){
       const suffix=k==='max_non_ortho'||k==='avg_non_ortho'?'<small>°</small>':'';
       const of=k==='skew_faces'&&typeof q.faces==='number'
         ? `<small> of ${q.faces.toLocaleString()}</small>`:'';
-      return `<div class="mx-c"><div class="mx-k">${esc(LBL[k]||k.replace(/_/g,' '))}</div>`
+      return `<div class="mx-c" data-key="${esc(k)}"><div class="mx-k">${esc(LBL[k]||k.replace(/_/g,' '))}</div>`
             +`<div class="mx-v">${shown}${suffix}${of}</div></div>`;};
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
@@ -719,4 +719,149 @@ function initViewer(job,surf,uiCfg){
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
     markers:()=>flags.length,
     render:()=>rw.render()};
+
+  /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
+     The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
+     surface reader's own filter), the bar the engine's gate judges against, and the worst
+     spots. The delivered-mesh FIGURES are the controls: the non-orthogonality and skewness
+     numbers become clickable when fields exist for them - clicking a number shows where it
+     lives. Nothing here touches the geometry: colouring is cell scalars on the same immutable
+     actors, and turning it off restores exactly the property colours the parts panel set. */
+  let activeMetric=null,lastProbe=null;
+  (function heatmap(){
+    const qf=surf.quality_fields;
+    if(!qf||!qf.patches||!qf.metrics||!window.vtk)return;
+    const META={non_ortho:{fact:'max_non_ortho',b64:'non_ortho_b64'},
+                skewness:{fact:'max_skewness',b64:'skewness_b64'}};
+    const avail=Object.keys(META).filter(m=>qf.metrics[m]);
+    // decode once. An array that does not match the polygon count is dropped, not trusted:
+    // a misaligned field would paint every face with its neighbour's number.
+    entries.forEach(en=>{const p=qf.patches[en.patch];en.q={};if(!p)return;
+      avail.forEach(m=>{if(!p[META[m].b64])return;const a=b64f32(p[META[m].b64]);
+        if(a.length===en.nCells)en.q[m]=a;});
+      if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}});
+    if(!entries.some(en=>Object.keys(en.q).length))return;
+
+    /* one ramp per metric: calm below the bar, warm approaching it, red past it. The colours
+       are computed here and handed to the mapper as direct per-face RGB, and the legend is
+       built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
+       depends on which lookup-table classes the vendored bundle happens to export. */
+    const STOPS=[[0,[41,92,176]],[0.5,[64,173,168]],[0.8,[242,199,68]],[1.0,[232,97,60]]];
+    const PAST=[140,20,25];
+    function ramp(m){const md=qf.metrics[m],lim=md.limit||1,hi=Math.max(lim*1.3,md.max||0);
+      const pts=STOPS.map(([f,c])=>[f*lim,c]).concat([[hi,PAST]]);
+      const color=(v,out,o)=>{
+        if(!(v>0)){out[o]=pts[0][1][0];out[o+1]=pts[0][1][1];out[o+2]=pts[0][1][2];return;}
+        let i=1;while(i<pts.length-1&&v>pts[i][0])i++;
+        const [a,ca]=pts[i-1],[b,cb]=pts[i],t=Math.min(1,Math.max(0,(v-a)/((b-a)||1)));
+        out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
+      const pc=v=>(100*v/hi).toFixed(1)+'%';
+      const css='linear-gradient(90deg,'+STOPS.map(([f,c])=>`rgb(${c}) ${pc(f*lim)}`).join(',')
+        +`,rgb(${PAST}) 100%)`;
+      return {color,hi,css,limitPct:pc(lim)};}
+    function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
+
+    const hotActors=[];
+    function clearHot(){hotActors.forEach(a=>ren.removeActor(a));hotActors.length=0;}
+    function showHot(m){clearHot();
+      const r=stats&&stats.typ>0?Math.max(stats.typ*1.6,diag*0.0025):diag*0.006;
+      (qf.hotspots||[]).filter(h=>h.metric===m).forEach(h=>{
+        const mp=vtk.Rendering.Core.vtkMapper.newInstance();mp.setInputData(spherePd(h.x,h.y,h.z,r));
+        const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mp);ac.setPickable(false);
+        const pp=ac.getProperty();pp.setColor(1.0,0.22,0.16);pp.setAmbient(1.0);pp.setDiffuse(0.0);pp.setLighting(false);
+        ren.addActor(ac);hotActors.push(ac);});}
+
+    let legend=null,probeEl=null;
+    function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
+    function setMetric(m){
+      if(m===activeMetric)m=null;
+      activeMetric=m;
+      const rp=m?ramp(m):null;
+      entries.forEach(en=>{const mp=en.actor.getMapper();
+        if(rp&&en.q[m]){
+          const v=en.q[m],rgb=new Uint8Array(v.length*3);
+          for(let i=0;i<v.length;i++)rp.color(v[i],rgb,i*3);
+          en.pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
+            {name:'quality',values:rgb,numberOfComponents:3}));
+          mp.setScalarModeToUseCellData();mp.setColorModeToDirectScalars();
+          if(mp.setInterpolateScalarsBeforeMapping)mp.setInterpolateScalarsBeforeMapping(false);
+          mp.setScalarVisibility(true);}
+        else mp.setScalarVisibility(false);});
+      if(legend){legend.remove();legend=null;}
+      clearHot();hideProbe();
+      if(rp){const md=qf.metrics[m];showHot(m);
+        legend=document.createElement('div');legend.className='v-legend';
+        legend.innerHTML=`<b>${esc(md.label)}</b>`
+          +`<span class="bar" style="background:${rp.css}"><i style="left:${rp.limitPct}"></i></span>`
+          +`<span>0 → <b>${esc(fmt(m,md.limit))}</b> limit → ${esc(fmt(m,rp.hi))}</span>`
+          +`<span class="sep">·</span><span>max ${esc(fmt(m,md.max||0))}</span>`
+          +(md.n_over
+             ?`<span class="sep">·</span><span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
+             :`<span class="sep">·</span><span class="ok">none over</span>`)
+          +`<span class="x" title="turn colouring off">✕</span>`;
+        legend.querySelector('.x').onclick=()=>setMetric(null);
+        host.appendChild(legend);
+        hintEl.textContent='click a face to see its numbers · drag still rotates';}
+      else hintEl.textContent='rotate: drag · zoom: wheel or right-drag · pan: shift+drag';
+      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`)
+        .forEach(c=>c.classList.toggle('on',c.dataset.metric===m));
+      rw.render();}
+
+    // the figures are the controls; a payload with no figures block gets a plain text one
+    const facts=document.getElementById('v-facts-'+job);
+    let wired=0;
+    if(facts)avail.forEach(m=>{
+      const cell=[...facts.querySelectorAll('.mx-c')].find(c=>c.dataset.key===META[m].fact);
+      if(!cell)return;
+      cell.classList.add('live');cell.dataset.metric=m;cell.title='colour the mesh by this';
+      cell.onclick=()=>setMetric(m);wired++;});
+    if(wired<avail.length){
+      const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
+      ctl.innerHTML='colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+      ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
+      host.appendChild(ctl);}
+
+    /* CLICK TO EXPLAIN. A click on a coloured face says what its number is, whether it clears
+       the gate's bar, what the cell behind it is, and the likely reason - then offers to mark
+       the spot, which is the existing dispute path: the reviewer re-inspects there and the mesh
+       is rebuilt. The reason is a reading of the cell's shape and place, and says "likely". */
+    function why(cf,role){
+      const at=/inlet|outlet|port/i.test(role||'')?'at a port mouth, ':'';
+      if(cf>6)return at+'a polyhedral cell where refinement levels meet - the mesher splits hexes at a level change and the split faces sit askew';
+      if(cf===5)return at+'a boundary-layer prism squeezed where the surface curves or folds';
+      if(cf===6)return at+'a hex distorted while snapping to the curved surface here';
+      return at+'an irregular cell';}
+    function showProbe(en,cid){
+      hideProbe();
+      const role=((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'';
+      const cf=en.cellFaces?en.cellFaces[cid]:null;
+      const have=avail.filter(m=>en.q[m]);
+      const over=have.filter(m=>en.q[m][cid]>qf.metrics[m].limit);
+      lastProbe={patch:en.patch,cell:cid,cellFaces:cf,over,
+                 values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
+      const rows=have.map(m=>{const v=en.q[m][cid],md=qf.metrics[m],bad=v>md.limit;
+        return `<div><b>${esc(md.label)}</b> ${esc(fmt(m,v))} `
+          +`<span class="${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}).join('');
+      const shape=cf===6?'hex':cf===5?'prism':cf===4?'tet':'polyhedron';
+      probeEl=document.createElement('div');probeEl.className='v-probe';
+      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>${rows}`
+        +(cf!=null?`<div>cell behind it: ${cf}-face ${shape}</div>`:'')
+        +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'')
+        +`<div class="acts"><button class="v-btn" data-a="mark">Mark this spot</button>`
+        +`<button class="v-btn" data-a="close">Close</button></div>`;
+      probeEl.querySelector('[data-a=mark]').onclick=()=>{placeMarker(en,cid);hideProbe();};
+      probeEl.querySelector('[data-a=close]').onclick=hideProbe;
+      host.appendChild(probeEl);}
+    host.addEventListener('pointerup',e=>{
+      if(markMode||!activeMetric||!downXY)return;
+      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl'))return;
+      if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
+      pickCell(e,showProbe);},true);
+
+    /* support/debug hook - lets the browser tier drive the heatmap without pixel picking */
+    window._vdbg[job+':heat']={metrics:avail,set:setMetric,active:()=>activeMetric,
+      probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
+      last:()=>lastProbe,legend:()=>!!legend,hotspots:()=>hotActors.length,
+      wired:()=>wired};
+  })();
 }
