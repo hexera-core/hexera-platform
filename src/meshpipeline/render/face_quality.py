@@ -17,7 +17,13 @@ logger = logging.getLogger(__name__)
 #: bytes per thousand faces, but the edge-expanded temporaries of the geometry pass are not, and the
 #: worker computes this while it still owns a workspace it must also upload. Past the cap the user
 #: keeps the mesh and the summary figures; only the per-face colouring is absent, and the log says so.
-MAX_FACES_FOR_FIELDS = 12_000_000
+#: Measured on a delivered 3.9M-cell orifice mesh (12,237,824 faces): 31 s and a 3.96 GB peak -
+#: about 330 bytes per face, dominated by the full-length per-face vectors of the skewness pass
+#: (the geometry pass is already chunked). That mesh was the first live payload to ship without a
+#: heatmap, under the 12M guess this replaces. 20M faces is ~6.4M hex-dominant cells and ~6.5 GB
+#: peak: every ordinary delivery, short of the 8M-cell hard limit. To raise it, chunk the
+#: skewness pass the way the geometry pass is chunked.
+MAX_FACES_FOR_FIELDS = 20_000_000
 
 #: How many worst spots ship per metric. Bad faces are rare on a mesh worth delivering (single
 #: digits to a few hundred), so the list is small by nature; the cap only bounds a bad mesh.
@@ -367,6 +373,8 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
                     mesh.n_faces, MAX_FACES_FOR_FIELDS)
         return None
 
+    import time as _time
+    _t0 = _time.monotonic()
     ni = len(mesh.neighbour)
     nc = mesh.n_cells
     fCtrs, fAreas = _face_geometry(mesh.points, mesh.face_flat, mesh.face_off)
@@ -417,6 +425,9 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     no_limits = np.full(ni, float(non_ortho_limit))
     hot = (_hotspots("non_ortho", no, no_limits, fCtrs, mesh.owner, nfc, patch_of_face, names)
            + _hotspots("skewness", sk, sk_limits, fCtrs, mesh.owner, nfc, patch_of_face, names))
+    logger.info("viewer quality fields: %d faces (%d internal), %d boundary faces coloured, "
+                "%d hotspot(s), %.1fs", mesh.n_faces, ni,
+                sum(p["count"] for p in per_patch.values()), len(hot), _time.monotonic() - _t0)
 
     return {
         "basis": "owner_cell_max",
