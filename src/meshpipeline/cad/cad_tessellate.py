@@ -450,7 +450,8 @@ def seal_open_rims(tris: list) -> tuple[list, list[dict]]:
 def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
-                        declared_ports: list | None = None) -> dict:
+                        declared_ports: list | None = None,
+                        fluid_solid: bool | None = None) -> dict:
     import math as _m
 
     from OCP.BRep import BRep_Builder, BRep_Tool
@@ -949,7 +950,46 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         step = 0.5 * _m.sqrt(area / _m.pi)              # ~half the port radius, inward
         candidates.append(tuple(c[k] - step * n[k] for k in range(3)))
         candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
+    # RING PORTS. The centroid of an annular port face is the centre of the hole it rims - for a
+    # blade-row passage that is the hub bore, which is not fluid, and for a wall shell's flanged
+    # end it is the bore. So every ring port also offers points ON the ring: mid-radius, four
+    # in-plane directions, nudged inward along the port normal. Blade-row passages 001/003/005
+    # (jobs 9bf37dd8, f69eb843, db9e64e1) were "delivered" as a mesh of the hub bore - the port
+    # caps sealed the bore at both ends, the seed sat inside it, and snappyHexMesh kept it.
+    for pi in (inlet_i, *outlet_ids):
+        f = faces[pi]
+        prof = _inner_opening(f)
+        if prof is None:
+            continue
+        area, c = _face_props(f)
+        inner_area = float(prof["area_m2"])
+        r_out = _m.sqrt(max(area + inner_area, 0.0) / _m.pi)
+        r_in = _m.sqrt(max(inner_area, 0.0) / _m.pi)
+        r_mid = 0.5 * (r_out + r_in)
+        ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+        n = [ax.X(), ax.Y(), ax.Z()]
+        # an in-plane basis: any vector not parallel to n, made orthogonal
+        seed_u = [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0]
+        dot = sum(seed_u[k] * n[k] for k in range(3))
+        u = [seed_u[k] - dot * n[k] for k in range(3)]
+        ul = _m.sqrt(sum(v * v for v in u)) or 1.0
+        u = [v / ul for v in u]
+        v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
+        step = 0.5 * (r_out - r_in)
+        for d in (u, [-x for x in u], v, [-x for x in v]):
+            on_ring = [c[k] + r_mid * d[k] for k in range(3)]
+            for sign in (-1.0, 1.0):
+                candidates.append(tuple(on_ring[k] + sign * step * n[k] for k in range(3)))
     interior = next((p for p in candidates if _inside(p)), None)
+    if interior is None and fluid_solid:
+        # A DECLARED fluid domain is the fluid: a point that is not inside the solid is not in
+        # the flow, whatever the hollow-wall fallback below would make of it. Refuse loudly
+        # rather than seed a void.
+        raise RuntimeError(
+            "could not locate a point inside the declared fluid domain for locationInMesh - "
+            "the volume centroid, the port centroids and the ring-port candidates all fall "
+            "outside the solid (a hole through the part?); the mesh would have been of the "
+            "void, not the flow")
     if interior is None:
         # HOLLOW-WALL FALLBACK. Everything above assumes the input solid IS the fluid
         # volume (a duct modeled as a solid rod), where inside-the-solid means inside the

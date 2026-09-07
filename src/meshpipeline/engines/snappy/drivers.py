@@ -515,6 +515,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         from meshpipeline.engines.port_binding import declaration_targets
         t = await _asyncio.to_thread(
             R.tessellate_internal, source_path, workspace / "_internal_stls",
+            fluid_solid=(str(state.get("input_kind") or "").strip() == "fluid-domain"),
             prepared=_prepared,
             declared_ports=declaration_targets(state.get("intake_patches") or []))
         t, _wall_key, _bound_note = _bind_declared_ports(

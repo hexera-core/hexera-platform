@@ -143,9 +143,9 @@
       "deliveries": [
         {
           "purpose": "internal_cfd",
-          "job": "9bf37dd8",
+          "job": "9d0e62c1",
           "date": "2026-09-07",
-          "summary": "blade_row_passage_001 as a fluid solid (annular blade-row passage, 453 mm bore around a 269 mm hub, 5 twisted blades): delivered attempt 1, 120,746 cells, max non-ortho 54.4, max skew 2.5, prism-layer coverage 99.3%; the same shape failed 0/6 through gmsh on trailing-edge slivers. Annular ports declared as bore + centre body; thin-feature refinement clustered and budget-bounded (7 boxes, +1 level)"
+          "summary": "blade_row_passage_001 as a fluid solid (annular blade-row passage, 453 mm bore around a 269 mm hub, 5 twisted blades): delivered attempt 1, 567,933 cells, max non-ortho 63.9, max skew 9.3, prism-layer coverage 97.4%; boundary is wall/inlet/outlet only and the seed sits at r=180 mm between hub and shroud. Supersedes job 9bf37dd8 (recorded earlier the same day), which had meshed the HUB BORE: the seed was the axis centroid and the port caps sealed the bore - see cad_tessellate ring-port seed candidates. Same day, same lane: passages 003 (401k cells), 004 (739k), 005 (294k), 006 (559k) delivered; the family had failed 0/6 through gmsh."
         }
       ]
     }
