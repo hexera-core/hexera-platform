@@ -118,6 +118,47 @@ discover() {
     info "exchange bucket gs://${MESH_BUCKET} not found - it will be created"
   fi
 
+  # THE DATA TIER'S ADDRESSES ARE DISCOVERED, NOT DECLARED. MIGRATE_DB_HOST and REDIS_URL are
+  # allocated by Google when the instances are created, so a workflow that pins them pins a value
+  # that is correct only until an instance is replaced. What the deployment DECLARES is the
+  # instance NAME; the address is read back from it here, in the discovery stage, read-only.
+  #
+  # THIS RUNS EVEN WHEN THE DATA TIER IS NOT BEING RECONCILED, which is the whole point.
+  # create-data-tier.sh also writes these values back, but it is stage 7 and only runs when 'data'
+  # is among DEPLOY_COMPONENTS - so a deploy of just 'images,migrate' would otherwise reach the
+  # migration with no host and either skip the schema or refuse. Discovery is the right owner: it
+  # is where every other target is resolved, it costs one read per tier, and it makes the address
+  # available to validation at stage 2 rather than three stages after it is first needed.
+  if [ -z "${MIGRATE_DB_HOST:-}" ] && [ -n "${CLOUDSQL_INSTANCE:-}" ]; then
+    # PRIVATE_ADDRESS specifically. An instance may also carry a public one, and the migration job
+    # reaches the database over Direct VPC egress - resolving to the public IP would work until
+    # somebody removes it, then fail for a reason nothing in the deploy explains.
+    # The SAME resolution create-data-tier.sh uses, deliberately - two spellings of "the private
+    # address" would be two things that can disagree, and this one is already proven against an
+    # instance carrying a public address as well as a private one.
+    _SQL_IP="$(gcloud sql instances describe "${CLOUDSQL_INSTANCE}" --project "${PROJECT_ID}" \
+      --flatten='ipAddresses[]' --format='value(ipAddresses.type,ipAddresses.ipAddress)' 2>/dev/null \
+      | awk '$1=="PRIVATE"{print $2; exit}' || true)"
+    if [ -n "${_SQL_IP}" ]; then
+      MIGRATE_DB_HOST="${_SQL_IP}"
+      info "resolved MIGRATE_DB_HOST=${MIGRATE_DB_HOST} from Cloud SQL ${CLOUDSQL_INSTANCE}"
+    else
+      info "Cloud SQL ${CLOUDSQL_INSTANCE} has no private address yet - the data tier stage must create it"
+    fi
+  fi
+  if [ -z "${REDIS_URL:-}" ] && [ -n "${REDIS_INSTANCE:-}" ]; then
+    _REDIS_HOST="$(gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" \
+      --project "${PROJECT_ID}" --format='value(host)' 2>/dev/null || true)"
+    _REDIS_PORT="$(gcloud redis instances describe "${REDIS_INSTANCE}" --region "${REGION}" \
+      --project "${PROJECT_ID}" --format='value(port)' 2>/dev/null || true)"
+    if [ -n "${_REDIS_HOST}" ]; then
+      REDIS_URL="redis://${_REDIS_HOST}:${_REDIS_PORT:-6379}/${REDIS_DB_INDEX:-0}"
+      info "resolved REDIS_URL from Memorystore ${REDIS_INSTANCE}"
+    else
+      info "Memorystore ${REDIS_INSTANCE} has no address yet - the data tier stage must create it"
+    fi
+  fi
+
   return 0
 }
 
