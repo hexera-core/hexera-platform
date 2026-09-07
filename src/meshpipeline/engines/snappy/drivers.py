@@ -654,7 +654,10 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             _wall_stl = (Path(workspace) / "constant" / "triSurface"
                          / f"{prep['names'][_wall_key]}.stl")
             if _wall_stl.exists():
-                _thin_regions = _thin_boxes(_read_tris(_wall_stl), cell_m=_wall_cell)
+                # the extra levels may spend at most half the run's cell budget: a thin feature
+                # is captured locally, never by re-meshing the whole part at the finest level
+                _thin_regions = _thin_boxes(_read_tris(_wall_stl), cell_m=_wall_cell,
+                                            budget_cells=max(50_000, int(0.5 * _budget)))
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)

@@ -84,3 +84,67 @@ def test_no_thin_regions_leaves_the_case_exactly_as_before(tmp_path):
     text, summary = _render(tmp_path, [])
     assert "thinZone" not in text
     assert summary["thin_regions"] == []
+
+
+# ---- local and bounded: the blade-row lesson (job 3cd77f85) ------------------------------------
+# Five trailing-edge strips around an annulus are thin along their whole span. One hull over all
+# of them was the entire passage, refined to the finest level: 7 M cells for a 2 M budget.
+
+
+def _strip(cx, cy, angle, thickness=0.002, length=0.09, width=0.012, n=12):
+    """A thin plate 'length' long, 'width' wide, rotated by 'angle' about z at (cx, cy)."""
+    ca, sa = np.cos(angle), np.sin(angle)
+    tris = []
+    us = np.linspace(-length / 2, length / 2, n)
+    vs = np.linspace(-width / 2, width / 2, 3)
+    for z, flip in ((0.0, False), (thickness, True)):
+        for i in range(n - 1):
+            for j in range(2):
+                def P(u, v, z=z):
+                    return (cx + u * ca - v * sa, cy + u * sa + v * ca, z)
+                a, b = P(us[i], vs[j]), P(us[i + 1], vs[j])
+                c, d = P(us[i + 1], vs[j + 1]), P(us[i], vs[j + 1])
+                tris += ([[a, c, b], [a, d, c]] if flip else [[a, b, c], [a, c, d]])
+    return np.array(tris, dtype=float)
+
+
+def _blade_row_edges():
+    strips = [_strip(0.2 * np.cos(t), 0.2 * np.sin(t), t + np.pi / 2)
+              for t in np.linspace(0, 2 * np.pi, 5, endpoint=False)]
+    return np.concatenate(strips, axis=0)
+
+
+def test_scattered_thin_strips_get_tight_boxes_not_one_hull():
+    tris = _blade_row_edges()
+    boxes = thin_refinement_boxes(tris, cell_m=0.016)
+    assert len(boxes) >= 5, "five separate strips must not collapse into one box"
+    # the hull every thin triangle shares, padded the way each box is (0.6 cell each side)
+    hull = np.ptp(tris.reshape(-1, 3), axis=0) + 2 * 0.6 * 0.016
+    hull_vol = float(np.prod(hull))
+    total = sum(b["volume_m3"] for b in boxes)
+    assert total < 0.25 * hull_vol, f"boxes cover {total / hull_vol:.0%} of the hull - not local"
+    # every thin triangle is inside some box
+    cents = tris.mean(axis=1)
+    inside = np.zeros(len(cents), dtype=bool)
+    for b in boxes:
+        lo, hi = np.asarray(b["min"]), np.asarray(b["max"])
+        inside |= np.all((cents >= lo) & (cents <= hi), axis=1)
+    assert inside.all()
+
+
+def test_the_cell_budget_bounds_the_extra_refinement():
+    plate = _plate(0.003)
+    free = thin_refinement_boxes(plate, cell_m=0.0044)
+    assert free and all(b["level_bump"] == free[0]["level_bump"] for b in free)
+    assert free[0]["level_bump"] >= 1 and all("est_cells" in b for b in free)
+    tight = thin_refinement_boxes(plate, cell_m=0.0044, budget_cells=1_000)
+    assert tight and tight[0]["level_bump"] == 1, "a tiny budget must clamp the bump to +1"
+    roomy = thin_refinement_boxes(plate, cell_m=0.0044, budget_cells=10 ** 9)
+    assert roomy[0]["level_bump"] == free[0]["level_bump"], "a roomy budget clamps nothing"
+
+
+def test_a_single_plate_is_still_one_compact_box():
+    boxes = thin_refinement_boxes(_plate(0.003), cell_m=0.0044)
+    assert 1 <= len(boxes) <= 2
+    lo, hi = np.asarray(boxes[0]["min"]), np.asarray(boxes[0]["max"])
+    assert (lo <= [-0.05, -0.05, 0.0]).all() and (hi >= [0.05, 0.05, 0.003]).all()

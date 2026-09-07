@@ -154,8 +154,57 @@ def class_area_fractions(labels: np.ndarray, area_m2: np.ndarray) -> dict[str, f
 
 # ------------------------------------------------------------------ refinement ----
 
+def _cluster_boxes(tri_v: np.ndarray, bin_size: float, max_span_bins: int = 8) -> list[np.ndarray]:
+    """Compact groups of thin triangles: occupied bins of a coarse grid, joined across the
+    26-neighbourhood, and any group longer than max_span_bins bins sliced along its longest axis.
+    Returns index arrays into tri_v. One hull over every thin triangle is what this replaces:
+    on a blade row the trailing edges are thin along their whole span at five places around the
+    annulus, so their common hull was the entire passage - refined to the finest level, 7 M
+    cells against a 2 M budget (job 3cd77f85)."""
+    cents = tri_v.mean(axis=1)
+    keys = np.floor(cents / bin_size).astype(np.int64)
+    by_bin: dict = {}
+    for i, k in enumerate(map(tuple, keys)):
+        by_bin.setdefault(k, []).append(i)
+    seen: set = set()
+    groups: list[list[int]] = []
+    for start in by_bin:
+        if start in seen:
+            continue
+        stack, members = [start], []
+        seen.add(start)
+        while stack:
+            k = stack.pop()
+            members.extend(by_bin[k])
+            kx, ky, kz = k
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        nb = (kx + dx, ky + dy, kz + dz)
+                        if nb in by_bin and nb not in seen:
+                            seen.add(nb); stack.append(nb)
+        groups.append(members)
+    out: list[np.ndarray] = []
+    for g in groups:
+        idx = np.asarray(g, dtype=int)
+        c = cents[idx]
+        span = c.max(axis=0) - c.min(axis=0)
+        axis = int(np.argmax(span))
+        if span[axis] <= max_span_bins * bin_size:
+            out.append(idx)
+            continue
+        # a long thin run (a trailing edge, a seam): slabs along its longest axis, each a
+        # handful of bins long, so the boxes hug the feature instead of spanning its hull
+        slab = 0.5 * max_span_bins * bin_size
+        order = np.floor((c[:, axis] - c[:, axis].min()) / slab).astype(int)
+        for s in np.unique(order):
+            out.append(idx[order == s])
+    return out
+
+
 def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
-                          pad_frac: float = 0.6, max_level_bump: int = 4) -> list[dict]:
+                          pad_frac: float = 0.6, max_level_bump: int = 4,
+                          budget_cells: int | None = None) -> list[dict]:
     """Boxes enclosing surface regions too THIN for the planned cell, and the extra
     refinement level each needs.
 
@@ -171,6 +220,15 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
     and the extra level is log2(cell_m / target), clamped by max_level_bump so a pinhole
     cannot buy unbounded refinement. Returns an empty list when nothing is too thin or
     when the probe could not run - a caller gets no guess, only a measurement.
+
+    The boxes are LOCAL: thin triangles are clustered into compact groups (_cluster_boxes) and
+    each group gets its own box, so a feature that is thin along a long run - a blade's
+    trailing edge - is hugged by a chain of small boxes rather than covered by one hull. And
+    the refinement is BOUNDED: when budget_cells is given, the extra level is lowered until
+    the boxes' estimated cell cost (their volume at the refined cell size, a deliberate
+    over-estimate that counts the void inside each box too) fits it, never below +1. A clamp
+    is logged as unmet need - the feature may then stay under-resolved, but the mesh keeps
+    its budget instead of detonating it (7 M cells for a 2 M request, job 3cd77f85).
     """
     import math as _math
 
@@ -183,18 +241,40 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
         thickness < cell_m * float(cells_across))
     if not bool(too_thin.any()):
         return []
-    verts = np.asarray(tris, dtype=float)[too_thin].reshape(-1, 3)
     thinnest = float(thickness[too_thin].min())
     target = thinnest / float(cells_across)
     if target <= 0.0:
         return []
     bump = int(_math.ceil(_math.log2(max(cell_m / target, 1.0) + 1e-12)))
     bump = max(1, min(int(max_level_bump), bump))
-    lo, hi = verts.min(axis=0), verts.max(axis=0)
+    tri_v = np.asarray(tris, dtype=float)[too_thin]
     pad = cell_m * float(pad_frac)
-    logger.info("thin_refinement_boxes: thinnest feature %.4g m vs cell %.4g m -> "
-                "+%d level(s) over %d triangle(s)", thinnest, cell_m, bump,
-                int(too_thin.sum()))
-    return [{"min": (lo - pad).tolist(), "max": (hi + pad).tolist(),
-             "level_bump": bump, "thinnest_m": thinnest,
-             "n_triangles": int(too_thin.sum())}]
+    # a few wall cells: fine enough that features a blade pitch apart stay separate groups
+    bin_size = max(3.0 * float(cell_m), 4.0 * thinnest)
+    groups = _cluster_boxes(tri_v, bin_size)
+    boxes = []
+    for idx in groups:
+        v = tri_v[idx].reshape(-1, 3)
+        lo, hi = v.min(axis=0) - pad, v.max(axis=0) + pad
+        boxes.append({"min": lo.tolist(), "max": hi.tolist(), "thinnest_m": thinnest,
+                      "n_triangles": int(len(idx)),
+                      "volume_m3": float(np.prod(np.maximum(hi - lo, 0.0)))})
+    total_vol = sum(b["volume_m3"] for b in boxes)
+
+    def _est(b_):
+        return total_vol / (cell_m / (2 ** b_)) ** 3
+
+    clamped = False
+    if budget_cells is not None and budget_cells > 0:
+        while bump > 1 and _est(bump) > float(budget_cells):
+            bump -= 1
+            clamped = True
+    for b in boxes:
+        b["level_bump"] = bump
+        b["est_cells"] = int(b["volume_m3"] / (cell_m / (2 ** bump)) ** 3)
+    logger.info("thin_refinement_boxes: thinnest feature %.4g m vs cell %.4g m -> +%d level(s) "
+                "over %d triangle(s) in %d box(es), ~%.0f cells%s", thinnest, cell_m, bump,
+                int(too_thin.sum()), len(boxes), _est(bump),
+                (f" (clamped to the {budget_cells}-cell thin-refinement budget - the feature "
+                 "may stay under-resolved)" if clamped else ""))
+    return boxes
