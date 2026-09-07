@@ -6,6 +6,7 @@
     "dev:admin": "pnpm --filter @hexera/admin-console dev",
     "dev:console": "pnpm --filter @hexera/console dev",
     "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
     "test:web": "pnpm --filter @hexera/api-client test",
     "typecheck": "pnpm -r --if-present typecheck"
   }

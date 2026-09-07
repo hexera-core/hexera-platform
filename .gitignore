@@ -7,6 +7,7 @@
 
 # Secrets - never commit. .env.example is the tracked template and is deliberately not matched.
 .env
+.env*.local
 *.pem
 *.key
 # The canonical home of the local Google credential, and the cloud credential directory some
