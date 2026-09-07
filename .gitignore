@@ -39,3 +39,8 @@ deploy/output/
 # Python bytecode. Redirecting it means changing interpreter behaviour repository-wide.
 __pycache__/
 *.py[cod]
+
+# JavaScript workspaces: dependency trees, framework output and local TS test builds.
+node_modules/
+.next/
+.turbo/

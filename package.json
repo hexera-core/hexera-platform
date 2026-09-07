@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev:admin": "pnpm --filter @hexera/admin-console dev",
+    "dev:console": "pnpm --filter @hexera/console dev",
+    "lint": "pnpm -r --if-present lint",
+    "test:web": "pnpm --filter @hexera/api-client test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}
