@@ -93,3 +93,38 @@ def test_a_wall_shells_thin_ring_still_binds_by_its_bore():
                 DeclaredPatch("inlet", "inlet", diameter_mm=796, near_mm=(0, 0, 0)),
                 DeclaredPatch("outlet", "outlet", diameter_mm=796, near_mm=(600, -600, 0))]
     assert bind_ports(declared, t).port_map == {"inlet": "inlet", "outlet": "outlet"}
+
+
+# ---- the bore filed as outer_diameter_mm, the gap as diameter_mm (job eea4fe22) --------------
+
+
+def test_a_bore_named_outer_diameter_with_the_gap_in_diameter_is_the_ring():
+    # blade_row_passage_006: "between the centre-body outside diameter 187.14 mm and the pipe bore
+    # diameter 311.92 mm - a 62.39 mm radial gap"; the intake filed it as below
+    p = DeclaredPatch.from_intake({"name": "inlet", "type": "inlet", "near_mm": [-139.94, 0, 0],
+                                   "diameter_mm": 62.39, "inner_diameter_mm": 187.14,
+                                   "outer_diameter_mm": 311.92})
+    assert p.diameter_mm == pytest.approx(311.92)
+    assert p.declared_area_m2() == pytest.approx(
+        math.pi * ((311.92 / 2) ** 2 - (187.14 / 2) ** 2) * 1e-6, rel=1e-9)   # 48,905 mm2
+
+
+def test_outer_diameter_alone_is_the_bore():
+    p = DeclaredPatch.from_intake({"name": "inlet", "type": "inlet", "outer_diameter_mm": 453.3})
+    assert p.diameter_mm == pytest.approx(453.3)
+
+
+def test_a_smaller_outer_diameter_does_not_override_a_real_bore():
+    p = DeclaredPatch.from_intake({"name": "inlet", "type": "inlet", "diameter_mm": 453.3,
+                                   "outer_diameter_mm": 100.0})
+    assert p.diameter_mm == pytest.approx(453.3)
+
+
+def test_a_diameter_smaller_than_the_centre_body_is_the_radial_gap():
+    # blade_row_passage_002 (job ac839f83): hub 208.6 mm, shroud 308.42 mm, "a 49.91 mm radial
+    # gap" - the intake filed the gap as diameter_mm and named no bore at all
+    p = DeclaredPatch.from_intake({"name": "inlet", "type": "inlet", "diameter_mm": 49.91,
+                                   "inner_diameter_mm": 208.6})
+    assert p.diameter_mm == pytest.approx(308.42)
+    assert p.declared_area_m2() == pytest.approx(
+        math.pi * ((308.42 / 2) ** 2 - (208.6 / 2) ** 2) * 1e-6, rel=1e-6)   # 40,530 mm2

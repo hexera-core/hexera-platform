@@ -29,6 +29,25 @@ class BindError(ValueError):
     so it costs seconds and carries everything the user needs to disambiguate."""
 
 
+def _bore_mm(entry: dict):
+    """The bore of a declared port. `outer_diameter_mm`, when the intake wrote one beside
+    `inner_diameter_mm`, IS the bore - the model reads "between the centre-body outside diameter
+    187 mm and the pipe bore diameter 312 mm - a 62 mm radial gap" and files the gap under
+    diameter_mm and the bore under a field of its own (job eea4fe22). A diameter smaller than the
+    centre body cannot be the bore either; the outer one is."""
+    outer, d, inner = entry.get("outer_diameter_mm"), entry.get("diameter_mm"), entry.get("inner_diameter_mm")
+    if isinstance(outer, (int, float)) and not isinstance(outer, bool) and outer > 0:
+        if d is None or (isinstance(inner, (int, float)) and inner >= (d or 0.0)) or outer > (d or 0.0):
+            return float(outer)
+    # No bore field, and a "diameter" SMALLER than the centre body: no bore can be, so it is the
+    # radial gap the user quoted ("a 49.9 mm radial gap", blade_row_passage_002, job ac839f83) -
+    # the bore is the centre body plus a gap each side. Exact for a concentric annulus.
+    if (isinstance(d, (int, float)) and not isinstance(d, bool) and isinstance(inner, (int, float))
+            and not isinstance(inner, bool) and 0.0 < d < inner):
+        return float(inner) + 2.0 * float(d)
+    return d
+
+
 @dataclass(frozen=True)
 class DeclaredPatch:
     name: str
@@ -51,7 +70,7 @@ class DeclaredPatch:
         return cls(
             name=entry["name"],
             role=entry["type"],
-            diameter_mm=entry.get("diameter_mm"),
+            diameter_mm=_bore_mm(entry),
             area_mm2=entry.get("area_mm2"),
             width_mm=entry.get("width_mm"),
             height_mm=entry.get("height_mm"),

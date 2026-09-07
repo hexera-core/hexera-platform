@@ -231,6 +231,14 @@ def _declared_area_mm2(p: dict) -> float | None:
     d, ar, w, h = (p.get("diameter_mm"), p.get("area_mm2"), p.get("width_mm"),
                    p.get("height_mm"))
     di = p.get("inner_diameter_mm")
+    do = p.get("outer_diameter_mm")
+    # the bore may arrive as outer_diameter_mm with the radial gap in diameter_mm (job eea4fe22)
+    if (isinstance(do, (int, float)) and not isinstance(do, bool) and do > 0
+            and (not isinstance(d, (int, float)) or isinstance(d, bool) or do > d)):
+        d = do
+    elif (isinstance(d, (int, float)) and not isinstance(d, bool) and isinstance(di, (int, float))
+            and not isinstance(di, bool) and 0.0 < d < di):
+        d = float(di) + 2.0 * float(d)      # a "diameter" below the centre body is the radial gap
     try:
         if isinstance(d, (int, float)) and not isinstance(d, bool):
             if (isinstance(di, (int, float)) and not isinstance(di, bool)
