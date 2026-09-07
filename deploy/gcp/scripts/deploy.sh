@@ -54,6 +54,7 @@ stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\
 # A SKIPPED STAGE IS STATED, never silent: each prints what it did not do and why, so a summary
 # that says "reused" and a summary that says "not selected" are never read as the same thing.
 DEPLOY_COMPONENTS="${DEPLOY_COMPONENTS:-all}"
+export DEPLOY_COMPONENTS
 want() {
   case ",${DEPLOY_COMPONENTS}," in
     *,all,*) return 0 ;;
@@ -83,6 +84,17 @@ fi
 
 # skipped <component> <what would have happened> - one shape for every unselected stage.
 skipped() { log "SKIPPED - '$1' is not in DEPLOY_COMPONENTS (${DEPLOY_COMPONENTS}); $2"; }
+
+# NAMING A COMPONENT IS A STATEMENT OF INTENT, and it has to be distinguishable from inheriting it
+# through `all`. `all` covers a mesh-only deployment that genuinely has no database, where the
+# migration stage skipping itself is correct. Typing `migrate` is different: it says this run is
+# expected to move the schema, and a stage that then finds no target and exits 0 has told the
+# operator their instruction was carried out when it was not.
+explicitly() { [ "${DEPLOY_COMPONENTS}" != "all" ] && want "$1"; }
+if explicitly migrate; then
+  MIGRATE_REQUIRED=1
+  export MIGRATE_REQUIRED
+fi
 
 # confirmation policy
 # INTERACTIVE BY DEFAULT. A cloud-mutating deploy requires a deliberate go-ahead: after the
