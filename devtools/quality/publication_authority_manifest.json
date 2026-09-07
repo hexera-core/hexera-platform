@@ -273,6 +273,19 @@
   "roots": []
  },
  {
+  "context": "adapters/mesh_execution/cloud_run_client.py::_uncollected::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/cloud_run_client.py",
+  "qualname": "_uncollected",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/model_capacity/redis.py::RedisCapacityController.acquire::error#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/model_capacity/redis.py",
   "qualname": "RedisCapacityController.acquire",
