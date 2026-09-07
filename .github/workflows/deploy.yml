@@ -22,6 +22,23 @@ on:
     # section 1 "Decision needed" and the Decisions section).
     branches: [main]
     tags: ["v*"]
+  # THE ITERATION PATH. Push a branch to shared dev, repeatedly, before it is merged - which is
+  # what a shared dev environment is FOR, and what this workflow could not do while its only
+  # trigger was a merge that had already happened. Prod is deliberately absent: the `prod`
+  # environment's deployment policy admits `v*` tags only, so a release still cannot be reached
+  # from a branch, by anyone, however this workflow is invoked.
+  workflow_dispatch:
+    inputs:
+      components:
+        description: "Which tiers to deploy. Fewer is faster and cheaper."
+        required: false
+        default: images
+        type: choice
+        options:
+          - images                      # the mesh job and the API service - the usual change
+          - images,migrate              # ...and the schema, when the model moved
+          - images,migrate,workers      # ...and roll the fleet onto the new digest
+          - all                         # every tier, including Cloud SQL and Memorystore
 
 # A deploy MUTATES a cloud project through a 12-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -50,6 +67,10 @@ jobs:
       registry: ${{ steps.pick.outputs.registry }}
       wif_provider: ${{ steps.pick.outputs.wif_provider }}
       deployer_sa: ${{ steps.pick.outputs.deployer_sa }}
+      # WHICH TIERS THIS RUN RECONCILES. deploy.sh reads DEPLOY_COMPONENTS and states every stage
+      # it skips; `all` is the only value that means "everything", so an unset or mistyped one can
+      # never quietly deploy less than was asked for.
+      components: ${{ steps.pick.outputs.components }}
       # Every workload beyond the mesh executor, named the same way in both environments:
       # <deployment-id>-<role>. The project is already called hexera-dev / hexera-prod, so a
       # `hexera-dev-` prefix INSIDE it says the same word twice; the hand-made resources that
@@ -69,14 +90,25 @@ jobs:
       # 10.66.0.3 that used to live in this file belonged to an instance that no longer exists.
     steps:
       - id: pick
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_COMPONENTS: ${{ github.event.inputs.components }}
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
         # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
         # value editable in the GitHub settings UI without a review IS ambient configuration -
         # it just lives somewhere else. Reviewing a deploy target then means reviewing a diff.
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+          # A manual run and a merge both target dev; they differ only in HOW MUCH they reconcile.
+          # A merge to main takes the cheap path - the two workloads that carry an application
+          # digest, and the schema they may need - because reconciling Cloud SQL, the object-store
+          # credential and the whole worker fleet to ship an image costs minutes and money for
+          # tiers the change did not touch. `all` remains one dispatch away, and every release
+          # takes it.
+          COMPONENTS="${DISPATCH_COMPONENTS:-images,migrate}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             {
+              echo "components=${COMPONENTS}"
               echo "environment=dev"
               echo "deployment_id=dev"
               echo "project=hexera-dev"
@@ -118,6 +150,10 @@ jobs:
           # unreviewed, which is not an approval gate (platform-buildout-plan.md, Decided
           # 2026-08-31).
           {
+            # A RELEASE RECONCILES EVERYTHING. A tag is the one moment the deployed environment
+            # should be provably the whole of what the repository describes, so the cheap path is
+            # not offered here and the dispatch input cannot reach it.
+            echo "components=all"
             echo "environment=prod"
             echo "deployment_id=prod"
             echo "project=hexera-prod"
@@ -133,8 +169,15 @@ jobs:
             # blank while hexera-prod had no data tier and the deploy identity could not create
             # one; it can now, so the first release provisions what it names.
             echo "api_service=prod-api"
-            echo "cloudsql_instance=prod-pg"
-            echo "redis_instance=prod-redis"
+            # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
+            # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
+            # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
+            # cannot be renamed in place, and deploy.sh reconciles BY EXACT NAME, so pinning the
+            # tidier name here would not rename anything: it would build a SECOND database beside
+            # the live one on the next release tag. Renaming them is a data migration, not a
+            # config edit, and it is tracked as its own decision.
+            echo "cloudsql_instance=hexera-prod-pg"
+            echo "redis_instance=hexera-prod-redis"
             echo "migrate_db_name=meshpipeline"
             echo "migrate_db_user=meshpipeline"
             echo "postgres_password_secret=postgres-password"
@@ -170,14 +213,47 @@ jobs:
     permissions:
       contents: read
       checks: read
+    outputs:
+      # false means "stand down quietly", which is NOT the same as failing. See the superseded
+      # branch below; the deploy job consults this rather than merely depending on the job.
+      proceed: ${{ steps.gate.outputs.proceed }}
     steps:
-      - name: Require hexera/ci-gate to have passed for ${{ github.sha }}
+      - id: gate
+        name: Require hexera/ci-gate to have passed for ${{ github.sha }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          # ADVISORY FOR A MANUAL DEV RUN, BLOCKING EVERYWHERE ELSE. Pushing a branch to shared dev
+          # is what the environment is for, and a branch with no open pull request has no ci-gate
+          # at all - so requiring one would make the iteration path depend on remembering to run
+          # CI first. The artifact is still validated either way: this job gates the RELEASE
+          # RECORD, and release-validate builds and tests the exact images before any of them are
+          # published. What is given up is ruff, mypy, CodeQL and the dependency audit, on a
+          # sandbox, at the request of a person who typed the branch name.
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "manual dev deploy - CI is reported, not required"
+            read -r _t _ok _bad _c _p <<<"$(
+              gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
+                      | "\(length) \([.[] | select(.conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) 0 \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0 0"
+            )"
+            if [ "${_t}" -eq 0 ]; then
+              echo "::warning::no hexera/ci-gate has run for ${SHA}. Deploying to dev anyway; open a pull request to get one."
+            elif [ "${_bad}" -gt 0 ]; then
+              echo "::warning::hexera/ci-gate did NOT pass for ${SHA} (${_bad} of ${_t}). Deploying to dev anyway - this is a sandbox, but do not tag this commit."
+            elif [ "${_p}" -gt 0 ]; then
+              echo "::warning::hexera/ci-gate is still running for ${SHA}. Deploying to dev without waiting."
+            else
+              echo "hexera/ci-gate passed for ${SHA}"
+            fi
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Polled rather than awaited, because the check may not have been CREATED yet: on a push
           # to main both workflows start together and this job can reach the API first. "Not there"
           # and "not finished" are therefore the same state - keep waiting - and only a concluded
@@ -189,17 +265,37 @@ jobs:
             # SHA starts a SECOND ci-gate, and if it finished first its success would release the
             # deploy while the push's own run was still going - and might still fail. So a
             # still-running sibling keeps this waiting, and one failed sibling fails the deploy.
-            read -r total done_ok failed pending <<<"$(
+            read -r total done_ok failed cancelled pending <<<"$(
               gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
                 --jq '[.check_runs[] | select(.name == "hexera/ci-gate")]
-                      | "\(length) \([.[] | select(.status == "completed" and .conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0"
+                      | "\(length) \([.[] | select(.status == "completed" and .conclusion == "success")] | length) \([.[] | select(.status == "completed" and .conclusion != "success")] | length) \([.[] | select(.status == "completed" and .conclusion == "cancelled")] | length) \([.[] | select(.status != "completed")] | length)"' 2>/dev/null || echo "0 0 0 0 0"
             )"
             if [ "${failed}" -gt 0 ]; then
-              echo "::error::${failed} of ${total} hexera/ci-gate runs for ${SHA} did not pass. Nothing is deployed from a commit CI rejected."
+              # CANCELLED IS NOT REJECTED, and conflating them cost a red deploy on the very first
+              # merge this gate ran on. ci.yml cancels a superseded run of itself (concurrency,
+              # cancel-in-progress on main), so two merges landing a minute apart leave the FIRST
+              # commit's ci-gate cancelled - no verdict, not a bad one. Failing there reports a
+              # rejection that never happened, on a commit that is already history, while the
+              # newer commit's deploy is queued behind it and about to do the same work.
+              #
+              # So a cancellation is only a problem if nothing newer is coming. If this commit is
+              # no longer the branch head, the deploy stands down and says so; if it IS the head,
+              # the commit genuinely has no verdict and that is a hard stop.
+              if [ "${cancelled}" -eq "${failed}" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+                head="$(gh api "repos/${REPO}/commits/main" --jq '.sha' 2>/dev/null || echo "")"
+                if [ -n "${head}" ] && [ "${head}" != "${SHA}" ]; then
+                  echo "hexera/ci-gate was CANCELLED for ${SHA}, which is no longer the head of main (${head:0:7})."
+                  echo "Superseded - standing down. The deploy for ${head:0:7} covers this."
+                  echo "proceed=false" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+              fi
+              echo "::error::${failed} of ${total} hexera/ci-gate runs for ${SHA} did not pass (${cancelled} cancelled). Nothing is deployed from a commit CI did not clear."
               exit 1
             fi
             if [ "${total}" -gt 0 ] && [ "${pending}" -eq 0 ] && [ "${done_ok}" -eq "${total}" ]; then
               echo "all ${total} hexera/ci-gate run(s) passed for ${SHA} - proceeding"
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "${SECONDS}" -ge "${deadline}" ]; then
@@ -214,6 +310,10 @@ jobs:
   deploy:
     name: Release and deploy (${{ needs.target.outputs.environment }})
     needs: [target, await-ci]
+    # `needs` alone is not enough. await-ci exits 0 when it decides this commit was SUPERSEDED, so
+    # that a merge landing behind another does not report a rejection that never happened - and a
+    # green stand-down must still not deploy.
+    if: needs.await-ci.outputs.proceed == 'true'
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -361,6 +461,7 @@ jobs:
       - name: Provision the deployment (deploy/gcp/scripts/deploy.sh, non-interactive)
         env:
           DEPLOY_NONINTERACTIVE: "1"
+          DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
         run: bash deploy/gcp/scripts/deploy.sh
 
       # The two records that say what was validated and what is actually deployed, kept as build

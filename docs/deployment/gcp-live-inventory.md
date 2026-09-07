@@ -16,12 +16,12 @@ Organisation `hexera.ai` (`896858594150`, customer `C04l53wnx`), billing account
 | Project | Number | State | What is in it |
 | --- | --- | --- | --- |
 | `hexera-dev` | 224734058693 | ACTIVE, billing on | **Everything below.** Created 2026-08-29 23:44 UTC. |
-| `hexera-prod` | 688073002171 | ACTIVE | Empty. Only the default API set; Compute/Run/SQL not enabled. |
+| `hexera-prod` | 688073002171 | ACTIVE | **Stale as of 2026-09-04 — prod was stood up 09-01 to 09-03 and now runs an API, a mesh job, a worker fleet, Cloud SQL and Memorystore. See `environments-and-delivery.md`.** |
 | `hexera-506114` | 737785361719 | ACTIVE | Empty, same as above. |
 | `gen-lang-client-0538862942` | 214432523008 | ACTIVE | Empty (Gemini default project). |
 | `psyched-choir-507100-d4` | 829638646302 | ACTIVE | Empty. |
 
-Only `hexera-dev` carries workloads. There is no production deployment yet.
+~~Only `hexera-dev` carries workloads. There is no production deployment yet.~~ **Withdrawn 2026-09-04** — both projects carry workloads. This whole file is a 2026-08-30 observation; `environments-and-delivery.md` is the current one.
 
 Everything runs in **`us-central1`**, zone **`us-central1-a`** where zonal.
 

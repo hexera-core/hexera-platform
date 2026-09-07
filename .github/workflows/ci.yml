@@ -25,13 +25,13 @@ on:
   # audit go stale against a repository that simply was not touched that week.
   schedule:
     - cron: "17 6 * * 1"
+  # No inputs, deliberately. This used to take a `target_ref` that validated a DIFFERENT commit
+  # from the one the run belongs to - and a check run attaches to `github.sha`, not to whatever
+  # was checked out. So dispatching from main against another ref posted a green `hexera/ci-gate`
+  # onto main's head having tested something else, which is precisely the claim deploy.yml's
+  # await-ci job trusts. Removing the input closes that: what is tested is always what the check
+  # is attached to.
   workflow_dispatch:
-    inputs:
-      target_ref:
-        description: Optional branch, tag or full commit SHA to validate instead of the workflow ref
-        required: false
-        default: ""
-        type: string
 
 # A manual run is never cancelled by a later one - somebody is watching it. Pull requests and
 # branches cancel their own supersedes.
@@ -62,11 +62,12 @@ jobs:
     steps:
       - name: Resolve checkout ref
         id: checkout-ref
-        env:
-          TARGET_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || '' }}
         run: |
           set -euo pipefail
-          echo "ref=${TARGET_REF:-$GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          # Always the commit this run belongs to. Kept as a step rather than inlined because
+          # every job below refers to it, and a single definition is what made removing the
+          # `target_ref` input a one-line change instead of a twelve-job one.
+          echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
