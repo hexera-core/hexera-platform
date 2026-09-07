@@ -95,7 +95,32 @@ def test_automation_may_not_skip_the_schema_step(tmp_path):
     # migrated. Under DEPLOY_NONINTERACTIVE a missing migration target is a mistake, not a choice.
     p, log = _run("run-migrations.sh", tmp_path, _BASE, {"DEPLOY_NONINTERACTIVE": "1"})
     assert p.returncode != 0
-    assert "must not skip the schema step" in p.stderr
+    # The refusal has to NAME the schema step, so an operator reading a wall of deploy output knows
+    # which stage stopped. The exact sentence is not the contract - it was "automation must not"
+    # until the same refusal grew a second caller below - but the subject of it is.
+    assert "skip the schema step" in p.stderr
+    assert "jobs replace" not in log
+
+
+def test_a_run_that_asked_for_the_migration_may_not_skip_it_either(tmp_path):
+    # THE SECOND CALLER. DEPLOY_COMPONENTS=...,migrate is an instruction, and deploy.sh marks it as
+    # one with MIGRATE_REQUIRED=1. Without this the interactive path took the "no database declared"
+    # branch and exited 0: the operator asked for the schema to move, was told nothing, and the API
+    # stage then started a revision against a database nobody had migrated. The likeliest way to
+    # reach it is a new environment whose Cloud SQL instance is named but not yet created.
+    p, log = _run("run-migrations.sh", tmp_path, _BASE, {"MIGRATE_REQUIRED": "1"})
+    assert p.returncode != 0
+    assert "skip the schema step" in p.stderr
+    assert "jobs replace" not in log
+
+
+def test_all_components_still_skips_a_deployment_that_declares_no_database(tmp_path):
+    # The other side of the same line, and the reason the signal is "explicitly selected" rather
+    # than "selected": `all` covers the mesh-only deployment that genuinely has no database, where
+    # skipping IS the correct outcome. Only naming `migrate` makes it an instruction.
+    p, log = _run("run-migrations.sh", tmp_path, _BASE, {"MIGRATE_REQUIRED": "0"})
+    assert p.returncode == 0, p.stderr
+    assert "skipping" in p.stdout.lower()
     assert "jobs replace" not in log
 
 

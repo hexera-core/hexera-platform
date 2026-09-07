@@ -31,7 +31,6 @@ COMPONENTS="${DEPLOY_COMPONENTS:-all}"
 _selected() { case ",${COMPONENTS}," in *,all,*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 if _selected images; then
-  IMAGES_RECONCILED=True
   MESH_DIGEST="$(resolve_digest "${MESH_IMAGE:-}" 2>/dev/null || printf '%s' "${MESH_IMAGE:-}")"
   APP_DIGEST="$(resolve_digest "${APP_IMAGE:-}" 2>/dev/null || printf '%s' "${APP_IMAGE:-}")"
 else
@@ -40,7 +39,6 @@ else
   # deployed them this time, so the truthful value is whatever the mesh job and the API service
   # are actually running. An absent workload records an empty string rather than a digest it does
   # not have.
-  IMAGES_RECONCILED=False
   MESH_DIGEST="$(gc run jobs describe "${CLOUDRUN_MESH_JOB:-}" --region "${GCP_REGION}" \
     --format='value(spec.template.spec.template.spec.containers[0].image)' 2>/dev/null || true)"
   if [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
@@ -117,14 +115,14 @@ doc = {
     "exchange_bucket":      {"name": "${GCP_MESH_BUCKET}",    "disposition": "${MESH_BUCKET_DISPOSITION}"},
     "mesh_service_account": {"name": "${MESH_SA_EMAIL}",      "disposition": "${MESH_SA_DISPOSITION}"},
   },
-  # WHICH TIERS THIS RUN TOUCHED, and whether the digests below were deployed by it or merely
-  # observed on the running workloads. A consumer that assumes every manifest describes a full
+  # WHICH TIERS THIS RUN TOUCHED. A consumer that assumes every manifest describes a full
   # reconcile would otherwise read a partial deploy as a complete one.
   "components": "${COMPONENTS}",
-  "images": {
-    "mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}",
-    "reconciled": ${IMAGES_RECONCILED},
-  },
+  # A NAME-TO-DIGEST MAP AND NOTHING ELSE. Whether these were deployed by this run or observed on
+  # the running workloads is already answered per workload, by `reconciled` on mesh_job and
+  # api_service - saying it a second time here cost `set(doc["images"])` its meaning, which is
+  # exactly what a consumer iterating for digests relies on.
+  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}"},
 }
 if "${MIGRATE_DB_HOST:-}":
   doc["resources"]["migration_job"] = {
