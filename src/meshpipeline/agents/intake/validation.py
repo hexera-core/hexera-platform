@@ -230,8 +230,13 @@ _MIN_DECLARED_AREA_SEPARATION = 5.0 / 3.0
 def _declared_area_mm2(p: dict) -> float | None:
     d, ar, w, h = (p.get("diameter_mm"), p.get("area_mm2"), p.get("width_mm"),
                    p.get("height_mm"))
+    di = p.get("inner_diameter_mm")
     try:
         if isinstance(d, (int, float)) and not isinstance(d, bool):
+            if (isinstance(di, (int, float)) and not isinstance(di, bool)
+                    and 0.0 < float(di) < float(d)):
+                # an annular opening: the ring between the bore and its centre body
+                return 3.141592653589793 * ((float(d) / 2.0) ** 2 - (float(di) / 2.0) ** 2)
             return 3.141592653589793 * (float(d) / 2.0) ** 2
         if isinstance(ar, (int, float)) and not isinstance(ar, bool):
             return float(ar)

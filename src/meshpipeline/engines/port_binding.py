@@ -39,6 +39,11 @@ class DeclaredPatch:
     height_mm: float | None = None
     near_mm: tuple[float, float, float] | None = None
     interchangeable_with: tuple[str, ...] = ()
+    # An ANNULAR opening: the bore (diameter_mm) with a centre body of this diameter inside it.
+    # The declared size is then the ring between them - stated, never computed by the model:
+    # the blade-row passage intake wrote 31,403 mm2 for a 104,603 mm2 annulus (job a1593cdc)
+    # because the schema gave it no way to say "453.3 mm bore around a 268.88 mm hub".
+    inner_diameter_mm: float | None = None
 
     @classmethod
     def from_intake(cls, entry: dict) -> DeclaredPatch:
@@ -52,10 +57,14 @@ class DeclaredPatch:
             height_mm=entry.get("height_mm"),
             near_mm=tuple(near) if near is not None else None,
             interchangeable_with=tuple(entry.get("interchangeable_with") or ()),
+            inner_diameter_mm=entry.get("inner_diameter_mm"),
         )
 
     def declared_area_m2(self) -> float | None:
         if self.diameter_mm is not None:
+            if self.inner_diameter_mm is not None and 0.0 < self.inner_diameter_mm < self.diameter_mm:
+                return (math.pi * ((self.diameter_mm / 2.0) ** 2
+                                   - (self.inner_diameter_mm / 2.0) ** 2) * 1e-6)
             return math.pi * (self.diameter_mm / 2.0) ** 2 * 1e-6
         if self.area_mm2 is not None:
             return self.area_mm2 * 1e-6
@@ -98,7 +107,13 @@ def _measures(area: float, opening: dict | None) -> list[float]:
     not be the only thing the declared size is held against."""
     out = [float(area)]
     if opening and opening.get("area") is not None:
-        out.append(float(opening["area"]))
+        inner = float(opening["area"])
+        out.append(inner)
+        # The disc the ring's OUTER wire encloses. When the STEP is the fluid itself (a
+        # blade-row passage, an annular duct modelled as the flow volume), the port face IS
+        # the annulus and the declaration still quotes "the pipe bore diameter" - that bore is
+        # the outer wire, not the inner one, and the ring's own area is the true opening.
+        out.append(float(area) + inner)
     return out
 
 

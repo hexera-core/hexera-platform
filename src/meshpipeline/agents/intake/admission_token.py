@@ -163,6 +163,7 @@ def approved_intent_canonical(*, engine, purpose, input_kind, dimensionality, pa
             ({"name": (p.get("name") or "").strip(),
               "role": (p.get("role") or p.get("type") or "").strip(),
               "diameter_mm": p.get("diameter_mm"), "area_mm2": p.get("area_mm2"),
+              "inner_diameter_mm": p.get("inner_diameter_mm"),
               "width_mm": p.get("width_mm"), "height_mm": p.get("height_mm"),
               "near_mm": list(p["near_mm"]) if isinstance(p.get("near_mm"), (list, tuple))
               else None,
