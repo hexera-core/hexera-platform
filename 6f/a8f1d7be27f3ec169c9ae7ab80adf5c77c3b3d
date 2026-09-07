@@ -1,0 +1,114 @@
+apps/console/public/static/css/viewer.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-77
+.gitignore
+  s_e592481f7b6d27::t_6b432919d10bed 10
+apps/console/eslint.config.mjs
+  s_e592481f7b6d27::t_c8f641aa9a66d8 4-10
+apps/console/public/static/css/shell.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-53
+apps/console/package.json
+  s_e592481f7b6d27::t_0f03da81a6cefd 16
+  s_e592481f7b6d27::t_3d0b1f39f52204 29
+  s_e592481f7b6d27::t_81bae171e5fb36 10
+apps/console/public/static/js/shell/settings.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-38
+apps/console/src/app/api/v1/[...path]/route.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-24
+apps/console/src/app/sign-out/page.tsx
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-5
+apps/console/public/static/js/core/state.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-58
+apps/console/public/static/css/result.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-30
+apps/console/src/app/api/auth/[...nextauth]/route.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-3
+apps/console/public/static/js/core/format.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-26
+apps/console/src/lib/product-api/proxy.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-62,67-110
+  s_e592481f7b6d27::t_a1fb5872466cf1 63-66
+apps/console/src/lib/product-api/proxy.test.ts
+  s_e592481f7b6d27::t_8965964cb5317b 1-3,5-40,51
+  s_e592481f7b6d27::t_c93acc3f565156 4,41-50
+apps/console/public/static/js/viewer/config.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-18
+apps/console/src/app/readyz/route.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-24
+apps/console/src/app/(console)/page.tsx
+  s_e592481f7b6d27::t_4f5ba108216880 2-3,5-27,30-99
+  s_e592481f7b6d27::t_d8ac96fd5df14a 1
+package.json
+  s_e592481f7b6d27::t_1b3fb3a83c896d 9
+apps/console/public/static/js/api/endpoints.js
+  s_e592481f7b6d27::t_d74e7cdad33c69 82-84,88
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-81,85-87,89
+apps/console/src/types/next-auth.d.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-7
+apps/console/public/static/css/tokens.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-84
+apps/console/public/static/css/timeline.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-109
+apps/console/public/static/js/core/events.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-129
+apps/console/public/static/css/chat.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-11
+apps/console/public/static/css/a11y.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-48
+apps/console/src/app/sign-in/page.tsx
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-22
+apps/console/public/static/css/theme.css
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-399
+apps/console/public/static/js/realtime/stream.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-178
+apps/console/src/app/_components/auth-buttons.tsx
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-31
+apps/console/src/app/globals.css
+  s_e592481f7b6d27::t_4f5ba108216880 3-7,9,13,15,18-20,23,32-34,38,40,42,45-47,49-50,53-58,61-66,69-70
+apps/console/public/static/js/shell/composer.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-151
+apps/console/src/lib/auth/session.test.ts
+  s_e592481f7b6d27::t_8965964cb5317b 1-21
+apps/console/public/static/js/render/stage.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-342
+apps/console/public/static/js/viewer/dispute.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-100
+apps/console/public/static/js/viewer/viewer.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-722
+apps/console/src/auth.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-21
+apps/console/public/static/js/main.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-168
+apps/console/public/static/js/api/client.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-101
+apps/console/public/static/js/render/notice.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-32
+apps/console/public/static/js/shell/intake_formats.js
+  s_e592481f7b6d27::t_2fb36c1ae60a61 1-54
+apps/console/src/lib/auth/session.ts
+  s_e592481f7b6d27::t_0f03da81a6cefd 1-4,6-16
+  s_e592481f7b6d27::t_42548864361f02 5
+apps/console/.env.example
+  s_e592481f7b6d27::t_6b432919d10bed 1-16
+apps/console/public/static/vendor/SHA256SUMS
+  s_e592481f7b6d27::t_488ca76040a452 1-6
+apps/console/public/static/vendor/vtk.js
+  s_e592481f7b6d27::t_6a4e75ec09a46b 1-4577
+pnpm-lock.yaml
+  s_e592481f7b6d27::t_9a28380031bf37 62-64,96-98,121-134,693-695,1667-1669,1847-1862,1892-1894,1981-1988,2302-2309,2756-2757,3943-3944,4081-4086,4121-4122,4219-4224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "6fa8f1d7be27f3ec169c9ae7ab80adf5c77c3b3d",
+  "prompts": {},
+  "sessions": {
+    "s_e592481f7b6d27": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07dcc-4896-7503-a566-d7b043776b18",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Pranav Kannepalli <pranav@hexera.ai>"
+    }
+  }
+}
