@@ -605,6 +605,13 @@ else
   }
   HEALTHY=1
   _wait "postgres" "${PG}" 45 docker exec "${PG}" pg_isready -U mesh || HEALTHY=0
+  # pg_isready reports the image's TEMPORARY initdb server too, which shuts down and restarts a
+  # moment later; a CREATE DATABASE issued on that answer met a server going down and the gate
+  # ended 'incomplete' with every native tier green. Wait until the real server answers a query.
+  if [ "${HEALTHY}" = "1" ]; then
+    _wait "postgres (answering queries)" "${PG}" 45 \
+      docker exec "${PG}" psql -U mesh -d mesh -v ON_ERROR_STOP=1 -q -c "SELECT 1" || HEALTHY=0
+  fi
   # Stamp the task database the way tests/disposable_database.py provisions one: its own schema
   # (the suite drops `public`, which would take a marker there with it) recording the run that
   # owns it. Without this the tier cannot prove the database is disposable and refuses to touch it.
