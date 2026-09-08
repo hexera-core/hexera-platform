@@ -240,6 +240,14 @@ MESH_TIMEOUT_SECONDS=14400
 # runs it; the migration job and the queue-depth publisher run application code from the same bytes.
 APP_IMAGE=${APP_IMAGE:-}
 
+# The CONSOLE image, written by scripts/promote-release.sh as the validated digest; empty until
+# then, for the same reason MESH_IMAGE and APP_IMAGE start empty. Without this, a fresh
+# regeneration silently dropped a previously promoted console digest - harmless inside deploy.sh
+# (the promote stage re-adds it before the console stage runs) but fatal to running
+# create-console-service.sh standalone right after a bootstrap, where the API and mesh tiers
+# already survive a regeneration and the console did not.
+CONSOLE_IMAGE=${CONSOLE_IMAGE:-}
+
 # the network the private-address tiers below are reached over (Cloud SQL, Memorystore)
 VPC_NETWORK=${VPC_NETWORK:-default}
 VPC_SUBNET=${VPC_SUBNET:-default}
@@ -324,6 +332,7 @@ CONSOLE_MEMORY=${CONSOLE_MEMORY:-512Mi}
 CONSOLE_CONCURRENCY=${CONSOLE_CONCURRENCY:-80}
 CONSOLE_MIN_INSTANCES=${CONSOLE_MIN_INSTANCES:-0}
 CONSOLE_MAX_INSTANCES=${CONSOLE_MAX_INSTANCES:-3}
+CONSOLE_TIMEOUT_SECONDS=${CONSOLE_TIMEOUT_SECONDS:-300}
 # THE CONSOLE IS THE PUBLIC FRONT DOOR and is invokable by anyone by design: its own Auth.js
 # session is the gate, not Cloud Run's IAM. This is a stated choice, not an inherited default.
 CONSOLE_INGRESS=${CONSOLE_INGRESS:-all}
