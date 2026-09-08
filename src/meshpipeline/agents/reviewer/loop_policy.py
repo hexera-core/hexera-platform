@@ -60,6 +60,8 @@ class AxisDeficits:
     ungrounded: tuple[str, ...] = ()
     covered: tuple[str, ...] = ()
     invalid_evidence: tuple[str, ...] = ()
+    # keys that name no required axis even after canonicalisation - reported, never inferred
+    unknown: tuple[str, ...] = ()
     # obligation deficits (uninspected required targets), verbatim from the eligibility gate -
     # populated by the session, not by compute_deficits, which is axis-level only
     unmet_obligations: tuple[str, ...] = ()
@@ -67,13 +69,38 @@ class AxisDeficits:
     def signature(self) -> str:
         body = "|".join(",".join(sorted(part)) for part in
                         (self.missing, self.duplicate, self.ungrounded, self.invalid_evidence,
-                         self.unmet_obligations))
+                         self.unmet_obligations, self.unknown))
         return hashlib.sha256(body.encode()).hexdigest()[:16]
 
     @property
     def clean(self) -> bool:
         return not (self.missing or self.duplicate or self.ungrounded
                     or self.invalid_evidence or self.unmet_obligations)
+
+
+def canonical_axis_key(key: str, required_axes: tuple[str, ...]) -> str:
+    """The required axis a filed key names, or the key unchanged.
+
+    The rubric shows every axis under its category (integrity, quality, solvability,
+    conformance) and models file 'conformance/group_completeness' for 'group_completeness'
+    often enough that it cost a review: the key matched nothing, the deficit check ignored it,
+    and six identical rejections named the axis as missing without saying why. A key whose
+    last segment (after '/', ':' or '.') is a required axis IS that axis; case and hyphens do
+    not matter. Anything else stays as filed and is reported as unknown."""
+    known = {a: a for a in required_axes}
+    norm = lambda k: k.strip().lower().replace("-", "_")  # noqa: E731
+    by_norm = {norm(a): a for a in required_axes}
+    if key in known:
+        return key
+    k = norm(key)
+    if k in by_norm:
+        return by_norm[k]
+    for sep in ("/", ":", "."):
+        if sep in k:
+            tail = k.rsplit(sep, 1)[-1]
+            if tail in by_norm:
+                return by_norm[tail]
+    return key
 
 
 def compute_deficits(required_axes: tuple[str, ...], findings: tuple[AxisFinding, ...],
@@ -93,7 +120,8 @@ def compute_deficits(required_axes: tuple[str, ...], findings: tuple[AxisFinding
         ungrounded=tuple(sorted(k for k in seen if k in known and not _has_usable_citation(
             k, findings, ledger))),
         covered=tuple(sorted(k for k in seen if k in known)),
-        invalid_evidence=tuple(sorted(cited_bad)))
+        invalid_evidence=tuple(sorted(cited_bad)),
+        unknown=tuple(sorted(k for k in seen if k not in known)))
 
 
 def _has_usable_citation(axis: str, findings: tuple[AxisFinding, ...],
@@ -216,6 +244,9 @@ class ReviewLoopPolicy:
             return ToolOutcome(content=self._malformed_findings_correction(problems),
                                accepted=False)
         self.submissions += 1
+        # a key filed under its category names the axis it ends in; anything else stays as filed
+        findings = tuple(replace(f, axis_key=canonical_axis_key(f.axis_key, self.required_axes))
+                         for f in findings)
 
         before = self._snapshot or EvidenceSnapshot.of(self.ledger)
         after = EvidenceSnapshot.of(self.ledger)
@@ -374,6 +405,12 @@ class ReviewLoopPolicy:
         lines = ["Submission rejected."]
         if deficits.missing:
             lines.append(f"Missing axes: {', '.join(deficits.missing)}")
+        if deficits.unknown:
+            # say that the KEY is wrong, not merely that the axis is missing - six identical
+            # rejections on volute_scroll_005 never did, and the review ended with no verdict
+            lines.append(f"Unknown axis keys (they name no axis in this rubric): "
+                         f"{', '.join(deficits.unknown)}. The required axis keys are exactly: "
+                         f"{', '.join(self.required_axes)}.")
         if deficits.ungrounded:
             lines.append(f"Ungrounded axes: {', '.join(deficits.ungrounded)}")
         if deficits.duplicate:
