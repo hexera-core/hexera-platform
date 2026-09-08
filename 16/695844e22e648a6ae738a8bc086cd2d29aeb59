@@ -1,0 +1,28 @@
+apps/console/src/app/_components/legacy-styles.tsx
+  s_e592481f7b6d27::t_cf1d739332d480 1-20
+apps/console/src/app/(console)/page.tsx
+  s_e592481f7b6d27::t_cf1d739332d480 7,21
+apps/console/src/app/globals.css
+  s_e592481f7b6d27::t_cf1d739332d480 1
+apps/console/src/app/sign-in/page.tsx
+  s_e592481f7b6d27::t_11a6703a1e389c 1,40-41
+  s_e592481f7b6d27::t_cf1d739332d480 6,15-39,42-47
+apps/console/src/app/_components/auth-buttons.tsx
+  s_e592481f7b6d27::t_cf1d739332d480 11,26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "16695844e22e648a6ae738a8bc086cd2d29aeb59",
+  "prompts": {},
+  "sessions": {
+    "s_e592481f7b6d27": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07dcc-4896-7503-a566-d7b043776b18",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Pranav Kannepalli <pranav@hexera.ai>"
+    }
+  }
+}
