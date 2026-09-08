@@ -22,14 +22,14 @@
          'Liberation Mono',monospace;
   --display:"Saira Semi Condensed","Helvetica Neue",Arial,sans-serif;
 
-  /* surfaces - the site's blacks, an elevation ladder each step a shade lighter */
-  --canvas:#0d0d0c;
-  --background:#131312;
-  --surface-1:#141413;
-  --surface-2:#1b1b19;
-  --surface-raised:#232321;
-  --viewer-frame:#131312;
-  --viewer-canvas:#0d0d0c;
+  /* surfaces - a deep amber-black canvas, an elevation ladder each step a shade lighter */
+  --canvas:#060402;
+  --background:#0b0905;
+  --surface-1:#0d0a06;
+  --surface-2:#15110a;
+  --surface-raised:#1c160d;
+  --viewer-frame:#0b0905;
+  --viewer-canvas:#060402;
   --border:rgba(238,235,225,.10);
   --border-strong:rgba(238,235,225,.22);
 
@@ -64,7 +64,7 @@
   --warn:#f1bd63;    --warn-soft:rgba(241,189,99,.12);
   --danger:#ff6b5e;  --danger-soft:rgba(216,58,48,.14);
 
-  --mesh-canvas:#0d0d0c;
+  --mesh-canvas:#060402;
   --mesh-selection:#ff4f00;
 
   --focus:var(--accent);
