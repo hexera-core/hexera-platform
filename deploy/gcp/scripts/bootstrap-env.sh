@@ -94,6 +94,9 @@ discover() {
   QUEUE_DEPTH_JOB="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOY_ID}-queue-depth}"
   QUEUE_DEPTH_SA="${QUEUE_DEPTH_SERVICE_ACCOUNT:-${DEPLOY_ID}-queue-depth}"
   QUEUE_DEPTH_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOY_ID}-queue-depth}"
+  # Left empty rather than defaulted to a name: a deployment gets a console because it asked for
+  # one, not because this script invented a service for it.
+  CONSOLE_SERVICE="${CLOUDRUN_CONSOLE_SERVICE:-}"
 
   if gcloud run jobs describe "${MESH_JOB}" --region "${REGION}" >/dev/null 2>&1; then
     MESH_JOB_DISPOSITION=reused
@@ -282,6 +285,31 @@ API_MAX_INSTANCES=${API_MAX_INSTANCES:-5}
 API_ALLOW_UNAUTHENTICATED=${API_ALLOW_UNAUTHENTICATED:-0}
 WORKER_SERVICE_ACCOUNT=${WORKER_SERVICE_ACCOUNT:-}
 WORKER_ENV_URI=${WORKER_ENV_URI:-}
+
+# THE CONSOLE TIER. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console
+# and that stage is skipped - the same arrangement an API-less deployment uses above.
+CLOUDRUN_CONSOLE_SERVICE=${CLOUDRUN_CONSOLE_SERVICE:-}
+CONSOLE_SERVICE_ACCOUNT=${CONSOLE_SERVICE_ACCOUNT:-${DEPLOY_ID}-console}
+# Sizing. The console renders pages and proxies; it runs no model call and holds no mesh, so it is
+# deliberately the smallest tier here.
+CONSOLE_CPU=${CONSOLE_CPU:-1}
+CONSOLE_MEMORY=${CONSOLE_MEMORY:-512Mi}
+CONSOLE_CONCURRENCY=${CONSOLE_CONCURRENCY:-80}
+CONSOLE_MIN_INSTANCES=${CONSOLE_MIN_INSTANCES:-0}
+CONSOLE_MAX_INSTANCES=${CONSOLE_MAX_INSTANCES:-3}
+# THE CONSOLE IS THE PUBLIC FRONT DOOR and is invokable by anyone by design: its own Auth.js
+# session is the gate, not Cloud Run's IAM. This is a stated choice, not an inherited default.
+CONSOLE_INGRESS=${CONSOLE_INGRESS:-all}
+CONSOLE_ALLOW_UNAUTHENTICATED=${CONSOLE_ALLOW_UNAUTHENTICATED:-1}
+# NO SECRET VALUES: container names only, in the same <SETTING>_SECRET spelling every other
+# credential here uses. CONSOLE_AUTH_USERS holds scrypt password hashes, which is a credential.
+AUTH_SECRET_SECRET=${AUTH_SECRET_SECRET:-console-auth-secret}
+CONSOLE_AUTH_USERS_SECRET=${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}
+# Where the console reaches the product API. The server-side value is used by the authenticated
+# /api/v1 proxy; the NEXT_PUBLIC_ one is compiled into the browser bundle and is what the
+# WebSocket dials, because the stream goes browser->API directly and not through the proxy.
+HEXERA_API_BASE_URL=${HEXERA_API_BASE_URL:-}
+NEXT_PUBLIC_HEXERA_API_BASE_URL=${NEXT_PUBLIC_HEXERA_API_BASE_URL:-${HEXERA_API_BASE_URL:-}}
 
 # SECRET CONTAINER NAMES (scripts/create-secrets.sh). Names only, never values - the guard in
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.
