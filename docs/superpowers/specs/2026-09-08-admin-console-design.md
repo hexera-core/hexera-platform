@@ -60,7 +60,9 @@ documentation.
   restart anything.
 - Replacing the Cloud console for billing analysis. The cost pages answer "roughly what, roughly
   where", not chargeback.
-- Prod outreach. The outreach app is a single hosted instance, not a per-environment tier.
+- A per-environment outreach tier. The outreach app is ONE hosted instance, in prod, because
+  the partner list and the sending mailbox are real. Dev's admin console renders that section
+  as unavailable rather than pointing at prod's tables. See §6.
 - Any change to the public console's posture. It stays `allUsers`-invokable.
 
 ## 3. Decisions
