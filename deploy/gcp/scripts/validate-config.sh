@@ -128,6 +128,14 @@ if [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
   fi
 fi
 
+# THE ADMIN CONSOLE. Empty CLOUDRUN_ADMIN_SERVICE means this deployment serves none.
+if [ -n "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
+  if [[ "${ADMIN_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${ADMIN_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
+    [ "${ADMIN_MIN_INSTANCES}" -le "${ADMIN_MAX_INSTANCES}" ] \
+      || add "ADMIN_MIN_INSTANCES (${ADMIN_MIN_INSTANCES}) exceeds ADMIN_MAX_INSTANCES (${ADMIN_MAX_INSTANCES})"
+  fi
+fi
+
 # THE OBJECT STORE. The access key is the PUBLIC half; its secret is a container name. Both or
 # neither - a half-configured store fails at the first upload rather than here.
 if [ -n "${MINIO_ACCESS_KEY:-}" ] || [ -n "${MINIO_BUCKET:-}" ]; then

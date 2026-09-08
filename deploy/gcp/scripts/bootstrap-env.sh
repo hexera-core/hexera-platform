@@ -97,6 +97,8 @@ discover() {
   # Left empty rather than defaulted to a name: a deployment gets a console because it asked for
   # one, not because this script invented a service for it.
   CONSOLE_SERVICE="${CLOUDRUN_CONSOLE_SERVICE:-}"
+  # Same reasoning for the admin console: empty until a deployment states it.
+  ADMIN_SERVICE="${CLOUDRUN_ADMIN_SERVICE:-}"
 
   if gcloud run jobs describe "${MESH_JOB}" --region "${REGION}" >/dev/null 2>&1; then
     MESH_JOB_DISPOSITION=reused
@@ -346,6 +348,25 @@ CONSOLE_AUTH_USERS_SECRET=${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}
 # WebSocket dials, because the stream goes browser->API directly and not through the proxy.
 HEXERA_API_BASE_URL=${HEXERA_API_BASE_URL:-}
 NEXT_PUBLIC_HEXERA_API_BASE_URL=${NEXT_PUBLIC_HEXERA_API_BASE_URL:-${HEXERA_API_BASE_URL:-}}
+
+# THE ADMIN TIER. Empty CLOUDRUN_ADMIN_SERVICE means this deployment serves no admin console and
+# that stage is skipped, the same arrangement the API and console tiers use.
+#
+# THERE IS DELIBERATELY NO PUBLIC-INVOKER TOGGLE FOR THIS TIER (the console has one, because its
+# sign-in page must be publicly reachable). The admin console's gate is IAP, and IAP in front of a
+# service that still carries an allUsers binding protects nothing - the two are separate checks.
+# Making that a setting would make the protection optional, so it is not one.
+CLOUDRUN_ADMIN_SERVICE=${ADMIN_SERVICE}
+ADMIN_SERVICE_ACCOUNT=${ADMIN_SERVICE_ACCOUNT:-${DEPLOY_ID}-admin}
+# The smallest tier here: it renders pages for a handful of people and runs no model call.
+ADMIN_CPU=${ADMIN_CPU:-1}
+ADMIN_MEMORY=${ADMIN_MEMORY:-512Mi}
+ADMIN_CONCURRENCY=${ADMIN_CONCURRENCY:-80}
+ADMIN_MIN_INSTANCES=${ADMIN_MIN_INSTANCES:-0}
+ADMIN_MAX_INSTANCES=${ADMIN_MAX_INSTANCES:-2}
+ADMIN_INGRESS=${ADMIN_INGRESS:-all}
+# The promoted digest, kept across regeneration exactly as MESH_IMAGE and APP_IMAGE are.
+ADMIN_IMAGE=${ADMIN_IMAGE:-}
 
 # SECRET CONTAINER NAMES (scripts/create-secrets.sh). Names only, never values - the guard in
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.
