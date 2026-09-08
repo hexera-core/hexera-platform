@@ -37,6 +37,8 @@ on:
         options:
           - images                      # the mesh job and the API service - the usual change
           - images,migrate              # ...and the schema, when the model moved
+          - images,migrate,console      # ...and the browser console (what a merge to main does)
+          - console                     # the console ALONE - the fast loop while iterating on it
           - images,migrate,workers      # ...and roll the fleet onto the new digest
           - all                         # every tier, including Cloud SQL and Memorystore
 

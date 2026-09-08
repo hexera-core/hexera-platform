@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).parents[3]
 DEPLOY = REPO / "deploy" / "gcp" / "scripts" / "deploy.sh"
 
@@ -49,3 +51,17 @@ def test_a_merge_reconciles_the_console():
 def test_a_release_tag_still_reconciles_everything():
     text = DEPLOY_WF.read_text(encoding="utf-8")
     assert "components=all" in text
+
+
+def test_a_manual_run_can_select_the_console():
+    """The spec's delivery mechanism is a manual dev run. A choice list with no console option
+    means the console cannot be deployed the one way the spec says it will be."""
+    doc = yaml.safe_load(DEPLOY_WF.read_text(encoding="utf-8"))
+    options = doc[True]["workflow_dispatch"]["inputs"]["components"]["options"]
+    with_console = [o for o in options if "console" in o]
+    assert with_console, (
+        "workflow_dispatch offers no components option containing 'console', so a manual run "
+        f"cannot deploy it. Offered: {options}")
+    assert "console" in options, (
+        "there is no console-only option, so iterating on the console costs a full "
+        f"images+migrate reconcile every time. Offered: {options}")
