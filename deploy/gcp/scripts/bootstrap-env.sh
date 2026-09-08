@@ -162,6 +162,33 @@ discover() {
     fi
   fi
 
+  # THE CONSOLE'S API ORIGIN, DISCOVERED THE SAME WAY: HEXERA_API_BASE_URL is an address Google
+  # allocates when the API's Cloud Run service is created, not a name this deployment picks - so
+  # it is read back from the live service here rather than pinned anywhere. What the deployment
+  # DECLARES is CLOUDRUN_API_SERVICE, exactly as CLOUDSQL_INSTANCE and REDIS_INSTANCE are declared
+  # above; this just reads the URL off it. NEXT_PUBLIC_HEXERA_API_BASE_URL defaults to this value
+  # (see emit_env), so resolving it here carries both the server-side proxy target and the
+  # browser-compiled one in one read.
+  #
+  # ONLY ATTEMPTED WHEN A CONSOLE IS ACTUALLY CONFIGURED: a deployment with no console has no
+  # /api/v1 proxy to point anywhere, so there is nothing here worth a gcloud call.
+  #
+  # DEGRADES SILENTLY, ON PURPOSE. The API service may not exist yet - a console can be discovered
+  # before the API tier's first deploy, or this could be a rerun ahead of it - and a name that
+  # does not resolve must never be guessed into a URL. Leaving HEXERA_API_BASE_URL empty here is
+  # exactly what lets validate-config.sh produce its own stated refusal for a console with no API
+  # origin; inventing one would just trade a clear refusal for a broken proxy nobody can explain.
+  if [ -z "${HEXERA_API_BASE_URL:-}" ] && [ -n "${CONSOLE_SERVICE}" ] && [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
+    _API_URL="$(gcloud run services describe "${CLOUDRUN_API_SERVICE}" --region "${REGION}" \
+      --project "${PROJECT_ID}" --format='value(status.url)' 2>/dev/null || true)"
+    if [ -n "${_API_URL}" ]; then
+      HEXERA_API_BASE_URL="${_API_URL}"
+      info "resolved HEXERA_API_BASE_URL=${HEXERA_API_BASE_URL} from Cloud Run ${CLOUDRUN_API_SERVICE}"
+    else
+      info "Cloud Run API service ${CLOUDRUN_API_SERVICE} has no URL yet - the console stage needs HEXERA_API_BASE_URL set before it can proceed"
+    fi
+  fi
+
   return 0
 }
 

@@ -76,6 +76,10 @@ jobs:
       # `hexera-dev-` prefix INSIDE it says the same word twice; the hand-made resources that
       # carried one are what made two conventions look like two systems.
       api_service: ${{ steps.pick.outputs.api_service }}
+      # The console, dev only. PROD IS DELIBERATELY EMPTY - see the reasoning where prod's pick
+      # branch sets it below. An empty output here means create-console-service.sh is never even
+      # asked to run against hexera-prod until a human states a name for it on purpose.
+      console_service: ${{ steps.pick.outputs.console_service }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -126,6 +130,13 @@ jobs:
               # the one users reach: hexera-dev-api was created by hand, ran an image no release
               # record named, and no workflow could roll it forward.
               echo "api_service=dev-api"
+              # The console, PINNED, for the same reason api_service is: `components=console` has
+              # been selectable since Task 11 and dev's manifest and provisioning script have
+              # named `dev-console` since Task 8/12, but nothing before this line ever told the
+              # deploy job to look for it - so the console stage ran on every dev deploy and
+              # stated its own skip. Pinning it here is what makes "a merge to main reconciles the
+              # console" actually true in dev, matching the api_service precedent above.
+              echo "console_service=dev-console"
               # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
               # instances themselves - see the outputs block above.
               echo "cloudsql_instance=dev-pg"
@@ -172,6 +183,18 @@ jobs:
             # blank while hexera-prod had no data tier and the deploy identity could not create
             # one; it can now, so the first release provisions what it names.
             echo "api_service=prod-api"
+            # THE CONSOLE, DELIBERATELY LEFT EMPTY. `components=all` a few lines up means a
+            # release tag reconciles every tier it is TOLD about - and stating console_service
+            # here is exactly what would tell it to reconcile the console, provisioning a new,
+            # billed Cloud Run service in production on the very next tag, unasked. That is the
+            # same class of mistake PR #12's naming slip nearly made below: a name typed into this
+            # file quietly becoming a second, unwanted, paid resource standing next to the real
+            # one - there it would have been a second empty Cloud SQL instance beside the
+            # production database; here it would be a console nobody requested serving from a
+            # project nobody pointed it at. Prod gets no console until a human deliberately pins
+            # a name here, in a reviewed diff, the same gate that governs everything else in this
+            # branch.
+            echo "console_service="
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -360,6 +383,11 @@ jobs:
       # THE PUBLIC SURFACE. Without this the deploy provisioned every tier except the one users
       # reach, and the API service stayed whatever a human last clicked into existence.
       CLOUDRUN_API_SERVICE: ${{ needs.target.outputs.api_service }}
+      # THE CONSOLE, dev only - empty on prod on purpose. See the `console_service` output above
+      # for why: an unpinned name here would let a release tag provision a paid service in
+      # production nobody asked for. Empty means bootstrap-env.sh's CLOUDRUN_CONSOLE_SERVICE stays
+      # empty too, and the console stage states its skip exactly as an API-less deployment's does.
+      CLOUDRUN_CONSOLE_SERVICE: ${{ needs.target.outputs.console_service }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
