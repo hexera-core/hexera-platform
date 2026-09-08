@@ -79,6 +79,7 @@ Every document lives in the folder that owns its subject. Nothing sits loose at 
 |---|---|
 | [deployment/overview.md](deployment/overview.md) | the mesh tier's lifecycle, identities, IAM, health, recovery, submission semantics |
 | [deployment/security-and-privacy.md](deployment/security-and-privacy.md) | isolation, redaction, retention, deletion, capture |
+| [deployment/admin-console-access.md](deployment/admin-console-access.md) | locking the admin console behind IAP: setup, granting and revoking people, proving it is not public |
 
 ### `reference/`: look a fact up
 | Document | Covers |
