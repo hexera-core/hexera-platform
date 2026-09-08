@@ -11,14 +11,15 @@
 # A tag is never resolved here, because a tag can be moved between validation and rollout: only a
 # digest still names the bytes that were validated.
 #
-#   mesh -> MESH_IMAGE      the Cloud Run mesh job
-#   app  -> APP_IMAGE       the API service, and every job that runs application code beside it -
-#                           the pre-deploy migration and the queue-depth publisher. They must be
-#                           the SAME bytes as the API: a schema migrated by one build and read by
-#                           another is the drift this record exists to remove.
+#   mesh    -> MESH_IMAGE    the Cloud Run mesh job
+#   app     -> APP_IMAGE     the API service, and every job that runs application code beside it -
+#                            the pre-deploy migration and the queue-depth publisher. They must be
+#                            the SAME bytes as the API: a schema migrated by one build and read by
+#                            another is the drift this record exists to remove.
+#   console -> CONSOLE_IMAGE the Cloud Run console service
 #
 # INPUTS   deploy/output/release.json, promotable
-# OUTPUT   MESH_IMAGE and APP_IMAGE written into the deployment env file as
+# OUTPUT   MESH_IMAGE, APP_IMAGE, and CONSOLE_IMAGE written into the deployment env file as
 #          registry/component@sha256:... references
 # NETWORK  none
 # MUTATES  the deployment env file only

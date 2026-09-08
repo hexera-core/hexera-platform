@@ -723,8 +723,15 @@ def test_promotion_writes_the_console_image(tmp_path):
     assert f"CONSOLE_IMAGE={REGISTRY}/console@{CONSOLE_DIGEST}" in written
 
 
-def test_promotion_refuses_a_tag_only_console_reference(tmp_path):
-    """Deployment identity is a digest. A movable tag is refused, not resolved."""
+def test_the_release_record_check_refuses_a_tag_only_console_reference(tmp_path):
+    """Deployment identity is a digest. A movable tag is refused, not resolved.
+
+    This is enforced by devtools/release/record.py's `check` command, which promote-release.sh
+    runs first and which generically validates every component's `reference` field - including
+    console - before CONSOLE_REF is ever computed. promote-release.sh's own digest-qualification
+    loop (the `for ref in ... CONSOLE_REF` block mirroring MESH_REF/APP_REF) is unreachable
+    defence-in-depth for this scenario, not what this test is exercising.
+    """
     sha, tree = _head()
     rec = make_record(commit=sha, tree=tree)
     rec["components"]["console"] = {
