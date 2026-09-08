@@ -35,3 +35,13 @@
 
 # Tests run from the repo (unit) or a bind mount (integration), never baked in.
 tests/
+
+# Node workspace artefacts (the console build). The console stage COPYs apps/console/ AFTER its
+# own `pnpm install --frozen-lockfile`, so an unignored host node_modules - a pnpm symlink farm
+# that does not resolve the same way inside the image - would land on top of that freshly
+# filtered install, and a stale .next would ride along with it. Measured on a developer machine:
+# apps/console/.next ~99M, root node_modules ~467M. Invisible on a fresh CI checkout, poisonous
+# locally. **/ so every workspace (root, apps/*, packages/*) is covered, not just the console's.
+**/node_modules/
+**/.next/
+**/.turbo/
