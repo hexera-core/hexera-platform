@@ -93,6 +93,24 @@ if [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
     || add "CLOUDRUN_API_SERVICE is set but VPC_NETWORK/VPC_SUBNET are not - the service could not reach the private data tier"
 fi
 
+# THE CONSOLE. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console and
+# the stage is skipped, so nothing below applies. A console that IS declared must be able to reach
+# the API and to resolve its two credentials, because both failures present only at runtime: an
+# unreachable API is a console that renders and then 503s, and a missing AUTH_SECRET is a revision
+# that never becomes ready.
+if [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
+  [ -n "${HEXERA_API_BASE_URL:-}" ] \
+    || add "CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not - the console's /api/v1 proxy would have no origin to forward to"
+  [ -n "${AUTH_SECRET_SECRET:-}" ] \
+    || add "the console is configured but AUTH_SECRET_SECRET names no Secret Manager container - Auth.js refuses to start without a secret"
+  [ -n "${CONSOLE_AUTH_USERS_SECRET:-}" ] \
+    || add "the console is configured but CONSOLE_AUTH_USERS_SECRET names no Secret Manager container - nobody could sign in"
+  if [[ "${CONSOLE_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${CONSOLE_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
+    [ "${CONSOLE_MIN_INSTANCES}" -le "${CONSOLE_MAX_INSTANCES}" ] \
+      || add "CONSOLE_MIN_INSTANCES (${CONSOLE_MIN_INSTANCES}) exceeds CONSOLE_MAX_INSTANCES (${CONSOLE_MAX_INSTANCES})"
+  fi
+fi
+
 # THE OBJECT STORE. The access key is the PUBLIC half; its secret is a container name. Both or
 # neither - a half-configured store fails at the first upload rather than here.
 if [ -n "${MINIO_ACCESS_KEY:-}" ] || [ -n "${MINIO_BUCKET:-}" ]; then
