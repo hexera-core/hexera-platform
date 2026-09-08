@@ -88,11 +88,18 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     if min_ext <= 0 or float(h) <= 0:
         return True, ""
     cells_across = min_ext / float(h)
-    # prefer the driver's own count when present (it knows the meshed extent exactly)
+    # prefer the driver's own count when present (it knows the meshed extent exactly, and
+    # whether the limiting width is the box or a declared port the flow must cross)
     cells_across = float(q.get("cells_across_min", cells_across))
+    basis = str(q.get("min_extent_basis", "bbox"))
+    if basis.startswith("port:"):
+        min_ext = float(q.get("min_extent", min_ext))
+        what = f"the flow width of its declared port {basis[5:]}"
+    else:
+        what = "the part's narrowest dimension"
     if cells_across < RESOLUTION_FLOOR_CELLS:
         return False, (
-            f"[RESOLUTION] the mesh spans the part's narrowest dimension "
+            f"[RESOLUTION] the mesh spans {what} "
             f"({min_ext * 1000:.1f} mm) in only ~{cells_across:.1f} elements "
             f"(element size {float(h) * 1000:.1f} mm) - below the "
             f"{RESOLUTION_FLOOR_CELLS}-cell floor, so the flow cross-section is "

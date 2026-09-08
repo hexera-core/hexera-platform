@@ -31,6 +31,60 @@ def narrowest_extent(ext, diag: float, *, planar: bool = False) -> float:
         real = real[1:]
     return real[0] if real else diag
 
+
+def _num(v) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
+def port_flow_width_mm(port: dict) -> float | None:
+    """The width the flow crosses at one declared port, in mm: a bore's diameter, a
+    rectangle's shorter side, an annulus's radial gap, an area's equivalent diameter."""
+    d, inner, outer = _num(port.get("diameter_mm")), _num(port.get("inner_diameter_mm")), \
+        _num(port.get("outer_diameter_mm"))
+    if inner is not None:
+        # an annular port: the flow crosses the radial gap. The bore is outer_diameter_mm, or
+        # diameter_mm when that is the larger number; a diameter_mm BELOW the centre body is
+        # the gap itself (the intake files it that way - see port_binding._bore_mm)
+        bore = outer if outer is not None and outer > inner else (d if d is not None and d > inner else None)
+        if bore is not None:
+            return (bore - inner) / 2.0
+        if d is not None:
+            return d
+    if d is not None:
+        return d
+    w, h = _num(port.get("width_mm")), _num(port.get("height_mm"))
+    if w is not None and h is not None:
+        return min(w, h)
+    a = _num(port.get("area_mm2"))
+    if a is not None:
+        return 2.0 * (a / 3.141592653589793) ** 0.5
+    return None
+
+
+def smallest_port_extent(ports) -> tuple[float, str] | None:
+    """(metres, port name) of the narrowest declared flow port, or None without one."""
+    best = None
+    for p in ports or []:
+        if not isinstance(p, dict) or str(p.get("type", "")) not in ("inlet", "outlet"):
+            continue
+        w = port_flow_width_mm(p)
+        if w is not None and (best is None or w < best[0]):
+            best = (w, str(p.get("name", "port")))
+    return (best[0] / 1000.0, best[1]) if best else None
+
+
+def resolution_extent(ext, diag: float, *, planar: bool = False, ports=None) -> tuple[float, str]:
+    """The extent the resolution clamp puts cells across, and what it is: the narrowest real
+    bbox dimension, or the smallest declared port when the flow crosses something narrower
+    than the box. A volute's box is wide every way; its outlet bore is what the flow must
+    cross, and eight cells across the box left a 21 mm element on a part whose bore is a
+    few times that (volute_scroll_005: 9,293 cells, 83.6 degrees non-orthogonality)."""
+    box = narrowest_extent(ext, diag, planar=planar)
+    port = smallest_port_extent(ports)
+    if port is not None and port[0] < box:
+        return port[0], f"port:{port[1]}"
+    return box, "bbox"
+
 # VALIDATED JSON SCRATCH. The model may author a rich gmsh_spec.json, but the driver
 # is the authority on what it supports - it REJECTS unknown/misspelled keys and
 # malformed values instead of silently dropping them (which would run to completion
@@ -290,11 +344,19 @@ def main(workspace: str) -> int:
         # factor gives. Only ever tightens h; never coarsens an already-fine request.
         ext = [xmax - xmin, ymax - ymin, zmax - zmin]
         _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
-        min_ext = narrowest_extent(ext, diag, planar=_is2d)
+        # the ports the intake declared (neutral workspace file); absent on an FEA part
+        _ports = []
+        try:
+            _ports = json.loads((ws / "port_declaration.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        min_ext, _basis = resolution_extent(ext, diag, planar=_is2d, ports=_ports)
         h = min(h_req, min_ext / MIN_CELLS_ACROSS)
         if h < h_req:
+            _what = (f"the {min_ext:.4g} m narrow dimension" if _basis == "bbox"
+                     else f"the {min_ext:.4g} m flow width of {_basis[5:]}")
             print(f"[GMSH] resolution clamp: element size {h_req:.4g} m would put only "
-                  f"{min_ext / h_req:.1f} cells across the {min_ext:.4g} m narrow dimension; "
+                  f"{min_ext / h_req:.1f} cells across {_what}; "
                   f"tightened to {h:.4g} m ({MIN_CELLS_ACROSS} across).", file=sys.stderr)
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
         gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
@@ -302,6 +364,7 @@ def main(workspace: str) -> int:
                               int(spec.get("curvature_nodes", 24)))
         _resolution = {"size_h_requested": round(h_req, 8),
                        "min_extent": round(min_ext, 8),
+                       "min_extent_basis": _basis,
                        "cells_across_min": round(min_ext / h, 3) if h > 0 else 0.0}
 
         if _is2d:
