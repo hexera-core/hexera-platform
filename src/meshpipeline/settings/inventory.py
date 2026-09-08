@@ -454,7 +454,7 @@ INVENTORY: list[Group] = [
     ]),
 
     Group("Advanced: per-role budgets", note="INTERNAL. Child budgets are each capped at the pipeline's remaining time; raising one cannot exceed PIPELINE_TOTAL_TIMEOUT_SECONDS.", vars=[
-        EnvVar("BUILDER_TOTAL_TIMEOUT_SECONDS", "10800", kind="int", exposure="internal"),
+        EnvVar("BUILDER_TOTAL_TIMEOUT_SECONDS", "9000", kind="int", exposure="internal"),
         EnvVar("BUILDER_AUTO_SUBMIT_AFTER", "2", kind="int", exposure="internal"),
         EnvVar("BUILDER_NULL_CHOICES_SLEEP", "15", kind="int", exposure="internal"),
         EnvVar("REVIEWER_TOTAL_TIMEOUT_SECONDS", "1800", kind="int", exposure="internal"),

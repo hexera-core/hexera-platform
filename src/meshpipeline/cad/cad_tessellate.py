@@ -951,12 +951,16 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         candidates.append(tuple(c[k] - step * n[k] for k in range(3)))
         candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
     # RING PORTS. The centroid of an annular port face is the centre of the hole it rims - for a
-    # blade-row passage that is the hub bore, which is not fluid, and for a wall shell's flanged
-    # end it is the bore. So every ring port also offers points ON the ring: mid-radius, four
-    # in-plane directions, nudged inward along the port normal. Blade-row passages 001/003/005
-    # (jobs 9bf37dd8, f69eb843, db9e64e1) were "delivered" as a mesh of the hub bore - the port
-    # caps sealed the bore at both ends, the seed sat inside it, and snappyHexMesh kept it.
-    for pi in (inlet_i, *outlet_ids):
+    # blade-row passage that is the hub bore, which is not fluid. So every ring port also offers
+    # points ON the ring: mid-radius, four in-plane directions, nudged inward along the port
+    # normal. Blade-row passages 001/003/005 (jobs 9bf37dd8, f69eb843, db9e64e1) were
+    # "delivered" as a mesh of the hub bore - the port caps sealed the bore at both ends, the
+    # seed sat inside it, and snappyHexMesh kept it. NOT for a solid declared a body
+    # (fluid_solid is False, which is what the driver passes for every non-fluid input): a metal
+    # tube's end face is an annulus too, and there the ring IS the wall - a point on it would
+    # seed the metal, not the bore. That case is the hollow-wall fallback's, below. Undeclared
+    # keeps the primary semantics: the solid is the fluid.
+    for pi in ((inlet_i, *outlet_ids) if fluid_solid is not False else ()):
         f = faces[pi]
         prof = _inner_opening(f)
         if prof is None:

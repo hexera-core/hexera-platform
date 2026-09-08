@@ -6,7 +6,6 @@ import json
 
 import pytest
 from conftest import assert_clean
-
 from tests.foam_fixtures import ROW_SHEAR, ROW_SHEAR_NON_ORTHO_DEG, write_row_of_hexes
 
 pytestmark = pytest.mark.ui

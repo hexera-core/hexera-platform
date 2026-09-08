@@ -7,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
-from meshpipeline.render import vtk_export as VX
 from tests.foam_fixtures import ROW_SHEAR as SHEAR
 from tests.foam_fixtures import ROW_SHEAR_NON_ORTHO_DEG as EXPECTED_DEG
 from tests.foam_fixtures import write_row_of_hexes
+
+from meshpipeline.render import vtk_export as VX
 
 ROOT = Path(__file__).parents[3]
 ROLES = {"wall": "wall", "inlet": "inlet", "outlet": "outlet"}

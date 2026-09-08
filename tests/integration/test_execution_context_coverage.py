@@ -265,7 +265,6 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
     # replay uses. The backoff is zeroed for certification only - the wait is policy, not what
     # this scenario proves.
     import meshpipeline.agents.builder.settings as _bcfg
-
     from meshpipeline.pipeline.graph import node_infra_retry
 
     mp.setattr(_bcfg, "BUILDER_INFRA_RETRY_BACKOFF_S", 0, raising=True)

@@ -74,7 +74,10 @@ def _classify(shape, p):
 def test_hollow_tube_gets_a_channel_point_not_a_metal_point(tmp_path):
     step = tmp_path / "tube.step"
     tube = _make_hollow_tube(step)
-    out = tessellate_internal(step, tmp_path / "stls", prepared=_prepared())
+    # declared a body, as the driver declares every non-fluid input (fluid_solid = input_kind ==
+    # 'fluid-domain'): the tube's annular end faces are metal, so the ring-port seeds a declared
+    # fluid annulus gets must not be offered here
+    out = tessellate_internal(step, tmp_path / "stls", prepared=_prepared(), fluid_solid=False)
     p = out["interior_point"]
     # the found point must be in the CHANNEL: near the axis, inside the bore radius, and
     # NOT inside the metal (the tessellation ran in metres - the STEP mm scale over 1000)

@@ -3356,6 +3356,19 @@
   "roots": []
  },
  {
+  "context": "render/face_quality.py::declared_count::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/face_quality.py",
+  "qualname": "declared_count",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "runtime/observability/sentry.py::setup_sentry::error#1|NotAPublisher|not-a-publisher|",
   "path": "runtime/observability/sentry.py",
   "qualname": "setup_sentry",

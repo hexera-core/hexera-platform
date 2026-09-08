@@ -6,8 +6,7 @@ import base64
 import json
 
 import numpy as np
-
-from tests.unit.api.test_viewer_endpoints import _PAYLOAD, JOB, _Store, _client
+from tests.unit.api.test_viewer_endpoints import _PAYLOAD, JOB, _client, _Store
 
 
 def _polymesh_payload() -> dict:

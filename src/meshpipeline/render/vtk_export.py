@@ -36,7 +36,7 @@ def surface_to_vtk(surface: dict) -> bytes:
     poly_parts: list[np.ndarray] = []
     pid_parts: list[np.ndarray] = []
     field_parts: dict[str, list[np.ndarray]] = {f: [] for f in FIELDS}
-    have: dict[str, bool] = {f: False for f in FIELDS}
+    have: dict[str, bool] = dict.fromkeys(FIELDS, False)
     n_points = 0
     n_polys = 0
     for i, p in enumerate(patches):

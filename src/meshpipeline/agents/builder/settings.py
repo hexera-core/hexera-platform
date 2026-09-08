@@ -32,7 +32,10 @@ BUILDER_LOOP_TIMEOUT: int     = int(optional_env("BUILDER_LOOP_TIMEOUT",     "36
 # logical pipeline run. Set once on the first attempt (into pipeline state) and never reset by a
 # retry, so the sum of attempts cannot exceed it; every model / run_mesh / run_python call inside an
 # attempt is capped at the REMAINING budget. Finite, documented default (< the naive 5×per-attempt).
-BUILDER_TOTAL_TIMEOUT_SECONDS: int = int(optional_env("BUILDER_TOTAL_TIMEOUT_SECONDS", "10800"))
+# Below the naive worst case (BUILDER_MAX_TOTAL_ATTEMPTS x BUILDER_LOOP_TIMEOUT = 3 x 3600 s)
+# by design: the budget bounds it, it does not restate it. 9000 s held the exam's longest
+# builder (shell_tube_bundle_009: two full cloud runs, two uncollected results, 2 h 15 min).
+BUILDER_TOTAL_TIMEOUT_SECONDS: int = int(optional_env("BUILDER_TOTAL_TIMEOUT_SECONDS", "9000"))
 if BUILDER_TOTAL_TIMEOUT_SECONDS <= 0:
     raise ConfigurationError(
         f"BUILDER_TOTAL_TIMEOUT_SECONDS must be a positive number of seconds, got {BUILDER_TOTAL_TIMEOUT_SECONDS}")

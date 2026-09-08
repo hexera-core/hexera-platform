@@ -134,7 +134,6 @@ def _assemble_pinned_laplacian(owner, neigh, n_cells: int):
 
 
 def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict) -> tuple[bool, str]:
-    import scipy.sparse as sp
 
     if n_cells < 2:
         return True, ""  # trivial mesh; nothing to solve

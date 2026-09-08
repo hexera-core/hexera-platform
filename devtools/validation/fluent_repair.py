@@ -202,7 +202,7 @@ def repair(path: Path, out: Path, check_only: bool, overrides: dict,
 
     # decide types
     newtype = {}
-    for zid, (kind, typ, name) in zones39.items():
+    for zid, (_kind, typ, name) in zones39.items():
         if typ in ("fluid", "interior"):
             continue
         want = infer_type(name, overrides)

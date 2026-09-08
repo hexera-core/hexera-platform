@@ -794,7 +794,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     seed_r = 16.0 * wall_cell_actual
     geom = ("".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
                     for p in names)
-            + f"seedZone {{ type searchableSphere; centre {'(%.6g %.6g %.6g)' % tuple(interior_point)}; "
+            + f"seedZone {{ type searchableSphere; centre ({' '.join(f'{v:.6g}' for v in interior_point)}); "
               f"radius {seed_r:.6g}; }} ")
     # THIN FEATURES. A plate thinner than the wall cell is never captured by castellation
     # (the orifice class: a 3 mm disc inside a 106 mm pipe). Refining globally to reach it

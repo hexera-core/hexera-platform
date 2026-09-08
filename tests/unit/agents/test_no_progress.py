@@ -59,8 +59,9 @@ class TestTheLadderHaltsOnIdenticalFailures:
         # so this returned None on every executor failure and the stop never fired. Build the
         # classifier_result the way pipeline/classifier.py actually does and require a
         # signature. Pinning the real key stops the reader/writer contract from drifting again.
-        from meshpipeline.pipeline import classifier as C
         import inspect
+
+        from meshpipeline.pipeline import classifier as C
         src = inspect.getsource(C)
         assert '"failed_gate"' in src and '"gate":' not in src, (
             "the classifier's gate key changed - update no_progress.failure_signature to match")
