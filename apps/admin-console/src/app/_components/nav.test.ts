@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ADMIN_SECTIONS } from "./nav.ts";
+import { ADMIN_SECTIONS } from "./sections";
 
 test("the shell offers the five admin sections in a fixed order", () => {
   assert.deepEqual(

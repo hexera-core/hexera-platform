@@ -1,4 +1,4 @@
-import { ADMIN_SECTIONS } from "./nav.ts";
+import { ADMIN_SECTIONS } from "./sections";
 
 export function AdminNav({ current }: { current: string }) {
   return (
