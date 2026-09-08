@@ -483,3 +483,46 @@ RUN curl -fsSLo /tmp/chrome.deb \
     && rm -f /tmp/chrome.deb && rm -rf /var/lib/apt/lists/* \
     && google-chrome --version
 USER USER_A
+
+
+# ---------------------------------------------------------------------------
+# THE CONSOLE. The Next.js browser front door, and the only Node image this repository builds.
+# It shares no layer with the stages above: those are a Python distribution and a native mesh
+# toolchain, and stacking a Node runtime on either would carry gigabytes this workload never runs.
+FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console-build
+WORKDIR /build
+ENV CI=1
+# The workspace pins its package manager in package.json; corepack honours that pin.
+RUN corepack enable
+# The manifests first, so a dependency-only change is the only thing that re-resolves the store.
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
+COPY packages/ ./packages/
+COPY apps/console/package.json ./apps/console/
+RUN pnpm install --frozen-lockfile --filter @hexera/console...
+COPY apps/console/ ./apps/console/
+RUN pnpm --filter @hexera/console build
+
+FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console
+ARG APP_VERSION
+LABEL org.opencontainers.image.title="Hexera Console" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.description="The Hexera browser console" \
+      org.opencontainers.image.licenses="LicenseRef-Proprietary"
+WORKDIR /srv
+# HOSTNAME is load-bearing: Next's standalone server binds localhost without it, so on Cloud Run
+# the container would start, answer nothing, and the revision would never become ready.
+ENV NODE_ENV=production \
+    PORT=8080 \
+    HOSTNAME=0.0.0.0
+# The standalone tree carries its own trimmed node_modules; static and public are not traced into
+# it and are copied beside the server that serves them.
+COPY --from=console-build /build/apps/console/.next/standalone/ ./
+COPY --from=console-build /build/apps/console/.next/static/ ./apps/console/.next/static/
+COPY --from=console-build /build/apps/console/public/ ./apps/console/public/
+# node:24-slim already ships a "node" user at uid 1000 (see /etc/passwd in the base image);
+# creating a new "console" user at the same uid fails with "UID 1000 is not unique", so the
+# existing account is reused here rather than invented.
+RUN chown -R node:node /srv
+USER node
+EXPOSE 8080
+CMD ["node", "apps/console/server.js"]
