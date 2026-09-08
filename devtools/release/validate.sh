@@ -23,9 +23,10 @@
 #     Redis and MinIO, health-checks them, runs the tier, and removes them from a trap. It cannot
 #     be skipped into a PASS.
 #
-# COMPONENTS. Two images are deployable, each a Dockerfile target:
-#     app  = Dockerfile target `pipeline`  - serves BOTH the API service and the pipeline job
-#     mesh = Dockerfile target `mesh`      - the off-box mesh job
+# COMPONENTS. Three images are deployable, each a Dockerfile target:
+#     app     = Dockerfile target `pipeline`  - serves BOTH the API service and the pipeline job
+#     mesh    = Dockerfile target `mesh`      - the off-box mesh job
+#     console = Dockerfile target `console`   - the console-service web app
 # `app` is validated with BOTH entrypoints because both run from that one image in production.
 # (Gate C used to build a separate `api`-target image and validate that; nothing ever deployed it.)
 #
@@ -253,9 +254,9 @@ else record "import provenance (site-packages, not the checkout)" failed 1 "${PR
 
 # the deployable images
 stage "images: build each DEPLOYABLE component exactly once"
-declare -A TARGET=( [app]=pipeline [mesh]=mesh )
+declare -A TARGET=( [app]=pipeline [mesh]=mesh [console]=console )
 declare -A IMAGE_ID=() IMAGE_TAG=()
-for comp in app mesh; do
+for comp in app mesh console; do
   tag="meshpipeline-${comp}:${SHORT}"
   IMAGE_TAG["${comp}"]="${tag}"
   # Built unconditionally, from this repository alone - the mesh target builds its own pinned
@@ -317,6 +318,33 @@ print(meshpipeline.__version__, p.parent)" 2>&1)"; then
   else record "in-image package is the INSTALLED distribution" failed 1 "${VER}"; fi
 else
   record "mesh image checks" not_run 1 "no mesh image was built"
+fi
+if [ -n "${IMAGE_ID[console]}" ]; then
+  # An image that builds and cannot serve is a green gate and a broken deploy. The container is
+  # started on a published port with the two settings Auth.js requires at boot; the values are
+  # deliberately not credentials - nothing here authenticates anyone.
+  _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
+            -e AUTH_SECRET=gate-c-not-a-real-secret -e CONSOLE_AUTH_USERS='[]' \
+            "${IMAGE_TAG[console]}" 2>/dev/null || true)"
+  if [ -n "${_cid}" ]; then
+    _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+    _ok=1
+    for _try in 1 2 3 4 5 6 7 8 9 10; do
+      curl -fsS "http://127.0.0.1:${_port}/api/internal/health" >/dev/null 2>&1 && { _ok=0; break; }
+      sleep 2
+    done
+    docker rm -f -v "${_cid}" >/dev/null 2>&1 || true
+    if [ "${_ok}" = "0" ]; then
+      record "console image: serves its health route" passed 1
+    else
+      record "console image: serves its health route" failed 1 \
+        "the container started but never answered /api/internal/health"
+    fi
+  else
+    record "console image: serves its health route" failed 1 "the container did not start"
+  fi
+else
+  record "console image: serves its health route" not_run 1 "no console image was built"
 fi
 
 # 3b. the UI, in a real browser
@@ -735,14 +763,17 @@ fi
 mkdir -p "${OUT_DIR}"
 REC="${OUT_DIR}/release.json"
 COMPONENTS="$(python3 - "${TARGET[app]}" "${IMAGE_TAG[app]:-}" "${IMAGE_ID[app]:-}" \
-                        "${TARGET[mesh]}" "${IMAGE_TAG[mesh]:-}" "${IMAGE_ID[mesh]:-}" <<'PY'
+                        "${TARGET[mesh]}" "${IMAGE_TAG[mesh]:-}" "${IMAGE_ID[mesh]:-}" \
+                        "${TARGET[console]}" "${IMAGE_TAG[console]:-}" "${IMAGE_ID[console]:-}" <<'PY'
 import json, sys
-at, atag, aid, mt, mtag, mid = sys.argv[1:7]
+at, atag, aid, mt, mtag, mid, ct, ctag, cid = sys.argv[1:10]
 print(json.dumps({
-  "app":  {"dockerfile_target": at, "local_tag": atag, "local_image_id": aid,
-           "workloads": ["api-service", "pipeline-job"]},
-  "mesh": {"dockerfile_target": mt, "local_tag": mtag, "local_image_id": mid,
-           "workloads": ["mesh-job"]},
+  "app":     {"dockerfile_target": at, "local_tag": atag, "local_image_id": aid,
+              "workloads": ["api-service", "pipeline-job"]},
+  "mesh":    {"dockerfile_target": mt, "local_tag": mtag, "local_image_id": mid,
+              "workloads": ["mesh-job"]},
+  "console": {"dockerfile_target": ct, "local_tag": ctag, "local_image_id": cid,
+              "workloads": ["console-service"]},
 }))
 PY
 )"
