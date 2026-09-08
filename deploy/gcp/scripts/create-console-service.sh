@@ -65,23 +65,11 @@ CONSOLE_DISPOSITION=created
 info "Console service ${CONSOLE_SERVICE} in ${GCP_REGION} (${GCP_PROJECT_ID})"
 log "image (validated digest): ${CONSOLE_IMAGE}"
 
-# 1) the console runtime identity - a named account, not the default compute service account.
-if sa_exists "${CONSOLE_SA_EMAIL}"; then
-  log "console identity ${CONSOLE_SA_EMAIL} (exists)"
-else
-  info "Creating console runtime identity ${CONSOLE_SA_EMAIL}"
-  gc iam service-accounts create "${CONSOLE_SA}" \
-    --display-name "Hexera console service" \
-    || die "could not create ${CONSOLE_SA_EMAIL}. Creating identities needs
-   iam.serviceAccountAdmin, which a DEPLOY identity is deliberately not given. Create it once, as
-   an owner:
-     gcloud iam service-accounts create ${CONSOLE_SA} --project ${GCP_PROJECT_ID} \\
-       --display-name 'Hexera console service'"
-fi
-
-# 2) THE CREDENTIALS, as references. `RUNTIME_VAR:ENV_VAR_HOLDING_THE_SECRET_NAME` - the same shape
+# 0) THE CREDENTIALS, as references. `RUNTIME_VAR:ENV_VAR_HOLDING_THE_SECRET_NAME` - the same shape
 #    the API tier and the worker startup script read theirs from. An unset name is skipped, never
-#    bound to an empty secret.
+#    bound to an empty secret. Built here, before step 1, purely by reading env vars already
+#    loaded - nothing below this point mutates anything, so it is safe to resolve ahead of the
+#    refusal that follows.
 SECRET_BINDINGS=()
 SECRET_NAMES=()
 DECLARED_ENV_NAMES=()
@@ -98,6 +86,53 @@ for pair in "AUTH_SECRET:AUTH_SECRET_SECRET" \
   DECLARED_ENV_NAMES+=("${runtime_var}")
 done
 
+# 0.5) REFUSE A KNOWN-ABSENT CONTAINER BEFORE ANY MUTATION. bootstrap-env.sh declares these
+#      container names and create-secrets.sh is the OWNER-run script that creates them - it is not
+#      a deploy.sh stage, so nothing in an ordinary deploy ever creates them. Left as a warning,
+#      this stage would still pass --set-secrets a container Cloud Run refuses to bind, and the
+#      rollout below fails after the identity and its IAM already exist. Refusing here - before
+#      step 1 creates the service account or binds any IAM - is the same "refuse before mutating"
+#      discipline create-secrets.sh already applies to its own required-and-missing case.
+#
+#      ONLY a CONFIRMED absence stops the deploy (secret_confirmed_absent, not secret_exists): a
+#      failed read is also what this identity lacking secretmanager.viewer looks like, and that
+#      ambiguity must not be read as proof the container is missing - it stays a warning, in the
+#      loop below, exactly as today.
+ABSENT_SECRETS=()
+for secret_name in ${SECRET_NAMES[@]+"${SECRET_NAMES[@]}"}; do
+  secret_confirmed_absent "${secret_name}" && ABSENT_SECRETS+=("${secret_name}")
+done
+if [ ${#ABSENT_SECRETS[@]} -gt 0 ]; then
+  MSG="the console references ${#ABSENT_SECRETS[@]} secret container(s) confirmed absent in ${GCP_PROJECT_ID}:"
+  for secret_name in "${ABSENT_SECRETS[@]}"; do MSG="${MSG}
+     ${secret_name}"; done
+  MSG="${MSG}
+   create-secrets.sh declares them but is owner-run, not a deploy.sh stage, so nothing in a deploy
+   creates them. Create each once, as an owner, then add a version (read from stdin, never a
+   command-line argument):"
+  for secret_name in "${ABSENT_SECRETS[@]}"; do
+    MSG="${MSG}
+     gcloud secrets create ${secret_name} --project ${GCP_PROJECT_ID} --replication-policy=automatic
+     gcloud secrets versions add ${secret_name} --project ${GCP_PROJECT_ID} --data-file=-"
+  done
+  die "${MSG}"
+fi
+
+# 1) the console runtime identity - a named account, not the default compute service account.
+if sa_exists "${CONSOLE_SA_EMAIL}"; then
+  log "console identity ${CONSOLE_SA_EMAIL} (exists)"
+else
+  info "Creating console runtime identity ${CONSOLE_SA_EMAIL}"
+  gc iam service-accounts create "${CONSOLE_SA}" \
+    --display-name "Hexera console service" \
+    || die "could not create ${CONSOLE_SA_EMAIL}. Creating identities needs
+   iam.serviceAccountAdmin, which a DEPLOY identity is deliberately not given. Create it once, as
+   an owner:
+     gcloud iam service-accounts create ${CONSOLE_SA} --project ${GCP_PROJECT_ID} \\
+       --display-name 'Hexera console service'"
+fi
+
+# 2) THE CREDENTIALS' IAM: grant each secret to the console identity now that it exists.
 for secret_name in ${SECRET_NAMES[@]+"${SECRET_NAMES[@]}"}; do
   secret_exists "${secret_name}" \
     || warn "cannot confirm secret '${secret_name}' exists in ${GCP_PROJECT_ID} - it may be absent,

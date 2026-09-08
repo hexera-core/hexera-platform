@@ -23,7 +23,24 @@ STATE="${FAKE_GCP_STATE:?}"; mkdir -p "${STATE}"
 ARGS="$*"; printf '%s\n' "${ARGS}" >> "${STATE}/calls.log"
 has(){ case "$ARGS" in *"$1"*) return 0;; *) return 1;; esac; }
 if has "iam service-accounts describe"; then exit 1; fi
-if has "secrets describe"; then exit 0; fi
+if has "secrets describe"; then
+  # ARGS ends "... secrets describe <name>". FAKE_SECRETS_ABSENT names containers Secret
+  # Manager AFFIRMATIVELY reports missing (NOT_FOUND); FAKE_SECRETS_DENIED names ones this
+  # identity cannot read (PERMISSION_DENIED) - an inconclusive failure, not proof of absence.
+  # Both are comma-separated; anything else "exists" (exit 0), matching the prior fake's default.
+  name="${ARGS##* }"
+  case ",${FAKE_SECRETS_ABSENT:-}," in
+    *",${name},"*)
+      echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [${name}] not found." >&2
+      exit 1 ;;
+  esac
+  case ",${FAKE_SECRETS_DENIED:-}," in
+    *",${name},"*)
+      echo "ERROR: (gcloud.secrets.describe) PERMISSION_DENIED: caller lacks secretmanager.versions.access" >&2
+      exit 1 ;;
+  esac
+  exit 0
+fi
 if has "run services describe"; then
   if has "containers[0].image"; then printf '%s\n' "${FAKE_LIVE_IMAGE:-}"; exit 0; fi
   if has "containers[0].env";   then printf '%s\n' "${FAKE_LIVE_ENV_NAMES:-}"; exit 0; fi
@@ -203,3 +220,33 @@ def test_the_public_binding_is_genuinely_removed(run):
     assert done.returncode == 0, done.stderr
     assert "remove-iam-policy-binding" in calls
     assert "allUsers" in calls.split("remove-iam-policy-binding")[-1]
+
+
+# ---------------------------------------------------------------------------
+# C1: a declared-but-absent secret container must refuse the deploy BEFORE any mutation, and
+# that refusal must be limited to a CONFIRMED absence - an unreadable Secret Manager (this
+# identity may simply lack secretmanager.viewer) stays a warning, exactly as before.
+# ---------------------------------------------------------------------------
+
+def test_a_confirmed_absent_secret_container_refuses_before_any_mutation(run):
+    done, calls = run(fake={"FAKE_SECRETS_ABSENT": "console-auth-secret"})
+    assert done.returncode != 0
+    combined = done.stdout + done.stderr
+    assert "console-auth-secret" in combined
+    # The two remedies an owner needs, verbatim.
+    assert "gcloud secrets create console-auth-secret" in combined
+    assert "gcloud secrets versions add console-auth-secret" in combined
+    # NOTHING was mutated: not the service account, not IAM, not the rollout.
+    assert "run deploy" not in calls
+    assert "iam service-accounts create" not in calls
+    assert "add-iam-policy-binding" not in calls
+
+
+def test_an_unreadable_secret_manager_is_a_warning_and_the_deploy_proceeds(run):
+    done, calls = run(fake={"FAKE_SECRETS_DENIED": "console-auth-secret"})
+    assert done.returncode == 0, done.stderr
+    combined = done.stdout + done.stderr
+    assert "cannot confirm secret 'console-auth-secret'" in combined
+    # Unlike the confirmed-absent case, this is not proof of absence - the deploy proceeds.
+    assert "run deploy" in calls
+    assert "iam service-accounts create" in calls
