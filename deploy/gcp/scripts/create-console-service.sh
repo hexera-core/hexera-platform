@@ -117,11 +117,18 @@ for secret_name in ${SECRET_NAMES[@]+"${SECRET_NAMES[@]}"}; do
 done
 
 # 3) THE NON-SECRET SETTINGS.
-#    NEXT_PUBLIC_HEXERA_API_BASE_URL is compiled into the browser bundle at BUILD time by Next, so
-#    setting it here changes nothing the browser already downloaded. It is stated anyway because a
-#    server component may read it, and because a spec that does not name the API this console
-#    talks to is not reviewable. When the two origins must differ per environment, the value has
-#    to be a build argument to the image - recorded in the deployment doc as a known limit.
+#    NEXT_PUBLIC_HEXERA_API_BASE_URL is load-bearing here and DOES take effect: its only consumer
+#    is a server component that injects it into the page as it renders, and the console image
+#    passes no NEXT_PUBLIC_* build argument, so nothing was inlined and the SSR bundle still reads
+#    process.env at request time. The browser's WebSocket dials this origin directly - it does not
+#    pass through this service's proxy - so a wrong value here is a console that renders correctly
+#    and never streams.
+#
+#    DO NOT supply this as a Docker build argument to "fix" it per environment. NEXT_PUBLIC_ is
+#    precisely the prefix Next inlines at build time when a value is present then; supplying one
+#    would freeze it at whichever origin the image was built against, silently, and promote that
+#    same frozen value to every environment. The durable fix is to stop using the NEXT_PUBLIC_
+#    prefix for a value no client code reads.
 CONSOLE_ENV_PAIRS=(
   "ENV=${APP_ENV}"
   "DEPLOYMENT_ID=${DEPLOYMENT_ID}"

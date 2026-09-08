@@ -106,10 +106,20 @@ errors until the API catches up.
 
 **Two known limits, stated rather than fixed here:**
 
-- `NEXT_PUBLIC_HEXERA_API_BASE_URL` is compiled into the browser bundle at image **build** time by
-  Next. Setting it on the deployed Cloud Run service changes nothing a browser has already
-  downloaded. A public API origin that differs per environment needs this as a **build argument**
-  to the console image, not a deploy-time setting.
+- `NEXT_PUBLIC_HEXERA_API_BASE_URL` **does** take effect at deploy time today, but only by
+  accident, and the obvious "fix" would break it. Read on 2026-09-08: the `console` Dockerfile
+  target passes no `NEXT_PUBLIC_*` build argument, so there is nothing for Next to inline; the
+  built SSR chunk still reads `process.env.NEXT_PUBLIC_HEXERA_API_BASE_URL` at request time, no
+  literal origin appears in the server or client bundles, and the only consumer
+  (`apps/console/src/app/(console)/page.tsx`) is a server component that injects the value into the
+  page as it renders. So the Cloud Run setting wins.
+
+  The trap: `NEXT_PUBLIC_*` is the prefix Next inlines at build time whenever a value IS present
+  then. Supplying this one as a build argument — which is what a reader would reasonably do to make
+  it "properly" per-environment — is exactly what would freeze it, silently, at whichever origin
+  the image was built against. The realtime WebSocket dials this origin directly, so the symptom
+  would be a console that renders fine and never streams. The durable fix is to stop using the
+  `NEXT_PUBLIC_` prefix for a value no client code reads.
 - The console runs on the generated `run.app` URL with no `AUTH_URL` set, because
   `apps/console/src/auth.ts` sets `trustHost: true` — Auth.js derives its callback URL from the
   request host instead of requiring one to be configured per environment.
