@@ -39,6 +39,16 @@ def test_the_console_names_secret_containers_never_values():
 
 def test_an_absent_console_service_is_a_supported_arrangement():
     text = BOOTSTRAP.read_text(encoding="utf-8")
-    assert "CLOUDRUN_CONSOLE_SERVICE=${CLOUDRUN_CONSOLE_SERVICE:-" in text, (
-        "the console service name must be overridable and may be empty - a deployment that "
-        "serves no console skips the stage, exactly as an API-less one does")
+    # discover() derives the console service name from CLOUDRUN_CONSOLE_SERVICE with an empty
+    # default - i.e. it is overridable and may legitimately be empty - the same shape MESH_JOB
+    # uses for CLOUDRUN_MESH_JOB.
+    assert 'CONSOLE_SERVICE="${CLOUDRUN_CONSOLE_SERVICE:-}"' in text, (
+        "discover() must derive CONSOLE_SERVICE from CLOUDRUN_CONSOLE_SERVICE with an empty "
+        "default; the console service name must be overridable and may be empty - a deployment "
+        "that serves no console skips the stage, exactly as an API-less one does")
+    # emit_env's heredoc must read the discovered variable back rather than re-deriving it from
+    # the raw environment - again mirroring how CLOUDRUN_MESH_JOB=${MESH_JOB} is written.
+    assert "CLOUDRUN_CONSOLE_SERVICE=${CONSOLE_SERVICE}" in text, (
+        "the generated env must read the console service name discover() already resolved "
+        "(CLOUDRUN_CONSOLE_SERVICE=${CONSOLE_SERVICE}), not re-default from the raw "
+        "CLOUDRUN_CONSOLE_SERVICE environment variable a second time")

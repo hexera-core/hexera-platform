@@ -288,7 +288,7 @@ WORKER_ENV_URI=${WORKER_ENV_URI:-}
 
 # THE CONSOLE TIER. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console
 # and that stage is skipped - the same arrangement an API-less deployment uses above.
-CLOUDRUN_CONSOLE_SERVICE=${CLOUDRUN_CONSOLE_SERVICE:-}
+CLOUDRUN_CONSOLE_SERVICE=${CONSOLE_SERVICE}
 CONSOLE_SERVICE_ACCOUNT=${CONSOLE_SERVICE_ACCOUNT:-${DEPLOY_ID}-console}
 # Sizing. The console renders pages and proxies; it runs no model call and holds no mesh, so it is
 # deliberately the smallest tier here.
