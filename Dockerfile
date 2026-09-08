@@ -526,3 +526,39 @@ RUN chown -R node:node /srv
 USER node
 EXPOSE 8080
 CMD ["node", "apps/console/server.js"]
+
+
+# ---------------------------------------------------------------------------
+# THE ADMIN CONSOLE. The same shape as the console stages above and pinned to the same Node base,
+# deliberately: two Node images in one Dockerfile would be two things to keep current.
+FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS admin-build
+WORKDIR /build
+ENV CI=1
+RUN corepack enable
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
+COPY packages/ ./packages/
+COPY apps/admin-console/package.json ./apps/admin-console/
+RUN pnpm install --frozen-lockfile --filter @hexera/admin-console...
+COPY apps/admin-console/ ./apps/admin-console/
+RUN pnpm --filter @hexera/admin-console build
+
+FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS admin
+ARG APP_VERSION
+LABEL org.opencontainers.image.title="Hexera Admin Console" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.description="The Hexera operations console" \
+      org.opencontainers.image.licenses="LicenseRef-Proprietary"
+WORKDIR /srv
+# HOSTNAME is load-bearing: Next's standalone server binds localhost without it, so on Cloud Run
+# the container would start, answer nothing, and the revision would never become ready.
+ENV NODE_ENV=production \
+    PORT=8080 \
+    HOSTNAME=0.0.0.0
+COPY --from=admin-build /build/apps/admin-console/.next/standalone/ ./
+COPY --from=admin-build /build/apps/admin-console/.next/static/ ./apps/admin-console/.next/static/
+COPY --from=admin-build /build/apps/admin-console/public/ ./apps/admin-console/public/
+# node:24-slim already ships a `node` user at uid 1000; creating another at that uid fails.
+RUN chown -R node:node /srv
+USER node
+EXPOSE 8080
+CMD ["node", "apps/admin-console/server.js"]
