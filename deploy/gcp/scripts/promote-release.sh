@@ -55,7 +55,8 @@ REC_COMMIT="$("${PY}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["co
 _ref() { "${PY}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["components"][sys.argv[2]]["reference"])' "${REC}" "$1" 2>/dev/null; }
 MESH_REF="$(_ref mesh)" || die "the release record names no 'mesh' component - re-run Gate C"
 APP_REF="$(_ref app)"   || die "the release record names no 'app' component - re-run Gate C"
-for ref in "${MESH_REF}" "${APP_REF}"; do
+CONSOLE_REF="$(_ref console)" || die "the release record names no 'console' component - re-run Gate C"
+for ref in "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}"; do
   case "${ref}" in
     *@sha256:*) ;;
     *) die "the record carries a tag-only reference (${ref}) - deployment identity must be a digest" ;;
@@ -63,12 +64,12 @@ for ref in "${MESH_REF}" "${APP_REF}"; do
 done
 
 ENV_TARGET="${DEPLOY_ENV_FILE:-${DEPLOY_DIR}/generated.env}"
-"${PY}" - "${ENV_TARGET}" "${MESH_REF}" "${APP_REF}" <<'PY'
+"${PY}" - "${ENV_TARGET}" "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}" <<'PY'
 import pathlib, re, sys
-path, mesh, app = sys.argv[1], sys.argv[2], sys.argv[3]
+path, mesh, app, console = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 p = pathlib.Path(path)
 text = p.read_text() if p.exists() else ""
-for key, value in (("MESH_IMAGE", mesh), ("APP_IMAGE", app)):
+for key, value in (("MESH_IMAGE", mesh), ("APP_IMAGE", app), ("CONSOLE_IMAGE", console)):
     if re.search(rf"^{key}=.*$", text, flags=re.M):
         text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, flags=re.M)
     else:
@@ -80,4 +81,5 @@ info "Promoting the validated release artifact (no build)"
 log "commit:        ${REC_COMMIT}"
 log "mesh (mesh job):            ${MESH_REF}"
 log "app (migration, publisher): ${APP_REF}"
+log "console (console service):  ${CONSOLE_REF}"
 log "written to:    ${ENV_TARGET}"
