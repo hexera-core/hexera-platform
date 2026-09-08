@@ -13,7 +13,7 @@ def test_console_is_a_built_component():
     text = VALIDATE.read_text(encoding="utf-8")
     assert "[console]=console" in text, (
         "the component-to-target map does not name the console")
-    assert "for comp in app mesh console;" in text, (
+    assert "for comp in app mesh console admin;" in text, (
         "the build loop does not cover the console, so no console image is ever validated")
 
 
