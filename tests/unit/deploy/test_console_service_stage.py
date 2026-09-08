@@ -11,6 +11,12 @@ import pytest
 REPO = Path(__file__).parents[3]
 SCRIPT = REPO / "deploy" / "gcp" / "scripts" / "create-console-service.sh"
 
+# The fake understands two families of Cloud Run call:
+#   - existence/description of the SERVICE itself (create vs. update path), parameterised by
+#     FAKE_SVC_EXISTS_RC / FAKE_LIVE_IMAGE / FAKE_LIVE_ENV_NAMES / FAKE_LIVE_ENV_NAMES's URL twin
+#   - the invoker policy, parameterised by FAKE_POLICY_MEMBERS
+# Everything else (service-account create, secret IAM bindings, run deploy, add/remove invoker
+# bindings) always "succeeds" via the trailing exit 0, exactly as before.
 _FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
 STATE="${FAKE_GCP_STATE:?}"; mkdir -p "${STATE}"
@@ -18,12 +24,21 @@ ARGS="$*"; printf '%s\n' "${ARGS}" >> "${STATE}/calls.log"
 has(){ case "$ARGS" in *"$1"*) return 0;; *) return 1;; esac; }
 if has "iam service-accounts describe"; then exit 1; fi
 if has "secrets describe"; then exit 0; fi
-if has "run services describe"; then exit 1; fi
-if has "run services get-iam-policy"; then exit 0; fi
+if has "run services describe"; then
+  if has "containers[0].image"; then printf '%s\n' "${FAKE_LIVE_IMAGE:-}"; exit 0; fi
+  if has "containers[0].env";   then printf '%s\n' "${FAKE_LIVE_ENV_NAMES:-}"; exit 0; fi
+  if has "status.url";          then printf '%s\n' "https://t-console.run.app"; exit 0; fi
+  exit "${FAKE_SVC_EXISTS_RC:-1}"          # 0 => the service already exists
+fi
+if has "run services get-iam-policy"; then printf '%s\n' "${FAKE_POLICY_MEMBERS:-}"; exit 0; fi
 exit 0
 """
 
 _CONSOLE_DIGEST = "us-central1-docker.pkg.dev/fake-proj/hexera/console@sha256:c0ffee"
+
+# The five names create-console-service.sh's own CONSOLE_ENV_PAIRS declares (step 3). Read from
+# the script rather than hard-coded to avoid re-guessing them here.
+_DECLARED_ENV_NAMES = "ENV;DEPLOYMENT_ID;NODE_ENV;HEXERA_API_BASE_URL;NEXT_PUBLIC_HEXERA_API_BASE_URL"
 
 _ENV = {
     "DEPLOYMENT_ID": "t",
@@ -54,7 +69,7 @@ def run(tmp_path):
     (bin_dir / "gcloud").chmod(0o755)
     state = tmp_path / "state"
 
-    def _run(over: dict | None = None) -> tuple[subprocess.CompletedProcess, str]:
+    def _run(over: dict | None = None, fake: dict | None = None) -> tuple[subprocess.CompletedProcess, str]:
         env_vals = {**_ENV, **(over or {})}
         env_file = tmp_path / "generated.env"
         env_file.write_text(
@@ -65,7 +80,8 @@ def run(tmp_path):
             env={**os.environ,
                  "PATH": f"{bin_dir}:{os.environ['PATH']}",
                  "FAKE_GCP_STATE": str(state),
-                 "DEPLOY_ENV_FILE": str(env_file)})
+                 "DEPLOY_ENV_FILE": str(env_file),
+                 **(fake or {})})
         log_path = state / "calls.log"
         return done, (log_path.read_text(encoding="utf-8") if log_path.exists() else "")
 
@@ -118,8 +134,72 @@ def test_the_console_is_publicly_invokable_when_stated(run):
     assert "allUsers" in calls
 
 
-def test_the_public_binding_is_removed_when_not_stated(run):
+def test_the_console_is_not_made_public_when_not_stated(run):
+    # NOTE: the fake gcloud's default policy is empty, so this drives the `*)` default arm at
+    # create-console-service.sh:224 (no public binding ever held -> none added), not the removal
+    # branch at :219-222. It asserts an ABSENCE, not a removal - see
+    # test_the_public_binding_is_genuinely_removed below for the removal branch itself.
     done, calls = run({"CONSOLE_ALLOW_UNAUTHENTICATED": "0"})
     assert done.returncode == 0, done.stderr
     assert "add-iam-policy-binding" not in calls or "allUsers" not in calls.split(
         "add-iam-policy-binding")[-1]
+
+
+def test_update_omits_the_create_only_flag(run):
+    # An update (the service already exists) must never add --no-allow-unauthenticated: doing so
+    # would momentarily strip public invoke from a live service mid-rollout, 403-ing the sign-in
+    # page for every user until the invoker policy step re-adds it.
+    reused, reused_calls = run(fake={
+        "FAKE_SVC_EXISTS_RC": "0",
+        "FAKE_LIVE_ENV_NAMES": _DECLARED_ENV_NAMES,
+        "FAKE_LIVE_IMAGE": _CONSOLE_DIGEST,
+    })
+    assert reused.returncode == 0, reused.stderr
+    assert "--no-allow-unauthenticated" not in reused_calls
+    assert "reused" in reused.stdout.lower()
+
+    rolled, rolled_calls = run(fake={
+        "FAKE_SVC_EXISTS_RC": "0",
+        "FAKE_LIVE_ENV_NAMES": _DECLARED_ENV_NAMES,
+        "FAKE_LIVE_IMAGE": "us-central1-docker.pkg.dev/fake-proj/hexera/console@sha256:stale",
+    })
+    assert rolled.returncode == 0, rolled.stderr
+    assert "--no-allow-unauthenticated" not in rolled_calls
+    assert "rolled" in rolled.stdout.lower()
+
+    # And the pair is meaningful: on a genuine create (no live service), the flag IS present.
+    created, created_calls = run()
+    assert created.returncode == 0, created.stderr
+    assert "--no-allow-unauthenticated" in created_calls
+
+
+def test_drift_is_refused_naming_only_names(run):
+    done, calls = run(fake={
+        "FAKE_SVC_EXISTS_RC": "0",
+        "FAKE_LIVE_ENV_NAMES": f"{_DECLARED_ENV_NAMES};LEGACY_FLAG",
+    })
+    combined = done.stdout + done.stderr
+    assert done.returncode != 0
+    assert "LEGACY_FLAG" in combined
+    assert "run deploy" not in calls
+    # The security-relevant half: only the NAME may appear, never a "NAME=value" pairing -
+    # printing a value would republish the credential this refusal exists to protect.
+    assert "LEGACY_FLAG=" not in combined
+
+
+def test_console_env_prune_proceeds(run):
+    done, calls = run({"CONSOLE_ENV_PRUNE": "1"}, fake={
+        "FAKE_SVC_EXISTS_RC": "0",
+        "FAKE_LIVE_ENV_NAMES": f"{_DECLARED_ENV_NAMES};LEGACY_FLAG",
+    })
+    assert done.returncode == 0, done.stderr
+    assert "run deploy" in calls
+
+
+def test_the_public_binding_is_genuinely_removed(run):
+    done, calls = run({"CONSOLE_ALLOW_UNAUTHENTICATED": "0"}, fake={
+        "FAKE_POLICY_MEMBERS": "allUsers;serviceAccount:x@y",
+    })
+    assert done.returncode == 0, done.stderr
+    assert "remove-iam-policy-binding" in calls
+    assert "allUsers" in calls.split("remove-iam-policy-binding")[-1]

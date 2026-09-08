@@ -41,6 +41,11 @@ if [ -z "${CONSOLE_SERVICE}" ]; then
   exit 0
 fi
 
+# HEXERA_API_BASE_URL is dereferenced unguarded below, in the container env spec. Stated here,
+# before step 1 creates anything, so a deployment missing it dies with a clear refusal rather than
+# an `unbound variable` after a service account and IAM bindings already exist.
+require_vars HEXERA_API_BASE_URL
+
 # The image is the CONSOLE image, BY DIGEST. promote-release.sh wrote it from the validated
 # release record; a tag is refused rather than re-resolved, because a tag can be moved between the
 # validation that approved the bytes and the rollout that ships them.
