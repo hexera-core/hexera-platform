@@ -766,11 +766,11 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    /* the site's ramp with a real middle: deep steel below, the wireframe blue through the
-       calm range, a pale bone at the midpoint, then amber, international orange and red at
-       the bar, dark red past it - six stops so it flows rather than flipping between two hues */
-    const STOPS=[[0,[62,84,110]],[0.3,[109,139,175]],[0.55,[214,208,194]],
-                 [0.75,[255,186,0]],[0.92,[255,79,0]],[1.0,[220,40,30]]];
+    /* the site's ramp, flowing: deep steel below, the wireframe blue through the calm range,
+       blending straight into amber, then international orange and red at the bar, dark red
+       past it - no pale stop in the middle */
+    const STOPS=[[0,[62,84,110]],[0.3,[109,139,175]],[0.72,[255,186,0]],
+                 [0.9,[255,79,0]],[1.0,[220,40,30]]];
     const PAST=[128,18,12];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,hi=Math.max(lim*1.3,md.max||0);
       const pts=STOPS.map(([f,c])=>[f*lim,c]).concat([[hi,PAST]]);
