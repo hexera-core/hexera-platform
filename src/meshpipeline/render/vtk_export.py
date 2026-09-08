@@ -77,10 +77,10 @@ def surface_to_vtk(surface: dict) -> bytes:
             if have[f] and isinstance((metrics.get(f) or {}).get("limit"), (int, float))]
     if lims:
         title += " - bars: " + " ".join(lims)
-    title = title.encode("ascii", "replace")[:_TITLE_MAX]
+    title_b = title.encode("ascii", "replace")[:_TITLE_MAX]
 
     out = bytearray()
-    out += b"# vtk DataFile Version 3.0\n" + title + b"\nBINARY\nDATASET POLYDATA\n"
+    out += b"# vtk DataFile Version 3.0\n" + title_b + b"\nBINARY\nDATASET POLYDATA\n"
     out += f"POINTS {n_points} float\n".encode()
     out += b"".join(a.tobytes() for a in pts_parts) + b"\n"
     total = sum(len(a) for a in poly_parts)
