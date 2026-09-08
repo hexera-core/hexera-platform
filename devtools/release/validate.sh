@@ -330,7 +330,7 @@ if [ -n "${IMAGE_ID[console]}" ]; then
     _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
     _ok=1
     for _try in 1 2 3 4 5 6 7 8 9 10; do
-      curl -fsS "http://127.0.0.1:${_port}/api/internal/health" >/dev/null 2>&1 && { _ok=0; break; }
+      curl -fsS --max-time 5 "http://127.0.0.1:${_port}/api/internal/health" >/dev/null 2>&1 && { _ok=0; break; }
       sleep 2
     done
     docker rm -f -v "${_cid}" >/dev/null 2>&1 || true
@@ -369,6 +369,25 @@ elif VEND="$(docker run --rm --label "amp-release=${STAMP}" --network none \
 else
   record "vendored browser assets match their pinned checksums (in the app image)" failed 1 \
     "$(echo "${VEND}" | tail -3 | tr '\n' ' ')"
+  KEEP_WORK=1
+fi
+
+# The SAME vendored bundle - byte-identical vtk.js and SHA256SUMS - is ALSO copied into the
+# console image (Dockerfile's console stage: apps/console/public/static/vendor/), and nothing
+# checked it there. Same shape as the app-image check above: `sha256sum -c` runs INSIDE the
+# console image against its own copy, so this proves the artifact the console actually ships
+# carries the pinned bundle - not that the checkout, or the unrelated app image, does.
+if [ -z "${IMAGE_ID[console]}" ]; then
+  record "vendored browser assets match their pinned checksums (in the console image)" not_run 1 \
+    "no console image was built"
+elif CVEND="$(docker run --rm --label "amp-release=${STAMP}" --network none \
+      --entrypoint sh "${IMAGE_TAG[console]}" -c \
+      'cd /srv/apps/console/public/static/vendor && sha256sum -c SHA256SUMS' 2>&1)"; then
+  record "vendored browser assets match their pinned checksums (in the console image)" passed 1 \
+    "$(echo "${CVEND}" | tr '\n' ' ')"
+else
+  record "vendored browser assets match their pinned checksums (in the console image)" failed 1 \
+    "$(echo "${CVEND}" | tail -3 | tr '\n' ' ')"
   KEEP_WORK=1
 fi
 
