@@ -4,11 +4,11 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 /* /
-   The product wears the same finish as hexera.ai: one warm amber-black canvas,
-   raised panels a shade lighter, near-white ink, teal for the primary action
-   and the running state, gold for the selection and nothing else, crimson for
-   a failure. Role-named, so a hue can change without every rule downstream
-   becoming a lie.
+   The product wears the finish hexera.ai actually ships (styles.css + orange-theme.css):
+   flight-test mono. Near-neutral blacks, near-white ink, ONE hot accent - international
+   orange - for the primary action, the running state and the selection, and deep steel
+   blue for technical linework: wireframes, edges, secondary structure. Role-named, so a
+   hue can change without every rule downstream becoming a lie.
 
    The LEGACY names (--ink, --card, --line ...) that the rest of this stylesheet
    tree already speaks are aliased at the bottom onto the new roles. That is
@@ -22,49 +22,50 @@
          'Liberation Mono',monospace;
   --display:"Saira Semi Condensed","Helvetica Neue",Arial,sans-serif;
 
-  /* surfaces - an elevation ladder, each step a shade lighter than the canvas */
-  --canvas:#060402;
-  --background:#0b0905;
-  --surface-1:#0d0a06;
-  --surface-2:#15110a;
-  --surface-raised:#1c160d;
-  --viewer-frame:#0b0905;
-  --viewer-canvas:#060402;
+  /* surfaces - the site's blacks, an elevation ladder each step a shade lighter */
+  --canvas:#0d0d0c;
+  --background:#131312;
+  --surface-1:#141413;
+  --surface-2:#1b1b19;
+  --surface-raised:#232321;
+  --viewer-frame:#131312;
+  --viewer-canvas:#0d0d0c;
   --border:rgba(238,235,225,.10);
   --border-strong:rgba(238,235,225,.22);
 
-  /* text - every value AA on the surfaces above */
+  /* text - the site's ink, every value AA on the surfaces above */
   --text:#ede9e0;
-  --text-muted:#b7b2a6;
-  --text-faint:#867f72;
+  --text-muted:#b9b6ae;
+  --text-faint:#8a8884;
   --text-bright:#f4f1ea;
 
-  /* accent - used sparingly: primary action, focus, the running state */
-  --accent:#0fb6ac;
-  --accent-hover:#19cfc4;
-  --accent-soft:rgba(15,182,172,.12);
-  --accent-line:rgba(15,182,172,.45);
-  --accent-ink:#04211f;          /* the ONLY safe text colour on --accent */
+  /* accent - international orange, the site's one hot colour: primary action, focus,
+     the running state, and the selection */
+  --accent:#ff4f00;
+  --accent-hover:#ff7033;
+  --accent-soft:rgba(255,79,0,.14);
+  --accent-line:rgba(255,79,0,.5);
+  --accent-ink:#1a0a02;          /* the ONLY safe text colour on --accent */
 
-  /* gold - the selection: the selected part, an armed control, a mark */
-  --gold:#ffba00;
-  --gold-soft:rgba(255,186,0,.14);
-  --gold-line:rgba(255,186,0,.5);
-  --gold-ink:#211800;
+  /* the selection reads through the same accent (kept as a role so it can diverge) */
+  --gold:#ff4f00;
+  --gold-soft:rgba(255,79,0,.14);
+  --gold-line:rgba(255,79,0,.5);
+  --gold-ink:#1a0a02;
 
-  /* steel - technical linework and secondary structure, warmed for the canvas */
-  --steel:#9db0ad;
-  --steel-bright:#c6d2cf;
-  --steel-muted:#4d5754;         /* decoration only, never text */
-  --steel-soft:rgba(157,176,173,.12);
+  /* steel - the site's wireframe blue: technical linework and secondary structure */
+  --steel:#6d8baf;
+  --steel-bright:#9db6d4;
+  --steel-muted:#57708f;         /* decoration only, never text */
+  --steel-soft:rgba(109,139,175,.14);
 
   /* status - meaning carried by a word AND a mark, never colour alone */
-  --ok:#3fcf9a;      --ok-soft:rgba(63,207,154,.11);
-  --warn:#ffba00;    --warn-soft:rgba(255,186,0,.12);
-  --danger:#ff6b5e;  --danger-soft:rgba(255,107,94,.12);
+  --ok:#61d49a;      --ok-soft:rgba(97,212,154,.11);
+  --warn:#f1bd63;    --warn-soft:rgba(241,189,99,.12);
+  --danger:#ff6b5e;  --danger-soft:rgba(216,58,48,.14);
 
-  --mesh-canvas:#060402;
-  --mesh-selection:#ffba00;
+  --mesh-canvas:#0d0d0c;
+  --mesh-selection:#ff4f00;
 
   --focus:var(--accent);
   --radius:2px;
@@ -81,7 +82,7 @@ html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
 
 :where(a,button,input,textarea,select,[tabindex]):focus-visible{
   outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
-::selection{background:var(--accent-soft);color:var(--text)}
+::selection{background:var(--accent);color:#fff}
 
 *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}

@@ -31,13 +31,14 @@ function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
   for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
 function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
-/* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
-   apart without shouting; the GOLD selection is never ambiguous against any of them */
-const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
-                   [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
-const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
-const _EDGE_HEAT=[0.17,0.15,0.13];    /* darker while the faces carry colour, so the data reads */
-const _SEL=[1.0,0.73,0.0],_SEL_EDGE=[0.58,0.42,0.06];
+/* geometry fills: a light cool grey, each patch a step of tint so the parts read apart
+   without shouting; edges in the site's steel wireframe blue; the ORANGE selection is never
+   ambiguous against any of them */
+const _PATCH_COLS=[[0.80,0.81,0.83],[0.70,0.76,0.83],[0.84,0.80,0.74],
+                   [0.74,0.75,0.76],[0.66,0.72,0.79],[0.78,0.74,0.72]];
+const _EDGE=[0.427,0.545,0.686];       /* 109,139,175 - the site's wireframe line */
+const _EDGE_HEAT=[0.16,0.16,0.15];     /* edges step back while the faces carry colour */
+const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
 export async function openViewer(job,anchorEl,opts){
@@ -766,10 +767,10 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    /* the product's own palette: deep water below, teal through the calm range, gold as the
-       number approaches the bar, crimson-soft at it, crimson past it */
-    const STOPS=[[0,[34,96,128]],[0.5,[15,182,172]],[0.8,[255,186,0]],[1.0,[255,107,94]]];
-    const PAST=[128,18,12];
+    /* the site's palette: deep steel below, the wireframe blue through the calm range,
+       warming to international orange at the bar, crimson past it */
+    const STOPS=[[0,[70,91,116]],[0.5,[109,139,175]],[0.8,[255,150,80]],[1.0,[255,79,0]]];
+    const PAST=[150,28,22];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,hi=Math.max(lim*1.3,md.max||0);
       const pts=STOPS.map(([f,c])=>[f*lim,c]).concat([[hi,PAST]]);
       const color=(v,out,o)=>{

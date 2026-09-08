@@ -399,11 +399,12 @@ th,td{border-color:var(--border)}
 @keyframes typ{0%,60%,100%{opacity:.25}30%{opacity:1}}
 
 /* /
-   THE HEXERA FINISH - the same palette and type as hexera.ai, and the viewer
-   dressed as an instrument. Every selector here already exists; only colour,
-   type and placement move. Teal is the primary action and the running state,
-   gold is the selection, crimson is a failure, and the mesh is grey - the
-   only saturated colour on a delivered mesh is the data the user asked for.
+   THE HEXERA FINISH - the palette and type hexera.ai ships (its orange theme),
+   and the viewer dressed as an instrument. Every selector here already exists;
+   only colour, type and placement move. International orange is the primary
+   action, the running state and the selection; steel blue is linework; crimson
+   is a failure; the mesh is grey with steel edges - the only saturated colour
+   on a delivered mesh is the data the user asked for.
 / */
 header{height:48px}
 .brand-name{font-family:var(--display);font-weight:600;font-size:15px;letter-spacing:.26em;
@@ -416,7 +417,7 @@ header{height:48px}
 #upload-btn:hover,#send-btn:hover:not(:disabled),.v-btn.primary:hover,.v-dlbtn.primary:hover{
   background:var(--accent-hover);border-color:var(--accent-hover)}
 
-/* the selection is gold, wherever it appears */
+/* the selection is the accent, wherever it appears */
 .v-btn.armed{background:var(--gold);border-color:var(--gold);color:var(--gold-ink)}
 .v-bnd-chip.sel{border-left-color:var(--gold);background:var(--gold-soft)}
 .v-bnd-chip.sel .sw{background:var(--gold)}
