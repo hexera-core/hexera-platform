@@ -49,6 +49,17 @@ else
   fi
 fi
 
+# THE CONSOLE'S DIGEST, on the console's own selection. A run that reconciled the API but not the
+# console must record what the console is actually running, not the digest this commit validated.
+if _selected console; then
+  CONSOLE_DIGEST="$(resolve_digest "${CONSOLE_IMAGE:-}" 2>/dev/null || printf '%s' "${CONSOLE_IMAGE:-}")"
+elif [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
+  CONSOLE_DIGEST="$(gc run services describe "${CLOUDRUN_CONSOLE_SERVICE}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+else
+  CONSOLE_DIGEST=""
+fi
+
 # TWO DIFFERENT QUESTIONS, kept apart because one is durable and one is about this run.
 #
 #   disposition  - OWNERSHIP. Did this tooling create the resource, or was it supplied? It does not
@@ -86,6 +97,10 @@ _recon() { if _selected "$1"; then printf 'True'; else printf 'False'; fi; }
 
 MESH_JOB_DISP="$(_disp images "${MESH_JOB_DISPOSITION:-}" mesh_job)"
 API_DISP="$(_disp images "${API_SERVICE_DISPOSITION:-}" api_service)"
+# CONSOLE_SERVICE_DISPOSITION is always empty in practice: each stage in deploy.sh runs as a
+# separate `bash` process, so create-console-service.sh cannot export it back here. Same as
+# API_SERVICE_DISPOSITION above - _disp's fallback to the prior manifest is what makes that fine.
+CONSOLE_DISP="$(_disp console "${CONSOLE_SERVICE_DISPOSITION:-}" console_service)"
 SQL_DISP="$(_disp data "${CLOUDSQL_DISPOSITION:-}" cloud_sql)"
 REDIS_DISP="$(_disp data "${REDIS_DISPOSITION:-}" memorystore)"
 STORE_DISP="$(_disp storage "${ARTIFACTS_BUCKET_DISPOSITION:-}" object_store)"
@@ -97,6 +112,7 @@ MESH_JOB_RECON="$(_recon images)";  API_RECON="$(_recon images)"
 SQL_RECON="$(_recon data)";         REDIS_RECON="$(_recon data)"
 STORE_RECON="$(_recon storage)";    FLEET_RECON="$(_recon workers)"
 QUEUE_RECON="$(_recon queue)";      MIGRATE_RECON="$(_recon migrate)"
+CONSOLE_RECON="$(_recon console)"
 
 python3 - "${OUT}" <<PY
 import datetime, json, sys
@@ -122,7 +138,7 @@ doc = {
   # the running workloads is already answered per workload, by `reconciled` on mesh_job and
   # api_service - saying it a second time here cost `set(doc["images"])` its meaning, which is
   # exactly what a consumer iterating for digests relies on.
-  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}"},
+  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}", "console": "${CONSOLE_DIGEST}"},
 }
 if "${MIGRATE_DB_HOST:-}":
   doc["resources"]["migration_job"] = {
@@ -167,6 +183,13 @@ if "${CLOUDRUN_API_SERVICE:-}":
     "service_account": "${API_SERVICE_ACCOUNT:-}",
     "instances": "${API_MIN_INSTANCES:-}..${API_MAX_INSTANCES:-}",
     "public": "${API_ALLOW_UNAUTHENTICATED:-0}" == "1",
+  }
+if "${CLOUDRUN_CONSOLE_SERVICE:-}":
+  doc["resources"]["console_service"] = {
+    "name": "${CLOUDRUN_CONSOLE_SERVICE:-}",
+    "service_account": "${CONSOLE_SERVICE_ACCOUNT:-}",
+    "disposition": "${CONSOLE_DISP}",
+    "reconciled": ${CONSOLE_RECON},
   }
 if "${WORKER_MIG:-}":
   # The TEMPLATE is the rotation record: a digest change makes a new template and the group rolls
