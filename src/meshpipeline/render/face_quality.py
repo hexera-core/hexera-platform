@@ -35,6 +35,13 @@ MAX_HOTSPOTS_PER_METRIC = 60
 INTERNAL_SKEW_LIMIT = 4.0
 BOUNDARY_SKEW_LIMIT = 20.0
 
+#: checkMesh's aspect-ratio bar (primitiveMesh::aspectThreshold_): a cell past 1000 is reported as
+#: high aspect ratio. Prism layers sit at 10 to 50 by design, so on a delivered mesh the bar is far
+#: above everything the mesh has; the payload therefore also carries `floor` (a cube reads 1) and
+#: `scale_to` (the mesh's own maximum), and the viewer spans its colours over that range, drawing
+#: the bar as a tick only when it falls inside it.
+ASPECT_RATIO_LIMIT = 1000.0
+
 _ROOTVSMALL = 1.0e-18
 _CHUNK_FACES = 1_500_000
 _COMMENT_BLOCK = re.compile(rb"/\*.*?\*/", re.S)
@@ -272,7 +279,23 @@ def _cell_geometry(fCtrs, fAreas, owner, neighbour, n_cells):
     tiny = np.abs(cVols3) <= _ROOTVSMALL
     if tiny.any():
         cCtrs[tiny] = cEst[tiny]
-    return cCtrs, nfc
+    return cCtrs, nfc, cVols3 / 3.0
+
+
+def _aspect_ratio(fAreas, owner, neighbour, cVols, n_cells):
+    """checkMesh's cell aspect ratio (primitiveMeshTools::cellClosedness, three solved directions):
+    the larger of the ratio of the largest to the smallest component of the cell's summed |Sf|,
+    and (1/6) * the sum of those components / V^(2/3). A unit cube reads 1; a 10:1:1 brick reads
+    10. A cell metric, so the boundary face carries its owner cell's value as it is."""
+    ni = len(neighbour)
+    mag = np.abs(fAreas)
+    sumMag = np.empty((n_cells, 3))
+    for k in range(3):
+        sumMag[:, k] = (np.bincount(owner, weights=mag[:, k], minlength=n_cells)
+                        + np.bincount(neighbour, weights=mag[:ni, k], minlength=n_cells))
+    ratio = sumMag.max(axis=1) / (sumMag.min(axis=1) + _ROOTVSMALL)
+    v = np.maximum(np.abs(cVols), _ROOTVSMALL)
+    return np.maximum(ratio, sumMag.sum(axis=1) / (6.0 * np.power(v, 2.0 / 3.0)))
 
 
 def _non_orthogonality(cCtrs, fAreas, owner, neighbour):
@@ -351,7 +374,8 @@ def _hotspots(metric: str, values: np.ndarray, limits: np.ndarray, fCtrs, owner,
 
 
 def attach_quality_fields(resp: dict, polymesh_dir, *, non_ortho_limit: float,
-                          skew_limit: float = INTERNAL_SKEW_LIMIT) -> None:
+                          skew_limit: float = INTERNAL_SKEW_LIMIT,
+                          aspect_limit: float = ASPECT_RATIO_LIMIT) -> None:
     """Add `quality_fields` to a viewer response, or leave it untouched.
 
     The colouring is an addition to a mesh the user already has. Nothing that goes wrong while
@@ -360,7 +384,7 @@ def attach_quality_fields(resp: dict, polymesh_dir, *, non_ortho_limit: float,
     try:
         names = [p.get("name") for p in (resp.get("patches") or []) if isinstance(p, dict)]
         fields = quality_fields(polymesh_dir, non_ortho_limit=non_ortho_limit,
-                                skew_limit=skew_limit, patch_names=names)
+                                skew_limit=skew_limit, aspect_limit=aspect_limit, patch_names=names)
         if fields:
             resp["quality_fields"] = fields
     except Exception:  # noqa: BLE001 - a heatmap is never worth a delivery
@@ -368,7 +392,8 @@ def attach_quality_fields(resp: dict, polymesh_dir, *, non_ortho_limit: float,
 
 
 def quality_fields(polymesh_dir, *, non_ortho_limit: float,
-                   skew_limit: float = INTERNAL_SKEW_LIMIT, patch_names=None) -> dict | None:
+                   skew_limit: float = INTERNAL_SKEW_LIMIT,
+                   aspect_limit: float = ASPECT_RATIO_LIMIT, patch_names=None) -> dict | None:
     """Per-face quality fields for the viewer, or None when the mesh cannot or should not be measured.
 
     A boundary face carries the WORST value of the cell behind it, over that cell's internal
@@ -378,7 +403,8 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     between two cells, and those are the faces the limit applies to).
 
     `non_ortho_limit` and `skew_limit` are the engine's bars; they are reported back verbatim so
-    the viewer's red line is the same line the quality gate drew.
+    the viewer's red line is the same line the quality gate drew. Aspect ratio is the third field:
+    checkMesh's own number per cell, against checkMesh's bar (`aspect_limit`).
     """
     declared = declared_count(Path(polymesh_dir) / "faces")
     if declared is not None and declared > MAX_FACES_FOR_FIELDS:
@@ -402,12 +428,14 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     ni = len(mesh.neighbour)
     nc = mesh.n_cells
     fCtrs, fAreas = _face_geometry(mesh.points, mesh.face_flat, mesh.face_off)
-    cCtrs, nfc = _cell_geometry(fCtrs, fAreas, mesh.owner, mesh.neighbour, nc)
+    cCtrs, nfc, cVols = _cell_geometry(fCtrs, fAreas, mesh.owner, mesh.neighbour, nc)
     no = _non_orthogonality(cCtrs, fAreas, mesh.owner, mesh.neighbour)   # (Fi,)
     sk = _skewness(mesh.points, mesh.face_flat, mesh.face_off, fCtrs, fAreas, cCtrs,
                    mesh.owner, mesh.neighbour)                             # (F,)
     no = np.nan_to_num(no, nan=0.0, posinf=0.0, neginf=0.0)
     sk = np.nan_to_num(sk, nan=0.0, posinf=0.0, neginf=0.0)
+    ar = np.nan_to_num(_aspect_ratio(fAreas, mesh.owner, mesh.neighbour, cVols, nc),
+                       nan=1.0, posinf=1.0, neginf=1.0)                    # (C,)
 
     # The worst value each cell touches, over its INTERNAL faces - both sides of every one. Both
     # metrics are judged against one bar in the viewer, and only internal faces share a bar: a
@@ -437,6 +465,7 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
         per_patch[p.name] = {
             "non_ortho_b64": _b64(cell_no[own].astype(np.float32)),
             "skewness_b64": _b64(cell_sk[own].astype(np.float32)),
+            "aspect_ratio_b64": _b64(ar[own].astype(np.float32)),
             "cell_faces_b64": _b64(np.clip(nfc[own], 0, 255).astype(np.uint8)),
             "count": int(len(ids)),
         }
@@ -447,8 +476,13 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     sk_limits = np.full(mesh.n_faces, float(skew_limit))
     sk_limits[ni:] = BOUNDARY_SKEW_LIMIT
     no_limits = np.full(ni, float(non_ortho_limit))
+    # aspect ratio is a cell number; every face reads its owner cell's, judged against one bar
+    ar_faces = ar[mesh.owner]
+    ar_limits = np.full(mesh.n_faces, float(aspect_limit))
     hot = (_hotspots("non_ortho", no, no_limits, fCtrs, mesh.owner, nfc, patch_of_face, names)
-           + _hotspots("skewness", sk, sk_limits, fCtrs, mesh.owner, nfc, patch_of_face, names))
+           + _hotspots("skewness", sk, sk_limits, fCtrs, mesh.owner, nfc, patch_of_face, names)
+           + _hotspots("aspect_ratio", ar_faces, ar_limits, fCtrs, mesh.owner, nfc, patch_of_face,
+                       names))
     logger.info("viewer quality fields: %d faces (%d internal), %d boundary faces coloured, "
                 "%d hotspot(s), %.1fs", mesh.n_faces, ni,
                 sum(p["count"] for p in per_patch.values()), len(hot), _time.monotonic() - _t0)
@@ -466,6 +500,12 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
                          "max": float(sk.max()),
                          "n_over": int(np.count_nonzero(sk > sk_limits)),
                          "n_faces": int(mesh.n_faces)},
+            "aspect_ratio": {"label": "aspect ratio", "unit": "",
+                             "limit": float(aspect_limit),
+                             "floor": 1.0, "scale_to": float(max(ar.max(), 2.0)),
+                             "max": float(ar.max()),
+                             "n_over": int(np.count_nonzero(ar_faces > ar_limits)),
+                             "n_faces": int(mesh.n_faces)},
         },
         "patches": per_patch,
         "hotspots": hot,

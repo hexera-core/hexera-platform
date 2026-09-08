@@ -26,7 +26,7 @@ def _foam(path: Path, cls: str, obj: str, count: int, records: list[str]) -> Non
 
 
 def write_row_of_hexes(polymesh: Path, *, shear_last_y: float = 0.0,
-                       degenerate_wall_face: bool = False) -> dict:
+                       degenerate_wall_face: bool = False, last_cell_length: float = 1.0) -> dict:
     """Three unit hexes in a row along x, as an OpenFOAM polyMesh.
 
     Points p(ix,iy,iz) = ix*4 + iy*2 + iz for ix in 0..3. Faces are ordered the way OpenFOAM
@@ -37,6 +37,8 @@ def write_row_of_hexes(polymesh: Path, *, shear_last_y: float = 0.0,
     `shear_last_y` moves the four points at x=3 in y, which skews cell 2 and makes the x=2 face
     non-orthogonal by a known angle. `degenerate_wall_face` appends a 2-vertex face to the wall
     patch - the surface reader drops such faces, and a per-face field must drop it too.
+    `last_cell_length` stretches cell 2 along x (its far points sit at x = 2 + L), which gives it
+    checkMesh's aspect ratio L for L >= 1 while cells 0 and 1 stay unit cubes.
     Returns {"n_wall": faces in the wall patch as written}.
     """
     polymesh.mkdir(parents=True, exist_ok=True)
@@ -45,7 +47,8 @@ def write_row_of_hexes(polymesh: Path, *, shear_last_y: float = 0.0,
         for iy in range(2):
             for iz in range(2):
                 y = iy + (shear_last_y if ix == 3 else 0.0)
-                pts.append(f"({ix} {y} {iz})")
+                x = 2 + last_cell_length if ix == 3 else ix
+                pts.append(f"({x} {y} {iz})")
     faces: list[str] = []
     owner: list[int] = []
     neighbour: list[int] = []

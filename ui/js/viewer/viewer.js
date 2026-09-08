@@ -691,15 +691,19 @@ function initViewer(job,surf,uiCfg){
      of still reaches the user rather than being silently dropped. Nothing is
      defaulted: a figure the mesh does not carry simply has no cell. */
   (function meshFacts(){
-    const host=document.getElementById('v-facts-'+job),q=surf.quality;
-    if(!host||!q||!Object.keys(q).length)return;
+    const host=document.getElementById('v-facts-'+job),q=Object.assign({},surf.quality||{});
+    // aspect ratio is measured by the heatmap pass, not by checkMesh's summary block; it gets a
+    // figure here so it is a control like the other two
+    const _ar=surf.quality_fields&&surf.quality_fields.metrics&&surf.quality_fields.metrics.aspect_ratio;
+    if(_ar&&!('max_aspect_ratio' in q)&&typeof _ar.max==='number')q.max_aspect_ratio=Number(_ar.max.toFixed(2));
+    if(!host||!Object.keys(q).length)return;
     const LBL={cells:'cells',faces:'faces',hexahedra:'hexahedra',polyhedra:'polyhedra',
                prisms:'prisms',pyramids:'pyramids',tetrahedra:'tetrahedra',
                regions:'mesh regions',max_non_ortho:'max non-orthogonality',
-               max_skewness:'max skewness',skew_faces:'skewed faces',
+               max_skewness:'max skewness',max_aspect_ratio:'max aspect ratio',skew_faces:'skewed faces',
                avg_non_ortho:'mean non-orthogonality'};
     const ORDER=['cells','faces','hexahedra','polyhedra','prisms','pyramids','tetrahedra',
-                 'regions','max_non_ortho','max_skewness','skew_faces','avg_non_ortho'];
+                 'regions','max_non_ortho','max_skewness','max_aspect_ratio','skew_faces','avg_non_ortho'];
     const keys=ORDER.filter(k=>k in q)
       .concat(Object.keys(q).filter(k=>!ORDER.includes(k)&&k!=='units'&&k!=='engine'));
     if(!keys.length)return;
@@ -740,11 +744,34 @@ function initViewer(job,surf,uiCfg){
     markers:()=>flags.length,
     render:()=>rw.render()};
 
+  /* PARAVIEW EXPORT - the same boundary and the same per-face numbers as a legacy VTK file,
+     built by the API from the stored payload. Fetched with the API headers (a plain link would
+     carry none) and handed to the browser as a download; the button says what it is doing. */
+  (function vtkExport(){
+    if(surf.kind!=='polymesh')return;
+    const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
+    const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
+    a.title='the boundary with its quality fields, for ParaView';
+    a.innerHTML='<b>ParaView</b><span>.vtk with quality fields</span>';
+    a.onclick=async e=>{e.preventDefault();if(a.dataset.busy)return;a.dataset.busy='1';
+      const lbl=a.querySelector('span'),was=lbl.textContent;lbl.textContent='building…';
+      try{const r=await fetch(`/api/v1/simulation/${job}/surface.vtk`,{headers:headers()});
+        if(!r.ok)throw new Error('export '+r.status);
+        const blob=await r.blob(),url=URL.createObjectURL(blob);
+        const dl=document.createElement('a');dl.href=url;dl.download=`mesh_quality_${String(job).slice(0,8)}.vtk`;
+        document.body.appendChild(dl);dl.click();dl.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+        lbl.textContent=fmtBytes(blob.size);}
+      catch(err){lbl.textContent='export failed';console.warn('vtk export',err);}
+      finally{delete a.dataset.busy;setTimeout(()=>{lbl.textContent=was;},4000);}};
+    bar.appendChild(a);
+    window._vdbg[job].vtk=()=>a;
+  })();
+
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
      The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
      surface reader's own filter), the bar the engine's gate judges against, and the worst
-     spots. The delivered-mesh FIGURES are the controls: the non-orthogonality and skewness
-     numbers become clickable when fields exist for them - clicking a number shows where it
+     spots. The delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
+     aspect-ratio numbers become clickable when fields exist for them - clicking a number shows where it
      lives. Nothing here touches the geometry: colouring is cell scalars on the same immutable
      actors, and turning it off restores exactly the property colours the parts panel set. */
   let activeMetric=null,lastProbe=null;
@@ -752,7 +779,8 @@ function initViewer(job,surf,uiCfg){
     const qf=surf.quality_fields;
     if(!qf||!qf.patches||!qf.metrics||!window.vtk)return;
     const META={non_ortho:{fact:'max_non_ortho',b64:'non_ortho_b64'},
-                skewness:{fact:'max_skewness',b64:'skewness_b64'}};
+                skewness:{fact:'max_skewness',b64:'skewness_b64'},
+                aspect_ratio:{fact:'max_aspect_ratio',b64:'aspect_ratio_b64'}};
     const avail=Object.keys(META).filter(m=>qf.metrics[m]);
     // decode once. An array that does not match the polygon count is dropped, not trusted:
     // a misaligned field would paint every face with its neighbour's number.
@@ -770,17 +798,22 @@ function initViewer(job,surf,uiCfg){
        warming to international orange at the bar, crimson past it */
     const STOPS=[[0,[70,91,116]],[0.5,[109,139,175]],[0.8,[255,150,80]],[1.0,[255,79,0]]];
     const PAST=[150,28,22];
-    function ramp(m){const md=qf.metrics[m],lim=md.limit||1,hi=Math.max(lim*1.3,md.max||0);
-      const pts=STOPS.map(([f,c])=>[f*lim,c]).concat([[hi,PAST]]);
+    function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
+      // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
+      // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
+      // and the bar is drawn as a tick only when it falls inside that range
+      const open=md.scale_to>0&&lim>md.scale_to;
+      const hi=open?md.scale_to:Math.max(lim*1.3,md.max||0);
+      const span=open?(hi-lo):(lim-lo);
+      const pts=STOPS.map(([f,c])=>[lo+f*span,c]).concat(open?[]:[[hi,PAST]]);
       const color=(v,out,o)=>{
-        if(!(v>0)){out[o]=pts[0][1][0];out[o+1]=pts[0][1][1];out[o+2]=pts[0][1][2];return;}
+        if(!(v>lo)){out[o]=pts[0][1][0];out[o+1]=pts[0][1][1];out[o+2]=pts[0][1][2];return;}
         let i=1;while(i<pts.length-1&&v>pts[i][0])i++;
         const [a,ca]=pts[i-1],[b,cb]=pts[i],t=Math.min(1,Math.max(0,(v-a)/((b-a)||1)));
         out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
-      const pc=v=>(100*v/hi).toFixed(1)+'%';
-      const css='linear-gradient(0deg,'+STOPS.map(([f,c])=>`rgb(${c}) ${pc(f*lim)}`).join(',')
-        +`,rgb(${PAST}) 100%)`;
-      return {color,hi,css,limitPct:pc(lim)};}
+      const pc=v=>(100*(v-lo)/((hi-lo)||1)).toFixed(1)+'%';
+      const css='linear-gradient(0deg,'+pts.map(([v,c])=>`rgb(${c}) ${pc(v)}`).join(',')+')';
+      return {color,hi,lo,open,css,limitPct:pc(lim)};}
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
 
     const hotActors=[];
@@ -822,13 +855,14 @@ function initViewer(job,surf,uiCfg){
         legend.innerHTML=`<b>${esc(md.label)}</b>`
           +`<span class="scale"><span class="ticks">`
             +`<span style="bottom:100%">${esc(fmt(m,rp.hi))}</span>`
-            +`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`
-            +`<span style="bottom:0">0</span></span>`
-          +`<span class="bar" style="background:${rp.css}"><i style="bottom:${rp.limitPct}"></i></span></span>`
+            +(rp.open?'':`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`)
+            +`<span style="bottom:0">${rp.lo?esc(fmt(m,rp.lo)):'0'}</span></span>`
+          +`<span class="bar" style="background:${rp.css}">${rp.open?'':`<i style="bottom:${rp.limitPct}"></i>`}</span></span>`
           +`<span class="mxv">max ${esc(fmt(m,md.max||0))}</span>`
           +(md.n_over
              ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
-             :`<span class="ok">none over</span>`)
+             :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
+                     :`<span class="ok">none over</span>`)
           +`<span class="x" title="turn colouring off">✕</span>`;
         legend.querySelector('.x').onclick=()=>setMetric(null);
         host.appendChild(legend);

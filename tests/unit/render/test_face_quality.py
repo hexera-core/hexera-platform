@@ -136,3 +136,31 @@ def test_every_openfoam_family_viewer_attaches_the_fields():
 def test_render_stays_free_of_engine_knowledge():
     src = (ROOT / "src" / "meshpipeline" / "render" / "face_quality.py").read_text()
     assert "meshpipeline.engines" not in src, "render/ imports an engine - the layering is broken"
+
+
+# ------------------------------------------------------------------- aspect ratio ----
+def test_aspect_ratio_reads_one_on_unit_cubes_and_the_stretch_on_a_brick(tmp_path):
+    # checkMesh's number: a cube is 1, a 10:1:1 brick is 10 (the component ratio wins over the
+    # area/volume term, which reads 1.5 there)
+    write_row_of_hexes(tmp_path / "polyMesh", last_cell_length=10.0)
+    q = FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0)
+    assert _f32(q["patches"]["inlet"]["aspect_ratio_b64"])[0] == pytest.approx(1.0, abs=1e-5)
+    assert _f32(q["patches"]["outlet"]["aspect_ratio_b64"])[0] == pytest.approx(10.0, abs=1e-4)
+    wall = _f32(q["patches"]["wall"]["aspect_ratio_b64"])
+    assert wall[:4] == pytest.approx(1.0, abs=1e-5) and wall[-4:] == pytest.approx(10.0, abs=1e-4)
+    md = q["metrics"]["aspect_ratio"]
+    assert md["limit"] == FQ.ASPECT_RATIO_LIMIT == 1000.0
+    assert md["max"] == pytest.approx(10.0, abs=1e-4) and md["floor"] == 1.0
+    assert md["scale_to"] == pytest.approx(10.0, abs=1e-4)      # the viewer's scale: the mesh's own range
+    assert md["n_over"] == 0 and not [h for h in q["hotspots"] if h["metric"] == "aspect_ratio"]
+
+
+def test_a_cell_past_the_aspect_bar_is_a_hotspot_on_every_face_it_owns(tmp_path):
+    write_row_of_hexes(tmp_path / "polyMesh", last_cell_length=2000.0)
+    q = FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0)
+    md = q["metrics"]["aspect_ratio"]
+    assert md["max"] == pytest.approx(2000.0, rel=1e-4)
+    # cell 2 owns its outlet face and four wall faces; the internal face at x=2 belongs to cell 1
+    assert md["n_over"] == 5
+    hot = [h for h in q["hotspots"] if h["metric"] == "aspect_ratio"]
+    assert hot and all(h["x"] >= 2.0 for h in hot)

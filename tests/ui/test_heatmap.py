@@ -41,6 +41,11 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
         const s = String(u);
         const json = (b) => Promise.resolve(new Response(JSON.stringify(b),
           {status: 200, headers: {'Content-Type': 'application/json'}}));
+        if (s.includes('/simulation/__JOB__/surface.vtk')) {
+          window.__vtkHits = (window.__vtkHits || 0) + 1;
+          return Promise.resolve(new Response(new Blob(['# vtk DataFile Version 3.0\\n']),
+            {status: 200, headers: {'Content-Type': 'application/octet-stream'}}));
+        }
         if (s.includes('/simulation/__JOB__/surface')) return json(PAYLOAD);
         if (s.includes('/client-config')) return json({});
         return real(u, o);
@@ -59,8 +64,8 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
         .map(c => c.dataset.metric);
       return {{metrics: h.metrics, live, active: h.active(), legend: h.legend()}};
     }})()""")
-    assert state["metrics"] == ["non_ortho", "skewness"]
-    assert sorted(state["live"]) == ["non_ortho", "skewness"], state
+    assert state["metrics"] == ["non_ortho", "skewness", "aspect_ratio"]
+    assert sorted(state["live"]) == ["aspect_ratio", "non_ortho", "skewness"], state
     assert state["active"] is None and state["legend"] is False
 
     # clicking the non-orthogonality figure colours the mesh, draws the legend, marks the one
@@ -106,6 +111,31 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert marked["markers"] == 1 and marked["probeGone"]
     assert "1 mark" in marked["submit"]
 
+    # aspect ratio: cell 0 is a unit cube and reads 1.00; checkMesh's bar (1000) is far above
+    # the mesh's range, so the scale spans the mesh's own values and no limit tick is drawn
+    ar = live.evaluate(f"""(() => {{
+      const h = window._vdbg['{JOB}:heat'];
+      h.set(null); h.set('aspect_ratio');
+      const lg = document.querySelector('#viewer-{JOB} .v-legend');
+      return {{active: h.active(), text: lg ? lg.textContent : '',
+               tick: !!document.querySelector('#viewer-{JOB} .v-legend .lim'),
+               inlet: h.probe('inlet', 0).values.aspect_ratio}};
+    }})()""")
+    assert ar["active"] == "aspect_ratio" and "aspect ratio" in ar["text"], ar
+    assert ar["tick"] is False and "none near the 1000.00 bar" in ar["text"], ar
+    assert ar["inlet"] == pytest.approx(1.0, abs=1e-4)
+
+    # the ParaView export button fetches the VTK route with the API headers and hands the file
+    # to the browser as a download
+    exported = live.evaluate(f"""(async () => {{
+      const a = window._vdbg['{JOB}'].vtk && window._vdbg['{JOB}'].vtk();
+      if (!a) return {{present: false}};
+      a.click();
+      await new Promise(r => setTimeout(r, 800));
+      return {{present: true, hits: window.__vtkHits || 0, id: a.id, label: a.textContent}};
+    }})()""", timeout=30)
+    assert exported["present"] and exported["hits"] == 1 and exported["id"] == f"v-vtk-{JOB}", exported
+
     # turning it off restores the plain view: no legend, no hotspots, no active metric
     off = live.evaluate(f"""(() => {{
       window._vdbg['{JOB}:heat'].set(null);
@@ -142,6 +172,8 @@ def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_
       heat: !!(window._vdbg['plain-job:heat']),
       live: document.querySelectorAll('#v-facts-plain-job .mx-c.live').length,
       ctl: !!document.getElementById('v-heatctl-plain-job'),
-      legend: !!document.querySelector('#viewer-plain-job .v-legend')}))()""")
-    assert state == {"heat": False, "live": 0, "ctl": False, "legend": False}
+      legend: !!document.querySelector('#viewer-plain-job .v-legend'),
+      vtk: !!document.getElementById('v-vtk-plain-job')}))()""")
+    # the export needs no fields, only a polyMesh surface - it stays
+    assert state == {"heat": False, "live": 0, "ctl": False, "legend": False, "vtk": True}
     assert_clean(live, "the viewer without quality fields")
