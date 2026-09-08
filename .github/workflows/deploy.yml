@@ -141,8 +141,21 @@ jobs:
               echo "console_service=dev-console"
               # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
               # instances themselves - see the outputs block above.
-              echo "cloudsql_instance=dev-pg"
-              echo "redis_instance=dev-redis"
+              #
+              # NOT dev-pg / dev-redis, for exactly the reason prod's branch below is not
+              # prod-pg / prod-redis - dev was simply missed when that was corrected. Both
+              # instances are STATEFUL and already exist under the older naming: hexera-dev-pg
+              # holds the meshpipeline database this environment's migrations run against.
+              # Neither can be renamed in place and deploy.sh reconciles BY EXACT NAME, so the
+              # tidier name would not rename anything - it would build a SECOND, billed instance
+              # beside the live one on the next `components=all`, and leave every migration
+              # pointing at an empty database. Renaming them is a data migration, not a config
+              # edit, and it is tracked as its own decision.
+              #
+              # This was not merely latent: discovery reported "no hosted database declared" on
+              # every dev deploy, because it was resolving a name nothing answers to.
+              echo "cloudsql_instance=hexera-dev-pg"
+              echo "redis_instance=hexera-dev-redis"
               echo "migrate_db_name=meshpipeline"
               echo "migrate_db_user=meshpipeline"
               # A Secret Manager CONTAINER NAME. No credential value appears in this file.
