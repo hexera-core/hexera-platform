@@ -98,9 +98,26 @@ fi
 # the API and to resolve its two credentials, because both failures present only at runtime: an
 # unreachable API is a console that renders and then 503s, and a missing AUTH_SECRET is a revision
 # that never becomes ready.
+#
+# console_selected - mirrors deploy.sh's own `want()`: DEPLOY_COMPONENTS is a comma-separated list
+# or `all`, and UNSET means `all`, never "less" (deploy.sh defaults it the same way before
+# exporting it). Only the HEXERA_API_BASE_URL check below is gated on this: it is the one check
+# that depends on a LIVE resource (the API service's discovered URL) rather than static
+# configuration, and on a fresh environment that resource does not exist until stage 14 - twelve
+# stages after this one. A run that selects, say, only 'images' must not be refused at stage 2 for
+# a console it is not touching this run.
+console_selected() {
+  case ",${DEPLOY_COMPONENTS:-all}," in
+    *,all,*) return 0 ;;
+    *,console,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 if [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
-  [ -n "${HEXERA_API_BASE_URL:-}" ] \
-    || add "CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not - the console's /api/v1 proxy would have no origin to forward to"
+  if console_selected; then
+    [ -n "${HEXERA_API_BASE_URL:-}" ] \
+      || add "CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not - the console's /api/v1 proxy would have no origin to forward to"
+  fi
   [ -n "${AUTH_SECRET_SECRET:-}" ] \
     || add "the console is configured but AUTH_SECRET_SECRET names no Secret Manager container - Auth.js refuses to start without a secret"
   [ -n "${CONSOLE_AUTH_USERS_SECRET:-}" ] \

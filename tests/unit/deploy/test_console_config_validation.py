@@ -65,3 +65,24 @@ def test_inverted_console_scaling_is_refused(tmp_path):
 def test_no_console_is_not_an_error(tmp_path):
     done = _run({}, tmp_path)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_a_console_without_an_api_base_url_validates_clean_when_console_is_not_selected(tmp_path):
+    # A fresh environment: the API service that would satisfy HEXERA_API_BASE_URL is not created
+    # until stage 14, twelve stages after this validation runs at stage 2. A run that declares a
+    # console but is not actually reconciling it this time (DEPLOY_COMPONENTS names something
+    # else) must not be refused for a live resource it is not touching.
+    done = _run({"CLOUDRUN_CONSOLE_SERVICE": "t-console",
+                 "AUTH_SECRET_SECRET": "console-auth-secret",
+                 "CONSOLE_AUTH_USERS_SECRET": "console-auth-users",
+                 "DEPLOY_COMPONENTS": "images"}, tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_a_console_without_an_api_base_url_is_still_refused_when_console_is_selected(tmp_path):
+    done = _run({"CLOUDRUN_CONSOLE_SERVICE": "t-console",
+                 "AUTH_SECRET_SECRET": "console-auth-secret",
+                 "CONSOLE_AUTH_USERS_SECRET": "console-auth-users",
+                 "DEPLOY_COMPONENTS": "images,console"}, tmp_path)
+    assert done.returncode != 0
+    assert "HEXERA_API_BASE_URL" in done.stdout + done.stderr

@@ -27,7 +27,7 @@ describing it as empty is stale.
 | Role | `hexera-dev` | `hexera-prod` |
 | --- | --- | --- |
 | API (Cloud Run service) | `hexera-dev-api` | `prod-api` |
-| Console (Cloud Run service) | *(unset — see below)* | *(unset — see below)* |
+| Console (Cloud Run service) | `dev-console` | *(deliberately unset — see below)* |
 | Mesh executor (Cloud Run job) | `dev-mesh` | `prod-mesh` |
 | Schema migration (job) | `dev-migrate` | `prod-migrate` |
 | Queue-depth publisher (job) | `dev-queue-depth` | `prod-queue-depth` |
@@ -114,12 +114,20 @@ errors until the API catches up.
   `apps/console/src/auth.ts` sets `trustHost: true` — Auth.js derives its callback URL from the
   request host instead of requiring one to be configured per environment.
 
-**Not yet wired to a target:** `deploy.yml` selects `console` in the merge-to-main default (§5),
-but does not pin `CLOUDRUN_CONSOLE_SERVICE` for either environment the way it pins
-`CLOUDRUN_API_SERVICE` (`api_service=dev-api` / `api_service=prod-api`, §1). Until a service name
-is pinned there, `bootstrap-env.sh` leaves `CLOUDRUN_CONSOLE_SERVICE` empty and
-`create-console-service.sh` states its own skip ("no Cloud Run console service configured") on
-every run, dev included — see §7.
+**Pinned on dev, deliberately not on prod:** `deploy.yml` pins `console_service=dev-console` for
+dev, the same way it pins `CLOUDRUN_API_SERVICE` (`api_service=dev-api` / `api_service=prod-api`,
+§1) — so a merge to main, which selects `console` in its default component set (§5), actually
+reconciles a named service instead of `create-console-service.sh` stating its own skip.
+
+Prod's `console_service=` is left empty, and that is a decision, not a gap. `components=all` on a
+release tag means a tag reconciles every tier it is *told about* — pinning a name here is what
+would tell it to reconcile the console, provisioning a new, billed Cloud Run service in production
+on the very next tag, unasked. That is the same class of mistake PR #12's naming slip nearly made
+with `hexera-prod-pg` (§2): a name typed into this file quietly becoming a second, unwanted, paid
+resource standing next to the real one — there it would have been a second, empty Cloud SQL
+instance beside the production database; here it would be a console nobody requested, serving from
+a project nobody pointed it at. Prod gets no console until a human deliberately pins a name here,
+in a reviewed diff, the same gate that governs everything else in this file.
 
 ---
 
@@ -362,10 +370,6 @@ Ordered by how much they would hurt.
    2026-09-04. It will recur.
 9. **Every merge to main deploys**, including a docs-only change. `ci.yml`'s `preflight` already
    computes a changed-scope signal that `deploy.yml` does not consult.
-9a. **`deploy.yml` selects `console` but pins no `CLOUDRUN_CONSOLE_SERVICE`.** The `target` job
-    never outputs a `console_service`, and the deploy job's `env:` block names no
-    `CLOUDRUN_CONSOLE_SERVICE`, unlike `CLOUDRUN_API_SERVICE`. Until one is pinned for `dev` (and
-    `prod`), the console stage runs on every merge and states its own skip every time — see §1.
 10. **GitHub-hosted larger runners are unavailable to the org** — verified with an `admin:org`
     token; list, machine-sizes and create all return
     `404 GitHub hosted runners are not supported for this organization`. Enabling them is an

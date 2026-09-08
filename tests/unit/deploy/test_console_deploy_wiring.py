@@ -196,12 +196,20 @@ def test_discovery_does_not_overwrite_an_already_set_api_base_url(tmp_path):
 
 def test_discovery_does_not_attempt_the_read_without_a_configured_console(tmp_path):
     # No CLOUDRUN_CONSOLE_SERVICE at all: even though the API service exists and resolves, this
-    # is not a console deployment and there is no /api/v1 proxy for the URL to serve.
+    # is not a console deployment and there is no /api/v1 proxy for the URL to serve. An empty
+    # final value alone would also be produced by a read that was ATTEMPTED and returned nothing
+    # (see test_discovery_leaves_api_base_url_empty_when_api_service_returns_no_url), so this
+    # asserts the read never happened at all, via the same FAKE_CALL_LOG the deny-path tests use.
     base, tmp = _gcloud_env(tmp_path)
+    call_log = tmp / "calls.log"
     p = _run(base, {
         "CLOUDRUN_API_SERVICE": "dev-api",
         "FAKE_API_URL": "https://dev-api-abc123-uc.a.run.app",
+        "FAKE_CALL_LOG": str(call_log),
     })
     assert p.returncode == 0, p.stderr
+    assert not call_log.exists(), (
+        "discovery attempted to read the API service's URL even though no console is "
+        "configured - the console stage is the only consumer of HEXERA_API_BASE_URL")
     env = _gen(tmp)
     assert env.get("HEXERA_API_BASE_URL", "") == ""
