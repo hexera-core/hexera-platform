@@ -27,6 +27,7 @@ describing it as empty is stale.
 | Role | `hexera-dev` | `hexera-prod` |
 | --- | --- | --- |
 | API (Cloud Run service) | `hexera-dev-api` | `prod-api` |
+| Console (Cloud Run service) | *(unset — see below)* | *(unset — see below)* |
 | Mesh executor (Cloud Run job) | `dev-mesh` | `prod-mesh` |
 | Schema migration (job) | `dev-migrate` | `prod-migrate` |
 | Queue-depth publisher (job) | `dev-queue-depth` | `prod-queue-depth` |
@@ -74,6 +75,51 @@ that Cloud SQL and Memorystore are addressed out of. Dev additionally carries a
 `redis-peer-…` peering from the hand-made Memorystore instance.
 
 Cloud Run reaches the VPC by Direct VPC egress, `private-ranges-only`.
+
+### Console (Cloud Run service)
+
+The Next.js console — the browser front door — is a third promotable workload beside the mesh
+job and the API, provisioned by `deploy/gcp/scripts/create-console-service.sh` and named
+`<deployment-id>-console` (`dev-console` / `prod-console`) following the naming rule in §2.
+
+Unlike the API, **it is publicly invokable by design**: `CONSOLE_ALLOW_UNAUTHENTICATED` defaults
+to `1` where `API_ALLOW_UNAUTHENTICATED` defaults to `0`, because the console's own Auth.js
+session is the gate — putting Cloud Run IAM in front of it would mean nobody could reach the
+sign-in page to authenticate at all.
+
+It scales `0..3` instances on dev (`CONSOLE_MIN_INSTANCES` / `CONSOLE_MAX_INSTANCES`), smaller
+than the API's `0..5`, because it renders pages and proxies rather than running model calls.
+
+Credentials reach it as four Secret Manager references, never as literal values — two it owns and
+two it shares with the API:
+
+| Runtime var | Container name | Shared with the API? |
+| --- | --- | --- |
+| `AUTH_SECRET` | `console-auth-secret` | no — the console's own Auth.js session key |
+| `CONSOLE_AUTH_USERS` | `console-auth-users` | no — scrypt password hashes for console sign-in |
+| `MESH_API_KEY` | `mesh-api-key` | yes |
+| `USER_TOKEN_SECRET` | `user-token-secret` | yes |
+
+Selected by the `console` component in `DEPLOY_COMPONENTS` (§5), and rolled out *after* the API
+stage — every console page load reaches the API, so a console that rolls out first would serve
+errors until the API catches up.
+
+**Two known limits, stated rather than fixed here:**
+
+- `NEXT_PUBLIC_HEXERA_API_BASE_URL` is compiled into the browser bundle at image **build** time by
+  Next. Setting it on the deployed Cloud Run service changes nothing a browser has already
+  downloaded. A public API origin that differs per environment needs this as a **build argument**
+  to the console image, not a deploy-time setting.
+- The console runs on the generated `run.app` URL with no `AUTH_URL` set, because
+  `apps/console/src/auth.ts` sets `trustHost: true` — Auth.js derives its callback URL from the
+  request host instead of requiring one to be configured per environment.
+
+**Not yet wired to a target:** `deploy.yml` selects `console` in the merge-to-main default (§5),
+but does not pin `CLOUDRUN_CONSOLE_SERVICE` for either environment the way it pins
+`CLOUDRUN_API_SERVICE` (`api_service=dev-api` / `api_service=prod-api`, §1). Until a service name
+is pinned there, `bootstrap-env.sh` leaves `CLOUDRUN_CONSOLE_SERVICE` empty and
+`create-console-service.sh` states its own skip ("no Cloud Run console service configured") on
+every run, dev included — see §7.
 
 ---
 
@@ -132,7 +178,7 @@ Two oddities in dev:
 
 ```
                     ┌──────────────────────────────────────────────┐
-  merge to main ───▶│ Deploy: components = images,migrate          │──▶ hexera-dev
+  merge to main ───▶│ Deploy: components = images,migrate,console  │──▶ hexera-dev
                     │ gate: hexera/ci-gate MUST pass (blocking)    │
                     └──────────────────────────────────────────────┘
 
@@ -224,13 +270,14 @@ and money for resources the change never touched.
 | `migrate` | schema, applied once before anything serves the new image |
 | `queue` | queue-depth publisher + autoscaling policy |
 | `workers` | managed instance group + rolling update |
+| `console` | Cloud Run console service — the promoted console digest, in front of the API |
 
 Always on, never selectable: discovery, config validation, preflight, plan confirmation, API
 enablement, Artifact Registry, runtime identities, release promotion, IAM. Each is read-only or
 cheap and idempotent, and skipping them is how a run deploys against configuration it never checked.
 
-Defaults: merge to main → `images,migrate`. Release tag → `all`, forced. Manual → your choice.
-Locally: `make mesh-deploy COMPONENTS=images,migrate`.
+Defaults: merge to main → `images,migrate,console`. Release tag → `all`, forced. Manual → your
+choice. Locally: `make mesh-deploy COMPONENTS=images,migrate,console`.
 
 Every skipped stage says so, and the summary distinguishes *reconciled* / *not declared* /
 **not selected** — a summary reading "Schema at head" after `migrate` was excluded would be the
@@ -240,7 +287,7 @@ most misleading line the script prints.
 image on every run (~20 min) because GitHub runners keep no layer cache between runs. That is the
 dominant cost and is not addressed here — see §7.
 
-### The twelve stages, in order
+### The sixteen stages, in order
 
 1. Discover environment, generate config
 2. Validate configuration schema (typed, read-only)
@@ -256,10 +303,11 @@ dominant cost and is not addressed here — see §7.
 12. Schema migrations *(`migrate`)*
 13. Queue-depth publisher *(`queue`)*
 14. API service *(`images`)*
-15. Worker fleet + rolling update *(`workers`)*
+15. Console service *(`console`)*
+16. Worker fleet + rolling update *(`workers`)*
 
-Ordering is load-bearing: schema before the API serves it; the fleet last, so a worker never
-starts before the schema, queue signal and object store exist.
+Ordering is load-bearing: schema before the API serves it; the console after the API it talks to;
+the fleet last, so a worker never starts before the schema, queue signal and object store exist.
 
 ---
 
@@ -314,6 +362,10 @@ Ordered by how much they would hurt.
    2026-09-04. It will recur.
 9. **Every merge to main deploys**, including a docs-only change. `ci.yml`'s `preflight` already
    computes a changed-scope signal that `deploy.yml` does not consult.
+9a. **`deploy.yml` selects `console` but pins no `CLOUDRUN_CONSOLE_SERVICE`.** The `target` job
+    never outputs a `console_service`, and the deploy job's `env:` block names no
+    `CLOUDRUN_CONSOLE_SERVICE`, unlike `CLOUDRUN_API_SERVICE`. Until one is pinned for `dev` (and
+    `prod`), the console stage runs on every merge and states its own skip every time — see §1.
 10. **GitHub-hosted larger runners are unavailable to the org** — verified with an `admin:org`
     token; list, machine-sizes and create all return
     `404 GitHub hosted runners are not supported for this organization`. Enabling them is an
