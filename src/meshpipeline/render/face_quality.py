@@ -99,6 +99,25 @@ def _body(path: Path) -> tuple[int, bytes]:
     return int(m.group(1)), data[hdr_end + m.end():data.rindex(b")")]
 
 
+def declared_count(path: Path) -> int | None:
+    """The list count a polyMesh file declares, read from its first 64 KiB only - so a mesh past
+    the field cap is refused without loading it. A 22 M-face `faces` file is about a gigabyte of
+    arrays once parsed; on shell_tube_bundle_009 (7.3 M cells) that load, in a worker already
+    holding the mesh for its other checks, was part of what the kernel killed at 8 GiB.
+    None when the header cannot be read or carries no count (the full reader then decides)."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(65536)
+    except OSError:
+        return None
+    head = _strip(head)
+    hdr_end = head.find(b"}")
+    if hdr_end < 0:
+        return None
+    m = re.search(rb"(\d+)\s*\(", head[hdr_end + 1:])
+    return int(m.group(1)) if m else None
+
+
 def _tokens(buf: bytes, dtype) -> np.ndarray:
     if not buf.strip():
         return np.empty(0, dtype=dtype)
@@ -361,6 +380,11 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     `non_ortho_limit` and `skew_limit` are the engine's bars; they are reported back verbatim so
     the viewer's red line is the same line the quality gate drew.
     """
+    declared = declared_count(Path(polymesh_dir) / "faces")
+    if declared is not None and declared > MAX_FACES_FOR_FIELDS:
+        logger.info("viewer quality fields skipped: %d faces exceeds the %d cap (not loaded)",
+                    declared, MAX_FACES_FOR_FIELDS)
+        return None
     try:
         mesh = read_polymesh(Path(polymesh_dir))
     except UnreadableMesh as exc:
