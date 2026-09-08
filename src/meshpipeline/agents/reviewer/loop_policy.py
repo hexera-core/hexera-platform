@@ -152,6 +152,7 @@ class ReviewLoopPolicy:
     _observed_at: EvidenceSnapshot | None = None    # evidence as of the last ROUND observation
     _round_progressed: bool = False
     _progress_signature: str = ""
+    _last_malformed_sig: str = ""      # the problems the last malformed payload was corrected for
 
     def __post_init__(self) -> None:
         self.required_axes = tuple(getattr(ax, "name", "") for ax in getattr(self.plan, "axes", ()))
@@ -179,6 +180,7 @@ class ReviewLoopPolicy:
             record_operation_evidence,
         )
         if invocation.parsed is None:
+            self._malformed_round("unparseable")
             return ToolOutcome(content=self._malformed_correction(), accepted=False)
         args = invocation.parsed
 
@@ -210,7 +212,7 @@ class ReviewLoopPolicy:
             # consulted, and no verdict can exist. It is not counted as a submission because
             # eligibility never evaluated one - it is counted, and stalls, on its own terms.
             self.malformed_submissions += 1
-            self._mark_no_progress(f"malformed:{_signature(problems)}")
+            self._malformed_round(_signature(problems))
             return ToolOutcome(content=self._malformed_findings_correction(problems),
                                accepted=False)
         self.submissions += 1
@@ -297,6 +299,19 @@ class ReviewLoopPolicy:
             if _elig:
                 _text = f"{_text}\n{_elig}"
         return ToolOutcome(content=_text, accepted=False)
+
+    def _malformed_round(self, signature: str) -> None:
+        # A MALFORMED PAYLOAD IS CORRECTED, NOT STALLED ON. The correction names exactly what to
+        # fix, and the round the model spends fixing it is the expected next step - so the first
+        # time a given set of problems is named, that correction IS the round's progress. Only
+        # the same malformed payload again, uncorrected, is a stall. Without this a one-field slip
+        # after two fruitless rounds was the third strike (job 2d04696d: evidence_ids missing on
+        # one axis, review abandoned with a valid mesh in hand and nine rounds of budget unused).
+        if signature != self._last_malformed_sig:
+            self._mark_progress(f"malformed-corrected:{signature}")
+        else:
+            self._mark_no_progress(f"malformed:{signature}")
+        self._last_malformed_sig = signature
 
     def _mark_progress(self, signature: str) -> None:
         self._round_progressed, self._progress_signature = True, signature
