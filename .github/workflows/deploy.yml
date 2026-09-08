@@ -101,14 +101,17 @@ jobs:
           set -euo pipefail
           # A manual run and a merge both target dev; they differ only in HOW MUCH they reconcile.
           # A merge to main takes the cheap path - the two workloads that carry an application
-          # digest, and the schema they may need - because reconciling Cloud SQL, the object-store
-          # credential and the whole worker fleet to ship an image costs minutes and money for
-          # tiers the change did not touch. `all` remains one dispatch away, and every release
-          # takes it.
-          COMPONENTS="${DISPATCH_COMPONENTS:-images,migrate}"
+          # digest, the schema they may need, and the console that fronts them - because
+          # reconciling Cloud SQL, the object-store credential and the whole worker fleet to ship
+          # an image costs minutes and money for tiers the change did not touch. `all` remains one
+          # dispatch away, and every release takes it.
           if [ "${GITHUB_REF}" = "refs/heads/main" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             {
-              echo "components=${COMPONENTS}"
+              if [ -n "${DISPATCH_COMPONENTS:-}" ]; then
+                echo "components=${DISPATCH_COMPONENTS}"
+              else
+                echo "components=images,migrate,console"
+              fi
               echo "environment=dev"
               echo "deployment_id=dev"
               echo "project=hexera-dev"
