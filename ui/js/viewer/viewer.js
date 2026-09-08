@@ -31,9 +31,13 @@ function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
   for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
 function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
-/* geometry fills, steel-family so the orange SELECTION is never ambiguous */
-const _PATCH_COLS=[[0.192,0.322,0.443],[0.290,0.380,0.470],[0.235,0.365,0.420],
-                   [0.270,0.330,0.440],[0.220,0.350,0.460],[0.300,0.350,0.410]];
+/* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
+   apart without shouting; the GOLD selection is never ambiguous against any of them */
+const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
+                   [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
+const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
+const _EDGE_HEAT=[0.17,0.15,0.13];    /* darker while the faces carry colour, so the data reads */
+const _SEL=[1.0,0.73,0.0],_SEL_EDGE=[0.58,0.42,0.06];
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
 export async function openViewer(job,anchorEl,opts){
@@ -103,7 +107,21 @@ export async function openViewer(job,anchorEl,opts){
       <div class="v-hint" id="v-hint-${job}">rotate: drag · zoom: wheel or right-drag · pan: shift+drag</div>
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
-  anchorEl.after(box);
+  // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
+  // conversation becomes the drawer beside it; an earlier result stays in the DOM, hidden, so
+  // its context is not torn down under a still-running render. Without one (an embedding
+  // page) the viewer opens inline after its anchor, as it always did.
+  const _wb=document.getElementById('workbench'),_app=document.getElementById('app');
+  if(_wb&&_app&&opts.takeover!==false){
+    _wb.querySelectorAll('.viewer').forEach(v=>{v.hidden=true;});
+    _wb.appendChild(box);
+    _app.classList.add('wb');_app.classList.remove('wb-collapsed');
+    const _tg=document.getElementById('wb-toggle');
+    if(_tg){_tg.hidden=false;
+      _tg.onclick=()=>{const on=_app.classList.toggle('wb-collapsed');
+        _tg.textContent=on?'Show conversation':'Hide conversation';
+        _tg.setAttribute('aria-pressed',on?'true':'false');};}
+  } else anchorEl.after(box);
   // CASE B - "this is acceptable": the user amends the ACCEPTANCE CRITERIA, not the
   // mesh. Their statement joins the review brief, the SAME mesh is re-reviewed against
   // it, and the verdict is honoured (it can still fail). Validity is never overridden.
@@ -172,15 +190,16 @@ function initViewer(job,surf,uiCfg){
     const base=_PATCH_COLS[i%_PATCH_COLS.length];
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
-    pr.setEdgeVisibility(true);pr.setEdgeColor(0.702,0.796,0.902);pr.setLineWidth(1);
-    pr.setAmbient(0.24);pr.setDiffuse(0.82);
-    pr.setSpecular(0.32);pr.setSpecularPower(26);pr.setSpecularColor(1,1,1);
+    pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
+    pr.setAmbient(0.30);pr.setDiffuse(0.78);
+    pr.setSpecular(0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
     ren.addActor(actor);
     const b=pd.getBounds();
     entries.push({actor,pd,patch:p.name,polys,pts,nCells,offsets:null,
       diag:Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4])});
     totalFaces+=nCells;});
 
+  let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
   const cam=ren.getActiveCamera();
   cam.azimuth(45);cam.elevation(25);
   ren.resetCamera();rw.render();
@@ -358,9 +377,10 @@ function initViewer(job,surf,uiCfg){
         en.actor.setVisibility(!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
         if(pr.setBackfaceCulling)pr.setBackfaceCulling(s.opacity>=1);
-        if(isSel){pr.setColor(1.0,0.31,0.0);pr.setEdgeColor(1.0,0.55,0.30);pr.setAmbient(0.42);}
+        if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
+                  pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
         else{pr.setColor(s.base[0],s.base[1],s.base[2]);
-             pr.setEdgeColor(0.702,0.796,0.902);pr.setAmbient(0.24);}
+             pr.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);pr.setAmbient(0.30);}
       });
       rw.render();
       chips.querySelectorAll('.v-bnd-chip').forEach(c=>{
@@ -746,8 +766,10 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    const STOPS=[[0,[41,92,176]],[0.5,[64,173,168]],[0.8,[242,199,68]],[1.0,[232,97,60]]];
-    const PAST=[140,20,25];
+    /* the product's own palette: deep water below, teal through the calm range, gold as the
+       number approaches the bar, crimson-soft at it, crimson past it */
+    const STOPS=[[0,[34,96,128]],[0.5,[15,182,172]],[0.8,[255,186,0]],[1.0,[255,107,94]]];
+    const PAST=[128,18,12];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,hi=Math.max(lim*1.3,md.max||0);
       const pts=STOPS.map(([f,c])=>[f*lim,c]).concat([[hi,PAST]]);
       const color=(v,out,o)=>{
@@ -756,7 +778,7 @@ function initViewer(job,surf,uiCfg){
         const [a,ca]=pts[i-1],[b,cb]=pts[i],t=Math.min(1,Math.max(0,(v-a)/((b-a)||1)));
         out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
       const pc=v=>(100*v/hi).toFixed(1)+'%';
-      const css='linear-gradient(90deg,'+STOPS.map(([f,c])=>`rgb(${c}) ${pc(f*lim)}`).join(',')
+      const css='linear-gradient(0deg,'+STOPS.map(([f,c])=>`rgb(${c}) ${pc(f*lim)}`).join(',')
         +`,rgb(${PAST}) 100%)`;
       return {color,hi,css,limitPct:pc(lim)};}
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
@@ -789,15 +811,24 @@ function initViewer(job,surf,uiCfg){
         else mp.setScalarVisibility(false);});
       if(legend){legend.remove();legend=null;}
       clearHot();hideProbe();
+      // edges step back while the faces carry the data, and return when it is switched off
+      edgeCol=rp?_EDGE_HEAT:_EDGE;
+      entries.forEach(en=>{const pp=en.actor.getProperty();
+        pp.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
       if(rp){const md=qf.metrics[m];showHot(m);
         legend=document.createElement('div');legend.className='v-legend';
+        // an instrument scale: the bar stands upright beside the viewport, the limit is a
+        // tick with its value, the top of the bar is a third past the limit
         legend.innerHTML=`<b>${esc(md.label)}</b>`
-          +`<span class="bar" style="background:${rp.css}"><i style="left:${rp.limitPct}"></i></span>`
-          +`<span>0 → <b>${esc(fmt(m,md.limit))}</b> limit → ${esc(fmt(m,rp.hi))}</span>`
-          +`<span class="sep">·</span><span>max ${esc(fmt(m,md.max||0))}</span>`
+          +`<span class="scale"><span class="ticks">`
+            +`<span style="bottom:100%">${esc(fmt(m,rp.hi))}</span>`
+            +`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`
+            +`<span style="bottom:0">0</span></span>`
+          +`<span class="bar" style="background:${rp.css}"><i style="bottom:${rp.limitPct}"></i></span></span>`
+          +`<span class="mxv">max ${esc(fmt(m,md.max||0))}</span>`
           +(md.n_over
-             ?`<span class="sep">·</span><span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
-             :`<span class="sep">·</span><span class="ok">none over</span>`)
+             ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
+             :`<span class="ok">none over</span>`)
           +`<span class="x" title="turn colouring off">✕</span>`;
         legend.querySelector('.x').onclick=()=>setMetric(null);
         host.appendChild(legend);

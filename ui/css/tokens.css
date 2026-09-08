@@ -4,65 +4,72 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 /* /
-   Engineering instrument: graphite, steel and international orange.
-   Palette adopted from the Design-Lab design system. Role-named, so a hue can
-   change without every rule downstream becoming a lie.
+   The product wears the same finish as hexera.ai: one warm amber-black canvas,
+   raised panels a shade lighter, near-white ink, teal for the primary action
+   and the running state, gold for the selection and nothing else, crimson for
+   a failure. Role-named, so a hue can change without every rule downstream
+   becoming a lie.
 
-   The LEGACY names (--ink, --card, --line …) that the rest of this stylesheet
+   The LEGACY names (--ink, --card, --line ...) that the rest of this stylesheet
    tree already speaks are aliased at the bottom onto the new roles. That is
    deliberate: the product structure is unchanged, so every existing rule keeps
    working and only the values move.
 / */
 :root{
-  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',
-         'Noto Sans',Arial,sans-serif;
-  --mono:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',
-         'DejaVu Sans Mono',monospace;
+  --sans:"Geist","Geist Fallback",system-ui,-apple-system,"Segoe UI","Helvetica Neue",
+         Arial,sans-serif;
+  --mono:"Geist Mono","Geist Mono Fallback",ui-monospace,SFMono-Regular,Menlo,Consolas,
+         'Liberation Mono',monospace;
+  --display:"Saira Semi Condensed","Helvetica Neue",Arial,sans-serif;
 
-  /* surfaces - an elevation ladder, each step lighter than the page */
-  --canvas:#090e13;
-  --background:#0d141b;
-  --surface-1:#111a22;
-  --surface-2:#16212b;
-  --surface-raised:#1b2833;
-  --viewer-frame:#0d141b;
-  --viewer-canvas:#090e13;
-  --border:#2b3b47;
-  --border-strong:#435967;
+  /* surfaces - an elevation ladder, each step a shade lighter than the canvas */
+  --canvas:#060402;
+  --background:#0b0905;
+  --surface-1:#0d0a06;
+  --surface-2:#15110a;
+  --surface-raised:#1c160d;
+  --viewer-frame:#0b0905;
+  --viewer-canvas:#060402;
+  --border:rgba(238,235,225,.10);
+  --border-strong:rgba(238,235,225,.22);
 
   /* text - every value AA on the surfaces above */
-  --text:#f3f0e9;
-  --text-muted:#a5b0b8;
-  --text-faint:#6f7d87;
+  --text:#ede9e0;
+  --text-muted:#b7b2a6;
+  --text-faint:#867f72;
+  --text-bright:#f4f1ea;
 
-  /* accent - used sparingly: primary action, active selection, focus,
-     current progress, the selected mesh boundary */
-  --accent:#ff5a12;
-  --accent-hover:#ff7638;
-  --accent-soft:rgba(255,90,18,.13);
-  --accent-line:rgba(255,90,18,.45);
-  --accent-ink:#1a0a03;          /* the ONLY safe text colour on --accent */
+  /* accent - used sparingly: primary action, focus, the running state */
+  --accent:#0fb6ac;
+  --accent-hover:#19cfc4;
+  --accent-soft:rgba(15,182,172,.12);
+  --accent-line:rgba(15,182,172,.45);
+  --accent-ink:#04211f;          /* the ONLY safe text colour on --accent */
 
-  /* steel - technical linework and secondary structure */
-  --steel:#8fb3ca;
-  --steel-bright:#b2cfe4;
-  --steel-muted:#4b6577;         /* decoration only, never text */
-  --steel-soft:rgba(143,179,202,.14);
+  /* gold - the selection: the selected part, an armed control, a mark */
+  --gold:#ffba00;
+  --gold-soft:rgba(255,186,0,.14);
+  --gold-line:rgba(255,186,0,.5);
+  --gold-ink:#211800;
+
+  /* steel - technical linework and secondary structure, warmed for the canvas */
+  --steel:#9db0ad;
+  --steel-bright:#c6d2cf;
+  --steel-muted:#4d5754;         /* decoration only, never text */
+  --steel-soft:rgba(157,176,173,.12);
 
   /* status - meaning carried by a word AND a mark, never colour alone */
-  --ok:#61d49a;      --ok-soft:rgba(97,212,154,.11);
-  --warn:#f1bd63;    --warn-soft:rgba(240,180,107,.12);
-  --danger:#ff8b7e;  --danger-soft:rgba(255,139,139,.12);
+  --ok:#3fcf9a;      --ok-soft:rgba(63,207,154,.11);
+  --warn:#ffba00;    --warn-soft:rgba(255,186,0,.12);
+  --danger:#ff6b5e;  --danger-soft:rgba(255,107,94,.12);
 
-  --mesh-canvas:#090e13;
-  --mesh-selection:#ff5a12;
+  --mesh-canvas:#060402;
+  --mesh-selection:#ffba00;
 
   --focus:var(--accent);
-  --radius:3px;
-  --shadow-1:0 1px 2px rgba(0,0,0,.5);
-  --shadow-2:0 18px 48px -24px rgba(0,0,0,.7);
-
-  --text-bright:#dfe2e2;
+  --radius:2px;
+  --shadow-1:0 1px 2px rgba(0,0,0,.6);
+  --shadow-2:0 18px 48px -24px rgba(0,0,0,.8);
 }
 
 html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
@@ -81,4 +88,4 @@ html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;
   border:2px solid var(--canvas)}
-::-webkit-scrollbar-thumb:hover{background:#55636f}
+::-webkit-scrollbar-thumb:hover{background:rgba(238,235,225,.34)}
