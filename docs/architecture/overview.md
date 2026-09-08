@@ -20,8 +20,13 @@ orchestration. The flow regime is never inferred from keywords: `flow_topology`
 field, internal purposes mesh the cavity, external ones build the far-field domain.
 
 ```
-API (stateless) ──enqueue──> Celery worker ──runs──> LangGraph state machine
-                                                         │
+Browser ──HTTP──> Console (Next.js) ──signed proxy──> API (stateless)
+   └───────────── WebSocket, straight to the API ─────────────┘
+                                                              │
+                                                           enqueue
+                                                              ↓
+                              Celery worker ──runs──> LangGraph state machine
+
   intake → engine_select → geometry_admission → builder → executor
          → {classifier → builder}* → reviewer → END
     (any node may set api_failure → node_failure_handler sink; a geometry-admission
@@ -51,6 +56,36 @@ cannot claim a download that is not ready or a review that did not pass.
 The application posts the verified final result back into the Intake conversation. Intake
 is not invoked again to reword it, and Intake never judges for itself whether execution
 succeeded.
+
+## The front door
+
+The **console** (`apps/console`) is what a user actually reaches. It is a Next.js server on its
+own Cloud Run service, and it is the only tier deliberately open to the internet: its Auth.js
+session is the gate, so putting Cloud Run's IAM in front of it would block the sign-in page it
+exists to serve. The API is not public in the same way, and that difference is stated in each
+service's configuration rather than inherited.
+
+Two paths leave the browser, and they are not the same path:
+
+- **HTTP goes through the console.** `/api/v1/*` is proxied server-side. The proxy resolves the
+  owner from the session and signs it (`X-User-Id` + an HMAC `X-User-Sig`), so the browser never
+  carries a credential and cannot assert an identity of its own. This is what replaces the legacy
+  page's `localStorage` identity, which any reader could edit.
+- **The event stream does not.** The WebSocket is opened by the browser straight at the API, using
+  a short-lived single-use ticket minted over authenticated HTTP. Credentials go in headers, never
+  in a URL a proxy or Cloud Run would log. The console is therefore not in the streaming path, and
+  a console deploy does not interrupt a running job's event feed.
+
+The console opens no database, no Redis and no object store. Everything it knows, it asks the API
+for. That is what lets it scale to zero, stay off the VPC, and deploy on its own schedule — and it
+is why a console change can never require a migration.
+
+**Accounts are env-backed today.** `CONSOLE_AUTH_USERS` carries email addresses and scrypt password
+hashes, delivered as a Secret Manager reference. It is a launch expedient, not an account system:
+there is no signup, no reset, no lockout, and no organisation boundary. Replacing it with database
+accounts is the next piece of work, and the tenant columns it will scope on
+(`Principal.organization_id`, `api_keys.organization_id`) are already carried and deliberately
+unused.
 
 ## Three tiers (this is what keeps it sane)
 1. **Generic spine** (built once): the graph, the builder agent loop, the reviewer's
@@ -160,6 +195,10 @@ The product is ONE installable distribution, `src/meshpipeline/`, the `meshpipel
 from which several runtime images are built. The dependency rule below is enforced by
 `tests/unit/hygiene/`, not merely documented.
 
+One deliverable does not come from that wheel: the **console** is a Next.js application built from
+its own `Dockerfile` target, on Node, sharing no layer with the Python images. It is a third
+release component beside `app` and `mesh`, promoted by digest like the other two.
+
 ### The seam (why the tree looks like this)
 
 | dir | role |
@@ -213,7 +252,9 @@ prescribes review presentation is rejected as not a current manifest.
 
 | dir | role |
 |---|---|
-| `ui/` | the frontend, an independent deliverable: served by the API, NOT part of the wheel |
+| `apps/` | the Next.js applications, a pnpm workspace: `console/` (the browser front door, its own image and Cloud Run service) and `admin-console/` (a stub, not yet deployed). NOT part of the wheel |
+| `packages/` | code shared between those apps: `hexera-api-client/`, the typed product-API client |
+| `ui/` | the LEGACY frontend, served by the API at `/ui`. Superseded by `apps/console`, kept as the fallback until the console's React rewrite lands |
 | `tests/` | `unit/` (fast, hermetic, heavy deps stubbed) · `integration/` (real deps, no stubs) · `unit/hygiene/` (the executable architecture rules) · `unit/platform/` (provider contracts, both backends) |
 | `deploy/` · `alembic/` | image + hosted-deploy documentation and templates (never imported by the package) · database migrations |
 | `devtools/` | developer tools, one directory per capability: `env/` (setup, doctor) · `quality/` (the CI-run repository gates) · `release/` (Gate C) |
@@ -258,7 +299,7 @@ Tests: `tests/unit/application/test_policy_versions.py`,
 
 | Service | Role | Notes |
 |---|---|---|
-| **api** | FastAPI: HTTP, WebSocket, and the browser UI | applies migrations on start |
+| **api** | FastAPI: HTTP, WebSocket, and the legacy `/ui` page | applies migrations on start |
 | **worker** | Celery worker running the pipeline | the LangGraph graph executes here |
 | **worker-utility** | maintenance work (retention, reconciliation) | separate so a long mesh never blocks it |
 | **beat** | scheduled maintenance triggers | |
@@ -266,6 +307,11 @@ Tests: `tests/unit/application/test_policy_versions.py`,
 | **redis** | typed event stream, backlog replay, Celery broker | |
 | **minio** | object storage for uploads and delivered bundles | S3-compatible; bucket names must be lowercase |
 | **searxng** | the web-search backend for the research tool | optional; `WEB_SEARCH_ENABLED=false` disables it |
+
+The console is **not** in that stack. It is a Node application in the pnpm workspace, run on its
+own with `pnpm dev:console`, and it talks to whichever API `HEXERA_API_BASE_URL` names — the local
+one, or a deployed environment. Nothing in Compose starts it, because nothing in Compose needs it:
+the API still serves `/ui`.
 
 ### Networking: and why the network has no fixed name
 

@@ -16,6 +16,11 @@ provisioning → then [Configuration](reference/configuration.md) for every sett
 [Repository map](architecture/repository-map.md) → [Architecture](architecture/overview.md) →
 [Development](development/overview.md) → [Gates](development/gates.md).
 
+**I am working on the browser console.**
+[The front door](architecture/overview.md#the-front-door) for what the console is and what it may
+not do → [Environments and delivery](deployment/environments-and-delivery.md) for how it is
+deployed and which settings reach it.
+
 **I am provisioning the cloud mesh tier, or running the stack for other people.**
 [Setup](getting-started/setup.md) → [Deployment](deployment/overview.md) →
 [Operating modes](architecture/operating-modes.md) → [Security and privacy](deployment/security-and-privacy.md).
