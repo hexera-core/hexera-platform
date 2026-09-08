@@ -51,3 +51,13 @@ def test_an_uncollected_result_for_another_reason_asks_for_an_unchanged_resubmit
     r = _uncollected("snappy", _REMOTE, OSError("disk full"))
     msg = _repair_message("rc", r, {})
     assert "RESULT NOT COLLECTED" in msg and "resubmit this plan unchanged" in msg
+
+
+def test_exit_137_is_read_as_out_of_memory_not_a_setup_issue():
+    # shell_tube_bundle_009 (job f5ae41d3): two runs on the 16 GiB task ended rc=137 and the
+    # planner was told to try strict quality and a larger domain - a bigger mesh
+    text = _repair_message("rc", {"rc": 137, "timed_out": False, "log_tail": ""}, {})
+    assert "KILLED FOR MEMORY" in text and "REDUCE" in text
+    assert "larger domain_margin" not in text
+    plain = _repair_message("rc", {"rc": 1, "timed_out": False, "log_tail": ""}, {})
+    assert "setup issue" in plain
