@@ -17,10 +17,11 @@
 #                            the SAME bytes as the API: a schema migrated by one build and read by
 #                            another is the drift this record exists to remove.
 #   console -> CONSOLE_IMAGE the Cloud Run console service
+#   admin   -> ADMIN_IMAGE   the Cloud Run admin service
 #
 # INPUTS   deploy/output/release.json, promotable
-# OUTPUT   MESH_IMAGE, APP_IMAGE, and CONSOLE_IMAGE written into the deployment env file as
-#          registry/component@sha256:... references
+# OUTPUT   MESH_IMAGE, APP_IMAGE, CONSOLE_IMAGE, and ADMIN_IMAGE written into the deployment env
+#          file as registry/component@sha256:... references
 # NETWORK  none
 # MUTATES  the deployment env file only
 set -euo pipefail
@@ -57,7 +58,8 @@ _ref() { "${PY}" -c 'import json,sys;print(json.load(open(sys.argv[1]))["compone
 MESH_REF="$(_ref mesh)" || die "the release record names no 'mesh' component - re-run Gate C"
 APP_REF="$(_ref app)"   || die "the release record names no 'app' component - re-run Gate C"
 CONSOLE_REF="$(_ref console)" || die "the release record names no 'console' component - re-run Gate C"
-for ref in "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}"; do
+ADMIN_REF="$(_ref admin)" || die "the release record names no 'admin' component - re-run Gate C"
+for ref in "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}" "${ADMIN_REF}"; do
   case "${ref}" in
     *@sha256:*) ;;
     *) die "the record carries a tag-only reference (${ref}) - deployment identity must be a digest" ;;
@@ -65,12 +67,13 @@ for ref in "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}"; do
 done
 
 ENV_TARGET="${DEPLOY_ENV_FILE:-${DEPLOY_DIR}/generated.env}"
-"${PY}" - "${ENV_TARGET}" "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}" <<'PY'
+"${PY}" - "${ENV_TARGET}" "${MESH_REF}" "${APP_REF}" "${CONSOLE_REF}" "${ADMIN_REF}" <<'PY'
 import pathlib, re, sys
-path, mesh, app, console = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, mesh, app, console, admin = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 p = pathlib.Path(path)
 text = p.read_text() if p.exists() else ""
-for key, value in (("MESH_IMAGE", mesh), ("APP_IMAGE", app), ("CONSOLE_IMAGE", console)):
+for key, value in (("MESH_IMAGE", mesh), ("APP_IMAGE", app), ("CONSOLE_IMAGE", console),
+                   ("ADMIN_IMAGE", admin)):
     if re.search(rf"^{key}=.*$", text, flags=re.M):
         text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, flags=re.M)
     else:
@@ -83,4 +86,5 @@ log "commit:        ${REC_COMMIT}"
 log "mesh (mesh job):            ${MESH_REF}"
 log "app (migration, publisher): ${APP_REF}"
 log "console (console service):  ${CONSOLE_REF}"
+log "admin (admin service):      ${ADMIN_REF}"
 log "written to:    ${ENV_TARGET}"
