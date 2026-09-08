@@ -1,11 +1,21 @@
 import NextAuth from "next-auth";
-import Google from "next-auth/providers/google";
+import Credentials from "next-auth/providers/credentials";
+
+import { verifyConsoleCredentials } from "@/lib/auth/credentials";
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
   pages: {
     signIn: "/sign-in",
   },
-  providers: [Google],
+  providers: [
+    Credentials({
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      authorize: (credentials) => verifyConsoleCredentials(credentials),
+    }),
+  ],
   session: {
     strategy: "jwt",
   },

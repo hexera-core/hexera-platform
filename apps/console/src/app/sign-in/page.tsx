@@ -2,14 +2,23 @@
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { GoogleSignInButton } from "@/app/_components/auth-buttons";
+import { EmailPasswordSignInForm } from "@/app/_components/auth-buttons";
 import { LegacyStyles } from "@/app/_components/legacy-styles";
 
-export default async function SignInPage() {
+type SignInPageProps = {
+  searchParams?: Promise<{
+    error?: string | string[];
+  }>;
+};
+
+export default async function SignInPage({ searchParams }: SignInPageProps) {
   const session = await auth();
   if (session) {
     redirect("/");
   }
+
+  const params = await searchParams;
+  const error = Array.isArray(params?.error) ? params.error[0] : params?.error;
 
   return (
     <>
@@ -37,8 +46,7 @@ export default async function SignInPage() {
             <div className="chat-col">
               <div id="empty">
                 <p>Sign in to open the Hexera console.</p>
-                <br />
-                <GoogleSignInButton />
+                <EmailPasswordSignInForm hasError={error === "CredentialsSignin"} />
               </div>
             </div>
           </div>
