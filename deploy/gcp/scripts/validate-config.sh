@@ -42,9 +42,15 @@ done
 # is the dangerous state: run-migrations.sh reads a missing database host as "this deployment has no
 # database" and skips, so a deployment that named its password secret and forgot its host would look
 # like a deliberate skip rather than the mistake it is.
+# A THIRD STATE EXISTS, and conflating it with the half-declared one broke a deploy. An address is
+# allocated by Google when the instance is created, so a deployment that NAMES its Cloud SQL
+# instance but has no host yet is not half-declared - it is fully declared and not yet built.
+# bootstrap-env.sh resolves the address from the named instance when one exists; when it does not,
+# the data tier stage is what creates it. Only a deployment that names NEITHER a host nor an
+# instance is the mistake this rule is for.
 if [ -n "${MIGRATE_DB_HOST:-}" ] || [ -n "${POSTGRES_PASSWORD_SECRET:-}" ]; then
-  [ -n "${MIGRATE_DB_HOST:-}" ] \
-    || add "POSTGRES_PASSWORD_SECRET is set but MIGRATE_DB_HOST is not - a migration target is host AND credential, or neither"
+  [ -n "${MIGRATE_DB_HOST:-}" ] || [ -n "${CLOUDSQL_INSTANCE:-}" ] \
+    || add "POSTGRES_PASSWORD_SECRET is set but neither MIGRATE_DB_HOST nor CLOUDSQL_INSTANCE is - a migration target is an address or the instance that has one"
   [ -n "${POSTGRES_PASSWORD_SECRET:-}" ] \
     || add "MIGRATE_DB_HOST is set but POSTGRES_PASSWORD_SECRET is not - the migration reads the password by reference, never as a value"
   [[ "${MIGRATE_DB_PORT:-5432}" =~ ^[0-9]{1,5}$ ]] \
@@ -56,7 +62,10 @@ fi
 if [ -n "${WORKER_MIG:-}" ] || [ -n "${WORKER_MIG_ZONE:-}" ]; then
   [ -n "${WORKER_MIG:-}" ]      || add "WORKER_MIG_ZONE is set but WORKER_MIG is not - name the instance group the metric scales"
   [ -n "${WORKER_MIG_ZONE:-}" ] || add "WORKER_MIG is set but WORKER_MIG_ZONE is not - a managed instance group is zonal"
-  [ -n "${REDIS_URL:-}" ]       || add "WORKER_MIG is set but REDIS_URL is not - the queue's depth is read from the broker"
+  # Same third state as the migration block above: a named Memorystore instance that does not
+  # exist yet has no address, and that is a deploy waiting to happen rather than a broken config.
+  [ -n "${REDIS_URL:-}" ] || [ -n "${REDIS_INSTANCE:-}" ] \
+    || add "WORKER_MIG is set but neither REDIS_URL nor REDIS_INSTANCE is - the queue's depth is read from the broker"
   [[ "${QUEUE_DEPTH_SERVICE_ACCOUNT:-}" =~ ^[a-z][a-z0-9-]{5,29}$ ]] \
     || add "service-account id '${QUEUE_DEPTH_SERVICE_ACCOUNT:-}' is not a valid GCP account id (6-30 chars, [a-z][a-z0-9-])"
   for n in WORKER_MIG_MIN_REPLICAS WORKER_MIG_MAX_REPLICAS WORKER_MIG_COOLDOWN_SECONDS WORKER_JOBS_PER_INSTANCE; do

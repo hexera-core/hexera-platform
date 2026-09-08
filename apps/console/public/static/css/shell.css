@@ -1,0 +1,53 @@
+/* Responsibility: Style the page frame - the header, its brand mark and the readiness chip. */
+/* Boundaries: the frame only; the conversation, timeline and viewer are styled by their own sheets. */
+
+/* header */
+header{flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 20px;height:52px;
+  background:#0c0d10;color:#e7e9ee;border-bottom:1px solid #20222a}
+.brand{display:flex;align-items:center;gap:9px}
+.brand-mark{width:22px;height:22px;display:block;flex-shrink:0}
+.brand-name{font-weight:700;letter-spacing:.22em;font-size:14px;color:#e7e9ee}
+.h-spacer{flex:1}
+.chip{display:flex;align-items:center;gap:7px;font-size:12px;color:#c4c7cf;cursor:pointer;
+  padding:5px 11px;border-radius:999px;border:1px solid #272930;background:#1a1b20;transition:.15s}
+.chip:hover{border-color:#3a3d46;color:#fff}
+.chip-status{cursor:default}
+.chip-status:hover{border-color:#272930;color:#c4c7cf}
+.dot{width:7px;height:7px;border-radius:50%;background:#4b4e57;transition:background .3s}
+.dot.online{background:#34d399}.dot.error{background:#ef4444}
+
+/* upload bar */
+#upload-bar{flex-shrink:0;display:flex;align-items:center;gap:11px;padding:9px 20px;
+  background:var(--surface-1);border-bottom:1px solid var(--border)}
+#step-file-input{display:none}
+#file-label{font-size:13px;color:var(--text-muted);font-family:var(--mono)}
+#file-label.ready{color:var(--text)}
+#upload-btn{font-family:var(--sans);font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:8px;
+  border:1px solid var(--text);background:var(--text);color:#fff;cursor:pointer;transition:.15s}
+#upload-btn:hover{opacity:.86}
+#upload-btn.done{background:var(--surface-1);color:var(--text)}
+#upload-btn:disabled{opacity:.5;cursor:default}
+
+/* stage / scroll */
+#stage{flex:1;overflow:hidden}
+.scroll{height:100%;overflow-y:auto}
+.scroll::-webkit-scrollbar{width:9px}.scroll::-webkit-scrollbar-thumb{background:#d6d8de;border-radius:5px}
+.chat-col{max-width:720px;margin:0 auto;padding:36px 24px 40px;display:flex;flex-direction:column;gap:18px}
+#empty{text-align:center;color:var(--text-faint);font-size:13.5px;line-height:1.9;padding:80px 0}
+
+
+/* notice banner (offline / session / errors) */
+#notice{display:none}
+#notice.show{display:flex;align-items:center;gap:10px;margin:8px 16px 0;padding:10px 14px;
+  border-radius:8px;font-size:13px;border:1px solid var(--border);background:var(--surface-1);
+  box-shadow:0 1px 3px rgba(0,0,0,.06)}
+#notice .nt-msg{flex:1}
+#notice.info{border-color:#bae6fd;background:#f0f9ff;color:#075985}
+#notice.warn{border-color:#fde68a;background:#fffbeb;color:#92620a}
+#notice.error{border-color:#fecaca;background:#fef2f2;color:#b91c1c}
+#notice .nt-act{border:1px solid currentColor;background:transparent;color:inherit;
+  font:inherit;padding:3px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}
+#notice .nt-act:hover{background:rgba(0,0,0,.05)}
+#notice .nt-x{border:0;background:transparent;color:inherit;font-size:18px;line-height:1;
+  cursor:pointer;opacity:.6;padding:0 2px}
+#notice .nt-x:hover{opacity:1}

@@ -289,11 +289,16 @@ mesh-setup: ## FIRST developer in a blank GCP project: build, validate, publish 
 	@echo ""
 
 mesh-deploy: ## Provision or update the Cloud Run MESH JOB and its exchange bucket (idempotent)
-	@bash deploy/gcp/scripts/deploy.sh
+	@# COMPONENTS= selects which tiers this run reconciles; the default is every one of them, because
+	@# an unset variable must never quietly deploy less than was asked for. Fewer is faster:
+	@#   make mesh-deploy COMPONENTS=images                  the mesh job and the API service
+	@#   make mesh-deploy COMPONENTS=images,migrate          ...and the schema, when the model moved
+	@#   make mesh-deploy COMPONENTS=images,migrate,workers  ...and roll the fleet onto the digest
+	@DEPLOY_COMPONENTS="$(or $(COMPONENTS),all)" bash deploy/gcp/scripts/deploy.sh
 
 env-bootstrap: ##! ONCE PER PROJECT, as an OWNER: the federation and secret containers a deploy cannot create itself
-	@# NOT a deploy stage, deliberately. Creating service accounts, setting project IAM and
-	@# administering Secret Manager are outside the four roles the federated deployer holds
+	@# NOT a deploy stage, deliberately. Creating service accounts and setting project IAM are
+	@# outside the roles the federated deployer holds
 	@# (run.admin, artifactregistry.writer, iam.serviceAccountUser, compute.instanceAdmin), and
 	@# widening them so CI could do this would hand a CI identity the ability to grant itself
 	@# anything. So it is run by a human with owner rights, once, before the first deploy.

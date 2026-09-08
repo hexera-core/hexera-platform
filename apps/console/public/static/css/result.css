@@ -1,0 +1,30 @@
+/* Responsibility: Style the delivered outcome - the deliverable grid and the input bar beneath it. */
+/* Boundaries: there is no standalone result card; the mesh itself is the result surface. */
+
+/* result: outcome is an assistant chat turn; the MESH is the result surface.
+   (There is no standalone terminal card - deliverables live in the
+ viewer header, next to the mesh they describe.) */
+.files{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:12px}
+
+/* input bar */
+#input-bar{flex-shrink:0;background:var(--surface-1);border-top:1px solid var(--border);padding:12px 20px}
+#input-inner{max-width:720px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+#chat-input{flex:1;resize:none;font-family:var(--sans);font-size:14px;line-height:1.5;padding:11px 14px;
+  border:1px solid var(--border2,#d1d5db);border-radius:12px;outline:none;max-height:140px;background:var(--surface-1);color:var(--text)}
+#chat-input:focus{border-color:var(--text)}
+#chat-input:disabled{background:var(--canvas);color:var(--text-faint)}
+#send-btn{font-family:var(--sans);font-size:13px;font-weight:600;padding:11px 18px;border-radius:12px;border:none;
+  background:var(--text);color:#fff;cursor:pointer;transition:.15s}
+#send-btn:hover{opacity:.86}#send-btn:disabled{opacity:.4;cursor:default}
+
+/* settings modal */
+
+/* lightbox */
+#lb{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;align-items:center;justify-content:center;cursor:zoom-out}
+#lb.open{display:flex}#lb img{max-width:92vw;max-height:92vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+
+.dragover #stage{outline:2px dashed var(--steel);outline-offset:-12px}
+table{border-collapse:collapse;width:100%;margin:6px 0;font-size:12px}
+th,td{border:1px solid #e2e4ea;padding:4px 8px;text-align:left}
+code{font-family:var(--mono);background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:.92em}
+

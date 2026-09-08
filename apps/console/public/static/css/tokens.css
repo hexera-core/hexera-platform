@@ -1,0 +1,84 @@
+/* Responsibility: Define the tokens every other stylesheet reads - palette, type, spacing and radii. */
+/* Boundaries: values only; it styles no component, and the legacy names alias onto these same roles. */
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* /
+   Engineering instrument: graphite, steel and international orange.
+   Palette adopted from the Design-Lab design system. Role-named, so a hue can
+   change without every rule downstream becoming a lie.
+
+   The LEGACY names (--ink, --card, --line …) that the rest of this stylesheet
+   tree already speaks are aliased at the bottom onto the new roles. That is
+   deliberate: the product structure is unchanged, so every existing rule keeps
+   working and only the values move.
+/ */
+:root{
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',
+         'Noto Sans',Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',
+         'DejaVu Sans Mono',monospace;
+
+  /* surfaces - an elevation ladder, each step lighter than the page */
+  --canvas:#090e13;
+  --background:#0d141b;
+  --surface-1:#111a22;
+  --surface-2:#16212b;
+  --surface-raised:#1b2833;
+  --viewer-frame:#0d141b;
+  --viewer-canvas:#090e13;
+  --border:#2b3b47;
+  --border-strong:#435967;
+
+  /* text - every value AA on the surfaces above */
+  --text:#f3f0e9;
+  --text-muted:#a5b0b8;
+  --text-faint:#6f7d87;
+
+  /* accent - used sparingly: primary action, active selection, focus,
+     current progress, the selected mesh boundary */
+  --accent:#ff5a12;
+  --accent-hover:#ff7638;
+  --accent-soft:rgba(255,90,18,.13);
+  --accent-line:rgba(255,90,18,.45);
+  --accent-ink:#1a0a03;          /* the ONLY safe text colour on --accent */
+
+  /* steel - technical linework and secondary structure */
+  --steel:#8fb3ca;
+  --steel-bright:#b2cfe4;
+  --steel-muted:#4b6577;         /* decoration only, never text */
+  --steel-soft:rgba(143,179,202,.14);
+
+  /* status - meaning carried by a word AND a mark, never colour alone */
+  --ok:#61d49a;      --ok-soft:rgba(97,212,154,.11);
+  --warn:#f1bd63;    --warn-soft:rgba(240,180,107,.12);
+  --danger:#ff8b7e;  --danger-soft:rgba(255,139,139,.12);
+
+  --mesh-canvas:#090e13;
+  --mesh-selection:#ff5a12;
+
+  --focus:var(--accent);
+  --radius:3px;
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);
+  --shadow-2:0 18px 48px -24px rgba(0,0,0,.7);
+
+  --text-bright:#dfe2e2;
+}
+
+html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
+  color:var(--text);background:var(--canvas);
+  -webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}
+#app{display:flex;flex-direction:column;height:100vh}
+
+.num{font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1}
+
+:where(a,button,input,textarea,select,[tabindex]):focus-visible{
+  outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
+::selection{background:var(--accent-soft);color:var(--text)}
+
+*{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;
+  border:2px solid var(--canvas)}
+::-webkit-scrollbar-thumb:hover{background:#55636f}

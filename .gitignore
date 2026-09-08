@@ -7,6 +7,7 @@
 
 # Secrets - never commit. .env.example is the tracked template and is deliberately not matched.
 .env
+.env*.local
 *.pem
 *.key
 # The canonical home of the local Google credential, and the cloud credential directory some
@@ -39,3 +40,8 @@ deploy/output/
 # Python bytecode. Redirecting it means changing interpreter behaviour repository-wide.
 __pycache__/
 *.py[cod]
+
+# JavaScript workspaces: dependency trees, framework output and local TS test builds.
+node_modules/
+.next/
+.turbo/

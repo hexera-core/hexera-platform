@@ -34,11 +34,20 @@ MIGRATE_SA_EMAIL="${MIGRATE_SA}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 # AUTOMATION MAY NOT SKIP IT. Under DEPLOY_NONINTERACTIVE the whole point is that every target was
 # pinned deliberately; a missing one there is a configuration mistake, and skipping the schema step
 # on the strength of it is how a deploy ships code against a database nobody migrated.
+#
+# NOR MAY A RUN THAT ASKED FOR IT. MIGRATE_REQUIRED=1 is set by deploy.sh when 'migrate' was named
+# in DEPLOY_COMPONENTS rather than inherited through 'all'. The distinction matters because the
+# environment this most likely happens in is a NEW one: the deployment names a Cloud SQL instance
+# that does not exist yet, so discovery resolves no address, and a run of 'images,migrate' would
+# skip the schema and then start an API revision against a database nothing had migrated. The
+# operator asked for the schema; the honest answer is that it could not be done, not silence.
 if [ -z "${MIGRATE_DB_HOST:-}" ] || [ -z "${POSTGRES_PASSWORD_SECRET:-}" ]; then
-  if [ "${DEPLOY_NONINTERACTIVE:-0}" = "1" ]; then
-    die "no migration target configured, and automation must not skip the schema step.
-   Set MIGRATE_DB_HOST (the deployment's database) and POSTGRES_PASSWORD_SECRET (its Secret
-   Manager container name), or set MIGRATE_SKIP=1 to state that this deployment has no database."
+  if [ "${DEPLOY_NONINTERACTIVE:-0}" = "1" ] || [ "${MIGRATE_REQUIRED:-0}" = "1" ]; then
+    die "no migration target configured, and this run may not skip the schema step.
+   MIGRATE_DB_HOST is empty. If the deployment names a Cloud SQL instance that does not exist yet,
+   include 'data' so this run creates it:  DEPLOY_COMPONENTS=data,images,migrate
+   Otherwise set MIGRATE_DB_HOST and POSTGRES_PASSWORD_SECRET, or MIGRATE_SKIP=1 to state that
+   this deployment has no database."
   fi
   info "No migration target configured - skipping the pre-deploy migration"
   log "set MIGRATE_DB_HOST and POSTGRES_PASSWORD_SECRET to migrate a hosted database from the deploy"
