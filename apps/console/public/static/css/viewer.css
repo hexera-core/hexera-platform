@@ -1,0 +1,77 @@
+/* Responsibility: Style the mesh viewer - its frame, toolbar, flag pins and modals. */
+/* Boundaries: the chrome around the canvas; what is drawn inside it is vtk.js output, not CSS. */
+
+.viewer{margin:14px 0;border:1px solid #262c36;border-radius:14px;background:#14171c;overflow:hidden;box-shadow:0 10px 30px rgba(8,12,20,.28)}
+.v-bar{display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid #222834;font-size:12.5px;color:#9aa4b4;background:#171b22}
+.v-bar b{font-weight:650;color:#f2f5f9;font-size:13px;letter-spacing:.2px}
+.v-row{display:flex;align-items:center;gap:8px;width:100%;flex-wrap:wrap}
+.v-pin{position:absolute;transform:translate(-50%,-50%);min-width:22px;height:22px;border-radius:50%;
+  color:#fff;font-weight:600;font-size:11.5px;line-height:22px;text-align:center;padding:0 3px;
+  border:2px solid rgba(255,255,255,.92);box-shadow:0 1px 6px rgba(10,20,35,.45);
+  cursor:pointer;z-index:7;user-select:none}
+.v-pin:hover{box-shadow:0 2px 10px rgba(10,20,35,.65)}
+.v-btn{padding:6px 12px;border:1px solid #333b49;border-radius:8px;background:#1d232d;color:#dfe5ee;font:inherit;font-size:12.5px;cursor:pointer;transition:border-color .12s,background .12s}
+.v-btn:hover{border-color:#4d5a6e;background:#232a37}
+.v-btn.armed{background:#3b82f6;border-color:#3b82f6;color:#fff}
+.v-btn.primary{background:#3b82f6;border-color:#3b82f6;color:#fff;font-weight:600}
+.v-btn.primary:hover{background:#2f6fdc;border-color:#2f6fdc}
+.v-meta{display:flex;align-items:center;gap:9px;font-size:12px;color:#8b96a7;font-family:var(--mono);white-space:nowrap}
+.v-status{font-size:11.5px;color:#79839400;color:#798394;font-family:var(--mono)}
+.v-meta .sep{color:#3a4352}
+.v-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:11px;
+  font-weight:700;letter-spacing:.05em;background:rgba(52,211,153,.14);color:#34d399;border:1px solid rgba(52,211,153,.3)}
+.v-pill.fail{background:rgba(239,68,68,.14);color:#f87171;border-color:rgba(239,68,68,.3)}
+.v-dl{display:flex;gap:7px;align-items:center}
+.v-dlbtn{display:inline-flex;flex-direction:column;gap:1px;padding:6px 12px;border:1px solid #3a4657;border-radius:8px;
+  background:#1d232d;color:#dfe5ee;text-decoration:none;font-size:12px;line-height:1.25;transition:border-color .12s,background .12s}
+.v-dlbtn:hover{border-color:#5b6b83;background:#232a37}
+.v-dlbtn.primary{background:#2563eb;border-color:#2563eb;color:#fff}
+.v-dlbtn.primary:hover{background:#1d4fd8;border-color:#1d4fd8}
+.v-dlbtn b{font-weight:600}
+.v-dlbtn span{font-size:10.5px;opacity:.75;font-family:var(--mono)}
+.v-dlbtn.off{opacity:.5;cursor:not-allowed}
+.v-why{padding:11px 14px;border-top:1px solid #222834;background:#1a1520;color:#d9c9b4;font-size:12.5px;line-height:1.65}
+.v-why b{color:#f3e6cf}
+.v-axes{font-family:var(--mono);font-size:11.5px;color:#f0b46b}
+.v-reason{margin-top:7px;padding:8px 10px;border-left:2px solid #4a3a2a;background:#171319;color:#b9aa93;font-size:12px}
+.v-why-act{display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap;color:#c9bba6}
+.v-loading{position:absolute;inset:0;display:flex;flex-direction:column;gap:13px;align-items:center;justify-content:center;color:#3d4b5f;font-size:13px;z-index:8;background:#c9d6e2}
+.v-spin{width:34px;height:34px;border-radius:50%;border:3px solid rgba(59,84,116,.22);border-top-color:#3b82f6;animation:vspin .85s linear infinite}
+@keyframes vspin{to{transform:rotate(360deg)}}
+.v-btn:disabled{opacity:.38;cursor:default}
+.v-canvas{position:relative;height:min(68vh,760px);min-height:420px;background:#c9d6e2;overflow:hidden}
+.v-canvas canvas{display:block}
+.v-hint{position:absolute;left:10px;bottom:8px;font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.62);padding:4px 10px;border-radius:7px;pointer-events:none;z-index:5}
+.v-count{position:absolute;right:10px;bottom:8px;font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.62);padding:4px 10px;border-radius:7px;pointer-events:none;z-index:5}
+.v-brush{display:inline-flex;align-items:center;gap:6px;color:#9aa4b4;font-size:11.5px}
+.v-brush input[type=range]{width:84px;accent-color:#3b82f6}
+.v-chip{width:17px;height:17px;border-radius:50%;display:inline-block;flex:none;position:relative;top:2px;color:#fff;font-weight:600;font-size:10px;line-height:17px;text-align:center}
+.v-flags{padding:12px 14px;border-top:1px solid #222834;font-size:13px;background:#14171c;color:#aeb7c6}
+.v-flags b{color:#dfe5ee}
+.v-flags .v-fhint{font-size:12px;color:#7f8a9b;margin:2px 0 4px}
+.v-flag{display:flex;gap:11px;align-items:flex-start;padding:9px 12px;margin:7px 0;background:#1b212a;border:1px solid #2a3240;border-radius:10px;color:#c7d0dc}
+.v-flag b{color:#eef2f7}
+.v-flag .f-body{flex:1;min-width:0}
+.v-flag .f-title{font-weight:600;color:#eef2f7;font-size:13px}
+.v-flag .f-meta{font-size:11.5px;color:#8b96a7;margin-top:1px}
+.v-flag .f-note{margin-top:5px;font-size:12.5px;color:#d7dde6}
+.v-flag .f-note.empty{color:#7f8a9b;font-style:italic;cursor:pointer}
+.v-flag .f-note.empty:hover{color:#aeb7c6}
+.v-flag .fx{color:#e0604f;cursor:pointer;font-size:14px;padding:2px 5px;border-radius:6px}
+.v-flag .fx:hover{background:#252c37}
+.v-modal{position:fixed;inset:0;background:rgba(22,23,27,.45);display:flex;align-items:center;justify-content:center;z-index:60}
+.v-modal .box{background:#fff;border-radius:12px;max-width:460px;padding:20px 22px;font-size:13.5px;color:#16171b}
+.v-modal .box h3{margin:0 0 8px;font-size:15px}
+.v-modal .row2{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.v-modal textarea{width:100%;min-height:56px;margin-top:10px;border:1px solid #cdd0d6;border-radius:8px;padding:8px;font:inherit;font-size:12.5px}
+
+/* a pin whose surface faces away from the camera is on the FAR side of the mesh */
+.v-pin.back{opacity:.42;transform:translate(-50%,-50%) scale(.78);border-color:rgba(255,255,255,.5)}
+.v-pin.back:hover{opacity:.85}
+/* ONE primary action + an honest note about what it costs */
+.v-act{gap:12px}
+.v-cost{font-size:11.5px;color:#79839b}
+/* notes are edited in place - no browser prompt() */
+.f-edit{width:100%;margin-top:5px;padding:7px 9px;border:1px solid #3a4657;border-radius:8px;
+  background:#12161d;color:#e6ebf2;font:inherit;font-size:12.5px;line-height:1.5;resize:vertical}
+.f-edit:focus{outline:none;border-color:#3b82f6}

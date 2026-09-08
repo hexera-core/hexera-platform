@@ -1,0 +1,109 @@
+/* Responsibility: Style the process card and its lanes - the run's progress while it is happening. */
+/* Boundaries: presentation only; which lanes exist and when they advance is decided by the event dispatch. */
+
+/* process card */
+.proc{border:1px solid var(--border);background:var(--surface-1);border-radius:18px;overflow:hidden;
+  box-shadow:0 1px 2px rgba(0,0,0,.03),0 24px 50px -30px rgba(0,0,0,.16);
+  animation:cardIn .5s cubic-bezier(.22,.61,.36,1)}
+@keyframes cardIn{from{opacity:0;transform:translateY(14px) scale(.99)}to{opacity:1;transform:none}}
+.proc-head{display:flex;align-items:center;gap:11px;padding:15px 22px;border-bottom:1px solid var(--border)}
+.proc-orb{width:15px;height:15px;border-radius:50%;border:2px solid var(--text);border-top-color:transparent;animation:spin .8s linear infinite;flex-shrink:0}
+.proc.done .proc-orb{border-color:var(--text);border-top-color:var(--text);animation:none;background:var(--text)}
+.proc-title{font-weight:600;font-size:13.5px;letter-spacing:-.01em}
+.proc-sub{margin-left:auto;font-size:11px;color:var(--text-faint);font-family:var(--mono)}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* timeline */
+.tl{position:relative;padding:14px 22px 18px}
+.tl-node{position:relative;padding-left:30px;padding-bottom:18px}
+.tl-node:last-child{padding-bottom:2px}
+.tl-node::before{content:'';position:absolute;left:8px;top:20px;bottom:-2px;width:1.5px;background:var(--border)}
+.tl-node:last-child::before{display:none}
+.tl-dot{position:absolute;left:1px;top:2px;width:17px;height:17px;border-radius:50%;background:#fff;
+  border:1.5px solid var(--steel-muted);z-index:1;display:flex;align-items:center;justify-content:center;transition:.25s}
+.tl-dot.active{border-color:var(--text)}
+.tl-dot.active::after{content:'';width:7px;height:7px;border-radius:50%;background:var(--text);animation:dotpulse 1.3s ease-in-out infinite}
+.tl-dot.done{border-color:var(--text);background:var(--text)}
+.tl-dot.done::after{content:'✓';color:#fff;font-size:9px;font-weight:700;line-height:1}
+@keyframes dotpulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.55);opacity:.45}}
+.tl-name{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;padding-top:1px}
+.tl-name .nm{font-weight:600;font-size:13px;color:var(--text)}
+.tl-name .ct{font-size:11px;color:var(--text-faint);font-family:var(--mono)}
+.tl-chev{margin-left:10px;color:var(--steel-muted);font-size:9px;transition:transform .2s}
+.tl-node.open .tl-chev{transform:rotate(180deg)}
+.tl-body{display:none;margin-top:9px}.tl-node.open .tl-body{display:block}
+.tl-inner{max-height:360px;overflow-y:auto;padding-right:6px}
+.tl-inner::-webkit-scrollbar{width:4px}.tl-inner::-webkit-scrollbar-thumb{background:#dcdee4;border-radius:2px}
+
+/* entry types */
+.row{padding:2px 0;animation:rise .25s ease}
+.e-tool{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:11.5px}
+.e-tool .tag{flex-shrink:0;font-size:9.5px;font-weight:700;letter-spacing:.05em;color:var(--text-muted);
+  background:#eceff3;border:1px solid var(--border);border-radius:5px;padding:1px 6px;text-transform:uppercase}
+.e-tool .call{color:var(--text-bright);word-break:break-all}
+.e-info{display:flex;gap:8px;font-family:var(--mono);font-size:11px;color:var(--text-muted)}
+.e-info::before{content:'·';color:var(--steel-muted);flex-shrink:0}
+.e-info.warn{color:#b45309}.e-info.warn::before{content:'!';color:#d97706}
+.e-detail{margin:2px 0 6px 18px;padding-left:11px;border-left:1.5px solid var(--border);color:var(--text-faint);
+  font-family:var(--mono);font-size:10.5px;white-space:pre-wrap;word-break:break-word;max-height:90px;overflow:auto}
+.e-think{margin:7px 0;padding:10px 13px;background:#f0f2f5;border-radius:10px}
+.e-think .lbl{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);margin-bottom:5px;display:flex;align-items:center;gap:6px}
+.e-think .lbl::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--text-faint)}
+.e-think .body{font-style:italic;color:var(--text-muted);font-size:12.5px;line-height:1.65;white-space:pre-wrap}
+.e-shot{margin:5px 0 9px 18px;animation:rise .3s ease}
+.e-shot img{max-width:300px;width:100%;border-radius:9px;border:1px solid var(--border);cursor:zoom-in;display:block;transition:.15s}
+.e-shot img:hover{border-color:var(--steel-muted);box-shadow:0 6px 18px -8px rgba(0,0,0,.25)}
+
+/* MCP web-search entry (replaces RAG) */
+.e-mcp{display:flex;align-items:center;gap:9px;margin:5px 0;padding:7px 11px;border-radius:9px;
+  background:rgba(8,145,178,.07);border:1px solid rgba(8,145,178,.25);border-left:3px solid var(--steel);
+  font-family:var(--mono);font-size:11.5px;animation:rise .3s ease}
+.e-mcp .ico{flex-shrink:0}
+.e-mcp .lbl{color:var(--steel);font-weight:700;flex-shrink:0;letter-spacing:.02em}
+.e-mcp .q{color:var(--steel-bright);font-weight:600;word-break:break-all}
+.e-mcp .hid{margin-left:auto;flex-shrink:0;color:var(--text-faint);font-style:italic;font-size:10px;opacity:.75}
+
+/* file write card */
+.e-edit{margin:7px 0;border:1px solid var(--border);border-radius:11px;overflow:hidden;background:#fafbfd;animation:rise .3s ease}
+.e-edit-h{display:flex;align-items:center;gap:9px;padding:8px 13px;background:#f0f2f5;font-family:var(--mono);font-size:11.5px}
+.e-edit-h .ic{width:7px;height:7px;border-radius:50%;background:var(--text);flex-shrink:0;animation:dotpulse 1.1s ease-in-out 3}
+.e-edit-h .fname{font-weight:700;color:var(--text)}
+.e-edit-h .act{color:var(--text-faint);font-size:10.5px}
+.e-edit-h .badge{margin-left:auto;font-size:10.5px;font-weight:700;color:var(--text-muted)}
+
+/* verdict */
+.tl-verd{display:flex;align-items:center;gap:10px;padding-top:2px}
+.tl-verd .pill{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.04em;padding:3px 12px;border-radius:999px;border:1.5px solid var(--text);color:var(--text)}
+.tl-verd .pill.fail{border-color:#b91c1c;color:#b91c1c}
+.tl-verd .mt{color:var(--text-faint);font-family:var(--mono);font-size:11px}
+
+
+/* live durations: every stage says how long it actually took */
+.proc-clock{margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--text-faint)}
+.tl-name .dur{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+
+/* mesh run: elapsed against the engine's DECLARED budget (a real bound -
+ not an invented percentage) */
+.meshbar{margin:8px 0 4px;padding:9px 11px;border:1px solid var(--border);border-radius:10px;background:#fbfbfc}
+.meshbar.done{opacity:.72}
+.mb-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.mb-lbl{font-size:12px;color:var(--text-muted);font-family:var(--mono)}
+.mb-num{font-size:11.5px;color:var(--text-faint);font-family:var(--mono)}
+.mb-track{height:5px;border-radius:999px;background:#e9ebef;overflow:hidden}
+.mb-fill{height:100%;width:0;border-radius:999px;background:#3b82f6;transition:width .5s linear}
+.mb-fill.over{background:#f59e0b}
+.meshbar.done .mb-fill{background:#34d399}
+
+/* validation evidence: what the mesh PROVED, not which function ran */
+.e-check{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--text-bright);
+  padding:2px 0;line-height:1.6}
+.e-check .ic{flex:none;width:16px;height:16px;border-radius:50%;background:#e8f7f0;color:#0f9d6a;
+  font-size:10px;line-height:16px;text-align:center;font-weight:700;margin-top:2px}
+.e-check.bad .ic{background:#fdeceb;color:#d1483b}
+.e-check .ct{min-width:0}
+
+/* a rebuild is a fresh attempt, not more rows under the old one */
+.tl-att{margin:12px 0 4px;padding-left:2px;font-size:11px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--text-faint)}
+
+.mb-sub{margin-top:3px;font-size:11px;color:var(--text-faint);letter-spacing:.02em}

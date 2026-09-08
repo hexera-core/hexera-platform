@@ -1,0 +1,48 @@
+/* Responsibility: Make the interface usable by keyboard, by screen reader, and at a small width. */
+/* Owns: the visible focus ring, the reduced-motion escape, and the only media queries in the tree. */
+/* Boundaries: it supplies what the component sheets omitted; it restyles no component. */
+
+/* accessibility + responsive
+   Keyboard focus was invisible (several controls set outline:none with no
+   :focus-visible replacement), animation had no reduced-motion escape, and there was
+   not a single media query - the layout was desktop-only. */
+
+/* VISIBLE KEYBOARD FOCUS on every interactive control. :focus-visible fires only for
+   keyboard/AT navigation, so mouse users still get the clean look. */
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible,
+[role="button"]:focus-visible, [tabindex]:focus-visible, .chip:focus-visible,
+.v-btn:focus-visible, .v-dlbtn:focus-visible, .nt-act:focus-visible, .nt-x:focus-visible{
+  outline:2px solid #3b82f6;
+  outline-offset:2px;
+  border-radius:6px;
+}
+
+/* RESPECT prefers-reduced-motion: no rise/spin/transition for users who ask for it. */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
+/* NARROW SCREENS. The console is desktop-first, but it must not break on a phone:
+   nothing scrolls sideways, controls stay tappable, the viewer fits. */
+@media (max-width: 640px){
+  html, body{font-size:13px}
+  header{flex-wrap:wrap; gap:6px; padding:8px 12px}
+  #upload-bar{flex-wrap:wrap; gap:8px; padding:8px 12px}
+  #upload-bar #file-label{flex-basis:100%; order:3}
+  #stage .chat-col, #stage .scroll{padding-left:12px; padding-right:12px}
+  #notice.show{margin:8px 12px 0}
+  #input-bar{padding:8px 12px}
+  /* the result card + mesh viewer must never force a sideways scroll */
+  .v-canvas, canvas{max-width:100%}
+  /* touch targets: comfortable minimum */
+  button, .chip, .v-btn, .v-dlbtn{min-height:36px}
+}
+
+/* screen-reader-only utility (used for labels that shouldn't render visually) */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
