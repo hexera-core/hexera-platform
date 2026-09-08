@@ -4,18 +4,8 @@ import Script from "next/script";
 
 import { auth } from "@/auth";
 import { SignOutButton } from "@/app/_components/auth-buttons";
+import { LegacyStyles } from "@/app/_components/legacy-styles";
 import { ownerIdFromSession } from "@/lib/auth/session";
-
-const legacyStylesheets = [
-  "/static/css/tokens.css",
-  "/static/css/shell.css",
-  "/static/css/chat.css",
-  "/static/css/timeline.css",
-  "/static/css/result.css",
-  "/static/css/viewer.css",
-  "/static/css/a11y.css",
-  "/static/css/theme.css",
-];
 
 export default async function ConsolePage() {
   const session = await auth();
@@ -28,9 +18,7 @@ export default async function ConsolePage() {
 
   return (
     <>
-      {legacyStylesheets.map((href) => (
-        <link href={href} key={href} rel="stylesheet" />
-      ))}
+      <LegacyStyles />
       <Script id="hexera-console-session" strategy="beforeInteractive">
         {`
           globalThis.__HEXERA_API_WS_BASE_URL__ = ${JSON.stringify(publicApiBaseUrl)};

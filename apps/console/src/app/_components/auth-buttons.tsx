@@ -8,7 +8,7 @@ export function GoogleSignInButton() {
         await signIn("google", { redirectTo: "/" });
       }}
     >
-      <button className="auth-button" type="submit">
+      <button id="upload-btn" type="submit">
         Continue with Google
       </button>
     </form>
@@ -23,7 +23,7 @@ export function SignOutButton() {
         await signOut({ redirectTo: "/sign-in" });
       }}
     >
-      <button className="sign-out-button" type="submit">
+      <button className="chip" type="submit">
         Sign out
       </button>
     </form>
