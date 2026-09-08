@@ -250,3 +250,37 @@ def test_an_unreadable_secret_manager_is_a_warning_and_the_deploy_proceeds(run):
     # Unlike the confirmed-absent case, this is not proof of absence - the deploy proceeds.
     assert "run deploy" in calls
     assert "iam service-accounts create" in calls
+
+
+# ---------------------------------------------------------------------------
+# I1: the deployed URL is handed to $GITHUB_OUTPUT, so deploy.yml's post-deploy verification
+# step can find it without re-deriving it - and ONLY when the console was actually reconciled.
+# ---------------------------------------------------------------------------
+
+def test_the_console_url_is_written_to_github_output_when_reconciled(run, tmp_path):
+    output_file = tmp_path / "gh_output"
+    output_file.write_text("", encoding="utf-8")
+    done, _calls = run(fake={"GITHUB_OUTPUT": str(output_file)})
+    assert done.returncode == 0, done.stderr
+    assert "console_url=https://t-console.run.app" in output_file.read_text(encoding="utf-8")
+
+
+def test_nothing_is_written_to_github_output_when_the_console_is_skipped(run, tmp_path):
+    output_file = tmp_path / "gh_output"
+    output_file.write_text("", encoding="utf-8")
+    done, _calls = run({"CLOUDRUN_CONSOLE_SERVICE": ""}, fake={"GITHUB_OUTPUT": str(output_file)})
+    assert done.returncode == 0, done.stderr
+    assert output_file.read_text(encoding="utf-8") == "", (
+        "a skipped console (no CLOUDRUN_CONSOLE_SERVICE) must not report a URL - nothing was "
+        "actually reconciled for a post-deploy check to verify")
+
+
+def test_a_refused_console_writes_no_github_output(run, tmp_path):
+    # The C1 refusal (confirmed-absent secret) exits before the rollout - no URL exists yet, and
+    # none must be reported.
+    output_file = tmp_path / "gh_output"
+    output_file.write_text("", encoding="utf-8")
+    done, _calls = run(fake={"FAKE_SECRETS_ABSENT": "console-auth-secret",
+                              "GITHUB_OUTPUT": str(output_file)})
+    assert done.returncode != 0
+    assert output_file.read_text(encoding="utf-8") == ""

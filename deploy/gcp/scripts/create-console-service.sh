@@ -282,4 +282,14 @@ log "  api origin    ${HEXERA_API_BASE_URL}"
 log "  credentials   ${#SECRET_BINDINGS[@]} Secret Manager reference(s) - no value is in the spec"
 log "  invoker       ${INVOKER_STATE}"
 log "  url           ${CONSOLE_URL:-<not reported>}"
+
+# THE DEPLOYED URL, for the caller that runs after this stage. deploy.yml's post-deploy
+# verification (design spec §4, "Verification") needs it to know where to point its HTTP checks,
+# and this script is the one place that already resolves it - written to $GITHUB_OUTPUT rather
+# than re-derived downstream, exactly once, ONLY when the console was actually reconciled (this
+# line is unreachable from the "no console configured" skip near the top). A no-op outside a
+# GitHub Actions step, so nothing here touches a local run or a unit test.
+if [ -n "${GITHUB_OUTPUT:-}" ] && [ -n "${CONSOLE_URL}" ]; then
+  printf 'console_url=%s\n' "${CONSOLE_URL}" >> "${GITHUB_OUTPUT}"
+fi
 log "done"

@@ -490,10 +490,86 @@ jobs:
       # mesh jobs, which is the application's runtime identity, not this deployer. Setting it here
       # would grant the CI identity a standing right to execute jobs it only exists to provision.
       - name: Provision the deployment (deploy/gcp/scripts/deploy.sh, non-interactive)
+        id: deploy
         env:
           DEPLOY_NONINTERACTIVE: "1"
           DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
         run: bash deploy/gcp/scripts/deploy.sh
+
+      # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
+      # §4): an HTTP check against the console's own dev URL, the one thing nothing before this
+      # step ever proves against a REAL deployed revision - Gate C's console smoke only proves the
+      # image can serve /api/internal/health in isolation, with no Auth.js, no live API origin and
+      # no Cloud Run front end in the loop.
+      #
+      # RUNS ONLY WHEN THE CONSOLE WAS ACTUALLY RECONCILED. create-console-service.sh is the one
+      # place that already resolves the deployed URL (it logs it too), so it writes
+      # console_url to $GITHUB_OUTPUT itself rather than this step re-deriving it - and it does so
+      # from the one line unreachable from its own "no console configured" skip, so a deploy that
+      # never touched the console (components without 'console', or a target - prod today - with
+      # no CLOUDRUN_CONSOLE_SERVICE pinned) leaves this condition false and the step does not run.
+      #
+      # THREE ASSERTIONS, unauthenticated (no session cookie is presented anywhere below):
+      #   1. GET /            -> a redirect to /sign-in (Auth.js's own gate, exercised for real)
+      #   2. GET /sign-in     -> 200, AND the /_next/static assets the rendered page references
+      #                          also 200 - weak "200 on /sign-in alone" would miss a broken
+      #                          .next/static or public/ path, which no smoke has ever covered
+      #   3. GET /readyz      -> 200
+      - name: Verify the deployed console (design spec §4 - / redirects, /sign-in renders, /readyz 200)
+        if: steps.deploy.outputs.console_url != ''
+        env:
+          CONSOLE_URL: ${{ steps.deploy.outputs.console_url }}
+        run: |
+          set -euo pipefail
+          echo "verifying ${CONSOLE_URL}"
+
+          # 1) unauthenticated / redirects to /sign-in. A few retries: the revision was reported
+          #    ready by `gcloud run deploy`, but the very first request can still race a cold
+          #    start behind Cloud Run's own load balancer.
+          ok=0
+          for _try in 1 2 3 4 5; do
+            read -r code location < <(curl -s -o /dev/null --max-time 10 \
+              -w $'%{http_code} %{redirect_url}\n' "${CONSOLE_URL}/")
+            case "${code}" in
+              301|302|303|307|308)
+                case "${location}" in
+                  */sign-in|*/sign-in\?*) ok=1 ;;
+                esac
+                ;;
+            esac
+            [ "${ok}" = "1" ] && break
+            sleep 3
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "::error::unauthenticated GET / did not redirect to /sign-in (last saw: ${code:-?} -> ${location:-<none>})"
+            exit 1
+          fi
+          echo "OK: / -> ${location}"
+
+          # 2) the sign-in page renders - strong enough to notice a broken asset path. Fetching it
+          #    alone proves nothing about .next/static or public/; actually fetching the assets it
+          #    references does.
+          code="$(curl -s -o /tmp/console-verify-signin.html --max-time 10 -w '%{http_code}' \
+            "${CONSOLE_URL}/sign-in")"
+          [ "${code}" = "200" ] || { echo "::error::GET /sign-in returned ${code}, not 200"; exit 1; }
+          grep -qi '<html' /tmp/console-verify-signin.html \
+            || { echo "::error::/sign-in did not render HTML"; exit 1; }
+          assets="$(grep -oE '/_next/static/[^"]+' /tmp/console-verify-signin.html | sort -u | head -5)"
+          if [ -z "${assets}" ]; then
+            echo "::error::/sign-in referenced no /_next/static assets - cannot confirm the asset path works"
+            exit 1
+          fi
+          while IFS= read -r asset; do
+            [ -n "${asset}" ] || continue
+            acode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}${asset}")"
+            [ "${acode}" = "200" ] || { echo "::error::asset ${asset} returned ${acode}, not 200"; exit 1; }
+          done <<<"${assets}"
+          echo "OK: /sign-in rendered, $(printf '%s\n' "${assets}" | grep -c .) static asset(s) served"
+
+          # 3) /readyz returns 200.
+          rcode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}/readyz")"
+          [ "${rcode}" = "200" ] || { echo "::error::GET /readyz returned ${rcode}, not 200"; exit 1; }
+          echo "OK: /readyz 200"
 
       # The two records that say what was validated and what is actually deployed, kept as build
       # outputs. Both are gitignored machine state, and the live drift they exist to prevent is
