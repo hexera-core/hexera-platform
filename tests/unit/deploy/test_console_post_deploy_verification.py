@@ -56,7 +56,7 @@ def test_the_verification_step_runs_after_provisioning_and_before_always_on_step
     assert _step("Verify the deployed console").get("if") != "always()"
 
 
-def test_the_verification_step_checks_all_three_spec_assertions():
+def test_the_verification_step_checks_all_four_spec_assertions():
     verify = _step("Verify the deployed console")
     run = verify["run"]
     # 1) unauthenticated / redirects to /sign-in.
@@ -66,15 +66,23 @@ def test_the_verification_step_checks_all_three_spec_assertions():
     assert "/_next/static/" in run, (
         "the verification step never fetches a /_next/static asset - a 200 on /sign-in alone "
         "would not notice a broken .next/static or public/ path")
-    # 3) /readyz returns 200.
-    assert "/readyz" in run
+    # 3) /api/internal/health returns 200 - the same unauthenticated route Gate C's in-container
+    #    smoke already curls, so post-deploy and build-time verification agree on one endpoint.
+    assert "/api/internal/health" in run
+    # 4) /readyz returns 401, not 200: /readyz is deliberately session-gated (it proxies to the
+    #    product API presenting MESH_API_KEY), so an unauthenticated 200 there would mean any
+    #    caller of this allUsers-invokable service could spend the console's own API key against
+    #    the product API. 401 is the passing case - it proves the session gate is actually live on
+    #    the deployed revision.
+    assert "/readyz" in run and '"401"' in run
 
     # It must not follow redirects with -L when checking step 1 (that would hide a redirect to
     # somewhere other than /sign-in behind a final 200), and every curl call must be bounded so a
     # hung console cannot burn the job to its timeout ceiling the way the pre-fix Gate C smoke did.
     assert "-L " not in run and not run.strip().startswith("-L")
-    assert run.count("--max-time") >= 3, (
-        "each HTTP check (/, /sign-in, its assets, /readyz) should be individually time-bounded")
+    assert run.count("--max-time") >= 4, (
+        "each HTTP check (/, /sign-in, its assets, /api/internal/health, /readyz) should be "
+        "individually time-bounded")
 
 
 def test_readyz_route_exists_for_the_check_to_target():

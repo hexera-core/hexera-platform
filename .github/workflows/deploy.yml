@@ -509,13 +509,25 @@ jobs:
       # never touched the console (components without 'console', or a target - prod today - with
       # no CLOUDRUN_CONSOLE_SERVICE pinned) leaves this condition false and the step does not run.
       #
-      # THREE ASSERTIONS, unauthenticated (no session cookie is presented anywhere below):
-      #   1. GET /            -> a redirect to /sign-in (Auth.js's own gate, exercised for real)
-      #   2. GET /sign-in     -> 200, AND the /_next/static assets the rendered page references
-      #                          also 200 - weak "200 on /sign-in alone" would miss a broken
-      #                          .next/static or public/ path, which no smoke has ever covered
-      #   3. GET /readyz      -> 200
-      - name: Verify the deployed console (design spec §4 - / redirects, /sign-in renders, /readyz 200)
+      # FOUR ASSERTIONS, unauthenticated (no session cookie is presented anywhere below):
+      #   1. GET /                    -> a redirect to /sign-in (Auth.js's own gate, exercised for
+      #                                  real)
+      #   2. GET /sign-in             -> 200, AND the /_next/static assets the rendered page
+      #                                  references also 200 - weak "200 on /sign-in alone" would
+      #                                  miss a broken .next/static or public/ path, which no smoke
+      #                                  has ever covered
+      #   3. GET /api/internal/health -> 200 with a JSON body whose status is "ok" - the same
+      #                                  unauthenticated route Gate C's in-container smoke already
+      #                                  curls, so post-deploy and build-time verification agree on
+      #                                  one endpoint instead of two
+      #   4. GET /readyz              -> 401 unauthenticated. /readyz is deliberately session-gated
+      #                                  - it proxies to the product API presenting MESH_API_KEY -
+      #                                  so a 200 here would mean any caller of this
+      #                                  allUsers-invokable service could spend the console's own
+      #                                  API key against the product API. 401 is the passing case:
+      #                                  it proves the session gate is actually live on the
+      #                                  deployed revision, which a 200-only check never would.
+      - name: Verify the deployed console (design spec §4 - / redirects, /sign-in renders, /api/internal/health 200, /readyz 401)
         if: steps.deploy.outputs.console_url != ''
         env:
           CONSOLE_URL: ${{ steps.deploy.outputs.console_url }}
@@ -566,10 +578,24 @@ jobs:
           done <<<"${assets}"
           echo "OK: /sign-in rendered, $(printf '%s\n' "${assets}" | grep -c .) static asset(s) served"
 
-          # 3) /readyz returns 200.
+          # 3) /api/internal/health returns 200 with a JSON body whose status is "ok". This route
+          #    is unauthenticated by design and is already what Gate C's in-container smoke curls,
+          #    so post-deploy and build-time verification agree on one endpoint.
+          hcode="$(curl -s -o /tmp/console-verify-health.json --max-time 10 -w '%{http_code}' \
+            "${CONSOLE_URL}/api/internal/health")"
+          [ "${hcode}" = "200" ] || { echo "::error::GET /api/internal/health returned ${hcode}, not 200"; exit 1; }
+          grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/console-verify-health.json \
+            || { echo "::error::/api/internal/health did not report status ok: $(cat /tmp/console-verify-health.json)"; exit 1; }
+          echo "OK: /api/internal/health 200, status ok"
+
+          # 4) /readyz returns 401 unauthenticated. /readyz is not a liveness probe: it requires a
+          #    session and then proxies to the product API presenting MESH_API_KEY, so a 200 here
+          #    unauthenticated would let any caller of this allUsers-invokable service spend the
+          #    console's own API key against the product API. 401 is the passing case - it proves
+          #    the session gate is actually live on the deployed revision.
           rcode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}/readyz")"
-          [ "${rcode}" = "200" ] || { echo "::error::GET /readyz returned ${rcode}, not 200"; exit 1; }
-          echo "OK: /readyz 200"
+          [ "${rcode}" = "401" ] || { echo "::error::GET /readyz returned ${rcode}, not 401 - the session gate may not be enforced on this revision"; exit 1; }
+          echo "OK: /readyz 401 (session gate enforced)"
 
       # The two records that say what was validated and what is actually deployed, kept as build
       # outputs. Both are gitignored machine state, and the live drift they exist to prevent is

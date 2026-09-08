@@ -115,7 +115,12 @@ the lane skips a documentation-only change exactly as the others do.
 
 **Verification.** Container boot smoke in `release-validate`; the `web` lane; and after deploy, an
 HTTP check against the dev URL — unauthenticated `/` redirects to `/sign-in`, the sign-in page
-renders, `/readyz` returns 200.
+renders, and `/api/internal/health` returns 200 (the same unauthenticated route the boot smoke
+already curls). `/readyz` is checked too, but for 401, not 200: it is deliberately session-gated —
+it proxies to the product API presenting `MESH_API_KEY` — so on a service that is `allUsers`-
+invokable, an unauthenticated 200 there would mean any caller could spend the console's own API
+key against the product API. Asserting 401 instead proves the session gate is actually live on the
+deployed revision, which the original 200 check never would have.
 
 ## 5. B — organisations and accounts
 
