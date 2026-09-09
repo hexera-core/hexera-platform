@@ -147,8 +147,13 @@ The admin console is a fourth promotable workload, provisioned by
 dev today; see below for prod). **It is the opposite of the console's posture**: it carries no
 Auth.js session of its own and is never `allUsers`-invokable — its only gate is IAP, which
 authenticates a Google identity before the request reaches the container (`docs/deployment/
-admin-console-access.md`). It is the one tier in this table that is not publicly reachable by
-design, and the post-deploy step in `deploy.yml` fails the run if that ever stops being true.
+admin-console-access.md`). It is the one Cloud Run *service* in this table that is not publicly
+reachable by design — Cloud SQL, Memorystore, the worker MIG and the buckets above are not
+publicly reachable either, just not for the same reason. The post-deploy step in `deploy.yml`
+fails the run if that ever stops being true, but only when it actually runs: the step is guarded
+on `steps.deploy.outputs.admin_url`, which is set only when the `admin` stage was actually
+reconciled (`admin` selected explicitly, or `all`). A merge-to-main run (`components=images,migrate,console`)
+never selects `admin`, so it never sets `admin_url` and the check never evaluates.
 
 It carries no secrets in this sub-project — IAP is the gate and there is no session for Secret
 Manager to hand it — and no VPC egress or database connection either; both arrive with Admin-2,

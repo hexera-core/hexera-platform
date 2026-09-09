@@ -197,7 +197,7 @@ public console's own tier with the two inversions §4 names; it never grants `al
 actively removes the binding if it finds one, so the failure in §2 cannot survive a rerun.
 
 Its name in `hexera-dev` is `dev-admin`, not the `admin-console` used as a placeholder in the
-commands above — substitute it when running §4-§6 for real. `hexera-prod`'s `admin_service` is
+commands above — substitute it when running §2, §4-§6 for real. `hexera-prod`'s `admin_service` is
 left deliberately empty in `.github/workflows/deploy.yml`, exactly as `console_service` is (§8):
 a release tag reconciles every tier it is told about, so naming one there would provision a
 billed production service nobody asked for. Prod gets an admin console only when a human pins a

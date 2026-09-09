@@ -33,7 +33,7 @@ STAGE_TOTAL="$(grep -c '^stage "' "${BASH_SOURCE[0]}")"
 stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\033[0m\n' "${STAGE}" "${STAGE_TOTAL}" "$1"; }
 
 # component selection
-# WHICH TIERS THIS RUN TOUCHES. A deploy that reconciles all twelve stages is the right default and
+# WHICH TIERS THIS RUN TOUCHES. A deploy that reconciles all seventeen stages is the right default and
 # the wrong routine: most changes are a new application image, and rebuilding the fleet, re-reading
 # Cloud SQL and re-minting the object-store credential to ship one costs minutes and money for
 # resources nothing in the change affected.

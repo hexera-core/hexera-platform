@@ -43,7 +43,7 @@ on:
           - images,migrate,workers      # ...and roll the fleet onto the new digest
           - all                         # every tier, including Cloud SQL and Memorystore
 
-# A deploy MUTATES a cloud project through a 12-stage provisioner. Cancelling one mid-flight
+# A deploy MUTATES a cloud project through a 17-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
 # not resumable from an arbitrary point - so runs QUEUE behind each other instead of replacing
 # each other. This is deliberately the opposite of ci.yml, where cancelling a superseded run of
@@ -644,7 +644,10 @@ jobs:
           PROJECT: ${{ needs.target.outputs.project }}
         run: |
           set -euo pipefail
-          code="$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${ADMIN_URL}/")"
+          if ! code="$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${ADMIN_URL}/")"; then
+            echo "::error::curl could not reach ${ADMIN_URL}/ - cannot verify the admin console is not publicly reachable"
+            exit 1
+          fi
           case "${code}" in
             200)
               echo "::error::an anonymous request to ${ADMIN_URL}/ returned 200 - the admin console is publicly reachable"
@@ -652,11 +655,19 @@ jobs:
             *)
               echo "OK: anonymous request refused (${code})" ;;
           esac
-          members="$(gcloud run services get-iam-policy "${ADMIN_SERVICE}" \
+          if ! members_raw="$(gcloud run services get-iam-policy "${ADMIN_SERVICE}" \
             --project "${PROJECT}" --region "${REGION}" \
-            --format='value(bindings.members)' 2>/dev/null | tr ';' '\n' || true)"
-          if printf '%s\n' "${members}" | grep -qx allUsers; then
-            echo "::error::${ADMIN_SERVICE} carries an allUsers invoker binding - IAP is not protecting it"
+            --format='value(bindings.members)' 2>&1)"; then
+            echo "::error::could not read the invoker policy for ${ADMIN_SERVICE} in ${PROJECT}/${REGION} - refusing to report success on the one check that matters when it could not actually run: ${members_raw}"
+            exit 1
+          fi
+          members="$(printf '%s' "${members_raw}" | tr ';' '\n')"
+          if [ -z "$(printf '%s' "${members}" | tr -d '[:space:]')" ]; then
+            echo "::error::the invoker policy for ${ADMIN_SERVICE} came back with no members at all - a working admin service always carries the IAP service agent's own invoker binding, so an empty read is evidence this check did not run, not evidence the service is private"
+            exit 1
+          fi
+          if printf '%s\n' "${members}" | grep -qxE 'allUsers|allAuthenticatedUsers'; then
+            echo "::error::${ADMIN_SERVICE} carries a public invoker binding (allUsers or allAuthenticatedUsers) - IAP is not protecting it"
             exit 1
           fi
           echo "OK: no public invoker binding"
