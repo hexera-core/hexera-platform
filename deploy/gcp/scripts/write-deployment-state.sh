@@ -70,6 +70,16 @@ else
   ADMIN_DIGEST=""
 fi
 
+# THE CERTIFICATE'S STATE, read back regardless of this run's own selection - it may have been
+# provisioned by an earlier run, and an operator checking whether DNS is working needs to know
+# what the certificate IS, not merely which run last touched it.
+if [ -n "${CONSOLE_DOMAIN:-}" ] || [ -n "${ADMIN_DOMAIN:-}" ]; then
+  EDGE_CERT_STATE="$(gc compute ssl-certificates describe "${EDGE_CERT:-}" --global \
+    --format='value(managed.status)' 2>/dev/null || true)"
+else
+  EDGE_CERT_STATE=""
+fi
+
 # TWO DIFFERENT QUESTIONS, kept apart because one is durable and one is about this run.
 #
 #   disposition  - OWNERSHIP. Did this tooling create the resource, or was it supplied? It does not
@@ -114,6 +124,10 @@ CONSOLE_DISP="$(_disp console "${CONSOLE_SERVICE_DISPOSITION:-}" console_service
 # ADMIN_SERVICE_DISPOSITION is always empty in practice, for the same reason CONSOLE's is above:
 # create-admin-service.sh runs as its own `bash` process and cannot export back into this one.
 ADMIN_DISP="$(_disp admin "${ADMIN_SERVICE_DISPOSITION:-}" admin_service)"
+# EDGE_DISPOSITION is always empty in practice, for the same reason CONSOLE's and ADMIN's are
+# above: create-edge.sh runs as its own `bash` process and cannot export back into this one -
+# same for EDGE_IP_ADDRESS below, which is why the manifest must tolerate it being empty.
+EDGE_DISP="$(_disp edge "${EDGE_DISPOSITION:-}" edge)"
 SQL_DISP="$(_disp data "${CLOUDSQL_DISPOSITION:-}" cloud_sql)"
 REDIS_DISP="$(_disp data "${REDIS_DISPOSITION:-}" memorystore)"
 STORE_DISP="$(_disp storage "${ARTIFACTS_BUCKET_DISPOSITION:-}" object_store)"
@@ -127,6 +141,7 @@ STORE_RECON="$(_recon storage)";    FLEET_RECON="$(_recon workers)"
 QUEUE_RECON="$(_recon queue)";      MIGRATE_RECON="$(_recon migrate)"
 CONSOLE_RECON="$(_recon console)"
 ADMIN_RECON="$(_recon admin)"
+EDGE_RECON="$(_recon edge)"
 
 python3 - "${OUT}" <<PY
 import datetime, json, sys
@@ -211,6 +226,20 @@ if "${CLOUDRUN_ADMIN_SERVICE:-}":
     "service_account": "${ADMIN_SERVICE_ACCOUNT:-}",
     "disposition": "${ADMIN_DISP}",
     "reconciled": ${ADMIN_RECON},
+  }
+if "${CONSOLE_DOMAIN:-}" or "${ADMIN_DOMAIN:-}":
+  # A deployment with no custom hostname declared has no edge - Cloud Run's own *.run.app URL
+  # works without one. EDGE_IP_ADDRESS is the reserved address this SAME process's edge stage just
+  # created; it is an in-process export only (create-edge.sh never writes it back to
+  # generated.env), so a run that reconciled a prior stage but not 'edge' records it as empty here
+  # rather than guessing - the same tolerance API_SERVICE_DISPOSITION and its siblings rely on.
+  doc["resources"]["edge"] = {
+    "address": "${EDGE_IP_ADDRESS:-}",
+    "hostnames": [h for h in ("${CONSOLE_DOMAIN:-}", "${ADMIN_DOMAIN:-}") if h],
+    "certificate": "${EDGE_CERT:-}",
+    "certificate_state": "${EDGE_CERT_STATE:-}",
+    "disposition": "${EDGE_DISP}",
+    "reconciled": ${EDGE_RECON},
   }
 if "${WORKER_MIG:-}":
   # The TEMPLATE is the rotation record: a digest change makes a new template and the group rolls

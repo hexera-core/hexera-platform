@@ -52,6 +52,8 @@ stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\
 #   workers  the managed instance group and the rolling update onto a new template
 #   console  the Cloud Run console service - the promoted console digest, in front of the API
 #   admin    the Cloud Run admin console, behind IAP - never publicly reachable
+#   edge     the reserved address, load balancer and managed certificate for both consoles' custom
+#            hostnames - runs LAST, after both console stages exist for it to route to
 #
 # A SKIPPED STAGE IS STATED, never silent: each prints what it did not do and why, so a summary
 # that says "reused" and a summary that says "not selected" are never read as the same thing.
@@ -67,7 +69,7 @@ want() {
 # A typo must not quietly deploy less than the operator asked for. `images` is not `image`, and a
 # run that silently skipped the API service because of a missing 's' is a bad afternoon.
 if [ "${DEPLOY_COMPONENTS}" != "all" ]; then
-  _known="images data storage migrate queue workers console admin"
+  _known="images data storage migrate queue workers console admin edge"
   _bad=""
   _good=0
   IFS=',' read -r -a _requested <<< "${DEPLOY_COMPONENTS}"
@@ -282,6 +284,15 @@ if want workers; then
   bash "${S}/create-worker-fleet.sh"
 else
   skipped workers "the fleet keeps its current template; no rolling update is started"
+fi
+
+stage "Edge (the address, the load balancer and the managed certificate)"
+# LAST, and after both console stages: a serverless NEG cannot be created for a Cloud Run service
+# that does not exist, and the certificate names hostnames that route to them.
+if want edge; then
+  bash "${S}/create-edge.sh"
+else
+  skipped edge "the load balancer keeps its current address, routes and certificate"
 fi
 
 # Record the machine-readable deployment-state manifest (ownership + digests; no secret values).
