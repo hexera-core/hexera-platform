@@ -220,8 +220,21 @@ class Page:
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
-            last = self.evaluate(f"(() => {{ try {{ return !!({expression}); }} "
-                                 f"catch (e) {{ return false; }} }})()")
+            # Each poll is bounded well inside the overall wait. A Runtime.evaluate issued while a
+            # navigation is still swapping execution contexts can go unanswered - Chrome drops the
+            # reply with the context it was queued against - and one poll's default 30 s silence
+            # used to outlast this whole 20 s wait, so a single dropped reply read as "the page
+            # never became ready". A dropped poll costs a retry, not the wait; the page is still
+            # judged only by the expression, and the deadline still ends in the diagnosis below.
+            try:
+                last = self.evaluate(f"(() => {{ try {{ return !!({expression}); }} "
+                                     f"catch (e) {{ return false; }} }})()",
+                                     timeout=min(5.0, max(0.5, deadline - time.time())))
+            except BrowserError as exc:
+                if "did not answer" not in str(exc):
+                    raise
+                last = None
+                continue
             if last:
                 return
             time.sleep(0.05)

@@ -90,6 +90,7 @@ def prepare_surface(workspace, *, geometry_file: str,
                     domain_min=None, domain_max=None, wall_patch: str = "body",
                     farfield_patch: str = "farfield", feature_angle: float = 30.0,
                     mirror_y_half: bool = False, reference_length_m: float | None = None,
+                    region_labeler=None,
                     bashrc: str = _DEFAULT_BASHRC) -> dict:
     ws = Path(workspace)
     body_stl = ws / geometry_file
@@ -106,6 +107,20 @@ def prepare_surface(workspace, *, geometry_file: str,
     if mirror_y_half:
         body = body + mirror_y(body)
         regions = {n: v + mirror_y(v) for n, v in regions.items()}
+    # SYNTHETIC CLASS REGIONS (thin-feature layer policy). Only a MONOLITHIC wall may be split:
+    # named CAD solids are the user's own patches and keep their names untouched. The labeller
+    # returns one region name per triangle; the class that keeps the declared wall name is what
+    # keeps the patch contract satisfied. A labeller that yields a single group changes nothing.
+    if region_labeler is not None and not regions:
+        _labels = region_labeler(body)
+        _groups: dict[str, list] = {}
+        for _lab, _tri in zip(_labels, body):
+            _groups.setdefault(str(_lab), []).append(_tri)
+        if len(_groups) > 1:
+            _wall_key = re.sub(r"[^A-Za-z0-9_]", "_", wall_patch) or "body"
+            _order = ([_wall_key] if _wall_key in _groups else []) \
+                + sorted(k for k in _groups if k != _wall_key)
+            regions = {k: _groups[k] for k in _order}
     bb_min = [min(v[i] for t in body for v in t) for i in range(3)]
     bb_max = [max(v[i] for t in body for v in t) for i in range(3)]
 
@@ -302,11 +317,23 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          symmetry: dict | None = None,
-                         flow_axis: str | None = None) -> tuple[list, list]:
+                         flow_axis: str | None = None,
+                         ruler_m: float | None = None) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     m = (strategy or {}).get("domain_margin") or {}
     up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
     side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
+    # THE RULER the margins multiply. When the approved intent carries a reference length -
+    # the unit the user quoted the far-field in, and the unit the extent gate judges the
+    # delivered box in - the margins are multiples of THAT, so the number in the request is
+    # the number in the plan is the number the judge measures. Sized in streamwise extent
+    # and judged in the reference length, a rotor (hub thickness an eighth of the diameter
+    # it was quoted in) came out at 0.5-0.6 of every margin asked and seven blocked at
+    # domain_extent on every attempt. Without a stated ruler the streamwise extent - a
+    # wing's chord - stays the unit the planner is briefed in, exactly as before.
+    ruler = float(ruler_m or (strategy or {}).get("reference_length_m") or 0.0) or None
+    if ruler:
+        L = ruler
 
     if flow_axis:
         # The user DECLARED the flow direction - the wake room goes downwind of it, whatever
@@ -316,8 +343,8 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
         i_s = {"x": 0, "y": 1, "z": 2}[letter]
         rest = [j for j in range(3) if j != i_s]
-        ref = float((analysis.get("extent") or
-                     [bmax[k] - bmin[k] for k in range(3)])[i_s]) or L
+        ref = ruler or float((analysis.get("extent") or
+                              [bmax[k] - bmin[k] for k in range(3)])[i_s]) or L
         dmin, dmax = list(bmin), list(bmax)
         lo_m, hi_m = (up, dn) if sign == "+" else (dn, up)
         dmin[i_s], dmax[i_s] = bmin[i_s] - lo_m * ref, bmax[i_s] + hi_m * ref
@@ -358,7 +385,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                            "flow - raising it. A zero here puts the far-field on the body's own "
                            "surface; only the SPANWISE margin may be zero.", vert, _VERT_FLOOR)
             vert = _VERT_FLOOR
-        ref = float(_extent_of(analysis)[i_s]) or L
+        ref = ruler or float(_extent_of(analysis)[i_s]) or L
         dmin, dmax = list(bmin), list(bmax)
         dmin[i_s], dmax[i_s] = bmin[i_s] - up * ref,   bmax[i_s] + dn * ref
         dmin[i_v], dmax[i_v] = bmin[i_v] - vert * ref, bmax[i_v] + vert * ref
@@ -381,7 +408,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
                        symmetry: dict | None = None,
-                       surface_regions: list | None = None) -> dict:
+                       surface_regions: list | None = None,
+                       layer_counts: dict | None = None,
+                       layer_overrides: dict | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -497,8 +526,16 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
 
     # layers - survival settings baked in (nRelaxedIter + relaxed quality + tet veto off), so
     # layers don't roll back to 0% on sharp edges. The builder only chooses count/thickness.
+    # The thin-feature layer policy may LOCALLY override the count per class region
+    # (layer_counts) and relax the termination knobs (layer_overrides); with neither given the
+    # authored dict is byte-identical to the historical one - pinned by regression test.
     n_layers = max(0, int(strategy.get("n_layers", 3)))
     first_rel = float(strategy.get("first_layer_rel", 0.35))
+    layer_counts = {str(k): max(0, int(v)) for k, v in (layer_counts or {}).items()}
+
+    def _n_for(patch: str) -> int:
+        return layer_counts.get(patch, n_layers)
+    _min_thick = float((layer_overrides or {}).get("min_thickness_rel", 0.05))
     (b0d, b0l), (b1d, b1l) = bands
     near_band_level = min(int(b0l) + deficit, smax + 2)   # bumped with the surface (see deficit above)
 
@@ -509,6 +546,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
     else:
         min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+    _med_override = (layer_overrides or {}).get("max_thickness_to_medial")
+    if _med_override is not None:
+        medial = float(_med_override)
     # REGION-WISE DECLARATION. Named solids in the surface become named patches: snappyHexMesh
     # emits <surface>_<region> for each, so the layer entry becomes a pattern covering them all.
     # With no regions every fragment is empty and the dict is exactly what it has always been.
@@ -523,11 +563,15 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would
     # come back silently without its boundary layer.
-    _layers = (" ".join(f"{r} {{ nSurfaceLayers {n_layers}; }}" for r in _names)
-               if _names else f"{surface_name} {{ nSurfaceLayers {n_layers}; }}")
+    _layers = (" ".join(f"{r} {{ nSurfaceLayers {_n_for(r)}; }}" for r in _names)
+               if _names else f"{surface_name} {{ nSurfaceLayers {_n_for(surface_name)}; }}")
+    # addLayers reflects what is actually REQUESTED somewhere: a policy that zeroes every
+    # region's count must not leave the layer stage running against an all-zero table.
+    _any_layers = (any(_n_for(r) > 0 for r in _names) if _names
+                   else _n_for(surface_name) > 0)
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
-castellatedMesh true; snap true; addLayers {'true' if n_layers > 0 else 'false'};
+castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
 geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
@@ -537,7 +581,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
-  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
+  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
@@ -547,10 +591,34 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
 """)
-    return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
-            "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
-            "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
-            "domain_max": [round(x, 3) for x in domain_max]}
+    # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
+    # a monolithic wall into <wall>_thin / <wall>_razor so each class can carry its own layer
+    # count, and snappyHexMesh makes every region its own PATCH. The user declared exactly one
+    # wall, and the patch contract refuses extras - five corpus rotors were rejected at
+    # patch_contract with a perfectly good mesh whose boundary read body / body_thin / body_razor.
+    # So the split lives only as long as the layers need it: after snappyHexMesh, createPatch
+    # folds the class patches back into the declared wall, and the mesh that reaches the
+    # manifest carries the boundary the user signed. Real CAD-named solids are never merged -
+    # they are the user's own patches.
+    _synthetic = [r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor")]
+    _cp = ws / "system" / "createPatchDict"
+    if _synthetic:
+        _cp.write_text(
+            _HDR.format(cls="dictionary", obj="createPatchDict")
+            + "pointSync false;\n"
+            + f"patches ( {{ name {surface_name}; patchInfo {{ type wall; }} constructFrom patches; "
+            + f"patches ({surface_name} {' '.join(_synthetic)}); }} );\n")
+    elif _cp.exists():
+        _cp.unlink()                      # a re-plan without a split leaves no stale merge behind
+    out = {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
+           "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
+           "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
+           "domain_max": [round(x, 3) for x in domain_max]}
+    if layer_counts:
+        out["layer_counts"] = dict(layer_counts)
+    if _synthetic:
+        out["merged_regions"] = list(_synthetic)
+    return out
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
@@ -608,11 +676,49 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
     return {"names": names, "features": feats}
 
 
+#: Minimum castellation cells across a port opening. Below ~4 the octree can seal the
+#: opening entirely (the corpus's biggest failure cluster - 21 episodes died at the
+#: manifest gate with a zero-face port); 6 leaves margin for snapping to eat one each side.
+PORT_MIN_CELLS_ACROSS = 6
+
+
+def _port_levels(*, base_cell: float, default_level: int, smin: int,
+                 port_sizes: dict[str, float] | None,
+                 sealed_before: frozenset[str] | set[str] = frozenset(),
+                 hard_max: int = 10) -> dict[str, int]:
+    """Per-port refinement levels sized from EACH port's own opening diameter.
+
+    The base cell is sized from the inlet bore, so a part whose other ports are much
+    smaller gets port cells bigger than those openings - castellation then seals them.
+    Each port's level is raised until its local cell (base_cell / 2^level) puts at least
+    PORT_MIN_CELLS_ACROSS cells across ITS diameter. A port that still sealed on the
+    previous attempt in this workspace gets one level more. Clamped to smin+4 so a
+    pinhole cannot detonate the cell budget - the clamp is logged as unmet need.
+    """
+    ceiling = min(hard_max, smin + 4)
+    out: dict[str, int] = {}
+    for key, dia in (port_sizes or {}).items():
+        lvl = default_level
+        if dia and dia > 0:
+            needed = math.ceil(math.log2(max(base_cell * PORT_MIN_CELLS_ACROSS / dia, 1.0)))
+            lvl = max(default_level, needed)
+        if key in sealed_before:
+            lvl += 1
+        clamped = max(1, min(ceiling, lvl))
+        if clamped < lvl:
+            logger.warning("_port_levels: port '%s' (Ø%.2g m) needs level %d but is clamped "
+                           "to %d - the opening may still be under-resolved", key, dia, lvl, clamped)
+        out[key] = clamped
+    return out
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
                          max_cells: int = 8_000_000, quality: str = "balanced",
-                         wall_key: str = "wall") -> dict:
+                         wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
+                         sealed_before: frozenset[str] | set[str] = frozenset(),
+                         thin_regions: list | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -629,20 +735,40 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # DOUBLED the base cell. ceil would add a phantom +1 level from mere div-rounding (base_actual
     # marginally > base_cell), needlessly doubling wall resolution on every internal build.
     deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base_cell, 1e-30), 1.0)) + 1e-9)))
+    # THE OTHER DIRECTION, which was missing and detonated the internal cluster: when the
+    # min-8 division clamp makes the background FINER than base_cell (a high planner
+    # surface_level inflates base_cell = wall_cell * 2^level far past the domain), keeping
+    # the planned level over-refines every band by the same factor. The autopsied
+    # mini_housing ended with EVERY cell at level 8: the whole budget burned before the
+    # fluid volume was covered, and the ports farthest from the seed simply never got
+    # cells - the true mechanism behind the zero-face-port cluster. Rounding to nearest
+    # holds the ABSOLUTE wall cell closest to the planner's intent.
+    surplus = max(0, int(round(math.log2(max(max(base_cell, 1e-30) / max(base_actual, 1e-30),
+                                             1.0)))))
     _HARD_MAX_LEVEL = 10
 
-    smin = smax = min(_HARD_MAX_LEVEL, int(surface_level) + deficit)
-    flevel = min(_HARD_MAX_LEVEL, max(smax, int(feature_level) + deficit))
+    smin = smax = max(1, min(_HARD_MAX_LEVEL, int(surface_level) + deficit - surplus))
+    flevel = min(_HARD_MAX_LEVEL, max(smax, int(feature_level) + deficit - surplus))
     port_level = max(1, smin - 1)                 # ports resolved, one below the wall
-    near_dist = max(3.0 * base_cell, 0.08 * maxext)
+    # ... except where a port's OWN opening is too small for that: each port's level is
+    # sized from its own diameter so castellation cannot seal it. Sized against the
+    # background cell the mesher will ACTUALLY use, not the pre-clamp intent.
+    port_lvls = _port_levels(base_cell=base_actual, default_level=port_level, smin=smin,
+                             port_sizes=port_sizes, sealed_before=sealed_before,
+                             hard_max=_HARD_MAX_LEVEL)
+    # The near-wall band exists to give the wall a few FINE cells of depth. Scaling it by
+    # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
+    # the domain at max level (the same detonation). Scale by the actual WALL cell.
+    wall_cell_actual = base_actual / (2 ** smin)
+    near_dist = max(8.0 * wall_cell_actual, 0.02 * maxext)
     near_level = min(_HARD_MAX_LEVEL, smax + 1)
     max_cells = int(max_cells)
     n_layers = max(0, int(n_layers))
     first_rel = float(first_layer_rel)
-    if deficit:
-        logger.info("render_internal_case: clamp deficit=%d → levels bumped (base_actual=%.4g "
-                    "surf=%d feat=%d) to hold absolute wall resolution", deficit, base_actual,
-                    smax, flevel)
+    if deficit or surplus:
+        logger.info("render_internal_case: clamp correction deficit=%d surplus=%d "
+                    "(base_cell=%.4g base_actual=%.4g) → surf=%d feat=%d wall_cell=%.4g",
+                    deficit, surplus, base_cell, base_actual, smax, flevel, wall_cell_actual)
 
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
@@ -658,14 +784,54 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         "boundary (outer { type patch; faces "
         "((0 3 2 1)(4 5 6 7)(0 1 5 4)(2 3 7 6)(1 2 6 5)(0 4 7 3)); });\nmergePatchPairs ();\n")
 
-    geom = "".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
-                   for p in names)
-    feat_entries = "".join(f'{{ file "{features[p]}"; level {flevel}; }} ' for p in names)
+    # THE SEED BUBBLE. locationInMesh decides which region survives; interior cells far
+    # from any surface stay at the BACKGROUND size, and a background cell containing the
+    # seed can physically straddle a nearby port disc or wall (the autopsied leak: seed
+    # 15 mm from an outlet disc, interior cells ~170 mm - the kept region flooded out
+    # around the disc, the `outer` box patch survived into the final mesh, and every
+    # submerged port ended with zero faces). A small refinement sphere around the seed
+    # guarantees its cell is wall-cell-sized and unambiguously inside.
+    seed_r = 16.0 * wall_cell_actual
+    geom = ("".join(f"{names[p]}.stl {{ type triSurfaceMesh; name {names[p]}; }} "
+                    for p in names)
+            + f"seedZone {{ type searchableSphere; centre ({' '.join(f'{v:.6g}' for v in interior_point)}); "
+              f"radius {seed_r:.6g}; }} ")
+    # THIN FEATURES. A plate thinner than the wall cell is never captured by castellation
+    # (the orifice class: a 3 mm disc inside a 106 mm pipe). Refining globally to reach it
+    # would detonate the budget, so each MEASURED thin region gets its own box, refined
+    # locally to put cells across the plate.
+    _thin = list(thin_regions or [])
+    thin_refine = ""
+    for _i, _tr in enumerate(_thin):
+        _lvl = min(_HARD_MAX_LEVEL, smin + int(_tr.get("level_bump", 1)))
+        _lo, _hi = _tr["min"], _tr["max"]
+        geom += (f"thinZone{_i} {{ type searchableBox; "
+                 f"min ({_lo[0]:.6g} {_lo[1]:.6g} {_lo[2]:.6g}); "
+                 f"max ({_hi[0]:.6g} {_hi[1]:.6g} {_hi[2]:.6g}); }} ")
+        thin_refine += f"thinZone{_i} {{ mode inside; levels ((1e15 {_lvl})); }} "
+    # a small port's rim must be feature-snapped at least as finely as its surface is
+    # refined, or snapping re-opens the very cells the refinement just won
+    feat_entries = "".join(
+        f'{{ file "{features[p]}"; level {max(flevel, port_lvls.get(p, 0))}; }} '
+        for p in names)
     wall = names[wall_key]
     refine_surfs = (f"{wall} {{ level ({smin} {smax}); patchInfo {{ type wall; }} }} "
-                    + "".join(f"{names[p]} {{ level ({port_level} {port_level}); "
+                    + "".join(f"{names[p]} {{ level ({port_lvls.get(p, port_level)} "
+                              f"{port_lvls.get(p, port_level)}); "
                               f"patchInfo {{ type patch; }} }} "
                               for p in names if p != wall_key))
+    # volume refinement near each SMALL port: surface levels alone act at the surface, but
+    # the cells that decide whether the opening survives castellation live in a band around
+    # it - refine within a few port-cells of any port raised above the default level
+    port_regions = ""
+    for p in names:
+        if p == wall_key:
+            continue
+        lvl = port_lvls.get(p, port_level)
+        if lvl > port_level:
+            band = max(4.0 * base_actual / (2 ** lvl), 0.5 * float((port_sizes or {}).get(p) or 0))
+            port_regions += (f"{names[p]} {{ mode distance; "
+                             f"levels (({band:.6g} {lvl})); }} ")
 
     if quality == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
@@ -678,7 +844,7 @@ geometry {{ {geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
-  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} }}
+  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
   locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -696,4 +862,9 @@ mergeTolerance 1e-6; debug 0;
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
             "location_in_mesh": [round(x, 5) for x in interior_point], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
-            "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values())}
+            "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
+            "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
+            "thin_regions": [{"level": min(_HARD_MAX_LEVEL,
+                                           smin + int(r.get("level_bump", 1))),
+                              "thinnest_m": r.get("thinnest_m"),
+                              "n_triangles": r.get("n_triangles")} for r in _thin]}

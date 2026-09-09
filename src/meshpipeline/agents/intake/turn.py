@@ -19,7 +19,9 @@ BUDGET_NUDGE = (
     "Otherwise, identify the SINGLE most important piece of information still missing and "
     "ask the user exactly that one question - do not re-ask anything already answered. If "
     "the user cannot provide something that is genuinely required, explain precisely what "
-    "is still needed and why."
+    "is still needed and why. 'Required' means only the fields submit_requirements marks "
+    "required: if the user has said to proceed with standard defaults, a question about anything "
+    "else is answered by that instruction - record the assumption in request_txt and submit."
 )
 
 

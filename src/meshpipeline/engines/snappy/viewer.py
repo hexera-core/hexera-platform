@@ -16,4 +16,13 @@ def polymesh_viewer(workspace, *, roles: dict, units: str,
     from meshpipeline.engines.snappy.polymesh_surface import boundary_surface
     from meshpipeline.render.viewer_pack import polymesh_response
     raw, cell_stats = boundary_surface(pm, skip_names=skip_names)
-    return polymesh_response(raw, cell_stats, roles, units)
+    resp = polymesh_response(raw, cell_stats, roles, units)
+    if resp:
+        # The heatmap the viewer colours the boundary with. The bar it paints red is THIS
+        # engine's own non-orthogonality criterion, so the picture and the gate agree.
+        from meshpipeline.engines.openfoam_criteria import MAX_NON_ORTHO
+        from meshpipeline.render.face_quality import attach_quality_fields
+        _bar = MAX_NON_ORTHO.threshold
+        if isinstance(_bar, (int, float)):        # no numeric bar, no line to paint
+            attach_quality_fields(resp, pm, non_ortho_limit=float(_bar))
+    return resp

@@ -366,6 +366,18 @@ def execute_prepared_mesh_run(ctx: BuilderToolContext, prepared: PreparedMeshRun
     # job trigger/poll/download broke) - a SYSTEM failure, not a mesh/strategy problem.
     # Without this branch it surfaced like a mesher failure and the model "fixed" a
     # correct spec in response to an outage.
+    if res["rc"] == -3 and "[CLOUD_RUN_RESULT_UNCOLLECTED]" in str(res.get("log_tail") or ""):
+        _rq = res.get("remote_quality") or {}
+        _over_cap = "over the" in str(res.get("log_tail")) and "cap" in str(res.get("log_tail"))
+        return {"success": False, "system_failure": not _over_cap, "rc": -3,
+                "log_tail": res["log_tail"], "remote_quality": _rq,
+                "guidance": ((f"The mesh RAN ({_rq.get('cells')} cells) but its result archive "
+                              "exceeded the exchange's size cap on the way back. Reduce the cell "
+                              "budget and the refinement so the delivered mesh fits, then "
+                              "run_mesh again. Do NOT enlarge anything.") if _over_cap else
+                             ("The mesh ran but its output could not be brought back from the "
+                              "remote runner (cloud infrastructure), not your mesh spec. Call "
+                              "run_mesh again unchanged; if it fails the same way again, STOP."))}
     if res["rc"] == -3:
         return {"success": False, "system_failure": True, "rc": -3,
                 "log_tail": res["log_tail"],

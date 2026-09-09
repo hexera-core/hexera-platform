@@ -61,8 +61,48 @@ def test_route_after_builder_no_failure_goes_to_executor():
     assert route_after_builder({}) == "node_executor"
 
 
-def test_route_after_builder_with_api_failure_goes_to_failure_handler():
-    assert route_after_builder({"api_failure": "builder_timeout"}) == "node_failure_handler"
+def test_route_after_builder_transient_failure_goes_to_infra_retry():
+    # PROVIDER_TRANSIENT / DEPENDENCY_DOWN markers get an infra replay while budget remains -
+    # the corpus's crash-window class (23 baseline episodes died terminal on attempt 1 here).
+    with patch.object(bcfg, "BUILDER_INFRA_RETRY_MAX", 2):
+        assert route_after_builder({"api_failure": "builder_timeout"}) == "node_infra_retry"
+        assert route_after_builder({"api_failure": "builder_transient"}) == "node_infra_retry"
+        assert route_after_builder(
+            {"api_failure": "connection refused", "infra_retry_count": 1}) == "node_infra_retry"
+
+
+def test_route_after_builder_transient_failure_budget_spent_goes_to_failure_handler():
+    with patch.object(bcfg, "BUILDER_INFRA_RETRY_MAX", 2):
+        assert route_after_builder(
+            {"api_failure": "builder_transient", "infra_retry_count": 2}) == "node_failure_handler"
+
+
+def test_route_after_builder_infra_retry_kill_switch():
+    with patch.object(bcfg, "BUILDER_INFRA_RETRY_MAX", 0):
+        assert route_after_builder({"api_failure": "builder_transient"}) == "node_failure_handler"
+
+
+def test_route_after_builder_non_retryable_failure_goes_to_failure_handler():
+    # Deterministic / non-retryable markers never buy a replay: auth, balance, bad request
+    # (the *_non_transient family) and circuit-open provider exhaustion go straight to the sink.
+    with patch.object(bcfg, "BUILDER_INFRA_RETRY_MAX", 2):
+        assert route_after_builder({"api_failure": "builder_non_transient"}) == "node_failure_handler"
+        assert route_after_builder({"api_failure": "some_unknown_marker"}) == "node_failure_handler"
+
+
+def test_node_infra_retry_clears_marker_and_replays_same_attempt():
+    import asyncio
+
+    from meshpipeline.pipeline.graph import node_infra_retry
+
+    with patch.object(bcfg, "BUILDER_INFRA_RETRY_BACKOFF_S", 0):
+        patch_out = asyncio.run(node_infra_retry(
+            {"job_id": "j1", "api_failure": "builder_transient",
+             "infra_retry_count": 0, "retry_count": 1}))
+    assert patch_out["api_failure"] == ""
+    assert patch_out["infra_retry_count"] == 1
+    # retry_count steps back one so builder prepare() re-derives the SAME attempt number.
+    assert patch_out["retry_count"] == 0
 
 
 

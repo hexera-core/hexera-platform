@@ -400,7 +400,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (204 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (210 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -509,6 +509,8 @@ Every supported setting (204 entries). `template` settings are the ones `.env.ex
 | `VIEWER_FLAG_SPAN_FACTOR` | template | app |  |
 | `VIEWER_FRAME_FRAC` | template | app |  |
 | `VIEWER_GRID_PX` | template | app |  |
+| `BUILDER_INFRA_RETRY_BACKOFF_S` | template | app |  |
+| `BUILDER_INFRA_RETRY_MAX` | template | app |  |
 | `DEEPINFRA_CALL_TIMEOUT` | template | app |  |
 | `DEEPINFRA_CONNECT_TIMEOUT` | template | app |  |
 | `DEEPINFRA_READ_TIMEOUT` | template | app |  |
@@ -541,6 +543,10 @@ Every supported setting (204 entries). `template` settings are the ones `.env.ex
 | `MODEL_DEFAULT_CONCURRENCY_BUDGET` | internal | app |  |
 | `PLANNER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
 | `REVIEWER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
+| `SNAPPY_RAZOR_CELL_FACTOR` | internal | app |  |
+| `SNAPPY_THIN_AREA_FLOOR` | internal | app |  |
+| `SNAPPY_THIN_LAYER_POLICY` | internal | app |  |
+| `SNAPPY_THIN_STACK_FACTOR` | internal | app |  |
 | `ALEMBIC_CONFIG` | external | app |  |
 | `CLOUD_RUN_EXECUTION` | external | app |  |
 | `GOOGLE_APPLICATION_CREDENTIALS` | external | app |  |

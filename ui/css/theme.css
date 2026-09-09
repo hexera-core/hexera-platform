@@ -397,3 +397,91 @@ th,td{border-color:var(--border)}
 /* the agent is working - a labelled beat, not three anonymous dots */
 .im.typing .txt{display:flex;align-items:center;gap:10px;padding:3px 0}
 @keyframes typ{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* /
+   THE HEXERA FINISH - the palette and type hexera.ai ships (its orange theme),
+   and the viewer dressed as an instrument. Every selector here already exists;
+   only colour, type and placement move. International orange is the primary
+   action, the running state and the selection; steel blue is linework; crimson
+   is a failure; the mesh is grey with steel edges - the only saturated colour
+   on a delivered mesh is the data the user asked for.
+/ */
+header{height:48px}
+.brand-name{font-family:var(--display);font-weight:600;font-size:15px;letter-spacing:.26em;
+  color:var(--text)}
+.chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  border-radius:2px}
+#file-label{font-family:var(--mono)}
+#upload-btn,#send-btn,.v-btn.primary,.v-dlbtn.primary{background:var(--accent);
+  border-color:var(--accent);color:var(--accent-ink)}
+#upload-btn:hover,#send-btn:hover:not(:disabled),.v-btn.primary:hover,.v-dlbtn.primary:hover{
+  background:var(--accent-hover);border-color:var(--accent-hover)}
+
+/* the selection is the accent, wherever it appears */
+.v-btn.armed{background:var(--gold);border-color:var(--gold);color:var(--gold-ink)}
+.v-bnd-chip.sel{border-left-color:var(--gold);background:var(--gold-soft)}
+.v-bnd-chip.sel .sw{background:var(--gold)}
+.v-bnd-act.on{border-color:var(--gold);color:var(--gold);background:var(--gold-soft)}
+.v-brush input[type=range],.v-bnd-op input{accent-color:var(--gold)}
+.v-bnd-lbl{color:var(--text-muted)}
+.mx-c.live:hover{background:var(--surface-2)}
+.mx-c.live.on{background:var(--gold-soft);box-shadow:inset 0 -2px 0 var(--gold)}
+.mx-c.live .mx-k::after{color:var(--text-faint)}
+
+/* the viewer's chrome: hairline panels on the canvas, monospace for anything measured */
+.v-bar{background:var(--background)}
+.v-facts .mx-c{background:var(--background)}
+.mx-v{font-family:var(--mono);font-size:14px}
+.v-count,.v-hint,.v-heatctl{font-family:var(--mono);background:rgba(6,4,2,.78);
+  border:1px solid var(--border);border-radius:2px;color:var(--text-muted)}
+.v-heatctl a{color:var(--text);text-decoration-color:var(--text-faint)}
+.v-heatctl a.on{color:var(--gold);text-decoration-color:var(--gold)}
+.v-loading{background:var(--viewer-canvas)}
+.v-pin{border-color:rgba(238,235,225,.9)}
+
+/* the heatmap legend stands upright beside the viewport, like a post-processor's scale */
+.v-legend{left:auto;right:14px;bottom:auto;top:50%;transform:translateY(-50%);
+  flex-direction:column;align-items:flex-end;gap:7px;padding:10px 12px 9px;
+  background:rgba(6,4,2,.84);border:1px solid var(--border);border-radius:2px;
+  font-family:var(--mono);font-size:10.5px;color:var(--text-muted);white-space:nowrap}
+.v-legend b{font-family:var(--sans);font-size:10.5px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--text)}
+.v-legend .scale{display:grid;grid-template-columns:auto 12px;gap:0 8px;height:172px;
+  margin:6px 0 4px}
+.v-legend .ticks{position:relative;height:100%;text-align:right;color:var(--text-muted)}
+.v-legend .ticks span{position:absolute;right:0;transform:translateY(50%);line-height:1}
+.v-legend .ticks .lim{color:var(--text)}
+.v-legend .bar{position:relative;width:12px;height:100%;border-radius:1px;
+  border:1px solid rgba(238,235,225,.22)}
+.v-legend .bar i{position:absolute;left:-4px;right:-4px;top:auto;height:2px;width:auto;
+  background:#fff;transform:translateY(50%);border-radius:0}
+.v-legend .mxv{color:var(--text)}
+.v-legend .over{color:var(--danger)}
+.v-legend .ok{color:var(--ok)}
+.v-legend .x{position:absolute;top:6px;right:8px;color:var(--text-faint);padding:0}
+.v-legend .x:hover{color:var(--text)}
+
+/* the probe: a data card, not a bubble */
+.v-probe{background:rgba(6,4,2,.9);border:1px solid var(--border);border-radius:2px;
+  color:var(--text)}
+.v-probe .pk{font-family:var(--mono);color:var(--text-faint)}
+.v-probe .over{color:var(--danger)}
+.v-probe .ok{color:var(--ok)}
+.v-probe .why{color:var(--text-muted)}
+
+/* marked regions */
+.v-flags{background:var(--background)}
+.v-flag{background:var(--surface-1);border:1px solid var(--border);border-radius:2px}
+.v-flag .fx{color:var(--text-faint)}
+.v-flag .fx:hover{background:var(--surface-2);color:var(--text)}
+.v-pill{border-radius:2px}
+.v-dlbtn{font-family:var(--mono);font-size:11px}
+.v-dlbtn span{font-size:9.5px}
+
+/* the timeline's working mark and the process card */
+.proc-title{font-family:var(--display);font-size:13px;letter-spacing:.14em}
+.im .who{font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;font-size:9.5px}
+.req-card .rc-h,.mx-h,.v-bnd-gl,.ins-eyebrow,.ins-k,.mx-k{font-family:var(--mono)}
+
+/* the hint never runs under the cell count */
+.v-hint{max-width:calc(100% - 150px);overflow:hidden;text-overflow:ellipsis}

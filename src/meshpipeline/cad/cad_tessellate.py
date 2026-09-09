@@ -450,7 +450,8 @@ def seal_open_rims(tris: list) -> tuple[list, list[dict]]:
 def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
-                        declared_ports: list | None = None) -> dict:
+                        declared_ports: list | None = None,
+                        fluid_solid: bool | None = None) -> dict:
     import math as _m
 
     from OCP.BRep import BRep_Builder, BRep_Tool
@@ -707,7 +708,13 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     # off a live passage, the sealed-branch failure the manifold work documents), and
     # (b) the gap sees the exterior - a straight ray from the hole along its normal
     # leaves the part without re-entering it (a perforated internal baffle fails this
-    # and is left alone; its holes join fluid to fluid, not fluid to exterior).
+    # and is left alone; its holes join fluid to fluid, not fluid to exterior) - and
+    # (c) it sees the exterior DIRECTLY, not through a declared port's mouth. An orifice
+    # plate's bore is a hole in a wall face whose axial ray runs down the pipe and out
+    # of the open end: void all the way, so (a) and (b) both pass, and every orifice
+    # shape in the corpus had its bore capped shut (jobs 848d9dba, 6edbafb2, 1b20782b -
+    # mesh a 7 mm slab, real ports sealed over). A ray that exits by crossing a mouth
+    # disc is the passage the fluid is meant to take; the mouth is a patch, not a leak.
     # #
     def _gap_is_void(pts, c, n, eps):
         # nothing fills the hole: just off BOTH sides of its span there is no material.
@@ -721,20 +728,41 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             for s in samples for sign in (1.0, -1.0))
 
     def _sees_exterior(c, n, eps):
-        # a straight all-void ray from the hole to past the part, along either normal
+        # a straight all-void ray from the hole to past the part, along either normal -
+        # and past the part DIRECTLY, not out through a declared mouth (see (c) above)
         for sign in (1.0, -1.0):
-            start = gp_Pnt(c[0] + sign * eps * n[0], c[1] + sign * eps * n[1],
-                           c[2] + sign * eps * n[2])
+            origin = (c[0] + sign * eps * n[0], c[1] + sign * eps * n[1],
+                      c[2] + sign * eps * n[2])
+            direction = (sign * n[0], sign * n[1], sign * n[2])
             ray = BRepIntCurveSurface_Inter()
-            ray.Init(shape, gp_Lin(start, gp_Dir(sign * n[0], sign * n[1], sign * n[2])),
-                     1e-9)
+            ray.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
             blocked = False
             while ray.More():
                 if ray.W() > 0.1 * eps:      # a forward hit; behind-the-start hits are
                     blocked = True           # the hole's own host surface
                     break
                 ray.Next()
-            if not blocked:
+            if not blocked and not _exits_through_mouth(origin, direction):
+                return True
+        return False
+
+    def _exits_through_mouth(origin, direction) -> bool:
+        # The ray leaves the part by crossing a declared port's own mouth disc. That is
+        # the fluid's passage, and the mouth is capped as a patch downstream - so what the
+        # hole "sees" is the port, never the exterior. The frames are built once the ports
+        # are chosen (mouth_frames below); this runs only from the sealing pass after that.
+        for pc, pn, pr in mouth_frames:
+            if pr <= 0.0:
+                continue
+            denom = sum(direction[k] * pn[k] for k in range(3))
+            if abs(denom) < 1e-9:
+                continue                     # travelling along the mouth plane
+            t = sum((pc[k] - origin[k]) * pn[k] for k in range(3)) / denom
+            if t <= 0.0:
+                continue                     # the mouth is behind the ray
+            hit = [origin[k] + t * direction[k] for k in range(3)]
+            lateral = _m.sqrt(sum((hit[k] - pc[k]) ** 2 for k in range(3)))
+            if lateral <= 1.05 * pr:
                 return True
         return False
 
@@ -763,6 +791,23 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         mouth_frames.append((tuple(m_c), (m_ax.X(), m_ax.Y(), m_ax.Z()),
                              _m.sqrt(max(m_area, 0.0) / _m.pi)))
 
+    def _clear_line(a, b) -> bool:
+        # The straight segment between two points crosses no material - the two holes
+        # are joined by an unobstructed void passage (a bore). Endpoints excluded:
+        # each sits on its own host surface.
+        d = [b[k] - a[k] for k in range(3)]
+        length = _m.sqrt(sum(v * v for v in d))
+        if length <= 0.0:
+            return True
+        dn = [v / length for v in d]
+        ray = BRepIntCurveSurface_Inter()
+        ray.Init(shape, gp_Lin(gp_Pnt(*a), gp_Dir(*dn)), 1e-9)
+        while ray.More():
+            if 1e-6 * length < ray.W() < length * (1.0 - 1e-3):
+                return False
+            ray.Next()
+        return True
+
     def _is_port_mouth(c, n, hole_area) -> bool:
         r_hole = _m.sqrt(max(hole_area, 0.0) / _m.pi)
         for pc, pn, pr in mouth_frames:
@@ -773,8 +818,20 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             off = [c[k] - pc[k] for k in range(3)]
             axial = sum(off[k] * pn[k] for k in range(3))
             lateral = _m.sqrt(max(sum(v * v for v in off) - axial * axial, 0.0))
-            if (abs(axial) <= 0.25 * pr and lateral <= 0.25 * pr
-                    and r_hole >= 0.75 * pr):
+            if lateral > 0.25 * pr or r_hole < 0.75 * pr:
+                continue
+            # Same axis, mouth-sized. The flange-ring case sits within a quarter radius
+            # of the mouth. The JUNCTION case does not: a ported chamber's inner wall
+            # has this hole a whole tube-length behind the mouth (mini_housing - eleven
+            # baseline episodes died with every chamber-to-bore junction sealed as an
+            # "undeclared opening"; the void/exterior probes cannot tell, because a
+            # bore is void rather than material and its exit ray leaves through the
+            # declared mouth itself). The discriminator is the PASSAGE: when the
+            # segment from this hole to the mouth is pure void, the hole opens into
+            # the declared port's own bore and is never sealable. A bolt hole fails
+            # the lateral test, a small tap fails the size test, and an unrelated
+            # coaxial hole is separated from the mouth by material.
+            if abs(axial) <= 0.25 * pr or _clear_line(c, pc):
                 return True
         return False
 
@@ -893,7 +950,50 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         step = 0.5 * _m.sqrt(area / _m.pi)              # ~half the port radius, inward
         candidates.append(tuple(c[k] - step * n[k] for k in range(3)))
         candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
+    # RING PORTS. The centroid of an annular port face is the centre of the hole it rims - for a
+    # blade-row passage that is the hub bore, which is not fluid. So every ring port also offers
+    # points ON the ring: mid-radius, four in-plane directions, nudged inward along the port
+    # normal. Blade-row passages 001/003/005 (jobs 9bf37dd8, f69eb843, db9e64e1) were
+    # "delivered" as a mesh of the hub bore - the port caps sealed the bore at both ends, the
+    # seed sat inside it, and snappyHexMesh kept it. NOT for a solid declared a body
+    # (fluid_solid is False, which is what the driver passes for every non-fluid input): a metal
+    # tube's end face is an annulus too, and there the ring IS the wall - a point on it would
+    # seed the metal, not the bore. That case is the hollow-wall fallback's, below. Undeclared
+    # keeps the primary semantics: the solid is the fluid.
+    for pi in ((inlet_i, *outlet_ids) if fluid_solid is not False else ()):
+        f = faces[pi]
+        prof = _inner_opening(f)
+        if prof is None:
+            continue
+        area, c = _face_props(f)
+        inner_area = float(prof["area_m2"])
+        r_out = _m.sqrt(max(area + inner_area, 0.0) / _m.pi)
+        r_in = _m.sqrt(max(inner_area, 0.0) / _m.pi)
+        r_mid = 0.5 * (r_out + r_in)
+        ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+        n = [ax.X(), ax.Y(), ax.Z()]
+        # an in-plane basis: any vector not parallel to n, made orthogonal
+        seed_u = [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0]
+        dot = sum(seed_u[k] * n[k] for k in range(3))
+        u = [seed_u[k] - dot * n[k] for k in range(3)]
+        ul = _m.sqrt(sum(v * v for v in u)) or 1.0
+        u = [v / ul for v in u]
+        v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
+        step = 0.5 * (r_out - r_in)
+        for d in (u, [-x for x in u], v, [-x for x in v]):
+            on_ring = [c[k] + r_mid * d[k] for k in range(3)]
+            for sign in (-1.0, 1.0):
+                candidates.append(tuple(on_ring[k] + sign * step * n[k] for k in range(3)))
     interior = next((p for p in candidates if _inside(p)), None)
+    if interior is None and fluid_solid:
+        # A DECLARED fluid domain is the fluid: a point that is not inside the solid is not in
+        # the flow, whatever the hollow-wall fallback below would make of it. Refuse loudly
+        # rather than seed a void.
+        raise RuntimeError(
+            "could not locate a point inside the declared fluid domain for locationInMesh - "
+            "the volume centroid, the port centroids and the ring-port candidates all fall "
+            "outside the solid (a hole through the part?); the mesh would have been of the "
+            "void, not the flow")
     if interior is None:
         # HOLLOW-WALL FALLBACK. Everything above assumes the input solid IS the fluid
         # volume (a duct modeled as a solid rod), where inside-the-solid means inside the

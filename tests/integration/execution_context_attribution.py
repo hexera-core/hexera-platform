@@ -188,11 +188,13 @@ def assert_measurement_sound(result: dict) -> None:
     # A LITERAL on purpose, like the scanner's ordinals: the denominator must not follow the
     # manifest silently, so growth fails closed here until the campaign re-certifies. 61 was the
     # reconciled set at the certification campaign (1 relocated + 17 renamed + 43 unchanged);
-    # three sites were added since, each regenerated into the manifest and proven in the
-    # certification ledger by a named committed scenario, and the combined measurement reaches
-    # 64/64 - so 64 is the calibrated denominator.
-    if result["target_total"] != 64:
-        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 64")
+    # five sites were added since, each regenerated into the manifest and proven in the
+    # certification ledger by a named committed scenario (the fourth is the infra-retry node's
+    # note, scenario infra-retry:transient-replay; the fifth is the internal driver's thin-feature
+    # disclosure, scenario snappy-driver:internal-thin-feature), and the combined measurement
+    # reaches 66/66 - so 66 is the calibrated denominator.
+    if result["target_total"] != 66:
+        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 66")
     if problems:
         raise AttributionUnsound("; ".join(problems))
 

@@ -160,21 +160,15 @@ def test_the_template_is_tracked_and_the_configuration_is_ignored():
     assert not _ignored(".env.example"), ".env.example is ignored and would not reach a clone"
 
 
-def test_only_the_known_environment_templates_are_tracked():
-    # ONE TEMPLATE PER RUNTIME A DEVELOPER ACTUALLY CONFIGURES, and no others. There are two
-    # because there are two runtimes: the product (Python, `.env.example`, generated from
-    # settings/inventory.py and checked byte-for-byte above) and the browser console (Node, its
-    # own process, its own settings, none of which the inventory knows about). A single file
-    # could not be generated from one authority or copied to one place.
-    #
-    # The rule still bites: it is an exact set, so a THIRD template - the failure this test was
-    # written for, where a stray `env.example` appears and a fresh clone cannot tell which file
-    # to copy - fails here.
-    known = [".env.example", "apps/console/.env.example"]
+def test_there_is_exactly_one_developer_facing_environment_template():
+    # The platform's own tree: the front-end apps under apps/ (the consoles, since b6f28a6) each
+    # own a template of their own, read by their own tooling, and are not a second way to
+    # configure this service.
     templates = sorted(f for f in _tracked()
-                       if f.endswith((".env.example", "env_example.txt", "env.example")))
-    assert templates == sorted(known), (
-        f"tracked environment templates are not the known set: {templates}")
+                       if f.endswith((".env.example", "env_example.txt", "env.example"))
+                       and not f.startswith("apps/"))
+    assert templates == [".env.example"], (
+        f"more than one environment template is tracked: {templates}")
 
 
 def test_no_retired_environment_path_is_referenced_anywhere():

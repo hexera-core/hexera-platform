@@ -185,6 +185,27 @@ async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
     return {"job_id": str(job_id), **surface}
 
 
+@router.get("/{job_id}/surface.vtk")
+async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
+    """The delivered boundary with its quality fields as a legacy VTK file, for ParaView. The
+    arrays are the viewer's own, so what ParaView colours is what the heatmap coloured. Built from
+    the stored viewer payload - no workspace is read."""
+    from fastapi.responses import Response
+
+    from meshpipeline.render.vtk_export import surface_to_vtk
+    data = await _viewer_data(job_id, owner_id)
+    surface = data.get("surface")
+    if not surface or surface.get("kind") != "polymesh":
+        raise HTTPException(404, "No polyMesh surface was delivered for this job")
+    try:
+        body = await asyncio.to_thread(surface_to_vtk, surface)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(content=body, media_type="application/octet-stream",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="mesh_quality_{str(job_id)[:8]}.vtk"'})
+
+
 #: The one sanitized failure this route returns when a dispute child could not be queued. A repeat of
 #: an operation whose child already failed to launch is answered with the SAME text, so the public
 #: contract gains no new shape from the retry policy.

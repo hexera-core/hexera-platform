@@ -4,65 +4,73 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 /* /
-   Engineering instrument: graphite, steel and international orange.
-   Palette adopted from the Design-Lab design system. Role-named, so a hue can
-   change without every rule downstream becoming a lie.
+   The product wears the finish hexera.ai actually ships (styles.css + orange-theme.css):
+   flight-test mono. Near-neutral blacks, near-white ink, ONE hot accent - international
+   orange - for the primary action, the running state and the selection, and deep steel
+   blue for technical linework: wireframes, edges, secondary structure. Role-named, so a
+   hue can change without every rule downstream becoming a lie.
 
-   The LEGACY names (--ink, --card, --line …) that the rest of this stylesheet
+   The LEGACY names (--ink, --card, --line ...) that the rest of this stylesheet
    tree already speaks are aliased at the bottom onto the new roles. That is
    deliberate: the product structure is unchanged, so every existing rule keeps
    working and only the values move.
 / */
 :root{
-  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',
-         'Noto Sans',Arial,sans-serif;
-  --mono:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',
-         'DejaVu Sans Mono',monospace;
+  --sans:"Geist","Geist Fallback",system-ui,-apple-system,"Segoe UI","Helvetica Neue",
+         Arial,sans-serif;
+  --mono:"Geist Mono","Geist Mono Fallback",ui-monospace,SFMono-Regular,Menlo,Consolas,
+         'Liberation Mono',monospace;
+  --display:"Saira Semi Condensed","Helvetica Neue",Arial,sans-serif;
 
-  /* surfaces - an elevation ladder, each step lighter than the page */
-  --canvas:#090e13;
-  --background:#0d141b;
-  --surface-1:#111a22;
-  --surface-2:#16212b;
-  --surface-raised:#1b2833;
-  --viewer-frame:#0d141b;
-  --viewer-canvas:#090e13;
-  --border:#2b3b47;
-  --border-strong:#435967;
+  /* surfaces - the site's near-neutral black, a shade darker, an elevation ladder each step lighter */
+  --canvas:#0a0a09;
+  --background:#0f0f0e;
+  --surface-1:#111110;
+  --surface-2:#181816;
+  --surface-raised:#1f1f1d;
+  --viewer-frame:#0f0f0e;
+  --viewer-canvas:#0a0a09;
+  --border:rgba(238,235,225,.10);
+  --border-strong:rgba(238,235,225,.22);
 
-  /* text - every value AA on the surfaces above */
-  --text:#f3f0e9;
-  --text-muted:#a5b0b8;
-  --text-faint:#6f7d87;
+  /* text - the site's ink, every value AA on the surfaces above */
+  --text:#ede9e0;
+  --text-muted:#b9b6ae;
+  --text-faint:#8a8884;
+  --text-bright:#f4f1ea;
 
-  /* accent - used sparingly: primary action, active selection, focus,
-     current progress, the selected mesh boundary */
-  --accent:#ff5a12;
-  --accent-hover:#ff7638;
-  --accent-soft:rgba(255,90,18,.13);
-  --accent-line:rgba(255,90,18,.45);
-  --accent-ink:#1a0a03;          /* the ONLY safe text colour on --accent */
+  /* accent - international orange, the site's one hot colour: primary action, focus,
+     the running state, and the selection */
+  --accent:#ff4f00;
+  --accent-hover:#ff7033;
+  --accent-soft:rgba(255,79,0,.14);
+  --accent-line:rgba(255,79,0,.5);
+  --accent-ink:#1a0a02;          /* the ONLY safe text colour on --accent */
 
-  /* steel - technical linework and secondary structure */
-  --steel:#8fb3ca;
-  --steel-bright:#b2cfe4;
-  --steel-muted:#4b6577;         /* decoration only, never text */
-  --steel-soft:rgba(143,179,202,.14);
+  /* the selection reads through the same accent (kept as a role so it can diverge) */
+  --gold:#ff4f00;
+  --gold-soft:rgba(255,79,0,.14);
+  --gold-line:rgba(255,79,0,.5);
+  --gold-ink:#1a0a02;
+
+  /* steel - the site's wireframe blue: technical linework and secondary structure */
+  --steel:#6d8baf;
+  --steel-bright:#9db6d4;
+  --steel-muted:#57708f;         /* decoration only, never text */
+  --steel-soft:rgba(109,139,175,.14);
 
   /* status - meaning carried by a word AND a mark, never colour alone */
   --ok:#61d49a;      --ok-soft:rgba(97,212,154,.11);
-  --warn:#f1bd63;    --warn-soft:rgba(240,180,107,.12);
-  --danger:#ff8b7e;  --danger-soft:rgba(255,139,139,.12);
+  --warn:#f1bd63;    --warn-soft:rgba(241,189,99,.12);
+  --danger:#ff6b5e;  --danger-soft:rgba(216,58,48,.14);
 
-  --mesh-canvas:#090e13;
-  --mesh-selection:#ff5a12;
+  --mesh-canvas:#0a0a09;
+  --mesh-selection:#ff4f00;
 
   --focus:var(--accent);
-  --radius:3px;
-  --shadow-1:0 1px 2px rgba(0,0,0,.5);
-  --shadow-2:0 18px 48px -24px rgba(0,0,0,.7);
-
-  --text-bright:#dfe2e2;
+  --radius:2px;
+  --shadow-1:0 1px 2px rgba(0,0,0,.6);
+  --shadow-2:0 18px 48px -24px rgba(0,0,0,.8);
 }
 
 html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
@@ -74,11 +82,11 @@ html,body{height:100%;font-family:var(--sans);font-size:14px;line-height:1.65;
 
 :where(a,button,input,textarea,select,[tabindex]):focus-visible{
   outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
-::selection{background:var(--accent-soft);color:var(--text)}
+::selection{background:var(--accent);color:#fff}
 
 *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;
   border:2px solid var(--canvas)}
-::-webkit-scrollbar-thumb:hover{background:#55636f}
+::-webkit-scrollbar-thumb:hover{background:rgba(238,235,225,.34)}

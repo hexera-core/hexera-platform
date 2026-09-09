@@ -191,6 +191,28 @@ def _fail(engine: str, detail: str) -> dict:
             "log_tail": f"[CLOUD_RUN_FAILED] {engine}: {detail}"}
 
 
+RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
+
+
+def _uncollected(engine: str, result: dict, exc: BaseException) -> dict:
+    """The remote run FINISHED and wrote its result document, but its output could not be
+    brought back (download or bounded extraction failed). Still RC_INFRASTRUCTURE - the plan did
+    not fail and the claim semantics are unchanged - but the text says what happened and carries
+    the remote's own summary, so a reader can tell "too big to return" from "never dispatched".
+    A 7 M-cell blade-row passage (job 3cd77f85) came back as 557 MB, tripped the 512 MiB
+    extraction cap, and was reported as 'the mesh run never started' - the one repair that
+    applied (a smaller mesh) was the one the wording forbade."""
+    q = result.get("quality") or {}
+    summary = (f"remote rc={result.get('rc')} cells={q.get('cells')} "
+               f"faces={q.get('faces')} timed_out={result.get('timed_out')}")
+    detail = f"{type(exc).__name__}: {exc}"
+    logger.error("Cloud Run mesh result NOT COLLECTED for %s (%s): %s", engine, summary, detail)
+    return {"rc": -3, "timed_out": False,
+            "remote_quality": dict(q),
+            "log_tail": (f"{RESULT_UNCOLLECTED_MARKER} {engine}: the mesh ran ({summary}) but "
+                         f"its result could not be collected - {detail}")}
+
+
 def run_mesh_remote(workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
     return _exchange(workspace, engine=engine, timeout=timeout, operation_key=operation_key,
                      submit=True)
@@ -231,6 +253,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
     # implies a collectable workspace, and a failing remote run returns its workspace and logs the
     # same way a successful one does. rc is the mesh's verdict, not evidence about the exchange.
     collection_complete = False
+    result = None                     # set once the remote's result document has been read
     try:
         from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
         ws = Path(workspace)
@@ -272,6 +295,8 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # decide what to record, and it must never read this as "nothing was submitted".
         raise
     except Exception as exc:  # noqa: BLE001 - any failure is a LOUD mesh failure, not a local run
+        if isinstance(result, dict) and "rc" in result:
+            return _uncollected(engine, result, exc)
         return _fail(engine, f"{type(exc).__name__}: {exc}")
     finally:
         if bucket is not None and collection_complete:

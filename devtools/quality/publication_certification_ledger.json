@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 64,
- "proven": 64,
+ "denominator": 66,
+ "proven": 66,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 3
+  "new_since_reconciliation": 5
  },
  "rows": [
   {
@@ -604,6 +604,24 @@
    "mapping_reason": "a new publication: a round's reasoning is published AS IT ARRIVES, against the id around_begin opened, so a long round shows its thinking instead of an empty card",
    "status": "proven",
    "proof_scenario": "builder-loop:cfmesh"
+  },
+  {
+   "canonical_id": "pipeline/graph.py::node_infra_retry::note#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the infra-retry replay tells the user a temporary service issue is being waited out instead of failing the job",
+   "status": "proven",
+   "proof_scenario": "infra-retry:transient-replay"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#7",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the internal driver tells the user a plate thinner than the wall cell was found and is being refined locally instead of vanishing from the mesh (fix #4, the orifice cluster)",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-thin-feature"
   }
  ]
 }
