@@ -36,7 +36,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 load_env
-require_vars GCP_PROJECT_ID GCP_REGION DEPLOYMENT_ID GCP_PROJECT_NUMBER
+require_vars GCP_PROJECT_ID GCP_REGION DEPLOYMENT_ID
 
 ADMIN_SERVICE="${CLOUDRUN_ADMIN_SERVICE:-}"
 ADMIN_SA="${ADMIN_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-admin}"
@@ -49,6 +49,12 @@ if [ -z "${ADMIN_SERVICE}" ]; then
   log "set CLOUDRUN_ADMIN_SERVICE to deploy the admin console from this deployment"
   exit 0
 fi
+
+# GCP_PROJECT_NUMBER is dereferenced unguarded below, to build the IAP service agent's address.
+# Stated here - after the skip, since a deployment with no admin service need not carry it, but
+# before step 1 creates anything - so a deployment missing it dies with a clear refusal rather
+# than an `unbound variable` after a service account and IAM bindings already exist.
+require_vars GCP_PROJECT_NUMBER
 
 # The image is the ADMIN image, BY DIGEST. promote-release.sh wrote it from the validated release
 # record; a tag is refused rather than re-resolved, because a tag can be moved between the
@@ -182,15 +188,38 @@ gc run services add-iam-policy-binding "${ADMIN_SERVICE}" --region "${GCP_REGION
 #    service is always wrong, so it is removed whenever it is found rather than being governed by
 #    a variable. IAP does not protect a service that allUsers may invoke; the two are separate
 #    gates.
+#
+#    A FAILED READ IS NOT A CONFIRMED-EMPTY POLICY. Folding the read into `|| true` made the two
+#    indistinguishable: a `get-iam-policy` failure left POLICY_MEMBERS empty, took no branch below,
+#    and the summary at the end of this script still asserted "no public invoker binding" -
+#    claiming a verification that never happened. The exit status is captured separately so a read
+#    failure gets its own warning instead of a false all-clear.
+POLICY_RC=0
 POLICY_MEMBERS="$(gc run services get-iam-policy "${ADMIN_SERVICE}" --region "${GCP_REGION}" \
-  --format='value(bindings.members)' 2>/dev/null || true)"
-case "${POLICY_MEMBERS}" in
-  *allUsers*)
-    warn "${ADMIN_SERVICE} carried a public invoker binding - removing it. IAP does not protect a
+  --format='value(bindings.members)' 2>/dev/null)" || POLICY_RC=$?
+if [ "${POLICY_RC}" -ne 0 ]; then
+  warn "could not read ${ADMIN_SERVICE}'s invoker policy (gcloud exited ${POLICY_RC}) - whether it
+       carries a public allUsers binding could not be confirmed. IAP does not protect a service
+       that allUsers may invoke, so verify by hand:
+         gcloud run services get-iam-policy ${ADMIN_SERVICE} --project ${GCP_PROJECT_ID} \\
+           --region ${GCP_REGION}"
+  INVOKER_STATE="COULD NOT BE CONFIRMED - the policy read failed; verify by hand"
+else
+  case "${POLICY_MEMBERS}" in
+    *allUsers*)
+      warn "${ADMIN_SERVICE} carried a public invoker binding - removing it. IAP does not protect a
        service that allUsers may invoke; the two are separate gates."
-    gc run services remove-iam-policy-binding "${ADMIN_SERVICE}" --region "${GCP_REGION}" \
-      --member allUsers --role roles/run.invoker >/dev/null ;;
-esac
+      gc run services remove-iam-policy-binding "${ADMIN_SERVICE}" --region "${GCP_REGION}" \
+        --member allUsers --role roles/run.invoker >/dev/null \
+        || warn "could not remove the public invoker binding from ${ADMIN_SERVICE}. It remains
+       publicly invokable until this is run by hand:
+         gcloud run services remove-iam-policy-binding ${ADMIN_SERVICE} --project ${GCP_PROJECT_ID} \\
+           --region ${GCP_REGION} --member allUsers --role roles/run.invoker"
+      INVOKER_STATE="a public invoker binding was found and removed" ;;
+    *)
+      INVOKER_STATE="no public invoker binding (confirmed)" ;;
+  esac
+fi
 
 ADMIN_URL="$(gc run services describe "${ADMIN_SERVICE}" --region "${GCP_REGION}" \
   --format='value(status.url)' 2>/dev/null || true)"
@@ -198,7 +227,7 @@ log "admin console service ${ADMIN_SERVICE}  (${ADMIN_DISPOSITION})"
 log "  identity      ${ADMIN_SA_EMAIL}"
 log "  image         ${ADMIN_IMAGE}"
 log "  scaling       ${ADMIN_MIN_INSTANCES}..${ADMIN_MAX_INSTANCES} instances, concurrency ${ADMIN_CONCURRENCY}"
-log "  gate          IAP, fronted by roles/run.invoker for ${IAP_AGENT} - no public invoker binding"
+log "  gate          IAP, fronted by roles/run.invoker for ${IAP_AGENT} - ${INVOKER_STATE}"
 log "  url           ${ADMIN_URL:-<not reported>}"
 
 # THE DEPLOYED URL, for the caller that runs after this stage. Task 8's post-deploy verification
