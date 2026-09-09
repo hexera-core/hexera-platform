@@ -604,7 +604,12 @@ jobs:
           [ "${code}" = "200" ] || { echo "::error::GET /sign-in returned ${code}, not 200"; exit 1; }
           grep -qi '<html' /tmp/console-verify-signin.html \
             || { echo "::error::/sign-in did not render HTML"; exit 1; }
-          assets="$(grep -oE '/_next/static/[^"]+' /tmp/console-verify-signin.html | sort -u | head -5)"
+          # A BACKSLASH ENDS AN ASSET PATH AS SURELY AS A QUOTE DOES. Next.js emits these paths
+          # twice: once as real HTML attributes, and once inside the RSC flight payload as ESCAPED
+          # JSON - `[\"/_next/static/chunks/x.js\"`. Matching to the next `"` runs straight through
+          # the escaping backslash and captures `.../x.js\`, a path that exists nowhere; Cloud Run
+          # answered it with a 308 and the deploy failed on a console whose assets were all fine.
+          assets="$(grep -oE '/_next/static/[^"\\]+' /tmp/console-verify-signin.html | sort -u | head -5)"
           if [ -z "${assets}" ]; then
             echo "::error::/sign-in referenced no /_next/static assets - cannot confirm the asset path works"
             exit 1
