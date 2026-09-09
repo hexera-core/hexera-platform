@@ -39,8 +39,10 @@ on:
           - images,migrate              # ...and the schema, when the model moved
           - images,migrate,console      # ...and the browser console
           - images,migrate,console,admin # ...and the admin console (what a merge to main does)
+          - images,migrate,console,admin,edge # ...and the load balancer, address and certificate
           - console                     # the console ALONE - the fast loop while iterating on it
           - admin                       # the admin console alone - the fast loop while iterating on it
+          - edge                        # the edge ALONE - reconcile the address/cert without a redeploy
           - images,migrate,workers      # ...and roll the fleet onto the new digest
           - all                         # every tier, including Cloud SQL and Memorystore
 
@@ -89,6 +91,13 @@ jobs:
       # before anyone can authenticate, but the admin console's ONLY gate is IAP, so this output
       # exists to name the Cloud Run service that gate is applied to, never to make it public.
       admin_service: ${{ steps.pick.outputs.admin_service }}
+      # The custom hostnames the edge (Task 4) fronts, dev only - PROD IS DELIBERATELY EMPTY, same
+      # reasoning as console_service/admin_service above: a release tag reconciles every tier it is
+      # told about, and pinning a hostname here would let the next tag provision a billed load
+      # balancer, address and certificate nobody asked for. Edge-2 turns prod on in its own
+      # reviewed diff.
+      console_domain: ${{ steps.pick.outputs.console_domain }}
+      admin_domain: ${{ steps.pick.outputs.admin_domain }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -150,6 +159,12 @@ jobs:
               # create-admin-service.sh and dev's deployment-state manifest have named
               # `dev-admin` since Task 6/7; this line is what tells the deploy job to look for it.
               echo "admin_service=dev-admin"
+              # The custom hostnames, PINNED, dev only - same reasoning as console_service and
+              # admin_service immediately above. create-edge.sh (Task 4) only provisions the load
+              # balancer, address and certificate when it is handed a domain; this is what hands
+              # it one for dev.
+              echo "console_domain=dev.console.hexera.ai"
+              echo "admin_domain=dev.admin.hexera.ai"
               # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
               # instances themselves - see the outputs block above.
               #
@@ -227,6 +242,14 @@ jobs:
             # provision a billed production admin service nobody asked for. Prod gets no admin
             # console until a human deliberately pins a name here, in a reviewed diff.
             echo "admin_service="
+            # THE CUSTOM HOSTNAMES, DELIBERATELY LEFT EMPTY - the same reasoning as console_service
+            # and admin_service immediately above, and it applies with the same force: naming a
+            # hostname here would let create-edge.sh provision a billed load balancer, a reserved
+            # global address and a managed certificate in production on the very next tag, unasked.
+            # Prod gets no custom hostname until a human deliberately pins one here, in a reviewed
+            # diff - Edge-2, a separate plan.
+            echo "console_domain="
+            echo "admin_domain="
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -424,6 +447,11 @@ jobs:
       # above. Empty means bootstrap-env.sh's CLOUDRUN_ADMIN_SERVICE stays empty too, and the
       # admin stage states its skip exactly as an admin-less deployment's does.
       CLOUDRUN_ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
+      # THE CUSTOM HOSTNAMES, dev only - empty on prod on purpose, same as CLOUDRUN_CONSOLE_SERVICE
+      # and CLOUDRUN_ADMIN_SERVICE above. Empty means create-edge.sh sees both CONSOLE_DOMAIN and
+      # ADMIN_DOMAIN unset and states its own skip, exactly as an edge-less deployment's does.
+      CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
+      ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
@@ -531,6 +559,31 @@ jobs:
           DEPLOY_NONINTERACTIVE: "1"
           DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
         run: bash deploy/gcp/scripts/deploy.sh
+
+      # THE ADDRESS AN OPERATOR MUST PUT IN DNS, surfaced where they will see it. create-edge.sh
+      # (Task 4) writes edge_ip and edge_cert_state to $GITHUB_OUTPUT only when the edge stage ran
+      # and declared at least one hostname; this step runs on exactly that condition, so a deploy
+      # that never touched the edge (components without 'edge', or a target - prod today - with no
+      # CONSOLE_DOMAIN/ADMIN_DOMAIN pinned) leaves it skipped rather than printing an empty table.
+      - name: Surface the edge address for DNS
+        if: steps.deploy.outputs.edge_ip != ''
+        env:
+          EDGE_IP: ${{ steps.deploy.outputs.edge_ip }}
+          EDGE_CERT_STATE: ${{ steps.deploy.outputs.edge_cert_state }}
+          CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
+          ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Edge"
+            echo
+            echo "| Hostname | Record | Value |"
+            echo "|---|---|---|"
+            [ -n "${CONSOLE_DOMAIN}" ] && echo "| \`${CONSOLE_DOMAIN}\` | A | \`${EDGE_IP}\` |"
+            [ -n "${ADMIN_DOMAIN}" ] && echo "| \`${ADMIN_DOMAIN}\` | A | \`${EDGE_IP}\` |"
+            echo
+            echo "Certificate: **${EDGE_CERT_STATE}**"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
       # §4): an HTTP check against the console's own dev URL, the one thing nothing before this
