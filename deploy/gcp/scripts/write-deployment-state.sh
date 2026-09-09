@@ -70,14 +70,24 @@ else
   ADMIN_DIGEST=""
 fi
 
-# THE CERTIFICATE'S STATE, read back regardless of this run's own selection - it may have been
-# provisioned by an earlier run, and an operator checking whether DNS is working needs to know
-# what the certificate IS, not merely which run last touched it.
+# THE CERTIFICATE'S STATE AND THE RESERVED ADDRESS, both read back regardless of this run's own
+# selection - either may have been provisioned by an earlier run, and an operator checking whether
+# DNS is working needs to know what the edge IS, not merely which run last touched it.
+#
+# THE ADDRESS IS READ, NOT INHERITED. create-edge.sh sets EDGE_IP_ADDRESS as an in-process export,
+# but deploy.sh runs every stage as its own `bash` process, so that value never reaches this one
+# and the manifest field recorded "" on every real deploy - the field the edge exists to publish.
+# EDGE_IP_NAME arrives here through generated.env exactly as EDGE_CERT does, so the address can
+# simply be asked for, with no cross-process assumption to get wrong. Failure is tolerated the same
+# way the certificate's is: a manifest is worth writing even when one read-back did not answer.
 if [ -n "${CONSOLE_DOMAIN:-}" ] || [ -n "${ADMIN_DOMAIN:-}" ]; then
   EDGE_CERT_STATE="$(gc compute ssl-certificates describe "${EDGE_CERT:-}" --global \
     --format='value(managed.status)' 2>/dev/null || true)"
+  EDGE_IP_ADDRESS="$(gc compute addresses describe "${EDGE_IP_NAME:-}" --global \
+    --format='value(address)' 2>/dev/null || true)"
 else
   EDGE_CERT_STATE=""
+  EDGE_IP_ADDRESS=""
 fi
 
 # TWO DIFFERENT QUESTIONS, kept apart because one is durable and one is about this run.
@@ -125,8 +135,9 @@ CONSOLE_DISP="$(_disp console "${CONSOLE_SERVICE_DISPOSITION:-}" console_service
 # create-admin-service.sh runs as its own `bash` process and cannot export back into this one.
 ADMIN_DISP="$(_disp admin "${ADMIN_SERVICE_DISPOSITION:-}" admin_service)"
 # EDGE_DISPOSITION is always empty in practice, for the same reason CONSOLE's and ADMIN's are
-# above: create-edge.sh runs as its own `bash` process and cannot export back into this one -
-# same for EDGE_IP_ADDRESS below, which is why the manifest must tolerate it being empty.
+# above: create-edge.sh runs as its own `bash` process and cannot export back into this one.
+# EDGE_IP_ADDRESS used to be empty for that same reason; it is now read back from the reserved
+# address above rather than inherited, so the manifest records the address on every run.
 EDGE_DISP="$(_disp edge "${EDGE_DISPOSITION:-}" edge)"
 SQL_DISP="$(_disp data "${CLOUDSQL_DISPOSITION:-}" cloud_sql)"
 REDIS_DISP="$(_disp data "${REDIS_DISPOSITION:-}" memorystore)"
@@ -229,10 +240,10 @@ if "${CLOUDRUN_ADMIN_SERVICE:-}":
   }
 if "${CONSOLE_DOMAIN:-}" or "${ADMIN_DOMAIN:-}":
   # A deployment with no custom hostname declared has no edge - Cloud Run's own *.run.app URL
-  # works without one. EDGE_IP_ADDRESS is the reserved address this SAME process's edge stage just
-  # created; it is an in-process export only (create-edge.sh never writes it back to
-  # generated.env), so a run that reconciled a prior stage but not 'edge' records it as empty here
-  # rather than guessing - the same tolerance API_SERVICE_DISPOSITION and its siblings rely on.
+  # works without one. EDGE_IP_ADDRESS is the address read back from EDGE_IP_NAME above, so it is
+  # the address that is actually reserved whether or not this run selected 'edge' - and empty only
+  # when the reservation does not exist yet or could not be read, never merely because the edge
+  # stage ran in a different process.
   doc["resources"]["edge"] = {
     "address": "${EDGE_IP_ADDRESS:-}",
     "hostnames": [h for h in ("${CONSOLE_DOMAIN:-}", "${ADMIN_DOMAIN:-}") if h],

@@ -6,8 +6,9 @@
 # Boundaries: it never deletes or recreates a live resource; DNS itself is the operator's, not this
 # script's - it only prints what belongs in it.
 
-# Provision the EDGE for the consoles. Idempotent and RECONCILING: every resource here is
-# describe-then-create-only-if-absent, never recreated.
+# Provision the EDGE for the consoles. Idempotent and RECONCILING: every resource here is either
+# describe-then-create-only-if-absent or a full-state `import` that says the same thing every run.
+# Nothing is recreated.
 #
 #   bash deploy/gcp/scripts/create-edge.sh
 #
@@ -89,9 +90,11 @@ info "Edge for $(IFS=,; printf '%s' "${DOMAIN_LIST[*]}") in ${GCP_PROJECT_ID}"
 # _ensure LABEL  describe-args...  --  create-args...
 # Runs the describe first; on success the resource is reused and nothing is mutated. Only when
 # the describe fails does it create. This is the whole "reuse, never recreate" rule, expressed
-# once and used for every resource below instead of being open-coded eight times. Sets
-# ENSURE_DISPOSITION to "reused" or "created" so a caller that must not repeat a one-shot mutation
-# (attaching a NEG to a backend service) can tell which happened.
+# once and used for every resource below instead of being open-coded eight times. It reports
+# nothing about WHICH branch it took, deliberately: the one caller that ever needed to know
+# (attaching a NEG to a backend service) asks the backend service itself instead, because a run
+# that created a resource and then died leaves "it existed already" and "it is complete" as two
+# different questions.
 _ensure() {
   local label="$1"; shift
   local -a describe_args=()
@@ -106,12 +109,10 @@ _ensure() {
   done
   if gc "${describe_args[@]}" >/dev/null 2>&1; then
     log "  ${label}  (exists)"
-    ENSURE_DISPOSITION=reused
     return 0
   fi
   info "Creating ${label}"
   gc "${create_args[@]}"
-  ENSURE_DISPOSITION=created
 }
 
 # 1) THE STATIC IP. Reserved once; every subsequent run reads the same address back. Recreating
@@ -147,13 +148,24 @@ for triple in "${TRIPLES[@]}"; do
     compute backend-services describe "${backend}" --global -- \
     compute backend-services create "${backend}" --global \
       --load-balancing-scheme=EXTERNAL_MANAGED
-  # Attaching the NEG is itself a one-shot create, not a describable property this fake (or real
-  # gcloud, re-run against an already-attached NEG) can be asked about cheaply - so it runs only
-  # the run that just created the backend service, never against one this run merely reused.
-  if [ "${ENSURE_DISPOSITION}" = created ]; then
-    gc compute backend-services add-backend "${backend}" --global \
-      --network-endpoint-group="${neg}" --network-endpoint-group-region="${GCP_REGION}"
-  fi
+  # ATTACH THE NEG WHEN IT IS NOT ALREADY ATTACHED - decided by READING THE BACKEND LIST, never by
+  # whether _ensure just created the backend service. Gating on the disposition assumed that a
+  # backend service that exists must already have its NEG, and any run that created the backend
+  # service and then died before this line (the certificate `die` below, a transient API error, or
+  # simply a run that failed halfway) falsifies that: every later run then reuses the empty backend
+  # service, never attaches, and the load balancer serves 502 forever with no error anywhere. The
+  # backend list is the actual state, so ask for it.
+  attached_groups="$(gc compute backend-services describe "${backend}" --global \
+    --format='value(backends[].group)' 2>/dev/null | tr '\n' ';' || true)"
+  # Delimited on both ends so a NEG whose name is a prefix of another ("x-neg" vs "x-neg-2") does
+  # not read as attached. gcloud joins a repeated field with ';'.
+  case ";${attached_groups};" in
+    *"/${neg};"*)
+      log "  ${neg} already attached to ${backend}" ;;
+    *)
+      gc compute backend-services add-backend "${backend}" --global \
+        --network-endpoint-group="${neg}" --network-endpoint-group-region="${GCP_REGION}" ;;
+  esac
 
   BACKENDS+=("${host}|${backend}")
   log "  ${label} routed to ${backend} <- ${neg} <- ${service}"
@@ -161,21 +173,46 @@ done
 
 # 3) THE SERVING URL MAP - one map, one host rule per hostname, each to its own backend. The
 #    default service is the first declared backend (console, when present); every other hostname
-#    reaches its backend only through its own host rule below.
+#    reaches its backend only through its own host rule.
+#
+#    WRITTEN AS ONE FULL-STATE `url-maps import`, NOT create + add-path-matcher. `add-path-matcher`
+#    is not the idempotent update it reads as: gcloud's own add_path_matcher surface refuses a host
+#    that already belongs to a host rule -
+#      "Cannot create a new host rule with host [X] because the host is already part of a host rule
+#       that references the path matcher [Y]"
+#    - and otherwise APPENDS a path matcher rather than replacing one. So the first run succeeded
+#    and every run after it died right here, before the certificate was read, before the DNS block
+#    printed and before $GITHUB_OUTPUT was written; deploy.sh is `set -euo pipefail`, so the whole
+#    deploy aborted at this stage and never reached the manifest write. `import` is a full-state
+#    write - gcloud's import inserts when the map is absent and replaces it when present - so it
+#    says the same thing on every run and needs no describe-then-create gate. It is also the idiom
+#    the redirect map below already uses, so this file has one way of writing a URL map, not two.
 default_backend="${BACKENDS[0]#*|}"
-_ensure "URL map ${EDGE_URL_MAP}" \
-  compute url-maps describe "${EDGE_URL_MAP}" --global -- \
-  compute url-maps create "${EDGE_URL_MAP}" --default-service "${default_backend}"
+# Backend services are named by their full resource URL in an imported UrlMap: the API accepts a
+# selfLink there, not the bare name the flag-based `--default-service` would have resolved.
+BE_URL="https://www.googleapis.com/compute/v1/projects/${GCP_PROJECT_ID}/global/backendServices"
+SERVING_FILE="$(mktemp -t edge-urlmap-XXXXXX).yaml"
+REDIRECT_FILE=""
+trap 'rm -f "${SERVING_FILE}" ${REDIRECT_FILE:+"${REDIRECT_FILE}"}' EXIT
 
-for pair in "${BACKENDS[@]}"; do
-  host="${pair%%|*}"
-  backend="${pair#*|}"
-  pm="${backend}-pm"
-  # add-path-matcher adds-or-replaces the named path matcher and its host rule - an idempotent
-  # update, not a create, so it runs every time rather than being gated by _ensure.
-  gc compute url-maps add-path-matcher "${EDGE_URL_MAP}" \
-    --path-matcher-name="${pm}" --default-service="${backend}" --new-hosts="${host}"
-done
+{
+  printf 'name: %s\n' "${EDGE_URL_MAP}"
+  printf 'defaultService: %s/%s\n' "${BE_URL}" "${default_backend}"
+  printf 'hostRules:\n'
+  for pair in "${BACKENDS[@]}"; do
+    printf -- '- hosts:\n'
+    printf -- '  - %s\n' "${pair%%|*}"
+    printf -- '  pathMatcher: %s-pm\n' "${pair#*|}"
+  done
+  printf 'pathMatchers:\n'
+  for pair in "${BACKENDS[@]}"; do
+    printf -- '- name: %s-pm\n' "${pair#*|}"
+    printf -- '  defaultService: %s/%s\n' "${BE_URL}" "${pair#*|}"
+  done
+} > "${SERVING_FILE}"
+
+info "Reconciling URL map ${EDGE_URL_MAP}"
+gc compute url-maps import "${EDGE_URL_MAP}" --global --source="${SERVING_FILE}" --quiet
 
 # 4) THE CERTIFICATE, covering exactly the declared hostnames, console-then-admin so its list
 #    agrees with the order TRIPLES was built in.
@@ -183,6 +220,42 @@ CERT_DOMAINS="$(IFS=,; printf '%s' "${DOMAIN_LIST[*]}")"
 _ensure "managed certificate ${EDGE_CERT}" \
   compute ssl-certificates describe "${EDGE_CERT}" --global -- \
   compute ssl-certificates create "${EDGE_CERT}" --domains="${CERT_DOMAINS}" --global
+
+# DRIFT IS NOTICED, NEVER SILENTLY REPAIRED. A managed certificate's domain list cannot be edited,
+# and "reuse, never recreate" forbids replacing it here - but it does not forbid saying so. Adding
+# ADMIN_DOMAIN to a deployment that previously declared only CONSOLE_DOMAIN adds the admin host
+# rule and prints an admin A record above while this certificate still covers only the console
+# name; that hostname then serves a certificate for a different name and every browser hard-fails
+# on it, with nothing in this run's output suggesting why. So read the list back and refuse.
+# An unreadable list is refused too: an unchecked certificate is exactly the state this guard
+# exists to rule out.
+CERT_DOMAINS_LIVE="$(gc compute ssl-certificates describe "${EDGE_CERT}" --global \
+  --format='value(managed.domains)')"
+# Both sides normalised to one sorted space-separated list, because neither the order gcloud
+# returns nor the order this deployment declares is meaningful - only the set is.
+# Split on both separators one at a time: gcloud joins a repeated field with ';', the declared
+# list is comma-joined, and a two-character SET2 for a two-character SET1 is what `tr` calls a
+# duplicate rather than a mapping.
+_domain_set() {
+  printf '%s' "$1" | tr ';' '\n' | tr ',' '\n' | sed '/^[[:space:]]*$/d' | LC_ALL=C sort \
+    | tr '\n' ' '
+}
+CERT_DOMAINS_DECLARED_SET="$(_domain_set "${CERT_DOMAINS}")"
+CERT_DOMAINS_LIVE_SET="$(_domain_set "${CERT_DOMAINS_LIVE}")"
+if [ "${CERT_DOMAINS_LIVE_SET}" != "${CERT_DOMAINS_DECLARED_SET}" ]; then
+  die "certificate ${EDGE_CERT} covers [${CERT_DOMAINS_LIVE_SET% }] but this deployment declares
+   [${CERT_DOMAINS_DECLARED_SET% }]. Any hostname missing from the certificate serves a mismatched
+   one and browsers refuse it outright.
+   A managed certificate's domains cannot be edited and this script never deletes a live resource,
+   so replacing it is an operator's deliberate act:
+     gcloud compute ssl-certificates create ${EDGE_CERT}-v2 --domains=${CERT_DOMAINS} --global \\
+       --project ${GCP_PROJECT_ID}
+     gcloud compute target-https-proxies update ${EDGE_URL_MAP}-https-proxy \\
+       --ssl-certificates=${EDGE_CERT}-v2 --global --project ${GCP_PROJECT_ID}
+   then set EDGE_CERT=${EDGE_CERT}-v2 in the deployment env and run this stage again. The new
+   certificate is PROVISIONING until it validates, so make the swap when a brief window of the
+   OLD certificate still being served is acceptable."
+fi
 
 CERT_STATE="$(gc compute ssl-certificates describe "${EDGE_CERT}" --global \
   --format='value(managed.status)')"
@@ -216,8 +289,8 @@ _ensure "HTTPS forwarding rule ${HTTPS_RULE}" \
 #    serve the app over plain HTTP rather than redirect it; a redirect is a url map whose action
 #    is defaultUrlRedirect, which gcloud can only write by importing a small YAML document.
 REDIRECT_MAP="${EDGE_URL_MAP}-redirect"
-REDIRECT_FILE="$(mktemp -t edge-redirect-XXXXXX).yaml"
-trap 'rm -f "${REDIRECT_FILE}"' EXIT
+REDIRECT_FILE="$(mktemp -t edge-redirect-XXXXXX).yaml"   # removed by the trap set alongside the
+                                                        # serving map's own temp file above
 cat > "${REDIRECT_FILE}" <<YAML
 name: ${REDIRECT_MAP}
 defaultUrlRedirect:
