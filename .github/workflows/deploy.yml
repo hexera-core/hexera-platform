@@ -550,6 +550,30 @@ jobs:
           set -euo pipefail
           echo "verifying ${CONSOLE_URL}"
 
+          # EVERY PROBE RETRIES TRANSPORT FAILURE, not just the first one. Assertion 1 below has
+          # always tolerated a cold start, but succeeding once only proves ONE request got
+          # through - Cloud Run can still be scaling when the next arrives. Assertions 2-4 read
+          # the status with `code="$(curl ...)"`, and a curl that TIMES OUT exits non-zero, which
+          # under `set -e` aborted this entire step with no diagnostic whatsoever: no ::error::,
+          # no code, just a failed deploy for a console that was in fact serving correctly. That
+          # is precisely what it did on the first console deploy to dev, where all four assertions
+          # passed by hand seconds later. A check that cannot tell "the console is broken" from
+          # "the connection was slow" is not a check.
+          probe() {                      # probe <url> [outfile] -> echoes the HTTP status code
+            local url="$1" out="${2:-/dev/null}" code=""
+            for _attempt in 1 2 3 4 5; do
+              # `|| true` because the status is carried in ${code}, never in curl's exit - a
+              # non-zero exit here means "no answer yet", which is the case worth retrying.
+              code="$(curl -s -o "${out}" --max-time 10 -w '%{http_code}' "${url}" || true)"
+              case "${code}" in
+                ""|000) ;;                # transport failure - no HTTP response at all
+                *) printf '%s' "${code}"; return 0 ;;
+              esac
+              sleep 3
+            done
+            printf '%s' "${code:-000}"    # 000 reaches the assertions as a failing code
+          }
+
           # 1) unauthenticated / redirects to /sign-in. A few retries: the revision was reported
           #    ready by `gcloud run deploy`, but the very first request can still race a cold
           #    start behind Cloud Run's own load balancer.
@@ -576,8 +600,7 @@ jobs:
           # 2) the sign-in page renders - strong enough to notice a broken asset path. Fetching it
           #    alone proves nothing about .next/static or public/; actually fetching the assets it
           #    references does.
-          code="$(curl -s -o /tmp/console-verify-signin.html --max-time 10 -w '%{http_code}' \
-            "${CONSOLE_URL}/sign-in")"
+          code="$(probe "${CONSOLE_URL}/sign-in" /tmp/console-verify-signin.html)"
           [ "${code}" = "200" ] || { echo "::error::GET /sign-in returned ${code}, not 200"; exit 1; }
           grep -qi '<html' /tmp/console-verify-signin.html \
             || { echo "::error::/sign-in did not render HTML"; exit 1; }
@@ -588,7 +611,7 @@ jobs:
           fi
           while IFS= read -r asset; do
             [ -n "${asset}" ] || continue
-            acode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}${asset}")"
+            acode="$(probe "${CONSOLE_URL}${asset}")"
             [ "${acode}" = "200" ] || { echo "::error::asset ${asset} returned ${acode}, not 200"; exit 1; }
           done <<<"${assets}"
           echo "OK: /sign-in rendered, $(printf '%s\n' "${assets}" | grep -c .) static asset(s) served"
@@ -596,8 +619,7 @@ jobs:
           # 3) /api/internal/health returns 200 with a JSON body whose status is "ok". This route
           #    is unauthenticated by design and is already what Gate C's in-container smoke curls,
           #    so post-deploy and build-time verification agree on one endpoint.
-          hcode="$(curl -s -o /tmp/console-verify-health.json --max-time 10 -w '%{http_code}' \
-            "${CONSOLE_URL}/api/internal/health")"
+          hcode="$(probe "${CONSOLE_URL}/api/internal/health" /tmp/console-verify-health.json)"
           [ "${hcode}" = "200" ] || { echo "::error::GET /api/internal/health returned ${hcode}, not 200"; exit 1; }
           grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/console-verify-health.json \
             || { echo "::error::/api/internal/health did not report status ok: $(cat /tmp/console-verify-health.json)"; exit 1; }
@@ -608,7 +630,7 @@ jobs:
           #    unauthenticated would let any caller of this allUsers-invokable service spend the
           #    console's own API key against the product API. 401 is the passing case - it proves
           #    the session gate is actually live on the deployed revision.
-          rcode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}/readyz")"
+          rcode="$(probe "${CONSOLE_URL}/readyz")"
           [ "${rcode}" = "401" ] || { echo "::error::GET /readyz returned ${rcode}, not 401 - the session gate may not be enforced on this revision"; exit 1; }
           echo "OK: /readyz 401 (session gate enforced)"
 
