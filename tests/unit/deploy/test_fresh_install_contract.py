@@ -240,11 +240,12 @@ def test_deployment_state_manifest_records_mesh_ownership_only(tmp_path):
     # recorded: the manifest states what exists, and an empty entry would read as one that does.
     assert set(doc["resources"]) == {"artifact_registry", "mesh_job", "exchange_bucket",
                                      "mesh_service_account"}
-    # ALL THREE images, unconditionally - the app and console digests are deployed state now, the
-    # same as the mesh digest: the app runs the pre-deploy migration and the queue-depth publisher,
-    # and the console is the browser front door, so a record naming only the mesh image could not
-    # say which build did either.
-    assert set(doc["images"]) == {"mesh", "app", "console"}
+    # ALL FOUR images, unconditionally - the app, console and admin digests are deployed state now,
+    # the same as the mesh digest: the app runs the pre-deploy migration and the queue-depth
+    # publisher, the console is the browser front door, and the admin console is IAP-gated but
+    # still a deployed workload, so a record naming only the mesh image could not say which build
+    # did any of them.
+    assert set(doc["images"]) == {"mesh", "app", "console", "admin"}
     blob = json.dumps(doc)
     for leak in ("postgres://", "postgresql://", "rediss://", "sk-", "BEGIN ", "secret_names"):
         assert leak not in blob, f"deployment manifest leaked {leak}"

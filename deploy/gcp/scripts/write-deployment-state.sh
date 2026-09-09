@@ -60,6 +60,16 @@ else
   CONSOLE_DIGEST=""
 fi
 
+# THE ADMIN'S DIGEST, on the admin's own selection - same reasoning as the console's above.
+if _selected admin; then
+  ADMIN_DIGEST="$(resolve_digest "${ADMIN_IMAGE:-}" 2>/dev/null || printf '%s' "${ADMIN_IMAGE:-}")"
+elif [ -n "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
+  ADMIN_DIGEST="$(gc run services describe "${CLOUDRUN_ADMIN_SERVICE}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+else
+  ADMIN_DIGEST=""
+fi
+
 # TWO DIFFERENT QUESTIONS, kept apart because one is durable and one is about this run.
 #
 #   disposition  - OWNERSHIP. Did this tooling create the resource, or was it supplied? It does not
@@ -101,6 +111,9 @@ API_DISP="$(_disp images "${API_SERVICE_DISPOSITION:-}" api_service)"
 # separate `bash` process, so create-console-service.sh cannot export it back here. Same as
 # API_SERVICE_DISPOSITION above - _disp's fallback to the prior manifest is what makes that fine.
 CONSOLE_DISP="$(_disp console "${CONSOLE_SERVICE_DISPOSITION:-}" console_service)"
+# ADMIN_SERVICE_DISPOSITION is always empty in practice, for the same reason CONSOLE's is above:
+# create-admin-service.sh runs as its own `bash` process and cannot export back into this one.
+ADMIN_DISP="$(_disp admin "${ADMIN_SERVICE_DISPOSITION:-}" admin_service)"
 SQL_DISP="$(_disp data "${CLOUDSQL_DISPOSITION:-}" cloud_sql)"
 REDIS_DISP="$(_disp data "${REDIS_DISPOSITION:-}" memorystore)"
 STORE_DISP="$(_disp storage "${ARTIFACTS_BUCKET_DISPOSITION:-}" object_store)"
@@ -113,6 +126,7 @@ SQL_RECON="$(_recon data)";         REDIS_RECON="$(_recon data)"
 STORE_RECON="$(_recon storage)";    FLEET_RECON="$(_recon workers)"
 QUEUE_RECON="$(_recon queue)";      MIGRATE_RECON="$(_recon migrate)"
 CONSOLE_RECON="$(_recon console)"
+ADMIN_RECON="$(_recon admin)"
 
 python3 - "${OUT}" <<PY
 import datetime, json, sys
@@ -138,7 +152,7 @@ doc = {
   # the running workloads is already answered per workload, by `reconciled` on mesh_job and
   # api_service - saying it a second time here cost `set(doc["images"])` its meaning, which is
   # exactly what a consumer iterating for digests relies on.
-  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}", "console": "${CONSOLE_DIGEST}"},
+  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}", "console": "${CONSOLE_DIGEST}", "admin": "${ADMIN_DIGEST}"},
 }
 if "${MIGRATE_DB_HOST:-}":
   doc["resources"]["migration_job"] = {
@@ -190,6 +204,13 @@ if "${CLOUDRUN_CONSOLE_SERVICE:-}":
     "service_account": "${CONSOLE_SERVICE_ACCOUNT:-}",
     "disposition": "${CONSOLE_DISP}",
     "reconciled": ${CONSOLE_RECON},
+  }
+if "${CLOUDRUN_ADMIN_SERVICE:-}":
+  doc["resources"]["admin_service"] = {
+    "name": "${CLOUDRUN_ADMIN_SERVICE:-}",
+    "service_account": "${ADMIN_SERVICE_ACCOUNT:-}",
+    "disposition": "${ADMIN_DISP}",
+    "reconciled": ${ADMIN_RECON},
   }
 if "${WORKER_MIG:-}":
   # The TEMPLATE is the rotation record: a digest change makes a new template and the group rolls

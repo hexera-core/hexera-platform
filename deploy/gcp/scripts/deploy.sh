@@ -51,6 +51,7 @@ stage() { STAGE=$((STAGE + 1)); printf '\n\033[1m━━━ [%d/%d] %s ━━━\
 #   queue    the queue-depth publisher and the autoscaling policy that reads it
 #   workers  the managed instance group and the rolling update onto a new template
 #   console  the Cloud Run console service - the promoted console digest, in front of the API
+#   admin    the Cloud Run admin console, behind IAP - never publicly reachable
 #
 # A SKIPPED STAGE IS STATED, never silent: each prints what it did not do and why, so a summary
 # that says "reused" and a summary that says "not selected" are never read as the same thing.
@@ -66,7 +67,7 @@ want() {
 # A typo must not quietly deploy less than the operator asked for. `images` is not `image`, and a
 # run that silently skipped the API service because of a missing 's' is a bad afternoon.
 if [ "${DEPLOY_COMPONENTS}" != "all" ]; then
-  _known="images data storage migrate queue workers console"
+  _known="images data storage migrate queue workers console admin"
   _bad=""
   _good=0
   IFS=',' read -r -a _requested <<< "${DEPLOY_COMPONENTS}"
@@ -261,6 +262,15 @@ if want console; then
   bash "${S}/create-console-service.sh"
 else
   skipped console "the console service keeps serving whichever digest it already has"
+fi
+
+stage "Admin console (the promoted admin digest, behind IAP)"
+# AFTER the API, like the console: its pages read the API and the database, so an admin console
+# that rolls out first shows errors until the rest catches up.
+if want admin; then
+  bash "${S}/create-admin-service.sh"
+else
+  skipped admin "the admin console keeps serving whichever digest it already has"
 fi
 
 stage "Worker fleet (template pinned to the digest, and the rolling update onto it)"
