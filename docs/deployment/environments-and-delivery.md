@@ -27,8 +27,8 @@ describing it as empty is stale.
 | Role | `hexera-dev` | `hexera-prod` |
 | --- | --- | --- |
 | API (Cloud Run service) | `hexera-dev-api` | `prod-api` |
-| Console (Cloud Run service) | `dev-console` | *(deliberately unset — see below)* |
-| Admin console (Cloud Run service) | `dev-admin` | *(deliberately unset — see below)* |
+| Console (Cloud Run service) | `dev-console` | `prod-console` — see below |
+| Admin console (Cloud Run service) | `dev-admin` | `prod-admin` — see below |
 | Mesh executor (Cloud Run job) | `dev-mesh` | `prod-mesh` |
 | Schema migration (job) | `dev-migrate` | `prod-migrate` |
 | Queue-depth publisher (job) | `dev-queue-depth` | `prod-queue-depth` |
@@ -125,20 +125,25 @@ errors until the API catches up.
   `apps/console/src/auth.ts` sets `trustHost: true` — Auth.js derives its callback URL from the
   request host instead of requiring one to be configured per environment.
 
-**Pinned on dev, deliberately not on prod:** `deploy.yml` pins `console_service=dev-console` for
-dev, the same way it pins `CLOUDRUN_API_SERVICE` (`api_service=dev-api` / `api_service=prod-api`,
-§1) — so a merge to main, which selects `console` in its default component set (§5), actually
-reconciles a named service instead of `create-console-service.sh` stating its own skip.
+**Pinned in both environments now:** `deploy.yml` pins `console_service=dev-console` for dev and
+`console_service=prod-console` for prod, the same way it pins `CLOUDRUN_API_SERVICE`
+(`api_service=dev-api` / `api_service=prod-api`, §1) — so a merge to main, which selects `console`
+in its default component set (§5), and a `v*` tag, which selects `all`, each actually reconcile a
+named service instead of `create-console-service.sh` stating its own skip.
 
-Prod's `console_service=` is left empty, and that is a decision, not a gap. `components=all` on a
-release tag means a tag reconciles every tier it is *told about* — pinning a name here is what
-would tell it to reconcile the console, provisioning a new, billed Cloud Run service in production
-on the very next tag, unasked. That is the same class of mistake PR #12's naming slip nearly made
-with `hexera-prod-pg` (§2): a name typed into this file quietly becoming a second, unwanted, paid
-resource standing next to the real one — there it would have been a second, empty Cloud SQL
-instance beside the production database; here it would be a console nobody requested, serving from
-a project nobody pointed it at. Prod gets no console until a human deliberately pins a name here,
-in a reviewed diff, the same gate that governs everything else in this file.
+Prod's `console_service=` was left empty for as long as it would have named a service with no
+service account and no secret access behind it. `components=all` on a release tag means a tag
+reconciles every tier it is *told about* — pinning a name before the prerequisites existed is
+exactly the class of mistake PR #12's naming slip nearly made with `hexera-prod-pg` (§2): a name
+typed into this file quietly becoming a second, unwanted, paid resource standing next to the real
+one — there it would have been a second, empty Cloud SQL instance beside the production database;
+here it would have been a console nobody could actually authenticate against, serving from
+credentials it had no access to. That is no longer the situation: `prod-console` is now a real
+service account in `hexera-prod` holding `secretmanager.secretAccessor` on all four secret
+containers in the table above, each with an enabled version, so this pin now reconciles a console
+that can actually read what it needs. Its hostname (`console.hexera.ai`) and what still has to
+happen by hand before it and the admin console's hostname are fully live are covered in
+`docs/deployment/console-domains.md`.
 
 ### Admin console (Cloud Run service)
 
@@ -165,10 +170,13 @@ console that rolls out first shows errors until the rest catches up. Unlike the 
 **not** part of the merge-to-main default (§5) — it is reconciled only when a run names it
 explicitly (`admin`) or takes `all`.
 
-**Pinned on dev, deliberately not on prod**, the same reasoning and the same mechanism as
-`console_service` above: naming it in `deploy.yml` for prod would tell a release tag to
-reconcile it, provisioning a billed production service nobody asked for. Prod gets an admin
-console only when a human deliberately pins a name here, in a reviewed diff.
+**Pinned in both environments now**, the same reasoning and the same mechanism as
+`console_service` above: `prod-admin` is now a real service account in `hexera-prod` with the same
+secret access, so naming it in `deploy.yml` reconciles a real admin console rather than one with
+nothing behind it. What pinning the name does *not* do is finish IAP: the OAuth brand `hexera-prod`
+needs for IAP on Cloud Run does not exist yet and, since Google shut down the IAP OAuth Admin APIs
+in March 2026, has to be created by hand in the Cloud Console before `--iap` against `prod-admin`
+will succeed — see `docs/deployment/console-domains.md` §7.
 
 ---
 

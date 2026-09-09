@@ -16,7 +16,7 @@ BOOTSTRAP = REPO / "deploy" / "gcp" / "scripts" / "bootstrap-env.sh"
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: deploy.yml pins console_service (dev only) and maps it into the deploy job.
+# Fix 1: deploy.yml pins console_service (dev and prod) and maps it into the deploy job.
 # ---------------------------------------------------------------------------
 
 def _pick_step_run() -> str:
@@ -34,11 +34,14 @@ def test_dev_pick_resolves_console_service_to_dev_console():
         "console stage has no name to reconcile and will keep stating its own skip")
 
 
-def test_prod_pick_resolves_console_service_to_empty():
+def test_prod_pick_resolves_console_service_to_prod_console():
     run = _pick_step_run()
-    assert re.search(r'echo "console_service="\s*$', run, re.MULTILINE), (
-        "the prod branch of the pick step must emit console_service= (empty) - a non-empty "
-        "value here would provision a paid console service in production on the next tag")
+    # Matched as the exact literal echo statement, not a bare substring: "prod-console" would
+    # also match if it were merely a suffix of some other value, so anchor on the whole
+    # `echo "console_service=prod-console"` line.
+    assert 'echo "console_service=prod-console"' in run, (
+        "the prod branch of the pick step must emit console_service=prod-console now that the "
+        "prod-console service account and its secret access exist in hexera-prod")
 
 
 def test_target_job_declares_a_console_service_output():

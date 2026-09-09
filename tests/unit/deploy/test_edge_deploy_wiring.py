@@ -20,19 +20,26 @@ def test_dev_declares_both_hostnames():
     assert "dev.admin.hexera.ai" in text
 
 
-def test_prod_hostnames_are_not_pinned_yet():
-    """Edge-2 turns prod on deliberately, in its own reviewed diff."""
+def test_prod_pins_the_production_hostnames_and_services():
+    """Edge-2: the service accounts and secret access a console needs now exist in hexera-prod,
+    so a release tag pins the real production services and hostnames, not empty placeholders."""
     text = WF.read_text(encoding="utf-8")
-    # `"console.hexera.ai" in text` alone would also be satisfied by the substring inside
-    # `dev.console.hexera.ai`, so it would pass even if prod WERE pinned - it proves nothing.
-    # Assert instead, exactly, that prod's outputs are emitted empty - the same shape
-    # `console_service=` / `admin_service=` are asserted in test_admin_deploy_wiring.py.
-    assert 'echo "console_domain="' in text, (
-        "prod must emit an empty console_domain, like console_service, so a release tag does "
-        "not pin a hostname nobody reviewed")
-    assert 'echo "admin_domain="' in text, (
-        "prod must emit an empty admin_domain, like admin_service, so a release tag does not "
-        "pin a hostname nobody reviewed")
+    # Matched as the full quoted `echo "key=value"` statement, not `value in text` alone -
+    # "console.hexera.ai" is a substring of dev's "dev.console.hexera.ai" (and likewise
+    # "admin.hexera.ai" of "dev.admin.hexera.ai"), so a bare substring check would pass even if
+    # prod were still unpinned, or pinned to the wrong value.
+    assert 'echo "console_service=prod-console"' in text, (
+        "prod must pin console_service=prod-console now that the service account and its "
+        "secret access exist")
+    assert 'echo "admin_service=prod-admin"' in text, (
+        "prod must pin admin_service=prod-admin now that the service account and its secret "
+        "access exist")
+    assert 'echo "console_domain=console.hexera.ai"' in text, (
+        "prod must pin console_domain=console.hexera.ai now that the console's prerequisites "
+        "exist")
+    assert 'echo "admin_domain=admin.hexera.ai"' in text, (
+        "prod must pin admin_domain=admin.hexera.ai now that the admin console's prerequisites "
+        "exist")
 
 
 def test_the_deploy_job_maps_both_domains():

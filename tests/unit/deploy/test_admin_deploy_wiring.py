@@ -1,4 +1,4 @@
-# Responsibility: Verify the workflow pins an admin service for dev, not prod, and proves it is not public.
+# Responsibility: Verify the workflow pins an admin service for dev and prod, and proves it is not public.
 # Boundaries: it reads the workflow document; it runs no deploy.
 from __future__ import annotations
 
@@ -18,12 +18,14 @@ def test_the_target_publishes_an_admin_service_output():
     assert "admin_service" in _doc()["jobs"]["target"]["outputs"]
 
 
-def test_dev_pins_an_admin_service_and_prod_does_not():
+def test_dev_and_prod_each_pin_their_own_admin_service():
     text = WF.read_text(encoding="utf-8")
     assert 'echo "admin_service=dev-admin"' in text
-    assert 'echo "admin_service="' in text, (
-        "prod must be left deliberately empty, like the console, so a release tag does not "
-        "provision an unasked-for billed service")
+    # Matched as the exact literal echo statement, not a bare substring of the value, following
+    # the same idiom as the dev assertion above.
+    assert 'echo "admin_service=prod-admin"' in text, (
+        "prod must pin admin_service=prod-admin now that the prod-admin service account and its "
+        "secret access exist in hexera-prod")
 
 
 def test_the_deploy_job_maps_the_admin_service():

@@ -117,20 +117,25 @@ jobs:
       # `hexera-dev-` prefix INSIDE it says the same word twice; the hand-made resources that
       # carried one are what made two conventions look like two systems.
       api_service: ${{ steps.pick.outputs.api_service }}
-      # The console, dev only. PROD IS DELIBERATELY EMPTY - see the reasoning where prod's pick
-      # branch sets it below. An empty output here means create-console-service.sh is never even
-      # asked to run against hexera-prod until a human states a name for it on purpose.
+      # The console, in both environments now. Prod stayed empty only while hexera-prod had no
+      # `prod-console` service account and no secret container it could read - see the reasoning
+      # where prod's pick branch sets it below. Both now exist, so this output is what tells
+      # create-console-service.sh to reconcile hexera-prod's console the same way dev's has been
+      # reconciled since Task 8/12.
       console_service: ${{ steps.pick.outputs.console_service }}
-      # The admin console, dev only - same reasoning as console_service immediately above: an
-      # allUsers-invokable service is fine for the console, whose sign-in page must be reachable
-      # before anyone can authenticate, but the admin console's ONLY gate is IAP, so this output
-      # exists to name the Cloud Run service that gate is applied to, never to make it public.
+      # The admin console, in both environments now - same reasoning as console_service
+      # immediately above: an allUsers-invokable service is fine for the console, whose sign-in
+      # page must be reachable before anyone can authenticate, but the admin console's ONLY gate
+      # is IAP, so this output exists to name the Cloud Run service that gate is applied to, never
+      # to make it public.
       admin_service: ${{ steps.pick.outputs.admin_service }}
-      # The custom hostnames the edge (Task 4) fronts, dev only - PROD IS DELIBERATELY EMPTY, same
-      # reasoning as console_service/admin_service above: a release tag reconciles every tier it is
-      # told about, and pinning a hostname here would let the next tag provision a billed load
-      # balancer, address and certificate nobody asked for. Edge-2 turns prod on in its own
-      # reviewed diff.
+      # The custom hostnames the edge (Task 4) fronts, in both environments now - same reasoning
+      # as console_service/admin_service above: the prerequisites an owner had to supply by hand
+      # (the service accounts above, and the secret containers each one reads) now exist in
+      # hexera-prod, so a release tag provisioning the load balancer, address and certificate for
+      # these hostnames is provisioning something a human asked for, not a surprise. The IAP OAuth
+      # brand for hexera-prod and the DNS records for these two hostnames are still outstanding -
+      # see docs/deployment/console-domains.md.
       console_domain: ${{ steps.pick.outputs.console_domain }}
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
@@ -298,32 +303,34 @@ jobs:
             # blank while hexera-prod had no data tier and the deploy identity could not create
             # one; it can now, so the first release provisions what it names.
             echo "api_service=prod-api"
-            # THE CONSOLE, DELIBERATELY LEFT EMPTY. `components=all` a few lines up means a
-            # release tag reconciles every tier it is TOLD about - and stating console_service
-            # here is exactly what would tell it to reconcile the console, provisioning a new,
-            # billed Cloud Run service in production on the very next tag, unasked. That is the
-            # same class of mistake PR #12's naming slip nearly made below: a name typed into this
-            # file quietly becoming a second, unwanted, paid resource standing next to the real
-            # one - there it would have been a second empty Cloud SQL instance beside the
-            # production database; here it would be a console nobody requested serving from a
-            # project nobody pointed it at. Prod gets no console until a human deliberately pins
-            # a name here, in a reviewed diff, the same gate that governs everything else in this
-            # branch.
-            echo "console_service="
-            # THE ADMIN CONSOLE, DELIBERATELY LEFT EMPTY - the same reasoning as console_service
-            # immediately above, and it applies with even more force here: `components=all` means
-            # a release tag reconciles every tier it is told about, and naming one here would
-            # provision a billed production admin service nobody asked for. Prod gets no admin
-            # console until a human deliberately pins a name here, in a reviewed diff.
-            echo "admin_service="
-            # THE CUSTOM HOSTNAMES, DELIBERATELY LEFT EMPTY - the same reasoning as console_service
-            # and admin_service immediately above, and it applies with the same force: naming a
-            # hostname here would let create-edge.sh provision a billed load balancer, a reserved
-            # global address and a managed certificate in production on the very next tag, unasked.
-            # Prod gets no custom hostname until a human deliberately pins one here, in a reviewed
-            # diff - Edge-2, a separate plan.
-            echo "console_domain="
-            echo "admin_domain="
+            # THE CONSOLE, NOW PINNED. `components=all` a few lines up means a release tag
+            # reconciles every tier it is told about, and this line is what tells it to reconcile
+            # the console. It stayed empty until the prerequisites an owner had to supply by hand
+            # existed: `prod-console` is now a real service account in hexera-prod, and it holds
+            # `secretmanager.secretAccessor` on the four secret containers (console-auth-secret,
+            # console-auth-users, mesh-api-key, user-token-secret), each with an enabled version.
+            # A name typed here before those existed would have been the same class of mistake
+            # PR #12's naming slip nearly made below - a second, unwanted, paid resource standing
+            # next to the real one - so it waited for a reviewed diff stating the prerequisites
+            # were actually met. This is that diff.
+            echo "console_service=prod-console"
+            # THE ADMIN CONSOLE, NOW PINNED - the same reasoning as console_service immediately
+            # above: `prod-admin` is now a real service account in hexera-prod with the same
+            # secret access. `components=all` means this line is what tells the release to
+            # reconcile it. What is NOT yet true: the IAP OAuth brand for hexera-prod, which has
+            # to be created by hand in the Cloud Console (Google shut down the IAP OAuth Admin
+            # APIs in March 2026, so it cannot be scripted). Until that brand exists, `--iap` on
+            # this service will not work - see docs/deployment/console-domains.md.
+            echo "admin_service=prod-admin"
+            # THE CUSTOM HOSTNAMES, NOW PINNED - the same reasoning as console_service and
+            # admin_service immediately above: naming them here is what lets create-edge.sh
+            # provision the load balancer, reserved global address and managed certificate these
+            # two services front. What is NOT yet true: the DNS A records for these hostnames do
+            # not exist, so the certificate this run provisions will report PROVISIONING until an
+            # operator points DNS at the address this run prints - see
+            # docs/deployment/console-domains.md.
+            echo "console_domain=console.hexera.ai"
+            echo "admin_domain=admin.hexera.ai"
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -512,18 +519,17 @@ jobs:
       # THE PUBLIC SURFACE. Without this the deploy provisioned every tier except the one users
       # reach, and the API service stayed whatever a human last clicked into existence.
       CLOUDRUN_API_SERVICE: ${{ needs.target.outputs.api_service }}
-      # THE CONSOLE, dev only - empty on prod on purpose. See the `console_service` output above
-      # for why: an unpinned name here would let a release tag provision a paid service in
-      # production nobody asked for. Empty means bootstrap-env.sh's CLOUDRUN_CONSOLE_SERVICE stays
-      # empty too, and the console stage states its skip exactly as an API-less deployment's does.
+      # THE CONSOLE, pinned in both environments now. See the `console_service` output above for
+      # why prod was empty until now and what changed. bootstrap-env.sh's CLOUDRUN_CONSOLE_SERVICE
+      # carries this straight through; an unset value there is what makes the console stage state
+      # its own skip, and that path is now only reachable if this output is ever unpinned again.
       CLOUDRUN_CONSOLE_SERVICE: ${{ needs.target.outputs.console_service }}
-      # THE ADMIN CONSOLE, dev only - empty on prod on purpose, same as CLOUDRUN_CONSOLE_SERVICE
-      # above. Empty means bootstrap-env.sh's CLOUDRUN_ADMIN_SERVICE stays empty too, and the
-      # admin stage states its skip exactly as an admin-less deployment's does.
+      # THE ADMIN CONSOLE, pinned in both environments now, same as CLOUDRUN_CONSOLE_SERVICE
+      # above. bootstrap-env.sh's CLOUDRUN_ADMIN_SERVICE carries this straight through.
       CLOUDRUN_ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
-      # THE CUSTOM HOSTNAMES, dev only - empty on prod on purpose, same as CLOUDRUN_CONSOLE_SERVICE
-      # and CLOUDRUN_ADMIN_SERVICE above. Empty means create-edge.sh sees both CONSOLE_DOMAIN and
-      # ADMIN_DOMAIN unset and states its own skip, exactly as an edge-less deployment's does.
+      # THE CUSTOM HOSTNAMES, pinned in both environments now, same as CLOUDRUN_CONSOLE_SERVICE
+      # and CLOUDRUN_ADMIN_SERVICE above. create-edge.sh sees both CONSOLE_DOMAIN and ADMIN_DOMAIN
+      # set and provisions the load balancer, address and certificate they front.
       CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
       ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
@@ -637,8 +643,10 @@ jobs:
       # THE ADDRESS AN OPERATOR MUST PUT IN DNS, surfaced where they will see it. create-edge.sh
       # (Task 4) writes edge_ip and edge_cert_state to $GITHUB_OUTPUT only when the edge stage ran
       # and declared at least one hostname; this step runs on exactly that condition, so a deploy
-      # that never touched the edge (components without 'edge', or a target - prod today - with no
-      # CONSOLE_DOMAIN/ADMIN_DOMAIN pinned) leaves it skipped rather than printing an empty table.
+      # whose components never touched the edge leaves it skipped rather than printing an empty
+      # table. Both environments now pin CONSOLE_DOMAIN/ADMIN_DOMAIN, so a release tag's first run
+      # is expected to print this table - with the certificate reporting PROVISIONING until DNS
+      # is pointed at the address it prints.
       - name: Surface the edge address for DNS
         if: steps.deploy.outputs.edge_ip != ''
         env:
