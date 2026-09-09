@@ -32,9 +32,12 @@ def test_the_deploy_job_maps_the_admin_service():
 
 
 def test_a_manual_run_can_select_the_admin_console():
-    options = _doc()[True]["workflow_dispatch"]["inputs"]["components"]["options"]
-    assert [o for o in options if "admin" in o], (
-        f"no components option contains 'admin', so a manual run cannot deploy it. Offered: {options}")
+    inputs = _doc()[True]["workflow_dispatch"]["inputs"]
+    assert "admin" in inputs, (
+        f"no checkbox input named 'admin', so a manual run cannot deploy it. Offered: {list(inputs)}")
+    assert inputs["admin"]["type"] == "boolean"
+    assert inputs["admin"]["default"] is False, (
+        "the admin checkbox must default to false - nothing may be selected implicitly")
 
 
 def test_the_deployed_admin_is_proved_not_public():

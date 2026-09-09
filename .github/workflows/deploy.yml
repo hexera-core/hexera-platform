@@ -28,23 +28,58 @@ on:
   # environment's deployment policy admits `v*` tags only, so a release still cannot be reached
   # from a branch, by anyone, however this workflow is invoked.
   workflow_dispatch:
+    # ONE CHECKBOX PER TIER, every one defaulted OFF. There is no "all" shortcut and no preset
+    # combination: deploying everything costs ticking every box, on purpose - the previous dropdown
+    # let one click reconcile every tier including Cloud SQL and Memorystore, and a mis-click there
+    # was indistinguishable from a deliberate choice. The roster matches deploy.sh's `_known` line
+    # exactly (nine tiers today); the picker step below composes DEPLOY_COMPONENTS from whichever
+    # of these came back 'true', in the same order `_known` lists them.
     inputs:
-      components:
-        description: "Which tiers to deploy. Fewer is faster and cheaper."
+      images:
+        description: "images - the mesh job and the API service (the two workloads that carry an application digest)"
         required: false
-        default: images
-        type: choice
-        options:
-          - images                      # the mesh job and the API service - the usual change
-          - images,migrate              # ...and the schema, when the model moved
-          - images,migrate,console      # ...and the browser console
-          - images,migrate,console,admin # ...and the admin console (what a merge to main does)
-          - images,migrate,console,admin,edge # ...and the load balancer, address and certificate
-          - console                     # the console ALONE - the fast loop while iterating on it
-          - admin                       # the admin console alone - the fast loop while iterating on it
-          - edge                        # the edge ALONE - reconcile the address/cert without a redeploy
-          - images,migrate,workers      # ...and roll the fleet onto the new digest
-          - all                         # every tier, including Cloud SQL and Memorystore
+        default: false
+        type: boolean
+      data:
+        description: "data - Cloud SQL and Memorystore"
+        required: false
+        default: false
+        type: boolean
+      storage:
+        description: "storage - the artifacts bucket and its S3-interoperability credential"
+        required: false
+        default: false
+        type: boolean
+      migrate:
+        description: "migrate - the schema, applied once before anything serves the new image"
+        required: false
+        default: false
+        type: boolean
+      queue:
+        description: "queue - the queue-depth publisher and the autoscaling policy that reads it"
+        required: false
+        default: false
+        type: boolean
+      workers:
+        description: "workers - the managed instance group, rolled onto the new template"
+        required: false
+        default: false
+        type: boolean
+      console:
+        description: "console - the Cloud Run console service, in front of the API"
+        required: false
+        default: false
+        type: boolean
+      admin:
+        description: "admin - the Cloud Run admin console, behind IAP (never publicly reachable)"
+        required: false
+        default: false
+        type: boolean
+      edge:
+        description: "edge - load balancer, reserved address and certificate for both consoles' hostnames"
+        required: false
+        default: false
+        type: boolean
 
 # A deploy MUTATES a cloud project through a 17-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -114,7 +149,17 @@ jobs:
       - id: pick
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_COMPONENTS: ${{ github.event.inputs.components }}
+          # Boolean workflow_dispatch inputs arrive as the strings 'true' / 'false' (unset, on any
+          # other trigger, where github.event.inputs is empty).
+          DISPATCH_IMAGES: ${{ github.event.inputs.images }}
+          DISPATCH_DATA: ${{ github.event.inputs.data }}
+          DISPATCH_STORAGE: ${{ github.event.inputs.storage }}
+          DISPATCH_MIGRATE: ${{ github.event.inputs.migrate }}
+          DISPATCH_QUEUE: ${{ github.event.inputs.queue }}
+          DISPATCH_WORKERS: ${{ github.event.inputs.workers }}
+          DISPATCH_CONSOLE: ${{ github.event.inputs.console }}
+          DISPATCH_ADMIN: ${{ github.event.inputs.admin }}
+          DISPATCH_EDGE: ${{ github.event.inputs.edge }}
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
         # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
         # value editable in the GitHub settings UI without a review IS ambient configuration -
@@ -125,12 +170,41 @@ jobs:
           # A merge to main takes the cheap path - the two workloads that carry an application
           # digest, the schema they may need, and the console that fronts them - because
           # reconciling Cloud SQL, the object-store credential and the whole worker fleet to ship
-          # an image costs minutes and money for tiers the change did not touch. `all` remains one
-          # dispatch away, and every release takes it.
+          # an image costs minutes and money for tiers the change did not touch. A manual dispatch
+          # instead composes DEPLOY_COMPONENTS from whichever checkboxes were ticked; ticking every
+          # one of them is what a manual run has to do to reconcile everything, and every release
+          # tag does exactly that, unconditionally, below.
           if [ "${GITHUB_REF}" = "refs/heads/main" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+              # Composed in the same order deploy.sh's `_known` line lists them, so the deploy log
+              # reads predictably no matter which boxes were ticked. Every checkbox defaults to
+              # false, so nothing is selected implicitly - there is deliberately no 'all' shortcut.
+              _selected=""
+              [ "${DISPATCH_IMAGES:-false}" = "true" ] && _selected="${_selected}images,"
+              [ "${DISPATCH_DATA:-false}" = "true" ] && _selected="${_selected}data,"
+              [ "${DISPATCH_STORAGE:-false}" = "true" ] && _selected="${_selected}storage,"
+              [ "${DISPATCH_MIGRATE:-false}" = "true" ] && _selected="${_selected}migrate,"
+              [ "${DISPATCH_QUEUE:-false}" = "true" ] && _selected="${_selected}queue,"
+              [ "${DISPATCH_WORKERS:-false}" = "true" ] && _selected="${_selected}workers,"
+              [ "${DISPATCH_CONSOLE:-false}" = "true" ] && _selected="${_selected}console,"
+              [ "${DISPATCH_ADMIN:-false}" = "true" ] && _selected="${_selected}admin,"
+              [ "${DISPATCH_EDGE:-false}" = "true" ] && _selected="${_selected}edge,"
+              _selected="${_selected%,}"
+              # DEPLOYING NOTHING IS A MISTAKE, NOT A VALID REQUEST - fail loudly rather than let an
+              # empty selection reach $GITHUB_OUTPUT. An empty `components=` output would still set
+              # DEPLOY_COMPONENTS in the deploy job's environment (to the empty string, not unset),
+              # and deploy.sh's own default (`DEPLOY_COMPONENTS:-all`) treats an empty variable the
+              # same as an unset one - so silently letting this through would deploy EVERYTHING,
+              # the exact opposite of "nothing ticked", and a run that mutates nothing was never the
+              # risk here; a run that mutates everything by accident was.
+              if [ -z "${_selected}" ]; then
+                echo "::error::no component checkbox was ticked - deploying nothing is not a valid request. Available checkboxes: images, data, storage, migrate, queue, workers, console, admin, edge. Tick every one of them to deploy everything."
+                exit 1
+              fi
+            fi
             {
-              if [ -n "${DISPATCH_COMPONENTS:-}" ]; then
-                echo "components=${DISPATCH_COMPONENTS}"
+              if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+                echo "components=${_selected}"
               else
                 echo "components=images,migrate,console,admin"
               fi

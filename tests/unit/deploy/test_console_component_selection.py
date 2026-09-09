@@ -54,14 +54,16 @@ def test_a_release_tag_still_reconciles_everything():
 
 
 def test_a_manual_run_can_select_the_console():
-    """The spec's delivery mechanism is a manual dev run. A choice list with no console option
-    means the console cannot be deployed the one way the spec says it will be."""
+    """The spec's delivery mechanism is a manual dev run. No checkbox for console would mean the
+    console cannot be deployed the one way the spec says it will be."""
     doc = yaml.safe_load(DEPLOY_WF.read_text(encoding="utf-8"))
-    options = doc[True]["workflow_dispatch"]["inputs"]["components"]["options"]
-    with_console = [o for o in options if "console" in o]
-    assert with_console, (
-        "workflow_dispatch offers no components option containing 'console', so a manual run "
-        f"cannot deploy it. Offered: {options}")
-    assert "console" in options, (
-        "there is no console-only option, so iterating on the console costs a full "
-        f"images+migrate reconcile every time. Offered: {options}")
+    inputs = doc[True]["workflow_dispatch"]["inputs"]
+    assert "console" in inputs, (
+        f"workflow_dispatch offers no checkbox named 'console', so a manual run cannot deploy "
+        f"it. Offered: {list(inputs)}")
+    assert inputs["console"]["type"] == "boolean"
+    assert inputs["console"]["default"] is False, (
+        "the console checkbox must default to false - nothing may be selected implicitly")
+    # Checkboxes are independent, so ticking ONLY console IS the console-only run the dropdown
+    # used to offer as a dedicated option - the fast loop while iterating on it costs no
+    # images+migrate reconcile, without needing a preset for it.

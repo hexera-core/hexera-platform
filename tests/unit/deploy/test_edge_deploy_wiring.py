@@ -42,9 +42,12 @@ def test_the_deploy_job_maps_both_domains():
 
 
 def test_a_manual_run_can_select_the_edge():
-    options = _doc()[True]["workflow_dispatch"]["inputs"]["components"]["options"]
-    assert [o for o in options if "edge" in o], (
-        f"no components option contains 'edge', so a manual run cannot provision it. Offered: {options}")
+    inputs = _doc()[True]["workflow_dispatch"]["inputs"]
+    assert "edge" in inputs, (
+        f"no checkbox input named 'edge', so a manual run cannot provision it. Offered: {list(inputs)}")
+    assert inputs["edge"]["type"] == "boolean"
+    assert inputs["edge"]["default"] is False, (
+        "the edge checkbox must default to false - nothing may be selected implicitly")
 
 
 def test_the_run_surfaces_the_address():
