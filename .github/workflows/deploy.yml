@@ -37,7 +37,8 @@ on:
         options:
           - images                      # the mesh job and the API service - the usual change
           - images,migrate              # ...and the schema, when the model moved
-          - images,migrate,console      # ...and the browser console (what a merge to main does)
+          - images,migrate,console      # ...and the browser console
+          - images,migrate,console,admin # ...and the admin console (what a merge to main does)
           - console                     # the console ALONE - the fast loop while iterating on it
           - admin                       # the admin console alone - the fast loop while iterating on it
           - images,migrate,workers      # ...and roll the fleet onto the new digest
@@ -122,7 +123,7 @@ jobs:
               if [ -n "${DISPATCH_COMPONENTS:-}" ]; then
                 echo "components=${DISPATCH_COMPONENTS}"
               else
-                echo "components=images,migrate,console"
+                echo "components=images,migrate,console,admin"
               fi
               echo "environment=dev"
               echo "deployment_id=dev"
