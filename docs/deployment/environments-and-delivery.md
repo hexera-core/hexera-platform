@@ -28,6 +28,7 @@ describing it as empty is stale.
 | --- | --- | --- |
 | API (Cloud Run service) | `hexera-dev-api` | `prod-api` |
 | Console (Cloud Run service) | `dev-console` | *(deliberately unset — see below)* |
+| Admin console (Cloud Run service) | `dev-admin` | *(deliberately unset — see below)* |
 | Mesh executor (Cloud Run job) | `dev-mesh` | `prod-mesh` |
 | Schema migration (job) | `dev-migrate` | `prod-migrate` |
 | Queue-depth publisher (job) | `dev-queue-depth` | `prod-queue-depth` |
@@ -138,6 +139,31 @@ resource standing next to the real one — there it would have been a second, em
 instance beside the production database; here it would be a console nobody requested, serving from
 a project nobody pointed it at. Prod gets no console until a human deliberately pins a name here,
 in a reviewed diff, the same gate that governs everything else in this file.
+
+### Admin console (Cloud Run service)
+
+The admin console is a fourth promotable workload, provisioned by
+`deploy/gcp/scripts/create-admin-service.sh` and named `<deployment-id>-admin` (`dev-admin` on
+dev today; see below for prod). **It is the opposite of the console's posture**: it carries no
+Auth.js session of its own and is never `allUsers`-invokable — its only gate is IAP, which
+authenticates a Google identity before the request reaches the container (`docs/deployment/
+admin-console-access.md`). It is the one tier in this table that is not publicly reachable by
+design, and the post-deploy step in `deploy.yml` fails the run if that ever stops being true.
+
+It carries no secrets in this sub-project — IAP is the gate and there is no session for Secret
+Manager to hand it — and no VPC egress or database connection either; both arrive with Admin-2,
+the first admin page that actually queries something.
+
+Selected by the `admin` component in `DEPLOY_COMPONENTS` (§5) and rolled out *after* the API
+stage, for the same reason the console is: its pages read the API and the database, so an admin
+console that rolls out first shows errors until the rest catches up. Unlike the console, it is
+**not** part of the merge-to-main default (§5) — it is reconciled only when a run names it
+explicitly (`admin`) or takes `all`.
+
+**Pinned on dev, deliberately not on prod**, the same reasoning and the same mechanism as
+`console_service` above: naming it in `deploy.yml` for prod would tell a release tag to
+reconcile it, provisioning a billed production service nobody asked for. Prod gets an admin
+console only when a human deliberately pins a name here, in a reviewed diff.
 
 ---
 
@@ -289,6 +315,7 @@ and money for resources the change never touched.
 | `queue` | queue-depth publisher + autoscaling policy |
 | `workers` | managed instance group + rolling update |
 | `console` | Cloud Run console service — the promoted console digest, in front of the API |
+| `admin` | Cloud Run admin console — the promoted admin digest, behind IAP; never publicly reachable |
 
 Always on, never selectable: discovery, config validation, preflight, plan confirmation, API
 enablement, Artifact Registry, runtime identities, release promotion, IAM. Each is read-only or
@@ -305,7 +332,7 @@ most misleading line the script prints.
 image on every run (~20 min) because GitHub runners keep no layer cache between runs. That is the
 dominant cost and is not addressed here — see §7.
 
-### The sixteen stages, in order
+### The seventeen stages, in order
 
 1. Discover environment, generate config
 2. Validate configuration schema (typed, read-only)
@@ -322,10 +349,12 @@ dominant cost and is not addressed here — see §7.
 13. Queue-depth publisher *(`queue`)*
 14. API service *(`images`)*
 15. Console service *(`console`)*
-16. Worker fleet + rolling update *(`workers`)*
+16. Admin console *(`admin`)*
+17. Worker fleet + rolling update *(`workers`)*
 
-Ordering is load-bearing: schema before the API serves it; the console after the API it talks to;
-the fleet last, so a worker never starts before the schema, queue signal and object store exist.
+Ordering is load-bearing: schema before the API serves it; the console and the admin console after
+the API they talk to; the fleet last, so a worker never starts before the schema, queue signal and
+object store exist.
 
 ---
 

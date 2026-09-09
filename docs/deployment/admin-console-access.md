@@ -187,10 +187,18 @@ verification at the point you first need to distinguish one admin from another, 
   console service yet; when it gets one, repeat §3-§6 with `hexera-prod` / `688073002171` and grant
   access separately. Access to dev must not imply access to prod.
 
-## 9. Prerequisite
+## 9. How the service gets there
 
-None of this can run yet: **`admin-console` has no Cloud Run service.** It is a stub app with a
-health route, deliberately left undeployed (`docs/superpowers/specs/2026-09-07-saas-console-design.md`,
-non-goals). Deploying it is the step before §4 — the public console's own tier
-(`deploy/gcp/scripts/create-console-service.sh`) is the pattern, with two deliberate inversions:
-`--no-allow-unauthenticated` instead of the public invoker binding, and `--iap`.
+The admin console has a Cloud Run service now, deployed by its own `admin` component:
+`DEPLOY_COMPONENTS=admin` (or `all`) runs `deploy/gcp/scripts/create-admin-service.sh`, which is
+the script that applies every mutation §4 describes by hand — `--no-allow-unauthenticated`,
+`--iap`, and the IAP service agent's invoker grant — on every run, not once. That script is the
+public console's own tier with the two inversions §4 names; it never grants `allUsers` and
+actively removes the binding if it finds one, so the failure in §2 cannot survive a rerun.
+
+Its name in `hexera-dev` is `dev-admin`, not the `admin-console` used as a placeholder in the
+commands above — substitute it when running §4-§6 for real. `hexera-prod`'s `admin_service` is
+left deliberately empty in `.github/workflows/deploy.yml`, exactly as `console_service` is (§8):
+a release tag reconciles every tier it is told about, so naming one there would provision a
+billed production service nobody asked for. Prod gets an admin console only when a human pins a
+name there in a reviewed diff, and then repeats §3-§6 against `hexera-prod`.
