@@ -51,6 +51,30 @@ def test_a_hardened_prod_passes(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
 
 
+def test_prod_with_a_mixed_case_dev_app_env_is_refused(tmp_path):
+    """settings/policy.py lower-cases ENV before matching its dev allowlist, so APP_ENV=Dev reaches
+    the API as `dev` and is unhardened at runtime - a case-sensitive check here would wrongly pass
+    it, which is the exact bypass this test guards against."""
+    done = _validate({"DEPLOYMENT_ID": "prod", "APP_ENV": "Dev"}, tmp_path)
+    assert done.returncode != 0
+    assert "APP_ENV" in done.stdout + done.stderr
+
+
+def test_prod_with_another_mixed_case_dev_app_env_is_refused(tmp_path):
+    """Same bypass as above, exercised against a different member of the dev allowlist (CI) to show
+    the fix is a case-insensitive match against the whole set, not a one-off for `dev` alone."""
+    done = _validate({"DEPLOYMENT_ID": "prod", "APP_ENV": "CI"}, tmp_path)
+    assert done.returncode != 0
+    assert "APP_ENV" in done.stdout + done.stderr
+
+
+def test_a_hardened_prod_with_unusual_casing_still_passes(tmp_path):
+    """The case-insensitive match must only widen the dev allowlist, not swallow values that don't
+    belong to it - APP_ENV=PROD is not a member under any casing and must still be accepted."""
+    done = _validate({"DEPLOYMENT_ID": "prod", "APP_ENV": "PROD"}, tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
 def test_dev_is_unaffected(tmp_path):
     done = _validate({"DEPLOYMENT_ID": "dev"}, tmp_path)
     assert done.returncode == 0, done.stdout + done.stderr

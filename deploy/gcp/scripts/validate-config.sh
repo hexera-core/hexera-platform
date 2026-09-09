@@ -30,9 +30,15 @@ done
 #
 # Checked on DEPLOYMENT_ID rather than on the presence of a service, because the failure is about
 # which environment this is, not which tier it deploys.
+#
+# APP_ENV is matched lower-cased because settings/policy.py lower-cases ENV before comparing it
+# against its dev allowlist - APP_ENV=Dev reaches the API as `dev` regardless of how it was spelled
+# here, so a case-sensitive check here would pass a value that is unhardened at runtime. DEPLOYMENT_ID
+# is matched verbatim: no deploy script normalizes its case before using it, so this check treats it
+# exactly as the rest of the tooling does.
 case "${DEPLOYMENT_ID:-}" in
   prod|production)
-    case "${APP_ENV:-}" in
+    case "$(printf '%s' "${APP_ENV:-}" | tr '[:upper:]' '[:lower:]')" in
       ""|dev|development|local|test|testing|ci)
         add "DEPLOYMENT_ID is '${DEPLOYMENT_ID}' but APP_ENV is '${APP_ENV:-<unset>}', which
    settings/policy.py treats as a development environment - MESH_API_KEY and USER_TOKEN_SECRET
