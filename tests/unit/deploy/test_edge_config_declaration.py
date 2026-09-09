@@ -59,6 +59,24 @@ def test_a_domain_with_its_service_passes(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
 
 
+def test_an_admin_domain_without_its_service_is_refused(tmp_path):
+    """validate-config.sh checks ADMIN_DOMAIN identically to CONSOLE_DOMAIN above, and until this
+    test existed only the console half of that pair was covered - so the admin half could have been
+    dropped or misspelled without a single test noticing."""
+    done = _validate({"ADMIN_DOMAIN": "dev.admin.hexera.ai"}, tmp_path)
+    assert done.returncode != 0
+    assert "CLOUDRUN_ADMIN_SERVICE" in done.stdout + done.stderr
+
+
+def test_an_admin_domain_with_its_service_passes(tmp_path):
+    # The admin tier carries no console-style prerequisites (its gate is IAP, and it reads no
+    # secrets), so naming the service is all this refusal needs satisfied - the mirror of
+    # test_a_domain_with_its_service_passes above.
+    done = _validate({"ADMIN_DOMAIN": "dev.admin.hexera.ai",
+                      "CLOUDRUN_ADMIN_SERVICE": "dev-admin"}, tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
 def test_no_domains_is_not_an_error(tmp_path):
     done = _validate({}, tmp_path)
     assert done.returncode == 0, done.stdout + done.stderr

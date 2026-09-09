@@ -191,7 +191,10 @@ default_backend="${BACKENDS[0]#*|}"
 # Backend services are named by their full resource URL in an imported UrlMap: the API accepts a
 # selfLink there, not the bare name the flag-based `--default-service` would have resolved.
 BE_URL="https://www.googleapis.com/compute/v1/projects/${GCP_PROJECT_ID}/global/backendServices"
-SERVING_FILE="$(mktemp -t edge-urlmap-XXXXXX).yaml"
+# No .yaml suffix: appending one AFTER mktemp returns names a path mktemp never created, so
+# the trap below removed nothing and left the real temp file behind on every run. `--source`
+# sniffs the content, not the extension.
+SERVING_FILE="$(mktemp -t edge-urlmap-XXXXXX)"
 REDIRECT_FILE=""
 trap 'rm -f "${SERVING_FILE}" ${REDIRECT_FILE:+"${REDIRECT_FILE}"}' EXIT
 
@@ -289,8 +292,9 @@ _ensure "HTTPS forwarding rule ${HTTPS_RULE}" \
 #    serve the app over plain HTTP rather than redirect it; a redirect is a url map whose action
 #    is defaultUrlRedirect, which gcloud can only write by importing a small YAML document.
 REDIRECT_MAP="${EDGE_URL_MAP}-redirect"
-REDIRECT_FILE="$(mktemp -t edge-redirect-XXXXXX).yaml"   # removed by the trap set alongside the
-                                                        # serving map's own temp file above
+REDIRECT_FILE="$(mktemp -t edge-redirect-XXXXXX)"   # removed by the trap set alongside the
+                                                    # serving map's own temp file above; no
+                                                    # .yaml suffix, for the reason stated there
 cat > "${REDIRECT_FILE}" <<YAML
 name: ${REDIRECT_MAP}
 defaultUrlRedirect:

@@ -175,8 +175,8 @@ doc = {
   # reconcile would otherwise read a partial deploy as a complete one.
   "components": "${COMPONENTS}",
   # A NAME-TO-DIGEST MAP AND NOTHING ELSE. Whether these were deployed by this run or observed on
-  # the running workloads is already answered per workload, by `reconciled` on mesh_job and
-  # api_service - saying it a second time here cost `set(doc["images"])` its meaning, which is
+  # the running workloads is already answered per workload, by 'reconciled' on mesh_job and
+  # api_service - saying it a second time here cost 'set(doc["images"])' its meaning, which is
   # exactly what a consumer iterating for digests relies on.
   "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}", "console": "${CONSOLE_DIGEST}", "admin": "${ADMIN_DIGEST}"},
 }
