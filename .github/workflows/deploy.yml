@@ -39,6 +39,7 @@ on:
           - images,migrate              # ...and the schema, when the model moved
           - images,migrate,console      # ...and the browser console (what a merge to main does)
           - console                     # the console ALONE - the fast loop while iterating on it
+          - admin                       # the admin console alone - the fast loop while iterating on it
           - images,migrate,workers      # ...and roll the fleet onto the new digest
           - all                         # every tier, including Cloud SQL and Memorystore
 
@@ -82,6 +83,11 @@ jobs:
       # branch sets it below. An empty output here means create-console-service.sh is never even
       # asked to run against hexera-prod until a human states a name for it on purpose.
       console_service: ${{ steps.pick.outputs.console_service }}
+      # The admin console, dev only - same reasoning as console_service immediately above: an
+      # allUsers-invokable service is fine for the console, whose sign-in page must be reachable
+      # before anyone can authenticate, but the admin console's ONLY gate is IAP, so this output
+      # exists to name the Cloud Run service that gate is applied to, never to make it public.
+      admin_service: ${{ steps.pick.outputs.admin_service }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -139,6 +145,10 @@ jobs:
               # stated its own skip. Pinning it here is what makes "a merge to main reconciles the
               # console" actually true in dev, matching the api_service precedent above.
               echo "console_service=dev-console"
+              # The admin console, PINNED, dev only - same reasoning as console_service above.
+              # create-admin-service.sh and dev's deployment-state manifest have named
+              # `dev-admin` since Task 6/7; this line is what tells the deploy job to look for it.
+              echo "admin_service=dev-admin"
               # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
               # instances themselves - see the outputs block above.
               #
@@ -210,6 +220,12 @@ jobs:
             # a name here, in a reviewed diff, the same gate that governs everything else in this
             # branch.
             echo "console_service="
+            # THE ADMIN CONSOLE, DELIBERATELY LEFT EMPTY - the same reasoning as console_service
+            # immediately above, and it applies with even more force here: `components=all` means
+            # a release tag reconciles every tier it is told about, and naming one here would
+            # provision a billed production admin service nobody asked for. Prod gets no admin
+            # console until a human deliberately pins a name here, in a reviewed diff.
+            echo "admin_service="
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -403,6 +419,10 @@ jobs:
       # production nobody asked for. Empty means bootstrap-env.sh's CLOUDRUN_CONSOLE_SERVICE stays
       # empty too, and the console stage states its skip exactly as an API-less deployment's does.
       CLOUDRUN_CONSOLE_SERVICE: ${{ needs.target.outputs.console_service }}
+      # THE ADMIN CONSOLE, dev only - empty on prod on purpose, same as CLOUDRUN_CONSOLE_SERVICE
+      # above. Empty means bootstrap-env.sh's CLOUDRUN_ADMIN_SERVICE stays empty too, and the
+      # admin stage states its skip exactly as an admin-less deployment's does.
+      CLOUDRUN_ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
@@ -611,6 +631,35 @@ jobs:
           rcode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}/readyz")"
           [ "${rcode}" = "401" ] || { echo "::error::GET /readyz returned ${rcode}, not 401 - the session gate may not be enforced on this revision"; exit 1; }
           echo "OK: /readyz 401 (session gate enforced)"
+
+      # THE ONE CHECK THAT MATTERS. IAP over a service that still carries an allUsers invoker
+      # binding protects nothing - the two are separate gates - and the symptom is silence,
+      # because the page loads and looks fine. Asserted here rather than left to a runbook.
+      - name: Verify the admin console is not publicly reachable
+        if: steps.deploy.outputs.admin_url != ''
+        env:
+          ADMIN_URL: ${{ steps.deploy.outputs.admin_url }}
+          ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
+          REGION: ${{ needs.target.outputs.region }}
+          PROJECT: ${{ needs.target.outputs.project }}
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${ADMIN_URL}/")"
+          case "${code}" in
+            200)
+              echo "::error::an anonymous request to ${ADMIN_URL}/ returned 200 - the admin console is publicly reachable"
+              exit 1 ;;
+            *)
+              echo "OK: anonymous request refused (${code})" ;;
+          esac
+          members="$(gcloud run services get-iam-policy "${ADMIN_SERVICE}" \
+            --project "${PROJECT}" --region "${REGION}" \
+            --format='value(bindings.members)' 2>/dev/null | tr ';' '\n' || true)"
+          if printf '%s\n' "${members}" | grep -qx allUsers; then
+            echo "::error::${ADMIN_SERVICE} carries an allUsers invoker binding - IAP is not protecting it"
+            exit 1
+          fi
+          echo "OK: no public invoker binding"
 
       # The two records that say what was validated and what is actually deployed, kept as build
       # outputs. Both are gitignored machine state, and the live drift they exist to prevent is
