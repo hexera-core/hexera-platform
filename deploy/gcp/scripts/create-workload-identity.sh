@@ -326,6 +326,13 @@ DEPLOYER_ROLES=(
   roles/iam.serviceAccountUser           # actAs the runtime identities those workloads run as
   roles/compute.instanceAdmin.v1         # the worker MIG and the autoscaling policy that scales it
   roles/compute.networkAdmin             # the private-services range the data tier is addressed from
+  # The EDGE (stage 18): the global address, the two serverless NEGs, the two backend services,
+  # the serving and redirect URL maps, the HTTP and HTTPS target proxies, and the two forwarding
+  # rules - none of which any role above can create. compute.networkAdmin is NOT a substitute:
+  # Google documents it as READ-ONLY on SSL certificates, so without this the run reaches
+  # `ssl-certificates create` and fails PERMISSION_DENIED after the address, both NEGs, both
+  # backend services and the URL map already exist and are billed - a half-provisioned edge.
+  roles/compute.loadBalancerAdmin        # the address, NEGs, backend services, URL maps, proxies, certificate
   roles/servicenetworking.networksAdmin  # the servicenetworking peering that carries that range
   roles/serviceusage.serviceUsageAdmin   # stage 5 and stage 7 turn on the APIs they then call
   roles/cloudsql.admin                   # the Postgres instance, its database and its user
