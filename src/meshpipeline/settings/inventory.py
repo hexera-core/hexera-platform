@@ -413,8 +413,13 @@ INVENTORY: list[Group] = [
         EnvVar("DEEPINFRA_CONNECT_TIMEOUT", "15", kind="int"),
         EnvVar("DEEPINFRA_READ_TIMEOUT", "60", kind="int"),
         EnvVar("DEEPINFRA_WRITE_TIMEOUT", "30", kind="int"),
-        EnvVar("MAX_BUILDER_RETRIES", "3", kind="int", help="rebuild attempts after a reviewer rejection"),
+        EnvVar("MAX_BUILDER_RETRIES", "1", kind="int",
+               help="mesh retries after a quality judgement; total build attempts = this + 2 (3 total)"),
         EnvVar("MAX_SNAPPY_ATTEMPTS", "3", kind="int"),
+        EnvVar("BUILDER_INFRA_RETRY_MAX", "2", kind="int",
+               help="replays of a builder attempt killed by a TRANSIENT system failure; 0 disables"),
+        EnvVar("BUILDER_INFRA_RETRY_BACKOFF_S", "90", kind="int",
+               help="wait before an infra replay - long enough to outlive a provider brownout"),
     ]),
 
     Group("Web search sizing", vars=[
@@ -449,7 +454,7 @@ INVENTORY: list[Group] = [
     ]),
 
     Group("Advanced: per-role budgets", note="INTERNAL. Child budgets are each capped at the pipeline's remaining time; raising one cannot exceed PIPELINE_TOTAL_TIMEOUT_SECONDS.", vars=[
-        EnvVar("BUILDER_TOTAL_TIMEOUT_SECONDS", "10800", kind="int", exposure="internal"),
+        EnvVar("BUILDER_TOTAL_TIMEOUT_SECONDS", "9000", kind="int", exposure="internal"),
         EnvVar("BUILDER_AUTO_SUBMIT_AFTER", "2", kind="int", exposure="internal"),
         EnvVar("BUILDER_NULL_CHOICES_SLEEP", "15", kind="int", exposure="internal"),
         EnvVar("REVIEWER_TOTAL_TIMEOUT_SECONDS", "1800", kind="int", exposure="internal"),
@@ -457,6 +462,14 @@ INVENTORY: list[Group] = [
         EnvVar("MAX_TOOL_OUTPUT_CHARS", "16000", kind="int", exposure="internal", help="context-blowup guard on any single builder tool result"),
         EnvVar("MODEL_DEFAULT_CONCURRENCY_BUDGET", "8", kind="int", exposure="internal"),
         EnvVar("INTAKE_GREETING_ON_UPLOAD", "true", kind="bool", exposure="internal"),
+    ]),
+
+    # INTERNAL: the snappy engine's thin-feature layer policy (engines/snappy/layer_policy.py).
+    Group("Advanced: snappy thin-feature layer policy", note="INTERNAL. Geometry-adaptive local prism layers: the classifier measures local thickness/sharpness on the tessellated surface and locally reduces layer counts at thin/razor features instead of letting one global count fold cells or collapse everywhere.", vars=[
+        EnvVar("SNAPPY_THIN_LAYER_POLICY", "true", kind="bool", exposure="internal", help="master switch for the thin-feature classifier and its local layer policy"),
+        EnvVar("SNAPPY_THIN_AREA_FLOOR", "0.002", kind="float", exposure="internal", help="act only when thin+razor classes cover at least this wetted-area fraction"),
+        EnvVar("SNAPPY_RAZOR_CELL_FACTOR", "1.0", kind="float", exposure="internal", help="razor threshold: locally thinner than this many wall cells"),
+        EnvVar("SNAPPY_THIN_STACK_FACTOR", "2.0", kind="float", exposure="internal", help="thin threshold: locally thinner than this many two-sided prism stacks"),
     ]),
 
     # EXTERNAL: nobody edits these in .env; a platform or a library supplies them.

@@ -17,8 +17,12 @@ def ws(tmp_path, n: int):
     return d
 
 
+# "failed_gate" is the key the classifier ACTUALLY writes (pipeline/classifier.py). The
+# earlier fixtures used "gate" - the same wrong key the reader used - so the test agreed
+# with the bug and passed while the stop never fired in production. These fixtures use the
+# real key now, so the test exercises the true classifier->no_progress contract.
 WYE_FAILURE = {"classifier_result": {
-    "gate": "manifest_valid", "section": "MANIFEST",
+    "failed_gate": "manifest_valid", "section": "MANIFEST",
     "summary": "these patches have zero faces: ['inlet_1', 'inlet_2', 'outlet']"}}
 
 
@@ -36,7 +40,8 @@ class TestTheLadderHaltsOnIdenticalFailures:
         record_failure(ws(tmp_path, 2), failure_signature(WYE_FAILURE))
         w3 = ws(tmp_path, 3)
         other = failure_signature({"classifier_result": {
-            "gate": "domain_extent", "section": "DOMAIN", "summary": "downstream 6.67L vs 8L"}})
+            "failed_gate": "domain_extent", "section": "DOMAIN",
+            "summary": "downstream 6.67L vs 8L"}})
         record_failure(w3, other)
         assert not repeats_previous(w3, other)
 
@@ -48,6 +53,21 @@ class TestTheLadderHaltsOnIdenticalFailures:
         w3 = ws(tmp_path, 3)
         record_failure(w3, None)
         assert not repeats_previous(w3, None)
+
+    def test_signature_reads_the_exact_key_the_classifier_writes(self):
+        # REGRESSION: the reader looked up "gate" while the classifier writes "failed_gate",
+        # so this returned None on every executor failure and the stop never fired. Build the
+        # classifier_result the way pipeline/classifier.py actually does and require a
+        # signature. Pinning the real key stops the reader/writer contract from drifting again.
+        import inspect
+
+        from meshpipeline.pipeline import classifier as C
+        src = inspect.getsource(C)
+        assert '"failed_gate"' in src and '"gate":' not in src, (
+            "the classifier's gate key changed - update no_progress.failure_signature to match")
+        cr = {"section": "MANIFEST", "summary": "zero faces", "failed_gate": "manifest_valid"}
+        sig = failure_signature({"classifier_result": cr})
+        assert sig is not None and sig["gate"] == "manifest_valid"
 
     def test_the_first_retry_never_stops(self, tmp_path):
         w2 = ws(tmp_path, 2)

@@ -99,8 +99,41 @@ def _check_polymesh_solvability(workspace: Path, metrics_out: dict) -> tuple[boo
     return _solve_fv_laplacian(oi, neigh, n_cells, metrics_out)
 
 
-def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict) -> tuple[bool, str]:
+def _assemble_pinned_laplacian(owner, neigh, n_cells: int):
+    """The FV graph Laplacian L = D - A (A[i,j] = A[j,i] = 1 per internal face, duplicates
+    summed) with cell 0 pinned as the reference pressure: row 0 and column 0 cleared, L[0,0] = 1,
+    so the pure-Neumann operator is SPD. Every other diagonal keeps its full degree.
+
+    Assembled ONCE, straight into CSR with 32-bit indices. The previous route went COO -> CSR ->
+    +diag -> CSR -> LIL -> CSR, and the LIL copy - two Python lists per row, ~50 M Python objects
+    on shell_tube_bundle_009's 7.3 M-cell mesh - is what took the worker past its 8 GiB limit;
+    the kernel killed it (WorkerLostError) and the job sat 'running' for four hours.
+    """
     import scipy.sparse as sp
+
+    idx = np.int32 if n_cells < 2**31 - 1 else np.int64
+    owner = np.asarray(owner, dtype=np.int64)
+    neigh = np.asarray(neigh, dtype=np.int64)
+    # Degree counts every internal face, including those on cell 0's row/column: pinning clears
+    # cell 0's couplings, not its neighbours' diagonals.
+    deg = (np.bincount(owner, minlength=n_cells) + np.bincount(neigh, minlength=n_cells)).astype(np.float64)
+    deg[0] = 1.0
+    keep = (owner != 0) & (neigh != 0)
+    o = owner[keep].astype(idx, copy=False)
+    n = neigh[keep].astype(idx, copy=False)
+    diag = np.arange(n_cells, dtype=idx)
+    rows = np.concatenate([o, n, diag])
+    cols = np.concatenate([n, o, diag])
+    del o, n, diag
+    data = np.concatenate([np.full(rows.size - n_cells, -1.0), deg])
+    del deg
+    L = sp.csr_matrix((data, (rows, cols)), shape=(n_cells, n_cells))
+    del rows, cols, data
+    L.sum_duplicates()
+    return L
+
+
+def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict) -> tuple[bool, str]:
 
     if n_cells < 2:
         return True, ""  # trivial mesh; nothing to solve
@@ -116,20 +149,8 @@ def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict) -> tuple[
         neigh = neigh[valid]
     if owner.size == 0:
         return True, ""  # no internal connectivity to test (degenerate)
-    # Symmetric graph Laplacian: L = D - A, A[i,j]=A[j,i]=1 for each internal face.
-    rows = np.concatenate([owner, neigh])
-    cols = np.concatenate([neigh, owner])
-    data = np.full(rows.size, -1.0)
-    A = sp.coo_matrix((data, (rows, cols)), shape=(n_cells, n_cells)).tocsr()
-    deg = np.asarray(-A.sum(axis=1)).ravel()  # = number of internal-face neighbours
-    L = (sp.diags(deg) + A).tocsr()
-
-    # Pin one cell (reference pressure) so the pure-Neumann operator is SPD.
-    L = L.tolil()
-    L[0, :] = 0
-    L[:, 0] = 0
-    L[0, 0] = 1.0
-    L = L.tocsr()
+    L = _assemble_pinned_laplacian(owner, neigh, n_cells)
+    del owner, neigh
 
     rng = np.random.default_rng(0)
     b = rng.random(n_cells)

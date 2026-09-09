@@ -120,8 +120,9 @@ def roles_for_purposes(keys) -> tuple:
 # possible on an engine iff SOME engine capability PRODUCES the mesh kind the
 # purpose REQUIRES. gmsh supports solid-body→solid-volume AND fluid-domain→
 # fluid-volume, so it serves structural AND CFD (with a supplied fluid domain); the
-# flow engines support only body-surface→fluid-volume, so they serve CFD only and
-# cfmesh+structural stays a genuine impossibility. When the SUBMITTED geometry's
+# flow engines support body-surface→fluid-volume (snappy also fluid-domain→
+# fluid-volume for INTERNAL flow, since its carve meshes a solid that is the fluid),
+# so they serve CFD only and cfmesh+structural stays a genuine impossibility. When the SUBMITTED geometry's
 # kind is known (intake, later stage), pass ``input_kind`` to also require that a
 # capability accepts it. Declared PHYSICAL capability - never an inferred domain.
 # `spec` is duck-typed (EngineSpec) so this module stays free of the engine

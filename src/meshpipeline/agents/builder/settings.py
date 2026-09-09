@@ -32,7 +32,10 @@ BUILDER_LOOP_TIMEOUT: int     = int(optional_env("BUILDER_LOOP_TIMEOUT",     "36
 # logical pipeline run. Set once on the first attempt (into pipeline state) and never reset by a
 # retry, so the sum of attempts cannot exceed it; every model / run_mesh / run_python call inside an
 # attempt is capped at the REMAINING budget. Finite, documented default (< the naive 5×per-attempt).
-BUILDER_TOTAL_TIMEOUT_SECONDS: int = int(optional_env("BUILDER_TOTAL_TIMEOUT_SECONDS", "10800"))
+# Below the naive worst case (BUILDER_MAX_TOTAL_ATTEMPTS x BUILDER_LOOP_TIMEOUT = 3 x 3600 s)
+# by design: the budget bounds it, it does not restate it. 9000 s held the exam's longest
+# builder (shell_tube_bundle_009: two full cloud runs, two uncollected results, 2 h 15 min).
+BUILDER_TOTAL_TIMEOUT_SECONDS: int = int(optional_env("BUILDER_TOTAL_TIMEOUT_SECONDS", "9000"))
 if BUILDER_TOTAL_TIMEOUT_SECONDS <= 0:
     raise ConfigurationError(
         f"BUILDER_TOTAL_TIMEOUT_SECONDS must be a positive number of seconds, got {BUILDER_TOTAL_TIMEOUT_SECONDS}")
@@ -40,7 +43,21 @@ if BUILDER_TOTAL_TIMEOUT_SECONDS <= 0:
 # auto-submits (the reviewer judges quality downstream).
 BUILDER_AUTO_SUBMIT_AFTER: int = int(optional_env("BUILDER_AUTO_SUBMIT_AFTER", "2"))
 
-MAX_BUILDER_RETRIES: int = int(optional_env("MAX_BUILDER_RETRIES", "3"))
+# 1 => a hard ceiling of 3 total build attempts (1 initial + 1 mesh retry + 1 reviewer-
+# feedback bonus). Cut from 3 (which gave 5 total): a deterministically-repeating failure
+# cannot be fixed by more attempts, and the corpus's known multi-attempt recoveries (a
+# real 2-attempt case, a reviewer recovery that delivered on attempt 3) both still fit
+# inside 3. Fewer attempts = fewer paid Cloud Run meshes on a doomed run.
+MAX_BUILDER_RETRIES: int = int(optional_env("MAX_BUILDER_RETRIES", "1"))
+
+# INFRA replays: a builder attempt killed by a TRANSIENT system failure (provider brownout,
+# dependency blip) is replayed after a long backoff instead of ending the job. Distinct from
+# MAX_BUILDER_RETRIES, which buys new MESH attempts after a quality judgement - an infra replay
+# re-runs the SAME attempt that never got judged. The backoff is deliberately much longer than
+# the HTTP layer's in-call retries (seconds): the corpus's crash-window deaths were brownouts
+# that outlasted those but not a minute-scale wait. Kill switch: BUILDER_INFRA_RETRY_MAX=0.
+BUILDER_INFRA_RETRY_MAX: int = int(optional_env("BUILDER_INFRA_RETRY_MAX", "2"))
+BUILDER_INFRA_RETRY_BACKOFF_S: int = int(optional_env("BUILDER_INFRA_RETRY_BACKOFF_S", "90"))
 # The TRUE ceiling on build attempts shown to the user: 1 initial + MAX_BUILDER_RETRIES normal
 # + 1 reviewer-feedback bonus (route_after_reviewer). Display/logging only.
 BUILDER_MAX_TOTAL_ATTEMPTS: int = MAX_BUILDER_RETRIES + 2

@@ -60,6 +60,8 @@ class AxisDeficits:
     ungrounded: tuple[str, ...] = ()
     covered: tuple[str, ...] = ()
     invalid_evidence: tuple[str, ...] = ()
+    # keys that name no required axis even after canonicalisation - reported, never inferred
+    unknown: tuple[str, ...] = ()
     # obligation deficits (uninspected required targets), verbatim from the eligibility gate -
     # populated by the session, not by compute_deficits, which is axis-level only
     unmet_obligations: tuple[str, ...] = ()
@@ -67,13 +69,38 @@ class AxisDeficits:
     def signature(self) -> str:
         body = "|".join(",".join(sorted(part)) for part in
                         (self.missing, self.duplicate, self.ungrounded, self.invalid_evidence,
-                         self.unmet_obligations))
+                         self.unmet_obligations, self.unknown))
         return hashlib.sha256(body.encode()).hexdigest()[:16]
 
     @property
     def clean(self) -> bool:
         return not (self.missing or self.duplicate or self.ungrounded
                     or self.invalid_evidence or self.unmet_obligations)
+
+
+def canonical_axis_key(key: str, required_axes: tuple[str, ...]) -> str:
+    """The required axis a filed key names, or the key unchanged.
+
+    The rubric shows every axis under its category (integrity, quality, solvability,
+    conformance) and models file 'conformance/group_completeness' for 'group_completeness'
+    often enough that it cost a review: the key matched nothing, the deficit check ignored it,
+    and six identical rejections named the axis as missing without saying why. A key whose
+    last segment (after '/', ':' or '.') is a required axis IS that axis; case and hyphens do
+    not matter. Anything else stays as filed and is reported as unknown."""
+    known = {a: a for a in required_axes}
+    norm = lambda k: k.strip().lower().replace("-", "_")  # noqa: E731
+    by_norm = {norm(a): a for a in required_axes}
+    if key in known:
+        return key
+    k = norm(key)
+    if k in by_norm:
+        return by_norm[k]
+    for sep in ("/", ":", "."):
+        if sep in k:
+            tail = k.rsplit(sep, 1)[-1]
+            if tail in by_norm:
+                return by_norm[tail]
+    return key
 
 
 def compute_deficits(required_axes: tuple[str, ...], findings: tuple[AxisFinding, ...],
@@ -93,7 +120,8 @@ def compute_deficits(required_axes: tuple[str, ...], findings: tuple[AxisFinding
         ungrounded=tuple(sorted(k for k in seen if k in known and not _has_usable_citation(
             k, findings, ledger))),
         covered=tuple(sorted(k for k in seen if k in known)),
-        invalid_evidence=tuple(sorted(cited_bad)))
+        invalid_evidence=tuple(sorted(cited_bad)),
+        unknown=tuple(sorted(k for k in seen if k not in known)))
 
 
 def _has_usable_citation(axis: str, findings: tuple[AxisFinding, ...],
@@ -152,6 +180,7 @@ class ReviewLoopPolicy:
     _observed_at: EvidenceSnapshot | None = None    # evidence as of the last ROUND observation
     _round_progressed: bool = False
     _progress_signature: str = ""
+    _last_malformed_sig: str = ""      # the problems the last malformed payload was corrected for
 
     def __post_init__(self) -> None:
         self.required_axes = tuple(getattr(ax, "name", "") for ax in getattr(self.plan, "axes", ()))
@@ -179,6 +208,7 @@ class ReviewLoopPolicy:
             record_operation_evidence,
         )
         if invocation.parsed is None:
+            self._malformed_round("unparseable")
             return ToolOutcome(content=self._malformed_correction(), accepted=False)
         args = invocation.parsed
 
@@ -210,10 +240,13 @@ class ReviewLoopPolicy:
             # consulted, and no verdict can exist. It is not counted as a submission because
             # eligibility never evaluated one - it is counted, and stalls, on its own terms.
             self.malformed_submissions += 1
-            self._mark_no_progress(f"malformed:{_signature(problems)}")
+            self._malformed_round(_signature(problems))
             return ToolOutcome(content=self._malformed_findings_correction(problems),
                                accepted=False)
         self.submissions += 1
+        # a key filed under its category names the axis it ends in; anything else stays as filed
+        findings = tuple(replace(f, axis_key=canonical_axis_key(f.axis_key, self.required_axes))
+                         for f in findings)
 
         before = self._snapshot or EvidenceSnapshot.of(self.ledger)
         after = EvidenceSnapshot.of(self.ledger)
@@ -298,6 +331,19 @@ class ReviewLoopPolicy:
                 _text = f"{_text}\n{_elig}"
         return ToolOutcome(content=_text, accepted=False)
 
+    def _malformed_round(self, signature: str) -> None:
+        # A MALFORMED PAYLOAD IS CORRECTED, NOT STALLED ON. The correction names exactly what to
+        # fix, and the round the model spends fixing it is the expected next step - so the first
+        # time a given set of problems is named, that correction IS the round's progress. Only
+        # the same malformed payload again, uncorrected, is a stall. Without this a one-field slip
+        # after two fruitless rounds was the third strike (job 2d04696d: evidence_ids missing on
+        # one axis, review abandoned with a valid mesh in hand and nine rounds of budget unused).
+        if signature != self._last_malformed_sig:
+            self._mark_progress(f"malformed-corrected:{signature}")
+        else:
+            self._mark_no_progress(f"malformed:{signature}")
+        self._last_malformed_sig = signature
+
     def _mark_progress(self, signature: str) -> None:
         self._round_progressed, self._progress_signature = True, signature
 
@@ -359,6 +405,12 @@ class ReviewLoopPolicy:
         lines = ["Submission rejected."]
         if deficits.missing:
             lines.append(f"Missing axes: {', '.join(deficits.missing)}")
+        if deficits.unknown:
+            # say that the KEY is wrong, not merely that the axis is missing - six identical
+            # rejections on volute_scroll_005 never did, and the review ended with no verdict
+            lines.append(f"Unknown axis keys (they name no axis in this rubric): "
+                         f"{', '.join(deficits.unknown)}. The required axis keys are exactly: "
+                         f"{', '.join(self.required_axes)}.")
         if deficits.ungrounded:
             lines.append(f"Ungrounded axes: {', '.join(deficits.ungrounded)}")
         if deficits.duplicate:

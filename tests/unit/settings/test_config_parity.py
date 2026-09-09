@@ -161,8 +161,12 @@ def test_the_template_is_tracked_and_the_configuration_is_ignored():
 
 
 def test_there_is_exactly_one_developer_facing_environment_template():
+    # The platform's own tree: the front-end apps under apps/ (the consoles, since b6f28a6) each
+    # own a template of their own, read by their own tooling, and are not a second way to
+    # configure this service.
     templates = sorted(f for f in _tracked()
-                       if f.endswith((".env.example", "env_example.txt", "env.example")))
+                       if f.endswith((".env.example", "env_example.txt", "env.example"))
+                       and not f.startswith("apps/"))
     assert templates == [".env.example"], (
         f"more than one environment template is tracked: {templates}")
 

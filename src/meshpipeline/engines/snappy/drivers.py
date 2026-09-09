@@ -221,12 +221,19 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # The staged surface is metres; this states which conversion produced it so the domain
     # bounds, refinement sizes and cell targets derived below are physical.
     from meshpipeline.cad.staging import staged_surface
+    from meshpipeline.engines.snappy import layer_policy as LP
     from meshpipeline.engines.snappy import snappy_runner as R
     from meshpipeline.engines.snappy.planner import clamp_cell_budget, plan_with_accounting
     from meshpipeline.engines.workspace_facts import contract_wall_patch as _contract_wall_patch
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
     _surface = staged_surface(_materialized(state), workspace / "input.stl")
     analysis = analyze_surface(_surface)
+    # THIN-FEATURE FIELD - measured once per build (the geometry is fixed across passes; only
+    # the strategy changes). None disables the local layer policy for this whole build.
+    _thin_field = LP.measure_field(_surface)
+    # the escalation ladder's durable stage: 0 on a fresh geometry, advanced by layer-fatal
+    # passes below, carried across pipeline retries via the sibling attempt's fact
+    _esc_stage = LP.read_escalation(workspace)
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
     # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
@@ -310,6 +317,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
         previous_plan = strategy                       # remember for the next repair
+        _policy = None                                 # this pass's local layer policy, if any
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
@@ -339,21 +347,41 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                     _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
+            # the approved ruler travels with the box it sizes - the same length the extent
+            # gate will judge the delivered box in (see domain_from_strategy)
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
-                                                flow_axis=state.get("flow_axis"))
+                                                flow_axis=state.get("flow_axis"),
+                                                ruler_m=state.get("reference_length_m"))
             wall = _contract_wall_patch(workspace) or "body"
+            # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
+            # (no thin features, policy off, no layers requested) authors the historical case
+            # exactly; otherwise razor/thin regions get locally fewer, thinner layers instead
+            # of one global count that folds at the sharp features or collapses everywhere.
+            _policy = LP.plan_layer_policy(_thin_field, rec=rec, strategy=strategy,
+                                           wall_name=wall, stage=_esc_stage)
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
                 wall_patch=wall, farfield_patch="farfield", feature_angle=150,
-                reference_length_m=strategy.get("reference_length_m"))
+                reference_length_m=strategy.get("reference_length_m"),
+                region_labeler=LP.make_region_labeler(_policy, wall) if _policy else None)
+            _policy = LP.reconcile_policy(_policy, prep.get("surface_regions") or [], wall)
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run, attempt)
+            # regions reach the dict ONLY for the policy's own synthetic split - a multi-solid
+            # input keeps rendering the single flattened wall entry it always has here
+            _dict_regions = (prep.get("surface_regions")
+                             if _policy is not None and _policy.mode == "split" else None)
             summary = R.render_snappy_case(
                 workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
                 analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
                 strategy=strategy, dimensionality=state.get("dimensionality", "3D"),
-                symmetry=symmetry)
+                symmetry=symmetry, surface_regions=_dict_regions,
+                layer_counts=LP.layer_counts_for(_policy),
+                layer_overrides=LP.overrides_for(_policy))
+            # the honest record travels with the case: the manifest reports the per-region
+            # layer decisions this pass actually authored (stale records are removed)
+            LP.write_layer_policy(workspace, _policy)
             # The case is authored, so the operation this pass opened is CLOSED. Without this the
             # reader was left with a validation that started every pass and never finished.
             await _op_end(publish, _spec, "validate_configuration",
@@ -388,6 +416,22 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         logger.info("snappy attempt %d - cells=%s wall_faces=%s skew_faces=%s -> %s (job_id=%s)",
                     attempt, q.get("cells"), wall_faces, q.get("skew_faces"),
                     "PRODUCTION-GRADE" if production else reason[:50], job_id)
+        # THE ESCALATION LADDER. A layer-fatal pass (negative-volume / mis-oriented cells -
+        # folding prisms) on a geometry with a MEASURED thin-feature policy escalates that
+        # policy deterministically - reduce layers at the classified thin regions first, then
+        # thin them, then drop the razor regions to zero - keeping the SAME plan. The planner's
+        # freeform re-plan stays the answer for every other failure, and for this one once the
+        # ladder is exhausted.
+        _esc_note = ""
+        if not production and _policy is not None and LP.is_layer_fatal(q):
+            _nxt = LP.escalate(_esc_stage)
+            if _nxt is not None:
+                _esc_stage = _nxt
+                LP.write_escalation(workspace, _nxt)
+                _esc_note = (f"escalating the thin-feature layer policy to stage {_nxt} "
+                             "(locally fewer/thinner layers at the thin and razor regions)")
+                logger.info("layer-fatal pass with a thin-feature policy - escalation stage %d "
+                            "(same plan) - job_id=%s", _nxt, job_id)
         # the JUDGEMENT, in the engineer's language. `reason` is the driver's own re-plan
         # note (not another agent's private feedback), so it may be shown.
         _shape = _pass_shape(q, wall_faces)
@@ -395,11 +439,15 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await publish.anote(f"Pass {attempt} produced a production-grade mesh - {_shape}",
                     op_id=f"snappy:pass-outcome:{attempt}")
         else:
-            await publish.anote(f"Pass {attempt} fell short - {_shape}; re-planning ({reason[:60]})",
+            await publish.anote(f"Pass {attempt} fell short - {_shape}; "
+                    + (_esc_note if _esc_note else f"re-planning ({reason[:60]})"),
                     op_id=f"snappy:pass-outcome:{attempt}")
         if production:
             return True                    # valid mesh is in the workspace; executor takes over
-        feedback, plan = reason, None      # re-plan against the concrete failure next attempt
+        if _esc_note:
+            feedback, plan = reason, strategy   # deterministic retry: same plan, escalated policy
+        else:
+            feedback, plan = reason, None  # re-plan against the concrete failure next attempt
 
     # Exhausted the attempts. Hand a best-effort VALID mesh to the executor/reviewer (they make the
     # final delivery call); only a genuinely invalid last mesh (no body captured) is a hard fail.
@@ -467,6 +515,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         from meshpipeline.engines.port_binding import declaration_targets
         t = await _asyncio.to_thread(
             R.tessellate_internal, source_path, workspace / "_internal_stls",
+            fluid_solid=(str(state.get("input_kind") or "").strip() == "fluid-domain"),
             prepared=_prepared,
             declared_ports=declaration_targets(state.get("intake_patches") or []))
         t, _wall_key, _bound_note = _bind_declared_ports(
@@ -497,6 +546,14 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # constant. With a binding it is the DECLARED inlet's area (the guess is dead there).
     _inlet_area = _bore_area_m2(t) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
+    # EVERY port's own diameter, for per-port refinement: the base cell is sized from the
+    # inlet bore, and a much smaller side port seals over at that size (the corpus's
+    # biggest failure cluster). Ring ports size by their inner opening, not the metal.
+    _port_sizes: dict = {}
+    for _nm, _rec in (t.get("openings") or {}).items():
+        _a = float((_rec.get("opening") or {}).get("area") or _rec.get("area") or 0.0)
+        if _a > 0:
+            _port_sizes[_nm] = 2.0 * _math.sqrt(_a / _math.pi)
     # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
     # and that is wrong for every diffusing or combining part, where the feed is not the widest
     # port. The geometry alone often cannot settle it: a wye is a wye whether flow splits or joins.
@@ -582,6 +639,36 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         feature_level = int(strategy.get("feature_level", surface_level + 1))
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
+        # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
+        # than it is never captured by castellation - an orifice plate (3-9 mm) inside a
+        # 106-290 mm pipe vanishes, its faces never become patches, and the run dies at the
+        # manifest gate (every kind=orifice shape failed at baseline; every kind=venturi,
+        # which carries no plate, passed). Measure the STAGED wall - the exact file the
+        # mesher reads - and refine locally where it is too thin: a global refinement fine
+        # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
+        # measurement failure degrades to "no thin features", never to a guess.
+        _wall_cell = bore_D / cells_across
+        _thin_regions: list = []
+        try:
+            from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
+            from meshpipeline.cad.thin_features import thin_refinement_boxes as _thin_boxes
+            _wall_stl = (Path(workspace) / "constant" / "triSurface"
+                         / f"{prep['names'][_wall_key]}.stl")
+            if _wall_stl.exists():
+                # the extra levels may spend at most half the run's cell budget: a thin feature
+                # is captured locally, never by re-meshing the whole part at the finest level
+                _thin_regions = _thin_boxes(_read_tris(_wall_stl), cell_m=_wall_cell,
+                                            budget_cells=max(50_000, int(0.5 * _budget)))
+        except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+            logger.exception("internal build: thin-feature probe failed - continuing without "
+                             "local thin refinement - job_id=%s", job_id)
+            _thin_regions = []
+        if _thin_regions:
+            _t0 = _thin_regions[0]
+            await publish.anote(
+                f"Thin feature detected - {_t0['thinnest_m'] * 1000:.1f} mm across, finer "
+                f"than the {_wall_cell * 1000:.1f} mm wall cell; refining locally so it is "
+                f"captured", op_id=f"internal:thin-feature:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}",
@@ -590,13 +677,20 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run)
+            try:
+                _sealed_before = set(_json.loads(
+                    (workspace / ".sealed_ports.json").read_text()))
+            except Exception:  # noqa: BLE001 - absent on a clean first attempt
+                _sealed_before = set()
             summary = R.render_internal_case(
                 workspace, names=prep["names"], features=prep["features"],
                 wall_key=_wall_key,
                 interior_point=t["interior_point"], bbox_min=t["bbox_min"],
                 bbox_max=t["bbox_max"], base_cell=base_cell, surface_level=surface_level,
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
-                max_cells=_budget, quality=quality)
+                max_cells=_budget, quality=quality,
+                port_sizes=_port_sizes, sealed_before=_sealed_before,
+                thin_regions=_thin_regions)
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers",
@@ -611,6 +705,32 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             wall_faces = int(fc.get(prep["names"][_wall_key], 0))
             production, reason = _judge_snappy(result, q, wall_faces)
             last_valid = bool(result.get("rc") == 0 and wall_faces > 0 and not q.get("fatal"))
+            # A mesh that carved over a declared port is NOT usable - it dies later at the
+            # manifest gate ("zero faces") after burning review budget, and it must never be
+            # the exhausted-path submission. Judge it HERE, name the port, and record it so
+            # the next pass raises that port's local refinement. Only judged when a mesh
+            # actually exists - on a crashed run every count is zero and says nothing.
+            if result.get("rc") == 0 and (q.get("cells") or 0) > 0:
+                _sealed_now = [p for p in prep["names"] if p != _wall_key
+                               and int(fc.get(prep["names"][p], 0)) == 0]
+                if _sealed_now:
+                    try:
+                        _prev_sealed = set(_json.loads(
+                            (workspace / ".sealed_ports.json").read_text()))
+                    except Exception:  # noqa: BLE001
+                        _prev_sealed = set()
+                    (workspace / ".sealed_ports.json").write_text(
+                        _json.dumps(sorted(_prev_sealed | set(_sealed_now))))
+                    _dias = ", ".join(
+                        f"{p} (Ø{_port_sizes.get(p, 0.0) * 1000:.1f} mm)"
+                        for p in _sealed_now)
+                    production = False
+                    last_valid = False
+                    reason = (f"port(s) sealed over during castellation - zero faces on "
+                              f"{_dias}. The opening is smaller than the local cells; "
+                              f"its refinement is raised for the next pass")
+                else:
+                    (workspace / ".sealed_ports.json").unlink(missing_ok=True)
             run.note_native_run(produced_usable_mesh=last_valid)
         except (_fence.StaleWorkerFenced, StaleExecutionPublish):
             raise                      # supersession stops the invocation; see the external build

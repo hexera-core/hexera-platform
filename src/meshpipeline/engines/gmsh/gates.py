@@ -12,6 +12,15 @@ from meshpipeline.engines.gmsh.gmsh_runner import SICN_FLOOR
 
 logger = logging.getLogger(__name__)
 
+#: Minimum elements that must span the NARROWEST bounding-box dimension. gmsh sizes
+#: from a factor of the part DIAGONAL, so a long thin duct (diagonal = length) can end
+#: up with an element bigger than its bore - a handful of cells across the flow that
+#: still passes every shape-quality gate. The baseline corpus shipped 14 such "passes"
+#: at 0.3-5% of budget (transition_006_fluid at 6,455 cells, s_duct_001_fluid 132x
+#: coarser than its solid twin) - silent under-resolution and training-label poison.
+#: 6 is the floor; the driver aims for 8 with margin.
+RESOLUTION_FLOOR_CELLS = 6
+
 
 def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
     ws = Path(ctx.workspace)
@@ -60,6 +69,49 @@ def _gate_sicn_floor(ctx: GateCtx) -> tuple[bool, str]:
     return True, ""
 
 
+def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
+    """The mesh must resolve the NARROWEST dimension of the part, not just have
+    well-shaped cells. Reads the element size and the bbox the driver already
+    recorded, and rejects a mesh whose largest element spans the thin direction
+    in fewer than RESOLUTION_FLOOR_CELLS cells. Self-contained: needs only fields
+    quality.json already carries (size_h, bounds), so no mesh-image change is
+    required for it to take effect."""
+    q = (ctx.manifest_or_load().get("quality") or {})
+    h = q.get("size_h")
+    bounds = q.get("bounds")
+    # An older deck without these fields is not judged here (the manifest/sicn
+    # gates still apply); a floor cannot be enforced on data that is not present.
+    if not h or not bounds or len(bounds) != 6:
+        return True, ""
+    extents = [bounds[3] - bounds[0], bounds[4] - bounds[1], bounds[5] - bounds[2]]
+    min_ext = min(e for e in extents if e > 0) if any(e > 0 for e in extents) else 0.0
+    if min_ext <= 0 or float(h) <= 0:
+        return True, ""
+    cells_across = min_ext / float(h)
+    # prefer the driver's own count when present (it knows the meshed extent exactly, and
+    # whether the limiting width is the box or a declared port the flow must cross)
+    cells_across = float(q.get("cells_across_min", cells_across))
+    basis = str(q.get("min_extent_basis", "bbox"))
+    if basis.startswith("port:"):
+        min_ext = float(q.get("min_extent", min_ext))
+        what = f"the flow width of its declared port {basis[5:]}"
+    else:
+        what = "the part's narrowest dimension"
+    if cells_across < RESOLUTION_FLOOR_CELLS:
+        return False, (
+            f"[RESOLUTION] the mesh spans {what} "
+            f"({min_ext * 1000:.1f} mm) in only ~{cells_across:.1f} elements "
+            f"(element size {float(h) * 1000:.1f} mm) - below the "
+            f"{RESOLUTION_FLOOR_CELLS}-cell floor, so the flow cross-section is "
+            "under-resolved even though the cells are well-shaped. Fix in "
+            "gmsh_spec.json: set size.mode='absolute' with a value near "
+            f"{min_ext / (RESOLUTION_FLOOR_CELLS + 2) * 1000:.1f} mm (or smaller), "
+            "and run_mesh again. gmsh's default factor-of-diagonal sizing under-"
+            "resolves long thin parts because the diagonal is the length, not the bore."
+        )
+    return True, ""
+
+
 def _gate_gmsh_region_contract(ctx: GateCtx) -> tuple[bool, str]:
     manifest = ctx.manifest_or_load()
     if not (manifest and ctx.intake_patches):
@@ -87,6 +139,12 @@ GMSH_GATES: tuple[GateSpec, ...] = (
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="sicn_floor",     check=_gate_sicn_floor,          section="MESH",
              proves="No degenerate elements - every element clears the quality floor for FE assembly"),
+    # Well-shaped is not the same as adequately resolved: this catches a mesh whose
+    # cells are clean but too big to resolve the flow cross-section (the corpus's
+    # silent under-spend). After sicn (a degenerate mesh is the worse news) and
+    # before naming (an under-resolved mesh is not worth patch-checking).
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor,   section="MESH",
+             proves="The narrowest dimension of the part is resolved in enough cells to carry the flow"),
     GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
              proves="Every named group you asked for exists in the deck"),
 )

@@ -31,6 +31,31 @@ def _polymesh_patch_names(ws: Path) -> list[str]:
     return [n for n in names if n != "FoamFile"]
 
 
+def folded_class_regions(ws: Path, layer_policy: dict | None) -> dict:
+    """The layer policy's synthetic class regions that the delivered boundary no longer carries.
+
+    The policy splits one declared wall into <wall>_thin / <wall>_razor triSurface regions so each
+    class can carry its own layer count; snappyHexMesh makes each a patch, and createPatch folds
+    them back into the declared wall after meshing (snappy_runner authors that merge). The staged
+    STL still names the regions and the layer record still lists them, but the polyMesh boundary
+    - the mesh the user receives - does not. Five corpus rotors reached the manifest gate with
+    body_thin / body_razor declared and zero faces: the mesh was right, the manifest was stale.
+    Returns {region: wall it was folded into}. Fail-safe: no boundary, or a region that still
+    exists in it, folds nothing - a genuinely missing patch must keep failing the manifest gate.
+    Real CAD-named solids never carry the class suffix and are never folded.
+    """
+    regions = (layer_policy or {}).get("region_patches") or {}
+    present = set(_polymesh_patch_names(ws))
+    if not regions or not present:
+        return {}
+    out: dict = {}
+    for r in regions:
+        base, _, cls = str(r).rpartition("_")
+        if cls in ("thin", "razor") and base and r not in present:
+            out[str(r)] = base
+    return out
+
+
 # Declared roles whose OpenFOAM patch TYPE is semantically load-bearing: a 2D case with a
 # front/back patch of type `patch` (a failed empty-retype) or a symmetry patch of type
 # `patch` SOLVES WRONG, yet has the right name and nonzero faces - name/face reconciliation
@@ -130,6 +155,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                             "coverage_pct": v.get("coverage_pct")} for n, v in _walls.items()}
             except Exception:
                 logger.exception("finalize: layer-coverage parse failed (non-fatal)")
+    # THE HONEST LAYER-POLICY RECORD (engines/snappy/layer_policy.py). When the thin-feature
+    # classifier locally reduced or dropped prism layers, the delivered quality data must SAY so
+    # - per class: the layer count and the wall-area fraction it covers - so the reviewer and the
+    # caveat machinery judge the measured coverage against the policy that was actually authored,
+    # not against the global request it deliberately replaced.
+    _lp = ws / "layer_policy.json"
+    if _lp.exists():
+        try:
+            import json as _json
+            _pol = _json.loads(_lp.read_text())
+            if isinstance(_pol, dict):
+                q["layer_policy"] = _pol
+        except Exception:
+            logger.exception("finalize: layer-policy record unreadable (non-fatal)")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -146,6 +185,12 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             _solids.update(R.read_stl_solids(_stl))
         except Exception:
             logger.exception("Executor: reading review geometry %s failed", _stl)
+    # Class regions the boundary no longer has are drawn as the wall they became, so the
+    # review surface, the manifest's patch map and the delivered boundary all say the same thing.
+    _folded = folded_class_regions(ws, q.get("layer_policy"))
+    for _reg, _base in _folded.items():
+        if _reg in _solids:
+            _solids[_base] = list(_solids.get(_base) or []) + list(_solids.pop(_reg))
     if _solids:
         _review_tris = _solids
         try:
@@ -230,6 +275,15 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     elif not patch_types:
         patch_types = {n: ("wall" if i == 0 else "farfield")
                        for i, n in enumerate(patch_entities.keys())}
+    # Synthetic thin/razor class patches ARE the wall - the layer policy split one declared wall
+    # into class regions, and the manifest must role every one of them as wall (the index fallback
+    # above would otherwise call them 'farfield' and the manifest-derived wall_faces would lie).
+    _pol_regions = (q.get("layer_policy") or {}).get("region_patches") or {}
+    for _rp in _pol_regions:
+        if _rp in _folded:
+            continue          # folded back into the declared wall by createPatch - not a patch here
+        if _rp not in patch_types or patch_types.get(_rp) == "farfield":
+            patch_types[_rp] = "wall"
     # SURFACE-CAPTURE ANCHOR - the OBJECTIVE 'surface capture' number (a vision reviewer
     # cannot read snap quality from a render; it confabulates 'good' from face counts or
     # 'staircased' from a blur). The ENGINE DECLARES which surfaces to compare - its snapped

@@ -25,7 +25,12 @@ def failure_signature(state: Mapping[str, Any]) -> dict | None:
     reviewer-feedback retry must never be stopped by this detector.
     """
     cr = (state or {}).get("classifier_result") or {}
-    gate = cr.get("gate")
+    # The classifier writes the deterministic gate under "failed_gate" (pipeline/classifier.py);
+    # this reader looked up "gate" and so ALWAYS came back empty, silently returning None on
+    # every failure - the no-progress stop never fired once, and identical gate rejections ran
+    # the full retry ladder (wasted Cloud Run meshes each time). Read the key the writer
+    # actually sets; keep "gate" as a fallback in case another path ever populates it.
+    gate = cr.get("failed_gate") or cr.get("gate")
     if not gate:
         return None
     return {"gate": str(gate), "section": str(cr.get("section") or ""),

@@ -3,10 +3,35 @@
 from __future__ import annotations
 
 from meshpipeline.contracts.model_routing import Capability
-from meshpipeline.settings.env import ConfigurationError, optional_env
+from meshpipeline.settings.env import ConfigurationError, bool_env, optional_env
 from meshpipeline.settings.routes import route_from_catalogue
 
 MAX_SNAPPY_ATTEMPTS: int = int(optional_env("MAX_SNAPPY_ATTEMPTS", "3"))
+
+# THIN-FEATURE LAYER POLICY - geometry-adaptive local prism layers (engines/snappy/layer_policy.py).
+# The classifier measures local thickness/sharpness on the tessellated surface; these knobs decide
+# when that measurement changes the authored layer configuration.
+SNAPPY_THIN_LAYER_POLICY: bool = bool_env("SNAPPY_THIN_LAYER_POLICY", "true")
+
+# act only when the thin+razor classes together cover at least this fraction of the wetted area -
+# below it the measurement is noise-scale and the authored dict stays exactly the historical one
+SNAPPY_THIN_AREA_FLOOR: float = float(optional_env("SNAPPY_THIN_AREA_FLOOR", "0.002"))
+if not (0.0 <= SNAPPY_THIN_AREA_FLOOR <= 1.0):
+    raise ConfigurationError(
+        f"SNAPPY_THIN_AREA_FLOOR must be a fraction in 0.0..1.0, got {SNAPPY_THIN_AREA_FLOOR}")
+
+# razor = locally thinner than this many wall cells (opposing prism stacks cannot even castellate)
+SNAPPY_RAZOR_CELL_FACTOR: float = float(optional_env("SNAPPY_RAZOR_CELL_FACTOR", "1.0"))
+if SNAPPY_RAZOR_CELL_FACTOR <= 0.0:
+    raise ConfigurationError(
+        f"SNAPPY_RAZOR_CELL_FACTOR must be positive, got {SNAPPY_RAZOR_CELL_FACTOR}")
+
+# thin = locally thinner than this many TWO-SIDED prism stacks (the stacks growing from the two
+# opposing surfaces would collide before reaching their requested thickness)
+SNAPPY_THIN_STACK_FACTOR: float = float(optional_env("SNAPPY_THIN_STACK_FACTOR", "2.0"))
+if SNAPPY_THIN_STACK_FACTOR <= 0.0:
+    raise ConfigurationError(
+        f"SNAPPY_THIN_STACK_FACTOR must be positive, got {SNAPPY_THIN_STACK_FACTOR}")
 
 # the planner's model identity (its OWN, not the builder's)
 PLANNER_MODEL: str = optional_env("PLANNER_MODEL", "zai-org/GLM-5.2")

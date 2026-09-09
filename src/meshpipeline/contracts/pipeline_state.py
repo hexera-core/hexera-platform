@@ -78,6 +78,11 @@ class PipelineState(TypedDict):
 
     api_failure: str
 
+    # TRANSIENT-infra replays consumed (builder attempts killed by a provider/dependency
+    # brownout and re-run by node_infra_retry). Distinct from retry_count: an infra replay
+    # re-runs the SAME mesh attempt number - it is not a new mesh attempt.
+    infra_retry_count: int
+
     request_txt:      str
     review_brief_txt: str
 

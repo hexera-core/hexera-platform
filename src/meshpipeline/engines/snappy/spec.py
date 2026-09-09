@@ -167,7 +167,19 @@ SPEC = EngineSpec(
         intake_params=(),
         # body-fits a surface and fills a FLUID region → CFD only, in EITHER region
         capabilities=(MeshCapability("body-surface", "fluid-volume",
-                                     topologies=("internal", "external")),),
+                                     topologies=("internal", "external")),
+                      # A PREPARED fluid domain for internal flow: the STEP solid IS the fluid
+                      # (a duct modelled as a solid rod, a blade-row passage, an extracted
+                      # exhaust runner). The internal carve's primary assumption is exactly that -
+                      # inside-the-solid means inside the flow, the hollow wall shell is its
+                      # fallback (cad_tessellate.tessellate_internal) - so nothing downstream
+                      # changes. The catalog alone refused it, and every fluid-volume shape in the
+                      # corpus was routed to gmsh's FEA lane, where knife-edge trailing edges
+                      # produce sliver tets no setting removes (blade_row_passage 0/6). External
+                      # flow is NOT admitted from a fluid domain: the carve expects declared
+                      # inlet/outlet mouths, not a far-field box.
+                      MeshCapability("fluid-domain", "fluid-volume",
+                                     topologies=("internal",))),
         input_contract=InputContract(
             # UPSTREAM TRUTH: snappyHexMesh is a 3D hex/split-hex mesher. The former
             # pseudo-2D workflow (thin slab + extrudeMesh collapse + empty retype) was a

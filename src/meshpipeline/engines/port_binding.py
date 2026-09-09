@@ -29,6 +29,25 @@ class BindError(ValueError):
     so it costs seconds and carries everything the user needs to disambiguate."""
 
 
+def _bore_mm(entry: dict):
+    """The bore of a declared port. `outer_diameter_mm`, when the intake wrote one beside
+    `inner_diameter_mm`, IS the bore - the model reads "between the centre-body outside diameter
+    187 mm and the pipe bore diameter 312 mm - a 62 mm radial gap" and files the gap under
+    diameter_mm and the bore under a field of its own (job eea4fe22). A diameter smaller than the
+    centre body cannot be the bore either; the outer one is."""
+    outer, d, inner = entry.get("outer_diameter_mm"), entry.get("diameter_mm"), entry.get("inner_diameter_mm")
+    if isinstance(outer, (int, float)) and not isinstance(outer, bool) and outer > 0:
+        if d is None or (isinstance(inner, (int, float)) and inner >= (d or 0.0)) or outer > (d or 0.0):
+            return float(outer)
+    # No bore field, and a "diameter" SMALLER than the centre body: no bore can be, so it is the
+    # radial gap the user quoted ("a 49.9 mm radial gap", blade_row_passage_002, job ac839f83) -
+    # the bore is the centre body plus a gap each side. Exact for a concentric annulus.
+    if (isinstance(d, (int, float)) and not isinstance(d, bool) and isinstance(inner, (int, float))
+            and not isinstance(inner, bool) and 0.0 < d < inner):
+        return float(inner) + 2.0 * float(d)
+    return d
+
+
 @dataclass(frozen=True)
 class DeclaredPatch:
     name: str
@@ -39,6 +58,11 @@ class DeclaredPatch:
     height_mm: float | None = None
     near_mm: tuple[float, float, float] | None = None
     interchangeable_with: tuple[str, ...] = ()
+    # An ANNULAR opening: the bore (diameter_mm) with a centre body of this diameter inside it.
+    # The declared size is then the ring between them - stated, never computed by the model:
+    # the blade-row passage intake wrote 31,403 mm2 for a 104,603 mm2 annulus (job a1593cdc)
+    # because the schema gave it no way to say "453.3 mm bore around a 268.88 mm hub".
+    inner_diameter_mm: float | None = None
 
     @classmethod
     def from_intake(cls, entry: dict) -> DeclaredPatch:
@@ -46,16 +70,20 @@ class DeclaredPatch:
         return cls(
             name=entry["name"],
             role=entry["type"],
-            diameter_mm=entry.get("diameter_mm"),
+            diameter_mm=_bore_mm(entry),
             area_mm2=entry.get("area_mm2"),
             width_mm=entry.get("width_mm"),
             height_mm=entry.get("height_mm"),
             near_mm=tuple(near) if near is not None else None,
             interchangeable_with=tuple(entry.get("interchangeable_with") or ()),
+            inner_diameter_mm=entry.get("inner_diameter_mm"),
         )
 
     def declared_area_m2(self) -> float | None:
         if self.diameter_mm is not None:
+            if self.inner_diameter_mm is not None and 0.0 < self.inner_diameter_mm < self.diameter_mm:
+                return (math.pi * ((self.diameter_mm / 2.0) ** 2
+                                   - (self.inner_diameter_mm / 2.0) ** 2) * 1e-6)
             return math.pi * (self.diameter_mm / 2.0) ** 2 * 1e-6
         if self.area_mm2 is not None:
             return self.area_mm2 * 1e-6
@@ -98,7 +126,13 @@ def _measures(area: float, opening: dict | None) -> list[float]:
     not be the only thing the declared size is held against."""
     out = [float(area)]
     if opening and opening.get("area") is not None:
-        out.append(float(opening["area"]))
+        inner = float(opening["area"])
+        out.append(inner)
+        # The disc the ring's OUTER wire encloses. When the STEP is the fluid itself (a
+        # blade-row passage, an annular duct modelled as the flow volume), the port face IS
+        # the annulus and the declaration still quotes "the pipe bore diameter" - that bore is
+        # the outer wire, not the inner one, and the ring's own area is the true opening.
+        out.append(float(area) + inner)
     return out
 
 

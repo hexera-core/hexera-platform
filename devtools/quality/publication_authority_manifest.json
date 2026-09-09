@@ -273,6 +273,19 @@
   "roots": []
  },
  {
+  "context": "adapters/mesh_execution/cloud_run_client.py::_uncollected::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/cloud_run_client.py",
+  "qualname": "_uncollected",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/model_capacity/redis.py::RedisCapacityController.acquire::error#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/model_capacity/redis.py",
   "qualname": "RedisCapacityController.acquire",
@@ -2503,6 +2516,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::note#7|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 7,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::error#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_snappy_deterministic",
@@ -3268,6 +3296,73 @@
   "method": "error",
   "ordinal": 1,
   "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "pipeline/graph.py::node_infra_retry::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
+  "path": "pipeline/graph.py",
+  "qualname": "node_infra_retry",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "execution_publisher(job_id, agent='builder')",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/graph.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "render/face_quality.py::_body::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/face_quality.py",
+  "qualname": "_body",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "render/face_quality.py::_body::search#2|NotAPublisher|not-a-publisher|",
+  "path": "render/face_quality.py",
+  "qualname": "_body",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "render/face_quality.py::_read_boundary::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/face_quality.py",
+  "qualname": "_read_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "render/face_quality.py::declared_count::search#1|NotAPublisher|not-a-publisher|",
+  "path": "render/face_quality.py",
+  "qualname": "declared_count",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

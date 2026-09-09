@@ -7,6 +7,83 @@ import sys
 from pathlib import Path
 
 SICN_FLOOR = 0.1   # shared with the executor gate + quality criteria
+# Minimum elements across the narrowest bbox extent. The clamp aims for 8; the
+# resolution_floor gate (gmsh/gates.py) rejects below 6, so a clamped mesh clears
+# the gate with margin. Kept a local literal on purpose: this driver runs as a
+# standalone script inside the mesh image, decoupled from the settings inventory.
+MIN_CELLS_ACROSS = 8
+
+#: A bounding-box extent below this fraction of the diagonal is noise, not a dimension of
+#: the part: a planar face reports a thickness of ~1e-9 m, and clamping to eight cells
+#: across THAT is a mesh that never finishes (the committed 2D fixture ran past its 300 s
+#: budget). The corpus's thinnest real features sit near 2.5e-4 of the diagonal.
+EXTENT_NOISE_FRACTION = 1e-6
+
+
+def narrowest_extent(ext, diag: float, *, planar: bool = False) -> float:
+    """The narrowest REAL dimension the resolution clamp must put cells across.
+
+    Noise extents are dropped. A planar (2D) case has no thickness at all - its clamp
+    spans the in-plane extents, so a tilted face whose box shows three real extents
+    still drops the smallest. With nothing real left, the diagonal (no clamp)."""
+    real = sorted(e for e in ext if e > EXTENT_NOISE_FRACTION * diag)
+    if planar and len(real) == 3:
+        real = real[1:]
+    return real[0] if real else diag
+
+
+def _num(v) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
+def port_flow_width_mm(port: dict) -> float | None:
+    """The width the flow crosses at one declared port, in mm: a bore's diameter, a
+    rectangle's shorter side, an annulus's radial gap, an area's equivalent diameter."""
+    d, inner, outer = _num(port.get("diameter_mm")), _num(port.get("inner_diameter_mm")), \
+        _num(port.get("outer_diameter_mm"))
+    if inner is not None:
+        # an annular port: the flow crosses the radial gap. The bore is outer_diameter_mm, or
+        # diameter_mm when that is the larger number; a diameter_mm BELOW the centre body is
+        # the gap itself (the intake files it that way - see port_binding._bore_mm)
+        bore = outer if outer is not None and outer > inner else (d if d is not None and d > inner else None)
+        if bore is not None:
+            return (bore - inner) / 2.0
+        if d is not None:
+            return d
+    if d is not None:
+        return d
+    w, h = _num(port.get("width_mm")), _num(port.get("height_mm"))
+    if w is not None and h is not None:
+        return min(w, h)
+    a = _num(port.get("area_mm2"))
+    if a is not None:
+        return 2.0 * (a / 3.141592653589793) ** 0.5
+    return None
+
+
+def smallest_port_extent(ports) -> tuple[float, str] | None:
+    """(metres, port name) of the narrowest declared flow port, or None without one."""
+    best = None
+    for p in ports or []:
+        if not isinstance(p, dict) or str(p.get("type", "")) not in ("inlet", "outlet"):
+            continue
+        w = port_flow_width_mm(p)
+        if w is not None and (best is None or w < best[0]):
+            best = (w, str(p.get("name", "port")))
+    return (best[0] / 1000.0, best[1]) if best else None
+
+
+def resolution_extent(ext, diag: float, *, planar: bool = False, ports=None) -> tuple[float, str]:
+    """The extent the resolution clamp puts cells across, and what it is: the narrowest real
+    bbox dimension, or the smallest declared port when the flow crosses something narrower
+    than the box. A volute's box is wide every way; its outlet bore is what the flow must
+    cross, and eight cells across the box left a 21 mm element on a part whose bore is a
+    few times that (volute_scroll_005: 9,293 cells, 83.6 degrees non-orthogonality)."""
+    box = narrowest_extent(ext, diag, planar=planar)
+    port = smallest_port_extent(ports)
+    if port is not None and port[0] < box:
+        return port[0], f"port:{port[1]}"
+    return box, "bbox"
 
 # VALIDATED JSON SCRATCH. The model may author a rich gmsh_spec.json, but the driver
 # is the authority on what it supports - it REJECTS unknown/misspelled keys and
@@ -125,7 +202,7 @@ def _validate_spec(spec) -> list[str]:
     return errs
 
 
-def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
+def _mesh_planar(ws: Path, spec: dict, h: float, resolution: dict | None = None) -> int:
     import gmsh
     faces = [t for _, t in gmsh.model.getEntities(2)]
     if not faces:
@@ -203,6 +280,7 @@ def _mesh_planar(ws: Path, spec: dict, h: float) -> int:
         "min_sicn": round(min_sicn, 4),
         "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
         "fatal": fatal, "size_h": h,
+        **(resolution or {}),
         "bounds": _final_node_bounds(gmsh),
         "groups": {name: str(_role_by_name.get(name, "free"))
                    for name in _actual_group_names},
@@ -256,17 +334,41 @@ def main(workspace: str) -> int:
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
         diag = ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
         size_spec = spec.get("size") or {"mode": "factor", "value": 0.04}
-        h = (float(size_spec["value"]) * diag
-             if size_spec.get("mode", "factor") == "factor"
-             else float(size_spec["value"]))
+        h_req = (float(size_spec["value"]) * diag
+                 if size_spec.get("mode", "factor") == "factor"
+                 else float(size_spec["value"]))
+        # RESOLUTION CLAMP. gmsh sizes from a factor of the DIAGONAL, but a duct's
+        # diagonal is its length - 4% of it can exceed the bore, leaving a handful of
+        # cells across the flow (the corpus's 6,455-cell "passes"). Force at least
+        # MIN_CELLS_ACROSS elements across the narrowest bbox extent, whatever the
+        # factor gives. Only ever tightens h; never coarsens an already-fine request.
+        ext = [xmax - xmin, ymax - ymin, zmax - zmin]
+        _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
+        # the ports the intake declared (neutral workspace file); absent on an FEA part
+        _ports = []
+        try:
+            _ports = json.loads((ws / "port_declaration.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        min_ext, _basis = resolution_extent(ext, diag, planar=_is2d, ports=_ports)
+        h = min(h_req, min_ext / MIN_CELLS_ACROSS)
+        if h < h_req:
+            _what = (f"the {min_ext:.4g} m narrow dimension" if _basis == "bbox"
+                     else f"the {min_ext:.4g} m flow width of {_basis[5:]}")
+            print(f"[GMSH] resolution clamp: element size {h_req:.4g} m would put only "
+                  f"{min_ext / h_req:.1f} cells across {_what}; "
+                  f"tightened to {h:.4g} m ({MIN_CELLS_ACROSS} across).", file=sys.stderr)
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
         gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature",
                               int(spec.get("curvature_nodes", 24)))
+        _resolution = {"size_h_requested": round(h_req, 8),
+                       "min_extent": round(min_ext, 8),
+                       "min_extent_basis": _basis,
+                       "cells_across_min": round(min_ext / h, 3) if h > 0 else 0.0}
 
-        _is2d = str(spec.get("dimensionality", "3D")).upper() == "2D"
         if _is2d:
-            return _mesh_planar(ws, spec, h)
+            return _mesh_planar(ws, spec, h, resolution=_resolution)
 
         # Physical groups: every volume is the solid; surfaces per the spec's
         # contracted names; unassigned surfaces land in the default group so
@@ -339,6 +441,7 @@ def main(workspace: str) -> int:
             "min_sicn": round(min_sicn, 4),
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": h,
+            **_resolution,
             "bounds": _final_node_bounds(gmsh),
             # groups = the ACTUAL physical groups present in the meshed model (read back),
             # role-annotated from the spec - the manifest must reflect the artifact, not

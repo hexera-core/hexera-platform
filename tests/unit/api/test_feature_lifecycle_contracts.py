@@ -111,6 +111,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/simulation/{job_id}"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
         ("GET", "/api/v1/simulation/{job_id}/surface"),
+        ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
         ("POST", "/api/v1/upload/step-file"),
         ("POST", "/api/v1/ws/ticket"),
     }

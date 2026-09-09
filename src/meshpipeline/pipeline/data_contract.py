@@ -396,6 +396,7 @@ STATE_FIELDS: dict[str, str] = {
                              "rejection / blameless system-failure note); never model prose",
     "solvability_failed":    "cheap solvability gate outcome (deterministic guardrail)",
     "api_failure":           "provider failure marker for honest failure taxonomy",
+    "infra_retry_count":     "transient-infra replay counter: same mesh attempt re-run after a provider/dependency brownout (node_infra_retry)",
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
     "intake_patches":        "patch contract (see contract)",

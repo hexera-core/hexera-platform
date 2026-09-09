@@ -222,6 +222,15 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                                "volume to slice", exc_info=True)
         return out
 
+    def _merge_class_patches():
+        # The renderer authors system/createPatchDict only when the layer policy split the wall
+        # into synthetic class regions (see render_snappy_case): fold them back into the declared
+        # wall so the delivered boundary is exactly the one the user signed. Authoritative - a
+        # merge that fails would leave the contract unmet, which is a failed run either way.
+        if (ws / "system" / "createPatchDict").exists():
+            _sh("createPatch -overwrite", "createPatch.log",
+                expected=("constant/polyMesh/boundary",))
+
     # background grid + feature edges (fast, serial). A pre-parallel failure short-circuits.
     if not _sh("blockMesh", "blockMesh.log",
                expected=("constant/polyMesh/points",)).ok:
@@ -244,12 +253,16 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                          "reconstructParMesh.log",
                          expected=("constant/polyMesh/owner", "constant/polyMesh/boundary"))
                 timed_out = timed_out or rp.timed_out
+                if rp.ok:
+                    _merge_class_patches()
         if not timed_out:                                   # keep the workspace / round-trip tar lean
             for pd in ws.glob("processor*"):                # (preserve processor dirs on timeout as evidence)
                 shutil.rmtree(pd, ignore_errors=True)
     else:
-        _sh("snappyHexMesh -overwrite", "snappyHexMesh.log",
-            expected=("constant/polyMesh/owner",))
+        sm = _sh("snappyHexMesh -overwrite", "snappyHexMesh.log",
+                 expected=("constant/polyMesh/owner",))
+        if sm.ok:
+            _merge_class_patches()
 
     return _finish()
 

@@ -34,11 +34,36 @@ def _repair_message(key: str, result: dict, q: dict) -> str:
         # changes the payload, and it is the payload changing under one operation identity that
         # the submission claim refuses. The only honest instruction is to change NOTHING.
         from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
+        if result.get("rc") == RC_INFRASTRUCTURE and \
+                "[CLOUD_RUN_RESULT_UNCOLLECTED]" in str(result.get("log_tail") or ""):
+            # The run FINISHED; its output was too large (or too broken) to bring back. The
+            # remote's own summary rides in the tail. When the cause is the archive cap, the
+            # mesh is simply bigger than the exchange can return: the repair IS a smaller
+            # mesh - the opposite of the never-started advice below.
+            _tail = str(result.get("log_tail") or "")
+            _rq = result.get("remote_quality") or {}
+            if "over the" in _tail and "cap" in _tail:
+                return (f"RESULT TOO LARGE TO COLLECT - the mesh ran to completion "
+                        f"({_rq.get('cells')} cells) but its result archive exceeded the "
+                        "exchange's size cap on the way back. REDUCE max_cells and/or "
+                        "surface_level (and any local refinement) so the delivered mesh fits; "
+                        "do NOT enlarge anything.")
+            return ("RESULT NOT COLLECTED - the mesh ran to completion but its output could not "
+                    "be brought back from the remote runner. Nothing in this plan caused it; "
+                    "resubmit this plan unchanged.")
         if result.get("rc") == RC_INFRASTRUCTURE:
             return ("INFRASTRUCTURE failure - the mesh run never started, so nothing about this "
                     "plan caused it and nothing in it can fix it. Do NOT change the domain, the "
                     "levels, the layers or the budget: a different plan is a different payload, "
                     "and that is what the submission claim rejects. Resubmit this plan unchanged.")
+        if result.get("rc") in (137, -9):
+            # SIGKILL: the container runtime's answer to a process past its memory limit. The
+            # 'setup issue' advice below (strict quality, a larger domain) makes the next mesh
+            # BIGGER - shell_tube_bundle_009 lost two 30-minute runs to exactly that.
+            return ("snappyHexMesh was KILLED FOR MEMORY (exit 137) - the mesh outgrew the "
+                    "remote task's memory. This is a size problem, not a setup problem: REDUCE "
+                    "max_cells, lower surface_level and any local refinement, and use fewer "
+                    "layers; do NOT enlarge the domain or raise quality.")
         return ("snappyHexMesh FAILED (nonzero exit) - a setup issue (domain point, feature "
                 "file, or over-aggressive levels). Try quality='strict' and a slightly larger "
                 "domain_margin. Not a budget problem - do not raise max_cells.")
