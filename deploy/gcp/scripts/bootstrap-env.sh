@@ -368,6 +368,19 @@ ADMIN_INGRESS=${ADMIN_INGRESS:-all}
 # The promoted digest, kept across regeneration exactly as MESH_IMAGE and APP_IMAGE are.
 ADMIN_IMAGE=${ADMIN_IMAGE:-}
 
+# THE EDGE. Empty domains mean this deployment serves no custom hostname and that stage is
+# skipped - the same arrangement every other optional tier uses.
+#
+# Cloud Run hands out no IP, so a hostname is a load balancer: a reserved global address, a
+# serverless NEG per service, a URL map that routes by host, and a Google-managed certificate.
+# The names below are the resources create-edge.sh reconciles; they are stated rather than derived
+# so an operator can find them in the console without reading a script.
+CONSOLE_DOMAIN=${CONSOLE_DOMAIN:-}
+ADMIN_DOMAIN=${ADMIN_DOMAIN:-}
+EDGE_IP_NAME=${EDGE_IP_NAME:-${DEPLOY_ID}-edge-ip}
+EDGE_URL_MAP=${EDGE_URL_MAP:-${DEPLOY_ID}-edge}
+EDGE_CERT=${EDGE_CERT:-${DEPLOY_ID}-edge-cert}
+
 # SECRET CONTAINER NAMES (scripts/create-secrets.sh). Names only, never values - the guard in
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.
 DEEPINFRA_API_KEY_SECRET=${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}

@@ -153,6 +153,18 @@ if [ -n "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
   fi
 fi
 
+# A HOSTNAME WITH NOTHING BEHIND IT is a load balancer that answers a real name with a 404, and it
+# is worse than no hostname because the name looks like it works. Each declared domain requires
+# the service it fronts.
+if [ -n "${CONSOLE_DOMAIN:-}" ] && [ -z "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
+  add "CONSOLE_DOMAIN is '${CONSOLE_DOMAIN}' but CLOUDRUN_CONSOLE_SERVICE is unset - there is no
+   console for that hostname to reach"
+fi
+if [ -n "${ADMIN_DOMAIN:-}" ] && [ -z "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
+  add "ADMIN_DOMAIN is '${ADMIN_DOMAIN}' but CLOUDRUN_ADMIN_SERVICE is unset - there is no admin
+   console for that hostname to reach"
+fi
+
 # THE OBJECT STORE. The access key is the PUBLIC half; its secret is a container name. Both or
 # neither - a half-configured store fails at the first upload rather than here.
 if [ -n "${MINIO_ACCESS_KEY:-}" ] || [ -n "${MINIO_BUCKET:-}" ]; then
