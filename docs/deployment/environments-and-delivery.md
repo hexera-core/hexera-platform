@@ -373,16 +373,20 @@ renames nothing — every lookup misses and the provisioner builds the new stack
 serving one. That is the intended cutover, because the old stack is hand-made and drifted, but it
 means dev briefly runs two of everything.
 
-| Legacy | Replacement |
-| --- | --- |
-| `hexera-dev-api` | `dev-api` |
-| `hexera-dev-pg` | `dev-pg` |
-| `hexera-dev-redis` | `dev-redis` |
-| `hexera-dev-workers` | `dev-workers` |
+| Legacy | Replacement | State |
+| --- | --- | --- |
+| `hexera-dev-api` | `dev-api` | **cut over** — `dev-api` is serving the released digest; the legacy service still runs |
+| `hexera-dev-pg` | *(kept)* | **not being replaced** — stateful, holds the `meshpipeline` database (§2) |
+| `hexera-dev-redis` | *(kept)* | **not being replaced** — stateful (§2) |
+| `hexera-dev-workers` | `dev-workers` | pending |
+
+**The data half of this table is now void.** `dev-pg` and `dev-redis` are not being built: the
+live instances are stateful and stay under their own names, so the only cutover still outstanding
+is the API service and the worker fleet.
 
 **Both halves must run.** Until the second does, the old stack keeps billing and `hexera-dev-api`
-keeps serving publicly, on an image no release record names, against a database the new deploy is
-not migrating.
+keeps serving publicly, on an image no release record names — now beside `dev-api`, which serves
+the same released digest against the same database.
 
 ```
 make mesh-decommission-legacy                              # report only
