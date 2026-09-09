@@ -316,6 +316,26 @@ MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-}
 # API SERVICE and WORKER FLEET identities (scripts/create-api-service.sh, create-worker-fleet.sh).
 # EMPTY CLOUDRUN_API_SERVICE means this deployment serves no API and that stage is skipped.
 CLOUDRUN_API_SERVICE=${CLOUDRUN_API_SERVICE:-}
+# THE RUNTIME'S OWN HARDENING SWITCH, and it has to be emitted HERE or it does not exist at all.
+# This file is REGENERATED on every deploy (stage 1) before validate-config.sh reads it (stage 2),
+# so a setting this heredoc does not name is erased no matter who wrote it - including a value the
+# workflow exported for exactly this purpose. That is not hypothetical: APP_ENV was set by hand in
+# a prod state file, this template dropped it on the next run, and stage 2's own guard then refused
+# the deploy for its absence - so no production deploy could complete AND none of the hardening
+# reached create-api-service.sh.
+#
+# The defaults below are create-api-service.sh's own (APP_ENV=dev, API_CORS_ORIGINS=*), so a
+# deployment that states neither is byte-identical to what it got before this line existed. The
+# '${VAR:-default}' form is what carries a stated value through regeneration: .github/workflows/
+# deploy.yml exports APP_ENV=prod and API_CORS_ORIGINS=https://console.hexera.ai for prod, and
+# those survive into the regenerated file rather than being overwritten with the defaults.
+#
+# settings/policy.py exempts {dev, development, local, test, testing, ci} from every hardening
+# guard, so APP_ENV is what decides whether the API enforces MESH_API_KEY and USER_TOKEN_SECRET or
+# accepts whatever X-User-Id a caller sends. API_CORS_ORIGINS is quoted for the same reason
+# QUEUE_DEPTH_SCHEDULE above is: its default is a bare '*'.
+APP_ENV=${APP_ENV:-dev}
+API_CORS_ORIGINS="${API_CORS_ORIGINS:-*}"
 API_SERVICE_ACCOUNT=${API_SERVICE_ACCOUNT:-}
 API_MIN_INSTANCES=${API_MIN_INSTANCES:-0}
 API_MAX_INSTANCES=${API_MAX_INSTANCES:-5}

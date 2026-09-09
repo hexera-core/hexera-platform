@@ -138,6 +138,15 @@ jobs:
       # see docs/deployment/console-domains.md.
       console_domain: ${{ steps.pick.outputs.console_domain }}
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
+      # THE RUNTIME HARDENING SWITCH AND THE BROWSER ORIGIN IT ADMITS, pinned per environment for
+      # the same reason every target above is: they have to reach create-api-service.sh, and the
+      # only path that reaches it is this one. bootstrap-env.sh REGENERATES the deployment env on
+      # stage 1 of every run, so a value written into that file by any other means is erased before
+      # stage 2 validates it - which is exactly what happened to a hand-set APP_ENV=prod, leaving
+      # prod both unhardened and undeployable. Emitted here, exported into the deploy job's env
+      # below, and preserved by bootstrap-env.sh's `${APP_ENV:-dev}` idiom.
+      app_env: ${{ steps.pick.outputs.app_env }}
+      api_cors_origins: ${{ steps.pick.outputs.api_cors_origins }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -244,6 +253,14 @@ jobs:
               # it one for dev.
               echo "console_domain=dev.console.hexera.ai"
               echo "admin_domain=dev.admin.hexera.ai"
+              # DEV IS UNCHANGED BY BEING STATED. Both values below are create-api-service.sh's
+              # own defaults, which is what dev has been getting all along while nothing named
+              # them; pinning them here makes dev's configuration visible in the same diff prod's
+              # is, without altering a single byte of what the API service receives. `dev` is in
+              # settings/policy.py's exempt set on purpose - a shared dev environment is not
+              # asked to enforce MESH_API_KEY - and `*` is the origin list that goes with it.
+              echo "app_env=dev"
+              echo "api_cors_origins=*"
               # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
               # instances themselves - see the outputs block above.
               #
@@ -331,6 +348,20 @@ jobs:
             # docs/deployment/console-domains.md.
             echo "console_domain=console.hexera.ai"
             echo "admin_domain=admin.hexera.ai"
+            # THE HARDENING PROD ACTUALLY DEPLOYS UNDER, and the only place that delivers it.
+            # settings/policy.py exempts {dev, development, local, test, testing, ci} from every
+            # guard it has, so any of those names here is an API that enforces neither MESH_API_KEY
+            # nor USER_TOKEN_SECRET and accepts whatever X-User-Id a caller sends - its own comment
+            # calls that IDOR. `prod` is outside that set, which is what validate-config.sh's
+            # DEPLOYMENT_ID=prod check demands before it will let the deploy past stage 2.
+            #
+            # The CORS list narrows with it: create-api-service.sh defaults to `*`, and a hardened
+            # runtime refuses to start under a wildcard origin, so leaving the default here would
+            # fail the release for a second, unrelated-looking reason. console.hexera.ai is the one
+            # browser origin this API is meant to serve - the same hostname console_domain names
+            # two lines up, so the edge and the API agree on what the front door is.
+            echo "app_env=prod"
+            echo "api_cors_origins=https://console.hexera.ai"
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -532,6 +563,14 @@ jobs:
       # set and provisions the load balancer, address and certificate they front.
       CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
       ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
+      # THE RUNTIME HARDENING, carried the same way CLOUDRUN_CONSOLE_SERVICE above is: pinned by
+      # the picker, exported here for the whole job, read out of the ambient environment by
+      # bootstrap-env.sh's generated-env heredoc, and handed to create-api-service.sh as ENV and
+      # CORS_ORIGINS on the service. This is the ONLY path by which either value reaches the API:
+      # stage 1 regenerates the deployment env from that heredoc, so anything written into that
+      # file by another route is gone before stage 2 reads it.
+      APP_ENV: ${{ needs.target.outputs.app_env }}
+      API_CORS_ORIGINS: ${{ needs.target.outputs.api_cors_origins }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
