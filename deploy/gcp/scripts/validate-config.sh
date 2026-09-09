@@ -23,6 +23,23 @@ for v in DEPLOYMENT_ID GCP_PROJECT_ID GCP_PROJECT_NUMBER GCP_REGION \
   [ -n "${!v:-}" ] || add "missing required config: ${v}"
 done
 
+# PRODUCTION CANNOT BE ALLOWED TO START UNHARDENED. create-api-service.sh defaults APP_ENV to
+# `dev` when the deployment env does not state one, and settings/policy.py exempts `dev` from
+# every hardening guard - so an unset APP_ENV here is not a missing label, it is an API that
+# accepts whatever X-User-Id a caller sends. The code's own comment calls that IDOR.
+#
+# Checked on DEPLOYMENT_ID rather than on the presence of a service, because the failure is about
+# which environment this is, not which tier it deploys.
+case "${DEPLOYMENT_ID:-}" in
+  prod|production)
+    case "${APP_ENV:-}" in
+      ""|dev|development|local|test|testing|ci)
+        add "DEPLOYMENT_ID is '${DEPLOYMENT_ID}' but APP_ENV is '${APP_ENV:-<unset>}', which
+   settings/policy.py treats as a development environment - MESH_API_KEY and USER_TOKEN_SECRET
+   would not be enforced and the API would accept self-asserted identities. Set APP_ENV=prod." ;;
+    esac ;;
+esac
+
 # Each mesh resource is either created by this tooling or pre-existing and validated. The
 # disposition is recorded per resource, so a project that already owns a mesh job can still let
 # this tooling create the bucket beside it.
