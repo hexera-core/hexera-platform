@@ -37,6 +37,10 @@ describing it as empty is stale.
 | Redis (Memorystore) | `hexera-dev-redis` | `hexera-prod-redis` |
 | Workspace exchange (bucket) | `dev-exchange-224734058693` | `prod-exchange-688073002171` |
 | Build artifacts (bucket) | `hexera-dev-artifacts-224734058693` | `prod-artifacts-688073002171` |
+| Console hostname | `dev.console.hexera.ai` | `console.hexera.ai` |
+| Admin hostname | `dev.admin.hexera.ai` | `admin.hexera.ai` |
+| Edge address (global static IP) | `dev-edge-ip` | `prod-edge-ip` |
+| Edge URL map / certificate | `dev-edge` / `dev-edge-cert` | `prod-edge` / `prod-edge-cert` |
 | Image registry | Artifact Registry `mesh` | Artifact Registry `mesh` |
 
 Dev additionally has `dev-transfer-224734058693`, holding source tarballs and an `env.txt`, which
@@ -157,8 +161,8 @@ reachable by design — Cloud SQL, Memorystore, the worker MIG and the buckets a
 publicly reachable either, just not for the same reason. The post-deploy step in `deploy.yml`
 fails the run if that ever stops being true, but only when it actually runs: the step is guarded
 on `steps.deploy.outputs.admin_url`, which is set only when the `admin` stage was actually
-reconciled (`admin` selected explicitly, or `all`). A merge-to-main run (`components=images,migrate,console`)
-never selects `admin`, so it never sets `admin_url` and the check never evaluates.
+reconciled (`admin` selected explicitly, or `all`). A run whose components never touch the
+admin tier never sets `admin_url`, so the check never evaluates.
 
 It carries no secrets in this sub-project — IAP is the gate and there is no session for Secret
 Manager to hand it — and no VPC egress or database connection either; both arrive with Admin-2,
@@ -166,9 +170,8 @@ the first admin page that actually queries something.
 
 Selected by the `admin` component in `DEPLOY_COMPONENTS` (§5) and rolled out *after* the API
 stage, for the same reason the console is: its pages read the API and the database, so an admin
-console that rolls out first shows errors until the rest catches up. Unlike the console, it is
-**not** part of the merge-to-main default (§5) — it is reconciled only when a run names it
-explicitly (`admin`) or takes `all`.
+console that rolls out first shows errors until the rest catches up. It **is** part of the merge-to-main default (§5), alongside the
+console.
 
 **Pinned in both environments now**, the same reasoning and the same mechanism as
 `console_service` above: `prod-admin` is now a real service account in `hexera-prod` with the same
@@ -235,7 +238,8 @@ Two oddities in dev:
 
 ```
                     ┌──────────────────────────────────────────────┐
-  merge to main ───▶│ Deploy: components = images,migrate,console  │──▶ hexera-dev
+  merge to main ───▶│ Deploy: components =                         │──▶ hexera-dev
+                    │           images,migrate,console,admin       │
                     │ gate: hexera/ci-gate MUST pass (blocking)    │
                     └──────────────────────────────────────────────┘
 
@@ -329,13 +333,14 @@ and money for resources the change never touched.
 | `workers` | managed instance group + rolling update |
 | `console` | Cloud Run console service — the promoted console digest, in front of the API |
 | `admin` | Cloud Run admin console — the promoted admin digest, behind IAP; never publicly reachable |
+| `edge` | the global address, load balancer and managed certificate the consoles' custom hostnames resolve to |
 
 Always on, never selectable: discovery, config validation, preflight, plan confirmation, API
 enablement, Artifact Registry, runtime identities, release promotion, IAM. Each is read-only or
 cheap and idempotent, and skipping them is how a run deploys against configuration it never checked.
 
-Defaults: merge to main → `images,migrate,console`. Release tag → `all`, forced. Manual → your
-choice. Locally: `make mesh-deploy COMPONENTS=images,migrate,console`.
+Defaults: merge to main → `images,migrate,console,admin`. Release tag → `all`, forced. Manual →
+your choice. Locally: `make mesh-deploy COMPONENTS=images,migrate,console`.
 
 Every skipped stage says so, and the summary distinguishes *reconciled* / *not declared* /
 **not selected** — a summary reading "Schema at head" after `migrate` was excluded would be the
@@ -345,7 +350,7 @@ most misleading line the script prints.
 image on every run (~20 min) because GitHub runners keep no layer cache between runs. That is the
 dominant cost and is not addressed here — see §7.
 
-### The seventeen stages, in order
+### The eighteen stages, in order
 
 1. Discover environment, generate config
 2. Validate configuration schema (typed, read-only)
@@ -364,10 +369,12 @@ dominant cost and is not addressed here — see §7.
 15. Console service *(`console`)*
 16. Admin console *(`admin`)*
 17. Worker fleet + rolling update *(`workers`)*
+18. Edge — global address, load balancer, managed certificate *(`edge`)*
 
 Ordering is load-bearing: schema before the API serves it; the console and the admin console after
-the API they talk to; the fleet last, so a worker never starts before the schema, queue signal and
-object store exist.
+the API they talk to; the fleet before the edge, so a worker never starts before the schema, queue
+signal and object store exist; and the edge last of all, because a load balancer with no
+backend service to route to is a hostname that answers with an error.
 
 ---
 

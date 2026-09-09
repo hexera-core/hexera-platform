@@ -81,7 +81,7 @@ on:
         default: false
         type: boolean
 
-# A deploy MUTATES a cloud project through a 17-stage provisioner. Cancelling one mid-flight
+# A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
 # not resumable from an arbitrary point - so runs QUEUE behind each other instead of replacing
 # each other. This is deliberately the opposite of ci.yml, where cancelling a superseded run of

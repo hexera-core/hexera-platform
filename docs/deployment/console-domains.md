@@ -66,12 +66,16 @@ The deploy workflow now does this printing for you — see §5.
 Once both A records exist and have propagated, Google's own validation polling picks them up
 without anything further from this repository. Expect **roughly 15–60 minutes** between the A
 records landing and the certificate reporting `ACTIVE`. Re-running `components=edge` at any point
-is safe and cheap — every resource in `create-edge.sh` is describe-then-create-only-if-absent, so
-a re-run against an already-`ACTIVE` certificate reads its state back and changes nothing. Use a
-re-run to check progress rather than to force it; nothing about the check itself makes validation
-happen sooner.
+is safe and cheap. Nothing is deleted or recreated: the address, the NEGs, the backend services,
+the certificate, the proxies, the forwarding rules and the HTTP redirect map are all
+describe-then-create-only-if-absent, so a re-run against an already-`ACTIVE` certificate reads its
+state back and leaves it alone. The **serving URL map is the one exception** — it is written by an
+unconditional full-state `url-maps import`, which issues an Update on every run. The content is
+identical, so the routing never changes, but the API call is a write and the resource's update
+timestamp moves; a re-run is not literally a no-op. Use a re-run to check progress rather than
+to force it; nothing about the check itself makes validation happen sooner.
 
-## 5. Where the address is: the run summary, not a 17-stage log
+## 5. Where the address is: the run summary, not an 18-stage log
 
 A deploy that reconciled the edge writes a step named **"Surface the edge address for DNS"** into
 the run's own summary (`$GITHUB_STEP_SUMMARY`) — a table of hostname → A record → address, and the
