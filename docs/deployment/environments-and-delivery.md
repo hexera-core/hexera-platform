@@ -155,19 +155,26 @@ on. The exceptions are all resources a human created before the scripts did.
 | Resource | Why it still carries the old prefix |
 | --- | --- |
 | `hexera-dev-api`, `hexera-dev-workers` | hand-made. **Being replaced** by the pending dev rebuild (§6). |
-| `hexera-dev-pg`, `hexera-dev-redis` | hand-made. Being replaced by `dev-pg` / `dev-redis`. |
+| **`hexera-dev-pg`, `hexera-dev-redis`** | **stateful, live, and holding dev's `meshpipeline` database.** Same exception as prod — see below. |
 | `hexera-dev-artifacts-…` | hand-made; not yet reconciled. |
 | **`hexera-prod-pg`, `hexera-prod-redis`** | **stateful, live, and holding the production database.** See below. |
 | `hexera-*-nat`, `hexera-*-router` | created outside `deploy/`; nothing reconciles them. |
 
-**The prod data tier is a deliberate exception, not an oversight.** Cloud SQL and Memorystore
+**Both data tiers are a deliberate exception, not an oversight.** Cloud SQL and Memorystore
 cannot be renamed in place, and `deploy.sh` reconciles *by exact name* — so pinning `prod-pg` in
 the workflow would not rename anything. It would build a **second, empty, paid** database beside
 the live one on the next release tag. That very mistake was committed earlier in this work and
 caught by reading the live project; the config now names `hexera-prod-pg` and `hexera-prod-redis`
 explicitly, with the reason stated at the pin.
 
-Renaming them later is a data migration, not a config edit. It is an open decision (§7).
+**Dev carried the identical slip for longer, and it was not merely latent.** The workflow pinned
+`dev-pg` and `dev-redis`, which do not exist. Discovery therefore reported *"no hosted database
+declared"* and *"has no private address yet"* on every dev deploy, and `MIGRATE_DB_HOST` and
+`REDIS_URL` reached the API service empty — while a single `components=all` would have built the
+second paid instance the prod fix was written to prevent. Dev now pins `hexera-dev-pg` and
+`hexera-dev-redis` for the same reason and with the same wording.
+
+Renaming either later is a data migration, not a config edit. It is an open decision (§7).
 
 ### Identities
 
@@ -176,7 +183,8 @@ Convention `<deployment-id>-<role>`, one per workload, no shared identity:
 | | dev | prod |
 | --- | --- | --- |
 | Mesh runner | `dev-mesh@` | `prod-mesh@` |
-| API | *(none — `hexera-dev-api` runs as the default compute SA)* | `prod-api@` |
+| API | `dev-api@` | `prod-api@` |
+| Console | `dev-console@` | *(none — prod has no console)* |
 | Migration | `dev-migrate@` | `prod-migrate@` |
 | Queue depth | `dev-queue-depth@` | `prod-queue-depth@` |
 | CI deployer | `github-deployer@` | `github-deployer@` |
@@ -187,8 +195,37 @@ Two oddities in dev:
   `iam.serviceAccountUser` at project level. It is not `dev-mesh@`, nothing in `deploy/` creates
   it, and it is the broadest non-deployer identity in either project. It looks like a superseded
   hand-made identity and should probably be deleted — but confirm nothing uses it first.
-- The dev API runs as the **default compute service account** with `cloud-platform` scope, where
-  prod has a dedicated `prod-api@`. The rebuild fixes this.
+- The hand-made `hexera-dev-api` runs as the **default compute service account** with
+  `cloud-platform` scope. Its replacement `dev-api` runs as `dev-api@`, created below; once
+  `dev-api` is verified serving, `hexera-dev-api` is superseded and should be deleted.
+
+### Runtime identities are created by an owner, once, before their first deploy
+
+`github-deployer@` holds eleven narrow roles and **`iam.serviceAccountAdmin` is deliberately not
+one of them** — a deploy identity that can mint identities can escalate past its own ceiling. So
+the first deploy of any workload under a *new* name stops at its runtime identity with the exact
+command to run, and nothing is mutated before that point:
+
+```
+ERROR: could not create dev-api@hexera-dev.iam.gserviceaccount.com.
+Creating identities needs iam.serviceAccountAdmin, which a DEPLOY identity is
+deliberately not given. Create it once, as an owner:
+```
+
+This is the same class of owner-run prerequisite as `create-secrets.sh`, which is not a `deploy.sh`
+stage either. Both were hit for real while standing the console up on dev. Create every identity a
+new deployment names before its first run, not one failed run at a time:
+
+```bash
+gcloud iam service-accounts create dev-api     --project hexera-dev --display-name 'Hexera API service'
+gcloud iam service-accounts create dev-console --project hexera-dev --display-name 'Hexera console service'
+```
+
+Everything the API and console stages do *after* that point is within the deployer's roles: they
+make only resource-level bindings (on secrets and on the Cloud Run services), never project-level
+ones, and the custom `hexeraDeploySecrets` role carries `secrets.setIamPolicy` — but not
+`versions.access`, so the deployer can grant a runtime identity access to a secret it cannot
+itself read.
 
 ---
 
@@ -385,6 +422,16 @@ Ordered by how much they would hurt.
     `404 GitHub hosted runners are not supported for this organization`. Enabling them is an
     enterprise billing change. `vars.HEXERA_RUNNER_HEAVY` is wired with a fallback and unset.
 11. **`dev-transfer-…` and `hexera-dev-artifacts-…`** are described by nothing in `deploy/`.
+12. **A deploy that fails after `release-publish` cannot be retried on the same commit.** The
+    publication tag is the commit sha12, and `publish.sh` refuses — correctly — to move a tag that
+    already points at different bytes. Retrying rebuilds the image, and the rebuild is not
+    byte-identical, so the second run dies at publish with
+    `already exists and points at <other digest>`. Hit for real: a run failed at stage 14 on a
+    missing runtime identity, and every retry of that commit was then blocked by its own
+    successful publish. The guard is right; the gap is that nothing reuses the already-published,
+    already-validated image on a retry. Workarounds today are a new commit or
+    `RELEASE_PUBLISH_TAG`, neither of which the workflow sets. Related to 7 — reproducible image
+    builds would close this and the cache complaint together.
 
 ---
 
