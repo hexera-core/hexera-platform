@@ -109,6 +109,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("POST", "/api/v1/chat/message"),
         ("GET", "/api/v1/client-config"),
         ("GET", "/api/v1/credits"),
+        ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
         ("GET", "/api/v1/simulation/{job_id}/surface"),

@@ -5,12 +5,12 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from meshpipeline.persistence.job_state import TransitionResult, legal_sources
-from meshpipeline.persistence.models import JobStatus, SimulationJob
+from meshpipeline.persistence.models import ChatSession, JobStatus, SimulationJob
 from meshpipeline.persistence.repositories import tenant_scope
 
 
@@ -34,6 +34,42 @@ class JobRepository:
                    tenant_scope.scope(SimulationJob, owner_id=owner_id,
                                       organization_id=organization_id)))
         return res.scalar_one_or_none()
+
+    async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
+                             organization_id: str = "", limit: int = 25,
+                             before: tuple[datetime, uuid.UUID] | None = None
+                             ) -> list[tuple[SimulationJob, str | None]]:
+        """One page of this tenant's runs, newest first, each with its session's task label.
+
+        THE JOIN IS OUTER on purpose: `chat_sessions.job_id` is nullable and set only once a
+        conversation reaches a run, so an inner join would silently hide every job submitted
+        outside the chat path. A run with no session reads as a null label, which the route
+        renders as an em dash - not as a missing row.
+
+        Keyset, not OFFSET: this list is append-mostly and read newest-first, where OFFSET skips
+        or repeats rows as new runs arrive between one page and the next.
+
+        The joined column is `ChatSession.domain`, not a column literally named `task_label`:
+        `domain` is documented on the model as "DESCRIPTIVE task label from intake ('elbow
+        internal flow')" - it IS the task label, under the name the schema actually gives it.
+        The tuple position (not the column name) is what the route reads, so this stays an
+        internal detail.
+        """
+        statement = (
+            select(SimulationJob, ChatSession.domain)
+            .outerjoin(ChatSession, ChatSession.job_id == SimulationJob.id)
+            .where(tenant_scope.scope(SimulationJob, owner_id=owner_id,
+                                      organization_id=organization_id))
+            .order_by(SimulationJob.created_at.desc(), SimulationJob.id.desc())
+            .limit(limit))
+        if before is not None:
+            # ROW COMPARISON, not `created_at < x OR (created_at = x AND id < y)`. Postgres
+            # compares the tuple lexicographically in one predicate, which is both correct at a
+            # timestamp tie and the shape an index on (created_at, id) can serve.
+            statement = statement.where(
+                tuple_(SimulationJob.created_at, SimulationJob.id) < before)
+        result = await db.execute(statement)
+        return [(row[0], row[1]) for row in result.all()]
 
     async def get_internal(self, db: AsyncSession, job_id: uuid.UUID) -> SimulationJob | None:
         result = await db.execute(
