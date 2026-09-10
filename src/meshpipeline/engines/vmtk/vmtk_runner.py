@@ -238,8 +238,12 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     # with a different payload"; jobs 73cce02e and 65081ced, 8 Sep). Numbered from the workspace
     # fact so the count survives the tool being called from a fresh loop.
     ws = Path(workspace)
-    note_native_pass(ws, (read_native_pass(ws) or 0) + 1)
-    note_native_payload(ws, _native_payload_members(ws))
+    # Facts are workspace files: recorded when there is a workspace to record them in. A run
+    # tool handed a path that does not exist (the dispatch-contract test does) still dispatches
+    # through the contract, which then reports the missing case itself.
+    if ws.is_dir():
+        note_native_pass(ws, (read_native_pass(ws) or 0) + 1)
+        note_native_payload(ws, _native_payload_members(ws))
     return run_mesh(ws, engine="vmtk", timeout=timeout)
 
 

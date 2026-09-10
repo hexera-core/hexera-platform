@@ -52,3 +52,14 @@ def test_a_missing_optional_input_is_simply_not_listed(tmp_path):
     assert R._native_payload_members(ws) == ["vmtk_spec.json", "lumen.vtp"]
     (ws / "lumen_open.vtp").write_text("x")
     assert R._native_payload_members(ws) == ["vmtk_spec.json", "lumen.vtp", "lumen_open.vtp"]
+
+
+def test_a_workspace_that_does_not_exist_still_dispatches_through_the_contract(tmp_path, monkeypatch):
+    # the dispatch-contract test hands every engine's run tool a path that does not exist
+    seen = []
+    monkeypatch.setattr("meshpipeline.contracts.mesh_execution.run_mesh",
+                        lambda w, *, engine, timeout: seen.append((str(w), engine)) or {"rc": 1})
+    ws = tmp_path / "nonexistent-ws"
+    assert R.run_cartesian_mesh(ws, timeout=10) == {"rc": 1}
+    assert seen == [(str(ws), "vmtk")]
+    assert not ws.exists()
