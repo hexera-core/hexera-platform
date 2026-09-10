@@ -106,6 +106,27 @@ def test_an_empty_token_never_reaches_the_decoder(monkeypatch):
     assert stub.calls == []
 
 
+def test_a_none_token_is_refused_like_an_empty_one(monkeypatch):
+    # The signature is typed `str`, and `(raw_token or "").strip()` already tolerates `None` -
+    # but on a security boundary that guarantee belongs in a test, not left implicit in the code.
+    stub = _verify(monkeypatch)
+    with pytest.raises(firebase_token.InvalidToken):
+        firebase_token.verify(None, project_id=_PROJECT, certs_provider=lambda: {"kid": "cert"})
+    assert stub.calls == []
+
+
+def test_a_cert_provider_failure_is_not_mistaken_for_a_forged_token(monkeypatch):
+    # A cert-endpoint outage, or a bug inside google_certs(), is an infrastructure/programming
+    # fault - not evidence of a forged token - and must surface as itself, not be relabelled
+    # InvalidToken. Collapsing the two would hide, forever, whether sign-ins are failing because
+    # Google's certs are unreachable or because someone is sending us forged tokens.
+    def broken_provider():
+        raise RuntimeError("cert endpoint unreachable")
+
+    with pytest.raises(RuntimeError, match="cert endpoint unreachable"):
+        firebase_token.verify("raw", project_id=_PROJECT, certs_provider=broken_provider)
+
+
 def test_no_configured_project_refuses_rather_than_accepting_anything(monkeypatch):
     stub = _verify(monkeypatch)
     with pytest.raises(firebase_token.InvalidToken):

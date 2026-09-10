@@ -93,12 +93,23 @@ def verify(raw_token: str, *, project_id: str,
     if not project_id:
         raise InvalidToken("no Identity Platform project is configured")
 
-    provider = certs_provider or google_certs
+    # Fetch certs OUTSIDE the try: a cert-endpoint outage or a bug inside google_certs() is an
+    # infrastructure/programming fault, not evidence of a forged token, and must not be relabelled
+    # as one. Collapsing the two would mean an operator watching this boundary could never tell
+    # "Google's cert endpoint is down" from "someone is sending us forged tokens" - every sign-in
+    # would fail identically either way, hiding the real cause permanently.
+    certs = (certs_provider or google_certs)()
     try:
-        claims = _decode(token, certs=provider(), audience=project_id)
+        claims = _decode(token, certs=certs, audience=project_id)
     except Exception as exc:
-        # Signature, expiry and audience all land here, and all become the same refusal.
-        raise InvalidToken(f"token did not verify: {exc}") from exc
+        # Signature, expiry and audience failures from google.auth.jwt.decode all land here, and
+        # all become the same refusal - that collapse is intended. The cause is preserved via
+        # `from exc` for anyone debugging with the traceback, but it is deliberately NOT
+        # interpolated into the message: some of the decoder's own pre-signature-check messages
+        # (e.g. "Certificate for key id {} not found", "Unsupported signature algorithm {}") echo
+        # the token's own header fields verbatim, and those fields are attacker-controlled. Putting
+        # them in a message that may reach a log is a log-injection vector from untrusted input.
+        raise InvalidToken("token did not verify") from exc
 
     if claims.get("iss") != _ISSUER_TEMPLATE.format(project_id=project_id):
         raise InvalidToken("token was not minted for this project")
