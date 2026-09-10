@@ -216,9 +216,31 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
 
 # run (isolated subprocess)
 
+def _native_payload_members(workspace) -> list[str]:
+    """What the remote vmtk pype consumes: the spec (argv is built from it there) and the staged
+    lumen. Everything else in the attempt's workspace is local-only or a PRIOR pass's output
+    (mesh.vtu, centerlines.vtp, the distance surface, log.vmtk) that must not ride along."""
+    ws = Path(workspace)
+    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp") if (ws / n).exists()]
+
+
 def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
-    from meshpipeline.contracts.mesh_execution import run_mesh
-    return run_mesh(workspace, engine="vmtk", timeout=timeout)
+    from meshpipeline.contracts.mesh_execution import (
+        note_native_pass,
+        note_native_payload,
+        read_native_pass,
+        run_mesh,
+    )
+    # THE PASS IS PART OF THE SUBMISSION IDENTITY (job + generation + attempt + pass). The
+    # builder may run the mesher several times in one attempt with a revised spec - remesh on,
+    # coarser edge length, layers off - and without a recorded pass every run after the first
+    # was refused as a conflicting replay of the first one's claim ("claimed for engine 'vmtk'
+    # with a different payload"; jobs 73cce02e and 65081ced, 8 Sep). Numbered from the workspace
+    # fact so the count survives the tool being called from a fresh loop.
+    ws = Path(workspace)
+    note_native_pass(ws, (read_native_pass(ws) or 0) + 1)
+    note_native_payload(ws, _native_payload_members(ws))
+    return run_mesh(ws, engine="vmtk", timeout=timeout)
 
 
 def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:

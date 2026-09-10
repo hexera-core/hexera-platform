@@ -180,7 +180,14 @@ SPEC = EngineSpec(
         # INTERNAL only: vmtk tetrahedralizes the lumen ENCLOSED by the surface,
         # sized off its centerline. There is no far-field construction in vmtk.
         capabilities=(MeshCapability("body-surface", "fluid-volume",
-                                     topologies=("internal",)),),
+                                     topologies=("internal",)),
+                      # A DECLARED FLUID DOMAIN (a CAD solid of the fluid region itself): its
+                      # boundary IS the lumen surface - the solid is tessellated to that surface
+                      # and the inside is filled, exactly the body-surface path. Registered so
+                      # the intake stops refusing VMTK for the fluid twins (HEX-11); the delivery
+                      # that backs it is in engines/validation_evidence.json.
+                      MeshCapability("fluid-domain", "fluid-volume",
+                                     topologies=("internal",))),
         input_contract=InputContract(
             dimensionalities=("3D",),
             input_kind="surface",
