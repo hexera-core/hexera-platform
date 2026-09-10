@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readBillingAccount, readBudgets, readSpendByService, spendQuery } from "./costs";
+import {
+  isExportNotYetWritten,
+  readBillingAccount,
+  readBudgets,
+  readSpendByService,
+  spendQuery,
+} from "./costs";
 
 test("reads which billing account pays for this project", async () => {
   const client = {
@@ -61,20 +67,29 @@ test("a budget with no explicit amount reports none rather than zero", async () 
   assert.equal(budgets[0].basis, "last period");
 });
 
+test("the query is scoped to this project, because one export carries several", () => {
+  // hexera-dev and hexera-prod share a billing account, so one export table holds both. Without
+  // this filter dev's Costs page would show dev + prod, and prod is the larger of the two.
+  const query = spendQuery("acct.billing_export.gcp_billing_export_v1_ABC", 30, "hexera-dev");
+  assert.match(query.query, /WHERE project\.id = @projectId/);
+  assert.equal(query.params.projectId, "hexera-dev");
+});
+
 test("the spend query reads the export table over a bounded window", () => {
-  const query = spendQuery("hexera-billing.billing_export.gcp_billing_export_v1_ABC", 30);
+  const query = spendQuery("hexera-billing.billing_export.gcp_billing_export_v1_ABC", 30, "hexera-dev");
 
   assert.match(query.query, /FROM `hexera-billing\.billing_export\.gcp_billing_export_v1_ABC`/);
   assert.match(query.query, /GROUP BY service, currency/);
   assert.match(query.query, /_PARTITIONTIME|usage_start_time/);
   assert.equal(query.params.days, 30);
+  assert.equal(query.params.projectId, "hexera-dev");
 });
 
 test("the export table name is refused unless it is a plain BigQuery reference", () => {
   // This value is interpolated into SQL - BigQuery does not parameterise table names - so anything
   // that is not project.dataset.table is refused rather than escaped.
-  assert.throws(() => spendQuery("a.b.c`; DROP TABLE x; --", 30), /table reference/i);
-  assert.throws(() => spendQuery("not-three-parts", 30), /table reference/i);
+  assert.throws(() => spendQuery("a.b.c`; DROP TABLE x; --", 30, "p"), /table reference/i);
+  assert.throws(() => spendQuery("not-three-parts", 30, "p"), /table reference/i);
 });
 
 test("sums spend by service, largest first", async () => {
@@ -88,7 +103,7 @@ test("sums spend by service, largest first", async () => {
       ] as never,
   } as never;
 
-  const rows = await readSpendByService(bq, "p.d.t", 30);
+  const rows = await readSpendByService(bq, "p.d.t", 30, "hexera-dev");
   assert.deepEqual(
     rows.map((row) => row.service),
     ["Cloud Run", "Compute Engine"],
@@ -98,5 +113,16 @@ test("sums spend by service, largest first", async () => {
 
 test("an export that returns nothing is an empty list", async () => {
   const bq = { query: async () => [[]] as never } as never;
-  assert.deepEqual(await readSpendByService(bq, "p.d.t", 30), []);
+  assert.deepEqual(await readSpendByService(bq, "p.d.t", 30, "hexera-dev"), []);
+});
+
+test("an export with no table yet is waiting, not broken", () => {
+  // The export writes its first table hours after being enabled. "Check back tomorrow" and "your
+  // configuration is wrong" are different instructions.
+  assert.equal(
+    isExportNotYetWritten(new Error("Not found: Table hexera-dev:billing_export.gcp_billing_export_v1_X")),
+    true,
+  );
+  assert.equal(isExportNotYetWritten(new Error("Access Denied: Table ...")), false);
+  assert.equal(isExportNotYetWritten(new Error("Syntax error")), false);
 });

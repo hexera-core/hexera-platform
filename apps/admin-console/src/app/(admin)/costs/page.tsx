@@ -2,6 +2,7 @@ import { Alert, EmptyState, FieldList, Panel, StatRow } from "@/app/_components/
 import { getBillingReader, getBudgetReader, getSpendReader } from "@/lib/gcp/clients";
 import { readAdminTargets } from "@/lib/gcp/config";
 import {
+  isExportNotYetWritten,
   readBillingAccount,
   readBudgets,
   readSpendByService,
@@ -56,15 +57,21 @@ export default async function CostsPage() {
   // caught and rendered as zero spend.
   let spend: SpendRow[] = [];
   let spendError: string | null = null;
+  let exportPending = false;
   if (targets.billingExportTable) {
     try {
       spend = await readSpendByService(
         getSpendReader(targets.projectId),
         targets.billingExportTable,
         WINDOW_DAYS,
+        targets.projectId,
       );
     } catch (error) {
-      spendError = error instanceof Error ? error.message : String(error);
+      if (isExportNotYetWritten(error)) {
+        exportPending = true;
+      } else {
+        spendError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
@@ -162,6 +169,8 @@ export default async function CostsPage() {
               "BILLING_EXPORT_TABLE to project.dataset.table."
             }
           />
+        ) : exportPending ? (
+          <EmptyState note={`The export at ${targets.billingExportTable} is configured but has not written its first table yet. A billing export begins accumulating the day it is enabled and the first data lands within about a day — there is nothing to fix here, only to wait for.`} />
         ) : spend.length === 0 && !spendError ? (
           <EmptyState note={`The export at ${targets.billingExportTable} returned no rows for the last ${WINDOW_DAYS} days. An export enabled recently has no history yet.`} />
         ) : spend.length > 0 ? (

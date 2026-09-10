@@ -138,6 +138,7 @@ jobs:
       # see docs/deployment/console-domains.md.
       console_domain: ${{ steps.pick.outputs.console_domain }}
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
+      billing_export_table: ${{ steps.pick.outputs.billing_export_table }}
       # THE RUNTIME HARDENING SWITCH AND THE BROWSER ORIGIN IT ADMITS, pinned per environment for
       # the same reason every target above is: they have to reach create-api-service.sh, and the
       # only path that reaches it is this one. bootstrap-env.sh REGENERATES the deployment env on
@@ -247,6 +248,15 @@ jobs:
               # create-admin-service.sh and dev's deployment-state manifest have named
               # `dev-admin` since Task 6/7; this line is what tells the deploy job to look for it.
               echo "admin_service=dev-admin"
+              # THE BILLING EXPORT, dev only. A BigQuery billing export is configured per BILLING
+              # ACCOUNT, not per project, and hexera-dev and hexera-prod share one - so this single
+              # table carries both projects' usage and the console's query filters by project.id.
+              # The dataset lives in hexera-dev because that is where it was created; pointing
+              # prod's console at it would be a cross-project read, which the admin console design
+              # (Decision 4) deliberately avoids. That is a decision to make when prod actually has
+              # an admin console; it has none today, so prod's stays empty rather than silently
+              # taking the other posture.
+              echo "billing_export_table=hexera-dev.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"
               # The custom hostnames, PINNED, dev only - same reasoning as console_service and
               # admin_service immediately above. create-edge.sh (Task 4) only provisions the load
               # balancer, address and certificate when it is handed a domain; this is what hands
@@ -339,6 +349,9 @@ jobs:
             # APIs in March 2026, so it cannot be scripted). Until that brand exists, `--iap` on
             # this service will not work - see docs/deployment/console-domains.md.
             echo "admin_service=prod-admin"
+            # Deliberately empty - see the dev block. The export dataset is in hexera-dev, and
+            # reading it from prod is a cross-project read this design does not take by default.
+            echo "billing_export_table="
             # THE CUSTOM HOSTNAMES, NOW PINNED - the same reasoning as console_service and
             # admin_service immediately above: naming them here is what lets create-edge.sh
             # provision the load balancer, reserved global address and managed certificate these
@@ -563,6 +576,7 @@ jobs:
       # set and provisions the load balancer, address and certificate they front.
       CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
       ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
+      BILLING_EXPORT_TABLE: ${{ needs.target.outputs.billing_export_table }}
       # THE RUNTIME HARDENING, carried the same way CLOUDRUN_CONSOLE_SERVICE above is: pinned by
       # the picker, exported here for the whole job, read out of the ambient environment by
       # bootstrap-env.sh's generated-env heredoc, and handed to create-api-service.sh as ENV and

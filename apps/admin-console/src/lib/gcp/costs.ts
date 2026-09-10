@@ -26,6 +26,15 @@ export type BudgetSummary = {
 
 export type SpendRow = { amount: number; currency: string; service: string };
 
+// A billing export starts writing from the day it is switched on, and the first table appears
+// hours later. Between configuring BILLING_EXPORT_TABLE and that first write, BigQuery answers
+// "Not found: Table ...", which is a WAITING state and not a broken one - telling them apart is
+// the difference between "check your configuration" and "check back tomorrow".
+export function isExportNotYetWritten(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found:\s*table/i.test(message);
+}
+
 export type BillingReader = Pick<CloudBillingClient, "getProjectBillingInfo">;
 export type BudgetReader = Pick<BudgetServiceClient, "listBudgets">;
 export type SpendReader = Pick<BigQuery, "query">;
@@ -78,7 +87,16 @@ export async function readBudgets(
   });
 }
 
-export function spendQuery(table: string, days: number): { params: { days: number }; query: string } {
+// THE PROJECT FILTER IS NOT OPTIONAL. A billing export is configured per BILLING ACCOUNT, and one
+// account bills several projects - hexera-dev and hexera-prod share one. A single export therefore
+// writes every project's usage into the same table, and a query without this filter would show
+// dev's Costs page the sum of dev AND prod. That is not a rounding error; prod is the larger of the
+// two, so the page would be mostly wrong and confidently so.
+export function spendQuery(
+  table: string,
+  days: number,
+  projectId: string,
+): { params: { days: number; projectId: string }; query: string } {
   if (!TABLE_REFERENCE.test(table)) {
     throw new Error(
       `'${table}' is not a BigQuery table reference. BILLING_EXPORT_TABLE must be ` +
@@ -87,14 +105,15 @@ export function spendQuery(table: string, days: number): { params: { days: numbe
   }
 
   return {
-    params: { days },
+    params: { days, projectId },
     query: `
       SELECT
         service.description AS service,
         currency,
         SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS cost
       FROM \`${table}\`
-      WHERE usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+      WHERE project.id = @projectId
+        AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
       GROUP BY service, currency
       ORDER BY cost DESC
     `,
@@ -105,8 +124,9 @@ export async function readSpendByService(
   bigquery: SpendReader,
   table: string,
   days: number,
+  projectId: string,
 ): Promise<SpendRow[]> {
-  const { params, query } = spendQuery(table, days);
+  const { params, query } = spendQuery(table, days, projectId);
   const [rows] = await bigquery.query({ params, query });
 
   return (rows as { cost?: number; currency?: string; service?: string }[])
