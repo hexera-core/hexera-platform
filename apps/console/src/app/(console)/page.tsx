@@ -4,16 +4,38 @@ import Script from "next/script";
 
 import { auth } from "@/auth";
 import { SignOutButton } from "@/app/_components/auth-buttons";
+import { VerifyEmailBanner } from "@/app/_components/auth-forms";
 import { LegacyStyles } from "@/app/_components/legacy-styles";
 import { ownerIdFromSession } from "@/lib/auth/session";
+import { proxyProductApiRequest } from "@/lib/product-api/proxy";
+
+type CreditBalance = {
+  balance: number;
+  unit: string;
+};
+
+async function creditBalance(ownerId: string): Promise<CreditBalance | null> {
+  // Goes through the same authenticated proxy path the browser's own /api/v1 calls use, so this
+  // never needs its own copy of the identity-header signing logic in proxy.ts.
+  const response = await proxyProductApiRequest(
+    new Request("http://console.internal/api/v1/credits"),
+    ["credits"],
+    ownerId,
+  );
+  if (!response.ok) {
+    return null;
+  }
+  return (await response.json()) as CreditBalance;
+}
 
 export default async function ConsolePage() {
   const session = await auth();
   const ownerId = ownerIdFromSession(session);
-  if (!ownerId) {
+  if (!session || !ownerId) {
     redirect("/sign-in");
   }
 
+  const credits = await creditBalance(ownerId);
   const publicApiBaseUrl = process.env.NEXT_PUBLIC_HEXERA_API_BASE_URL ?? "";
 
   return (
@@ -55,8 +77,13 @@ export default async function ConsolePage() {
             <div className="dot" id="dot" />
             <span id="api-lbl">checking...</span>
           </div>
+          <div aria-live="polite" className="chip" id="credit-balance" role="status">
+            <span>{credits ? `${credits.balance} ${credits.unit}` : "-- credits"}</span>
+          </div>
           <SignOutButton />
         </header>
+
+        {session.emailVerified ? null : <VerifyEmailBanner />}
 
         <div aria-live="polite" id="notice" role="status" />
 
