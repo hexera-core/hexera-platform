@@ -334,3 +334,130 @@ async def test_metrics_exposes_no_identity_or_credential(api, alphas_session):
         body = r.text
         for leak in (_USER_SECRET, _API_KEY, "sources/", "postgresql://"):
             assert leak not in body, f"/metrics exposed {leak!r}"
+
+
+# the chat dispatch path, for an owner who really has an organisation
+
+#: The approved configuration a seeded snapshot carries. The intake conversation that would
+#: normally produce one needs a model provider this tier does not run, so the gate is seeded with
+#: exactly the shape `agents/intake/approval` writes - see test_intake_approval_postgres.py.
+_APPROVED_PATCHES = [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"},
+                     {"name": "wall", "type": "wall"}]
+_APPROVED_PAYLOAD = {"domain": "duct", "request_txt": "r" * 120, "review_brief_txt": "b" * 90,
+                     "dimensionality": "3D", "purpose": "internal_cfd",
+                     "input_kind": "fluid-domain", "mesh_engine": "gmsh",
+                     "mesh_fidelity": "standard", "engine_source": "user_direct",
+                     "engine_params": {"element_order": "2"}, "patches": _APPROVED_PATCHES}
+
+
+async def _approvable_session(base, db, owner: str, organization_id) -> uuid.UUID:
+    """Upload real geometry for `owner`, then seed the confirmed unit and the live approval."""
+    import httpx
+
+    import meshpipeline.agents.intake.admission_token as at
+    import meshpipeline.agents.intake.approval as ap
+    import meshpipeline.agents.intake.engine_selection as es
+    from meshpipeline.contracts.geometry_units import LengthUnit, ResolutionBasis
+    from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
+        GeometryInterpretationRepository,
+    )
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    r = httpx.post(f"{base}/api/v1/upload/step-file", headers=_headers(owner),
+                   files={"file": ("part.step", _BODY, "application/octet-stream")},
+                   timeout=60.0)
+    assert r.status_code == 200, r.text
+    session_id = uuid.UUID(r.json()["session_id"])
+
+    sessions = SessionRepository()
+    db.expire_all()
+    row = await sessions.get_internal(db, session_id)
+    assert row is not None and row.geometry_source_id, "the upload wrote no geometry source"
+
+    # A synthetic STEP body declares no unit, so the session has no interpretation and the
+    # approval transaction would refuse it. Stamped with the organisation, as upload.py does.
+    recorded = await GeometryInterpretationRepository().record(
+        db, owner_id=owner, geometry_source_id=row.geometry_source_id,
+        unit=LengthUnit.millimetre, basis=ResolutionBasis.user_confirmed,
+        evidence="seeded by the isolation matrix", organization_id=str(organization_id))
+    await sessions.bind_geometry_interpretation(db, session_id,
+                                                uuid.UUID(recorded.interpretation_id))
+
+    user_msgs = len([m for m in (row.messages or []) if m.get("role") == "user"])
+    selection = es.select_from_structured_input("gmsh", session_id=str(session_id),
+                                                owner_id=owner, revision="r1")
+    canonical = at.canonical_payload("gmsh", "internal_cfd", "fluid-domain", "3D",
+                                     _APPROVED_PATCHES, {"element_order": "2"})
+    intent = at.approved_intent_canonical(
+        engine="gmsh", purpose="internal_cfd", input_kind="fluid-domain", dimensionality="3D",
+        patches=_APPROVED_PATCHES, engine_params={"element_order": "2"},
+        requested_mesh_fidelity="standard", request_txt=_APPROVED_PAYLOAD["request_txt"])
+    snapshot = ap.create(
+        owner_id=owner, session_id=str(session_id), selection_id=selection["id"], token_id="tok",
+        canonical=canonical, fingerprint=at.fingerprint(canonical), intent_canonical=intent,
+        intent_fingerprint=at.fingerprint(intent), payload=_APPROVED_PAYLOAD,
+        summary=at.CONFIRM_REQUIREMENTS_ASK, proposal_revision="r1",
+        proposal_msg_count=user_msgs)
+    await sessions.set_intake_gate(db, session_id,
+                                   {"selection": selection, "admission": None,
+                                    "approval": snapshot})
+    await db.commit()
+    return session_id
+
+
+async def test_a_job_approved_in_chat_is_readable_by_the_owner_who_approved_it(api, db):
+    # THE PRIMARY PRODUCT FLOW, for the only identity that can catch this: a provisioned owner.
+    # Every other approval test in the tree signs in as a self-asserted header name with no
+    # `users` row, whose organisation resolves to "" - so the job is stamped owner_id-only AND
+    # read back owner_id-only, and the two agree by accident. Give the caller a real organisation
+    # and the write and the read no longer agree: `job_repo.create` in the approval transaction
+    # must stamp organization_id, because `get_for_owner` compares on it, and NULL = <uuid> is
+    # NULL. Without the stamp the user approves a run and then cannot see the job they started.
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    base, _ = api
+    owner, org_id = await _provisioned_owner(db, org_name="chat-approval")
+    session_id = await _approvable_session(base, db, owner, org_id)
+
+    async with await _client(base) as c:
+        approved = await c.post("/api/v1/chat/message", headers=_headers(owner),
+                                json={"session_id": str(session_id),
+                                      "content": "yes, proceed"})
+
+    # The LAUNCH needs a broker this tier does not run, so a 500 from the enqueue step is an
+    # expected outcome here and is deliberately not asserted on: the job row is created, linked
+    # and COMMITTED before any launch is attempted, which is the row this test is about.
+    db.expire_all()
+    linked = await SessionRepository().get_internal(db, session_id)
+    assert linked.job_id is not None, (
+        f"the chat approval created no job at all: {approved.status_code} {approved.text}")
+
+    async with await _client(base) as c:
+        status = await c.get(f"/api/v1/simulation/{linked.job_id}", headers=_headers(owner))
+    assert status.status_code == 200, (
+        "the owner who approved this run cannot read the job it created "
+        f"({status.status_code}) - the approval transaction did not stamp organization_id, so "
+        "the org-scoped read matches nothing")
+
+
+async def test_a_job_approved_in_chat_carries_its_organisation(api, db):
+    # The same defect stated as the column it lives in, so a regression names its own cause
+    # rather than only its symptom. An unstamped row is also what would block 0005's NOT NULL.
+    from meshpipeline.persistence.repositories.job_repository import JobRepository
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    base, _ = api
+    owner, org_id = await _provisioned_owner(db, org_name="chat-approval-stamp")
+    session_id = await _approvable_session(base, db, owner, org_id)
+
+    async with await _client(base) as c:
+        await c.post("/api/v1/chat/message", headers=_headers(owner),
+                     json={"session_id": str(session_id), "content": "yes, proceed"})
+
+    db.expire_all()
+    linked = await SessionRepository().get_internal(db, session_id)
+    assert linked.job_id is not None
+    job = await JobRepository().get_internal(db, linked.job_id)
+    assert str(job.organization_id) == str(org_id), (
+        f"the approved job is stamped organization_id={job.organization_id!r}, expected "
+        f"{org_id!r}: writes must stamp BOTH columns")

@@ -60,7 +60,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
 
     session_repo = SessionRepository()
     inbound = msg.InboundMessage(session_id=body.session_id, owner_id=owner_id,
-                                 content=body.content)
+                                 content=body.content, organization_id=organization_id)
 
     outcome = await msg.accept(inbound, session_repo=session_repo, db_factory=get_db,
                                logger=logger)
@@ -69,7 +69,8 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         raise HTTPException(404, "Session not found")
     if outcome.status is msg.MessageStatus.approve:
         return await _confirm_pending_approval(outcome.session, session_repo, owner_id,
-                                               body.session_id)
+                                               body.session_id,
+                                               organization_id=organization_id)
     if outcome.status is msg.MessageStatus.already_dispatched:
         return ChatResponse(session_id=body.session_id, reply=outcome.reply, done=True,
                             job_id=outcome.job_id)
@@ -130,11 +131,13 @@ _APPROVAL_STATUS: dict[ap.ConfirmStatus, int] = {
 
 
 async def _confirm_pending_approval(session, session_repo, owner_id: str,
-                                    session_id: uuid.UUID) -> ChatResponse:
+                                    session_id: uuid.UUID,
+                                    organization_id: str = "") -> ChatResponse:
     cause: Exception | None = None
     try:
         outcome = await ap.confirm_pending_approval(
-            session, session_repo, owner_id, session_id, logger=logger)
+            session, session_repo, owner_id, session_id, logger=logger,
+            organization_id=organization_id)
     except ap.ApprovalTransactionError as exc:
         outcome, cause = exc.outcome, exc
 

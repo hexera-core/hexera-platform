@@ -94,9 +94,9 @@ def _run_real_confirmation(session):
     made: list = []
 
     class _JobRepo:
-        async def create(self, _db, owner_id):
+        async def create(self, _db, owner_id, *, organization_id=""):
             j = SimpleNamespace(id=uuid.uuid4(), geometry_source_id=None,
-                                owner_id=owner_id)
+                                owner_id=owner_id, organization_id=organization_id)
             made.append(j)
             return j
 
