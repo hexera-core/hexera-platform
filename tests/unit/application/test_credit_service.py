@@ -10,8 +10,6 @@ import meshpipeline.settings.policy as polcfg
 from meshpipeline.application import credit_service
 from meshpipeline.persistence.models import CreditEntryType
 
-pytestmark = pytest.mark.asyncio
-
 
 class _LedgerDouble:
 
@@ -35,6 +33,7 @@ def ledger(monkeypatch):
     return double
 
 
+@pytest.mark.asyncio
 async def test_a_grant_is_a_positive_entry(ledger):
     org = uuid.uuid4()
     await credit_service.grant(None, organization_id=org, amount=100, reason="signup")
@@ -42,12 +41,14 @@ async def test_a_grant_is_a_positive_entry(ledger):
                                "amount": 100, "reason": "signup"}]
 
 
+@pytest.mark.asyncio
 async def test_a_grant_of_zero_writes_nothing(ledger):
     # The ledger's CHECK refuses a zero amount, so the service must not offer it one.
     await credit_service.grant(None, organization_id=uuid.uuid4(), amount=0, reason="signup")
     assert ledger.entries == []
 
 
+@pytest.mark.asyncio
 async def test_a_negative_grant_is_refused(ledger):
     # Spending is out of scope for this cycle. A grant that could be negative is a debit with
     # the wrong name on it, and would be the one way this cycle could remove credits.
@@ -56,12 +57,14 @@ async def test_a_negative_grant_is_refused(ledger):
     assert ledger.entries == []
 
 
+@pytest.mark.asyncio
 async def test_the_balance_is_read_through_the_ledger(ledger):
     org = uuid.uuid4()
     await credit_service.grant(None, organization_id=org, amount=100, reason="signup")
     assert await credit_service.balance(None, organization_id=org) == 100
 
 
+@pytest.mark.asyncio
 async def test_the_signup_grant_honours_the_configured_amount(ledger, monkeypatch):
     monkeypatch.setattr(polcfg, "SIGNUP_GRANT_CREDITS", 250)
     org = uuid.uuid4()
@@ -69,6 +72,7 @@ async def test_the_signup_grant_honours_the_configured_amount(ledger, monkeypatc
     assert ledger.entries[0]["amount"] == 250
 
 
+@pytest.mark.asyncio
 async def test_a_configured_zero_disables_the_signup_grant(ledger, monkeypatch):
     monkeypatch.setattr(polcfg, "SIGNUP_GRANT_CREDITS", 0)
     org = uuid.uuid4()
@@ -77,10 +81,15 @@ async def test_a_configured_zero_disables_the_signup_grant(ledger, monkeypatch):
 
 
 def test_the_service_offers_no_way_to_spend():
-    # The guard on the design's central promise: this cycle issues credits and nothing else.
+    # An ALLOWLIST, not a denylist of suspicious names. Spending is out of scope for this cycle
+    # (design section 2), and the ledger's CHECK is `amount <> 0` rather than `amount > 0` - the
+    # database would accept a negative amount, so grant()'s refusal is the only guard. A denylist
+    # of names would let `deduct` or `withdraw` past; pinning the whole surface means any new
+    # public function has to be justified here first.
     names = {n for n, _ in inspect.getmembers(credit_service, inspect.isfunction)
-             if not n.startswith("_")}
-    assert not (names & {"debit", "spend", "charge", "hold", "settle", "refund"}), names
+             if not n.startswith("_") and getattr(credit_service, n).__module__ ==
+             credit_service.__name__}
+    assert names == {"grant", "balance", "grant_signup_credits"}, names
 
 
 def test_the_settings_are_declared_in_the_inventory():
