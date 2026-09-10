@@ -8,13 +8,19 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from tests import harness_provisioning as hp
+from sqlalchemy import delete
 
 if not os.getenv("DATABASE_URL"):
     pytest.skip("a real PostgreSQL endpoint is required", allow_module_level=True)
 
-import meshpipeline.settings.providers as provcfg
-from meshpipeline.persistence.models import CreditEntryType, MembershipRole
+from meshpipeline.persistence.models import (
+    CreditEntryType,
+    CreditLedgerEntry,
+    Membership,
+    MembershipRole,
+    Organization,
+    User,
+)
 from meshpipeline.persistence.repositories.credit_ledger_repository import (
     CreditLedgerRepository,
 )
@@ -24,18 +30,22 @@ from meshpipeline.persistence.repositories.organization_repository import (
 )
 from meshpipeline.persistence.repositories.user_repository import UserRepository
 
-# organizations/users/memberships/credit_ledger are exclusively this suite's within the tier - no
-# other integration test writes a row to any of them - so a per-test TRUNCATE is enough isolation.
-# The schema itself is built once per session by conftest's `_provisioned_stack`/`_schema_present`;
-# this reuses `hp.truncate_tables`, the same helper test_job_transitions_postgres.py uses for its
-# own table, rather than a second schema-management scheme. CASCADE lets one call clear all four
-# regardless of their foreign-key order.
-_TABLES = ("credit_ledger", "memberships", "users", "organizations")
-
 
 @pytest.fixture(autouse=True)
-async def _clean_identity_tables():
-    await hp.truncate_tables(provcfg.POSTGRES_DSN, *_TABLES)
+async def _clean_identity_tables(db):
+    # Child-first DELETE, never hp.truncate_tables' TRUNCATE ... CASCADE. A CASCADE off
+    # `organizations` is harmless only while nothing references it - Task 7 of this plan adds
+    # organization_id to seven existing tables (simulation_jobs, chat_sessions, geometry_sources,
+    # geometry_interpretations, capture_operations, artifact_reconciliations,
+    # source_object_cleanups) that share this session's schema with every other integration
+    # suite. From that commit on, a CASCADE here would silently take their rows with it on every
+    # test in this file - the same failure this tier's conftest exists to prevent (see its
+    # comments on the seven simulation_jobs rows a schema reset once destroyed). Deleting
+    # child-first instead means this fixture can only ever reach the four rows it owns: if a
+    # future table comes to reference one of them, the DELETE fails loudly on the foreign key
+    # rather than erasing the referencing row.
+    for model in (CreditLedgerEntry, Membership, User, Organization):
+        await db.execute(delete(model))
 
 
 async def _org_and_user(db, email="owner@example.com", uid="uid-1"):
