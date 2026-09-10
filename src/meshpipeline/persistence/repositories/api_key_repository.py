@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import ApiKey
+from meshpipeline.persistence.repositories import tenant_scope
 
 
 class ApiKeyRepository:
@@ -16,6 +17,10 @@ class ApiKeyRepository:
     async def create(self, db: AsyncSession, *, owner_id: str, name: str, key_prefix: str,
                      key_hash: str, plan: str = "", organization_id: uuid.UUID | None = None,
                      expires_at: datetime | None = None) -> ApiKey:
+        # NOT tenant_scope.stamp(): this write already receives its organisation as a resolved
+        # uuid.UUID rather than the string every request-facing site carries, because a key's
+        # organisation is minted alongside it rather than read off a Principal. See
+        # application/api_key_service.issue.
         row = ApiKey(owner_id=owner_id, name=name[:128], key_prefix=key_prefix, key_hash=key_hash,
                      plan=plan[:32], organization_id=organization_id, expires_at=expires_at)
         db.add(row)
@@ -28,20 +33,24 @@ class ApiKeyRepository:
         res = await db.execute(select(ApiKey).where(ApiKey.key_prefix == key_prefix))
         return res.scalar_one_or_none()
 
-    async def list_for_owner(self, db: AsyncSession, owner_id: str) -> list[ApiKey]:
+    async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
+                             organization_id: str = "") -> list[ApiKey]:
         res = await db.execute(
-            select(ApiKey).where(ApiKey.owner_id == owner_id)
+            select(ApiKey)
+            .where(tenant_scope.scope(ApiKey, owner_id=owner_id, organization_id=organization_id))
             .order_by(ApiKey.created_at.desc(), ApiKey.id.desc()))
         return list(res.scalars().all())
 
     async def revoke(self, db: AsyncSession, *, owner_id: str, key_id: uuid.UUID,
-                     at: datetime) -> bool:
+                     at: datetime, organization_id: str = "") -> bool:
         # Owner-scoped in SQL, like every other tenant-owned row: another tenant's key id is
         # indistinguishable from one that does not exist. `revoked_at is null` makes a repeat
         # revocation report False rather than rewriting the moment it happened.
         res = await db.execute(
             update(ApiKey)
-            .where(ApiKey.id == key_id, ApiKey.owner_id == owner_id, ApiKey.revoked_at.is_(None))
+            .where(ApiKey.id == key_id,
+                   tenant_scope.scope(ApiKey, owner_id=owner_id, organization_id=organization_id),
+                   ApiKey.revoked_at.is_(None))
             .values(revoked_at=at))
         return bool(res.rowcount)
 
