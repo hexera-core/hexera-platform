@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +39,12 @@ async def grant(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
 
 async def balance(db: AsyncSession, *, organization_id: uuid.UUID) -> int:
     return await credit_ledger_repo.balance(db, organization_id=organization_id)
+
+
+async def history(db: AsyncSession, *, organization_id: uuid.UUID, limit: int = 25,
+                  before: tuple[datetime, uuid.UUID] | None = None) -> list:
+    return await credit_ledger_repo.list_for_org(db, organization_id=organization_id,
+                                                 limit=limit, before=before)
 
 
 async def grant_signup_credits(db: AsyncSession, *, organization_id: uuid.UUID) -> int:
