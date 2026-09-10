@@ -231,9 +231,13 @@ async def test_api_lists_one_download_per_logical_artifact_and_hides_reconciliat
     signed: list[str] = []
 
     class _Svc:
-        async def get_job(self, db, jid, owner):
+        async def get_job(self, db, jid, owner, *, organization_id=""):
+            # Mirrors JobService.get_job's real signature: the route resolves the organisation
+            # beside the owner and passes it, so a stub that omits it fails the CALL rather than
+            # the assertion - which is how this went unnoticed until the integration tier ran.
             from meshpipeline.application.job_service import JobService
-            return await JobService().get_job(db, jid, owner)
+            return await JobService().get_job(db, jid, owner,
+                                              organization_id=organization_id)
         async def signed_url(self, storage_key):
             signed.append(storage_key)
             return f"https://signed/{storage_key}"
@@ -241,7 +245,10 @@ async def test_api_lists_one_download_per_logical_artifact_and_hides_reconciliat
     monkeypatch.setattr(sim, "svc", _Svc())
     monkeypatch.setattr(sim, "get_db", SessionLocal_ctx(SessionLocal))
     # the engine now comes from the durable viewer payload, not a workspace read
-    async def _vdata(job_id, owner_id, db=None):
+    async def _vdata(job_id, owner_id, db=None, *, organization_id=""):
+        # Mirrors _viewer_data_or_empty's real signature, organisation included. A stub that
+        # omits a parameter the route passes fails the CALL rather than the assertion, so the
+        # test reports a TypeError from inside the route instead of the behaviour it is about.
         return {"engine": "gmsh", "mesh_available": True,
                 "review": {"verdict": "PASS"}}
     monkeypatch.setattr(sim, "_viewer_data_or_empty", _vdata)

@@ -360,9 +360,14 @@ CONSOLE_TIMEOUT_SECONDS=${CONSOLE_TIMEOUT_SECONDS:-300}
 CONSOLE_INGRESS=${CONSOLE_INGRESS:-all}
 CONSOLE_ALLOW_UNAUTHENTICATED=${CONSOLE_ALLOW_UNAUTHENTICATED:-1}
 # NO SECRET VALUES: container names only, in the same <SETTING>_SECRET spelling every other
-# credential here uses. CONSOLE_AUTH_USERS holds scrypt password hashes, which is a credential.
+# credential here uses.
 AUTH_SECRET_SECRET=${AUTH_SECRET_SECRET:-console-auth-secret}
-CONSOLE_AUTH_USERS_SECRET=${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}
+# The Identity Platform web config the console signs in against. PUBLIC by design - it identifies
+# the project and authorises nothing on its own - so these are plain settings, never a
+# <SETTING>_SECRET container name.
+NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY:-}
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN:-}
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID:-}
 # Where the console reaches the product API. The server-side value is used by the authenticated
 # /api/v1 proxy; the NEXT_PUBLIC_ one is compiled into the browser bundle and is what the
 # WebSocket dials, because the stream goes browser->API directly and not through the proxy.

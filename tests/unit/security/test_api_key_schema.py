@@ -38,7 +38,7 @@ def test_the_tenant_columns_are_scoped_the_way_the_rest_of_the_schema_is():
     cols = {c.name: c for c in _table().columns}
     assert not cols["owner_id"].nullable, "a key with no owner authenticates as nobody"
     assert cols["owner_id"].type.length == 256, "owner_id diverges from the rest of the schema"
-    # Organisations do not exist yet, so the boundary is present but unpopulated.
+    # Nullable still: a key issued before the backfill names no organisation.
     assert cols["organization_id"].nullable
     assert any([c.name for c in i.columns] == ["organization_id"] for i in _table().indexes), \
         "organization_id is not indexed - it becomes the tenant filter"

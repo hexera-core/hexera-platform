@@ -49,8 +49,10 @@ VENDOR_ALLOWLIST: dict[str, set[str]] = {
         # needs the SDK's exception types to decide whether a failure may fail over.
         "adapters/model_inference/providers.py",
     },
-    # Google Cloud: the object store + the Cloud Run mesh/pipeline adapters.
+    # Google Cloud: the object store + the Cloud Run mesh/pipeline adapters, and the one
+    # adapter that verifies a Google Identity Platform ID token.
     "google": {
+        "adapters/firebase_token/identity_platform.py",
         "adapters/object_storage/gcs.py",
         "adapters/mesh_execution/cloud_run_client.py",
         "adapters/mesh_execution/gcs_exchange.py",
@@ -66,6 +68,9 @@ VENDOR_ALLOWLIST: dict[str, set[str]] = {
     },
     # HTTP clients belong to the adapters that call a remote API.
     "httpx": {
+        # Google's ID-token signing certificates: an outbound call to a provider's key endpoint,
+        # so it lives with the provider's adapter and not in the contract the product calls.
+        "adapters/firebase_token/identity_platform.py",
         "adapters/search/_http.py",
         "adapters/model_inference/tracing.py",
         "adapters/model_inference/deepinfra.py",

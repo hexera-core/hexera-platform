@@ -50,11 +50,13 @@ def answered(intake_gate) -> dict:
     return gate
 
 
-async def record(db, *, owner_id: str, geometry_source_id, unit: LengthUnit):
+async def record(db, *, owner_id: str, geometry_source_id, unit: LengthUnit,
+                 organization_id: str = ""):
     from meshpipeline.contracts.geometry_units import ResolutionBasis
     from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
         GeometryInterpretationRepository,
     )
     return await GeometryInterpretationRepository().record(
         db, owner_id=owner_id, geometry_source_id=geometry_source_id, unit=unit,
-        basis=ResolutionBasis.user_confirmed, evidence="confirmed in conversation")
+        basis=ResolutionBasis.user_confirmed, evidence="confirmed in conversation",
+        organization_id=organization_id)

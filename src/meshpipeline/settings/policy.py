@@ -55,6 +55,20 @@ CORS_ORIGINS: list = optional_env("CORS_ORIGINS", "*").split(",")
 # job quotas + retention
 MAX_JOBS_PER_OWNER: int         = int(optional_env("MAX_JOBS_PER_OWNER", "5"))
 MAX_CONCURRENT_JOBS: int        = int(optional_env("MAX_CONCURRENT_JOBS", "20"))
+# WHAT A NEW ACCOUNT IS GIVEN, in whole credits, and the only place the number lives. 0 disables
+# the grant without a code change. What a credit is WORTH is deliberately not decided here or
+# anywhere else yet - see the design's decision 8.
+SIGNUP_GRANT_CREDITS: int = int(optional_env("SIGNUP_GRANT_CREDITS", "100"))
+# WHETHER an unrecognised Identity Platform account may provision itself one. This is the REAL
+# gate and it lives on the API, not the console: anyone can create an Identity Platform account
+# directly against the project's public web API key, so a console that merely hides the sign-up
+# form is not a gate at all.
+CONSOLE_SIGNUP_ENABLED: bool = optional_env("CONSOLE_SIGNUP_ENABLED", "true").lower() == "true"
+# THE IDENTITY PLATFORM PROJECT this deployment accepts tokens from, and the audience every
+# presented token is checked against. Empty means no token verifies - which is the correct
+# posture for a deployment that has not been given a project, and is why the verifier refuses
+# rather than comparing `aud` against the empty string.
+FIREBASE_PROJECT_ID: str = optional_env("FIREBASE_PROJECT_ID", "")
 #: How long a retryable reconciliation failure waits before it may be claimed again. The
 #: sweep runs far more often than a transient object-store fault clears, so without a delay
 #: the five attempts RECONCILE_MAX_RETRIES allows are spent in five consecutive sweeps.

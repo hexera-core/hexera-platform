@@ -1,7 +1,7 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 
-import { verifyConsoleCredentials } from "@/lib/auth/credentials";
+import { authorizeFirebaseSession } from "@/lib/auth/firebase-session";
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
   pages: {
@@ -9,11 +9,12 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
   },
   providers: [
     Credentials({
+      // The console never sees a password. Identity Platform verified it and minted this token;
+      // the product API verifies the token. This provider only carries it between the two.
       credentials: {
-        email: { label: "Email", type: "email" },
-        password: { label: "Password", type: "password" },
+        idToken: { label: "ID token", type: "text" },
       },
-      authorize: (credentials) => verifyConsoleCredentials(credentials),
+      authorize: (credentials) => authorizeFirebaseSession(credentials),
     }),
   ],
   session: {
@@ -21,10 +22,19 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
   },
   trustHost: true,
   callbacks: {
+    jwt({ token, user }) {
+      if (user) {
+        token.organizationId = (user as { organizationId?: string }).organizationId ?? "";
+        token.emailVerified = (user as { emailVerified?: boolean }).emailVerified ?? false;
+      }
+      return token;
+    },
     session({ session, token }) {
       return {
         ...session,
         subject: token.sub ?? null,
+        organizationId: (token.organizationId as string | undefined) ?? "",
+        emailVerified: token.emailVerified === true,
       };
     },
   },

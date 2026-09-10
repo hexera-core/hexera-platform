@@ -118,7 +118,7 @@ fi
 
 # THE CONSOLE. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console and
 # the stage is skipped, so nothing below applies. A console that IS declared must be able to reach
-# the API and to resolve its two credentials, because both failures present only at runtime: an
+# the API and to resolve its credential, because both failures present only at runtime: an
 # unreachable API is a console that renders and then 503s, and a missing AUTH_SECRET is a revision
 # that never becomes ready.
 #
@@ -143,8 +143,25 @@ if [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
   fi
   [ -n "${AUTH_SECRET_SECRET:-}" ] \
     || add "the console is configured but AUTH_SECRET_SECRET names no Secret Manager container - Auth.js refuses to start without a secret"
-  [ -n "${CONSOLE_AUTH_USERS_SECRET:-}" ] \
-    || add "the console is configured but CONSOLE_AUTH_USERS_SECRET names no Secret Manager container - nobody could sign in"
+  # A CONSOLE NOBODY CAN SIGN IN TO. This replaces the CONSOLE_AUTH_USERS_SECRET check that was
+  # deleted with the env-var password path: the credential moved to Identity Platform, but the
+  # failure it guarded against did not go away. All three values are delivered as plain runtime
+  # environment by create-console-service.sh, and the console tests them together
+  # (`firebaseConfiguredOnServer`); with any one of them empty the sign-in, sign-up and
+  # forgot-password pages render "Sign-in is not configured for this deployment" to every visitor.
+  # That is a deployment that validates, builds, deploys and serves nobody - exactly the class of
+  # failure this stage exists to refuse, and one that is invisible until a human opens the page.
+  #
+  # Gated on console_selected for the same reason HEXERA_API_BASE_URL is: these values are only
+  # consumed when the console service itself is reconciled, so a run that touches something else
+  # must not be refused for them.
+  if console_selected; then
+    for _fb in NEXT_PUBLIC_FIREBASE_API_KEY NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN \
+               NEXT_PUBLIC_FIREBASE_PROJECT_ID; do
+      [ -n "${!_fb:-}" ] \
+        || add "the console is configured but ${_fb} is empty - the sign-in, sign-up and forgot-password pages would tell every visitor that sign-in is not configured. See docs/deployment/identity-platform.md section 3."
+    done
+  fi
   if [[ "${CONSOLE_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${CONSOLE_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
     [ "${CONSOLE_MIN_INSTANCES}" -le "${CONSOLE_MAX_INSTANCES}" ] \
       || add "CONSOLE_MIN_INSTANCES (${CONSOLE_MIN_INSTANCES}) exceeds CONSOLE_MAX_INSTANCES (${CONSOLE_MAX_INSTANCES})"

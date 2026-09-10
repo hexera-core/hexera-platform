@@ -52,6 +52,8 @@ class _Rec:
         self.commits = 0; self.jobs = 0; self.dispatches = 0
         self.store_reads = 0; self.gate_writes = []; self.links = []
         self.request_txt_writes = 0; self.launch_failures = 0
+        #: every (owner_id, organization_id) pair a job was created with
+        self.stamps: list[dict] = []
 
 
 class _SessionRepo:
@@ -64,8 +66,9 @@ class _SessionRepo:
 
 class _JobRepo:
     def __init__(self, rec): self.rec = rec
-    async def create(self, db, *, owner_id):
+    async def create(self, db, *, owner_id, organization_id=""):
         self.rec.jobs += 1
+        self.rec.stamps.append({"owner_id": owner_id, "organization_id": organization_id})
         return type("J", (), {"id": uuid.uuid4(), "geometry_source_id": None,
                               "geometry_interpretation_id": None})()
     async def mark_launch_failed(self, db, jid, detail): self.rec.launch_failures += 1
@@ -118,12 +121,13 @@ def wired(monkeypatch):
 
 
 async def _confirm(rec, *, session=None, locked=None, purged=False, missing_source=False,
-                   quota_error=None, dispatch=None, logger=None):
+                   quota_error=None, dispatch=None, logger=None, organization_id=""):
     session = session or _Session(source_id=rec.source_id)
     locked = locked if locked is not None else _Session(
         gate={"approval": _snapshot(), "selection": {"id": "sel"}}, source_id=rec.source_id)
     return await ap.confirm_pending_approval(
         session, _SessionRepo(rec, locked), OWNER, SESSION_ID, logger=logger or _Log(),
+        organization_id=organization_id,
         sessions=lambda: _Db(rec), job_service=_JobService(quota_error),
         job_repo=_JobRepo(rec),
         source_repo=_SourceRepo(rec, purged=purged, missing=missing_source),
@@ -138,6 +142,26 @@ async def test_a_live_approval_creates_one_job_and_dispatches_once(wired, monkey
     assert out.status is ap.ConfirmStatus.dispatched and out.dispatched
     assert wired.jobs == 1 and wired.dispatches == 1 and len(wired.links) == 1
     assert "wing.step" in out.message and str(out.job_id) in out.message
+
+
+async def test_the_job_is_stamped_with_the_callers_organisation(wired, monkeypatch):
+    # THE TENANT the job belongs to, carried from the route. Every later read of this job scopes
+    # on organization_id for a principal that has one, so a job created without it is invisible
+    # to the person who approved it - `NULL = <uuid>` is NULL, not false.
+    monkeypatch.setattr(ap, "verify", lambda *a, **k: (True, ""))
+    org = str(uuid.uuid4())
+    out = await _confirm(wired, organization_id=org)
+    assert out.status is ap.ConfirmStatus.dispatched
+    assert wired.stamps == [{"owner_id": OWNER, "organization_id": org}]
+
+
+async def test_a_caller_with_no_organisation_still_creates_a_job(wired, monkeypatch):
+    # The owner-only fallback, unchanged: a self-asserted identity with no `users` row names no
+    # organisation, and stamping owner_id alone is what tenant_scope already does for it.
+    monkeypatch.setattr(ap, "verify", lambda *a, **k: (True, ""))
+    out = await _confirm(wired)
+    assert out.status is ap.ConfirmStatus.dispatched
+    assert wired.stamps == [{"owner_id": OWNER, "organization_id": ""}]
 
 
 async def test_the_snapshot_is_marked_dispatched_and_consent_is_disarmed(wired, monkeypatch):

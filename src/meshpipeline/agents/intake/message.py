@@ -19,6 +19,12 @@ class InboundMessage:
     session_id: uuid.UUID
     owner_id: str
     content: str
+    #: The TENANT the durable consequences of this message are stamped with. Carried on the
+    #: inbound message rather than passed alongside it because every write this turn can reach -
+    #: the geometry interpretation below, and the job the approval authority creates - belongs to
+    #: the same tenant as the message itself. Empty for a principal that names no organisation,
+    #: which stamps owner_id alone; see persistence/repositories/tenant_scope.
+    organization_id: str = ""
 
 
 class MessageStatus(str, enum.Enum):
@@ -197,8 +203,13 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
     asked_already = uc.already_asked(gate)
     unit = uc.classify(inbound.content) if asked_already else None
     if unit is not None:
+        # STAMPED WITH BOTH, exactly as api/v1/upload.py stamps the interpretation it writes for a
+        # file-declared unit. The two paths write the same table for the same reason; an
+        # interpretation recorded here without its organisation is invisible to the org-scoped
+        # read that the dispute route makes of it later.
         recorded = await uc.record(db, owner_id=inbound.owner_id,
-                                   geometry_source_id=locked.geometry_source_id, unit=unit)
+                                   geometry_source_id=locked.geometry_source_id, unit=unit,
+                                   organization_id=inbound.organization_id)
         await session_repo.bind_geometry_interpretation(
             db, inbound.session_id, uuid.UUID(recorded.interpretation_id))
         await session_repo.set_intake_gate(db, inbound.session_id, uc.answered(gate))

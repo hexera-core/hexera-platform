@@ -11,23 +11,28 @@ from sqlalchemy.orm import selectinload
 
 from meshpipeline.persistence.job_state import TransitionResult, legal_sources
 from meshpipeline.persistence.models import JobStatus, SimulationJob
+from meshpipeline.persistence.repositories import tenant_scope
 
 
 class JobRepository:
-    async def create(self, db: AsyncSession, owner_id: str) -> SimulationJob:
-        job = SimulationJob(owner_id=owner_id)
+    async def create(self, db: AsyncSession, owner_id: str, *,
+                     organization_id: str = "") -> SimulationJob:
+        job = SimulationJob(**tenant_scope.stamp(owner_id=owner_id,
+                                                 organization_id=organization_id))
         db.add(job)
         await db.flush()
         return job
 
     async def get_for_owner(self, db: AsyncSession, job_id: uuid.UUID,
-                            owner_id: str) -> SimulationJob | None:
+                            owner_id: str, *, organization_id: str = "") -> SimulationJob | None:
         res = await db.execute(
             select(SimulationJob)
             # the same eager load the internal read uses: the status response renders artifacts,
             # and a lazy load after the session closes is a MissingGreenlet, not a 404
             .options(selectinload(SimulationJob.artifacts))
-            .where(SimulationJob.id == job_id, SimulationJob.owner_id == owner_id))
+            .where(SimulationJob.id == job_id,
+                   tenant_scope.scope(SimulationJob, owner_id=owner_id,
+                                      organization_id=organization_id)))
         return res.scalar_one_or_none()
 
     async def get_internal(self, db: AsyncSession, job_id: uuid.UUID) -> SimulationJob | None:
@@ -132,6 +137,11 @@ class JobRepository:
     _ACTIVE_STATUSES = [JobStatus.pending, JobStatus.running, JobStatus.queued]
 
     async def count_active_for_owner(self, db: AsyncSession, owner_id: str) -> int:
+        # DELIBERATELY owner_id-only, not tenant_scope.scope. This is a QUOTA check
+        # (settings/plans.max_jobs_per_owner), not a data-visibility read - widening it to the
+        # organisation would pool concurrency across every member of a tenant, which is a product
+        # decision about what a plan limits, not a consequence of "reads scope on the
+        # organisation." That decision is out of this task's scope.
         result = await db.execute(
             select(func.count()).select_from(SimulationJob).where(
                 SimulationJob.owner_id == owner_id,
