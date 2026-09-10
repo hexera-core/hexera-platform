@@ -111,6 +111,22 @@ def _seed(conn):
                "sha": "0" * 64})
 
 
+def _seed_api_key_only_owner(conn, owner: str):
+    """An owner known ONLY through an api_keys row - no geometry_sources/simulation_jobs/etc.
+
+    This is the case Finding 1 of the code review caught: the original _backfill() built its
+    owners_union from _TENANT_TABLES alone, so an owner who never created anything but held an
+    API key was invisible to the organisation/membership inserts. Their api_keys.organization_id
+    then had no slug to match and stayed NULL forever - not just on the first run, but on every
+    re-run, since nothing in the union would ever produce that owner's organisation.
+    """
+    conn.execute(text("""
+        INSERT INTO api_keys (id, owner_id, name, key_prefix, key_hash)
+        VALUES (:id, :owner, '', :prefix, :hash)
+    """), {"id": uuid.uuid4(), "owner": owner, "prefix": f"hx_live_{uuid.uuid4().hex[:12]}",
+           "hash": "0" * 64})
+
+
 def test_the_backfill_gives_every_owner_exactly_one_organisation(migrated_to_0003, run_migration):
     # Seed at 0003 - the identity tables exist, the tenant columns do not - then run 0004.
     _seed(migrated_to_0003)
@@ -189,3 +205,28 @@ def test_the_downgrade_removes_the_columns_without_deleting_accounts(migrated_to
     # 0003's tables are 0003's to drop. This downgrade must not take accounts with it.
     users = migrated_to_0003.execute(text("SELECT count(*) FROM users")).scalar()
     assert users == 2
+
+
+def test_an_owner_known_only_through_an_api_key_still_gets_an_organisation(migrated_to_0003,
+                                                                           run_migration):
+    # Finding 1: the owners_union that mints organisations/users/memberships originally came from
+    # _TENANT_TABLES alone, so an owner with an api_keys row but no geometry source, job, chat,
+    # interpretation, capture operation, reconciliation or cleanup was never a candidate for one.
+    _seed(migrated_to_0003)
+    _seed_api_key_only_owner(migrated_to_0003, "keyholder@example.com")
+    run_migration("0004_tenant_columns")
+
+    org_id = migrated_to_0003.execute(text("""
+        SELECT organization_id FROM api_keys WHERE owner_id = 'keyholder@example.com'
+    """)).scalar()
+    assert org_id is not None, "an API-key-only owner was left with no organisation"
+
+    # Three owners now: two from _seed (geometry_sources) and this one (api_keys only).
+    count = migrated_to_0003.execute(text("SELECT count(*) FROM organizations")).scalar()
+    assert count == 3
+
+    # And it is genuinely their OWN organisation, not one of the other two owners' by accident.
+    other_orgs = migrated_to_0003.execute(text("""
+        SELECT organization_id FROM geometry_sources
+    """)).scalars().all()
+    assert org_id not in other_orgs

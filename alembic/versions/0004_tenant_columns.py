@@ -22,12 +22,25 @@ down_revision = '0003_identity_and_credits'
 branch_labels = None
 depends_on = None
 
-#: Every table that scopes on owner_id. `artifacts` is deliberately absent: it has no owner_id and
-#: reaches its tenant through the job it belongs to.
+#: Every table that scopes on owner_id AND gets its own organization_id column here. `artifacts`
+#: is deliberately absent: it has no owner_id and reaches its tenant through the job it belongs
+#: to. `api_keys` is ALSO absent from this tuple - it already has its column from 0002 and only
+#: needs the FK and a stamp, both handled separately below - but it is NOT absent from the
+#: organisation/membership backfill; see _OWNER_SOURCES.
 _TENANT_TABLES = (
     'geometry_sources', 'simulation_jobs', 'chat_sessions', 'geometry_interpretations',
     'capture_operations', 'artifact_reconciliations', 'source_object_cleanups',
 )
+
+#: Every table whose owner_id must be able to MINT an organisation - wider than _TENANT_TABLES by
+#: exactly `api_keys`. An owner who holds only an API key and has never created a geometry
+#: source, job or chat still needs an organisation, or their key's organization_id can never be
+#: filled: the stamping UPDATE at the bottom of _backfill() only matches a slug this union
+#: produced, so an owner absent from the union is invisible to it forever, on every re-run. The
+#: column loop and the seven-table stamping loop still use _TENANT_TABLES alone - api_keys
+#: neither gets a new column here (0002 already gave it one) nor is one of the "existing rows"
+#: this migration adds columns to, so it stays out of that half.
+_OWNER_SOURCES = (*_TENANT_TABLES, 'api_keys')
 
 
 def upgrade():
@@ -48,16 +61,29 @@ def upgrade():
 def _backfill():
     bind = op.get_bind()
 
-    # 1. ONE ORGANISATION AND ONE USER PER DISTINCT owner_id, across every tenant table.
+    # 1. ONE ORGANISATION AND ONE USER PER DISTINCT owner_id, across every table an owner_id can
+    #    come from - _OWNER_SOURCES, not _TENANT_TABLES, so an owner known only through an API key
+    #    still mints one.
     #    owner_id is an email everywhere it is a real identity. A value that is not one still
     #    gets a row: it owns data, and leaving it unstamped would make that data unreachable
     #    once reads scope on the organisation.
+    #
+    #    Every owner_id is LOWERCASED before it is hashed into a slug or matched against `users`.
+    #    This is deliberate and safe for the case that matters - owner_id is email-shaped
+    #    everywhere it is a real identity, and email identity is case-insensitive here (see
+    #    users.email's ck_users_email_lowercased). It is a real, accepted tradeoff for the case
+    #    that does not: two non-email owner_ids differing only in case (e.g. a legacy worker
+    #    identifier) would collapse into the SAME organisation, because their lowercased forms
+    #    hash to the same slug. No current owner_id is known to collide this way, and the
+    #    alternative - hashing the raw value - would instead split ONE real user's data across
+    #    two organisations the moment they logged in with different casing, which is the worse
+    #    failure. Case-sensitive non-email identifiers are out of scope for this migration.
     #
     #    `WHERE NOT EXISTS` is what makes the whole backfill idempotent: a second run inserts
     #    nothing, which matters because this migration will be rehearsed more than once.
     owners_union = " UNION ".join(
         f"SELECT DISTINCT owner_id FROM {table} WHERE owner_id IS NOT NULL AND owner_id <> ''"
-        for table in _TENANT_TABLES)
+        for table in _OWNER_SOURCES)
 
     bind.execute(sa.text(f"""
         INSERT INTO users (id, firebase_uid, email, name, created_at)
