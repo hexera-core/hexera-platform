@@ -245,7 +245,10 @@ async def test_api_lists_one_download_per_logical_artifact_and_hides_reconciliat
     monkeypatch.setattr(sim, "svc", _Svc())
     monkeypatch.setattr(sim, "get_db", SessionLocal_ctx(SessionLocal))
     # the engine now comes from the durable viewer payload, not a workspace read
-    async def _vdata(job_id, owner_id, db=None):
+    async def _vdata(job_id, owner_id, db=None, *, organization_id=""):
+        # Mirrors _viewer_data_or_empty's real signature, organisation included. A stub that
+        # omits a parameter the route passes fails the CALL rather than the assertion, so the
+        # test reports a TypeError from inside the route instead of the behaviour it is about.
         return {"engine": "gmsh", "mesh_available": True,
                 "review": {"verdict": "PASS"}}
     monkeypatch.setattr(sim, "_viewer_data_or_empty", _vdata)
