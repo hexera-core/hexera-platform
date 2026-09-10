@@ -58,7 +58,8 @@ class Account:
 
 
 async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
-                               now: datetime | None = None) -> Account:
+                               now: datetime | None = None,
+                               organization_name: str = "") -> Account:
     at = now or datetime.now(UTC)
 
     # 1. THE UID PATH: the ordinary case, every sign-in after the first.
@@ -88,7 +89,7 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
             if not polcfg.CONSOLE_SIGNUP_ENABLED:
                 raise SignupDisabled("this deployment does not provision new accounts")
             try:
-                user = await _provision(db, token)
+                user = await _provision(db, token, organization_name=organization_name)
                 provisioned = True
             except IntegrityError:
                 # A concurrent first sign-in won the unique index on firebase_uid. Roll back to
@@ -157,14 +158,21 @@ async def _link(db: AsyncSession, existing, token: VerifiedToken):
     return existing
 
 
-async def _provision(db: AsyncSession, token: VerifiedToken):
+async def _provision(db: AsyncSession, token: VerifiedToken, *, organization_name: str = ""):
     # ONE TRANSACTION, four writes. The session this runs in is committed by the caller's
     # `get_db()` context, so a failure anywhere here leaves no user without an organisation and
     # no organisation without its grant. That atomicity is the whole reason the grant is issued
     # here rather than by a later, separately-failing step.
+    #
+    # `organization_name` IS CALLER-SUPPLIED and reaches this function on the provision path
+    # ALONE (design decision 6). The uid path resolves an account that already exists and the
+    # linking path attaches a uid to somebody else's backfilled tenant; honouring a name on
+    # either would let any token rename an organisation it did not create. Blank falls back to
+    # the address, which is the behaviour every account provisioned before this cycle got.
+    name = (organization_name or "").strip() or token.email
     user = await user_repo.create(db, email=token.email, name=token.name,
                                   firebase_uid=token.uid)
-    organization = await organization_repo.create(db, name=token.email,
+    organization = await organization_repo.create(db, name=name,
                                                   slug=_slug_for(token.uid))
     await membership_repo.create(db, user_id=user.id, organization_id=organization.id,
                                  role=MembershipRole.owner)
