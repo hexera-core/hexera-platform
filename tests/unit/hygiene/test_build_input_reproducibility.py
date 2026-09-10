@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -55,15 +56,57 @@ def image_references() -> list[tuple[str, str]]:
     # upstream to pin them to, and their content is this commit. Collect them from the build steps
     # and exclude them, rather than relying on a `docker run` being formatted so the scan misses it
     # - which is how these went unnoticed until the smoke steps were reflowed onto one line.
-    ci_text = read(CI)
-    locally_built = set(re.findall(r"docker\s+build\s+[^\n]*?-t\s+(\S+)", ci_text))
-    for m in re.finditer(r"docker\s+run\s+(?:[-\w=.]+\s+)*([\w./-]+:[\w.@:-]+)", ci_text):
-        if m.group(1) in locally_built:
-            continue
-        refs.append((".github/workflows/ci.yml", m.group(1)))
+    #
+    # The built set is the UNION over every rendering, and it has to be: each rendering of a
+    # matrix lane builds ONE target, so `meshpipeline-mesh:ci` is not locally built in the `api`
+    # rendering. Pairing per-rendering would report two of the three images this repository builds
+    # as unpinned third-party inputs on every run.
+    renderings = ci_renderings()
+    locally_built = {tag
+                     for ci_text in renderings
+                     for tag in re.findall(r"docker\s+build\s+[^\n]*?-t\s+(\S+)", ci_text)}
+    seen: set[str] = set()
+    for ci_text in renderings:
+        for m in re.finditer(r"docker\s+run\s+(?:[-\w=.]+\s+)*([\w./-]+:[\w.@:-]+)", ci_text):
+            if m.group(1) in locally_built or m.group(1) in seen:
+                continue
+            seen.add(m.group(1))
+            refs.append((".github/workflows/ci.yml", m.group(1)))
 
     assert refs, "no image references discovered - the scan subject is empty"
     return refs
+
+
+def ci_renderings() -> list[str]:
+    """The workflow as the RUNNER sees it: one rendering per matrix entry, continuations joined.
+
+    A matrix lane's `run:` is a template, and scanning the file as written reads it wrong in both
+    directions. Where the runner sees `docker build -t meshpipeline-api:ci`, the raw text says
+    `docker build -t ${{ matrix.image }}` - so the build that pairs with a `docker run` is
+    invisible, and the run looks like an unpinned third-party image nobody in this repository
+    builds. Rendering the file once per `include` entry, the way the runner expands it, is what
+    makes the pair legible again. Non-matrix jobs are identical in every rendering, so they are
+    scanned exactly as before.
+
+    Line continuations are joined for the same reason the Dockerfile's RUN blocks are: a `\`
+    between `docker build` and its `-t`, or between `docker run` and its image, hides the argument
+    from a single-line regex. That is not a formatting preference - it is the difference between
+    seeing an acquisition site and silently not seeing it.
+    """
+    text = re.sub(r"\\\n\s*", " ", read(CI))
+    entries = [entry
+               for job in (yaml.safe_load(read(CI)).get("jobs") or {}).values()
+               for entry in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []]
+    if not entries:
+        return [text]
+    renderings = []
+    for entry in entries:
+        rendered = text
+        for key, value in entry.items():
+            rendered = re.sub(r"\$\{\{\s*matrix\.%s\s*\}\}" % re.escape(str(key)),
+                              lambda _m, v=str(value): v, rendered)
+        renderings.append(rendered)
+    return renderings
 
 
 def run_blocks() -> list[tuple[int, str]]:

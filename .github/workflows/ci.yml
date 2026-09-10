@@ -305,23 +305,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The image name is a LITERAL on every entry rather than composed from `target` in the
+          # build step. tests/unit/hygiene/test_build_input_reproducibility.py scans this file for
+          # the images the workflow builds and the images it runs, and pairs them up so a genuine
+          # third-party image can never enter unpinned. A name assembled out of shell variables is
+          # invisible to that scan - which the test's own comment already calls out as the failure
+          # mode ("rather than relying on a `docker run` being formatted so the scan misses it").
+          # One literal per entry keeps both halves of the pair legible to it.
+          #
           # The smoke travels WITH the target it belongs to rather than living in a `case` below:
           # adding a fourth deployable target is then one entry, not an entry plus a branch
           # somebody forgets to write. An image that builds and cannot import is a green build
           # and a broken deploy, so no target is listed here without one.
           - target: api
-            smoke: |
-              docker run --rm --entrypoint python meshpipeline-api:ci \
-                -c "import meshpipeline.runtime.api_server as m; assert m.app"
+            image: meshpipeline-api:ci
+            smoke: docker run --rm --entrypoint python meshpipeline-api:ci -c "import meshpipeline.runtime.api_server as m; assert m.app"
           - target: pipeline
-            smoke: |
-              docker run --rm --entrypoint python meshpipeline-pipeline:ci \
-                -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
+            image: meshpipeline-pipeline:ci
+            smoke: docker run --rm --entrypoint python meshpipeline-pipeline:ci -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
           - target: mesh
-            smoke: |
-              docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-                meshpipeline-mesh:ci bash -lc \
-                'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
+            image: meshpipeline-mesh:ci
+            smoke: docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x meshpipeline-mesh:ci bash -lc 'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -345,17 +349,18 @@ jobs:
           persist-credentials: false
       - name: Resolve the authoritative product version
         run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
+      # ONE LINE, and the tag spelled out. The reproducibility scan pairs each build with the run
+      # that uses its tag, to decide which images are this commit's own rather than third-party
+      # inputs needing a digest; a line continuation between the build and its tag flag hides the
+      # tag from it, which is exactly what broke it.
       - name: Build the ${{ matrix.target }} target
-        run: |
-          set -euo pipefail
-          docker build --target "$TARGET" --build-arg APP_VERSION="$APP_VERSION" \
-            -t "meshpipeline-${TARGET}:ci" .
         env:
           TARGET: ${{ matrix.target }}
-      # Through the environment rather than interpolated straight into `run:`. The value is a
-      # workflow literal and not attacker-reachable, but a `${{ }}` expansion inside a shell body
-      # is the shape zizmor flags, and the workflow-audit lane is not worth arguing with over a
-      # habit that is right everywhere else.
+        run: docker build --target "$TARGET" --build-arg APP_VERSION="$APP_VERSION" -t ${{ matrix.image }} .
+      # Through the environment rather than interpolated straight into the shell body. The value is
+      # a workflow literal and not attacker-reachable, but a `${{ }}` expansion inside `run:` is the
+      # shape zizmor flags, and the workflow-audit lane is not worth arguing with over a habit that
+      # is right everywhere else.
       - name: Smoke - the ${{ matrix.target }} image runs what it ships
         env:
           SMOKE: ${{ matrix.smoke }}
