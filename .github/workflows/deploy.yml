@@ -682,6 +682,20 @@ jobs:
         env:
           DEPLOY_NONINTERACTIVE: "1"
           DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
+          # THE CONSOLE'S IDENTITY PLATFORM CONFIG. `vars` here resolves against the GitHub
+          # ENVIRONMENT this job runs under, so dev reads hexera-dev's values and prod reads
+          # hexera-506114's without either naming the other - the same per-environment split the
+          # project and region already get from the target job. Deliberately variables and not
+          # secrets: the web API key identifies the project and authorises nothing on its own, it
+          # ships inside the browser bundle, and pretending otherwise would only hide it from the
+          # people who need to read it. What gates signup is CONSOLE_SIGNUP_ENABLED on the API.
+          #
+          # An empty value here is not silent: validate-config.sh refuses a run whose components
+          # include the console while any of the three is unset, because a console that deploys
+          # without them tells every visitor sign-in is not configured.
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ vars.NEXT_PUBLIC_FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
         run: bash deploy/gcp/scripts/deploy.sh
 
       # THE ADDRESS AN OPERATOR MUST PUT IN DNS, surfaced where they will see it. create-edge.sh
