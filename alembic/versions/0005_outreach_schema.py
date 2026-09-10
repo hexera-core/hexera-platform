@@ -41,15 +41,15 @@
 # source. `AUTOINCREMENT` guarantees monotonic, never-reused ids; a Postgres identity sequence
 # gives the same guarantee, so nothing downstream that assumes "higher id means later row" breaks.
 #
-# Revision ID: 0003_outreach_schema
-# Revises: 0002_api_keys
+# Revision ID: 0005_outreach_schema
+# Revises: 0004_tenant_columns
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = '0003_outreach_schema'
-down_revision = '0002_api_keys'
+revision = '0005_outreach_schema'
+down_revision = '0004_tenant_columns'
 branch_labels = None
 depends_on = None
 

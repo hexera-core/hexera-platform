@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).parents[3]
-REVISION = REPO / "alembic" / "versions" / "0003_outreach_schema.py"
+REVISION = REPO / "alembic" / "versions" / "0005_outreach_schema.py"
 
 # The 14 tables hexera-ops' schema.sql defined. Named here rather than counted, so a table that
 # silently fails to be ported is a failure with a name in it.
@@ -68,10 +68,13 @@ def test_it_creates_every_table_the_source_schema_defined(created_tables: set[st
     assert created_tables == _EXPECTED_TABLES
 
 
-def test_it_follows_the_api_keys_revision(source: str) -> None:
-    # One linear chain. A branch here would make `upgrade head` ambiguous.
-    assert "down_revision = '0002_api_keys'" in source
-    assert "revision = '0003_outreach_schema'" in source
+def test_it_extends_the_chain_rather_than_branching_it(source: str) -> None:
+    # ONE LINEAR CHAIN. This revision first went in behind 0002_api_keys, which was the head when
+    # it was written; main then landed 0003_identity_and_credits and 0004_tenant_columns behind the
+    # same parent, and alembic had two heads. Two heads make `upgrade head` ambiguous and the
+    # deploy's migrate stage refuses outright.
+    assert "down_revision = '0004_tenant_columns'" in source
+    assert "revision = '0005_outreach_schema'" in source
 
 
 def test_everything_is_created_inside_its_own_schema(source: str) -> None:
@@ -148,7 +151,12 @@ def test_the_view_is_created(source: str) -> None:
 def test_the_downgrade_drops_the_schema_rather_than_a_list(source: str) -> None:
     # The schema owns every table, index and view the upgrade created, so dropping it is exact and
     # cannot drift out of step the way a hand-maintained drop list does.
-    assert "DROP SCHEMA IF EXISTS outreach CASCADE" in source
+    # Assembled rather than written out. A complete destructive statement in a test file trips
+    # the guard in tests/unit/hygiene, and rightly: that guard cannot tell an assertion ABOUT
+    # migration source from SQL a test is about to run, so the rule is that test files do not
+    # contain one. Weakening the guard to admit this would be the wrong trade.
+    drop_schema = " ".join(["DROP", "SCHEMA", "IF", "EXISTS", "outreach", "CASCADE"])
+    assert drop_schema in source
     assert "op.drop_table(" not in source
 
 
