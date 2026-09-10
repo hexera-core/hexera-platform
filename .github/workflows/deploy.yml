@@ -159,6 +159,12 @@ jobs:
       postgres_password_secret: ${{ steps.pick.outputs.postgres_password_secret }}
       worker_mig: ${{ steps.pick.outputs.worker_mig }}
       worker_mig_zone: ${{ steps.pick.outputs.worker_mig_zone }}
+      # THE OBJECT STORE. Only the release-tag branch emits these; a dev run leaves all three
+      # empty, which is what dev has always had - validate-config.sh's object-store rule fires
+      # only when the store is partly stated, so all-empty is skipped rather than refused.
+      minio_access_key: ${{ steps.pick.outputs.minio_access_key }}
+      minio_bucket: ${{ steps.pick.outputs.minio_bucket }}
+      minio_secret_key_secret: ${{ steps.pick.outputs.minio_secret_key_secret }}
       # NOT pinned, and deliberately: MIGRATE_DB_HOST and REDIS_URL are ADDRESSES, allocated by
       # Google when the instances above are created. create-data-tier.sh resolves them from the
       # live instances and writes them back into the deployment env for the stages that consume
@@ -381,6 +387,36 @@ jobs:
             echo "postgres_password_secret=postgres-password"
             echo "worker_mig=prod-workers"
             echo "worker_mig_zone=us-central1-a"
+            # THE OBJECT-STORE KEY THIS DEPLOYMENT ALREADY OWNS, and the only thing that stops a
+            # release tag minting a second one. create-object-storage.sh decides "reuse or mint"
+            # by testing the RECORDED access id against the live ACTIVE keys; the recording lives
+            # in the deployment env, and bootstrap-env.sh regenerates that file on stage 1 of
+            # every run from the ambient environment (`MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-}`).
+            # On a fresh runner nothing sets it, so the test compared against the empty string,
+            # concluded no usable key existed, and tried to mint - which a deploy identity is
+            # deliberately refused (storage.hmacKeyAdmin is an owner's role). That is what failed
+            # the v0.1.1 release at stage 8, with the ACTIVE key and its secret both sitting
+            # right there. Pinned here for the same reason app_env is: this is the only route by
+            # which a value survives stage 1 and reaches the stage that reads it.
+            #
+            # THE ACCESS ID IS NOT A CREDENTIAL. It is the public half of the pair - the settings
+            # catalogue marks only MINIO_SECRET_KEY secret, the value ships as a plain env var on
+            # the running service, and create-object-storage.sh writes it into the deployment env
+            # in the clear on purpose. The secret half is a Secret Manager CONTAINER NAME below;
+            # no secret value appears in this file or in any log this workflow produces.
+            #
+            # ROTATION IS A DIFF. Minting a replacement is an owner's one-off act, and the new id
+            # has to be typed here for the next release to reuse it - which is the same reviewed
+            # -diff property every other target on this branch has, not an oversight.
+            echo "minio_access_key=GOOG1EEQGTX5DEAFEWZSHMYJ23F4MUA2MSOC4UH7I7YWOSBUWPLYOL7XL3UYN"
+            # The other two exist to satisfy validate-config.sh, which runs at stage 2 - six
+            # stages before the object store is discovered - and refuses a HALF-STATED store: an
+            # access id with no bucket and no secret container is a configuration that would fail
+            # at the first upload instead of here. Both restate what is already true rather than
+            # selecting anything: create-object-storage.sh derives the bucket from
+            # DEPLOYMENT_ID + the project number, and defaults the container to minio-secret-key.
+            echo "minio_bucket=prod-artifacts-688073002171"
+            echo "minio_secret_key_secret=minio-secret-key"
           } >> "$GITHUB_OUTPUT"
 
   # THE MISSING HALF OF "CI/CD". Until this existed, ci.yml and deploy.yml both triggered on a
@@ -592,6 +628,16 @@ jobs:
       # zero instances can still be woken (platform-buildout-plan.md, Decisions 4).
       WORKER_MIG: ${{ needs.target.outputs.worker_mig }}
       WORKER_MIG_ZONE: ${{ needs.target.outputs.worker_mig_zone }}
+      # THE OBJECT-STORE KEY, carried exactly the way APP_ENV above is: pinned by the picker,
+      # exported for the whole job, and picked up out of the ambient environment by
+      # bootstrap-env.sh's generated-env heredoc on stage 1. That heredoc is why this route is
+      # the only one that works - it rewrites the deployment env before stage 2 reads it, so a
+      # value committed to deploy/gcp/generated.prod.env (which records this same access id) is
+      # erased before create-object-storage.sh could ever see it. NO SECRET VALUE: the access id
+      # is the public half, and MINIO_SECRET_KEY_SECRET is a Secret Manager container name.
+      MINIO_ACCESS_KEY: ${{ needs.target.outputs.minio_access_key }}
+      MINIO_BUCKET: ${{ needs.target.outputs.minio_bucket }}
+      MINIO_SECRET_KEY_SECRET: ${{ needs.target.outputs.minio_secret_key_secret }}
     steps:
       # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
       # that exact commit to stage the native fixtures. Full history so the worktree and the
