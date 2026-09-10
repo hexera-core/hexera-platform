@@ -8,20 +8,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import ChatSession
+from meshpipeline.persistence.repositories import tenant_scope
 
 
 class SessionRepository:
-    async def create(self, db: AsyncSession, owner_id: str) -> ChatSession:
-        s = ChatSession(owner_id=owner_id, messages=[])
+    async def create(self, db: AsyncSession, owner_id: str, *,
+                     organization_id: str = "") -> ChatSession:
+        s = ChatSession(**tenant_scope.stamp(owner_id=owner_id, organization_id=organization_id),
+                        messages=[])
         db.add(s)
         await db.flush()
         return s
 
     async def get_for_owner(self, db: AsyncSession, session_id: uuid.UUID,
-                            owner_id: str) -> ChatSession | None:
+                            owner_id: str, *, organization_id: str = "") -> ChatSession | None:
         res = await db.execute(
-            select(ChatSession).where(ChatSession.id == session_id,
-                                      ChatSession.owner_id == owner_id))
+            select(ChatSession).where(
+                ChatSession.id == session_id,
+                tenant_scope.scope(ChatSession, owner_id=owner_id,
+                                   organization_id=organization_id)))
         return res.scalar_one_or_none()
 
     async def get_internal(self, db: AsyncSession, session_id: uuid.UUID) -> ChatSession | None:
