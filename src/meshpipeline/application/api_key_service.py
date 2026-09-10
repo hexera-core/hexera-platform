@@ -52,9 +52,18 @@ async def issue(db: AsyncSession, *, owner_id: str, name: str = "", plan: str = 
 
 
 async def revoke(db: AsyncSession, *, owner_id: str, key_id: uuid.UUID,
-                 now: datetime | None = None) -> bool:
+                 organization_id: str = "", now: datetime | None = None) -> bool:
+    # organization_id is forwarded so revocation scopes the same way the listing does. Without
+    # it a key visible in the list (organisation-scoped) could be un-revokable (owner-scoped)
+    # the moment an organisation holds more than one member, which `memberships` already allows.
     return await api_key_repo.revoke(db, owner_id=owner_id, key_id=key_id,
+                                     organization_id=organization_id,
                                      at=now or _now())
+
+
+async def list_for_owner(db: AsyncSession, *, owner_id: str,
+                         organization_id: str = "") -> list:
+    return await api_key_repo.list_for_owner(db, owner_id, organization_id=organization_id)
 
 
 async def authenticate(db: AsyncSession, presented: str | None, *,
