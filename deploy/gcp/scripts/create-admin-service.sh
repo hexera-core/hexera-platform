@@ -116,33 +116,44 @@ compute.zoneOperations.get,compute.zones.get,\
 run.services.get,run.services.update,run.revisions.get,run.revisions.list,run.operations.get"
 
 if gc iam roles describe "${ADMIN_ROLE_ID}" >/dev/null 2>&1; then
-  ADMIN_ROLE_DISPOSITION=updated
-  gc iam roles update "${ADMIN_ROLE_ID}" \
+  if gc iam roles update "${ADMIN_ROLE_ID}" \
     --permissions "${ADMIN_ROLE_PERMISSIONS}" \
-    --stage GA >/dev/null 2>&1 \
-    || warn "could not update the custom role ${ADMIN_ROLE_ID}. If its permissions already match,
+    --stage GA >/dev/null 2>&1; then
+    ADMIN_ROLE_DISPOSITION=updated
+  else
+    ADMIN_ROLE_DISPOSITION="exists, NOT updated"
+    warn "could not update the custom role ${ADMIN_ROLE_ID}. If its permissions already match,
        the console's controls still work; if they do not, the control whose permission is missing
        returns PERMISSION_DENIED on the page."
+  fi
 else
-  ADMIN_ROLE_DISPOSITION=created
-  gc iam roles create "${ADMIN_ROLE_ID}" \
+  # The disposition is set from the RESULT. Reporting "created" for a call that failed is how a
+  # summary line ends up contradicting the warning three lines above it.
+  if gc iam roles create "${ADMIN_ROLE_ID}" \
     --title "Hexera admin console fleet operator" \
     --description "Read and resize the worker fleet and Cloud Run scaling from the admin console" \
     --permissions "${ADMIN_ROLE_PERMISSIONS}" \
-    --stage GA >/dev/null 2>&1 \
-    || warn "could not create the custom role ${ADMIN_ROLE_ID}. Creating roles needs iam.roles.create,
+    --stage GA >/dev/null 2>&1; then
+    ADMIN_ROLE_DISPOSITION=created
+  else
+    ADMIN_ROLE_DISPOSITION="ABSENT - could not be created"
+    warn "could not create the custom role ${ADMIN_ROLE_ID}. Creating roles needs iam.roles.create,
        which a DEPLOY identity is deliberately not given. The console's READ pages still work; its
        controls return PERMISSION_DENIED until an owner runs:
          gcloud iam roles create ${ADMIN_ROLE_ID} --project ${GCP_PROJECT_ID} \\
            --title 'Hexera admin console fleet operator' --stage GA \\
            --permissions ${ADMIN_ROLE_PERMISSIONS}"
+  fi
 fi
 
+# roles/billing.viewer is deliberately ABSENT from this list. It is a billing-ACCOUNT role and the
+# API refuses it on a project outright - "Role roles/billing.viewer is not supported for this
+# resource" - so including it here could only ever produce a warning that never becomes a grant.
+# Both Costs reads need it, and both are covered by the one manual command printed below.
 ADMIN_PROJECT_ROLES=(
   roles/compute.viewer
   roles/monitoring.viewer
   roles/run.viewer
-  roles/billing.viewer
   "projects/${GCP_PROJECT_ID}/roles/${ADMIN_ROLE_ID}"
 )
 # Only where a billing export exists. A grant for a dataset this deployment does not have is
@@ -164,9 +175,10 @@ for admin_role in "${ADMIN_PROJECT_ROLES[@]}"; do
   fi
 done
 
-# Budgets live on the BILLING ACCOUNT, not on the project, and a deploy identity has no authority
-# there at all. Stated as a command rather than attempted, because attempting it would always warn.
-log "for the Costs page's budgets, grant roles/billing.viewer on the billing ACCOUNT once:"
+# The Costs page's TWO reads - which account pays for this project, and what budgets it carries -
+# both need a role that exists only on the BILLING ACCOUNT, where a deploy identity has no
+# authority at all. Stated as a command rather than attempted, because attempting it always fails.
+log "the Costs page needs roles/billing.viewer on the billing ACCOUNT; grant it once:"
 log "  gcloud billing accounts add-iam-policy-binding <BILLING_ACCOUNT_ID> \\"
 log "    --member serviceAccount:${ADMIN_SA_EMAIL} --role roles/billing.viewer"
 

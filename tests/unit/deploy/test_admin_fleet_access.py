@@ -19,6 +19,7 @@ ARGS="$*"; printf '%s\n' "${ARGS}" >> "${STATE}/calls.log"
 has(){ case "$ARGS" in *"$1"*) return 0;; *) return 1;; esac; }
 if has "iam service-accounts describe"; then exit 1; fi
 if has "iam roles describe"; then exit "${FAKE_ROLE_RC:-1}"; fi
+if has "iam roles create"; then exit "${FAKE_IAM_ROLE_CREATE_FAILS:-0}"; fi
 if has "run services describe"; then
   if has "containers[0].image"; then printf '%s\n' "${FAKE_LIVE_IMAGE:-}"; exit 0; fi
   if has "containers[0].env";   then printf '%s\n' "${FAKE_LIVE_ENV_NAMES:-}"; exit 0; fi
@@ -124,6 +125,33 @@ def test_read_roles_are_granted(run):
     assert done.returncode == 0, done.stderr
     for role in ("roles/compute.viewer", "roles/monitoring.viewer", "roles/run.viewer"):
         assert role in calls, f"{role} was not granted; the pages that need it render an error"
+
+
+def test_no_project_binding_is_attempted_for_a_billing_account_role(run):
+    # roles/billing.viewer exists on a billing ACCOUNT, not on a project: the API refuses it with
+    # "Role roles/billing.viewer is not supported for this resource". Attempting it on the project
+    # could only ever emit a warning that never becomes a grant, which trains an operator to ignore
+    # the warnings that do matter.
+    done, calls = run()
+    assert done.returncode == 0, done.stderr
+    project_bindings = [line for line in calls.splitlines() if "projects add-iam-policy-binding" in line]
+    assert project_bindings, "no project bindings were attempted at all"
+    assert not any("roles/billing.viewer" in line for line in project_bindings)
+    # It must still be stated, as the one grant a human has to make.
+    assert "roles/billing.viewer" in done.stdout
+
+
+def test_a_failed_custom_role_is_not_reported_as_created(run):
+    # The summary line is read as the record of what happened. Saying "created" for a call that
+    # failed contradicts the warning printed three lines above it.
+    done, _calls = run(fake={"FAKE_ROLE_RC": "1", "FAKE_IAM_ROLE_CREATE_FAILS": "1"})
+    combined = done.stdout + done.stderr
+    assert "could not create the custom role" in combined, "the fake did not reach the failure path"
+
+    authority = next(line for line in combined.splitlines() if "custom role" in line)
+    assert "(created)" not in authority, (
+        f"the summary claims the role was created while the warning says it was not: {authority!r}")
+    assert "ABSENT" in authority
 
 
 def test_the_write_authority_is_a_custom_role_not_a_broad_one(run):
