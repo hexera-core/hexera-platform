@@ -10,23 +10,51 @@ from fastapi import APIRouter, Depends, HTTPException
 from meshpipeline.agents.intake import approval as ap
 from meshpipeline.agents.intake import message as msg
 from meshpipeline.agents.intake.agent import _extract_reply
+from meshpipeline.api import pagination
+from meshpipeline.api.schemas import listing
 from meshpipeline.api.schemas.chat import ChatMessageIn, ChatResponse
 from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.application.intake_brief import build_brief
 from meshpipeline.errors import classify_api_failure, user_message_for
+from meshpipeline.persistence.repositories.session_repository import SessionRepository
 from meshpipeline.persistence.session import get_db
 from meshpipeline.trace.sink import project_all
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+session_repo = SessionRepository()
 
+
+@router.get("")
+async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = None,
+                        owner_id: str = Depends(owner_dep),
+                        organization_id: str = Depends(org_dep)) -> dict:
+    # DECLARED BEFORE `/history/{session_id}`. FastAPI matches in declaration order, so a
+    # collection route placed after that one would never be reached.
+    bounded = pagination.clamp_limit(limit)
+    async with get_db() as db:
+        rows = await session_repo.list_for_owner(db, owner_id, organization_id=organization_id,
+                                                  limit=bounded,
+                                                  before=pagination.decode_cursor(cursor))
+    items = [{
+        "id": str(row.id),
+        # The JSON key is "task_label" though the column is `ChatSession.domain`: `domain` is
+        # documented on the model as "DESCRIPTIVE task label from intake ('elbow internal
+        # flow')" - it IS the task label, under the name the schema actually gives it. Task 1's
+        # `job_repository.list_for_owner` reads the same column for the same reason.
+        "task_label": row.domain,
+        "job_id": str(row.job_id) if row.job_id else None,
+        "message_count": len(row.messages or []),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    } for row in rows]
+    last = (rows[-1].created_at, rows[-1].id) if rows else None
+    return listing.page(items, limit=bounded, last_key=last)
 
 
 @router.get("/history/{session_id}")
 async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                            organization_id: str = Depends(org_dep)):
-    from meshpipeline.persistence.repositories.session_repository import SessionRepository
-    session_repo = SessionRepository()
     async with get_db() as db:
         session = await session_repo.get_for_owner(db, session_id, owner_id,
                                                     organization_id=organization_id)

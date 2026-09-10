@@ -105,6 +105,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
     served = {(m.upper(), p)
               for p, ops in app.openapi()["paths"].items() for m in ops}
     expected = {
+        ("GET", "/api/v1/chat"),                 # the caller's own conversations, keyset paged
         ("GET", "/api/v1/chat/history/{session_id}"),
         ("POST", "/api/v1/chat/message"),
         ("GET", "/api/v1/client-config"),
