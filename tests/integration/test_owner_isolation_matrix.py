@@ -156,12 +156,17 @@ async def test_a_foreign_owner_cannot_read_a_session_that_exists(api, alphas_ses
             "a foreign session answers differently from an unknown one, which discloses existence")
 
 
-async def _provisioned_owner(db, *, org_name: str) -> str:
+async def _provisioned_owner(db, *, org_name: str = "", organization_id=None):
     # A REAL account, unlike _A/_B above: tenant-alpha and tenant-bravo are self-asserted header
     # identities with no `users` row, so `_organization_for` resolves them to "" and every
     # assertion above exercises tenant_scope's OWNER fallback, never its organisation branch. This
     # helper is what lets a test reach the other branch: a genuine user, in a genuine
     # organisation, so the Principal the route sees carries a real, non-empty organization_id.
+    #
+    # `organization_id`, when given, joins an EXISTING organisation instead of minting a new one -
+    # this is what lets a test provision a second, distinct owner who is nonetheless a TEAMMATE:
+    # the one variable that isolates "scoped on the organisation" from "scoped on the owner" is
+    # holding the organisation fixed while the owner changes.
     from meshpipeline.persistence.models import MembershipRole
     from meshpipeline.persistence.repositories.membership_repository import MembershipRepository
     from meshpipeline.persistence.repositories.organization_repository import (
@@ -170,22 +175,33 @@ async def _provisioned_owner(db, *, org_name: str) -> str:
     from meshpipeline.persistence.repositories.user_repository import UserRepository
 
     suffix = uuid.uuid4().hex[:12]
-    email = f"{org_name}-{suffix}@example.com"
-    org = await OrganizationRepository().create(db, name=org_name, slug=f"org-{suffix}")
+    email = f"{org_name or 'org'}-{suffix}@example.com"
+    if organization_id is None:
+        org = await OrganizationRepository().create(db, name=org_name or "org",
+                                                     slug=f"org-{suffix}")
+        organization_id = org.id
     user = await UserRepository().create(db, email=email, name="", firebase_uid=f"uid-{suffix}")
-    await MembershipRepository().create(db, user_id=user.id, organization_id=org.id,
+    await MembershipRepository().create(db, user_id=user.id, organization_id=organization_id,
                                         role=MembershipRole.owner)
     # COMMITTED HERE, not left for fixture teardown: the API subprocess reads through its own
     # connection, so the row must be visible before the HTTP calls below are made, not after the
     # test function returns.
     await db.commit()
-    return email
+    return email, organization_id
 
 
-async def test_a_foreign_organisation_cannot_read_a_session_that_exists(api, db):
+async def _org_scoped_session(api, db):
+    # THE ONE PAIR OF IDENTITIES that isolates the variable: org_a_teammate shares NOTHING with
+    # the session's own owner_id except the organisation, and org_b_owner shares NOTHING with it
+    # except being a different owner_id in a different organisation. Only testing both - one
+    # succeeding, one refused - proves a read keys on organization_id rather than on owner_id: a
+    # regression to plain owner_id matching would 404 BOTH of them (the foreign-organisation
+    # caller is, after all, also a different owner_id), and only the teammate case would catch
+    # that regression.
     base, _ = api
-    org_a_owner = await _provisioned_owner(db, org_name="org-a")
-    org_b_owner = await _provisioned_owner(db, org_name="org-b")
+    org_a_owner, org_a_id = await _provisioned_owner(db, org_name="org-a")
+    org_a_teammate, _ = await _provisioned_owner(db, organization_id=org_a_id)
+    org_b_owner, _ = await _provisioned_owner(db, org_name="org-b")
 
     async with await _client(base) as c:
         upload = await c.post("/api/v1/upload/step-file", headers=_headers(org_a_owner),
@@ -193,12 +209,36 @@ async def test_a_foreign_organisation_cannot_read_a_session_that_exists(api, db)
         assert upload.status_code == 200, upload.text
         session_id = upload.json()["session_id"]
 
+    return session_id, org_a_owner, org_a_teammate, org_b_owner
+
+
+async def test_a_teammate_in_the_same_organisation_can_read_a_session_that_exists(api, db):
+    # THE POSITIVE HALF of the pair - see _org_scoped_session. Reachable ONLY if the read scopes
+    # on organization_id: org_a_teammate is a genuinely different owner_id from the session's own,
+    # so under a regression to owner-only matching this would 404, which is exactly the failure
+    # this test exists to catch. The pre-existing test_a_foreign_owner_cannot_read_a_session_
+    # that_exists already proves owner_id isolation on its own; this is what the organisation
+    # widens beyond it.
+    base, _ = api
+    session_id, org_a_owner, org_a_teammate, _ = await _org_scoped_session(api, db)
+    async with await _client(base) as c:
         mine = await c.get(f"/api/v1/chat/history/{session_id}", headers=_headers(org_a_owner))
         assert mine.status_code == 200, mine.text
 
-        # A DIFFERENT owner in a DIFFERENT organisation - not merely a different owner_id. If
-        # tenant_scope ever regressed to matching on owner_id alone, this would still 200 for a
-        # request signed as an org-a owner who is not the session's owner_id; it must not.
+        teammates = await c.get(f"/api/v1/chat/history/{session_id}",
+                                headers=_headers(org_a_teammate))
+        assert teammates.status_code == 200, teammates.text
+
+
+async def test_a_foreign_organisation_cannot_read_a_session_that_exists(api, db):
+    # THE NEGATIVE HALF of the pair - see _org_scoped_session and the teammate case above for what
+    # the two together prove.
+    base, _ = api
+    session_id, org_a_owner, _, org_b_owner = await _org_scoped_session(api, db)
+    async with await _client(base) as c:
+        mine = await c.get(f"/api/v1/chat/history/{session_id}", headers=_headers(org_a_owner))
+        assert mine.status_code == 200, mine.text
+
         theirs = await c.get(f"/api/v1/chat/history/{session_id}", headers=_headers(org_b_owner))
         assert theirs.status_code == 404, theirs.status_code
         # NON-DISCLOSURE, exactly as the foreign-owner case above: an unknown session must answer
