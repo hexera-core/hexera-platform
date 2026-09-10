@@ -170,7 +170,17 @@ export default async function CostsPage() {
             }
           />
         ) : exportPending ? (
-          <EmptyState note={`The export at ${targets.billingExportTable} is configured but has not written its first table yet. A billing export begins accumulating the day it is enabled and the first data lands within about a day — there is nothing to fix here, only to wait for.`} />
+          <EmptyState
+            note={
+              `${targets.billingExportTable} does not exist yet, which means one of two things and ` +
+              `neither is broken. Either the BigQuery billing export has not been switched on for ` +
+              `this billing account — it is enabled in the Cloud Console under Billing → Billing ` +
+              `export → BigQuery export, and there is no API or gcloud command for it — or it was ` +
+              `switched on recently and has not written its first table yet, which takes hours. ` +
+              `This page needs no redeployment either way: it starts reporting the moment the ` +
+              `table appears.`
+            }
+          />
         ) : spend.length === 0 && !spendError ? (
           <EmptyState note={`The export at ${targets.billingExportTable} returned no rows for the last ${WINDOW_DAYS} days. An export enabled recently has no history yet.`} />
         ) : spend.length > 0 ? (
