@@ -59,6 +59,7 @@ jobs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
       run_python: ${{ steps.scope.outputs.run_python }}
       run_images: ${{ steps.scope.outputs.run_images }}
+      run_web: ${{ steps.scope.outputs.run_web }}
     steps:
       - name: Resolve checkout ref
         id: checkout-ref
@@ -106,14 +107,17 @@ jobs:
           fi
           run_python=true
           run_images=true
+          run_web=true
           if [ "$docs_only" = "true" ]; then
             run_python=false
             run_images=false
+            run_web=false
           fi
           {
             echo "docs_only=$docs_only"
             echo "run_python=$run_python"
             echo "run_images=$run_images"
+            echo "run_web=$run_web"
           } >> "$GITHUB_OUTPUT"
 
   workflow-audit:
@@ -378,6 +382,29 @@ jobs:
       # property that makes this lane worth having.
       - run: make test-ui
 
+  web:
+    name: Workspace (pnpm)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # The workspace pins its package manager in package.json ("packageManager": "pnpm@11.3.0");
+      # corepack honours that pin rather than installing whatever is newest.
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+
   ci-gate:
     name: hexera/ci-gate
     needs:
@@ -393,6 +420,7 @@ jobs:
       - images
       - integration
       - ui
+      - web
     # `always()` would also fire for a run the concurrency group cancelled, posting a red required
     # check nobody is waiting on. `!cancelled()` still runs the gate when a lane genuinely fails,
     # which is the entire point of it.
@@ -418,6 +446,7 @@ jobs:
             images=${{ needs.images.result }}
             integration=${{ needs.integration.result }}
             ui=${{ needs.ui.result }}
+            web=${{ needs.web.result }}
         run: |
           set -euo pipefail
           failures=0

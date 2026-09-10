@@ -194,7 +194,12 @@ if gc iam workload-identity-pools providers describe "${WIF_PROVIDER}" \
            --location=${WIF_LOCATION} --workload-identity-pool=${WIF_POOL} --project ${GCP_PROJECT_ID} \\
            --attribute-condition='${ATTRIBUTE_CONDITION}'"
       RECONCILE_FAILED=1 ;;
-    *"${GITHUB_REPOSITORY}"*)
+    # MATCHED WITH ITS QUOTES, because a bare substring match reads a LONGER repository name as
+    # this one. `hexera-core/hexera-platform` occurs inside `hexera-core/hexera-platform-v2`, so
+    # after this repository was renamed the unquoted test reported hexera-prod's provider - still
+    # scoped to the old name, and therefore accepting nothing - as correctly restricted. The
+    # closing delimiter is what makes the name whole. CEL takes either quote style.
+    *"\"${GITHUB_REPOSITORY}\""*|*"'${GITHUB_REPOSITORY}'"*)
       log "  condition restricts to ${GITHUB_REPOSITORY}: ${PROVIDER_CONDITION}" ;;
     *)
       warn "provider '${WIF_PROVIDER}' has an attribute condition that does not mention
@@ -321,6 +326,13 @@ DEPLOYER_ROLES=(
   roles/iam.serviceAccountUser           # actAs the runtime identities those workloads run as
   roles/compute.instanceAdmin.v1         # the worker MIG and the autoscaling policy that scales it
   roles/compute.networkAdmin             # the private-services range the data tier is addressed from
+  # The EDGE (stage 18): the global address, the two serverless NEGs, the two backend services,
+  # the serving and redirect URL maps, the HTTP and HTTPS target proxies, and the two forwarding
+  # rules - none of which any role above can create. compute.networkAdmin is NOT a substitute:
+  # Google documents it as READ-ONLY on SSL certificates, so without this the run reaches
+  # `ssl-certificates create` and fails PERMISSION_DENIED after the address, both NEGs, both
+  # backend services and the URL map already exist and are billed - a half-provisioned edge.
+  roles/compute.loadBalancerAdmin        # the address, NEGs, backend services, URL maps, proxies, certificate
   roles/servicenetworking.networksAdmin  # the servicenetworking peering that carries that range
   roles/serviceusage.serviceUsageAdmin   # stage 5 and stage 7 turn on the APIs they then call
   roles/cloudsql.admin                   # the Postgres instance, its database and its user
@@ -396,6 +408,37 @@ gc iam service-accounts add-iam-policy-binding "${DEPLOYER_SA_EMAIL}" \
   --member "${PRINCIPAL_SET}" \
   --role roles/iam.workloadIdentityUser --condition=None >/dev/null
 log "serviceAccount/${DEPLOYER_SERVICE_ACCOUNT} += roles/iam.workloadIdentityUser -> ${GITHUB_REPOSITORY}"
+
+# 5b) AND EVERY OTHER PRINCIPAL THAT ALREADY HELD IT. Adding the right binding says nothing about
+#     what else can impersonate this deployer, and that gap is not hypothetical: after this
+#     repository was renamed, hexera-dev's provider condition was correct while its binding still
+#     named `hexera-core/hexera-platform-v2` alone - so every branch dispatch failed the exchange,
+#     and a run of this script "succeeded" without ever looking. A stale principal set is also a
+#     standing grant to whoever creates a repository under that old name in this org.
+#
+#     REPORTED, NOT REVOKED. Removing an impersonation binding can cut off a deploy path somebody
+#     depends on, and this script reconciles rather than rewrites - so the extra members are named
+#     with the command that removes them, and the run exits non-zero so nothing reads as clean.
+EXTRA_PRINCIPALS="$(gc iam service-accounts get-iam-policy "${DEPLOYER_SA_EMAIL}" \
+  --flatten='bindings[].members' \
+  --filter='bindings.role=roles/iam.workloadIdentityUser' \
+  --format='value(bindings.members)' 2>/dev/null | grep -vFx "${PRINCIPAL_SET}" || true)"
+if [ -n "${EXTRA_PRINCIPALS}" ]; then
+  MSG="serviceAccount/${DEPLOYER_SERVICE_ACCOUNT} lets principals OTHER than ${GITHUB_REPOSITORY}
+       impersonate it:"
+  while IFS= read -r principal; do
+    [ -n "${principal}" ] || continue
+    MSG="${MSG}
+         ${principal}"
+  done <<<"${EXTRA_PRINCIPALS}"
+  MSG="${MSG}
+       Each is a separate decision, so nothing was removed. To drop one:
+         gcloud iam service-accounts remove-iam-policy-binding ${DEPLOYER_SA_EMAIL} \\
+           --project ${GCP_PROJECT_ID} --role roles/iam.workloadIdentityUser --condition=None \\
+           --member '<principal>'"
+  warn "${MSG}"
+  RECONCILE_FAILED=1
+fi
 
 # An empty condition is printed as the refusal it is, never as an empty field an eye slides over.
 CONDITION_SHOWN="${PROVIDER_CONDITION:-<NONE - this provider accepts every repository on GitHub>}"

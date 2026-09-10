@@ -79,9 +79,11 @@ export async function getSurface(jobId) {
 
 /** Build the stream URL. Only the ticket and the cursor go in the query string. */
 export function streamUrl(jobId, ticket, since) {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const apiBase = globalThis.__HEXERA_API_WS_BASE_URL__;
+  const urlBase = apiBase ? new URL(apiBase) : location;
+  const proto = urlBase.protocol === "https:" ? "wss" : "ws";
   const qs = new URLSearchParams();
   qs.set("ticket", ticket);
   qs.set("since", String(since));
-  return `${proto}://${location.host}/api/v1/ws/${jobId}/stream?${qs}`;
+  return `${proto}://${urlBase.host}/api/v1/ws/${jobId}/stream?${qs}`;
 }

@@ -27,6 +27,8 @@ describing it as empty is stale.
 | Role | `hexera-dev` | `hexera-prod` |
 | --- | --- | --- |
 | API (Cloud Run service) | `hexera-dev-api` | `prod-api` |
+| Console (Cloud Run service) | `dev-console` | `prod-console` — see below |
+| Admin console (Cloud Run service) | `dev-admin` | `prod-admin` — see below |
 | Mesh executor (Cloud Run job) | `dev-mesh` | `prod-mesh` |
 | Schema migration (job) | `dev-migrate` | `prod-migrate` |
 | Queue-depth publisher (job) | `dev-queue-depth` | `prod-queue-depth` |
@@ -35,6 +37,10 @@ describing it as empty is stale.
 | Redis (Memorystore) | `hexera-dev-redis` | `hexera-prod-redis` |
 | Workspace exchange (bucket) | `dev-exchange-224734058693` | `prod-exchange-688073002171` |
 | Build artifacts (bucket) | `hexera-dev-artifacts-224734058693` | `prod-artifacts-688073002171` |
+| Console hostname | `dev.console.hexera.ai` | `console.hexera.ai` |
+| Admin hostname | `dev.admin.hexera.ai` | `admin.hexera.ai` |
+| Edge address (global static IP) | `dev-edge-ip` | `prod-edge-ip` |
+| Edge URL map / certificate | `dev-edge` / `dev-edge-cert` | `prod-edge` / `prod-edge-cert` |
 | Image registry | Artifact Registry `mesh` | Artifact Registry `mesh` |
 
 Dev additionally has `dev-transfer-224734058693`, holding source tarballs and an `env.txt`, which
@@ -74,6 +80,106 @@ that Cloud SQL and Memorystore are addressed out of. Dev additionally carries a
 `redis-peer-…` peering from the hand-made Memorystore instance.
 
 Cloud Run reaches the VPC by Direct VPC egress, `private-ranges-only`.
+
+### Console (Cloud Run service)
+
+The Next.js console — the browser front door — is a third promotable workload beside the mesh
+job and the API, provisioned by `deploy/gcp/scripts/create-console-service.sh` and named
+`<deployment-id>-console` (`dev-console` / `prod-console`) following the naming rule in §2.
+
+Unlike the API, **it is publicly invokable by design**: `CONSOLE_ALLOW_UNAUTHENTICATED` defaults
+to `1` where `API_ALLOW_UNAUTHENTICATED` defaults to `0`, because the console's own Auth.js
+session is the gate — putting Cloud Run IAM in front of it would mean nobody could reach the
+sign-in page to authenticate at all.
+
+It scales `0..3` instances on dev (`CONSOLE_MIN_INSTANCES` / `CONSOLE_MAX_INSTANCES`), smaller
+than the API's `0..5`, because it renders pages and proxies rather than running model calls.
+
+Credentials reach it as four Secret Manager references, never as literal values — two it owns and
+two it shares with the API:
+
+| Runtime var | Container name | Shared with the API? |
+| --- | --- | --- |
+| `AUTH_SECRET` | `console-auth-secret` | no — the console's own Auth.js session key |
+| `CONSOLE_AUTH_USERS` | `console-auth-users` | no — scrypt password hashes for console sign-in |
+| `MESH_API_KEY` | `mesh-api-key` | yes |
+| `USER_TOKEN_SECRET` | `user-token-secret` | yes |
+
+Selected by the `console` component in `DEPLOY_COMPONENTS` (§5), and rolled out *after* the API
+stage — every console page load reaches the API, so a console that rolls out first would serve
+errors until the API catches up.
+
+**Two known limits, stated rather than fixed here:**
+
+- `NEXT_PUBLIC_HEXERA_API_BASE_URL` **does** take effect at deploy time today, but only by
+  accident, and the obvious "fix" would break it. Read on 2026-09-08: the `console` Dockerfile
+  target passes no `NEXT_PUBLIC_*` build argument, so there is nothing for Next to inline; the
+  built SSR chunk still reads `process.env.NEXT_PUBLIC_HEXERA_API_BASE_URL` at request time, no
+  literal origin appears in the server or client bundles, and the only consumer
+  (`apps/console/src/app/(console)/page.tsx`) is a server component that injects the value into the
+  page as it renders. So the Cloud Run setting wins.
+
+  The trap: `NEXT_PUBLIC_*` is the prefix Next inlines at build time whenever a value IS present
+  then. Supplying this one as a build argument — which is what a reader would reasonably do to make
+  it "properly" per-environment — is exactly what would freeze it, silently, at whichever origin
+  the image was built against. The realtime WebSocket dials this origin directly, so the symptom
+  would be a console that renders fine and never streams. The durable fix is to stop using the
+  `NEXT_PUBLIC_` prefix for a value no client code reads.
+- The console runs on the generated `run.app` URL with no `AUTH_URL` set, because
+  `apps/console/src/auth.ts` sets `trustHost: true` — Auth.js derives its callback URL from the
+  request host instead of requiring one to be configured per environment.
+
+**Pinned in both environments now:** `deploy.yml` pins `console_service=dev-console` for dev and
+`console_service=prod-console` for prod, the same way it pins `CLOUDRUN_API_SERVICE`
+(`api_service=dev-api` / `api_service=prod-api`, §1) — so a merge to main, which selects `console`
+in its default component set (§5), and a `v*` tag, which selects `all`, each actually reconcile a
+named service instead of `create-console-service.sh` stating its own skip.
+
+Prod's `console_service=` was left empty for as long as it would have named a service with no
+service account and no secret access behind it. `components=all` on a release tag means a tag
+reconciles every tier it is *told about* — pinning a name before the prerequisites existed is
+exactly the class of mistake PR #12's naming slip nearly made with `hexera-prod-pg` (§2): a name
+typed into this file quietly becoming a second, unwanted, paid resource standing next to the real
+one — there it would have been a second, empty Cloud SQL instance beside the production database;
+here it would have been a console nobody could actually authenticate against, serving from
+credentials it had no access to. That is no longer the situation: `prod-console` is now a real
+service account in `hexera-prod` holding `secretmanager.secretAccessor` on all four secret
+containers in the table above, each with an enabled version, so this pin now reconciles a console
+that can actually read what it needs. Its hostname (`console.hexera.ai`) and what still has to
+happen by hand before it and the admin console's hostname are fully live are covered in
+`docs/deployment/console-domains.md`.
+
+### Admin console (Cloud Run service)
+
+The admin console is a fourth promotable workload, provisioned by
+`deploy/gcp/scripts/create-admin-service.sh` and named `<deployment-id>-admin` (`dev-admin` on
+dev today; see below for prod). **It is the opposite of the console's posture**: it carries no
+Auth.js session of its own and is never `allUsers`-invokable — its only gate is IAP, which
+authenticates a Google identity before the request reaches the container (`docs/deployment/
+admin-console-access.md`). It is the one Cloud Run *service* in this table that is not publicly
+reachable by design — Cloud SQL, Memorystore, the worker MIG and the buckets above are not
+publicly reachable either, just not for the same reason. The post-deploy step in `deploy.yml`
+fails the run if that ever stops being true, but only when it actually runs: the step is guarded
+on `steps.deploy.outputs.admin_url`, which is set only when the `admin` stage was actually
+reconciled (`admin` selected explicitly, or `all`). A run whose components never touch the
+admin tier never sets `admin_url`, so the check never evaluates.
+
+It carries no secrets in this sub-project — IAP is the gate and there is no session for Secret
+Manager to hand it — and no VPC egress or database connection either; both arrive with Admin-2,
+the first admin page that actually queries something.
+
+Selected by the `admin` component in `DEPLOY_COMPONENTS` (§5) and rolled out *after* the API
+stage, for the same reason the console is: its pages read the API and the database, so an admin
+console that rolls out first shows errors until the rest catches up. It **is** part of the merge-to-main default (§5), alongside the
+console.
+
+**Pinned in both environments now**, the same reasoning and the same mechanism as
+`console_service` above: `prod-admin` is now a real service account in `hexera-prod` with the same
+secret access, so naming it in `deploy.yml` reconciles a real admin console rather than one with
+nothing behind it. What pinning the name does *not* do is finish IAP: the OAuth brand `hexera-prod`
+needs for IAP on Cloud Run does not exist yet and, since Google shut down the IAP OAuth Admin APIs
+in March 2026, has to be created by hand in the Cloud Console before `--iap` against `prod-admin`
+will succeed — see `docs/deployment/console-domains.md` §7.
 
 ---
 
@@ -132,7 +238,8 @@ Two oddities in dev:
 
 ```
                     ┌──────────────────────────────────────────────┐
-  merge to main ───▶│ Deploy: components = images,migrate          │──▶ hexera-dev
+  merge to main ───▶│ Deploy: components =                         │──▶ hexera-dev
+                    │           images,migrate,console,admin       │
                     │ gate: hexera/ci-gate MUST pass (blocking)    │
                     └──────────────────────────────────────────────┘
 
@@ -224,13 +331,16 @@ and money for resources the change never touched.
 | `migrate` | schema, applied once before anything serves the new image |
 | `queue` | queue-depth publisher + autoscaling policy |
 | `workers` | managed instance group + rolling update |
+| `console` | Cloud Run console service — the promoted console digest, in front of the API |
+| `admin` | Cloud Run admin console — the promoted admin digest, behind IAP; never publicly reachable |
+| `edge` | the global address, load balancer and managed certificate the consoles' custom hostnames resolve to |
 
 Always on, never selectable: discovery, config validation, preflight, plan confirmation, API
 enablement, Artifact Registry, runtime identities, release promotion, IAM. Each is read-only or
 cheap and idempotent, and skipping them is how a run deploys against configuration it never checked.
 
-Defaults: merge to main → `images,migrate`. Release tag → `all`, forced. Manual → your choice.
-Locally: `make mesh-deploy COMPONENTS=images,migrate`.
+Defaults: merge to main → `images,migrate,console,admin`. Release tag → `all`, forced. Manual →
+your choice. Locally: `make mesh-deploy COMPONENTS=images,migrate,console`.
 
 Every skipped stage says so, and the summary distinguishes *reconciled* / *not declared* /
 **not selected** — a summary reading "Schema at head" after `migrate` was excluded would be the
@@ -240,7 +350,7 @@ most misleading line the script prints.
 image on every run (~20 min) because GitHub runners keep no layer cache between runs. That is the
 dominant cost and is not addressed here — see §7.
 
-### The twelve stages, in order
+### The eighteen stages, in order
 
 1. Discover environment, generate config
 2. Validate configuration schema (typed, read-only)
@@ -256,10 +366,15 @@ dominant cost and is not addressed here — see §7.
 12. Schema migrations *(`migrate`)*
 13. Queue-depth publisher *(`queue`)*
 14. API service *(`images`)*
-15. Worker fleet + rolling update *(`workers`)*
+15. Console service *(`console`)*
+16. Admin console *(`admin`)*
+17. Worker fleet + rolling update *(`workers`)*
+18. Edge — global address, load balancer, managed certificate *(`edge`)*
 
-Ordering is load-bearing: schema before the API serves it; the fleet last, so a worker never
-starts before the schema, queue signal and object store exist.
+Ordering is load-bearing: schema before the API serves it; the console and the admin console after
+the API they talk to; the fleet before the edge, so a worker never starts before the schema, queue
+signal and object store exist; and the edge last of all, because a load balancer with no
+backend service to route to is a hostname that answers with an error.
 
 ---
 

@@ -46,13 +46,16 @@ DEEPINFRA_SECRET="${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}"
 DEEPSEEK_SECRET="${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}"
 MESH_API_KEY_SECRET_NAME="${MESH_API_KEY_SECRET:-mesh-api-key}"
 USER_TOKEN_SECRET_NAME="${USER_TOKEN_SECRET_SECRET:-user-token-secret}"
+AUTH_SECRET_NAME="${AUTH_SECRET_SECRET:-console-auth-secret}"
+CONSOLE_AUTH_USERS_NAME="${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}"
 
-# THE READERS: MIGRATE_SERVICE_ACCOUNT (written by bootstrap-env.sh), API_SERVICE_ACCOUNT and
-# WORKER_SERVICE_ACCOUNT. Each is a service-account ID; the email is derived. They are named per
-# role rather than collected into one list because a secret is granted to the identity that opens
-# it and to nothing else - the whole point of the per-secret rule - and because a deployment with
-# no worker fleet has no worker identity to grant anything to. The roster below names the variables
-# and each is resolved at grant time, so declaring one later needs no edit here.
+# THE READERS: MIGRATE_SERVICE_ACCOUNT (written by bootstrap-env.sh), API_SERVICE_ACCOUNT,
+# WORKER_SERVICE_ACCOUNT and CONSOLE_SERVICE_ACCOUNT. Each is a service-account ID; the email is
+# derived. They are named per role rather than collected into one list because a secret is granted
+# to the identity that opens it and to nothing else - the whole point of the per-secret rule - and
+# because a deployment with no worker fleet has no worker identity to grant anything to. The roster
+# below names the variables and each is resolved at grant time, so declaring one later needs no
+# edit here.
 #
 # API_SERVICE_ACCOUNT and WORKER_SERVICE_ACCOUNT are UNSET by default and that is not an oversight.
 # Today hexera-dev's API carries these credentials as plaintext environment values and the worker
@@ -60,6 +63,10 @@ USER_TOKEN_SECRET_NAME="${USER_TOKEN_SECRET_SECRET:-user-token-secret}"
 # inventory, not identities to bind secrets to. An unset reader is reported as ungranted, never
 # quietly replaced by the default compute account - which would hand every VM in the project every
 # credential named here.
+#
+# CONSOLE_SERVICE_ACCOUNT reads two of the API's own containers (MESH_API_KEY, USER_TOKEN_SECRET)
+# alongside its own two: the console's /api/v1 proxy signs X-User-Id and presents X-API-Key, so it
+# genuinely needs both, granted beside API_SERVICE_ACCOUNT rather than instead of it.
 
 # The mesh runtime identity is granted NOTHING here, and that is a property to preserve rather than
 # an omission: the mesh job is compute-only, its only access is the exchange bucket, and it holds
@@ -83,8 +90,10 @@ SECRETS=(
   "MINIO_SECRET_KEY|${MINIO_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|object storage for workspaces and results"
   "DEEPINFRA_API_KEY|${DEEPINFRA_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|the model provider the agents call"
   "DEEPSEEK_API_KEY|${DEEPSEEK_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|the model provider the agents call"
-  "MESH_API_KEY|${MESH_API_KEY_SECRET_NAME}|optional|API_SERVICE_ACCOUNT|the key the API presents when it submits a mesh job"
-  "USER_TOKEN_SECRET|${USER_TOKEN_SECRET_NAME}|optional|API_SERVICE_ACCOUNT|the HMAC key user tokens are signed with - generated elsewhere, never here"
+  "MESH_API_KEY|${MESH_API_KEY_SECRET_NAME}|optional|API_SERVICE_ACCOUNT CONSOLE_SERVICE_ACCOUNT|the key the API presents when it submits a mesh job"
+  "USER_TOKEN_SECRET|${USER_TOKEN_SECRET_NAME}|optional|API_SERVICE_ACCOUNT CONSOLE_SERVICE_ACCOUNT|the HMAC key user tokens are signed with - generated elsewhere, never here"
+  "AUTH_SECRET|${AUTH_SECRET_NAME}|optional|CONSOLE_SERVICE_ACCOUNT|the key Auth.js signs console session cookies with - generated elsewhere, never here"
+  "CONSOLE_AUTH_USERS|${CONSOLE_AUTH_USERS_NAME}|optional|CONSOLE_SERVICE_ACCOUNT|the console's email/password users and their scrypt hashes - replaced by database accounts in sub-project B"
 )
 
 info "Secret containers for ${DEPLOYMENT_ID} in ${GCP_PROJECT_ID} (${#SECRETS[@]} secrets, no values)"

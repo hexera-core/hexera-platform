@@ -29,6 +29,8 @@ APIS=(
   iam.googleapis.com
   iamcredentials.googleapis.com          # SignBlob for v4 signed URLs without a key
   cloudresourcemanager.googleapis.com
+  iap.googleapis.com                     # Identity-Aware Proxy, the admin console's gate
+  compute.googleapis.com                 # the edge: address, NEGs, backend services, URL maps, proxies, certificate
 )
 
 info "Enabling ${#APIS[@]} APIs on ${GCP_PROJECT_ID} (idempotent)"

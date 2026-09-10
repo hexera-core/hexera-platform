@@ -49,6 +49,63 @@ else
   fi
 fi
 
+# THE CONSOLE'S DIGEST, on the console's own selection. A run that reconciled the API but not the
+# console must record what the console is actually running, not the digest this commit validated.
+if _selected console; then
+  CONSOLE_DIGEST="$(resolve_digest "${CONSOLE_IMAGE:-}" 2>/dev/null || printf '%s' "${CONSOLE_IMAGE:-}")"
+elif [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
+  CONSOLE_DIGEST="$(gc run services describe "${CLOUDRUN_CONSOLE_SERVICE}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+else
+  CONSOLE_DIGEST=""
+fi
+
+# THE ADMIN'S DIGEST, on the admin's own selection - same reasoning as the console's above.
+if _selected admin; then
+  ADMIN_DIGEST="$(resolve_digest "${ADMIN_IMAGE:-}" 2>/dev/null || printf '%s' "${ADMIN_IMAGE:-}")"
+elif [ -n "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
+  ADMIN_DIGEST="$(gc run services describe "${CLOUDRUN_ADMIN_SERVICE}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+else
+  ADMIN_DIGEST=""
+fi
+
+# THE CERTIFICATE'S STATE AND THE RESERVED ADDRESS, both read back regardless of this run's own
+# selection - either may have been provisioned by an earlier run, and an operator checking whether
+# DNS is working needs to know what the edge IS, not merely which run last touched it.
+#
+# THE ADDRESS IS READ, NOT INHERITED. create-edge.sh sets EDGE_IP_ADDRESS as an in-process export,
+# but deploy.sh runs every stage as its own `bash` process, so that value never reaches this one
+# and the manifest field recorded "" on every real deploy - the field the edge exists to publish.
+# EDGE_IP_NAME arrives here through generated.env exactly as EDGE_CERT does, so the address can
+# simply be asked for, with no cross-process assumption to get wrong. Failure is tolerated the same
+# way the certificate's is: a manifest is worth writing even when one read-back did not answer.
+#
+# THERE IS NO LONGER ONE CERTIFICATE TO DESCRIBE. create-edge.sh gives each hostname its own,
+# named ${EDGE_CERT}-console and ${EDGE_CERT}-admin from the same base, because a managed
+# certificate serves only once it is wholly ACTIVE and one shared certificate therefore gave every
+# hostname one fate. EDGE_CERT still arrives here through generated.env, but as a BASE NAME - so
+# describing it names nothing, and the manifest recorded an empty state for the field an operator
+# reads to find out whether HTTPS is working. One record per hostname instead, each with the
+# certificate that actually covers it.
+if [ -n "${CONSOLE_DOMAIN:-}" ] || [ -n "${ADMIN_DOMAIN:-}" ]; then
+  EDGE_CERT_REPORT=""
+  for _edge_pair in "${CONSOLE_DOMAIN:-}|console" "${ADMIN_DOMAIN:-}|admin"; do
+    _edge_host="${_edge_pair%%|*}"
+    [ -n "${_edge_host}" ] || continue
+    _edge_cert="${EDGE_CERT:-}-${_edge_pair##*|}"
+    _edge_state="$(gc compute ssl-certificates describe "${_edge_cert}" --global \
+      --format='value(managed.status)' 2>/dev/null || true)"
+    EDGE_CERT_REPORT="${EDGE_CERT_REPORT}${_edge_host} ${_edge_cert} ${_edge_state:-unknown}
+"
+  done
+  EDGE_IP_ADDRESS="$(gc compute addresses describe "${EDGE_IP_NAME:-}" --global \
+    --format='value(address)' 2>/dev/null || true)"
+else
+  EDGE_CERT_REPORT=""
+  EDGE_IP_ADDRESS=""
+fi
+
 # TWO DIFFERENT QUESTIONS, kept apart because one is durable and one is about this run.
 #
 #   disposition  - OWNERSHIP. Did this tooling create the resource, or was it supplied? It does not
@@ -86,6 +143,18 @@ _recon() { if _selected "$1"; then printf 'True'; else printf 'False'; fi; }
 
 MESH_JOB_DISP="$(_disp images "${MESH_JOB_DISPOSITION:-}" mesh_job)"
 API_DISP="$(_disp images "${API_SERVICE_DISPOSITION:-}" api_service)"
+# CONSOLE_SERVICE_DISPOSITION is always empty in practice: each stage in deploy.sh runs as a
+# separate `bash` process, so create-console-service.sh cannot export it back here. Same as
+# API_SERVICE_DISPOSITION above - _disp's fallback to the prior manifest is what makes that fine.
+CONSOLE_DISP="$(_disp console "${CONSOLE_SERVICE_DISPOSITION:-}" console_service)"
+# ADMIN_SERVICE_DISPOSITION is always empty in practice, for the same reason CONSOLE's is above:
+# create-admin-service.sh runs as its own `bash` process and cannot export back into this one.
+ADMIN_DISP="$(_disp admin "${ADMIN_SERVICE_DISPOSITION:-}" admin_service)"
+# EDGE_DISPOSITION is always empty in practice, for the same reason CONSOLE's and ADMIN's are
+# above: create-edge.sh runs as its own `bash` process and cannot export back into this one.
+# EDGE_IP_ADDRESS used to be empty for that same reason; it is now read back from the reserved
+# address above rather than inherited, so the manifest records the address on every run.
+EDGE_DISP="$(_disp edge "${EDGE_DISPOSITION:-}" edge)"
 SQL_DISP="$(_disp data "${CLOUDSQL_DISPOSITION:-}" cloud_sql)"
 REDIS_DISP="$(_disp data "${REDIS_DISPOSITION:-}" memorystore)"
 STORE_DISP="$(_disp storage "${ARTIFACTS_BUCKET_DISPOSITION:-}" object_store)"
@@ -97,6 +166,9 @@ MESH_JOB_RECON="$(_recon images)";  API_RECON="$(_recon images)"
 SQL_RECON="$(_recon data)";         REDIS_RECON="$(_recon data)"
 STORE_RECON="$(_recon storage)";    FLEET_RECON="$(_recon workers)"
 QUEUE_RECON="$(_recon queue)";      MIGRATE_RECON="$(_recon migrate)"
+CONSOLE_RECON="$(_recon console)"
+ADMIN_RECON="$(_recon admin)"
+EDGE_RECON="$(_recon edge)"
 
 python3 - "${OUT}" <<PY
 import datetime, json, sys
@@ -119,10 +191,10 @@ doc = {
   # reconcile would otherwise read a partial deploy as a complete one.
   "components": "${COMPONENTS}",
   # A NAME-TO-DIGEST MAP AND NOTHING ELSE. Whether these were deployed by this run or observed on
-  # the running workloads is already answered per workload, by `reconciled` on mesh_job and
-  # api_service - saying it a second time here cost `set(doc["images"])` its meaning, which is
+  # the running workloads is already answered per workload, by 'reconciled' on mesh_job and
+  # api_service - saying it a second time here cost 'set(doc["images"])' its meaning, which is
   # exactly what a consumer iterating for digests relies on.
-  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}"},
+  "images": {"mesh": "${MESH_DIGEST}", "app": "${APP_DIGEST}", "console": "${CONSOLE_DIGEST}", "admin": "${ADMIN_DIGEST}"},
 }
 if "${MIGRATE_DB_HOST:-}":
   doc["resources"]["migration_job"] = {
@@ -167,6 +239,36 @@ if "${CLOUDRUN_API_SERVICE:-}":
     "service_account": "${API_SERVICE_ACCOUNT:-}",
     "instances": "${API_MIN_INSTANCES:-}..${API_MAX_INSTANCES:-}",
     "public": "${API_ALLOW_UNAUTHENTICATED:-0}" == "1",
+  }
+if "${CLOUDRUN_CONSOLE_SERVICE:-}":
+  doc["resources"]["console_service"] = {
+    "name": "${CLOUDRUN_CONSOLE_SERVICE:-}",
+    "service_account": "${CONSOLE_SERVICE_ACCOUNT:-}",
+    "disposition": "${CONSOLE_DISP}",
+    "reconciled": ${CONSOLE_RECON},
+  }
+if "${CLOUDRUN_ADMIN_SERVICE:-}":
+  doc["resources"]["admin_service"] = {
+    "name": "${CLOUDRUN_ADMIN_SERVICE:-}",
+    "service_account": "${ADMIN_SERVICE_ACCOUNT:-}",
+    "disposition": "${ADMIN_DISP}",
+    "reconciled": ${ADMIN_RECON},
+  }
+if "${CONSOLE_DOMAIN:-}" or "${ADMIN_DOMAIN:-}":
+  # A deployment with no custom hostname declared has no edge - Cloud Run's own *.run.app URL
+  # works without one. EDGE_IP_ADDRESS is the address read back from EDGE_IP_NAME above, so it is
+  # the address that is actually reserved whether or not this run selected 'edge' - and empty only
+  # when the reservation does not exist yet or could not be read, never merely because the edge
+  # stage ran in a different process.
+  doc["resources"]["edge"] = {
+    "address": "${EDGE_IP_ADDRESS:-}",
+    "hostnames": [h for h in ("${CONSOLE_DOMAIN:-}", "${ADMIN_DOMAIN:-}") if h],
+    "certificates": [
+        dict(zip(("hostname", "name", "state"), _line.split()))
+        for _line in """${EDGE_CERT_REPORT}""".strip().splitlines() if _line.strip()
+    ],
+    "disposition": "${EDGE_DISP}",
+    "reconciled": ${EDGE_RECON},
   }
 if "${WORKER_MIG:-}":
   # The TEMPLATE is the rotation record: a digest change makes a new template and the group rolls
