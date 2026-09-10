@@ -239,6 +239,15 @@ _name_set() {
     | LC_ALL=C sort | tr '\n' ' '
 }
 
+# The same normalisation WITHOUT the sort, because the proxy's certificate order is load-bearing:
+# when several attached certificates match one SNI name, the load balancer serves the FIRST, so a
+# still-PROVISIONING certificate ahead of a working one is an outage. Sets answer "are these the
+# same certificates"; this answers "in the same order", which is the question section 5 asks.
+_name_csv() {
+  printf '%s' "$1" | tr ';' '\n' | tr ',' '\n' | sed -e 's#.*/##' -e '/^[[:space:]]*$/d' \
+    | tr '\n' ',' | sed -e 's/,$//'
+}
+
 # The HTTPS proxy is NAMED here rather than at section 5 because the drift refusal below has to
 # print the `target-https-proxies update` an operator would run to finish the swap by hand.
 HTTPS_PROXY="${EDGE_URL_MAP}-https-proxy"
@@ -306,6 +315,21 @@ for triple in "${TRIPLES[@]}"; do
   fi
 done
 
+# 4b) EVERY CERTIFICATE'S STATE, read once, here. Two later decisions need it and neither may
+#     re-read it independently: which certificates the proxy may safely be narrowed to (section 5)
+#     and which hostnames this run refuses over (section 7).
+CERT_STATES=()
+CERTS_ALL_ACTIVE=yes
+cert_i=0
+for triple in "${TRIPLES[@]}"; do
+  host="${triple%%|*}"
+  cert_state="$(gc compute ssl-certificates describe "${CERT_NAMES[${cert_i}]}" --global \
+    --format='value(managed.status)')"
+  cert_i=$((cert_i + 1))
+  CERT_STATES+=("${host}=${cert_state}")
+  [ "${cert_state}" = "ACTIVE" ] || CERTS_ALL_ACTIVE=no
+done
+
 # 5) HTTPS: proxy + forwarding rule on port 443.
 #
 #    THE CERTIFICATE LIST IS RECONCILED, NOT MERELY SET AT CREATION. `_ensure` creates a proxy that
@@ -328,16 +352,62 @@ _ensure "HTTPS proxy ${HTTPS_PROXY}" \
   compute target-https-proxies create "${HTTPS_PROXY}" \
     --ssl-certificates="${CERT_LIST}" --url-map="${EDGE_URL_MAP}"
 
+#    A CERTIFICATE THAT IS SERVING IS NEVER DETACHED TO MAKE ROOM FOR ONE THAT CANNOT SERVE YET.
+#    Setting the list to exactly this deployment's certificates is right only once they can all
+#    serve. Before that it is an OUTAGE, and it was one: attaching two PROVISIONING per-host
+#    certificates in place of a working shared certificate took both dev hostnames off HTTPS for
+#    about twenty minutes, curl reporting SSL_ERROR_SYSCALL, until the old certificate was put
+#    back by hand.
+#
+#    The obvious repair - attach the new certificates only once they are ACTIVE - cannot work. A
+#    Google-managed certificate does not begin validating until it is attached to a target proxy
+#    that has a forwarding rule, so a certificate withheld until ACTIVE stays PROVISIONING for
+#    ever. Attachment is a PRECONDITION of validation, not a reward for it.
+#
+#    So the list is a UNION while any of this deployment's certificates is not yet ACTIVE: whatever
+#    is already attached and is not ours stays attached, FIRST, and ours follow. Order is the
+#    load-bearing part - the load balancer serves the first attached certificate whose names match
+#    the SNI name, so the proven one has to precede the provisioning one or the union changes
+#    nothing. Once every one of ours is ACTIVE the list narrows to exactly ours, which detaches the
+#    old certificate - without deleting it, and without touching the address, which belongs to the
+#    forwarding rule.
 PROXY_CERTS_LIVE="$(gc compute target-https-proxies describe "${HTTPS_PROXY}" --global \
   --format='value(sslCertificates)')"
-PROXY_CERTS_LIVE_SET="$(_name_set "${PROXY_CERTS_LIVE}")"
-CERT_LIST_SET="$(_name_set "${CERT_LIST}")"
-if [ "${PROXY_CERTS_LIVE_SET}" != "${CERT_LIST_SET}" ]; then
-  info "Attaching ${CERT_LIST} to ${HTTPS_PROXY} (it serves [${PROXY_CERTS_LIVE_SET% }])"
-  gc compute target-https-proxies update "${HTTPS_PROXY}" --global \
-    --ssl-certificates="${CERT_LIST}"
+PROXY_CERTS_LIVE_CSV="$(_name_csv "${PROXY_CERTS_LIVE}")"
+
+PROXY_CERTS_RETAIN=""
+if [ "${CERTS_ALL_ACTIVE}" != "yes" ]; then
+  for live_cert in $(printf '%s' "${PROXY_CERTS_LIVE_CSV}" | tr ',' ' '); do
+    case ",${CERT_LIST}," in
+      *",${live_cert},"*) ;;
+      *) PROXY_CERTS_RETAIN="${PROXY_CERTS_RETAIN:+${PROXY_CERTS_RETAIN},}${live_cert}" ;;
+    esac
+  done
+fi
+PROXY_CERTS_WANT="${PROXY_CERTS_RETAIN:+${PROXY_CERTS_RETAIN},}${CERT_LIST}"
+
+# ORDER IS COMPARED ONLY WHEN ORDER MEANS SOMETHING. Our per-hostname certificates each carry one
+# name and those names are disjoint, so no SNI name matches two of them and their relative order can
+# never decide what is served - comparing them as a SET keeps a re-run from rewriting a proxy that
+# is already correct, and an LB config rewrite on every deploy is churn with a propagation window
+# attached. A RETAINED certificate is the opposite case: it overlaps our names by definition, that
+# is why it is being kept, so it has to come first and the comparison has to be ordered.
+if [ -n "${PROXY_CERTS_RETAIN}" ]; then
+  PROXY_CERTS_DRIFTED=$([ "${PROXY_CERTS_LIVE_CSV}" = "${PROXY_CERTS_WANT}" ] || echo yes)
 else
-  log "  ${HTTPS_PROXY} serves ${CERT_LIST}"
+  PROXY_CERTS_DRIFTED=$([ "$(_name_set "${PROXY_CERTS_LIVE_CSV}")" = "$(_name_set "${PROXY_CERTS_WANT}")" ] || echo yes)
+fi
+if [ -n "${PROXY_CERTS_DRIFTED}" ]; then
+  if [ -n "${PROXY_CERTS_RETAIN}" ]; then
+    info "Attaching ${CERT_LIST} to ${HTTPS_PROXY} BEHIND ${PROXY_CERTS_RETAIN}, which keeps
+   serving until every certificate of this deployment's is ACTIVE"
+  else
+    info "Attaching ${CERT_LIST} to ${HTTPS_PROXY} (it serves [${PROXY_CERTS_LIVE_CSV}])"
+  fi
+  gc compute target-https-proxies update "${HTTPS_PROXY}" --global \
+    --ssl-certificates="${PROXY_CERTS_WANT}"
+else
+  log "  ${HTTPS_PROXY} serves ${PROXY_CERTS_WANT}"
 fi
 
 HTTPS_RULE="${EDGE_URL_MAP}-https-rule"
@@ -385,16 +455,13 @@ _ensure "HTTP forwarding rule ${HTTP_RULE}" \
 #    certificate exists to end, just moved into this script's control flow. So everything is
 #    reconciled first, then every hostname's state is read and reported, and only then does a
 #    FAILED one fail the run.
-CERT_STATES=()
 CERT_FAILED=""
 cert_i=0
 for triple in "${TRIPLES[@]}"; do
   host="${triple%%|*}"
   cert="${CERT_NAMES[${cert_i}]}"
+  cert_state="${CERT_STATES[${cert_i}]#*=}"
   cert_i=$((cert_i + 1))
-  cert_state="$(gc compute ssl-certificates describe "${cert}" --global \
-    --format='value(managed.status)')"
-  CERT_STATES+=("${host}=${cert_state}")
   case "${cert_state}" in
     ACTIVE) ;;
     PROVISIONING|PROVISIONING_FAILED_TEMPORARILY)

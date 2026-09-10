@@ -96,7 +96,38 @@ def test_the_recorded_address_is_the_one_actually_reserved(tmp_path):
     assert "compute addresses describe t-edge-ip --global" in calls, (
         "the address was never read back; the manifest can only be repeating what it was handed")
     assert doc["resources"]["edge"]["address"] == "203.0.113.44"
-    assert doc["resources"]["edge"]["certificate_state"] == "ACTIVE"
+    # ONE RECORD PER HOSTNAME, not one certificate. EDGE_CERT is a BASE name now - create-edge.sh
+    # derives ${EDGE_CERT}-console and ${EDGE_CERT}-admin from it and nothing is created under the
+    # base itself, so describing EDGE_CERT named no resource and the field an operator reads to
+    # find out whether HTTPS works recorded an empty state on every deploy.
+    assert doc["resources"]["edge"]["certificates"] == [
+        {"hostname": "dev.console.hexera.ai", "name": "t-edge-cert-console", "state": "ACTIVE"},
+        {"hostname": "dev.admin.hexera.ai", "name": "t-edge-cert-admin", "state": "ACTIVE"},
+    ], doc["resources"]["edge"]
+    assert "t-edge-cert-console" in calls and "t-edge-cert-admin" in calls, calls
+    assert "ssl-certificates describe t-edge-cert --global" not in calls, (
+        "the base name is not a resource; describing it is the bug this replaced")
+
+
+def test_only_a_declared_hostname_gets_a_certificate_record(tmp_path):
+    """A deployment serving one hostname has one certificate, and the manifest must not invent a
+    record for a hostname that was never declared."""
+    doc, _ = _write_manifest(tmp_path, over={"ADMIN_DOMAIN": ""})
+    assert doc["resources"]["edge"]["certificates"] == [
+        {"hostname": "dev.console.hexera.ai", "name": "t-edge-cert-console", "state": "ACTIVE"},
+    ], doc["resources"]["edge"]
+
+
+def test_a_certificate_that_cannot_be_read_is_recorded_as_unknown(tmp_path):
+    """An unreadable state must not be recorded as a state. Reporting "" where ACTIVE would go
+    reads as "no certificate", which is the same class of bug as a check that passes because it
+    could not run."""
+    bad = tmp_path / "badbin2"
+    bad.mkdir()
+    (bad / "gcloud").write_text("#!/usr/bin/env bash\nexit 7\n", encoding="utf-8")
+    (bad / "gcloud").chmod(0o755)
+    doc, _ = _write_manifest(tmp_path, extra_env={"PATH": f"{bad}:{os.environ['PATH']}"})
+    assert [c["state"] for c in doc["resources"]["edge"]["certificates"]] == ["unknown", "unknown"]
 
 
 def test_an_address_that_cannot_be_read_is_empty_rather_than_fatal(tmp_path):

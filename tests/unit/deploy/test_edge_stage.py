@@ -300,26 +300,65 @@ def test_the_https_proxy_is_given_only_the_declared_hostname_certificate(run):
     assert "t-edge-cert-admin" not in calls
 
 
-def test_an_existing_proxy_has_its_certificate_list_updated(run):
-    """THE MIGRATION. dev already has the one shared `dev-edge-cert` attached to its HTTPS proxy.
-    The proxy is only ever handed certificates by `create`, and an existing proxy is never created
-    - so without an explicit reconcile the per-hostname certificates would be provisioned, billed
-    and never served, and the shared certificate would stay attached forever."""
-    # Dev's shape today: a reserved address, both forwarding rules, the proxy, and the one shared
-    # certificate attached to it.
+def test_the_migration_keeps_the_serving_certificate_until_ours_can_serve(run):
+    """THE OUTAGE THIS EXISTS TO PREVENT, and it was a real one. dev had the shared `dev-edge-cert`
+    attached and ACTIVE. Narrowing the proxy to the two per-hostname certificates while both were
+    still PROVISIONING took dev.console and dev.admin off HTTPS entirely - TCP connected and the
+    handshake was aborted - until the old certificate was reattached by hand.
+
+    Withholding ours until they are ACTIVE is not the fix and cannot be: a Google-managed
+    certificate does not begin validating until it is attached to a target proxy with a forwarding
+    rule, so a certificate withheld until ACTIVE never becomes ACTIVE. Attachment is a
+    precondition of validation. The union is the only shape that both serves and validates."""
     done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1", "FAKE_RULE_RC": "0",
                             "FAKE_PROXY_CERTS": "t-edge-cert"})
     assert done.returncode == 0, done.stderr
     assert "target-https-proxies create" not in calls, "the proxy was supposed to pre-exist"
+    # The retained certificate leads: the load balancer serves the FIRST attached certificate
+    # matching the SNI name, so a PROVISIONING one ahead of it would make the union pointless.
     assert ("target-https-proxies update t-edge-https-proxy --global "
-            "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin") in calls, calls
-    # Detaching is not deleting, and the address is not touched: the IP lives on the forwarding
-    # rule, which names the proxy and is never rewritten here.
+            "--ssl-certificates=t-edge-cert,t-edge-cert-console,t-edge-cert-admin") in calls, calls
     assert "delete" not in calls
     assert "addresses create" not in calls
     assert "forwarding-rules create" not in calls
     attached = (run.state / "proxy-certs.t-edge-https-proxy").read_text(encoding="utf-8")
+    assert attached == "t-edge-cert,t-edge-cert-console,t-edge-cert-admin"
+
+
+def test_the_old_certificate_is_detached_once_every_one_of_ours_is_active(run):
+    """The other half of the cutover. Retaining forever would leave the shared certificate serving
+    both names for good, which is the coupling the split exists to remove - so once every
+    per-hostname certificate is ACTIVE the list narrows to exactly ours."""
+    done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1", "FAKE_RULE_RC": "0",
+                            "FAKE_PROXY_CERTS": "t-edge-cert", "FAKE_CERT_STATE": "ACTIVE"})
+    assert done.returncode == 0, done.stderr
+    assert ("target-https-proxies update t-edge-https-proxy --global "
+            "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin") in calls, calls
+    # Detaching is not deleting. The old certificate survives for an operator to remove.
+    assert "delete" not in calls
+    attached = (run.state / "proxy-certs.t-edge-https-proxy").read_text(encoding="utf-8")
     assert attached == "t-edge-cert-console,t-edge-cert-admin"
+
+
+def test_one_hostname_still_provisioning_holds_the_whole_cutover(run):
+    """ALL of ours, not SOME. Narrowing while admin is still PROVISIONING would take the admin
+    hostname off HTTPS even though the console's certificate was ready - the certificate is per
+    hostname, but the proxy's list is shared, so the cutover is only safe when every one is ready."""
+    done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1", "FAKE_RULE_RC": "0",
+                            "FAKE_PROXY_CERTS": "t-edge-cert",
+                            "FAKE_CERT_STATE_console": "ACTIVE",
+                            "FAKE_CERT_STATE_admin": "PROVISIONING"})
+    assert done.returncode == 0, done.stderr
+    attached = (run.state / "proxy-certs.t-edge-https-proxy").read_text(encoding="utf-8")
+    assert attached == "t-edge-cert,t-edge-cert-console,t-edge-cert-admin", attached
+
+
+def test_a_first_run_attaches_only_its_own_certificates(run):
+    """A project with no edge yet has nothing to retain, so the union degenerates to ours alone -
+    prod's first run must not invent a certificate to keep."""
+    done, calls = run()
+    assert done.returncode == 0, done.stderr
+    assert "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin" in calls, calls
 
 
 def test_a_proxy_already_carrying_the_right_certificates_is_left_alone(run):

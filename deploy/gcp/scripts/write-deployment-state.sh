@@ -80,13 +80,29 @@ fi
 # EDGE_IP_NAME arrives here through generated.env exactly as EDGE_CERT does, so the address can
 # simply be asked for, with no cross-process assumption to get wrong. Failure is tolerated the same
 # way the certificate's is: a manifest is worth writing even when one read-back did not answer.
+#
+# THERE IS NO LONGER ONE CERTIFICATE TO DESCRIBE. create-edge.sh gives each hostname its own,
+# named ${EDGE_CERT}-console and ${EDGE_CERT}-admin from the same base, because a managed
+# certificate serves only once it is wholly ACTIVE and one shared certificate therefore gave every
+# hostname one fate. EDGE_CERT still arrives here through generated.env, but as a BASE NAME - so
+# describing it names nothing, and the manifest recorded an empty state for the field an operator
+# reads to find out whether HTTPS is working. One record per hostname instead, each with the
+# certificate that actually covers it.
 if [ -n "${CONSOLE_DOMAIN:-}" ] || [ -n "${ADMIN_DOMAIN:-}" ]; then
-  EDGE_CERT_STATE="$(gc compute ssl-certificates describe "${EDGE_CERT:-}" --global \
-    --format='value(managed.status)' 2>/dev/null || true)"
+  EDGE_CERT_REPORT=""
+  for _edge_pair in "${CONSOLE_DOMAIN:-}|console" "${ADMIN_DOMAIN:-}|admin"; do
+    _edge_host="${_edge_pair%%|*}"
+    [ -n "${_edge_host}" ] || continue
+    _edge_cert="${EDGE_CERT:-}-${_edge_pair##*|}"
+    _edge_state="$(gc compute ssl-certificates describe "${_edge_cert}" --global \
+      --format='value(managed.status)' 2>/dev/null || true)"
+    EDGE_CERT_REPORT="${EDGE_CERT_REPORT}${_edge_host} ${_edge_cert} ${_edge_state:-unknown}
+"
+  done
   EDGE_IP_ADDRESS="$(gc compute addresses describe "${EDGE_IP_NAME:-}" --global \
     --format='value(address)' 2>/dev/null || true)"
 else
-  EDGE_CERT_STATE=""
+  EDGE_CERT_REPORT=""
   EDGE_IP_ADDRESS=""
 fi
 
@@ -247,8 +263,10 @@ if "${CONSOLE_DOMAIN:-}" or "${ADMIN_DOMAIN:-}":
   doc["resources"]["edge"] = {
     "address": "${EDGE_IP_ADDRESS:-}",
     "hostnames": [h for h in ("${CONSOLE_DOMAIN:-}", "${ADMIN_DOMAIN:-}") if h],
-    "certificate": "${EDGE_CERT:-}",
-    "certificate_state": "${EDGE_CERT_STATE:-}",
+    "certificates": [
+        dict(zip(("hostname", "name", "state"), _line.split()))
+        for _line in """${EDGE_CERT_REPORT}""".strip().splitlines() if _line.strip()
+    ],
     "disposition": "${EDGE_DISP}",
     "reconciled": ${EDGE_RECON},
   }

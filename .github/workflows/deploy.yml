@@ -696,14 +696,24 @@ jobs:
         run: |
           set -euo pipefail
           {
+            # edge_cert_state carries one `hostname=STATE` per declared hostname, so the state
+            # belongs in the row for that hostname rather than mashed into one line under the
+            # table -- with per-host certificates the two hostnames reach ACTIVE separately, and
+            # the whole point of reading this table is to see WHICH one is not there yet.
+            _state_of() {
+              for _pair in ${EDGE_CERT_STATE}; do
+                case "${_pair}" in "$1="*) printf '%s' "${_pair#*=}"; return ;; esac
+              done
+              printf 'unknown'
+            }
             echo "## Edge"
             echo
-            echo "| Hostname | Record | Value |"
-            echo "|---|---|---|"
-            [ -n "${CONSOLE_DOMAIN}" ] && echo "| \`${CONSOLE_DOMAIN}\` | A | \`${EDGE_IP}\` |"
-            [ -n "${ADMIN_DOMAIN}" ] && echo "| \`${ADMIN_DOMAIN}\` | A | \`${EDGE_IP}\` |"
+            echo "| Hostname | Record | Value | Certificate |"
+            echo "|---|---|---|---|"
+            [ -n "${CONSOLE_DOMAIN}" ] && echo "| \`${CONSOLE_DOMAIN}\` | A | \`${EDGE_IP}\` | $(_state_of "${CONSOLE_DOMAIN}") |"
+            [ -n "${ADMIN_DOMAIN}" ] && echo "| \`${ADMIN_DOMAIN}\` | A | \`${EDGE_IP}\` | $(_state_of "${ADMIN_DOMAIN}") |"
             echo
-            echo "Certificate: **${EDGE_CERT_STATE}**"
+            echo "TTL 300 on each A record. \`PROVISIONING\` becomes \`ACTIVE\` on its own, 15-60 min after the record propagates."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md

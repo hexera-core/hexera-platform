@@ -81,11 +81,38 @@ either way, and each hostname's state is reported on its own line.
 
 ### 2.2 What the migration onto per-host certificates does to a live edge
 
-Dev already had the shared `dev-edge-cert` attached to `dev-edge-https-proxy`. The first run of the
-new script against it creates the two per-host certificates and then **updates the proxy's
-certificate list** — `create-edge.sh` reads the live list back and reconciles it rather than only
-setting it at creation, because an existing proxy is never created and would otherwise go on
-serving the shared certificate forever while the new ones sat provisioned, billed and unused.
+Dev already had the shared `dev-edge-cert` attached to `dev-edge-https-proxy`. The migration is a
+**two-stage cutover**, and it is two stages because the one-stage version caused an outage.
+
+**What went wrong the first time.** The script created the two per-host certificates and set the
+proxy's list to exactly those two — while both were still `PROVISIONING`. That detached the one
+certificate that could actually serve. Both dev hostnames went off HTTPS completely for about
+twenty minutes: TCP connected, then the handshake was aborted (`SSL_ERROR_SYSCALL`, curl exit 35),
+with `ssl_verify_result=1`. It was not a degradation; nothing served. Service came back only when
+`dev-edge-cert` was reattached by hand.
+
+**Why the obvious fix does not work.** "Attach the new certificates only once they are `ACTIVE`" is
+impossible. A Google-managed certificate does not begin validating until it is attached to a target
+proxy that has a forwarding rule — attachment is a *precondition* of validation, not a reward for
+it. A certificate withheld until `ACTIVE` stays `PROVISIONING` for ever.
+
+**So the list is a union while any of ours is not yet `ACTIVE`.** Whatever is already attached and
+is not this deployment's stays attached — **first** — and ours follow:
+
+```
+--ssl-certificates=dev-edge-cert,dev-edge-cert-console,dev-edge-cert-admin
+```
+
+Order is load-bearing. The load balancer serves the *first* attached certificate whose names match
+the SNI name, and the retained certificate overlaps ours by definition — that is why it is kept —
+so it has to lead or the union changes nothing. Among our own certificates order is irrelevant:
+each carries exactly one name and those names are disjoint, so no SNI name matches two of them.
+That is why the reconcile compares an ordered list only when something is retained, and a set
+otherwise — an LB rewrite on every deploy is churn with a propagation window attached.
+
+Once **every** one of ours is `ACTIVE` the list narrows to exactly ours, which detaches the old
+certificate. All of ours, not some: the certificate is per hostname but the proxy's list is shared,
+so narrowing while one is still `PROVISIONING` would take that hostname down.
 
 Two things that update deliberately does **not** do:
 
@@ -96,9 +123,11 @@ Two things that update deliberately does **not** do:
   (`dev-edge-https-rule` / `dev-edge-http-rule` on `35.186.202.188`), which names the proxy and is
   not rewritten at all. DNS that already points at that address keeps working across the swap.
 
-There is a window during the swap in which the new certificates are `PROVISIONING`. They validate
-against A records that already exist, so it is the short end of the 15–60 minutes in §4 rather than
-a first run's wait — but HTTPS on both hostnames is degraded until they go `ACTIVE`.
+Expect the cutover to span two runs: the first attaches the union and the certificates validate
+against A records that already exist (dev's took about 25 minutes), the second narrows the list.
+HTTPS keeps working throughout. Note that an LB configuration change propagates unevenly across
+Google's frontends for a few minutes, so a hostname can flap between working and failing right
+after a proxy update — measure the outcome a few minutes later, not immediately.
 
 ## 3. The first run reserves an address and leaves each certificate `PROVISIONING` — by design
 
@@ -119,6 +148,12 @@ The deploy workflow now does this printing for you — see §5.
 
 ## 4. `PROVISIONING` becomes `ACTIVE` on its own
 
+**TTL on the A records: 300 seconds.** The address is a *reserved static* IP that this script
+never recreates (§6), so a long TTL would be safe in principle — but 300 keeps a wrong record
+correctable in minutes rather than an hour, which is the failure actually worth insuring against
+while hostnames are being stood up. Raise it to 3600 once a hostname has been stable for a week and
+cut the query volume. Do not go below 300: many resolvers clamp it and there is nothing to gain.
+
 Once both A records exist and have propagated, Google's own validation polling picks them up
 without anything further from this repository. Expect **roughly 15–60 minutes** between an A
 record landing and its certificate reporting `ACTIVE`; the two hostnames now get there separately.
@@ -132,9 +167,11 @@ rather than creations:
   an Update on every run. The content is identical, so the routing never changes, but the API call
   is a write and the resource's update timestamp moves; a re-run is not literally a no-op.
 - The **HTTPS proxy's certificate list** is read back and updated when it disagrees with the
-  hostnames this deployment declares (§2.2). Comparison is by set, not by literal string, so a
+  hostnames this deployment declares (§2.2). While nothing is retained, comparison is by set, so a
   proxy already carrying the right certificates is left untouched however they happen to be
-  ordered — a converged edge issues no `create`, no `delete` and no proxy update.
+  ordered — a converged edge issues no `create`, no `delete` and no proxy update. While a
+  certificate *is* retained mid-cutover the comparison is ordered instead, because the retained one
+  has to lead.
 
 Use a re-run to check progress rather than to force it; nothing about the check itself makes
 validation happen sooner.
