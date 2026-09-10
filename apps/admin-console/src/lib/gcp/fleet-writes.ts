@@ -132,9 +132,19 @@ export async function updateScalingPolicy(
     throw new Error(`A floor of ${floor} is above the ceiling of ${ceiling}.`);
   }
 
+  // ONLY THE WRITABLE FIELDS GO BACK. `live` also carries id, selfLink, creationTimestamp, status,
+  // statusDetails and recommendedSize - all output-only. Echoing them into a PUT is at best
+  // ignored and at worst rejected, and none of them is anything this write means to change.
+  // `target` is not optional: it is the group this autoscaler drives, and an update that omits it
+  // is an autoscaler pointed at nothing.
   const [operation] = await clients.autoscalers.update({
     autoscaler: target.migName,
-    autoscalerResource: { ...live, autoscalingPolicy: after },
+    autoscalerResource: {
+      autoscalingPolicy: after,
+      description: live.description,
+      name: live.name,
+      target: live.target,
+    },
     project: target.projectId,
     zone: target.migZone,
   });

@@ -20,6 +20,14 @@ const TARGET = {
 const LIMITS = { maxAllowedReplicas: 12 };
 
 const LIVE_AUTOSCALER = {
+  // The output-only fields a real GET returns alongside the policy.
+  creationTimestamp: "2026-08-30T10:00:00.000-07:00",
+  id: "123456789",
+  recommendedSize: 3,
+  selfLink: "https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-a/autoscalers/hexera-dev-workers",
+  status: "ACTIVE",
+  statusDetails: [{ message: "fine", type: "OK" }],
+  target: "https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-a/instanceGroupManagers/hexera-dev-workers",
   autoscalingPolicy: {
     coolDownPeriodSec: 180,
     customMetricUtilizations: [
@@ -64,6 +72,29 @@ test("preserves the custom metric the fleet actually scales on", async () => {
   assert.equal(policy?.minNumReplicas, 2);
   assert.equal(policy?.maxNumReplicas, 5, "an unspecified field keeps its live value");
   assert.equal(policy?.coolDownPeriodSec, 180);
+});
+
+test("sends back only the writable fields, and keeps the group it drives", async () => {
+  // A PUT that echoed status, selfLink and recommendedSize would be sending output-only fields the
+  // write does not mean to change. Omitting `target`, on the other hand, would point the
+  // autoscaler at nothing.
+  let sent: { autoscalerResource?: Record<string, unknown> } = {};
+  await updateScalingPolicy(
+    autoscalerClients((request) => {
+      sent = request;
+    }),
+    TARGET,
+    { minReplicas: 2 },
+    LIMITS,
+  );
+
+  assert.deepEqual(Object.keys(sent.autoscalerResource ?? {}).sort(), [
+    "autoscalingPolicy",
+    "description",
+    "name",
+    "target",
+  ]);
+  assert.equal(sent.autoscalerResource?.target, LIVE_AUTOSCALER.target);
 });
 
 test("addresses the autoscaler by name and zone", async () => {
