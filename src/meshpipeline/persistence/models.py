@@ -529,6 +529,133 @@ class ApiKey(Base):
     )
 
 
+class MembershipRole(str, PyEnum):
+    owner  = "owner"
+    member = "member"
+
+
+class CreditEntryType(str, PyEnum):
+    #: credits issued - the only kind this cycle writes
+    grant  = "grant"
+    #: credits consumed. Declared now so the ledger's shape is settled; nothing writes one yet.
+    debit  = "debit"
+    #: credits returned after a debit that should not have stood
+    refund = "refund"
+
+
+class Organization(Base):
+    # THE TENANT. One per user today (there is no organisation UI), but the table and its
+    # memberships exist from day one because widening a tenant boundary after data has
+    # accumulated is the expensive migration - the same argument api_keys.organization_id
+    # was already carrying an empty column for.
+
+    __tablename__ = "organizations"
+
+    id:   Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                            default=uuid.uuid4)
+    name: Mapped[str]       = mapped_column(String(256), nullable=False)
+    #: a URL-safe handle. Unique so it can address the organisation once anything needs to.
+    slug: Mapped[str]       = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 server_default=func.now(), nullable=False)
+
+
+class User(Base):
+    # THE PERSON. Identity Platform holds their credential; this row holds everything about them
+    # that the columns in this schema scope on. There is deliberately NO password column - see
+    # the design's decision 1. A password we never receive is one we cannot leak.
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                          default=uuid.uuid4)
+    # THE IDENTITY PLATFORM SUBJECT. Nullable because the backfill creates a row per existing
+    # owner_id before that person has ever signed up; it is filled in the first time they do,
+    # which is what makes their existing jobs and geometry follow them in rather than being
+    # stranded behind a second, empty account.
+    firebase_uid: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True,
+                                                     index=True)
+    # THE LINK TO owner_id, which is this address lowercased. Unique and indexed because both
+    # the uid path and the backfill-linking path find a user by it.
+    email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
+    name:  Mapped[str] = mapped_column(String(256), nullable=False, server_default="")
+    # WHEN the address was proven, not whether. A moment survives a provider that later stops
+    # reporting the flag, and it is what a future "grant only on verified email" rule would read.
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                               nullable=True)
+    last_login_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                               nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 server_default=func.now(), nullable=False)
+
+    __table_args__: tuple = (
+        # owner_id is the lowercased email everywhere else in this schema. A row that disagreed
+        # would resolve to an organisation for one spelling of the address and not the other.
+        CheckConstraint("email = lower(email)", name="ck_users_email_lowercased"),
+    )
+
+
+class Membership(Base):
+    # WHICH ORGANISATION a user acts within. One row per personal organisation today; the table
+    # is what makes multi-user organisations a later feature rather than a later migration.
+
+    __tablename__ = "memberships"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                          default=uuid.uuid4)
+    # RESTRICT, like every other lineage reference in this schema: a membership is how a user's
+    # rows are reachable, so neither side may be deleted out from under it.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False,
+        index=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True)
+    role: Mapped[MembershipRole] = mapped_column(Enum(MembershipRole, name="membershiprole"),
+                                                 nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 server_default=func.now(), nullable=False)
+
+    __table_args__: tuple = (
+        UniqueConstraint("user_id", "organization_id", name="uq_memberships_user_org"),
+    )
+
+
+class CreditLedgerEntry(Base):
+    # ONE MOVEMENT of credits, APPEND-ONLY. The balance is SUM(amount) over an organisation and is
+    # never stored: a counter decremented at submit leaks credits down every failure path, and
+    # this pipeline has several (FailedReason, artifact_reconciliations). A row per movement also
+    # answers "why is my balance this?", which a counter never can.
+    #
+    # Nothing in this cycle writes anything but a grant. debit and refund exist so that when
+    # spending lands it is a new caller, not a new migration.
+
+    __tablename__ = "credit_ledger"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                          default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True)
+    entry_type: Mapped[CreditEntryType] = mapped_column(
+        Enum(CreditEntryType, name="creditentrytype"), nullable=False)
+    # SIGNED, in whole credits. A grant is positive and a debit negative, so the balance is a
+    # plain SUM with no per-type arithmetic that a new entry type could get wrong. BigInteger
+    # because the unit is undecided and a small unit means large numbers.
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: why this entry exists, for the person reading their own ledger. Display only.
+    reason: Mapped[str] = mapped_column(String(128), nullable=False, server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 server_default=func.now(), nullable=False)
+
+    __table_args__: tuple = (
+        # THE BALANCE QUERY, and the ledger view's ordering. Both read this index.
+        Index("ix_credit_ledger_org_created", "organization_id", "created_at"),
+        # A zero-amount entry is a row that changes nothing and explains nothing.
+        CheckConstraint("amount <> 0", name="ck_credit_ledger_amount_nonzero"),
+    )
+
+
 class NativeSubmissionClaim(Base):
     # ONE native mesh submission per (job, execution generation). The row is the right to make at
     # most one external call, and the durable record of what became of it - a `claimed` row is
