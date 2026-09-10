@@ -31,9 +31,13 @@ function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
   for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
 function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
-/* geometry fills, steel-family so the orange SELECTION is never ambiguous */
-const _PATCH_COLS=[[0.192,0.322,0.443],[0.290,0.380,0.470],[0.235,0.365,0.420],
-                   [0.270,0.330,0.440],[0.220,0.350,0.460],[0.300,0.350,0.410]];
+/* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
+   apart without shouting; the ORANGE selection is never ambiguous against any of them */
+const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
+                   [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
+const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
+const _EDGE_HEAT=[0.17,0.15,0.13];     /* darker while the faces carry colour, so the data reads */
+const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
 export async function openViewer(job,anchorEl,opts){
@@ -103,7 +107,21 @@ export async function openViewer(job,anchorEl,opts){
       <div class="v-hint" id="v-hint-${job}">rotate: drag · zoom: wheel or right-drag · pan: shift+drag</div>
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
-  anchorEl.after(box);
+  // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
+  // conversation becomes the drawer beside it; an earlier result stays in the DOM, hidden, so
+  // its context is not torn down under a still-running render. Without one (an embedding
+  // page) the viewer opens inline after its anchor, as it always did.
+  const _wb=document.getElementById('workbench'),_app=document.getElementById('app');
+  if(_wb&&_app&&opts.takeover!==false){
+    _wb.querySelectorAll('.viewer').forEach(v=>{v.hidden=true;});
+    _wb.appendChild(box);
+    _app.classList.add('wb');_app.classList.remove('wb-collapsed');
+    const _tg=document.getElementById('wb-toggle');
+    if(_tg){_tg.hidden=false;
+      _tg.onclick=()=>{const on=_app.classList.toggle('wb-collapsed');
+        _tg.textContent=on?'Show conversation':'Hide conversation';
+        _tg.setAttribute('aria-pressed',on?'true':'false');};}
+  } else anchorEl.after(box);
   // CASE B - "this is acceptable": the user amends the ACCEPTANCE CRITERIA, not the
   // mesh. Their statement joins the review brief, the SAME mesh is re-reviewed against
   // it, and the verdict is honoured (it can still fail). Validity is never overridden.
@@ -172,15 +190,16 @@ function initViewer(job,surf,uiCfg){
     const base=_PATCH_COLS[i%_PATCH_COLS.length];
     const pr=actor.getProperty();
     pr.setColor(base[0],base[1],base[2]);
-    pr.setEdgeVisibility(true);pr.setEdgeColor(0.702,0.796,0.902);pr.setLineWidth(1);
-    pr.setAmbient(0.24);pr.setDiffuse(0.82);
-    pr.setSpecular(0.32);pr.setSpecularPower(26);pr.setSpecularColor(1,1,1);
+    pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
+    pr.setAmbient(0.30);pr.setDiffuse(0.78);
+    pr.setSpecular(0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
     ren.addActor(actor);
     const b=pd.getBounds();
     entries.push({actor,pd,patch:p.name,polys,pts,nCells,offsets:null,
       diag:Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4])});
     totalFaces+=nCells;});
 
+  let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
   const cam=ren.getActiveCamera();
   cam.azimuth(45);cam.elevation(25);
   ren.resetCamera();rw.render();
@@ -358,9 +377,10 @@ function initViewer(job,surf,uiCfg){
         en.actor.setVisibility(!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
         if(pr.setBackfaceCulling)pr.setBackfaceCulling(s.opacity>=1);
-        if(isSel){pr.setColor(1.0,0.31,0.0);pr.setEdgeColor(1.0,0.55,0.30);pr.setAmbient(0.42);}
+        if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
+                  pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
         else{pr.setColor(s.base[0],s.base[1],s.base[2]);
-             pr.setEdgeColor(0.702,0.796,0.902);pr.setAmbient(0.24);}
+             pr.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);pr.setAmbient(0.30);}
       });
       rw.render();
       chips.querySelectorAll('.v-bnd-chip').forEach(c=>{
@@ -671,15 +691,19 @@ function initViewer(job,surf,uiCfg){
      of still reaches the user rather than being silently dropped. Nothing is
      defaulted: a figure the mesh does not carry simply has no cell. */
   (function meshFacts(){
-    const host=document.getElementById('v-facts-'+job),q=surf.quality;
-    if(!host||!q||!Object.keys(q).length)return;
+    const host=document.getElementById('v-facts-'+job),q=Object.assign({},surf.quality||{});
+    // aspect ratio is measured by the heatmap pass, not by checkMesh's summary block; it gets a
+    // figure here so it is a control like the other two
+    const _ar=surf.quality_fields&&surf.quality_fields.metrics&&surf.quality_fields.metrics.aspect_ratio;
+    if(_ar&&!('max_aspect_ratio' in q)&&typeof _ar.max==='number')q.max_aspect_ratio=Number(_ar.max.toFixed(2));
+    if(!host||!Object.keys(q).length)return;
     const LBL={cells:'cells',faces:'faces',hexahedra:'hexahedra',polyhedra:'polyhedra',
                prisms:'prisms',pyramids:'pyramids',tetrahedra:'tetrahedra',
                regions:'mesh regions',max_non_ortho:'max non-orthogonality',
-               max_skewness:'max skewness',skew_faces:'skewed faces',
+               max_skewness:'max skewness',max_aspect_ratio:'max aspect ratio',skew_faces:'skewed faces',
                avg_non_ortho:'mean non-orthogonality'};
     const ORDER=['cells','faces','hexahedra','polyhedra','prisms','pyramids','tetrahedra',
-                 'regions','max_non_ortho','max_skewness','skew_faces','avg_non_ortho'];
+                 'regions','max_non_ortho','max_skewness','max_aspect_ratio','skew_faces','avg_non_ortho'];
     const keys=ORDER.filter(k=>k in q)
       .concat(Object.keys(q).filter(k=>!ORDER.includes(k)&&k!=='units'&&k!=='engine'));
     if(!keys.length)return;
@@ -694,7 +718,7 @@ function initViewer(job,surf,uiCfg){
       const suffix=k==='max_non_ortho'||k==='avg_non_ortho'?'<small>°</small>':'';
       const of=k==='skew_faces'&&typeof q.faces==='number'
         ? `<small> of ${q.faces.toLocaleString()}</small>`:'';
-      return `<div class="mx-c"><div class="mx-k">${esc(LBL[k]||k.replace(/_/g,' '))}</div>`
+      return `<div class="mx-c" data-key="${esc(k)}"><div class="mx-k">${esc(LBL[k]||k.replace(/_/g,' '))}</div>`
             +`<div class="mx-v">${shown}${suffix}${of}</div></div>`;};
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
@@ -719,4 +743,231 @@ function initViewer(job,surf,uiCfg){
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
     markers:()=>flags.length,
     render:()=>rw.render()};
+
+  /* PARAVIEW EXPORT - the same boundary and the same per-face numbers as a legacy VTK file,
+     built by the API from the stored payload. Fetched with the API headers (a plain link would
+     carry none) and handed to the browser as a download; the button says what it is doing. */
+  (function vtkExport(){
+    if(surf.kind!=='polymesh')return;
+    const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
+    const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
+    a.title='the boundary with its quality fields, for ParaView';
+    a.innerHTML='<b>ParaView</b><span>.vtk with quality fields</span>';
+    a.onclick=async e=>{e.preventDefault();if(a.dataset.busy)return;a.dataset.busy='1';
+      const lbl=a.querySelector('span'),was=lbl.textContent;lbl.textContent='building…';
+      try{const r=await fetch(`/api/v1/simulation/${job}/surface.vtk`,{headers:headers()});
+        if(!r.ok)throw new Error('export '+r.status);
+        const blob=await r.blob(),url=URL.createObjectURL(blob);
+        const dl=document.createElement('a');dl.href=url;dl.download=`mesh_quality_${String(job).slice(0,8)}.vtk`;
+        document.body.appendChild(dl);dl.click();dl.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+        lbl.textContent=fmtBytes(blob.size);}
+      catch(err){lbl.textContent='export failed';console.warn('vtk export',err);}
+      finally{delete a.dataset.busy;setTimeout(()=>{lbl.textContent=was;},4000);}};
+    bar.appendChild(a);
+    window._vdbg[job].vtk=()=>a;
+  })();
+
+  /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
+     The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
+     surface reader's own filter), the bar the engine's gate judges against, and the worst
+     spots. The delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
+     aspect-ratio numbers become clickable when fields exist for them - clicking a number shows where it
+     lives. Nothing here touches the geometry: colouring is cell scalars on the same immutable
+     actors, and turning it off restores exactly the property colours the parts panel set. */
+  let activeMetric=null,lastProbe=null;
+  (function heatmap(){
+    const qf=surf.quality_fields;
+    if(!qf||!qf.patches||!qf.metrics||!window.vtk)return;
+    const META={non_ortho:{fact:'max_non_ortho',b64:'non_ortho_b64'},
+                skewness:{fact:'max_skewness',b64:'skewness_b64'},
+                aspect_ratio:{fact:'max_aspect_ratio',b64:'aspect_ratio_b64'}};
+    const avail=Object.keys(META).filter(m=>qf.metrics[m]);
+    // decode once. An array that does not match the polygon count is dropped, not trusted:
+    // a misaligned field would paint every face with its neighbour's number.
+    entries.forEach(en=>{const p=qf.patches[en.patch];en.q={};if(!p)return;
+      avail.forEach(m=>{if(!p[META[m].b64])return;const a=b64f32(p[META[m].b64]);
+        if(a.length===en.nCells)en.q[m]=a;});
+      if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}});
+    if(!entries.some(en=>Object.keys(en.q).length))return;
+
+    /* one ramp per metric: calm below the bar, warm approaching it, red past it. The colours
+       are computed here and handed to the mapper as direct per-face RGB, and the legend is
+       built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
+       depends on which lookup-table classes the vendored bundle happens to export. */
+    /* the site's ramp: deep steel below, the wireframe blue through the calm range,
+       warming to international orange at the bar, crimson past it */
+    const STOPS=[[0,[70,91,116]],[0.5,[109,139,175]],[0.8,[255,150,80]],[1.0,[255,79,0]]];
+    const PAST=[150,28,22];
+    function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
+      // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
+      // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
+      // and the bar is drawn as a tick only when it falls inside that range
+      const open=md.scale_to>0&&lim>md.scale_to;
+      const hi=open?md.scale_to:Math.max(lim*1.3,md.max||0);
+      const span=open?(hi-lo):(lim-lo);
+      const pts=STOPS.map(([f,c])=>[lo+f*span,c]).concat(open?[]:[[hi,PAST]]);
+      const color=(v,out,o)=>{
+        if(!(v>lo)){out[o]=pts[0][1][0];out[o+1]=pts[0][1][1];out[o+2]=pts[0][1][2];return;}
+        let i=1;while(i<pts.length-1&&v>pts[i][0])i++;
+        const [a,ca]=pts[i-1],[b,cb]=pts[i],t=Math.min(1,Math.max(0,(v-a)/((b-a)||1)));
+        out[o]=ca[0]+(cb[0]-ca[0])*t;out[o+1]=ca[1]+(cb[1]-ca[1])*t;out[o+2]=ca[2]+(cb[2]-ca[2])*t;};
+      const pc=v=>(100*(v-lo)/((hi-lo)||1)).toFixed(1)+'%';
+      const css='linear-gradient(0deg,'+pts.map(([v,c])=>`rgb(${c}) ${pc(v)}`).join(',')+')';
+      return {color,hi,lo,open,css,limitPct:pc(lim)};}
+    function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
+
+    const hotActors=[];
+    function clearHot(){hotActors.forEach(a=>ren.removeActor(a));hotActors.length=0;}
+    function showHot(m){clearHot();
+      const r=stats&&stats.typ>0?Math.max(stats.typ*1.6,diag*0.0025):diag*0.006;
+      (qf.hotspots||[]).filter(h=>h.metric===m).forEach(h=>{
+        const mp=vtk.Rendering.Core.vtkMapper.newInstance();mp.setInputData(spherePd(h.x,h.y,h.z,r));
+        const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mp);ac.setPickable(false);
+        const pp=ac.getProperty();pp.setColor(1.0,0.22,0.16);pp.setAmbient(1.0);pp.setDiffuse(0.0);pp.setLighting(false);
+        ren.addActor(ac);hotActors.push(ac);});}
+
+    let legend=null,probeEl=null;
+    function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
+    /* BAD FACES ONLY. On a million-face mesh the failing faces are a few dozen; with the switch
+       on, every face under the bar goes one flat dark grey and the failures are the only colour
+       left. NEXT BAD SPOT walks the camera from hotspot to hotspot (the red dots the payload
+       already carries, worst first), keeping the current view direction, and lights the one it
+       is on. Both are per-viewer preferences; nothing in the payload changes. */
+    const NEUTRAL=[46,44,40];
+    let badOnly=false,hotIdx=-1,lastFocus=null,curRp=null;
+    function hotsOf(m){return (qf.hotspots||[]).filter(h=>h.metric===m);}
+    function paint(m,rp){const md=qf.metrics[m];
+      entries.forEach(en=>{const mp=en.actor.getMapper();
+        if(rp&&en.q[m]){
+          const v=en.q[m],rgb=new Uint8Array(v.length*3);
+          for(let i=0;i<v.length;i++){
+            if(badOnly&&!(v[i]>md.limit)){rgb[i*3]=NEUTRAL[0];rgb[i*3+1]=NEUTRAL[1];rgb[i*3+2]=NEUTRAL[2];}
+            else rp.color(v[i],rgb,i*3);}
+          en.pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
+            {name:'quality',values:rgb,numberOfComponents:3}));
+          mp.setScalarModeToUseCellData();mp.setColorModeToDirectScalars();
+          if(mp.setInterpolateScalarsBeforeMapping)mp.setInterpolateScalarsBeforeMapping(false);
+          mp.setScalarVisibility(true);}
+        else mp.setScalarVisibility(false);});}
+    function lightHot(i){hotActors.forEach((a,k)=>{const pp=a.getProperty();
+      if(k===i)pp.setColor(1.0,1.0,1.0);else pp.setColor(1.0,0.22,0.16);});}
+    function focusHotspot(i){
+      const hots=hotsOf(activeMetric);if(!hots.length)return null;
+      hotIdx=((i%hots.length)+hots.length)%hots.length;
+      const h=hots[hotIdx],f=cam.getFocalPoint(),p=cam.getPosition();
+      const vx=p[0]-f[0],vy=p[1]-f[1],vz=p[2]-f[2],d0=Math.hypot(vx,vy,vz)||1;
+      const r=capRange(),d=Math.max(r[0],Math.min(r[1],diag*0.12));
+      cam.setFocalPoint(h.x,h.y,h.z);
+      cam.setPosition(h.x+vx/d0*d,h.y+vy/d0*d,h.z+vz/d0*d);
+      clampCam();lightHot(hotIdx);
+      const nb=legend&&legend.querySelector('.nxt');
+      if(nb)nb.textContent=`next bad spot ${hotIdx+1}/${hots.length}`;
+      lastFocus={index:hotIdx,x:h.x,y:h.y,z:h.z,patch:h.patch,value:h.value};
+      rw.render();return lastFocus;}
+    function setBadOnly(b){badOnly=!!b;
+      if(activeMetric&&curRp){paint(activeMetric,curRp);
+        const cb=legend&&legend.querySelector('.tog input');if(cb)cb.checked=badOnly;rw.render();}}
+    function setMetric(m){
+      if(m===activeMetric)m=null;
+      activeMetric=m;
+      const rp=m?ramp(m):null;curRp=rp;hotIdx=-1;lastFocus=null;
+      if(rp)paint(m,rp);else entries.forEach(en=>en.actor.getMapper().setScalarVisibility(false));
+      if(legend){legend.remove();legend=null;}
+      clearHot();hideProbe();
+      // edges step back while the faces carry the data, and return when it is switched off
+      edgeCol=rp?_EDGE_HEAT:_EDGE;
+      entries.forEach(en=>{const pp=en.actor.getProperty();
+        pp.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
+      if(rp){const md=qf.metrics[m];showHot(m);
+        legend=document.createElement('div');legend.className='v-legend';
+        // an instrument scale: the bar stands upright beside the viewport, the limit is a
+        // tick with its value, the top of the bar is a third past the limit
+        legend.innerHTML=`<b>${esc(md.label)}</b>`
+          +`<span class="scale"><span class="ticks">`
+            +`<span style="bottom:100%">${esc(fmt(m,rp.hi))}</span>`
+            +(rp.open?'':`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`)
+            +`<span style="bottom:0">${rp.lo?esc(fmt(m,rp.lo)):'0'}</span></span>`
+          +`<span class="bar" style="background:${rp.css}">${rp.open?'':`<i style="bottom:${rp.limitPct}"></i>`}</span></span>`
+          +`<span class="mxv">max ${esc(fmt(m,md.max||0))}</span>`
+          +(md.n_over
+             ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
+             :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
+                     :`<span class="ok">none over</span>`)
+          +(md.n_over
+             ?`<label class="tog"><input type="checkbox"${badOnly?' checked':''}> bad faces only</label>`
+              +`<button class="v-btn nxt">next bad spot 0/${hotsOf(m).length}</button>`
+             :'')
+          +`<span class="x" title="turn colouring off">✕</span>`;
+        legend.querySelector('.x').onclick=()=>setMetric(null);
+        const _cb=legend.querySelector('.tog input');if(_cb)_cb.onchange=()=>setBadOnly(_cb.checked);
+        const _nb=legend.querySelector('.nxt');if(_nb)_nb.onclick=()=>focusHotspot(hotIdx+1);
+        host.appendChild(legend);
+        hintEl.textContent='click a face to see its numbers · drag still rotates';}
+      else hintEl.textContent='rotate: drag · zoom: wheel or right-drag · pan: shift+drag';
+      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`)
+        .forEach(c=>c.classList.toggle('on',c.dataset.metric===m));
+      rw.render();}
+
+    // the figures are the controls; a payload with no figures block gets a plain text one
+    const facts=document.getElementById('v-facts-'+job);
+    let wired=0;
+    if(facts)avail.forEach(m=>{
+      const cell=[...facts.querySelectorAll('.mx-c')].find(c=>c.dataset.key===META[m].fact);
+      if(!cell)return;
+      cell.classList.add('live');cell.dataset.metric=m;cell.title='colour the mesh by this';
+      cell.onclick=()=>setMetric(m);wired++;});
+    if(wired<avail.length){
+      const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
+      ctl.innerHTML='colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+      ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
+      host.appendChild(ctl);}
+
+    /* CLICK TO EXPLAIN. A click on a coloured face says what its number is, whether it clears
+       the gate's bar, what the cell behind it is, and the likely reason - then offers to mark
+       the spot, which is the existing dispute path: the reviewer re-inspects there and the mesh
+       is rebuilt. The reason is a reading of the cell's shape and place, and says "likely". */
+    function why(cf,role){
+      const at=/inlet|outlet|port/i.test(role||'')?'at a port mouth, ':'';
+      if(cf>6)return at+'a polyhedral cell where refinement levels meet - the mesher splits hexes at a level change and the split faces sit askew';
+      if(cf===5)return at+'a boundary-layer prism squeezed where the surface curves or folds';
+      if(cf===6)return at+'a hex distorted while snapping to the curved surface here';
+      return at+'an irregular cell';}
+    function showProbe(en,cid){
+      hideProbe();
+      const role=((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'';
+      const cf=en.cellFaces?en.cellFaces[cid]:null;
+      const have=avail.filter(m=>en.q[m]);
+      const over=have.filter(m=>en.q[m][cid]>qf.metrics[m].limit);
+      lastProbe={patch:en.patch,cell:cid,cellFaces:cf,over,
+                 values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
+      const rows=have.map(m=>{const v=en.q[m][cid],md=qf.metrics[m],bad=v>md.limit;
+        return `<div><b>${esc(md.label)}</b> ${esc(fmt(m,v))} `
+          +`<span class="${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}).join('');
+      const shape=cf===6?'hex':cf===5?'prism':cf===4?'tet':'polyhedron';
+      probeEl=document.createElement('div');probeEl.className='v-probe';
+      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>${rows}`
+        +(cf!=null?`<div>cell behind it: ${cf}-face ${shape}</div>`:'')
+        +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'')
+        +`<div class="acts"><button class="v-btn" data-a="mark">Mark this spot</button>`
+        +`<button class="v-btn" data-a="close">Close</button></div>`;
+      probeEl.querySelector('[data-a=mark]').onclick=()=>{placeMarker(en,cid);hideProbe();};
+      probeEl.querySelector('[data-a=close]').onclick=hideProbe;
+      host.appendChild(probeEl);}
+    host.addEventListener('pointerup',e=>{
+      if(markMode||!activeMetric||!downXY)return;
+      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl'))return;
+      if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
+      pickCell(e,showProbe);},true);
+
+    /* support/debug hook - lets the browser tier drive the heatmap without pixel picking */
+    window._vdbg[job+':heat']={metrics:avail,set:setMetric,active:()=>activeMetric,
+      badOnly:()=>badOnly,setBadOnly,next:()=>focusHotspot(hotIdx+1),focus:()=>lastFocus,
+      hotN:()=>hotsOf(activeMetric).length,
+      colorOf:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(!en)return null;
+        const a=en.pd.getCellData().getScalars().getData();return [a[cid*3],a[cid*3+1],a[cid*3+2]];},
+      focal:()=>cam.getFocalPoint(),
+      probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
+      last:()=>lastProbe,legend:()=>!!legend,hotspots:()=>hotActors.length,
+      wired:()=>wired};
+  })();
 }
