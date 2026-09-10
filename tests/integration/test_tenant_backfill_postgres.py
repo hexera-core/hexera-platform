@@ -29,32 +29,45 @@ def _sync_url() -> str:
     return sync_migration_url(provcfg.POSTGRES_DSN, ssl_required=False)
 
 
-def _connect_autocommit():
-    eng = create_engine(_sync_url(), pool_pre_ping=True)
-    return eng, eng.connect().execution_options(isolation_level="AUTOCOMMIT")
-
-
 def _wipe_and_upgrade_to(rev: str) -> None:
+    """Return this run's database to a bare, EMPTY schema at `rev`.
+
+    The DROP SCHEMA is deliberately not issued here. `harness_provisioning.reset_schema` owns it
+    and re-proves, from the LIVE SERVER and against this exact connection immediately before the
+    DDL, that the database was provisioned for this run. A fixture carrying its own DROP SCHEMA
+    bypasses that proof entirely - which is how seven real `simulation_jobs` rows were once
+    destroyed (see the comments in tests/integration/conftest.py and tests/disposable_database.py).
+
+    reset_schema rebuilds to HEAD, because head is what the production migration entry point
+    produces and the harness runs nothing else. Reaching 0003 from there is 0004's own downgrade,
+    not a second wipe and not a hand-built schema: that downgrade drops exactly the columns,
+    indexes and constraints its upgrade added, and this suite already asserts as much
+    (test_the_downgrade_removes_the_columns_without_deleting_accounts).
+    """
+    import asyncio
+
+    from tests import disposable_database as dd
+    from tests import harness_provisioning as hp
+
     try:
-        eng, conn = _connect_autocommit()
+        asyncio.run(hp.reset_schema(hp.dsn()))
+    except dd.NotDisposableError:
+        # The guard refusing is never "the database is down": re-raise it as itself so the
+        # message that names WHICH database, and why it may not be destroyed, survives.
+        raise
     except Exception as exc:  # noqa: BLE001
         pytest.fail("PostgreSQL is not reachable for the tenant-backfill integration test - it "
                     f"must be PROVISIONED, not skipped ({type(exc).__name__}: {exc})")
-    try:
-        conn.execute(text("DROP SCHEMA public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-    finally:
-        conn.close()
-        eng.dispose()
 
-    from alembic import command
-    command.upgrade(migrate._alembic_config(), rev)
+    if rev != "head":
+        from alembic import command
+        command.downgrade(migrate._alembic_config(), rev)
 
 
 @pytest.fixture()
 def migrated_to_0003():
-    # Wipe to bare metal, then drive alembic to 0003 directly - mirroring
-    # test_migration_wrapper_postgres.py's `empty_db`, not a second mechanism.
+    # Wipe to bare metal through the disposable-database authority, then let alembic reverse
+    # 0004 - the tenant columns this suite is here to re-apply.
     _wipe_and_upgrade_to(_PRE_TENANT_REVISION)
 
     # An AUTOCOMMIT connection: the test seeds rows and then hands control to alembic's own,
