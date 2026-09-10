@@ -3,6 +3,7 @@
 # Boundaries: identity only - it never decides what the caller may then do.
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 from typing import Annotated
@@ -37,8 +38,14 @@ async def create_session(
             raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
     try:
-        verified = firebase_token.verify(id_token,
-                                         project_id=polcfg.FIREBASE_PROJECT_ID)
+        # IN A THREADPOOL, as spec section 4 step 1 requires. `firebase_token.verify` is
+        # synchronous throughout: on a cold certificate cache it makes a blocking `httpx.get`
+        # to Google, and it does a blocking RSA verification on EVERY call. Awaiting either on
+        # the event loop stalls the whole API process - every unrelated request in flight -
+        # for as long as the certificate endpoint takes to answer, which presents as a general
+        # outage rather than as a slow sign-in.
+        verified = await asyncio.to_thread(firebase_token.verify, id_token,
+                                           project_id=polcfg.FIREBASE_PROJECT_ID)
     except firebase_token.InvalidToken:
         # Deliberately NOT logged with the token, the exception message or the email. The first
         # is a live credential, and the third would put an address into the log of every failed
@@ -49,6 +56,13 @@ async def create_session(
     try:
         async with get_db() as db:
             account = await account_service.resolve_or_provision(db, verified)
+    except account_service.LinkRefused:
+        # THE SAME REFUSAL a forged, expired or malformed token gets, and deliberately so. This
+        # branch is reached only when a token names an address that already has an account it has
+        # not proven it owns; answering it differently - a distinct status, a distinct message,
+        # even a distinct latency profile - would turn this endpoint into an oracle for which
+        # addresses hold accounts here. The cause is in the log, not in the response.
+        raise HTTPException(status_code=401, detail=REFUSAL) from None
     except account_service.SignupDisabled:
         # 403, not 401, and the one refusal that says something. A user can act on "this
         # deployment is not open"; it discloses no account existence, because it is the answer

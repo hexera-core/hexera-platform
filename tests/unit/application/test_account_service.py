@@ -250,3 +250,100 @@ async def test_a_concurrent_first_sign_in_yields_one_organisation(fakes, monkeyp
     assert len(fakes.users) == 1, "the race produced two users"
     assert len(fakes.orgs) == 1, "the race produced two organisations"
     assert account.organization_id == str(fakes.orgs[0].id)
+
+
+# linking to an account that already exists
+
+async def _backfilled(fakes, email="veteran@example.com"):
+    """The state 0004 leaves for every owner who predates Identity Platform."""
+    existing = await fakes.create_user(None, email=email, name="", firebase_uid=None)
+    org = await fakes.create_org(None, name=email, slug="veteran")
+    await fakes.create_membership(None, user_id=existing.id, organization_id=org.id,
+                                  role=MembershipRole.owner)
+    return existing, org
+
+
+async def test_an_unverified_token_cannot_link_to_an_existing_account(fakes):
+    # THE ACCOUNT-TAKEOVER PATH. Anyone may register any address in Identity Platform and skip
+    # the verification email; presenting the resulting token used to hand over the victim's
+    # tenant - their jobs, geometry, chat sessions, artifacts and credit balance - because
+    # linking matched on the address alone. It must be refused, and the row must be untouched.
+    existing, _ = await _backfilled(fakes)
+
+    with pytest.raises(account_service.LinkRefused):
+        await account_service.resolve_or_provision(
+            None, _token(uid="uid-attacker", email="veteran@example.com", verified=False))
+
+    assert existing.firebase_uid is None, "an unverified token was attached to somebody's account"
+    assert len(fakes.users) == 1, "the refusal created a second user"
+    assert fakes.grants == []
+
+
+async def test_a_verified_token_links_to_the_same_existing_account(fakes):
+    # THE OTHER HALF of the pair: verification is the ONLY variable between this and the case
+    # above, so together they prove the gate is the verified flag and not something incidental.
+    existing, org = await _backfilled(fakes)
+
+    account = await account_service.resolve_or_provision(
+        None, _token(uid="uid-veteran", email="veteran@example.com", verified=True))
+
+    assert existing.firebase_uid == "uid-veteran"
+    assert account.organization_id == str(org.id)
+    assert account.provisioned is False
+    assert len(fakes.users) == 1
+
+
+async def test_a_token_whose_uid_differs_from_an_already_linked_row_is_refused(fakes):
+    # The second hole in the same block: the old code skipped the attach for a row that already
+    # named a uid but STILL returned it, so a second Identity Platform account for one address -
+    # which a federated provider makes possible - was handed the first account's tenant. Even a
+    # VERIFIED token must not do this: verification proves the mailbox, not that this uid is the
+    # uid the account was linked to.
+    await _backfilled(fakes)
+    fakes.users[0].firebase_uid = "uid-the-real-owner"
+
+    with pytest.raises(account_service.LinkRefused):
+        await account_service.resolve_or_provision(
+            None, _token(uid="uid-someone-else", email="veteran@example.com", verified=True))
+
+    assert fakes.users[0].firebase_uid == "uid-the-real-owner"
+
+
+async def test_the_same_uid_on_an_already_linked_row_still_signs_in(fakes):
+    # Not a takeover: a duplicate of this very request whose uid read lost a race with the link
+    # that has since committed. Refusing it would fail a legitimate concurrent sign-in.
+    _, org = await _backfilled(fakes)
+    fakes.users[0].firebase_uid = "uid-veteran"
+
+    async def _no_uid_match(db, firebase_uid):
+        # Stand in for the read at step 1 that ran before the concurrent link committed.
+        return None
+
+    original = account_service.user_repo.get_by_firebase_uid
+    try:
+        account_service.user_repo.get_by_firebase_uid = staticmethod(_no_uid_match)
+        account = await account_service.resolve_or_provision(
+            None, _token(uid="uid-veteran", email="veteran@example.com"))
+    finally:
+        account_service.user_repo.get_by_firebase_uid = original
+
+    assert account.organization_id == str(org.id)
+
+
+async def test_provisioning_a_brand_new_account_is_not_gated_on_verification(fakes):
+    # Spec section 4 deliberately permits an unverified address to sign in. The distinction is
+    # that a NEW account has no victim: nothing pre-existing is handed over, and the grant is
+    # for the account this token just created. Only LINKING needs the mailbox proven.
+    account = await account_service.resolve_or_provision(None, _token(verified=False))
+    assert account.provisioned is True
+    assert account.email_verified is False
+    assert len(fakes.users) == 1 and fakes.grants == [fakes.orgs[0].id]
+
+
+async def test_two_uids_differing_only_in_case_get_different_slugs(fakes):
+    # `organizations.slug` is unique, and the slug used to be the lowercased, truncated uid - so
+    # two distinct uids differing only in case (or only after the 48th character) collided, and
+    # the IntegrityError handler could not recover from that conflict because it re-reads by uid
+    # and nothing was inserted. The slug is now injective in the uid.
+    assert account_service._slug_for("AbC") != account_service._slug_for("abc")
+    assert len(account_service._slug_for("x" * 200)) <= 64

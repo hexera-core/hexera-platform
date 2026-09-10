@@ -117,3 +117,65 @@ async def test_no_project_configured_refuses_every_token(app, monkeypatch):
     monkeypatch.setattr(polcfg, "FIREBASE_PROJECT_ID", "")
     response = await _post(app, {"id_token": "good"})
     assert response.status_code == 401
+
+
+async def test_a_refused_link_is_indistinguishable_from_a_forged_token(app, monkeypatch):
+    # A token that names an address which already has an account it has not proven it owns is
+    # refused - but it must be refused with the SAME answer a forged token gets. Anything that
+    # differs (the status, the body, a distinguishing word) turns this endpoint into an oracle
+    # for which addresses hold accounts here, which is precisely what the refusal exists to deny.
+    from meshpipeline.application.account_service import LinkRefused
+
+    async def refuse(db, token, now=None):
+        raise LinkRefused("linking an existing account requires a verified address")
+
+    monkeypatch.setattr(auth_route.account_service, "resolve_or_provision", refuse)
+    refused = await _post(app, {"id_token": "good"})
+    forged = await _post(app, {"id_token": "forged"})
+
+    assert refused.status_code == forged.status_code == 401
+    assert refused.json() == forged.json()
+    assert refused.json()["detail"] == auth_route.REFUSAL
+
+
+async def test_the_refused_link_does_not_name_the_address_in_the_response(app, monkeypatch):
+    from meshpipeline.application.account_service import LinkRefused
+
+    async def refuse(db, token, now=None):
+        raise LinkRefused("this address is already linked to another account")
+
+    monkeypatch.setattr(auth_route.account_service, "resolve_or_provision", refuse)
+    response = await _post(app, {"id_token": "good"})
+    assert "person@example.com" not in response.text
+    assert "verif" not in response.text.lower(), "the refusal disclosed why it refused"
+
+
+async def test_token_verification_does_not_run_on_the_event_loop(app, monkeypatch):
+    # `firebase_token.verify` is synchronous: a cold certificate cache makes a blocking HTTP call
+    # to Google and every call does a blocking RSA verification. On the loop that stalls every
+    # other request in the process, which presents as a general API outage rather than a slow
+    # sign-in. Spec section 4 step 1 requires a threadpool; this asserts the call actually leaves
+    # the loop's thread rather than merely being awaited.
+    import asyncio
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: dict = {}
+
+    def fake_verify(raw, *, project_id):
+        seen["thread"] = threading.get_ident()
+        seen["loop_running"] = True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            seen["loop_running"] = False
+        return VerifiedToken(uid="uid-1", email="person@example.com",
+                             email_verified=True, name="A Person")
+
+    monkeypatch.setattr(auth_route.firebase_token, "verify", fake_verify)
+    response = await _post(app, {"id_token": "good"})
+
+    assert response.status_code == 200
+    assert seen["thread"] != loop_thread, (
+        "the blocking token verification ran on the event loop's own thread")
+    assert seen["loop_running"] is False

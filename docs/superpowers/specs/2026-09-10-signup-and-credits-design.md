@@ -87,7 +87,7 @@ Each read from the code in this repository on 2026-09-10, not from documentation
 | 6 | One organisation per user, auto-created, no org UI | Carried unchanged from the 09-07 design, decision 1. |
 | 7 | The ledger is append-only with a derived balance | A counter leaks credits on every failure path, and the pipeline has several. Grants, debits, holds and refunds are all rows; the balance is `SUM(amount)`. |
 | 8 | Credits are whole integers of an undenominated unit | Recording a dollar figure would pre-empt a pricing decision nobody has made. An integer count does not. |
-| 9 | Backfilled users link by email on first sign-up | Otherwise a returning owner signs up and lands in a second, empty organisation while their jobs and geometry sit in the first. |
+| 9 | Backfilled users link by email on first sign-up, and **only against a verified address** | Otherwise a returning owner signs up and lands in a second, empty organisation while their jobs and geometry sit in the first. The verification requirement is what stops that same rule being an account-takeover primitive: `0004` leaves an unlinked row for every pre-existing owner, and anyone may register any address in Identity Platform without verifying it. Linking is asymmetric with provisioning on purpose - see section 4. |
 | 10 | `organization_id` ships nullable; `NOT NULL` is a follow-up `0005` | Carried unchanged from the 09-07 design, decision 10. `deploy.sh` migrates before the new image, so the old revision briefly serves against the new schema and its inserts must not fail. |
 
 ## 4. Authentication
@@ -115,11 +115,32 @@ provider's `authorize` posts it to the product API and keeps `{ owner_id, organi
 email_verified }` in the Auth.js JWT. `ownerIdFromSession` continues to return the email, so
 `proxy.ts` and every existing `/api/v1` call are unchanged.
 
-An unverified email may sign in and is shown a persistent banner with a resend control. It is not
-blocked, because blocking on delivery of an email through a `firebaseapp.com` sender is a support
-burden with no security benefit at this stage — nothing costly is gated on it yet. When spending
-lands, gating the *grant* on verification is the natural place, and this design leaves
-`email_verified_at` populated so that choice stays available.
+An unverified email may **sign in to a new account** and is shown a persistent banner with a resend
+control. It is not blocked, because blocking on delivery of an email through a `firebaseapp.com`
+sender is a support burden with no security benefit at this stage — nothing costly is gated on it
+yet. When spending lands, gating the *grant* on verification is the natural place, and this design
+leaves `email_verified_at` populated so that choice stays available.
+
+**Linking is the exception, and it is verification-gated.** The two differ in what is at stake, not
+in how much we trust the address. Provisioning a *new* account creates rows that did not exist a
+moment ago: an unverified sign-in there costs nobody anything, because there is no other party.
+*Linking* attaches a presented uid to somebody else's existing tenant — their jobs, geometry, chat
+sessions, artifacts and credit balance — on the strength of an address string the token merely
+asserts. Anyone can register any address in Identity Platform and skip the verification email, and
+`0004` leaves exactly one unlinked row per pre-existing owner, so an ungated link is an
+account-takeover primitive for every backfilled account. Control of the mailbox is the only
+evidence that separates the returning owner from a stranger claiming to be them.
+
+Two rules follow, and both refuse with the *same* 401 the API already answers a forged token with —
+never a distinct status, message or wording, because the difference would tell an attacker which
+addresses hold accounts here:
+
+- an **unverified** token presented for an address that already has an unlinked account is refused,
+  and no uid is attached;
+- a token whose uid **differs** from the uid a matched row already names is refused, verified or
+  not. Verification proves the mailbox; it does not prove that this uid is the one the account was
+  linked to. This matters the moment the project allows more than one account per address, or a
+  federated provider is enabled.
 
 Firebase web configuration (`NEXT_PUBLIC_FIREBASE_API_KEY`, `_AUTH_DOMAIN`, `_PROJECT_ID`) is
 public by design and is delivered as plain environment, not as Secret Manager references.
@@ -137,11 +158,14 @@ Given an ID token it:
    TTL and the verification runs in a threadpool, because `google-auth`'s transport is synchronous
    and this route is not.
 2. Resolves the user: by `firebase_uid`, else by normalised email — attaching the uid to that row
-   when it matches a backfilled account (decision 9).
-3. On a genuinely new uid, in **one transaction**: inserts `users`, `organizations`,
-   `memberships` and one `credit_ledger` grant.
-4. Updates `last_login_at`, and `email_verified_at` the first time the token asserts it.
-5. Returns `{ user_id, owner_id, organization_id, email_verified }`.
+   when it matches a backfilled account (decision 9). **Linking requires `email_verified`.** It also
+   refuses outright when the matched row already names a *different* uid.
+3. Refusals from step 2 answer with the same undifferentiated 401 as a forged or expired token, and
+   say nothing about why.
+4. On a genuinely new uid, in **one transaction**: inserts `users`, `organizations`,
+   `memberships` and one `credit_ledger` grant. This path is **not** gated on verification.
+5. Updates `last_login_at`, and `email_verified_at` the first time the token asserts it.
+6. Returns `{ user_id, owner_id, organization_id, email_verified }`.
 
 It is idempotent under concurrent calls: `users.firebase_uid` is unique, and the insert path
 handles the conflict by re-reading rather than failing. The grant is bound to organisation

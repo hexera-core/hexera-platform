@@ -3,6 +3,7 @@
 # Boundaries: it decides identity and tenancy, never authorisation.
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,6 +30,16 @@ membership_repo = MembershipRepository()
 
 class SignupDisabled(Exception):
     """This deployment does not provision unrecognised accounts."""
+
+
+class LinkRefused(Exception):
+    """The token names an EXISTING account it has not proven it owns.
+
+    Raised, never returned, and never described to the caller: `api/auth.py` answers it with the
+    same undifferentiated refusal every other token failure gets, because the difference between
+    "that address is taken" and "that token did not verify" is exactly the disclosure an attacker
+    probing addresses is looking for.
+    """
 
 
 @dataclass(frozen=True)
@@ -59,12 +70,19 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
         # what 0004's backfill leaves for every owner who predates Identity Platform. Attaching
         # the uid is what makes their existing jobs and geometry follow them in. It is NOT a
         # signup, so it is neither gated by CONSOLE_SIGNUP_ENABLED nor granted credits.
+        #
+        # LINKING REQUIRES A VERIFIED ADDRESS, and it is the ONLY path here that does. It hands a
+        # presented uid somebody ELSE's tenant - their jobs, geometry, chat sessions, artifacts and
+        # credit balance - on the strength of a string the token merely asserts. Anyone may
+        # register any address in Identity Platform without verifying it, so without this gate an
+        # attacker who knows a victim's address takes over every account 0004 backfilled. Proving
+        # control of the mailbox is the only evidence that distinguishes the veteran returning
+        # from the stranger claiming to be them. Provisioning a genuinely NEW account stays
+        # ungated (spec section 4): there is no victim to take over, and nothing costly is behind
+        # it yet.
         existing = await user_repo.get_by_email(db, token.email)
         if existing is not None:
-            if existing.firebase_uid is None:
-                await user_repo.attach_firebase_uid(db, user_id=existing.id,
-                                                    firebase_uid=token.uid)
-            user = existing
+            user = await _link(db, existing, token)
         else:
             # 3. THE SIGNUP PATH.
             if not polcfg.CONSOLE_SIGNUP_ENABLED:
@@ -76,6 +94,12 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                 # A concurrent first sign-in won the unique index on firebase_uid. Roll back to
                 # the savepoint the failed insert poisoned and read the row the winner wrote -
                 # the loser must not answer with a refusal for an account that now exists.
+                #
+                # THE UID CONFLICT IS THE ONLY ONE THIS CAN BE. The other unique index this
+                # transaction touches is `organizations.slug`, and `_slug_for` is injective in
+                # the uid, so a slug conflict implies a uid conflict that the users insert has
+                # already refused. If the re-read still finds nothing the assumption was wrong
+                # and the original error is re-raised rather than mistranslated.
                 await db.rollback()
                 user = await user_repo.get_by_firebase_uid(db, token.uid)
                 if user is None:
@@ -95,6 +119,44 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
     )
 
 
+async def _link(db: AsyncSession, existing, token: VerifiedToken):
+    """Attach `token.uid` to an existing row for the same address, or refuse.
+
+    Every refusal here raises the SAME exception with no detail the caller can use: the attacker
+    and the confused legitimate user must be given the same answer.
+    """
+    if existing.firebase_uid is not None:
+        # A row that ALREADY names a uid is a live account, not a backfilled one. The old code
+        # skipped the attach here but still returned this row, so a second Identity Platform
+        # account for the same address - which a federated provider, or a project configured to
+        # allow multiple accounts per address, makes possible - was handed the first one's tenant.
+        # The equality case is not a takeover: it is our own concurrent request, whose uid read
+        # at step 1 lost a race with the link that has since committed.
+        if existing.firebase_uid == token.uid:
+            return existing
+        logger.warning("sign-in refused: a token presented a uid for an address that is already "
+                       "linked to a different account")
+        raise LinkRefused("this address is already linked to another account")
+
+    if not token.email_verified:
+        # Deliberately NOT logged with the address: this is the log line an enumeration attempt
+        # would fill, and it would name people who do not have an account here.
+        logger.info("sign-in refused: linking an existing account requires a verified address")
+        raise LinkRefused("linking an existing account requires a verified address")
+
+    if not await user_repo.attach_firebase_uid(db, user_id=existing.id, firebase_uid=token.uid):
+        # `attach_firebase_uid` only updates a row whose uid is still NULL, so a False here means
+        # somebody linked this row between the read above and this update. Accept it only when the
+        # winner is US - the same uid, a duplicate of this very request - and refuse otherwise.
+        winner = await user_repo.get_by_firebase_uid(db, token.uid)
+        if winner is None or winner.id != existing.id:
+            logger.warning("sign-in refused: an address was linked to another account "
+                           "concurrently")
+            raise LinkRefused("this address is already linked to another account")
+        return winner
+    return existing
+
+
 async def _provision(db: AsyncSession, token: VerifiedToken):
     # ONE TRANSACTION, four writes. The session this runs in is committed by the caller's
     # `get_db()` context, so a failure anywhere here leaves no user without an organisation and
@@ -112,11 +174,25 @@ async def _provision(db: AsyncSession, token: VerifiedToken):
     return user
 
 
+#: `organizations.slug` is String(64) with a unique index. "org-" + 40 + "-" + 8 = 53.
+_SLUG_UID_CHARS = 40
+_SLUG_DIGEST_CHARS = 8
+
+
 def _slug_for(firebase_uid: str) -> str:
     # Derived from the uid rather than the email: an address contains characters a slug should
     # not, and two people at the same domain must not collide. The uid is already unique and
     # already URL-safe.
-    return f"org-{firebase_uid.lower()[:48]}"
+    #
+    # THE DIGEST IS WHAT MAKES THIS INJECTIVE, and that is what keeps the IntegrityError handler
+    # in `_provision` honest. Lowercasing and truncating alone are not: two distinct uids that
+    # differ only in case, or only after the 48th character, produced the SAME slug and so a
+    # second unique-index conflict the handler cannot recover from - it re-reads by uid, finds
+    # nothing (nothing was inserted), and re-raises as an opaque 500. Hashing the EXACT uid means
+    # a slug collision implies a uid collision, which the users insert refuses first, so the only
+    # conflict `_provision` can now see is the concurrent-signup one it is written for.
+    digest = hashlib.sha256(firebase_uid.encode("utf-8")).hexdigest()[:_SLUG_DIGEST_CHARS]
+    return f"org-{firebase_uid.lower()[:_SLUG_UID_CHARS]}-{digest}"
 
 
 async def organization_id_for_owner(db: AsyncSession, owner_id: str) -> str:
