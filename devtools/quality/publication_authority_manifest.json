@@ -1097,6 +1097,19 @@
   ]
  },
  {
+  "context": "api/security.py::_organization_for::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/security.py",
+  "qualname": "_organization_for",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "api/v1/simulation.py::_viewer_data::error#1|NotAPublisher|not-a-publisher|",
   "path": "api/v1/simulation.py",
   "qualname": "_viewer_data",
