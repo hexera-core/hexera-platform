@@ -2,7 +2,7 @@
 # Responsibility: Provision the global external Application Load Balancer that gives the console
 # and admin console their custom hostnames.
 # Owns: the reserved static IP, one serverless NEG and backend service per Cloud Run service, the
-# host-routed URL map, the Google-managed certificate, and the HTTP-to-HTTPS redirect.
+# host-routed URL map, one Google-managed certificate per hostname, and the HTTP-to-HTTPS redirect.
 # Boundaries: it never deletes or recreates a live resource; DNS itself is the operator's, not this
 # script's - it only prints what belongs in it.
 
@@ -16,7 +16,15 @@
 # means routing through a global external Application Load Balancer, which is what everything
 # below assembles: a reserved global static IP, a serverless NEG per Cloud Run service (the bridge
 # from a classic LB backend to a Cloud Run revision), a backend service per NEG, a URL map that
-# routes by host, and a Google-managed certificate covering every declared hostname.
+# routes by host, and a Google-managed certificate per declared hostname.
+#
+# WHY ONE CERTIFICATE PER HOSTNAME AND NOT ONE COVERING BOTH. A Google-managed certificate serves
+# only once it is WHOLLY ACTIVE, so a single name that fails validation holds the whole certificate
+# at PROVISIONING and takes every OTHER name on it off HTTPS with it. Dev showed exactly that:
+#   overall PROVISIONING / dev.console.hexera.ai ACTIVE / dev.admin.hexera.ai FAILED_NOT_VISIBLE
+# - the console had validated and was still unreachable over HTTPS because of its neighbour. In
+# prod that shape lets a validation problem on admin.hexera.ai take down console.hexera.ai, the
+# customer-facing name. A certificate each makes the fates independent.
 #
 # WHY REUSE, NEVER RECREATE, IS THE ONE RULE THAT MATTERS HERE. A recreated forwarding rule is
 # handed a NEW address - silently breaking any DNS that already pointed at the old one - and a
@@ -27,9 +35,11 @@
 #
 # WHY A PROVISIONING CERTIFICATE IS A SUCCESS, NOT A FAILURE. A Google-managed certificate cannot
 # validate until DNS points at the address this run may have just reserved - which cannot have
-# happened before this run exists. So the FIRST run always leaves the certificate PROVISIONING.
+# happened before this run exists. So the FIRST run always leaves every certificate PROVISIONING.
 # Failing on that would make this pipeline unusable on the day it is introduced; only a state that
-# does not resolve itself (FAILED*) is treated as a failure.
+# does not resolve itself (FAILED*) is treated as a failure - and that failure is reported and
+# raised per hostname, AFTER every hostname's state has been read and printed, so one name's
+# trouble never decides what is said about another's.
 #
 # WHY THE HTTP REDIRECT IS ITS OWN URL MAP. Pointing the HTTP target proxy at the same URL map the
 # HTTPS proxy uses would SERVE the app over plain HTTP rather than redirect it - the documentation
@@ -44,8 +54,8 @@
 # INPUTS   the deployment env (CONSOLE_DOMAIN, ADMIN_DOMAIN, EDGE_IP_NAME, EDGE_URL_MAP, EDGE_CERT,
 #          CLOUDRUN_CONSOLE_SERVICE, CLOUDRUN_ADMIN_SERVICE, GCP_REGION).
 # MUTATES  a global static IP, a serverless NEG and backend service per declared console, two URL
-#          maps (serving and redirect), a managed certificate, two target proxies, and two
-#          forwarding rules. It deletes nothing.
+#          maps (serving and redirect), a managed certificate per declared hostname, two target
+#          proxies, and two forwarding rules. It deletes nothing.
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -67,7 +77,7 @@ fi
 require_vars EDGE_IP_NAME EDGE_URL_MAP EDGE_CERT
 
 # HOST/SERVICE/LABEL triples, in a plain indexed array - bash 3.2 has no associative arrays.
-# Console-then-admin order, matching the order the certificate's --domains list must agree with.
+# Console-then-admin order, matching the order the HTTPS proxy's certificate list is built in.
 # A domain with no service behind it is refused here defensively; validate-config.sh already
 # refuses it earlier in the pipeline, but this script does not rely on always running after it.
 TRIPLES=()
@@ -217,69 +227,118 @@ trap 'rm -f "${SERVING_FILE}" ${REDIRECT_FILE:+"${REDIRECT_FILE}"}' EXIT
 info "Reconciling URL map ${EDGE_URL_MAP}"
 gc compute url-maps import "${EDGE_URL_MAP}" --global --source="${SERVING_FILE}" --quiet
 
-# 4) THE CERTIFICATE, covering exactly the declared hostnames, console-then-admin so its list
-#    agrees with the order TRIPLES was built in.
-CERT_DOMAINS="$(IFS=,; printf '%s' "${DOMAIN_LIST[*]}")"
-_ensure "managed certificate ${EDGE_CERT}" \
-  compute ssl-certificates describe "${EDGE_CERT}" --global -- \
-  compute ssl-certificates create "${EDGE_CERT}" --domains="${CERT_DOMAINS}" --global
-
-# DRIFT IS NOTICED, NEVER SILENTLY REPAIRED. A managed certificate's domain list cannot be edited,
-# and "reuse, never recreate" forbids replacing it here - but it does not forbid saying so. Adding
-# ADMIN_DOMAIN to a deployment that previously declared only CONSOLE_DOMAIN adds the admin host
-# rule and prints an admin A record above while this certificate still covers only the console
-# name; that hostname then serves a certificate for a different name and every browser hard-fails
-# on it, with nothing in this run's output suggesting why. So read the list back and refuse.
-# An unreadable list is refused too: an unchecked certificate is exactly the state this guard
-# exists to rule out.
-CERT_DOMAINS_LIVE="$(gc compute ssl-certificates describe "${EDGE_CERT}" --global \
-  --format='value(managed.domains)')"
-# Both sides normalised to one sorted space-separated list, because neither the order gcloud
-# returns nor the order this deployment declares is meaningful - only the set is.
-# Split on both separators one at a time: gcloud joins a repeated field with ';', the declared
-# list is comma-joined, and a two-character SET2 for a two-character SET1 is what `tr` calls a
-# duplicate rather than a mapping.
-_domain_set() {
-  printf '%s' "$1" | tr ';' '\n' | tr ',' '\n' | sed '/^[[:space:]]*$/d' | LC_ALL=C sort \
-    | tr '\n' ' '
+# One sorted, space-separated set out of a list gcloud joined with ';' or this script joined with
+# ',', with any resource-URL prefix stripped so a certificate's bare NAME compares against the bare
+# name declared here. Both sides are normalised because neither the order gcloud returns nor the
+# order this deployment declares is meaningful - only the set is.
+# Split on the two separators one at a time: gcloud joins a repeated field with ';', the declared
+# lists are comma-joined, and a two-character SET2 for a two-character SET1 is what `tr` calls a
+# duplicate rather than a mapping. A hostname contains no '/', so the same helper serves both.
+_name_set() {
+  printf '%s' "$1" | tr ';' '\n' | tr ',' '\n' | sed -e 's#.*/##' -e '/^[[:space:]]*$/d' \
+    | LC_ALL=C sort | tr '\n' ' '
 }
-CERT_DOMAINS_DECLARED_SET="$(_domain_set "${CERT_DOMAINS}")"
-CERT_DOMAINS_LIVE_SET="$(_domain_set "${CERT_DOMAINS_LIVE}")"
-if [ "${CERT_DOMAINS_LIVE_SET}" != "${CERT_DOMAINS_DECLARED_SET}" ]; then
-  die "certificate ${EDGE_CERT} covers [${CERT_DOMAINS_LIVE_SET% }] but this deployment declares
-   [${CERT_DOMAINS_DECLARED_SET% }]. Any hostname missing from the certificate serves a mismatched
-   one and browsers refuse it outright.
+
+# The HTTPS proxy is NAMED here rather than at section 5 because the drift refusal below has to
+# print the `target-https-proxies update` an operator would run to finish the swap by hand.
+HTTPS_PROXY="${EDGE_URL_MAP}-https-proxy"
+
+# 4) THE CERTIFICATES - ONE PER HOSTNAME, each covering exactly its own name, console-then-admin so
+#    the proxy's list below agrees with the order TRIPLES was built in.
+#
+#    WHY NOT ONE CERTIFICATE COVERING BOTH NAMES, WHICH IS WHAT THIS USED TO DO. A managed
+#    certificate serves only once it is WHOLLY ACTIVE: one name failing validation holds the whole
+#    certificate at PROVISIONING and takes every other name on it off HTTPS too, however long ago
+#    that name validated. That is not hypothetical - dev ran in exactly that state, console ACTIVE
+#    and unreachable behind an admin name at FAILED_NOT_VISIBLE (see the header). The names are
+#    derived from EDGE_CERT, which stays the BASE name this deployment declares, so they remain
+#    predictable and greppable in the console: ${EDGE_CERT}-console, ${EDGE_CERT}-admin.
+CERT_NAMES=()
+for triple in "${TRIPLES[@]}"; do
+  rest="${triple#*|}"
+  CERT_NAMES+=("${EDGE_CERT}-${rest#*|}")
+done
+# The proxy takes a LIST; this is it, in the one stable order this script uses everywhere.
+CERT_LIST="$(IFS=,; printf '%s' "${CERT_NAMES[*]}")"
+
+cert_i=0
+for triple in "${TRIPLES[@]}"; do
+  host="${triple%%|*}"
+  cert="${CERT_NAMES[${cert_i}]}"
+  cert_i=$((cert_i + 1))
+
+  _ensure "managed certificate ${cert} (${host})" \
+    compute ssl-certificates describe "${cert}" --global -- \
+    compute ssl-certificates create "${cert}" --domains="${host}" --global
+
+  # DRIFT IS NOTICED, NEVER SILENTLY REPAIRED. A managed certificate's domain list cannot be
+  # edited, and "reuse, never recreate" forbids replacing it here - but it does not forbid saying
+  # so. A certificate named for this hostname that covers some OTHER name (an older shared
+  # certificate left under a name this scheme now claims, a hand-made one) serves a certificate
+  # for a different name, and every browser hard-fails on it with nothing in this run's output
+  # suggesting why. So read the list back and refuse. An unreadable list is refused too: an
+  # unchecked certificate is exactly the state this guard exists to rule out.
+  cert_domains_live="$(gc compute ssl-certificates describe "${cert}" --global \
+    --format='value(managed.domains)')"
+  cert_domains_live_set="$(_name_set "${cert_domains_live}")"
+  cert_domains_want_set="$(_name_set "${host}")"
+  if [ "${cert_domains_live_set}" != "${cert_domains_want_set}" ]; then
+    # The remediation swaps THIS hostname's certificate and leaves the others attached, because
+    # the proxy takes the whole list on every update: dropping the others would take their
+    # hostnames off HTTPS, which is the coupling this whole section exists to remove.
+    cert_remedy=""
+    for other in "${CERT_NAMES[@]}"; do
+      [ "${other}" != "${cert}" ] || other="${cert}-v2"
+      cert_remedy="${cert_remedy:+${cert_remedy},}${other}"
+    done
+    die "certificate ${cert} covers [${cert_domains_live_set% }] but it must cover exactly
+   [${cert_domains_want_set% }], the one hostname it is for. A hostname whose certificate does not
+   name it serves a mismatched one and browsers refuse it outright.
    A managed certificate's domains cannot be edited and this script never deletes a live resource,
    so replacing it is an operator's deliberate act:
-     gcloud compute ssl-certificates create ${EDGE_CERT}-v2 --domains=${CERT_DOMAINS} --global \\
+     gcloud compute ssl-certificates create ${cert}-v2 --domains=${host} --global \\
        --project ${GCP_PROJECT_ID}
-     gcloud compute target-https-proxies update ${EDGE_URL_MAP}-https-proxy \\
-       --ssl-certificates=${EDGE_CERT}-v2 --global --project ${GCP_PROJECT_ID}
-   then set EDGE_CERT=${EDGE_CERT}-v2 in the deployment env and run this stage again. The new
-   certificate is PROVISIONING until it validates, so make the swap when a brief window of the
-   OLD certificate still being served is acceptable."
-fi
-
-CERT_STATE="$(gc compute ssl-certificates describe "${EDGE_CERT}" --global \
-  --format='value(managed.status)')"
-case "${CERT_STATE}" in
-  ACTIVE)        log "  certificate    ACTIVE" ;;
-  PROVISIONING|PROVISIONING_FAILED_TEMPORARILY)
-    # NOT A FAILURE. A managed certificate cannot validate until DNS points at the address this
-    # run may have just reserved, so the first run always lands here. Failing would make the
-    # pipeline unusable the day it is introduced.
-    warn "certificate ${EDGE_CERT} is ${CERT_STATE} - it stays that way until the A records below
-       exist and propagate, then becomes ACTIVE on its own within roughly 15-60 minutes." ;;
-  *)             die "certificate ${EDGE_CERT} is ${CERT_STATE} - this does not resolve itself.
-   Check the domains on the certificate against the A records that exist." ;;
-esac
+     gcloud compute target-https-proxies update ${HTTPS_PROXY} \\
+       --ssl-certificates=${cert_remedy} --global --project ${GCP_PROJECT_ID}
+   then rename or remove ${cert} so this stage can create it again under the same name, and run
+   this stage again. The new certificate is PROVISIONING until it validates, so make the swap when
+   a brief window of the OLD certificate still being served is acceptable."
+  fi
+done
 
 # 5) HTTPS: proxy + forwarding rule on port 443.
-HTTPS_PROXY="${EDGE_URL_MAP}-https-proxy"
+#
+#    THE CERTIFICATE LIST IS RECONCILED, NOT MERELY SET AT CREATION. `_ensure` creates a proxy that
+#    is absent and otherwise leaves it exactly as it stands - which is the point for every other
+#    resource here and a trap for this one field. A deployment that already has an HTTPS proxy
+#    pointing at the single shared certificate would go on pointing at it forever: the per-hostname
+#    certificates above would be created, provisioned, billed and never served, and no run would
+#    ever say so. So the live list is read back and updated whenever it disagrees with this
+#    deployment's. Comparing SETS, not the literal string, keeps a re-run from rewriting a proxy
+#    that already carries the right certificates in a different order.
+#
+#    UPDATING THE LIST DETACHES THE OLD CERTIFICATE; IT NEITHER DELETES IT NOR MOVES THE ADDRESS.
+#    `target-https-proxies update --ssl-certificates` writes the proxy's sslCertificates field and
+#    nothing else - the old certificate resource survives, unreferenced, for an operator to remove
+#    deliberately, because this script never deletes. And the IP belongs to the FORWARDING RULE,
+#    which names the proxy and is not rewritten here at all, so the address already in DNS is
+#    untouched by the swap.
 _ensure "HTTPS proxy ${HTTPS_PROXY}" \
   compute target-https-proxies describe "${HTTPS_PROXY}" --global -- \
   compute target-https-proxies create "${HTTPS_PROXY}" \
-    --ssl-certificates="${EDGE_CERT}" --url-map="${EDGE_URL_MAP}"
+    --ssl-certificates="${CERT_LIST}" --url-map="${EDGE_URL_MAP}"
+
+PROXY_CERTS_LIVE="$(gc compute target-https-proxies describe "${HTTPS_PROXY}" --global \
+  --format='value(sslCertificates)')"
+PROXY_CERTS_LIVE_SET="$(_name_set "${PROXY_CERTS_LIVE}")"
+CERT_LIST_SET="$(_name_set "${CERT_LIST}")"
+if [ "${PROXY_CERTS_LIVE_SET}" != "${CERT_LIST_SET}" ]; then
+  info "Attaching ${CERT_LIST} to ${HTTPS_PROXY} (it serves [${PROXY_CERTS_LIVE_SET% }])"
+  gc compute target-https-proxies update "${HTTPS_PROXY}" --global \
+    --ssl-certificates="${CERT_LIST}"
+else
+  log "  ${HTTPS_PROXY} serves ${CERT_LIST}"
+fi
 
 HTTPS_RULE="${EDGE_URL_MAP}-https-rule"
 _ensure "HTTPS forwarding rule ${HTTPS_RULE}" \
@@ -318,22 +377,70 @@ _ensure "HTTP forwarding rule ${HTTP_RULE}" \
     --load-balancing-scheme=EXTERNAL_MANAGED --network-tier=PREMIUM \
     --address="${EDGE_IP_NAME}" --target-http-proxy="${HTTP_PROXY}" --ports=80
 
+# 7) THE CERTIFICATE STATES, ONE HOSTNAME PER LINE - read here, at the end, rather than before the
+#    proxy above, and that placement is the fix, not an accident of layout. Refusing on a FAILED
+#    certificate BEFORE reconciling the proxy would mean a deployment whose admin name cannot
+#    validate never gets its console certificate attached at all, and no re-run ever would either -
+#    the same "one hostname's problem is every hostname's problem" deadlock that splitting the
+#    certificate exists to end, just moved into this script's control flow. So everything is
+#    reconciled first, then every hostname's state is read and reported, and only then does a
+#    FAILED one fail the run.
+CERT_STATES=()
+CERT_FAILED=""
+cert_i=0
+for triple in "${TRIPLES[@]}"; do
+  host="${triple%%|*}"
+  cert="${CERT_NAMES[${cert_i}]}"
+  cert_i=$((cert_i + 1))
+  cert_state="$(gc compute ssl-certificates describe "${cert}" --global \
+    --format='value(managed.status)')"
+  CERT_STATES+=("${host}=${cert_state}")
+  case "${cert_state}" in
+    ACTIVE) ;;
+    PROVISIONING|PROVISIONING_FAILED_TEMPORARILY)
+      # NOT A FAILURE. A managed certificate cannot validate until DNS points at the address this
+      # run may have just reserved, so the first run always lands here. Failing would make the
+      # pipeline unusable the day it is introduced. It is also strictly this hostname's state:
+      # the other hostname's certificate is a different resource with a validation of its own.
+      warn "certificate ${cert} for ${host} is ${cert_state} - it stays that way until that
+       hostname's A record below exists and propagates, then becomes ACTIVE on its own within
+       roughly 15-60 minutes." ;;
+    *) CERT_FAILED="${CERT_FAILED}
+     ${host}  ${cert}  ${cert_state}" ;;
+  esac
+done
+
 log "edge ${EDGE_URL_MAP}"
 log "  address        ${EDGE_IP_ADDRESS}"
-log "  certificate    ${EDGE_CERT} (${CERT_STATE})"
+cert_i=0
+for triple in "${TRIPLES[@]}"; do
+  host="${triple%%|*}"
+  log "  certificate    ${CERT_NAMES[${cert_i}]}  ${CERT_STATES[${cert_i}]#*=}  (${host})"
+  cert_i=$((cert_i + 1))
+done
 
 info "DNS - add these A records, then nothing else is required:"
 for pair in ${DOMAIN_LIST[@]+"${DOMAIN_LIST[@]}"}; do
   log "  ${pair}  A  ${EDGE_IP_ADDRESS}"
 done
 
-# THE ADDRESS AND CERTIFICATE STATE, for the caller that runs after this stage. Task 4 records the
+# The A records are printed above this refusal on purpose: a FAILED certificate is very often a
+# missing or wrong A record, so the run that refuses is the run that says which records it wanted.
+if [ -n "${CERT_FAILED}" ]; then
+  die "these certificates are in a state that does not resolve itself:${CERT_FAILED}
+   Check each certificate's one domain against the A records that actually exist. Every OTHER
+   hostname above is unaffected - its certificate is a separate resource and stays attached."
+fi
+
+# THE ADDRESS AND CERTIFICATE STATES, for the caller that runs after this stage. Task 4 records the
 # address in the manifest; a no-op outside a GitHub Actions step, so nothing here touches a local
-# run or a unit test.
+# run or a unit test. `edge_cert_state` now carries one `hostname=STATE` per declared hostname,
+# space-separated, because there is no longer a single state to report - the states are the whole
+# point of the change.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     printf 'edge_ip=%s\n' "${EDGE_IP_ADDRESS}"
-    printf 'edge_cert_state=%s\n' "${CERT_STATE}"
+    printf 'edge_cert_state=%s\n' "$(IFS=' '; printf '%s' "${CERT_STATES[*]}")"
   } >> "${GITHUB_OUTPUT}"
 fi
 log "done"

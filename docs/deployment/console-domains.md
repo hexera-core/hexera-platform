@@ -42,21 +42,77 @@ hostnames and `create-edge.sh` provisions the edge for both consoles on the next
 already works over HTTPS with a Google-managed certificate; what it cannot do is answer to a name
 you chose. Fronting it with one means a global external Application Load Balancer:  a reserved
 static IP, a serverless NEG bridging the classic LB backend model to a Cloud Run revision, a
-backend service, a URL map that routes by host, and a Google-managed certificate covering the
-declared hostnames. `create-edge.sh` assembles exactly that, once, for both consoles — one address
-and one certificate serving two host-routed backends, not two of each.
+backend service, a URL map that routes by host, and a Google-managed certificate. `create-edge.sh`
+assembles exactly that, once, for both consoles — **one** address serving two host-routed backends,
+and **one certificate per hostname**.
 
-## 3. The first run reserves an address and leaves the certificate `PROVISIONING` — by design
+### 2.1 One certificate per hostname, because a shared one couples them
+
+A Google-managed certificate serves only once it is **wholly** `ACTIVE`. A certificate that names
+two hostnames therefore has one fate for both: while either name is still failing validation, the
+certificate as a whole is not `ACTIVE`, and **neither** name is reachable over HTTPS — including
+one that validated hours earlier.
+
+That is an observation, not a worry. Dev ran in exactly this state on **2026-09-09**:
+
+```
+overall:                PROVISIONING
+dev.console.hexera.ai = ACTIVE
+dev.admin.hexera.ai   = FAILED_NOT_VISIBLE
+```
+
+`dev.console.hexera.ai` had validated and was still unreachable over HTTPS, because
+`dev.admin.hexera.ai` on the same certificate had not. Carried into prod, that shape means a
+validation problem on `admin.hexera.ai` — an internal, IAP-gated console — takes
+`console.hexera.ai`, the customer-facing name, down with it. The blast radius of the admin console's
+DNS is the whole product.
+
+So `create-edge.sh` now creates **one certificate per declared hostname**, each covering exactly
+that one domain, and hands the HTTPS target proxy the **list** of them
+(`--ssl-certificates=cert1,cert2`). The names are derived from the `EDGE_CERT` base the deployment
+env already declares — `dev-edge-cert-console`, `dev-edge-cert-admin` — so they stay predictable
+and greppable in the Cloud Console. `EDGE_CERT` itself is now a base name rather than a resource:
+no certificate is created under it any more.
+
+The fates are then independent. One hostname at `FAILED_NOT_VISIBLE` still fails the deploy — a
+state that does not resolve itself is still a failure — but it fails **after** every hostname's
+state has been read, reported and attached, so the healthy hostname is serving its own certificate
+either way, and each hostname's state is reported on its own line.
+
+### 2.2 What the migration onto per-host certificates does to a live edge
+
+Dev already had the shared `dev-edge-cert` attached to `dev-edge-https-proxy`. The first run of the
+new script against it creates the two per-host certificates and then **updates the proxy's
+certificate list** — `create-edge.sh` reads the live list back and reconciles it rather than only
+setting it at creation, because an existing proxy is never created and would otherwise go on
+serving the shared certificate forever while the new ones sat provisioned, billed and unused.
+
+Two things that update deliberately does **not** do:
+
+- **It does not delete the old certificate.** `target-https-proxies update --ssl-certificates`
+  rewrites the proxy's `sslCertificates` field and nothing else. `dev-edge-cert` survives,
+  unreferenced, until an operator removes it — this script never deletes anything.
+- **It does not change the address.** The IP belongs to the *forwarding rule*
+  (`dev-edge-https-rule` / `dev-edge-http-rule` on `35.186.202.188`), which names the proxy and is
+  not rewritten at all. DNS that already points at that address keeps working across the swap.
+
+There is a window during the swap in which the new certificates are `PROVISIONING`. They validate
+against A records that already exist, so it is the short end of the 15–60 minutes in §4 rather than
+a first run's wait — but HTTPS on both hostnames is degraded until they go `ACTIVE`.
+
+## 3. The first run reserves an address and leaves each certificate `PROVISIONING` — by design
 
 Run `create-edge.sh` (`components=edge`, or anything that includes it) against a project with no
-edge yet, and it ends with the certificate reporting `PROVISIONING`. **That is the passing
+edge yet, and it ends with every certificate reporting `PROVISIONING`. **That is the passing
 outcome for a first run, not a failure to fix.** A Google-managed certificate validates by DNS: it
-polls the hostnames its `--domains` list names, waiting for an A record that resolves to the
+polls the hostname its `--domains` list names, waiting for an A record that resolves to the
 certificate's own load balancer. That address cannot exist before this run reserves it — so on
 the run that reserves it, no A record naming it can exist yet either, and the certificate has
 nothing to validate against. `create-edge.sh` treats `PROVISIONING` (and the transient
 `PROVISIONING_FAILED_TEMPORARILY`) as success and logs the address anyway; only a state that does
-not resolve itself (`FAILED*`) stops the script.
+not resolve itself (`FAILED*`) stops the script. Each hostname is judged on its own certificate
+(§2.1), so `console` at `ACTIVE` beside `admin` at `PROVISIONING` is a passing run that says so on
+two lines.
 
 **What the operator owes it:** the two A records, pointed at the address the run just printed.
 The deploy workflow now does this printing for you — see §5.
@@ -64,27 +120,38 @@ The deploy workflow now does this printing for you — see §5.
 ## 4. `PROVISIONING` becomes `ACTIVE` on its own
 
 Once both A records exist and have propagated, Google's own validation polling picks them up
-without anything further from this repository. Expect **roughly 15–60 minutes** between the A
-records landing and the certificate reporting `ACTIVE`. Re-running `components=edge` at any point
-is safe and cheap. Nothing is deleted or recreated: the address, the NEGs, the backend services,
-the certificate, the proxies, the forwarding rules and the HTTP redirect map are all
-describe-then-create-only-if-absent, so a re-run against an already-`ACTIVE` certificate reads its
-state back and leaves it alone. The **serving URL map is the one exception** — it is written by an
-unconditional full-state `url-maps import`, which issues an Update on every run. The content is
-identical, so the routing never changes, but the API call is a write and the resource's update
-timestamp moves; a re-run is not literally a no-op. Use a re-run to check progress rather than
-to force it; nothing about the check itself makes validation happen sooner.
+without anything further from this repository. Expect **roughly 15–60 minutes** between an A
+record landing and its certificate reporting `ACTIVE`; the two hostnames now get there separately.
+Re-running `components=edge` at any point is safe and cheap. Nothing is deleted or recreated: the
+address, the NEGs, the backend services, the certificates, the proxies, the forwarding rules and
+the HTTP redirect map are all describe-then-create-only-if-absent, so a re-run against an
+already-`ACTIVE` certificate reads its state back and leaves it alone. Two exceptions, both writes
+rather than creations:
+
+- The **serving URL map** is written by an unconditional full-state `url-maps import`, which issues
+  an Update on every run. The content is identical, so the routing never changes, but the API call
+  is a write and the resource's update timestamp moves; a re-run is not literally a no-op.
+- The **HTTPS proxy's certificate list** is read back and updated when it disagrees with the
+  hostnames this deployment declares (§2.2). Comparison is by set, not by literal string, so a
+  proxy already carrying the right certificates is left untouched however they happen to be
+  ordered — a converged edge issues no `create`, no `delete` and no proxy update.
+
+Use a re-run to check progress rather than to force it; nothing about the check itself makes
+validation happen sooner.
 
 ## 5. Where the address is: the run summary, not an 18-stage log
 
 A deploy that reconciled the edge writes a step named **"Surface the edge address for DNS"** into
 the run's own summary (`$GITHUB_STEP_SUMMARY`) — a table of hostname → A record → address, and the
-certificate's current state, generated from `create-edge.sh`'s own `edge_ip` / `edge_cert_state`
-outputs. That step runs only when `edge_ip` is non-empty, i.e. only when this run's `deploy` step
+certificate states, generated from `create-edge.sh`'s own `edge_ip` / `edge_cert_state` outputs.
+`edge_cert_state` now carries **one `hostname=STATE` pair per declared hostname**, space-separated
+(`dev.console.hexera.ai=ACTIVE dev.admin.hexera.ai=PROVISIONING`), because there is no longer a
+single state to report — the states being separable is the point (§2.1). That step runs only when
+`edge_ip` is non-empty, i.e. only when this run's `deploy` step
 actually reconciled an edge with at least one hostname declared — a run whose components never
 touched the edge leaves no table rather than an empty one. Both environments now pin
 `CONSOLE_DOMAIN`/`ADMIN_DOMAIN`, so the first `v*` tag is expected to print this table for prod
-exactly as every dev deploy has since Task 4 — with the certificate reporting `PROVISIONING` until
+exactly as every dev deploy has since Task 4 — with both certificates reporting `PROVISIONING` until
 an operator points DNS at the address it prints (§3). Before this table existed, the address was
 findable only by reading the deploy step's raw log output, which is measured in tens of minutes
 and dozens of stages for the same run.
@@ -126,8 +193,8 @@ were before this document's §1 was updated, not a bug to fix in either script.
   reachable at its load-balancer hostname without the gate this whole document exists to describe
   — check IAP's own enforcement state on the service before treating the console as protected.
 - **DNS for `console.hexera.ai` and `admin.hexera.ai`.** §3 above applies to prod's first release
-  exactly as it always has to dev's: the certificate will sit at `PROVISIONING` until an operator
-  reads the address the run prints (§5) and points both A records at it.
+  exactly as it always has to dev's: each hostname's certificate will sit at `PROVISIONING`
+  until an operator reads the address the run prints (§5) and points both A records at it.
 
 ## 9. What this does not cover
 

@@ -42,23 +42,32 @@ if has "addresses describe"; then
 fi
 if has "addresses create"; then : > "${STATE}/address.created"; exit 0; fi
 
+# CERTIFICATES ARE KEYED BY NAME, because there is one per hostname now and a test's whole point
+# is often that they differ. `<base>-console` / `<base>-admin`, so the trailing word is the label a
+# per-host override names: FAKE_CERT_STATE_admin=FAILED_NOT_VISIBLE leaves the console's alone.
 if has "ssl-certificates create"; then
-  flag --domains "$@" > "${STATE}/cert.domains" || true
-  : > "${STATE}/cert.created"; exit 0
+  n="$(after create "$@" || true)"
+  flag --domains "$@" > "${STATE}/cert.domains.${n}" || true
+  : > "${STATE}/cert.created.${n}"; exit 0
 fi
 if has "ssl-certificates describe"; then
-  if [ -z "${FAKE_CERT_EXISTS:-}" ] && [ ! -f "${STATE}/cert.created" ]; then exit 1; fi
+  n="$(after describe "$@" || true)"
+  lbl="${n##*-}"
+  if [ -z "${FAKE_CERT_EXISTS:-}" ] && [ ! -f "${STATE}/cert.created.${n}" ]; then exit 1; fi
   if has "managed.domains"; then
-    if [ -n "${FAKE_CERT_DOMAINS:-}" ]; then d="${FAKE_CERT_DOMAINS}"
-    elif [ -f "${STATE}/cert.domains" ]; then d="$(cat "${STATE}/cert.domains")"
-    # A certificate that predates this state directory covers what the fixture declares, so a
-    # scenario about something else (a PROVISIONING status, a reused address) is not derailed by
-    # a drift refusal it never asked for. FAKE_CERT_DOMAINS is how a test asks for drift.
-    else d="dev.console.hexera.ai,dev.admin.hexera.ai"; fi
+    v="FAKE_CERT_DOMAINS_${lbl}"
+    if [ -n "${!v:-}" ]; then d="${!v}"
+    elif [ -n "${FAKE_CERT_DOMAINS:-}" ]; then d="${FAKE_CERT_DOMAINS}"
+    elif [ -f "${STATE}/cert.domains.${n}" ]; then d="$(cat "${STATE}/cert.domains.${n}")"
+    # A certificate that predates this state directory covers the one hostname its name is for, so
+    # a scenario about something else (a PROVISIONING status, a reused address) is not derailed by
+    # a drift refusal it never asked for. FAKE_CERT_DOMAINS[_<label>] is how a test asks for drift.
+    else d="dev.${lbl}.hexera.ai"; fi
     # real gcloud joins a repeated field with ';'
     printf '%s' "${d}" | tr ',' ';'; printf '\n'; exit 0
   fi
-  printf '%s\n' "${FAKE_CERT_STATE:-PROVISIONING}"; exit 0
+  v="FAKE_CERT_STATE_${lbl}"
+  printf '%s\n' "${!v:-${FAKE_CERT_STATE:-PROVISIONING}}"; exit 0
 fi
 
 if has "network-endpoint-groups create"; then
@@ -121,11 +130,40 @@ if has "url-maps describe"; then
   exit 1
 fi
 
+# THE PROXY REMEMBERS ITS CERTIFICATE LIST, which is the only way to see whether a MIGRATION
+# happened: a proxy that already exists is never created, so `create` says nothing about what it
+# ends up serving. FAKE_PROXY_CERTS seeds a proxy that predates this state directory - e.g. the one
+# shared certificate dev really has attached today.
+if has "target-https-proxies update"; then
+  n="$(after update "$@" || true)"
+  flag --ssl-certificates "$@" > "${STATE}/proxy-certs.${n}" || true
+  exit 0
+fi
 case "${ARGS}" in
-  *"target-https-proxies create"*|*"target-http-proxies create"*|*"forwarding-rules create"*)
+  *"target-https-proxies create"*)
+    n="$(after create "$@" || true)"; : > "${STATE}/res.${n}"
+    flag --ssl-certificates "$@" > "${STATE}/proxy-certs.${n}" || true
+    exit 0 ;;
+  *"target-http-proxies create"*|*"forwarding-rules create"*)
     n="$(after create "$@" || true)"; : > "${STATE}/res.${n}"; exit 0 ;;
 esac
-if has "target-https-proxies describe" || has "target-http-proxies describe"; then
+if has "target-https-proxies describe"; then
+  n="$(after describe "$@" || true)"
+  if [ ! -f "${STATE}/res.${n}" ] && [ -n "${FAKE_PROXY_CERTS:-}" ]; then
+    printf '%s' "${FAKE_PROXY_CERTS}" > "${STATE}/proxy-certs.${n}"
+    : > "${STATE}/res.${n}"
+  fi
+  [ -f "${STATE}/res.${n}" ] || exit 1
+  if has "sslCertificates"; then
+    # real gcloud returns FULL RESOURCE URLs, joined with ';'
+    tr ',' '\n' < "${STATE}/proxy-certs.${n}" 2>/dev/null | sed -e '/^[[:space:]]*$/d' \
+      -e 's#^#https://www.googleapis.com/compute/v1/projects/p/global/sslCertificates/#' \
+      | tr '\n' ';'
+    printf '\n'
+  fi
+  exit 0
+fi
+if has "target-http-proxies describe"; then
   n="$(after describe "$@" || true)"
   if [ -f "${STATE}/res.${n}" ]; then exit 0; fi
   exit 1
@@ -230,10 +268,68 @@ def test_each_hostname_gets_a_host_rule_to_its_own_backend(run):
         assert f"/backendServices/{backend}\n" in served, served
 
 
-def test_the_certificate_covers_exactly_the_declared_hostnames(run):
+def test_every_hostname_gets_a_certificate_of_its_own(run):
+    """THE change. One certificate covering both names couples them: a managed certificate serves
+    only when it is WHOLLY ACTIVE, so dev ran with `dev.console.hexera.ai` ACTIVE and unreachable
+    over HTTPS behind a `dev.admin.hexera.ai` at FAILED_NOT_VISIBLE. In prod that shape lets admin
+    take console - the customer-facing name - down with it."""
     done, calls = run()
     assert done.returncode == 0, done.stderr
-    assert "--domains=dev.console.hexera.ai,dev.admin.hexera.ai" in calls
+    assert "ssl-certificates create t-edge-cert-console --domains=dev.console.hexera.ai" in calls
+    assert "ssl-certificates create t-edge-cert-admin --domains=dev.admin.hexera.ai" in calls
+    # No certificate names two hostnames - that is the coupling, and it is what is being removed.
+    assert "--domains=dev.console.hexera.ai,dev.admin.hexera.ai" not in calls
+    for line in calls.splitlines():
+        if "ssl-certificates create" not in line:
+            continue
+        domains = [a[len("--domains="):] for a in line.split() if a.startswith("--domains=")]
+        assert len(domains) == 1, line
+        assert "," not in domains[0], f"{domains[0]} couples two hostnames onto one certificate"
+
+
+def test_the_https_proxy_is_given_every_hostname_certificate(run):
+    done, calls = run()
+    assert done.returncode == 0, done.stderr
+    assert "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin" in calls, calls
+
+
+def test_the_https_proxy_is_given_only_the_declared_hostname_certificate(run):
+    done, calls = run({"ADMIN_DOMAIN": ""})
+    assert done.returncode == 0, done.stderr
+    assert "--ssl-certificates=t-edge-cert-console" in calls
+    assert "t-edge-cert-admin" not in calls
+
+
+def test_an_existing_proxy_has_its_certificate_list_updated(run):
+    """THE MIGRATION. dev already has the one shared `dev-edge-cert` attached to its HTTPS proxy.
+    The proxy is only ever handed certificates by `create`, and an existing proxy is never created
+    - so without an explicit reconcile the per-hostname certificates would be provisioned, billed
+    and never served, and the shared certificate would stay attached forever."""
+    # Dev's shape today: a reserved address, both forwarding rules, the proxy, and the one shared
+    # certificate attached to it.
+    done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1", "FAKE_RULE_RC": "0",
+                            "FAKE_PROXY_CERTS": "t-edge-cert"})
+    assert done.returncode == 0, done.stderr
+    assert "target-https-proxies create" not in calls, "the proxy was supposed to pre-exist"
+    assert ("target-https-proxies update t-edge-https-proxy --global "
+            "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin") in calls, calls
+    # Detaching is not deleting, and the address is not touched: the IP lives on the forwarding
+    # rule, which names the proxy and is never rewritten here.
+    assert "delete" not in calls
+    assert "addresses create" not in calls
+    assert "forwarding-rules create" not in calls
+    attached = (run.state / "proxy-certs.t-edge-https-proxy").read_text(encoding="utf-8")
+    assert attached == "t-edge-cert-console,t-edge-cert-admin"
+
+
+def test_a_proxy_already_carrying_the_right_certificates_is_left_alone(run):
+    """Reconciling compares SETS, so a proxy that already serves both - in either order - is not
+    rewritten on every run."""
+    done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1",
+                            "FAKE_PROXY_CERTS": "t-edge-cert-admin,t-edge-cert-console"})
+    assert done.returncode == 0, done.stderr
+    assert "target-https-proxies update" not in calls
+    assert "target-https-proxies create" not in calls
 
 
 def test_only_a_declared_hostname_is_served(run):
@@ -306,22 +402,73 @@ def test_an_already_attached_neg_is_not_attached_again(run):
 
 
 def test_certificate_drift_is_refused_with_a_remediation(run):
-    """Adding ADMIN_DOMAIN to a deployment that previously declared only CONSOLE_DOMAIN adds the
-    admin host rule and prints an admin A record while the certificate still covers only the
-    console name - that hostname then serves a mismatched certificate and browsers hard-fail."""
+    """A certificate named for one hostname that covers a DIFFERENT one - an older shared
+    certificate left under a name this scheme now claims, a hand-made one - makes that hostname
+    serve a mismatched certificate, and browsers hard-fail on it. A managed certificate's domains
+    cannot be edited and this script never deletes, so it says so instead of repairing it."""
     done, _ = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1",
-                        "FAKE_CERT_DOMAINS": "dev.console.hexera.ai"})
+                        "FAKE_CERT_DOMAINS_admin": "dev.console.hexera.ai"})
     assert done.returncode != 0, "certificate drift was accepted silently"
-    assert "t-edge-cert" in done.stderr
+    assert "t-edge-cert-admin" in done.stderr
     assert "dev.admin.hexera.ai" in done.stderr, "the refusal does not say what is missing"
-    assert "ssl-certificates create t-edge-cert-v2" in done.stderr, "no remediation was offered"
+    assert "ssl-certificates create t-edge-cert-admin-v2" in done.stderr, "no remediation offered"
+    # The remediation keeps the OTHER hostname attached: the proxy takes the whole list on every
+    # update, so a remediation naming only the replacement would take console off HTTPS - the very
+    # coupling one certificate per hostname exists to remove.
+    assert "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin-v2" in done.stderr
 
 
-def test_a_certificate_covering_the_declared_hostnames_is_not_drift(run):
-    """The order gcloud returns is not the order this deployment declares, and neither is data."""
-    done, _ = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1",
-                        "FAKE_CERT_DOMAINS": "dev.admin.hexera.ai;dev.console.hexera.ai"})
+def test_a_certificate_covering_exactly_its_own_hostname_is_not_drift(run):
+    """gcloud returns a repeated field ';'-joined, not in the form this deployment declares it in;
+    only the set is data. And an existing certificate is reused, never recreated."""
+    done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1",
+                            "FAKE_CERT_DOMAINS_console": "dev.console.hexera.ai",
+                            "FAKE_CERT_DOMAINS_admin": "dev.admin.hexera.ai"})
     assert done.returncode == 0, done.stderr
+    assert "ssl-certificates create" not in calls
+    assert "ssl-certificates delete" not in calls
+
+
+def test_one_failed_hostname_fails_the_run_and_the_other_is_still_reported(run):
+    """The FAILED rule is unchanged - a state that does not resolve itself is a failure. What
+    changes is that the ACTIVE hostname is still read, still reported and still attached: its
+    certificate is a separate resource now, so its neighbour's failure is not its own."""
+    done, calls = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1",
+                            "FAKE_CERT_STATE_console": "ACTIVE",
+                            "FAKE_CERT_STATE_admin": "FAILED_NOT_VISIBLE"})
+    assert done.returncode != 0
+    assert "dev.console.hexera.ai" in done.stdout
+    assert "t-edge-cert-console  ACTIVE" in done.stdout, done.stdout
+    assert "FAILED_NOT_VISIBLE" in done.stderr
+    assert "dev.admin.hexera.ai" in done.stderr
+    # The console's certificate was attached BEFORE the admin's state could stop the run. Refusing
+    # first would leave a console that validated with no certificate on the proxy, and no re-run
+    # would ever attach one - the same deadlock, moved into this script.
+    assert "--ssl-certificates=t-edge-cert-console,t-edge-cert-admin" in calls
+
+
+def test_one_provisioning_hostname_beside_an_active_one_is_not_a_failure(run):
+    """A certificate cannot validate before DNS resolves, so PROVISIONING is a passing state - and
+    it stays one whatever the other hostname is doing."""
+    done, _ = run(fake={"FAKE_IP_EXISTS": "1", "FAKE_CERT_EXISTS": "1",
+                        "FAKE_CERT_STATE_console": "ACTIVE",
+                        "FAKE_CERT_STATE_admin": "PROVISIONING"})
+    assert done.returncode == 0, done.stderr
+    assert "t-edge-cert-console  ACTIVE" in done.stdout, done.stdout
+    assert "t-edge-cert-admin  PROVISIONING" in done.stdout, done.stdout
+
+
+def test_a_converged_edge_creates_and_deletes_nothing(run):
+    """Everything already in place, per hostname: the second run must be a read."""
+    first, first_calls = run()
+    assert first.returncode == 0, first.stderr
+    second, all_calls = run()
+    assert second.returncode == 0, second.stderr
+    # Only the SECOND run's calls; everything before them is the run that built the state.
+    converged = all_calls[len(first_calls):]
+    assert "create" not in converged, converged
+    assert "delete" not in converged, converged
+    assert "target-https-proxies update" not in converged, converged
 
 
 def test_the_ip_and_cert_state_are_published(run, tmp_path):
