@@ -382,8 +382,14 @@ costs storage and scan.
 **The dataset is `hexera-prod:billing_export`, and it is in prod on purpose.** An export
 accumulates from the day it is switched on and cannot be backfilled, so its history is
 irreplaceable. `hexera-dev` is a shared sandbox that may be rebuilt; a table that disappears with it
-takes every month recorded up to that point. The table name follows the account id with its hyphens
-turned to underscores: `gcp_billing_export_v1_01EFBB_8FF368_9E335F`.
+takes every month recorded up to that point.
+
+**`BILLING_EXPORT_TABLE` names the DATASET, not the table**, and the console finds the Standard
+usage cost table inside it. The table's name is derived from the billing account id with its
+hyphens turned to underscores, and deriving it in configuration is a trap: a derived name that is
+wrong fails identically to an export that was never switched on — `Not found: Table` — so the
+mistake is indistinguishable from the state it is legitimately waiting on, and stays that way. An
+exact `project.dataset.table` is still accepted where one is wanted.
 
 **One billing account bills both projects, so one table holds both.** Three reads had to be scoped
 because of it, and the third was only caught by looking at the deployed page:

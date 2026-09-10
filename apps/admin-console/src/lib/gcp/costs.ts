@@ -45,6 +45,54 @@ export type SpendReader = Pick<BigQuery, "query">;
 // configuration setting and an injected query.
 const TABLE_REFERENCE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$/;
 
+// project.dataset - the form that lets the table be DISCOVERED rather than guessed.
+const DATASET_REFERENCE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_]+$/;
+
+// The Standard usage cost export writes one table per billing account, named for the account with
+// its hyphens turned to underscores. The other exports write their own prefixes into the same
+// dataset - detailed usage cost is `gcp_billing_export_resource_v1_`, pricing is
+// `cloud_pricing_export` - so the prefix is what tells them apart, and the `_resource_` one is
+// excluded rather than matched by accident.
+const STANDARD_EXPORT_PREFIX = "gcp_billing_export_v1_";
+
+// WHY DISCOVERY EXISTS AT ALL. BILLING_EXPORT_TABLE was originally pinned to a table name derived
+// from the billing account id, before any table existed to check it against. A derived name that
+// turns out wrong fails the same way a disabled export does - "Not found: Table" - so the mistake
+// would have looked exactly like the state it was waiting on, indefinitely. Naming the DATASET and
+// finding the table removes the guess.
+export async function resolveExportTable(bigquery: SpendReader, reference: string): Promise<string> {
+  if (TABLE_REFERENCE.test(reference)) return reference;
+
+  if (!DATASET_REFERENCE.test(reference)) {
+    throw new Error(
+      `'${reference}' is neither project.dataset.table nor project.dataset. BILLING_EXPORT_TABLE ` +
+        `is interpolated into SQL, which BigQuery cannot parameterise, so anything else is refused.`,
+    );
+  }
+
+  const [rows] = await bigquery.query({
+    params: { prefix: `${STANDARD_EXPORT_PREFIX}%` },
+    query: `
+      SELECT table_name
+      FROM \`${reference}.INFORMATION_SCHEMA.TABLES\`
+      WHERE table_name LIKE @prefix AND table_name NOT LIKE '%_resource_v1_%'
+      ORDER BY table_name
+      LIMIT 1
+    `,
+  });
+
+  const found = (rows as { table_name?: string }[])[0]?.table_name;
+  if (!found) {
+    throw new Error(
+      `Not found: Table — the dataset ${reference} holds no ${STANDARD_EXPORT_PREFIX}* table yet. ` +
+        `Either the Standard usage cost export is not enabled on the billing account, or it is and ` +
+        `has not written its first table.`,
+    );
+  }
+
+  return `${reference}.${found}`;
+}
+
 function toNumber(value: number | string | { toNumber(): number } | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "object") return value.toNumber();
@@ -137,10 +185,11 @@ export function spendQuery(
 
 export async function readSpendByService(
   bigquery: SpendReader,
-  table: string,
+  tableOrDataset: string,
   days: number,
   projectId: string,
 ): Promise<SpendRow[]> {
+  const table = await resolveExportTable(bigquery, tableOrDataset);
   const { params, query } = spendQuery(table, days, projectId);
   const [rows] = await bigquery.query({ params, query });
 

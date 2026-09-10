@@ -264,7 +264,12 @@ jobs:
               # roles/billing.viewer on the shared billing ACCOUNT, so it can already see
               # account-wide billing data. The BigQuery grant is dataset-scoped READER on this one
               # table and adds nothing it could not already reach.
-              echo "billing_export_table=hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"
+              # NAMED AS A DATASET, NOT A TABLE. The console finds the Standard usage cost table
+              # inside it. The table name is derived from the billing account id, and a derived
+              # name that is wrong fails identically to an export that is switched off - "Not
+              # found: Table" - so the mistake would be indistinguishable from the state it is
+              # waiting on. An exact project.dataset.table is still accepted if one is ever needed.
+              echo "billing_export_table=hexera-prod.billing_export"
               # The custom hostnames, PINNED, dev only - same reasoning as console_service and
               # admin_service immediately above. create-edge.sh (Task 4) only provisions the load
               # balancer, address and certificate when it is handed a domain; this is what hands
@@ -359,7 +364,7 @@ jobs:
             echo "admin_service=prod-admin"
             # The same table the dev block names, and for prod it is not even a cross-project
             # read - the dataset lives here.
-            echo "billing_export_table=hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"
+            echo "billing_export_table=hexera-prod.billing_export"
             # THE CUSTOM HOSTNAMES, NOW PINNED - the same reasoning as console_service and
             # admin_service immediately above: naming them here is what lets create-edge.sh
             # provision the load balancer, reserved global address and managed certificate these

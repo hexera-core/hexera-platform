@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isExportNotYetWritten,
+  resolveExportTable,
   readBillingAccount,
   readBudgets,
   readSpendByService,
@@ -164,4 +165,52 @@ test("with no project number, only account-wide budgets are claimed", () => {
   return readBudgets(client, "billingAccounts/x", null).then((budgets) => {
     assert.deepEqual(budgets, []);
   });
+});
+
+test("an exact table reference is used as given", async () => {
+  const bq = { query: async () => { throw new Error("must not query"); } } as never;
+  assert.equal(
+    await resolveExportTable(bq, "hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"),
+    "hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F",
+  );
+});
+
+test("a dataset reference discovers the standard export table", async () => {
+  // The table name is derived from the billing account id. Deriving it in config and being wrong
+  // fails exactly like a disabled export - "Not found: Table" - so the mistake is indistinguishable
+  // from the state it is waiting on. Finding it removes the guess.
+  let sql = "";
+  const bq = {
+    query: async (req: { query: string }) => {
+      sql = req.query;
+      return [[{ table_name: "gcp_billing_export_v1_01EFBB_8FF368_9E335F" }]] as never;
+    },
+  } as never;
+
+  assert.equal(
+    await resolveExportTable(bq, "hexera-prod.billing_export"),
+    "hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F",
+  );
+  assert.match(sql, /INFORMATION_SCHEMA\.TABLES/);
+});
+
+test("the detailed-usage export is not mistaken for the standard one", async () => {
+  // Both land in the same dataset and both begin gcp_billing_export. Only the standard table has
+  // the shape this query reads.
+  const bq = { query: async (req: { query: string }) => { assert.match(req.query, /NOT LIKE '%_resource_v1_%'/); return [[]] as never; } } as never;
+  await assert.rejects(() => resolveExportTable(bq, "hexera-prod.billing_export"), /Not found: Table/);
+});
+
+test("an empty dataset reads as the waiting state, not a broken one", async () => {
+  const bq = { query: async () => [[]] as never } as never;
+  await assert.rejects(
+    () => resolveExportTable(bq, "hexera-prod.billing_export"),
+    (error: Error) => isExportNotYetWritten(error),
+  );
+});
+
+test("anything that is not a dataset or table reference is refused", async () => {
+  const bq = { query: async () => [[]] as never } as never;
+  await assert.rejects(() => resolveExportTable(bq, "a.b`; DROP TABLE x; --"), /refused/i);
+  await assert.rejects(() => resolveExportTable(bq, "onepart"), /refused/i);
 });
