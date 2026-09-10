@@ -309,6 +309,8 @@ INVENTORY: list[Group] = [
         EnvVar("MESH_API_KEY", "", secret=True),
         EnvVar("USER_TOKEN_SECRET", "", secret=True),
         EnvVar("CORS_ORIGINS", "*"),
+        EnvVar("FIREBASE_PROJECT_ID", "",
+               help="the Identity Platform project whose ID tokens the console signs in with"),
     ]),
     Group("Product modes", vars=[
         EnvVar("DATA_COLLECTION_ENABLED", "true",

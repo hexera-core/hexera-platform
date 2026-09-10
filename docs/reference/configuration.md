@@ -400,7 +400,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (212 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (213 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -452,6 +452,7 @@ Every supported setting (212 entries). `template` settings are the ones `.env.ex
 | `WEB_SEARCH_PROVIDER` | template | app |  |
 | `CORS_ORIGINS` | template | app |  |
 | `ENV` | template | app |  |
+| `FIREBASE_PROJECT_ID` | template | app |  |
 | `MESH_API_KEY` | template | app | yes |
 | `USER_TOKEN_SECRET` | template | app | yes |
 | `ALLOW_PUBLIC_RAW_TRACE` | template | app |  |
