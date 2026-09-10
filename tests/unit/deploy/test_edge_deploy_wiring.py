@@ -42,8 +42,9 @@ def test_prod_pins_the_production_hostnames_and_services():
         "exist")
 
 
-def test_the_deploy_job_maps_both_domains():
-    body = yaml.dump(_doc()["jobs"]["deploy"])
+def test_the_provision_job_maps_both_domains():
+    # provision is the job that runs deploy.sh, so its environment is the one create-edge.sh sees.
+    body = yaml.dump(_doc()["jobs"]["provision"])
     assert "CONSOLE_DOMAIN" in body
     assert "ADMIN_DOMAIN" in body
 
@@ -58,6 +59,21 @@ def test_a_manual_run_can_select_the_edge():
 
 
 def test_the_run_surfaces_the_address():
-    body = yaml.dump(_doc()["jobs"]["deploy"])
+    """The address must leave the job that discovered it AND be printed somewhere a human reads.
+
+    Two assertions rather than one, because the split separated them: create-edge.sh writes
+    edge_ip to provision's $GITHUB_OUTPUT, and the `edge-dns` job is what turns it into the DNS
+    table in the run summary. Either half missing means an operator never sees the address the
+    run just reserved, which is the whole point of this test.
+    """
+    doc = _doc()
+    assert "edge_ip" in yaml.dump(doc["jobs"]["provision"].get("outputs", {})), (
+        "provision does not publish edge_ip as a job output, so the address cannot leave the job "
+        "that reserved it")
+    edge = doc["jobs"]["edge-dns"]
+    assert "provision" in edge["needs"]
+    body = yaml.dump(edge)
     assert "edge_ip" in body, (
         "the address an operator must put in DNS is not surfaced by the run that reserved it")
+    assert "GITHUB_STEP_SUMMARY" in body, (
+        "the address is never written to the run summary, so it is buried in a log nobody opens")
