@@ -306,11 +306,22 @@ def test_no_node_install_appears_without_a_frozen_lockfile():
         for i, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
             if line.strip().startswith("#"):
                 continue
-            if re.search(r"\b(?:npm|pnpm|yarn)\s+(?:install|add)\b", line):
-                installs.append(f"{rel}:{i}")
+            if not re.search(r"\b(?:npm|pnpm|yarn)\s+(?:install|add)\b", line):
+                continue
+            # A FROZEN install is the whole point, not the literal command `npm ci`. This rule
+            # exists so a build cannot silently resolve a dependency the lockfile does not name;
+            # `pnpm install --frozen-lockfile` and `yarn install --frozen-lockfile` refuse exactly
+            # that, and are what the pnpm workspace uses. Matching on the verb alone rejected them
+            # and would have pushed the fix towards `npm ci` in a repository that has no
+            # package-lock.json for npm to read.
+            if re.search(r"--frozen-lockfile\b", line):
+                continue
+            installs.append(f"{rel}:{i}")
     if not manifests and not installs:
         return                                  # the ecosystem is genuinely absent
-    assert not installs, f"non-frozen Node install (use `npm ci`): {installs}"
+    assert not installs, (
+        "non-frozen Node install - use `npm ci`, or `--frozen-lockfile` for pnpm/yarn: "
+        f"{installs}")
 
 
 # reconciliation

@@ -100,6 +100,21 @@ confirm() {
 sa_exists()      { gc iam service-accounts describe "$1" >/dev/null 2>&1; }
 bucket_exists()  { gcloud storage buckets describe "gs://$1" >/dev/null 2>&1; }
 secret_exists()  { gc secrets describe "$1" >/dev/null 2>&1; }
+
+# secret_confirmed_absent NAME - true only when Secret Manager AFFIRMATIVELY says the container
+# does not exist (its error names NOT_FOUND). `secret_exists` failing is not proof of absence: the
+# same non-zero exit also covers this identity lacking secretmanager.viewer, a transient API
+# error, or Secret Manager being disabled - none of which mean the container is missing. Callers
+# that need to distinguish "I can act on this" from "I merely could not confirm it" use this
+# instead of inverting secret_exists.
+secret_confirmed_absent() {
+  local out
+  out="$(gc secrets describe "$1" 2>&1)" && return 1   # describe succeeded - it exists
+  case "${out}" in
+    *NOT_FOUND*) return 0 ;;   # Secret Manager affirmatively says it is not there
+    *)           return 2 ;;   # inconclusive - do not treat this as absence
+  esac
+}
 run_job_exists() { gc run jobs describe "$1" --region "${GCP_REGION}" >/dev/null 2>&1; }
 run_svc_exists() { gc run services describe "$1" --region "${GCP_REGION}" >/dev/null 2>&1; }
 ar_repo_exists() {

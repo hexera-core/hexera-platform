@@ -7,6 +7,7 @@
     "build": "next build",
     "dev": "next dev -p 3001",
     "lint": "eslint .",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "eslint-config-next": "16.3.4",
     "postcss": "8.5.28",
     "tailwindcss": "4.3.3",
+    "tsx": "4.23.13",
     "typescript": "6.0.3"
   }
 }

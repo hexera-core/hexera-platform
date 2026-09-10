@@ -688,6 +688,139 @@ def test_the_gate_d_helper_owns_every_ambient_input():
         assert owned in src, f"{owned} is no longer owned by the test helper"
 
 
+CONSOLE_DIGEST = "sha256:" + "e5" * 32
+
+
+def test_promotion_writes_the_console_image(tmp_path):
+    """A record carrying a console component promotes it into the deployment env."""
+    sha, tree = _head()
+    rec = make_record(commit=sha, tree=tree)
+    rec["components"]["console"] = {
+        "dockerfile_target": "console",
+        "local_tag": "meshpipeline-console:abc1234",
+        "local_image_id": "sha256:" + "f6" * 32,
+        "registry_repository": REGISTRY,
+        "publication_tag": "v0.0.0",
+        "registry_digest": CONSOLE_DIGEST,
+        "reference": f"{REGISTRY}/console@{CONSOLE_DIGEST}",
+        "workloads": ["console-service"],
+    }
+    # promote-release.sh requires an admin component unconditionally (ADMIN_REF), so a record
+    # exercising the console promotion path must still carry one alongside it.
+    rec["components"]["admin"] = {
+        "dockerfile_target": "admin",
+        "local_tag": "meshpipeline-admin:abc1234",
+        "local_image_id": "sha256:" + "b8" * 32,
+        "registry_repository": REGISTRY,
+        "publication_tag": "v0.0.0",
+        "registry_digest": ADMIN_DIGEST,
+        "reference": f"{REGISTRY}/admin@{ADMIN_DIGEST}",
+        "workloads": ["admin-service"],
+    }
+    record_path = write_record(tmp_path, rec)
+    env_file = tmp_path / "generated.env"
+    env_file.write_text(
+        "DEPLOYMENT_ID=t\nGCP_PROJECT_ID=p\nMESH_SERVICE_ACCOUNT=mesh-sa\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["bash", str(REPO / "deploy" / "gcp" / "scripts" / "promote-release.sh")],
+        check=True, capture_output=True, text=True,
+        env={**os.environ, "RELEASE_RECORD": str(record_path),
+             "DEPLOY_ENV_FILE": str(env_file)},
+    )
+
+    written = env_file.read_text(encoding="utf-8")
+    assert f"CONSOLE_IMAGE={REGISTRY}/console@{CONSOLE_DIGEST}" in written
+
+
+def test_the_release_record_check_refuses_a_tag_only_console_reference(tmp_path):
+    """Deployment identity is a digest. A movable tag is refused, not resolved.
+
+    This is enforced by devtools/release/record.py's `check` command, which promote-release.sh
+    runs first and which generically validates every component's `reference` field - including
+    console - before CONSOLE_REF is ever computed. promote-release.sh's own digest-qualification
+    loop (the `for ref in ... CONSOLE_REF` block mirroring MESH_REF/APP_REF) is unreachable
+    defence-in-depth for this scenario, not what this test is exercising.
+    """
+    sha, tree = _head()
+    rec = make_record(commit=sha, tree=tree)
+    rec["components"]["console"] = {
+        "dockerfile_target": "console",
+        "local_tag": "meshpipeline-console:abc1234",
+        "local_image_id": "sha256:" + "f6" * 32,
+        "registry_repository": REGISTRY,
+        "publication_tag": "v0.0.0",
+        "registry_digest": CONSOLE_DIGEST,
+        "reference": f"{REGISTRY}/console:v0.0.0",
+        "workloads": ["console-service"],
+    }
+    record_path = write_record(tmp_path, rec)
+    env_file = tmp_path / "generated.env"
+    env_file.write_text(
+        "DEPLOYMENT_ID=t\nGCP_PROJECT_ID=p\nMESH_SERVICE_ACCOUNT=mesh-sa\n",
+        encoding="utf-8",
+    )
+
+    done = subprocess.run(
+        ["bash", str(REPO / "deploy" / "gcp" / "scripts" / "promote-release.sh")],
+        capture_output=True, text=True,
+        env={**os.environ, "RELEASE_RECORD": str(record_path),
+             "DEPLOY_ENV_FILE": str(env_file)},
+    )
+    assert done.returncode != 0
+    assert "digest" in (done.stderr + done.stdout).lower()
+
+
+ADMIN_DIGEST = "sha256:" + "a7" * 32
+
+
+def test_promotion_writes_the_admin_image(tmp_path):
+    """A record carrying an admin component promotes it into the deployment env."""
+    sha, tree = _head()
+    rec = make_record(commit=sha, tree=tree)
+    # promote-release.sh requires a console component unconditionally (CONSOLE_REF), so a record
+    # exercising the admin promotion path must still carry one - the admin console is a fourth
+    # component alongside it, not a replacement for it.
+    rec["components"]["console"] = {
+        "dockerfile_target": "console",
+        "local_tag": "meshpipeline-console:abc1234",
+        "local_image_id": "sha256:" + "f6" * 32,
+        "registry_repository": REGISTRY,
+        "publication_tag": "v0.0.0",
+        "registry_digest": CONSOLE_DIGEST,
+        "reference": f"{REGISTRY}/console@{CONSOLE_DIGEST}",
+        "workloads": ["console-service"],
+    }
+    rec["components"]["admin"] = {
+        "dockerfile_target": "admin",
+        "local_tag": "meshpipeline-admin:abc1234",
+        "local_image_id": "sha256:" + "b8" * 32,
+        "registry_repository": REGISTRY,
+        "publication_tag": "v0.0.0",
+        "registry_digest": ADMIN_DIGEST,
+        "reference": f"{REGISTRY}/admin@{ADMIN_DIGEST}",
+        "workloads": ["admin-service"],
+    }
+    record_path = write_record(tmp_path, rec)
+    env_file = tmp_path / "generated.env"
+    env_file.write_text(
+        "DEPLOYMENT_ID=t\nGCP_PROJECT_ID=p\nMESH_SERVICE_ACCOUNT=mesh-sa\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["bash", str(REPO / "deploy" / "gcp" / "scripts" / "promote-release.sh")],
+        check=True, capture_output=True, text=True,
+        env={**os.environ, "RELEASE_RECORD": str(record_path),
+             "DEPLOY_ENV_FILE": str(env_file)},
+    )
+
+    written = env_file.read_text(encoding="utf-8")
+    assert f"ADMIN_IMAGE={REGISTRY}/admin@{ADMIN_DIGEST}" in written
+
+
 def test_the_manifest_check_invokes_the_real_render_test():
     # Complements the behavioural control above: that one proves an interpreter which CANNOT run
     # the check is reported as unrun. This one proves the check, when it does run, is still the
