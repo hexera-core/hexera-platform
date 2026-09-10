@@ -36,8 +36,11 @@ performs it: on the SDK version this repository's tooling was checked against (5
 **Until this is done, the console renders the sign-up, sign-in and forgot-password pages and every
 one of them fails on submit.** The failure is silent at build and deploy time — nothing refuses to
 start — and shows up only when a real person tries to use the form. This is exactly the gap
-`deploy/gcp/scripts/enable-apis.sh` now warns about after it enables the API (see §2a below for why
-that warning lives there and not in `deploy-preflight.sh`).
+`deploy/gcp/scripts/enable-apis.sh` now reports after it enables the API (see §2a below for why
+that note lives there and not in `deploy-preflight.sh`). It is emitted at `info`, not `warn`: the
+CLI cannot observe whether the project is initialised, so no correct state can silence it, and a
+`warn` on every deploy regardless of whether anything is wrong is what teaches operators to ignore
+the ones that mean something.
 
 Do this once per project, before the console is expected to accept a sign-up:
 
@@ -85,6 +88,7 @@ bash versions and already runs on every deploy (`deploy.sh` calls it directly, b
 wired only to the standalone `make mesh-preflight` gate and is not part of the deploy path at all.
 It is read-only exactly as the design asked: it enables the API, and separately reports (never
 provisions) that initialisation cannot be confirmed automatically, with the console URL from §2.
+It reports at `info` — see §2 for why a standing note about a manual step is not a `warn`.
 
 ## 3. Where the console's web configuration comes from
 

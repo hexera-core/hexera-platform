@@ -85,7 +85,14 @@ log "done - all ${#APIS[@]} APIs enabled"
 # the alpha component first (verified with `--help` against SDK 582.0.0; neither was invoked - a
 # read-only check must not trigger a component install as a side effect). So this is enabled-API
 # only, and it cannot confirm initialisation either way - it can only tell the operator to check.
-warn "identitytoolkit.googleapis.com is enabled, which is NOT the same as Identity Platform being
+#
+# EMITTED AT `info`, NOT `warn`, deliberately. There is no state - not even a correctly
+# initialised project with the Email/Password provider enabled - that this check can observe and
+# so be silenced by, because the gcloud CLI here cannot observe it at all. A `warn` that fires on
+# every single deploy regardless of whether anything is wrong is not a warning; it is noise that
+# teaches operators that `warn` in this script means nothing, which is what makes the NEXT one
+# invisible. This is a standing note about a manual step, and `info` is what a standing note is.
+info "identitytoolkit.googleapis.com is enabled, which is NOT the same as Identity Platform being
     INITIALISED in ${GCP_PROJECT_ID}. This gcloud CLI has no working 'identity-platform' command
     to check that automatically. Until it is initialised - a one-time console action - the console
     renders sign-up and fails on submit. Initialise it once at
