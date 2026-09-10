@@ -5,12 +5,15 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { ForgotPasswordForm } from "@/app/_components/auth-forms";
 import { LegacyStyles } from "@/app/_components/legacy-styles";
+import { firebaseConfiguredOnServer } from "@/lib/firebase/server-config";
 
 export default async function ForgotPasswordPage() {
   const session = await auth();
   if (session) {
     redirect("/");
   }
+
+  const configured = firebaseConfiguredOnServer();
 
   return (
     <>
@@ -38,10 +41,18 @@ export default async function ForgotPasswordPage() {
             <div className="chat-col">
               <div id="empty">
                 <p>Enter the email on your Hexera console account.</p>
-                <ForgotPasswordForm />
-                <p>
-                  <Link href="/sign-in">Back to sign in.</Link>
-                </p>
+                {configured ? (
+                  <>
+                    <ForgotPasswordForm />
+                    <p>
+                      <Link href="/sign-in">Back to sign in.</Link>
+                    </p>
+                  </>
+                ) : (
+                  // Same rule as /sign-in and /sign-up: say so rather than offering a form that
+                  // fails on every submit.
+                  <p role="status">Sign-in is not configured for this deployment.</p>
+                )}
               </div>
             </div>
           </div>

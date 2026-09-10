@@ -6,6 +6,7 @@ import { auth } from "@/auth";
 import { SignUpForm } from "@/app/_components/auth-forms";
 import { LegacyStyles } from "@/app/_components/legacy-styles";
 import { getHexeraApiClient } from "@/lib/hexera-api/server";
+import { firebaseConfiguredOnServer } from "@/lib/firebase/server-config";
 import { hexeraApiRoutes } from "@hexera/api-client";
 
 type ClientConfig = {
@@ -29,7 +30,10 @@ export default async function SignUpPage() {
     redirect("/");
   }
 
-  if (!(await signupEnabled())) {
+  const configured = firebaseConfiguredOnServer();
+  // Checking signup_enabled against a product API that cannot even authenticate a token is
+  // pointless -- and the deployment-not-configured message takes precedence when both are true.
+  if (configured && !(await signupEnabled())) {
     redirect("/sign-in?signup=closed");
   }
 
@@ -59,10 +63,18 @@ export default async function SignUpPage() {
             <div className="chat-col">
               <div id="empty">
                 <p>Create a Hexera console account.</p>
-                <SignUpForm />
-                <p>
-                  <Link href="/sign-in">Already have an account? Sign in.</Link>
-                </p>
+                {configured ? (
+                  <>
+                    <SignUpForm />
+                    <p>
+                      <Link href="/sign-in">Already have an account? Sign in.</Link>
+                    </p>
+                  </>
+                ) : (
+                  // Same rule as /sign-in: a console whose Identity Platform project was never
+                  // set up must say so rather than presenting a form that fails on every submit.
+                  <p role="status">Sign-in is not configured for this deployment.</p>
+                )}
               </div>
             </div>
           </div>

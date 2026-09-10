@@ -15,17 +15,39 @@ type CreditBalance = {
 };
 
 async function creditBalance(ownerId: string): Promise<CreditBalance | null> {
-  // Goes through the same authenticated proxy path the browser's own /api/v1 calls use, so this
-  // never needs its own copy of the identity-header signing logic in proxy.ts.
-  const response = await proxyProductApiRequest(
-    new Request("http://console.internal/api/v1/credits"),
-    ["credits"],
-    ownerId,
-  );
-  if (!response.ok) {
+  try {
+    // Goes through the same authenticated proxy path the browser's own /api/v1 calls use, so
+    // this never needs its own copy of the identity-header signing logic in proxy.ts.
+    //
+    // Both the try/catch and the race against a timeout matter here, and neither alone is
+    // enough: fetch() REJECTS (rather than resolving with a non-ok Response) on a connection
+    // failure -- refused, DNS failure -- and an uncaught rejection here previously propagated
+    // out of the whole page component, taking down the entire authenticated console instead of
+    // just this chip. A slow-but-not-failing API is just as damaging without a bound on time, so
+    // the timeout keeps a hang from stalling the page's whole server render the same way the
+    // catch keeps a crash from doing the same.
+    const response = await Promise.race([
+      proxyProductApiRequest(
+        new Request("http://console.internal/api/v1/credits"),
+        ["credits"],
+        ownerId,
+      ),
+      rejectOnAbort(AbortSignal.timeout(3_000)),
+    ]);
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as CreditBalance;
+  } catch {
+    // Fails open: a down, unreachable or slow product API degrades the chip, not the page.
     return null;
   }
-  return (await response.json()) as CreditBalance;
+}
+
+function rejectOnAbort(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason ?? new Error("timed out")));
+  });
 }
 
 export default async function ConsolePage() {

@@ -12,6 +12,7 @@ import {
 
 import { firebaseAuth } from "@/lib/firebase/client";
 import { errorStyle, inputStyle, labelStyle, signInFormStyle } from "@/app/_components/auth-form-styles";
+import { explainSessionError, messageForSignIn, messageForSignUp } from "@/app/_components/auth-form-messages";
 
 export function SignUpForm() {
   const router = useRouter();
@@ -214,39 +215,4 @@ export function VerifyEmailBanner() {
       </button>
     </div>
   );
-}
-
-/** Auth.js masks any authorize() failure that is not one of its own client-safe error types down
- *  to "Configuration" before it reaches the browser. The only thing authorizeFirebaseSession
- *  throws (rather than returning null for) is SignupDisabled, so that mask is the one signal we
- *  have for telling "this deployment has signup closed" apart from an ordinary session failure. */
-function explainSessionError(errorType: string, ordinaryFailureMessage: string): string {
-  if (errorType === "CredentialsSignin") {
-    return ordinaryFailureMessage;
-  }
-  return "This deployment is not accepting new accounts.";
-}
-
-function messageForSignUp(cause: unknown): string {
-  const code = (cause as { code?: string })?.code ?? "";
-  if (code === "auth/email-already-in-use") return "That email already has an account.";
-  if (code === "auth/weak-password") return "Choose a longer password.";
-  if (code === "auth/invalid-email") return "That does not look like an email address.";
-  return "Could not create the account. Try again.";
-}
-
-function messageForSignIn(cause: unknown): string {
-  const code = (cause as { code?: string })?.code ?? "";
-  if (code === "auth/invalid-email") return "That does not look like an email address.";
-  if (code === "auth/too-many-requests") return "Too many attempts. Try again later.";
-  // Firebase itself collapses "wrong password" and "no such account" into one code
-  // (auth/invalid-credential) as its own enumeration protection; we echo that, not split it.
-  if (
-    code === "auth/invalid-credential" ||
-    code === "auth/wrong-password" ||
-    code === "auth/user-not-found"
-  ) {
-    return "Invalid email or password.";
-  }
-  return "Could not sign in. Try again.";
 }

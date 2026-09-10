@@ -5,27 +5,13 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { SignInForm } from "@/app/_components/auth-forms";
 import { LegacyStyles } from "@/app/_components/legacy-styles";
+import { firebaseConfiguredOnServer } from "@/lib/firebase/server-config";
 
 type SignInPageProps = {
   searchParams?: Promise<{
     signup?: string | string[];
   }>;
 };
-
-// Mirrors firebaseIsConfigured() in @/lib/firebase/client, deliberately not imported: that module
-// is "use client" (getAuth() assumes a browser), and Next.js refuses to invoke a plain function
-// exported from a Client Component's module from a Server Component -- confirmed against this
-// exact route, which throws "Attempted to call firebaseIsConfigured() from the server" at
-// request time (a build alone does not catch it, because this route is dynamic and never
-// executes during the build's static-page pass). The check itself is three env reads, so
-// duplicating it here is simpler than restructuring the client module to split it out.
-function firebaseConfiguredOnServer(): boolean {
-  return Boolean(
-    process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&
-      process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN &&
-      process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  );
-}
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
   const session = await auth();
