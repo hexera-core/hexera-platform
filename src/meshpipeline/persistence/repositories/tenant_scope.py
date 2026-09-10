@@ -6,6 +6,21 @@ from __future__ import annotations
 import uuid
 
 
+def _parsed(organization_id: str) -> uuid.UUID | None:
+    # FAIL OPEN TO THE OWNER FALLBACK, never to an exception inside a request. Every caller today
+    # hands this a value a Principal produced, which is always either "" or a real UUID string -
+    # but this module is deliberately the one place the rule lives, so a future caller (a new
+    # credential path, an admin tool, a test helper) that passes something unsanitised must not
+    # get an unhandled 500. A malformed id narrows to owner-scoping rather than widening access,
+    # which is the same direction _organization_for already fails in (api/security.py).
+    if not organization_id:
+        return None
+    try:
+        return uuid.UUID(organization_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def scope(model, *, owner_id: str, organization_id: str = ""):
     """The WHERE clause a tenant-scoped read filters on.
 
@@ -13,21 +28,26 @@ def scope(model, *, owner_id: str, organization_id: str = ""):
     lookup failed, or a deployment between 0004 and the image that fills the column - falls back
     to owner_id rather than matching nothing. Matching nothing would read as data loss to the
     person whose rows they are, and this fallback is exactly today's behaviour, so the degraded
-    path is one we already ship.
+    path is one we already ship. A MALFORMED organisation id takes the same fallback: it narrows
+    to owner-scoping rather than raising inside a request.
     """
-    if organization_id:
-        return model.organization_id == uuid.UUID(organization_id)
+    parsed = _parsed(organization_id)
+    if parsed is not None:
+        return model.organization_id == parsed
     return model.owner_id == owner_id
 
 
 def stamp(*, owner_id: str, organization_id: str = "") -> dict:
     """The columns a tenant-scoped write sets.
 
-    BOTH, always. owner_id stays the actor - who did this - and organization_id becomes the
-    tenant. Dropping owner_id would lose per-seat attribution the moment organisations hold more
-    than one person, which memberships already allows.
+    BOTH, always, when the organisation is real. owner_id stays the actor - who did this - and
+    organization_id becomes the tenant. Dropping owner_id would lose per-seat attribution the
+    moment organisations hold more than one person, which memberships already allows. A malformed
+    organisation id is treated exactly like an absent one: the write stamps owner_id alone rather
+    than raising.
     """
     values: dict = {"owner_id": owner_id}
-    if organization_id:
-        values["organization_id"] = uuid.UUID(organization_id)
+    parsed = _parsed(organization_id)
+    if parsed is not None:
+        values["organization_id"] = parsed
     return values

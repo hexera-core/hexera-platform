@@ -46,3 +46,25 @@ async def test_a_write_without_an_organisation_stamps_only_the_owner():
 
     values = tenant_scope.stamp(owner_id="person@example.com", organization_id="")
     assert set(values) == {"owner_id"}
+
+
+async def test_a_read_with_a_malformed_organisation_falls_back_to_the_owner():
+    # NOT an exception inside a request. tenant_scope is the one place this rule lives, so a
+    # future caller passing something unsanitised (a new credential path, an admin tool, a test
+    # helper) must degrade to owner-scoping - the safe, narrowing direction - rather than 500 a
+    # proven request.
+    from meshpipeline.persistence.models import GeometrySource
+    from meshpipeline.persistence.repositories import tenant_scope
+
+    predicate = tenant_scope.scope(GeometrySource, owner_id="person@example.com",
+                                   organization_id="not-a-uuid")
+    assert predicate.left.name == "owner_id"
+    assert predicate.right.value == "person@example.com"
+
+
+async def test_a_write_with_a_malformed_organisation_stamps_only_the_owner():
+    from meshpipeline.persistence.repositories import tenant_scope
+
+    values = tenant_scope.stamp(owner_id="person@example.com", organization_id="not-a-uuid")
+    assert set(values) == {"owner_id"}
+    assert values["owner_id"] == "person@example.com"
