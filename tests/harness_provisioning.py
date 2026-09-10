@@ -87,6 +87,13 @@ def ensure_bucket() -> None:
 # against this exact URL, immediately before the DDL - not inherited from whoever built the
 # fixture. `authority` defaults to the session capability so a suite that already ran through the
 # supported runner needs no ceremony, but there is no way to reach the DROP without one.
+#: Schemas the product's migrations create outside `public`. Each is dropped by `reset_schema`,
+#: which is what lets `upgrade_to_head` run against a genuinely empty database. Add to this when a
+#: revision creates a schema, or the integration tier starts failing on its second run with
+#: "relation already exists".
+_MIGRATION_OWNED_SCHEMAS = ("outreach",)
+
+
 async def reset_schema(url: URL | str, *, authority=None) -> None:
     import asyncio
 
@@ -105,6 +112,16 @@ async def reset_schema(url: URL | str, *, authority=None) -> None:
         async with engine.begin() as conn:
             await conn.execute(text("DROP SCHEMA public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
+            # EVERY SCHEMA THE MIGRATIONS CREATE, not just `public`. A reset that leaves one
+            # standing is not a reset: the following upgrade_to_head re-runs every revision, and
+            # the first CREATE TABLE in the surviving schema fails with "relation already exists".
+            #
+            # Named explicitly rather than discovered. A query for "all non-system schemas" would
+            # also match `_mesh_disposable`, and that one must survive - it holds the marker proving
+            # this database may be destroyed at all, and it lives outside `public` precisely
+            # because `public` is dropped here.
+            for schema in _MIGRATION_OWNED_SCHEMAS:
+                await conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
     finally:
         await engine.dispose()
     await asyncio.to_thread(upgrade_to_head, url)
