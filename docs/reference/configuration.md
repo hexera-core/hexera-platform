@@ -400,7 +400,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (210 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (212 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -461,9 +461,11 @@ Every supported setting (210 entries). `template` settings are the ones `.env.ex
 | `LANGFUSE_PUBLIC_KEY` | template | app |  |
 | `LANGFUSE_SECRET_KEY` | template | app | yes |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
+| `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `MAX_CONCURRENT_JOBS` | template | app |  |
 | `MAX_JOBS_PER_OWNER` | template | app |  |
 | `RECONCILE_RETRY_DELAY_SECONDS` | template | app |  |
+| `SIGNUP_GRANT_CREDITS` | template | app |  |
 | `DB_MAX_OVERFLOW` | template | app |  |
 | `DB_POOL_RECYCLE` | template | app |  |
 | `DB_POOL_SIZE` | template | app |  |

@@ -326,6 +326,11 @@ INVENTORY: list[Group] = [
     Group("Quotas", vars=[
         EnvVar("MAX_JOBS_PER_OWNER", "5"),
         EnvVar("MAX_CONCURRENT_JOBS", "20"),
+        EnvVar("SIGNUP_GRANT_CREDITS", "100", kind="int",
+               help="credits a newly provisioned organisation is granted once; 0 disables it"),
+        EnvVar("CONSOLE_SIGNUP_ENABLED", "true", kind="bool",
+               help="whether an unknown Identity Platform account may provision itself an "
+                    "organisation on first sign-in"),
         EnvVar("RECONCILE_RETRY_DELAY_SECONDS", "300", kind="int",
                help="how long a retryable artifact-reconciliation failure waits before the "
                     "sweep may claim it again"),
