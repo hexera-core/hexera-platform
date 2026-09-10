@@ -340,17 +340,25 @@ Until then the console reads and reports; it changes nothing.
 API answers `Role roles/billing.viewer is not supported for this resource` — so the script does not
 try. `hexera-dev`'s billing account is `01EFBB-8FF368-9E335F`; the grant command is in §10.
 
-**The fleet name in `deploy.yml` does not match the group that is running.** `deploy.yml` pins
-`worker_mig=dev-workers`, and the only managed instance group in `hexera-dev` is
-`hexera-dev-workers` (size 1, stable, `us-central1-a`). **`dev-workers` is the intended name** —
-the running group is the hand-made legacy one, from before the fleet had a provisioning script, and
-`deploy.yml` is correct about where the fleet is going.
+**The console points at `dev-workers`, which does not exist yet, and that is deliberate.**
+`deploy.yml` pins `worker_mig=dev-workers`; the only managed instance group in `hexera-dev` today
+is `hexera-dev-workers` (size 1, stable, `us-central1-a`), which is the hand-made group from before
+the fleet had a provisioning script.
 
-The consequence is that the admin console's Fleet page reports `NOT_FOUND` for `dev-workers` until
-a `workers`-tier deploy creates it. That is the page behaving correctly: it names the group and the
-environment variables it read, rather than quietly showing a different fleet. It is also the first
-thing in the system that reads that name at all, which is why the drift surfaced now and not at the
-next `workers` deploy.
+**`dev-workers` is the name the platform is moving to**, and separate work renames the fleet onto
+it. The admin console is therefore pointed at the DESTINATION name rather than the current one, so
+that the rename needs no change here and no redeploy of this tier: the Fleet page starts reporting
+the moment a group by that name exists. `hexera-prod` already follows the convention — its group is
+`prod-workers` — so prod needed no equivalent decision.
+
+Until the rename lands, the Fleet page reports `NOT_FOUND` for `dev-workers` and names the two
+environment variables it read. That is the page working, not failing: the alternative — quietly
+falling back to a group with a similar name — is how an operator ends up reading one fleet's
+numbers and acting on another's.
+
+If the rename is deferred and dev needs live fleet numbers sooner, the stopgap is a one-line change
+of `worker_mig` to `hexera-dev-workers` in `deploy.yml` plus an `admin`-tier deploy. It is a
+stopgap and not the destination, which is why it is written here rather than done.
 
 **The autoscaler is not named after its group.** `hexera-dev-workers` is driven by an autoscaler
 called `hexera-dev-workers-9k6e`. Everything that asks "does this group have an autoscaler" must
