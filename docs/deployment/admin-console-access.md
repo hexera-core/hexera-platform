@@ -106,7 +106,16 @@ gcloud run services add-iam-policy-binding "${SERVICE}" \
 ## 5. Grant a person access
 
 The role is `roles/iap.httpsResourceAccessor`. It is granted on the IAP resource, not on the Cloud
-Run service:
+Run service.
+
+**Project Owner does not grant this, and the error does not say so.** An Owner who opens the
+hostname gets "You don't have access" with their own address in the troubleshooting box, which reads
+like a broken deployment. It is not. `roles/owner` includes `iap.tunnelDestGroups.accessViaIAP` and
+`iap.tunnelInstances.accessViaIAP` — the *tunnel* permissions, for SSH and TCP forwarding. Web
+resources are gated by `iap.webServiceVersions.accessViaIAP`, which Owner does not hold. Verified
+against `gcloud iam roles describe` on 2026-09-09. This separation is deliberate: administering a
+project and being admitted to an application it hosts are different questions, so every admin must
+be granted access explicitly, including the person who created the project.
 
 ```bash
 gcloud iap web add-iam-policy-binding \
@@ -145,9 +154,7 @@ URL=$(gcloud run services describe "${SERVICE}" \
 # 1) An anonymous request must NOT reach the app. Expect 302 to accounts.google.com, or 401/403.
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "${URL}/"
 
-# 2) A granted identity gets in.
-curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" "${URL}/"
+# 2) A granted identity gets in. USE A BROWSER, not curl -- see the note below.
 
 # 3) No public invoker binding survives.
 gcloud run services get-iam-policy "${SERVICE}" \
@@ -158,6 +165,18 @@ gcloud run services get-iam-policy "${SERVICE}" \
 
 A `200` from check 1 means the app served an anonymous request. Stop and fix §2 before going
 further.
+
+**Check 2 has to be a browser.** `gcloud auth print-identity-token` mints a token whose audience is
+the default one, and IAP requires the audience to be its own OAuth client ID — so that token yields
+`401` even when access is correctly granted, and reads as a failure that is not one. Curl can prove
+the *negative* (check 1: anonymous does not get in); only the browser's OAuth round trip proves the
+positive. To script it, mint a token for the right audience instead:
+
+```bash
+# CLIENT_ID is the IAP OAuth client, visible in the check-1 redirect URL.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token --audiences="${CLIENT_ID}")" "${URL}/"
+```
 
 ## 7. Reading who the user is, inside the app
 
