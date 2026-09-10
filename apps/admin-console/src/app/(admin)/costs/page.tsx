@@ -47,7 +47,7 @@ export default async function CostsPage() {
   let budgetError: string | null = null;
   if (account.name) {
     try {
-      budgets = await readBudgets(getBudgetReader(), account.name);
+      budgets = await readBudgets(getBudgetReader(), account.name, targets.projectNumber);
     } catch (error) {
       budgetError = error instanceof Error ? error.message : String(error);
     }
@@ -138,7 +138,7 @@ export default async function CostsPage() {
                         : money(budget.amount, budget.currency ?? "USD"),
                   },
                   {
-                    label: "Alerts at",
+                    label: budget.scopedToProject ? "Alerts at" : "Alerts at (account-wide)",
                     value: budget.thresholdPercents.length
                       ? budget.thresholdPercents.map((percent) => `${percent}%`).join(", ")
                       : "no thresholds",

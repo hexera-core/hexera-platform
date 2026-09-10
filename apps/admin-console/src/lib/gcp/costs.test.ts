@@ -35,6 +35,7 @@ test("reads budgets, their amounts and their alert thresholds", async () => {
         [
           {
             amount: { specifiedAmount: { currencyCode: "USD", nanos: 500000000, units: "400" } },
+            budgetFilter: { projects: ["projects/224734058693"] },
             displayName: "hexera-dev monthly",
             name: "billingAccounts/x/budgets/1",
             thresholdRules: [{ thresholdPercent: 0.5 }, { thresholdPercent: 0.9 }],
@@ -45,7 +46,7 @@ test("reads budgets, their amounts and their alert thresholds", async () => {
       ] as never,
   } as never;
 
-  const budgets = await readBudgets(client, "billingAccounts/x");
+  const budgets = await readBudgets(client, "billingAccounts/x", "224734058693");
   assert.equal(budgets.length, 1);
   assert.equal(budgets[0].displayName, "hexera-dev monthly");
   assert.equal(budgets[0].currency, "USD");
@@ -62,7 +63,7 @@ test("a budget with no explicit amount reports none rather than zero", async () 
       [[{ amount: { lastPeriodAmount: {} }, displayName: "rolling", name: "b" }], null, {}] as never,
   } as never;
 
-  const budgets = await readBudgets(client, "billingAccounts/x");
+  const budgets = await readBudgets(client, "billingAccounts/x", "224734058693");
   assert.equal(budgets[0].amount, null);
   assert.equal(budgets[0].basis, "last period");
 });
@@ -125,4 +126,42 @@ test("an export with no table yet is waiting, not broken", () => {
   );
   assert.equal(isExportNotYetWritten(new Error("Access Denied: Table ...")), false);
   assert.equal(isExportNotYetWritten(new Error("Syntax error")), false);
+});
+
+test("shows only budgets that apply to this project", () => {
+  // Budgets are listed per BILLING ACCOUNT and hexera-dev and hexera-prod share one, so an
+  // unfiltered list puts prod's budget on dev's page.
+  const client = {
+    listBudgets: async () =>
+      [
+        [
+          { budgetFilter: { projects: ["projects/224734058693"] }, displayName: "dev", name: "b1" },
+          { budgetFilter: { projects: ["projects/688073002171"] }, displayName: "prod", name: "b2" },
+          { displayName: "whole account", name: "b3" },
+        ],
+        null,
+        {},
+      ] as never,
+  } as never;
+
+  return readBudgets(client, "billingAccounts/x", "224734058693").then((budgets) => {
+    assert.deepEqual(
+      budgets.map((b) => b.displayName),
+      ["dev", "whole account"],
+      "an account-wide budget applies here too; another project's does not",
+    );
+    assert.equal(budgets[0].scopedToProject, true);
+    assert.equal(budgets[1].scopedToProject, false);
+  });
+});
+
+test("with no project number, only account-wide budgets are claimed", () => {
+  const client = {
+    listBudgets: async () =>
+      [[{ budgetFilter: { projects: ["projects/1"] }, displayName: "other", name: "b" }], null, {}] as never,
+  } as never;
+
+  return readBudgets(client, "billingAccounts/x", null).then((budgets) => {
+    assert.deepEqual(budgets, []);
+  });
 });

@@ -21,6 +21,7 @@ export type BudgetSummary = {
   basis: string;
   currency: string | null;
   displayName: string;
+  scopedToProject: boolean;
   thresholdPercents: readonly number[];
 };
 
@@ -59,13 +60,26 @@ export async function readBillingAccount(
   return { enabled: info.billingEnabled ?? false, name: info.billingAccountName || null };
 }
 
+// BUDGETS ARE LISTED PER BILLING ACCOUNT, NOT PER PROJECT - the same shape that made the spend
+// query need a project filter. hexera-dev and hexera-prod share an account, so an unfiltered list
+// shows dev's Costs page prod's budget alongside its own. A budget with no project filter applies
+// to the whole account and is genuinely this project's business, so it is kept and marked.
 export async function readBudgets(
   client: BudgetReader,
   billingAccount: string,
+  projectNumber: string | null,
 ): Promise<BudgetSummary[]> {
   const [budgets] = await client.listBudgets({ parent: billingAccount });
 
-  return (budgets ?? []).map((budget) => {
+  const applies = (scope: readonly string[]): boolean => {
+    if (scope.length === 0) return true;
+    if (!projectNumber) return false;
+    return scope.includes(`projects/${projectNumber}`);
+  };
+
+  return (budgets ?? [])
+    .filter((budget) => applies(budget.budgetFilter?.projects ?? []))
+    .map((budget) => {
     const specified = budget.amount?.specifiedAmount;
     // A money value is units plus nanos, and nanos are a billionth. Reading only units silently
     // rounds every budget down to the dollar.
@@ -80,6 +94,7 @@ export async function readBudgets(
       basis: specified ? "specified" : "last period",
       currency: specified?.currencyCode || null,
       displayName: budget.displayName || budget.name || "unnamed budget",
+      scopedToProject: (budget.budgetFilter?.projects ?? []).length > 0,
       thresholdPercents: (budget.thresholdRules ?? [])
         .map((rule) => Math.round((rule.thresholdPercent ?? 0) * 100))
         .sort((a, b) => a - b),
