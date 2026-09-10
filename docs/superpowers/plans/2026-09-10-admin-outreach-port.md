@@ -41,14 +41,18 @@ Read from a tarball of `hexera-core/hexera-ops` at `2026-09-02`, and from this r
 
 ## Phase 1 — Schema
 
-- [ ] **1.1** Write `alembic/versions/0003_outreach_schema.py` creating all 14 tables as `outreach_*`, `down_revision = "0002_api_keys"`.
-- [ ] **1.2** Translate SQLite types: `INTEGER PRIMARY KEY AUTOINCREMENT` → `BigInteger` identity; ISO-8601 `TEXT` timestamps → `TIMESTAMP(timezone=True)`; `INTEGER` booleans → `Boolean`.
-- [ ] **1.3** Carry every index, including the partial unique on `contacts(email_normalized) WHERE email_normalized IS NOT NULL` — many rows legitimately have no email and NULLs must not collide.
-- [ ] **1.4** Carry foreign keys. SQLite had `PRAGMA foreign_keys=ON`; Postgres enforces them always, so a migration that drops one changes behaviour silently.
-- [ ] **1.5** Test: upgrade then downgrade against a real Postgres; assert 14 tables created and dropped, and that the partial unique index rejects a duplicate email while admitting two NULLs.
-- [ ] **1.6** Commit.
+- [x] **1.1** Write `alembic/versions/0003_outreach_schema.py` creating all 14 tables as `outreach_*`, `down_revision = "0002_api_keys"`.
+- [x] **1.2** ~~Translate SQLite types~~ **DEPARTED, deliberately.** Only `INTEGER PRIMARY KEY AUTOINCREMENT` → `BigInteger` identity, because that one has no Postgres spelling. Timestamps stay `TEXT` holding ISO-8601 and booleans stay `INTEGER` holding 0/1.
+
+  The reason is that this port's risk is already dominated by turning a synchronous database API asynchronous across 28 files. Adding a representation change on top interleaves two classes of breakage, and the failure it produces — a `Date` where a string was expected, rendering as `Invalid Date` — is exactly the kind that survives review and reaches production. ISO-8601 sorts lexically, so `<`, `>` and `ORDER BY` mean the same thing on `TEXT` in Postgres as they did in SQLite; nothing behaves differently. Types get modernised in their own revision once the engine change has settled, where the diff is about types and the tests can be about types.
+- [x] **1.3** Carry every index, including the partial unique on `contacts(email_normalized) WHERE email_normalized IS NOT NULL` — many rows legitimately have no email and NULLs must not collide.
+- [x] **1.4** Carry foreign keys. SQLite had `PRAGMA foreign_keys=ON`; Postgres enforces them always, so a migration that drops one changes behaviour silently.
+- [x] **1.5** Verified against a real Postgres 16: upgrade → downgrade → re-upgrade. 14 tables, 46 indexes, 13 foreign keys, 1 view; downgrade leaves the baseline's 12 tables untouched. Two NULL-email contacts admitted, a duplicate rejected by `ix_outreach_contacts_email`, and a suppression survived deletion of its contact with `contact_id` set to NULL. Hermetic invariant tests live in `tests/unit/migrations/test_outreach_schema_revision.py`; the round trip itself is not in CI because it needs a live database.
+- [x] **1.6** Commit.
 
 ## Phase 2 — The database layer
+
+**Phase 1 is complete.**
 
 - [ ] **2.1** Add `pg` and `@types/pg`. Reimplement `lib/db/index.ts` as `apps/admin-console/src/lib/outreach/db.ts` over a `pg.Pool`, same five-function shape, all returning promises.
 - [ ] **2.2** Rewrite placeholders: SQLite `?` → Postgres `$1..$n`. Do it in the wrapper, not at 100+ call sites.

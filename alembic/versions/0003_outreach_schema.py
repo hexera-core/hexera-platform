@@ -1,0 +1,418 @@
+# Responsibility: Create the outreach engine's 14 tables, its view and its indexes as outreach_*.
+# Boundaries: it creates only what hexera-ops' schema.sql defined; it touches nothing the baseline
+#             or the api_keys revision created, and it changes no value semantics.
+
+# THE OUTREACH SCHEMA, moved from a laptop's SQLite file onto this chain.
+#
+# WHY EVERYTHING IS PREFIXED. The original names are `events`, `settings`, `contacts`, `templates`
+# and `messages` - every one of them a word this product will want for something else. They share a
+# schema with the pipeline's tables now, so the prefix is what stops a future `contacts` table from
+# being a migration conflict rather than a decision.
+#
+# WHY THE VALUE SEMANTICS ARE PRESERVED EXACTLY, AND WHAT THAT COSTS.
+# Timestamps stay TEXT holding ISO-8601 UTC, and booleans stay INTEGER holding 0/1, because that is
+# what the 15,000 lines being ported alongside this already read and write. The schema's own header
+# explains the choice: ISO-8601 sorts lexically, so `<`, `>` and `ORDER BY` mean the same thing on
+# TEXT in Postgres as they did in SQLite.
+#
+# Converting them here would be the better schema and the worse migration. The port's risk is
+# already dominated by turning a synchronous database API asynchronous across 28 files; adding a
+# representation change on top interleaves two classes of breakage, and the failure it produces -
+# a Date where a string was expected, rendering as "Invalid Date" - is exactly the kind that
+# survives review and reaches production. Types are modernised in their own revision once the
+# engine change has settled, where the diff is about types and its tests can be about types.
+#
+# WHAT DID HAVE TO CHANGE: SQLite's `INTEGER PRIMARY KEY AUTOINCREMENT` has no Postgres spelling.
+# It becomes a BigInteger identity column, which is the one place a row's type differs from the
+# source. `AUTOINCREMENT` guarantees monotonic, never-reused ids; a Postgres identity sequence
+# gives the same guarantee, so nothing downstream that assumes "higher id means later row" breaks.
+#
+# Revision ID: 0003_outreach_schema
+# Revises: 0002_api_keys
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = '0003_outreach_schema'
+down_revision = '0002_api_keys'
+branch_labels = None
+depends_on = None
+
+# The tables, in dependency order. Dropped in reverse, so a downgrade never orphans a foreign key.
+_TABLES = (
+    'outreach_contacts',
+    'outreach_verifications',
+    'outreach_domain_intel',
+    'outreach_templates',
+    'outreach_campaigns',
+    'outreach_sequence_steps',
+    'outreach_enrollments',
+    'outreach_messages',
+    'outreach_replies',
+    'outreach_suppressions',
+    'outreach_events',
+    'outreach_settings',
+    'outreach_oauth_tokens',
+    'outreach_send_ledger',
+)
+
+
+def _ts(name: str, *, nullable: bool = False) -> sa.Column:
+    """An ISO-8601 UTC timestamp, stored as text. See the header for why."""
+    return sa.Column(name, sa.Text(), nullable=nullable)
+
+
+def _flag(name: str, default: str = '0') -> sa.Column:
+    """A 0/1 boolean, stored as an integer. See the header for why."""
+    return sa.Column(name, sa.Integer(), server_default=default, nullable=False)
+
+
+def upgrade():
+    op.create_table(
+        'outreach_contacts',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('source_sheet', sa.Text(), nullable=False),
+        sa.Column('source_row_id', sa.BigInteger(), nullable=True),
+        sa.Column('company', sa.Text(), nullable=False),
+        sa.Column('full_name', sa.Text(), nullable=True),
+        sa.Column('first_name', sa.Text(), nullable=True),
+        # 'person' -> a real human name, safe to greet by first name.
+        # 'placeholder' -> the sheet holds a role ("CEO") instead of a name, which blocks
+        # personalized sends until a human fixes it.
+        sa.Column('name_quality', sa.Text(), server_default='person', nullable=False),
+        sa.Column('role', sa.Text(), nullable=True),
+        sa.Column('role_group', sa.Text(), nullable=True),
+        sa.Column('industry', sa.Text(), nullable=True),
+        sa.Column('tier', sa.Text(), nullable=True),
+        sa.Column('stage', sa.Text(), nullable=True),
+        sa.Column('email', sa.Text(), nullable=True),
+        sa.Column('email_normalized', sa.Text(), nullable=True),
+        sa.Column('domain', sa.Text(), nullable=True),
+        sa.Column('linkedin', sa.Text(), nullable=True),
+        sa.Column('priority', sa.Text(), nullable=True),
+        sa.Column('outreach_channel', sa.Text(), nullable=True),
+        sa.Column('notes', sa.Text(), nullable=True),
+        _ts('created_at'),
+        _ts('updated_at'),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    # PARTIAL unique, and the partiality is the point: many rows legitimately have no email, and a
+    # plain UNIQUE would let the first NULL through and reject every one after it.
+    op.create_index(
+        'ix_outreach_contacts_email', 'outreach_contacts', ['email_normalized'],
+        unique=True, postgresql_where=sa.text('email_normalized IS NOT NULL'),
+    )
+    op.create_index('ix_outreach_contacts_domain', 'outreach_contacts', ['domain'])
+    op.create_index('ix_outreach_contacts_sheet', 'outreach_contacts', ['source_sheet'])
+    op.create_index('ix_outreach_contacts_priority', 'outreach_contacts', ['priority'])
+    op.create_index('ix_outreach_contacts_industry', 'outreach_contacts', ['industry'])
+
+    op.create_table(
+        'outreach_verifications',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('contact_id', sa.BigInteger(), nullable=False),
+        # valid | risky | invalid | unknown
+        sa.Column('status', sa.Text(), nullable=False),
+        sa.Column('score', sa.Integer(), nullable=False),
+        _flag('syntax_ok'),
+        _flag('mx_ok'),
+        sa.Column('mx_hosts', sa.Text(), nullable=True),
+        _flag('is_role'),
+        _flag('is_disposable'),
+        _flag('is_free_provider'),
+        _flag('is_catch_all'),
+        _flag('smtp_checked'),
+        sa.Column('smtp_code', sa.Integer(), nullable=True),
+        sa.Column('smtp_message', sa.Text(), nullable=True),
+        sa.Column('provider', sa.Text(), server_default='builtin', nullable=False),
+        sa.Column('reasons', sa.Text(), nullable=True),
+        sa.Column('duration_ms', sa.Integer(), nullable=True),
+        _ts('checked_at'),
+        sa.ForeignKeyConstraint(['contact_id'], ['outreach_contacts.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    op.create_index(
+        'ix_outreach_verifications_contact', 'outreach_verifications',
+        ['contact_id', sa.text('checked_at DESC')],
+    )
+
+    op.create_table(
+        'outreach_domain_intel',
+        sa.Column('domain', sa.Text(), nullable=False),
+        _flag('mx_ok'),
+        sa.Column('mx_hosts', sa.Text(), nullable=True),
+        # NULL means "not yet determined", which is distinct from "determined to be false".
+        sa.Column('is_catch_all', sa.Integer(), nullable=True),
+        _flag('is_disposable'),
+        _flag('is_free'),
+        _ts('checked_at'),
+        sa.PrimaryKeyConstraint('domain'),
+    )
+
+    op.create_table(
+        'outreach_templates',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('name', sa.Text(), nullable=False),
+        sa.Column('subject', sa.Text(), nullable=False),
+        sa.Column('body', sa.Text(), nullable=False),
+        # opener -> starts a thread; follow_up -> replies in-thread, inheriting Re:
+        sa.Column('kind', sa.Text(), server_default='opener', nullable=False),
+        sa.Column('notes', sa.Text(), nullable=True),
+        _ts('created_at'),
+        _ts('updated_at'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('name', name='uq_outreach_templates_name'),
+    )
+
+    op.create_table(
+        'outreach_campaigns',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('name', sa.Text(), nullable=False),
+        sa.Column('description', sa.Text(), nullable=True),
+        sa.Column('status', sa.Text(), server_default='draft', nullable=False),
+        sa.Column('timezone', sa.Text(), server_default='America/Los_Angeles', nullable=False),
+        sa.Column('daily_cap', sa.Integer(), server_default='40', nullable=False),
+        sa.Column('send_window_start', sa.Integer(), server_default='8', nullable=False),
+        sa.Column('send_window_end', sa.Integer(), server_default='17', nullable=False),
+        sa.Column('send_days', sa.Text(), server_default='1,2,3,4,5', nullable=False),
+        # Two contacts at one company must not get mail the same day; it reads as a blast.
+        sa.Column('per_domain_daily_cap', sa.Integer(), server_default='1', nullable=False),
+        _ts('created_at'),
+        _ts('updated_at'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('name', name='uq_outreach_campaigns_name'),
+    )
+
+    op.create_table(
+        'outreach_sequence_steps',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('campaign_id', sa.BigInteger(), nullable=False),
+        sa.Column('step_number', sa.Integer(), nullable=False),
+        sa.Column('template_id', sa.BigInteger(), nullable=False),
+        sa.Column('delay_days', sa.Integer(), server_default='3', nullable=False),
+        # Every follow-up is conditional on silence, kept explicit so the rule lives in the data.
+        _flag('only_if_no_reply', '1'),
+        _ts('created_at'),
+        sa.ForeignKeyConstraint(['campaign_id'], ['outreach_campaigns.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['template_id'], ['outreach_templates.id']),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('campaign_id', 'step_number', name='uq_outreach_steps_campaign_step'),
+    )
+    op.create_index(
+        'ix_outreach_steps_campaign', 'outreach_sequence_steps', ['campaign_id', 'step_number'],
+    )
+
+    op.create_table(
+        'outreach_enrollments',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('campaign_id', sa.BigInteger(), nullable=False),
+        sa.Column('contact_id', sa.BigInteger(), nullable=False),
+        # pending|active|completed|replied|bounced|stopped|review|suppressed
+        sa.Column('status', sa.Text(), server_default='pending', nullable=False),
+        sa.Column('current_step', sa.Integer(), server_default='0', nullable=False),
+        _ts('next_send_at', nullable=True),
+        sa.Column('thread_id', sa.Text(), nullable=True),
+        sa.Column('last_message_id', sa.Text(), nullable=True),
+        sa.Column('stopped_reason', sa.Text(), nullable=True),
+        _ts('enrolled_at'),
+        _ts('updated_at'),
+        sa.ForeignKeyConstraint(['campaign_id'], ['outreach_campaigns.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['contact_id'], ['outreach_contacts.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('campaign_id', 'contact_id', name='uq_outreach_enrollments_pair'),
+    )
+    # The scheduler's hot path: "what is due right now". Partial, because most rows have nothing
+    # scheduled and indexing their NULLs would be indexing the answer "no".
+    op.create_index(
+        'ix_outreach_enrollments_due', 'outreach_enrollments', ['status', 'next_send_at'],
+        postgresql_where=sa.text('next_send_at IS NOT NULL'),
+    )
+    op.create_index('ix_outreach_enrollments_contact', 'outreach_enrollments', ['contact_id'])
+    op.create_index(
+        'ix_outreach_enrollments_campaign', 'outreach_enrollments', ['campaign_id', 'status'],
+    )
+    op.create_index('ix_outreach_enrollments_thread', 'outreach_enrollments', ['thread_id'])
+
+    op.create_table(
+        'outreach_messages',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('enrollment_id', sa.BigInteger(), nullable=True),
+        sa.Column('contact_id', sa.BigInteger(), nullable=True),
+        sa.Column('direction', sa.Text(), nullable=False),
+        sa.Column('step_number', sa.Integer(), nullable=True),
+        sa.Column('template_id', sa.BigInteger(), nullable=True),
+        # queued|dry_run|sent|failed|skipped. `dry_run` is a first-class state: a message fully
+        # rendered and recorded but deliberately not sent.
+        sa.Column('status', sa.Text(), server_default='queued', nullable=False),
+        sa.Column('subject', sa.Text(), nullable=True),
+        sa.Column('body', sa.Text(), nullable=True),
+        sa.Column('snippet', sa.Text(), nullable=True),
+        sa.Column('to_email', sa.Text(), nullable=True),
+        sa.Column('from_email', sa.Text(), nullable=True),
+        sa.Column('gmail_message_id', sa.Text(), nullable=True),
+        sa.Column('gmail_thread_id', sa.Text(), nullable=True),
+        sa.Column('rfc822_message_id', sa.Text(), nullable=True),
+        sa.Column('in_reply_to', sa.Text(), nullable=True),
+        sa.Column('error', sa.Text(), nullable=True),
+        _ts('scheduled_for', nullable=True),
+        _ts('sent_at', nullable=True),
+        _ts('received_at', nullable=True),
+        _ts('created_at'),
+        sa.ForeignKeyConstraint(['enrollment_id'], ['outreach_enrollments.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['contact_id'], ['outreach_contacts.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['template_id'], ['outreach_templates.id']),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    op.create_index(
+        'ix_outreach_messages_enrollment', 'outreach_messages', ['enrollment_id', 'created_at'],
+    )
+    op.create_index('ix_outreach_messages_contact', 'outreach_messages', ['contact_id'])
+    op.create_index('ix_outreach_messages_thread', 'outreach_messages', ['gmail_thread_id'])
+    op.create_index(
+        'ix_outreach_messages_sent', 'outreach_messages', ['direction', 'status', 'sent_at'],
+    )
+    # Partial unique: the idempotency key for inbound sync. Only sent/received messages have a
+    # Gmail id, and the NULLs of everything queued must not collide.
+    op.create_index(
+        'ix_outreach_messages_gmail_id', 'outreach_messages', ['gmail_message_id'],
+        unique=True, postgresql_where=sa.text('gmail_message_id IS NOT NULL'),
+    )
+
+    op.create_table(
+        'outreach_replies',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('message_id', sa.BigInteger(), nullable=False),
+        sa.Column('enrollment_id', sa.BigInteger(), nullable=True),
+        sa.Column('contact_id', sa.BigInteger(), nullable=True),
+        # positive|negative|neutral|ooo|auto|bounce. `ooo` is deliberately not a reply: it
+        # reschedules rather than halting the sequence.
+        sa.Column('classification', sa.Text(), nullable=False),
+        sa.Column('confidence', sa.Float(), server_default='0', nullable=False),
+        sa.Column('classifier', sa.Text(), server_default='rules', nullable=False),
+        sa.Column('matched_rules', sa.Text(), nullable=True),
+        _flag('requires_review'),
+        _ts('reviewed_at', nullable=True),
+        sa.Column('reviewed_by', sa.Text(), nullable=True),
+        sa.Column('human_override', sa.Text(), nullable=True),
+        _ts('received_at'),
+        _ts('created_at'),
+        sa.ForeignKeyConstraint(['message_id'], ['outreach_messages.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['enrollment_id'], ['outreach_enrollments.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['contact_id'], ['outreach_contacts.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    op.create_index(
+        'ix_outreach_replies_classification', 'outreach_replies', ['classification', 'received_at'],
+    )
+    op.create_index(
+        'ix_outreach_replies_review', 'outreach_replies', ['requires_review', 'received_at'],
+    )
+    op.create_index('ix_outreach_replies_contact', 'outreach_replies', ['contact_id'])
+
+    # The hard "never contact" gate, checked immediately before every send. A domain-scope entry
+    # blocks every address at that company, which is the correct reading of "take us off your list".
+    op.create_table(
+        'outreach_suppressions',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('scope', sa.Text(), nullable=False),
+        sa.Column('value', sa.Text(), nullable=False),
+        sa.Column('reason', sa.Text(), nullable=False),
+        sa.Column('source', sa.Text(), nullable=False),
+        # SET NULL, not CASCADE: deleting a contact must never delete the record that they asked
+        # not to be contacted.
+        sa.Column('contact_id', sa.BigInteger(), nullable=True),
+        _ts('created_at'),
+        sa.ForeignKeyConstraint(['contact_id'], ['outreach_contacts.id'], ondelete='SET NULL'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('scope', 'value', name='uq_outreach_suppressions_scope_value'),
+    )
+    op.create_index('ix_outreach_suppressions_value', 'outreach_suppressions', ['value'])
+
+    # The append-only spine. Every state change writes one row, so a metric can always be traced
+    # back to the transitions that produced it. No foreign keys on purpose: an event outlives the
+    # entity it describes, and a cascade here would erase the audit trail with the record.
+    op.create_table(
+        'outreach_events',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('type', sa.Text(), nullable=False),
+        sa.Column('entity_type', sa.Text(), nullable=True),
+        sa.Column('entity_id', sa.BigInteger(), nullable=True),
+        sa.Column('campaign_id', sa.BigInteger(), nullable=True),
+        sa.Column('contact_id', sa.BigInteger(), nullable=True),
+        sa.Column('payload', sa.Text(), nullable=True),
+        _ts('created_at'),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    op.create_index('ix_outreach_events_type', 'outreach_events', ['type', 'created_at'])
+    op.create_index('ix_outreach_events_entity', 'outreach_events', ['entity_type', 'entity_id'])
+    op.create_index('ix_outreach_events_created', 'outreach_events', ['created_at'])
+    op.create_index('ix_outreach_events_campaign', 'outreach_events', ['campaign_id', 'created_at'])
+
+    op.create_table(
+        'outreach_settings',
+        sa.Column('key', sa.Text(), nullable=False),
+        sa.Column('value', sa.Text(), nullable=False),
+        _ts('updated_at'),
+        sa.PrimaryKeyConstraint('key'),
+    )
+
+    # The columns holding Gmail credentials are nullable and stay TEXT, but what goes in them
+    # changes: the port envelope-encrypts access_token and refresh_token with Cloud KMS before
+    # writing. A refresh token is long-lived mailbox access, and this table is the reason a
+    # database dump would otherwise be a mailbox compromise.
+    op.create_table(
+        'outreach_oauth_tokens',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column('account_email', sa.Text(), nullable=False),
+        sa.Column('access_token', sa.Text(), nullable=True),
+        sa.Column('refresh_token', sa.Text(), nullable=True),
+        sa.Column('scope', sa.Text(), nullable=True),
+        sa.Column('token_type', sa.Text(), nullable=True),
+        sa.Column('expiry_date', sa.BigInteger(), nullable=True),
+        # Gmail's incremental sync cursor, so a restart resumes rather than re-reading the mailbox.
+        sa.Column('history_id', sa.Text(), nullable=True),
+        _ts('created_at'),
+        _ts('updated_at'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('account_email', name='uq_outreach_oauth_tokens_account'),
+    )
+
+    # Per-day send accounting in its own table rather than counted from messages: it keeps the cap
+    # check O(1) and makes the cap auditable after the fact.
+    op.create_table(
+        'outreach_send_ledger',
+        sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+        # 'YYYY-MM-DD' in the CAMPAIGN's timezone, not UTC - which is why it is not a date.
+        sa.Column('day', sa.Text(), nullable=False),
+        sa.Column('campaign_id', sa.BigInteger(), nullable=False),
+        sa.Column('domain', sa.Text(), nullable=False),
+        sa.Column('count', sa.Integer(), server_default='0', nullable=False),
+        sa.ForeignKeyConstraint(['campaign_id'], ['outreach_campaigns.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('day', 'campaign_id', 'domain', name='uq_outreach_ledger_day_campaign_domain'),
+    )
+    op.create_index('ix_outreach_ledger_day', 'outreach_send_ledger', ['day', 'campaign_id'])
+
+    # The newest verification per contact. Carried across because application code selects from it
+    # by name; a missing view is a runtime error in a query, not a failure the migration reports.
+    op.execute(
+        """
+        CREATE VIEW outreach_latest_verification AS
+        SELECT v.*
+        FROM outreach_verifications v
+        WHERE v.id = (
+          SELECT v2.id FROM outreach_verifications v2
+          WHERE v2.contact_id = v.contact_id
+          ORDER BY v2.checked_at DESC, v2.id DESC
+          LIMIT 1
+        )
+        """
+    )
+
+
+def downgrade():
+    # The view first: it depends on a table this is about to drop.
+    op.execute('DROP VIEW IF EXISTS outreach_latest_verification')
+    for table in reversed(_TABLES):
+        op.drop_table(table)
