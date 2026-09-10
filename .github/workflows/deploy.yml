@@ -750,6 +750,14 @@ jobs:
           # would silently lose it. Retiring CONSOLE_AUTH_USERS is exactly that drop and is
           # intended - once. Pinning this to "1" in the file would retire the guard along with
           # the setting, so it stays a checkbox that defaults OFF like every tier above.
+          # THE BROWSER TALKS TO THE API DIRECTLY - client-config on page load, and the
+          # WebSocket stream, neither of which passes through the console's proxy - so a browser
+          # can never present a Google identity token and the service cannot be invoker-private
+          # while the console works. This is the dev concession the build-out plan already
+          # records, and it is NOT the whole gate: MESH_API_KEY and USER_TOKEN_SECRET are both
+          # set on dev-api, so a caller past Cloud Run still needs the key and an HMAC-signed
+          # X-User-Sig. Set per environment, so prod chooses for itself rather than inheriting.
+          API_ALLOW_UNAUTHENTICATED: ${{ vars.API_ALLOW_UNAUTHENTICATED }}
           CONSOLE_ENV_PRUNE: ${{ inputs.console_env_prune && '1' || '' }}
           NEXT_PUBLIC_FIREBASE_API_KEY: ${{ vars.NEXT_PUBLIC_FIREBASE_API_KEY }}
           NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
