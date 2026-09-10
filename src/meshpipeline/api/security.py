@@ -11,6 +11,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.application import account_service
 from meshpipeline.contracts import api_key
 from meshpipeline.contracts.identity import Credential, Principal
 from meshpipeline.contracts.rate_limit import incr_window
@@ -67,8 +68,31 @@ async def resolve_principal(authorization: str | None, x_api_key: str | None,
 
     owner_id = verify_identity(x_api_key, x_user_id, x_user_sig)
     return Principal(owner_id=owner_id,
+                     organization_id=await _organization_for(owner_id),
                      credential=Credential.signed_header if polcfg.USER_TOKEN_SECRET
                      else Credential.self_asserted)
+
+
+async def _organization_for(owner_id: str) -> str:
+    # THE ONE PLACE a header credential's tenant is resolved. One indexed read per request; a
+    # cache belongs here and nowhere else, which is why the journey is a single call rather than
+    # a join written at each call site.
+    #
+    # A key credential does NOT come through here: its row already names an organisation, and a
+    # key may be scoped to one while its owner belongs to several.
+    if not owner_id:
+        return ""
+    try:
+        async with get_db() as db:
+            return await account_service.organization_id_for_owner(db, owner_id)
+    except Exception as exc:
+        # FAIL OPEN TO OWNER SCOPE, never to a refusal. The organisation is a scope, not a
+        # credential: the caller has already proven who they are, and a lookup that cannot run
+        # must degrade to today's owner-only behaviour rather than 500 a proven request. Reads
+        # fall back to owner_id when the principal names no organisation (see the repositories).
+        logger.warning("could not resolve an organisation for %s - scoping on owner alone: %s",
+                       owner_id, exc)
+        return ""
 
 
 async def _principal_from_key(presented: str) -> Principal:
@@ -137,3 +161,9 @@ async def owner_dep(
 
 async def plan_dep(principal: Annotated[Principal, Depends(principal_dep)]) -> str:
     return principal.plan
+
+
+async def org_dep(principal: Annotated[Principal, Depends(principal_dep)]) -> str:
+    # Beside owner_dep, resolved from the SAME cached principal - so a route taking both gets one
+    # credential check and one organisation lookup, not two.
+    return principal.organization_id
