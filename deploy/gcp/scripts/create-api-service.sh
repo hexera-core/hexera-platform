@@ -176,6 +176,18 @@ API_ENV_PAIRS=(
   # ENV=production refuses a wildcard at startup (settings inventory, "Auth / environment"), so a
   # prod deployment that leaves this at its default fails closed rather than serving every origin.
   "CORS_ORIGINS=${API_CORS_ORIGINS}"
+  # Identity Platform lives in the SAME project as everything else this deployment provisions -
+  # the console signs in through it, and this is the audience the API verifies the resulting ID
+  # token against. A deployment that ever splits them states FIREBASE_PROJECT_ID explicitly;
+  # until then the default is correct and nobody has to know Identity Platform's project id.
+  "FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-${GCP_PROJECT_ID}}"
+  # Whether an unknown Identity Platform account may provision itself an organisation on first
+  # sign-in, and how many credits that organisation starts with. Both are API settings, never the
+  # console's: the console can only decline to *render* /sign-up, while anyone can create an
+  # Identity Platform account directly against the project's public web API key and present the
+  # resulting token, so the API is the only place this is a real gate.
+  "CONSOLE_SIGNUP_ENABLED=${CONSOLE_SIGNUP_ENABLED:-true}"
+  "SIGNUP_GRANT_CREDITS=${SIGNUP_GRANT_CREDITS:-100}"
 )
 # The mesh executor, if this deployment has one. The application reads the job as CLOUDRUN_JOB.
 if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then

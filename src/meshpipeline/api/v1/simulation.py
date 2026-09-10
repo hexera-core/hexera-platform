@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, JobStatus_
-from meshpipeline.api.security import owner_dep, plan_dep
+from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application.job_service import JobService
 from meshpipeline.persistence.models import ArtifactType
 from meshpipeline.persistence.session import get_db
@@ -30,9 +30,10 @@ def _amended_brief(parent_session, mode: str, comment: str) -> str:
             + comment.strip()[:2000])
 
 
-async def _viewer_data_or_empty(job_id: uuid.UUID, owner_id: str, db=None) -> dict:
+async def _viewer_data_or_empty(job_id: uuid.UUID, owner_id: str, db=None, *,
+                                organization_id: str = "") -> dict:
     try:
-        return await _viewer_data(job_id, owner_id, db)
+        return await _viewer_data(job_id, owner_id, db, organization_id=organization_id)
     except HTTPException as exc:
         # Job status must still render when the viewer payload is absent OR the object store is
         # briefly unreachable - a viewer problem is not a reason to fail the whole status page.
@@ -43,7 +44,8 @@ async def _viewer_data_or_empty(job_id: uuid.UUID, owner_id: str, db=None) -> di
         return {}
 
 
-async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None) -> dict:
+async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None, *,
+                       organization_id: str = "") -> dict:
     import json as _json
 
     from meshpipeline.application.viewer_payload import VIEWER_LOGICAL_KEY
@@ -51,7 +53,7 @@ async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None) -> dict:
     from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 
     async def _resolve(session):
-        job = await svc.get_job(session, job_id, owner_id)
+        job = await svc.get_job(session, job_id, owner_id, organization_id=organization_id)
         if not job:
             raise HTTPException(404, "Job not found")
         return await ArtifactRepository().get_by_logical_key(session, job_id, VIEWER_LOGICAL_KEY)
@@ -118,13 +120,15 @@ def _failed_concerns(review: dict, engine: str) -> list[str]:
 
 
 @router.get("/{job_id}", response_model=JobStatus_)
-async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
+async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                  organization_id: str = Depends(org_dep)):
     async with get_db() as db:
-        job = await svc.get_job(db, job_id, owner_id)
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
         if not job:
             raise HTTPException(404, "Job not found")
 
-        _vdata = await _viewer_data_or_empty(job_id, owner_id, db)
+        _vdata = await _viewer_data_or_empty(job_id, owner_id, db,
+                                             organization_id=organization_id)
         _engine = str(_vdata.get("engine", "") or "")
         artifacts_out = []
         for a in (job.artifacts or []):
@@ -177,8 +181,9 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
 
 
 @router.get("/{job_id}/surface")
-async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
-    data = await _viewer_data(job_id, owner_id)
+async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                      organization_id: str = Depends(org_dep)):
+    data = await _viewer_data(job_id, owner_id, organization_id=organization_id)
     surface = data.get("surface")
     if not surface:
         raise HTTPException(404, "No renderable surface was delivered for this job")
@@ -186,14 +191,15 @@ async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
 
 
 @router.get("/{job_id}/surface.vtk")
-async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
+async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                          organization_id: str = Depends(org_dep)):
     """The delivered boundary with its quality fields as a legacy VTK file, for ParaView. The
     arrays are the viewer's own, so what ParaView colours is what the heatmap coloured. Built from
     the stored viewer payload - no workspace is read."""
     from fastapi.responses import Response
 
     from meshpipeline.render.vtk_export import surface_to_vtk
-    data = await _viewer_data(job_id, owner_id)
+    data = await _viewer_data(job_id, owner_id, organization_id=organization_id)
     surface = data.get("surface")
     if not surface or surface.get("kind") != "polymesh":
         raise HTTPException(404, "No polyMesh surface was delivered for this job")
@@ -214,7 +220,8 @@ _DISPATCH_FAILED = "Failed to enqueue dispute job"
 
 @router.post("/{job_id}/dispute", response_model=DisputeOut, status_code=202)
 async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depends(owner_dep),
-                      plan: str = Depends(plan_dep)):
+                      plan: str = Depends(plan_dep),
+                      organization_id: str = Depends(org_dep)):
     from meshpipeline.application import dispute_operation
     from meshpipeline.persistence.models import JobStatus as _JS
     from meshpipeline.persistence.repositories.job_repository import JobRepository
@@ -245,7 +252,7 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
     job_repo = JobRepository()
     session_repo = SessionRepository()
     async with get_db() as db:
-        parent = await svc.get_job(db, job_id, owner_id)
+        parent = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
         if not parent:
             raise HTTPException(404, "Job not found")
         # A FAILED run that still produced a mesh is disputable too: the retry loop
@@ -261,7 +268,8 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
             # So a stored verdict is the gate-validity certificate. Without it the mesh
             # is invalid, and no amount of user acceptance may deliver it: the reviewer's
             # quality bar is amendable, the gates are NOT.
-            _dv = await _viewer_data_or_empty(job_id, owner_id, db)
+            _dv = await _viewer_data_or_empty(job_id, owner_id, db,
+                                              organization_id=organization_id)
             if not (_dv.get("mesh_available") and _dv.get("review")):
                 raise HTTPException(409, "This run produced no valid mesh to review - "
                                          "describe the change in the chat instead")
@@ -273,6 +281,12 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # nothing, so it must not be refused for capacity, and it must not consume any. A child that
         # exists but failed to launch is not "on its way", so its repeat gets the same sanitized
         # failure instead of a 202 that would be untrue.
+        # dispute_operation.claim stays owner_id-only: it lives in application/, not in
+        # persistence/repositories, and its key already folds owner_id into the digest
+        # (operation_key's own docstring: "no two tenants can ever collide on a key"), so
+        # widening its predicate is not needed for isolation - only application-layer files this
+        # task does not touch would benefit, and that is a design question for later work, not a
+        # missed site.
         _replay = await dispute_operation.claim(db, owner_id=owner_id, key=_operation)
         if _replay is not None:
             if _replay.launch_failed:
@@ -288,7 +302,7 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # session; request.txt is recovered from the parent workspace by the worker.
         parent_session = await session_repo.get_by_job_id(db, job_id)
 
-        new_job = await job_repo.create(db, owner_id=owner_id)
+        new_job = await job_repo.create(db, owner_id=owner_id, organization_id=organization_id)
         # The child IS the operation's durable record. Written in the same transaction that creates
         # it, under the claim's lock, so the row and its identity become visible together.
         new_job.dispute_operation_key = _operation
@@ -303,7 +317,8 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
                 GeometryInterpretationRepository,
             )
             _parent_interpretation = await GeometryInterpretationRepository().get_for_owner(
-                db, parent.geometry_interpretation_id, owner_id)
+                db, parent.geometry_interpretation_id, owner_id,
+                organization_id=organization_id)
         await db.commit()
 
     try:

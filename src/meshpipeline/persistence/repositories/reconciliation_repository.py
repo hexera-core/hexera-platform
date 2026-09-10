@@ -14,6 +14,7 @@ from meshpipeline.persistence.models import (
     ArtifactType,
     ReconciliationState,
 )
+from meshpipeline.persistence.repositories import tenant_scope
 
 
 class ReconciliationRepository:
@@ -22,10 +23,14 @@ class ReconciliationRepository:
                             delivery_attempt: int, logical_key: str, artifact_type: ArtifactType,
                             object_key: str, object_checksum: str | None, object_size: int,
                             failure_category: str = "row_write_failed",
-                            detail: str | None = None) -> None:
+                            detail: str | None = None, organization_id: str = "") -> None:
+        # Written from the pipeline's own reconciliation path (pipeline_run._persist_orphans),
+        # never from a request holding a Principal - organization_id defaults to "" there, exactly
+        # as it does for every caller that predates the organisation.
         stmt = (
             pg_insert(ArtifactReconciliation)
-            .values(id=uuid.uuid4(), owner_id=owner_id, job_id=job_id,
+            .values(id=uuid.uuid4(), job_id=job_id,
+                    **tenant_scope.stamp(owner_id=owner_id, organization_id=organization_id),
                     delivery_attempt=delivery_attempt, logical_key=logical_key,
                     artifact_type=artifact_type, object_key=object_key,
                     object_checksum=object_checksum, object_size=object_size,

@@ -11,7 +11,7 @@ from meshpipeline.agents.intake import approval as ap
 from meshpipeline.agents.intake import message as msg
 from meshpipeline.agents.intake.agent import _extract_reply
 from meshpipeline.api.schemas.chat import ChatMessageIn, ChatResponse
-from meshpipeline.api.security import owner_dep
+from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.application.intake_brief import build_brief
 from meshpipeline.errors import classify_api_failure, user_message_for
 from meshpipeline.persistence.session import get_db
@@ -23,11 +23,13 @@ router = APIRouter()
 
 
 @router.get("/history/{session_id}")
-async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_dep)):
+async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                           organization_id: str = Depends(org_dep)):
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
     session_repo = SessionRepository()
     async with get_db() as db:
-        session = await session_repo.get_for_owner(db, session_id, owner_id)
+        session = await session_repo.get_for_owner(db, session_id, owner_id,
+                                                    organization_id=organization_id)
         if not session:
             raise HTTPException(404, "Session not found")
     return {
@@ -51,13 +53,14 @@ def _require_session(session, session_id):
 @router.post("/message", response_model=ChatResponse,
              description="Hand the message to the intake authority and render what "
                          "it decided; this function owns no gate.")
-async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep)):
+async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
+                       organization_id: str = Depends(org_dep)):
     from meshpipeline.agents.intake.agent import node_intake
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
     session_repo = SessionRepository()
     inbound = msg.InboundMessage(session_id=body.session_id, owner_id=owner_id,
-                                 content=body.content)
+                                 content=body.content, organization_id=organization_id)
 
     outcome = await msg.accept(inbound, session_repo=session_repo, db_factory=get_db,
                                logger=logger)
@@ -66,7 +69,8 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep)):
         raise HTTPException(404, "Session not found")
     if outcome.status is msg.MessageStatus.approve:
         return await _confirm_pending_approval(outcome.session, session_repo, owner_id,
-                                               body.session_id)
+                                               body.session_id,
+                                               organization_id=organization_id)
     if outcome.status is msg.MessageStatus.already_dispatched:
         return ChatResponse(session_id=body.session_id, reply=outcome.reply, done=True,
                             job_id=outcome.job_id)
@@ -95,8 +99,14 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep)):
 
     # request_txt on the session (not just this turn's result) - a confirmation turn that
     # asks a clarifying question submits nothing new, yet is still awaiting confirmation.
+    #
+    # NOTE: the turn above already ran through msg.accept, whose own session lookup
+    # (agents/intake/message.py) is still owner_id-only - see this task's report. Scoping this
+    # re-read on the organisation cannot widen who reaches this line; it only keeps this read
+    # consistent with the same rule everywhere else.
     async with get_db() as db:
-        _sess = await session_repo.get_for_owner(db, body.session_id, owner_id)
+        _sess = await session_repo.get_for_owner(db, body.session_id, owner_id,
+                                                  organization_id=organization_id)
     return ChatResponse(
         session_id=body.session_id,
         reply=_extract_reply(result),
@@ -121,11 +131,13 @@ _APPROVAL_STATUS: dict[ap.ConfirmStatus, int] = {
 
 
 async def _confirm_pending_approval(session, session_repo, owner_id: str,
-                                    session_id: uuid.UUID) -> ChatResponse:
+                                    session_id: uuid.UUID,
+                                    organization_id: str = "") -> ChatResponse:
     cause: Exception | None = None
     try:
         outcome = await ap.confirm_pending_approval(
-            session, session_repo, owner_id, session_id, logger=logger)
+            session, session_repo, owner_id, session_id, logger=logger,
+            organization_id=organization_id)
     except ap.ApprovalTransactionError as exc:
         outcome, cause = exc.outcome, exc
 

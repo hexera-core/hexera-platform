@@ -9,6 +9,11 @@
 # lanes join it without anyone editing branch protection.
 name: CI
 
+# The Actions list shows one row per run, and "CI" twelve times over tells you nothing about
+# WHICH change is red. `head_ref` is the source branch on a pull_request; `ref_name` covers
+# push and schedule, where head_ref is empty.
+run-name: CI (${{ github.head_ref || github.ref_name }})
+
 # Least privilege, stated. security-events is what lets CodeQL upload its SARIF; nothing here
 # writes contents, packages or statuses.
 # Default for EVERY lane: read the repository and nothing else. The two lanes that upload code

@@ -14,6 +14,7 @@ from meshpipeline.contracts.geometry_units import (
     scale_to_metres,
 )
 from meshpipeline.persistence.models import GeometryInterpretationRow
+from meshpipeline.persistence.repositories import tenant_scope
 
 
 def _to_domain(row: GeometryInterpretationRow) -> GeometryInterpretation:
@@ -27,14 +28,21 @@ def _to_domain(row: GeometryInterpretationRow) -> GeometryInterpretation:
 class GeometryInterpretationRepository:
 
     async def record(self, db: AsyncSession, *, owner_id: str, geometry_source_id: uuid.UUID,
-                     unit: LengthUnit, basis: ResolutionBasis,
-                     evidence: str = "") -> GeometryInterpretation:
+                     unit: LengthUnit, basis: ResolutionBasis, evidence: str = "",
+                     organization_id: str = "") -> GeometryInterpretation:
+        # `find` stays owner_id-only, deliberately: it is the idempotency check behind
+        # `uq_geometry_interpretation`, which is itself keyed on owner_id, not on the
+        # organisation. Widening its match to the organisation would let this return a
+        # DIFFERENT owner's row for the same source/unit/basis inside one organisation - the
+        # right answer to "does a duplicate already exist for this constraint" is the
+        # constraint's own key, not the wider tenant scope.
         existing = await self.find(db, owner_id=owner_id, geometry_source_id=geometry_source_id,
                                    unit=unit, basis=basis)
         if existing is not None:
             return existing
         row = GeometryInterpretationRow(
-            owner_id=owner_id, geometry_source_id=geometry_source_id, unit=unit.value,
+            **tenant_scope.stamp(owner_id=owner_id, organization_id=organization_id),
+            geometry_source_id=geometry_source_id, unit=unit.value,
             scale_to_metres=scale_to_metres(unit), basis=basis.value, evidence=evidence[:256])
         db.add(row)
         await db.flush()
@@ -42,6 +50,8 @@ class GeometryInterpretationRepository:
 
     async def find(self, db: AsyncSession, *, owner_id: str, geometry_source_id: uuid.UUID,
                    unit: LengthUnit, basis: ResolutionBasis) -> GeometryInterpretation | None:
+        # Owner-scoped only - see the note in `record`. This is the unique constraint's own
+        # lookup, not a tenant-facing read.
         res = await db.execute(
             select(GeometryInterpretationRow).where(
                 GeometryInterpretationRow.owner_id == owner_id,
@@ -52,19 +62,22 @@ class GeometryInterpretationRepository:
         return _to_domain(row) if row is not None else None
 
     async def get_for_owner(self, db: AsyncSession, interpretation_id: uuid.UUID,
-                            owner_id: str) -> GeometryInterpretation | None:
+                            owner_id: str, *, organization_id: str = "") -> GeometryInterpretation | None:
         res = await db.execute(
             select(GeometryInterpretationRow).where(
                 GeometryInterpretationRow.id == interpretation_id,
-                GeometryInterpretationRow.owner_id == owner_id))
+                tenant_scope.scope(GeometryInterpretationRow, owner_id=owner_id,
+                                   organization_id=organization_id)))
         row = res.scalar_one_or_none()
         return _to_domain(row) if row is not None else None
 
     async def latest_for_source(self, db: AsyncSession, *, owner_id: str,
-                                geometry_source_id: uuid.UUID) -> GeometryInterpretation | None:
+                                geometry_source_id: uuid.UUID,
+                                organization_id: str = "") -> GeometryInterpretation | None:
         res = await db.execute(
             select(GeometryInterpretationRow)
-            .where(GeometryInterpretationRow.owner_id == owner_id,
+            .where(tenant_scope.scope(GeometryInterpretationRow, owner_id=owner_id,
+                                      organization_id=organization_id),
                    GeometryInterpretationRow.geometry_source_id == geometry_source_id)
             .order_by(GeometryInterpretationRow.created_at.desc(),
                       GeometryInterpretationRow.id.desc()))

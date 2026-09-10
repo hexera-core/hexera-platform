@@ -52,6 +52,9 @@ def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
     from meshpipeline.adapters.event_stream.redis import JobPublisher, RedisEventSubscription
+    from meshpipeline.adapters.firebase_token.identity_platform import (
+        verify as verify_identity_platform_token,
+    )
     from meshpipeline.adapters.inference_telemetry.redis import RedisInferenceTelemetrySink
     from meshpipeline.adapters.mesh_timing.redis import RedisMeshTimingStore
     from meshpipeline.adapters.model_capacity.redis import RedisCapacityController
@@ -64,6 +67,7 @@ def install_adapters() -> None:
         dead_letter,
         delivery_guard,
         event_stream,
+        firebase_token,
         inference_telemetry,
         mesh_execution,
         mesh_timing,
@@ -83,6 +87,10 @@ def install_adapters() -> None:
     search.set_web_search_provider(build_web_search_provider())
     training_export.set_export_enqueuer(_enqueue_training_export)
     mesh_execution.set_mesh_executor(build_mesh_executor())
+    # Console sign-in. The product knows only `contracts.firebase_token.verify`; which identity
+    # provider is behind it - and therefore which certificate endpoint and which claim
+    # vocabulary - is settled here, once.
+    firebase_token.set_token_verifier(verify_identity_platform_token)
 
     # The narrow Redis-backed capabilities. Each is its own port: a capability can move off
     # Redis (or off a shared Redis) on its own, without touching the others or the callers.

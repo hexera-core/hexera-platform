@@ -1,0 +1,16 @@
+# Responsibility: Read and write organizations rows.
+# Boundaries: rows only - who may belong to one is the membership repository's question.
+from __future__ import annotations
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from meshpipeline.persistence.models import Organization
+
+
+class OrganizationRepository:
+
+    async def create(self, db: AsyncSession, *, name: str, slug: str) -> Organization:
+        row = Organization(name=name[:256], slug=slug[:64])
+        db.add(row)
+        await db.flush()
+        return row

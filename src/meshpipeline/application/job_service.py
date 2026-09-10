@@ -90,17 +90,19 @@ class JobService:
                 f"Please try again in a few minutes."
             )
 
-    async def create_session(self, db: AsyncSession, owner_id: str) -> uuid.UUID:
+    async def create_session(self, db: AsyncSession, owner_id: str, *,
+                             organization_id: str = "") -> uuid.UUID:
         from meshpipeline.persistence.repositories.session_repository import SessionRepository
         session_repo = SessionRepository()
-        session = await session_repo.create(db, owner_id)
+        session = await session_repo.create(db, owner_id, organization_id=organization_id)
         await db.flush()
         return session.id
 
-    async def get_job(self, db: AsyncSession, job_id: uuid.UUID, owner_id: str):
+    async def get_job(self, db: AsyncSession, job_id: uuid.UUID, owner_id: str, *,
+                      organization_id: str = ""):
         # Scoped in SQL: a foreign job id and a missing one are indistinguishable here, and no
         # other tenant's row is ever materialised inside this service.
-        job = await job_repo.get_for_owner(db, job_id, owner_id)
+        job = await job_repo.get_for_owner(db, job_id, owner_id, organization_id=organization_id)
         if not job:
             return None
         return job

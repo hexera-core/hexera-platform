@@ -51,7 +51,7 @@ def _client(monkeypatch, *, row=True, store=None, owner=OWNER, job_owner=OWNER):
     monkeypatch.setattr(osmod, "get_object_store", lambda: store)
     monkeypatch.setattr(sim, "get_db", _fake_db())
 
-    async def fake_get_job(db, job_id, owner_id):
+    async def fake_get_job(db, job_id, owner_id, *, organization_id=""):
         # the real service is tenant-scoped; a foreign owner simply gets nothing
         return SimpleNamespace(id=job_id) if owner_id == job_owner else None
     monkeypatch.setattr(sim.svc, "get_job", fake_get_job)

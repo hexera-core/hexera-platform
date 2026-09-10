@@ -325,7 +325,7 @@ if [ -n "${IMAGE_ID[console]}" ]; then
   # started on a published port with the two settings Auth.js requires at boot; the values are
   # deliberately not credentials - nothing here authenticates anyone.
   _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
-            -e AUTH_SECRET=gate-c-not-a-real-secret -e CONSOLE_AUTH_USERS='[]' \
+            -e AUTH_SECRET=gate-c-not-a-real-secret \
             "${IMAGE_TAG[console]}" 2>/dev/null || true)"
   if [ -n "${_cid}" ]; then
     _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
