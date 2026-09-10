@@ -143,8 +143,6 @@ if [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
   fi
   [ -n "${AUTH_SECRET_SECRET:-}" ] \
     || add "the console is configured but AUTH_SECRET_SECRET names no Secret Manager container - Auth.js refuses to start without a secret"
-  [ -n "${CONSOLE_AUTH_USERS_SECRET:-}" ] \
-    || add "the console is configured but CONSOLE_AUTH_USERS_SECRET names no Secret Manager container - nobody could sign in"
   if [[ "${CONSOLE_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${CONSOLE_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
     [ "${CONSOLE_MIN_INSTANCES}" -le "${CONSOLE_MAX_INSTANCES}" ] \
       || add "CONSOLE_MIN_INSTANCES (${CONSOLE_MIN_INSTANCES}) exceeds CONSOLE_MAX_INSTANCES (${CONSOLE_MAX_INSTANCES})"

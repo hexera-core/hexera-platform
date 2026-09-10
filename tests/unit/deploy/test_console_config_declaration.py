@@ -12,7 +12,9 @@ DECLARED = (
     "CONSOLE_CPU", "CONSOLE_MEMORY", "CONSOLE_CONCURRENCY",
     "CONSOLE_MIN_INSTANCES", "CONSOLE_MAX_INSTANCES", "CONSOLE_TIMEOUT_SECONDS",
     "CONSOLE_INGRESS", "CONSOLE_ALLOW_UNAUTHENTICATED",
-    "AUTH_SECRET_SECRET", "CONSOLE_AUTH_USERS_SECRET",
+    "AUTH_SECRET_SECRET",
+    "NEXT_PUBLIC_FIREBASE_API_KEY", "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN",
+    "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
     "HEXERA_API_BASE_URL", "NEXT_PUBLIC_HEXERA_API_BASE_URL",
 )
 
@@ -32,9 +34,6 @@ def test_the_console_names_secret_containers_never_values():
         assert not stripped.startswith("AUTH_SECRET="), (
             f"the generated env assigns AUTH_SECRET directly ({stripped!r}); it must name a "
             f"Secret Manager container via AUTH_SECRET_SECRET instead")
-        assert not stripped.startswith("CONSOLE_AUTH_USERS="), (
-            f"the generated env assigns CONSOLE_AUTH_USERS directly ({stripped!r}); the "
-            f"password hashes are a credential and belong in Secret Manager")
 
 
 def test_an_absent_console_service_is_a_supported_arrangement():

@@ -56,7 +56,6 @@ def test_inverted_console_scaling_is_refused(tmp_path):
     done = _run({"CLOUDRUN_CONSOLE_SERVICE": "t-console",
                  "HEXERA_API_BASE_URL": "https://api.example",
                  "AUTH_SECRET_SECRET": "console-auth-secret",
-                 "CONSOLE_AUTH_USERS_SECRET": "console-auth-users",
                  "CONSOLE_MIN_INSTANCES": "4", "CONSOLE_MAX_INSTANCES": "2"}, tmp_path)
     assert done.returncode != 0
     assert "CONSOLE_MIN_INSTANCES" in done.stdout + done.stderr
@@ -74,7 +73,6 @@ def test_a_console_without_an_api_base_url_validates_clean_when_console_is_not_s
     # else) must not be refused for a live resource it is not touching.
     done = _run({"CLOUDRUN_CONSOLE_SERVICE": "t-console",
                  "AUTH_SECRET_SECRET": "console-auth-secret",
-                 "CONSOLE_AUTH_USERS_SECRET": "console-auth-users",
                  "DEPLOY_COMPONENTS": "images"}, tmp_path)
     assert done.returncode == 0, done.stdout + done.stderr
 
@@ -82,7 +80,6 @@ def test_a_console_without_an_api_base_url_validates_clean_when_console_is_not_s
 def test_a_console_without_an_api_base_url_is_still_refused_when_console_is_selected(tmp_path):
     done = _run({"CLOUDRUN_CONSOLE_SERVICE": "t-console",
                  "AUTH_SECRET_SECRET": "console-auth-secret",
-                 "CONSOLE_AUTH_USERS_SECRET": "console-auth-users",
                  "DEPLOY_COMPONENTS": "images,console"}, tmp_path)
     assert done.returncode != 0
     assert "HEXERA_API_BASE_URL" in done.stdout + done.stderr
