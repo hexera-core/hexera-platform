@@ -390,10 +390,29 @@ jobs:
           SMOKE: ${{ matrix.smoke }}
         run: bash -euo pipefail -c "$SMOKE"
 
+  # THE LONGEST LANE IN THE RUN at 12m55s, of which 10m26s was one pytest session: 73 files
+  # against one provisioned Postgres/Redis/MinIO stack, strictly serially, while eleven other
+  # lanes sat finished. Each shard provisions its OWN stack and its own disposable database -
+  # which is what run_in_container.sh already does per invocation - so the shards share nothing
+  # and cannot interfere with each other.
+  #
+  # WHAT A SHARD MAY NOT CONCLUDE is that the TIER ran. Split four ways, no single shard executes
+  # the 300-test floor and no single shard holds all three named real-PostgreSQL guarantees; they
+  # live in three different modules. So a shard asserts what is true of a shard - the report
+  # parses, it is not empty, nothing failed, nothing skipped for a reason that is not one of the
+  # two optional fixtures - and `integration-tier` below asserts the two whole-suite claims once,
+  # over the union of every shard's JUnit report. ci-gate waits on that job, so a run in which the
+  # union was never proven is not green. The guard did not get weaker; it moved.
   integration:
-    name: Integration tier (real Redis + Postgres + MinIO)
+    name: Integration tier (${{ matrix.shard }}/4)
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true'
+    strategy:
+      # Four shards, four independent verdicts. Cancelling the siblings of the first failure would
+      # throw away three quarters of the evidence AND three quarters of the union the guard needs.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -423,7 +442,63 @@ jobs:
       # that marker, unsets any ambient DATABASE_URL, health-checks Postgres, Redis and MinIO, and
       # tears the stack down from a trap. Developers run it through `make test-container-integration`;
       # CI running the same command is what keeps the two from diverging again.
-      - run: make test-container-integration
+      - name: Integration shard ${{ matrix.shard }} of 4
+        env:
+          SHARD: ${{ matrix.shard }}
+          # The runner deletes its own scratch directory on exit, which is right for a developer
+          # and wrong here: the union pass runs in another job on another machine and the JUnit
+          # report is all it has.
+          INTEGRATION_REPORT_DIR: ${{ github.workspace }}/integration-reports
+        run: make test-container-integration-shard SHARD="$SHARD" SHARDS=4
+      # `always()`: a shard that FAILED is exactly the shard whose report the union pass most needs
+      # - without it the union reports a missing shard rather than the real failure underneath.
+      - name: Keep this shard's JUnit report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-report-${{ matrix.shard }}
+          path: integration-reports/*.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  # THE CLAIM THE SHARDS CANNOT MAKE INDIVIDUALLY: that the dependency-backed tier actually ran.
+  # It asserts the 300-test floor and the three named real-PostgreSQL guarantees over the UNION of
+  # every shard's report - the same two assertions, on the same evidence, that the single-session
+  # lane made inline. `if-no-files-found: error` above and the merge below are what stop a shard
+  # quietly contributing nothing: a missing report is a failure here, not a smaller union.
+  integration-tier:
+    name: Integration tier is not vacuous
+    needs: [preflight, integration]
+    # `!cancelled()` rather than success(): when a shard fails, its report is precisely what makes
+    # the union legible, and refusing to look at it would replace a real failure with silence. The
+    # shard's own red X still fails the gate on its own.
+    if: ${{ !cancelled() && needs.preflight.outputs.run_images == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: integration-report-*
+          path: integration-reports
+          merge-multiple: true
+      - name: Every shard reported, and the union is not vacuous
+        run: |
+          set -euo pipefail
+          mapfile -t reports < <(find integration-reports -name '*.xml' | sort)
+          echo "reports: ${#reports[@]}"
+          printf '  %s\n' "${reports[@]}"
+          # FOUR SHARDS, FOUR REPORTS. Counting them is not pedantry: the union guard's floor is a
+          # property of the whole tier, and three shards' worth of tests could clear it while a
+          # quarter of the suite never ran at all.
+          if [ "${#reports[@]}" -ne 4 ]; then
+            echo "::error title=A shard contributed no report::expected 4 shard reports, found ${#reports[@]} - the union below would be judging less than the tier"
+            exit 1
+          fi
+          python3 tests/integration/assert_integration_coverage.py "${reports[@]}"
 
   ui:
     name: UI in a real browser
@@ -480,6 +555,7 @@ jobs:
       - codeql
       - images
       - integration
+      - integration-tier
       - ui
       - web
     # `always()` would also fire for a run the concurrency group cancelled, posting a red required
@@ -511,6 +587,7 @@ jobs:
             codeql=${{ needs.codeql.result }}
             images=${{ needs.images.result }}
             integration=${{ needs.integration.result }}
+            integration-tier=${{ needs.integration-tier.result }}
             ui=${{ needs.ui.result }}
             web=${{ needs.web.result }}
         run: |
