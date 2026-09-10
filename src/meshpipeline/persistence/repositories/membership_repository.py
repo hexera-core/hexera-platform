@@ -33,3 +33,17 @@ class MembershipRepository:
             .order_by(Membership.created_at.asc())
             .limit(1))
         return res.scalar_one_or_none()
+
+    async def list_members(self, db: AsyncSession, *, organization_id: uuid.UUID
+                           ) -> list[tuple[User, MembershipRole]]:
+        """Everyone who acts within this organisation, with the role they act in.
+
+        Joined rather than two queries: the console renders name, address and role in one table,
+        and a membership without its user is not a row anything can display.
+        """
+        result = await db.execute(
+            select(User, Membership.role)
+            .join(Membership, Membership.user_id == User.id)
+            .where(Membership.organization_id == organization_id)
+            .order_by(Membership.created_at.asc()))
+        return [(row[0], row[1]) for row in result.all()]

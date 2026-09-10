@@ -111,6 +111,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/client-config"),
         ("GET", "/api/v1/credits"),
         ("GET", "/api/v1/credits/history"),      # the org's credit ledger, keyset paged
+        ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
