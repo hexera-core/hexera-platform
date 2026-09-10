@@ -15,8 +15,9 @@ run-name: Deploy (${{ github.ref_name }})
 # `contents: read` is the checkout, and nothing beyond it - a deploy has no reason to write to
 # the repository. Item 9 of the build-out plan blocks this item precisely because a JSON key in
 # a GitHub secret was the alternative.
-# Default: read only. The deploy job asks for id-token itself, where the federated exchange
-# actually happens - a workflow-wide id-token is a credential every job could mint.
+# Default: read only. The three jobs that talk to Google - release, provision and verify-admin -
+# ask for id-token themselves, where the federated exchange actually happens; a workflow-wide
+# id-token is a credential every job could mint, including the target picker.
 permissions:
   contents: read
 
@@ -572,18 +573,48 @@ jobs:
             sleep 30
           done
 
-  deploy:
-    name: Release and deploy (${{ needs.target.outputs.environment }})
+  # WHY THE DEPLOY IS SIX JOBS AND NOT ONE. It used to be one - checkout, toolchain, auth, Gate C,
+  # the push, deploy.sh, two post-deploy verifications and the records upload, in a single
+  # 300-minute lane. That shape cost three things. A red X said "the deploy failed" without saying whether it
+  # failed BUILDING, PUBLISHING, PROVISIONING or VERIFYING, which are four different pages and
+  # four different people. Re-running it re-ran ALL of it, so a flaky post-deploy curl rebuilt the
+  # mesh image. And the two verifications at the end - one an unauthenticated curl, the other a
+  # gcloud IAM read - are wholly independent of each other and ran back to back for no reason.
+  #
+  # THE DEPENDENCIES BELOW ARE THE REAL ONES, not the order somebody typed the steps in:
+  #
+  #   target ───┐                          ┌─ edge-dns ───────┐
+  #             ├─ release ─── provision ──┼─ verify-console ─┼─ deploy-gate
+  #   await-ci ─┘                          └─ verify-admin ───┘
+  #
+  #   target    -> release      the registry to push to, and the project to authenticate against
+  #   await-ci  -> release      nothing this commit produced is published until CI cleared it
+  #   release   -> provision    deploy.sh promotes DIGESTS out of deploy/output/release.json; it
+  #                             does not build, so the record is the whole of what it needs
+  #   provision -> the three    each consumes a URL or address deploy.sh discovered, and nothing
+  #                             else - so they run at the same time as each other
+  #
+  # WHAT IS DELIBERATELY *NOT* SPLIT: release-validate and release-publish. publish pushes THE
+  # EXACT IMAGE OBJECTS validate built - never a rebuild, which is the property the whole gate
+  # exists for - and images do not survive a job boundary without a multi-gigabyte docker save
+  # and load of the OpenFOAM layer. They share a runner because they share a docker daemon.
+
+  release:
+    name: Validate and publish the release artifact
     needs: [target, await-ci]
     # `needs` alone is not enough. await-ci exits 0 when it decides this commit was SUPERSEDED, so
     # that a merge landing behind another does not report a rejection that never happened - and a
-    # green stand-down must still not deploy.
+    # green stand-down must still not publish. Stated once, HERE: every job below reaches main
+    # through this one, and a skipped dependency skips its dependents, so repeating the condition
+    # further down would only be a second place to forget to change it.
     if: needs.await-ci.outputs.proceed == 'true'
-    # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
-    # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
-    # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
-    # larger runner; UNSET IT AND THIS FALLS BACK to the standard image, so the workflow is valid
-    # either way and no job can ever queue forever against a label nobody created.
+    # THE HEAVY LANE, and the only one left in this workflow that deserves the label: this is the
+    # job that builds four container images and runs the five-engine native terminal matrix
+    # against real Postgres/Redis/MinIO. A 2-core / 14 GB standard runner is what made this carry
+    # a "reclaim runner disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the
+    # label of a larger runner; UNSET IT AND THIS FALLS BACK to the standard image, so the
+    # workflow is valid either way and no job can ever queue forever against a label nobody
+    # created.
     #
     # UNSET TODAY, and not by oversight. Checked 2026-09-04 with an admin:org token: every
     # `/orgs/hexera-core/actions/hosted-runners` call - list, machine-sizes, and a real create -
@@ -592,20 +623,160 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-latest' }}
-    # id-token lives HERE and nowhere else: this is the only job that exchanges an OIDC token for
-    # Google credentials, and a workflow-wide grant would let the target-selection job mint one too.
+    # id-token because release-publish authenticates to Artifact Registry by federation, the same
+    # way provision authenticates to everything else: no key file, nothing to rotate.
     permissions:
       contents: read
       id-token: write
-    # The GitHub environment is what carries the protection rules: `dev` is branch-restricted to
-    # main and deploys without approval; `prod` is where the required reviewers live. Naming it
-    # here is what makes a run wait for them.
+    # NO `environment:` HERE, and that is a decision rather than an omission. GitHub prompts an
+    # environment's required reviewers ONCE PER JOB, so naming `prod` on both this job and
+    # provision would make one release ask for two approvals - the same human, twice, for one
+    # decision. The gate sits on provision, which is the job that mutates anything that serves
+    # traffic. What this job does before that approval is push immutable digests into
+    # hexera-prod's Artifact Registry: bytes that no service references and that promote-release.sh
+    # is the only thing that can point a revision at. Approval still stands between the pushed
+    # bytes and anything running them.
+    #
+    # THE TRADE, STATED: prod's Artifact Registry receives objects, and prod's WIF provider is
+    # exercised, before a reviewer clicks. If that is ever judged too much, the fix is to name the
+    # environment here TOO and accept the second prompt - not to move the gate off provision.
+    #
+    # Artifact validation builds the app, mesh, console and admin images AND runs the five-engine
+    # native terminal matrix. It is measured in tens of minutes, not minutes.
+    timeout-minutes: 240
+    env:
+      # publish.sh derives its registry from RELEASE_REGISTRY when it is set (it is, at the step
+      # below) and from these three otherwise. Both routes are pinned so neither can fall back to
+      # a value discovered off an env file that does not exist on a fresh runner.
+      GCP_PROJECT_ID: ${{ needs.target.outputs.project }}
+      GCP_REGION: ${{ needs.target.outputs.region }}
+      ARTIFACT_REGISTRY_REPOSITORY: ${{ needs.target.outputs.ar_repository }}
+    steps:
+      # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
+      # that exact commit to stage the native fixtures. Full history so the worktree and the
+      # record's commit/tree assertions have everything they name.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          fetch-depth: 0
+          # The release authenticates to Google by federation, never to GitHub by token; leaving
+          # the checkout credential in .git/config would outlive the step that needed it.
+          persist-credentials: false
+
+      # A stock runner has ~14 GB free; the mesh image alone (OpenFOAM 2412 + vmtk + gmsh) is
+      # several of them, and Gate C builds the app image beside it. These four toolchains are
+      # preinstalled on the image and are used by nothing in this repository.
+      - name: Reclaim runner disk for the image builds
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - id: python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11"
+          # NO pip cache here, deliberately. This job builds and publishes the release artifacts,
+          # and a cache is writable by workflows that run on untrusted pull requests - restoring
+          # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
+          # once per release; the seconds a cache saves are not worth that.
+      # The same single pinned environment ci.yml installs. Gate C runs the UI suite on the host
+      # against the containerised app image, so the host needs the test dependencies; no version
+      # is named here, for the same reason ci.yml names none.
+      #
+      # THIS INSTALL IS WHY provision IS A SEPARATE JOB AND NOT JUST A SEPARATE STEP: pyvista and
+      # the rest of dev.txt are minutes of wheels that deploy.sh has no use for. Every script under
+      # deploy/gcp/scripts uses a bare `python3` and the standard library, so provision runs on the
+      # runner's own interpreter with nothing installed into it.
+      - run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
+      - name: Install the meshpipeline distribution (editable)
+        run: pip install -e . --no-deps
+
+      # WORKLOAD IDENTITY FEDERATION. No `credentials_json`, no key file, no long-lived secret:
+      # the provider below only accepts tokens whose `repository` claim is this repository, and
+      # the service account only accepts impersonation from that same principal set.
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: ${{ needs.target.outputs.wif_provider }}
+          service_account: ${{ needs.target.outputs.deployer_sa }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+
+      # release-publish pushes with `docker push`, which needs the credential helper for this
+      # registry host. create-artifact-registry.sh configures it too, but that runs INSIDE the
+      # deploy - a whole job later, after publication - so the helper has to exist before Gate C's
+      # push, not after.
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      # GATE C, part 1. Builds the deployable images ONCE from this commit and validates THOSE
+      # artifacts - wheel provenance, both app entrypoints, the mesh toolchain, the vendored
+      # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
+      # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
+      # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
+      - name: Validate the release artifact (build the images once, test those exact bytes)
+        env:
+          RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: make release-validate
+
+      # ARTIFACT VALIDATION, part 2. Pushes the exact image objects just validated - never a rebuild -
+      # and folds the immutable registry digest each push produced into deploy/output/release.json.
+      # The registry is pinned rather than discovered: discovery writes deploy/gcp/generated.env,
+      # which does not exist yet on a fresh runner (the provision job below is what creates it).
+      - name: Publish the validated images (push, then record their immutable digests)
+        env:
+          RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
+          RELEASE_REGISTRY: ${{ needs.target.outputs.registry }}
+        run: make release-publish
+
+      # THE HANDOFF. deploy.sh promotes by digest and builds nothing, so this one file is the
+      # entire contract between the two jobs - not the images, which stay on this runner and die
+      # with it. `if: always()` because Gate C writes a record with verdict=failed or
+      # verdict=incomplete too, and that record is the evidence of WHAT failed; losing it on the
+      # runs that need it most is how "the deploy went red" becomes an archaeology exercise.
+      - name: Publish the release record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: release-record-${{ needs.target.outputs.environment }}-${{ github.sha }}
+          path: deploy/output/release.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  provision:
+    name: Provision ${{ needs.target.outputs.environment }}
+    needs: [target, await-ci, release]
+    # NO `if:` - and that is the point of the chain. release carries the proceed check, and a job
+    # whose dependency was skipped is skipped, so a stand-down propagates here without a second
+    # copy of the condition to keep in step with the first.
+    #
+    # A STANDARD RUNNER, not the heavy one. This job builds nothing and tests nothing: it reads a
+    # JSON record, talks to gcloud, and waits on Google. The heavy label exists for image builds.
+    runs-on: ubuntu-latest
+    # id-token lives here and in release, and nowhere else: these are the only jobs that exchange
+    # an OIDC token for Google credentials, and a workflow-wide grant would let the target-selection
+    # job mint one too.
+    permissions:
+      contents: read
+      id-token: write
+    # THE GATE. The GitHub environment is what carries the protection rules: `dev` is
+    # branch-restricted to main and deploys without approval; `prod` is where the required
+    # reviewers live. Naming it HERE, on the one job that mutates anything that serves traffic, is
+    # what makes a release wait for them - and naming it here ONLY is what keeps that to one
+    # prompt. See the note on release above for what happens before this line is reached.
     environment:
       name: ${{ needs.target.outputs.environment }}
-    # Artifact validation builds the app image AND the mesh image (OpenFOAM + vmtk + gmsh), then runs the
-    # five-engine native terminal matrix against real Postgres/Redis/MinIO. It is measured in
-    # tens of minutes, not minutes; the default 360 is left as the ceiling this stays under.
-    timeout-minutes: 300
+    # deploy.sh waits on Google - a Cloud SQL instance that has to be created is tens of minutes on
+    # its own - but it neither builds nor tests. The old 300 was sized for Gate C, which now lives
+    # a job away.
+    timeout-minutes: 120
+    outputs:
+      # WHAT deploy.sh DISCOVERED, promoted from step outputs to job outputs so the three jobs
+      # below can branch on them. Each one is written by the script that owns that tier and is
+      # EMPTY when the tier was not reconciled, which is what makes `!= ''` a real condition
+      # rather than a guess about whether a component was selected.
+      edge_ip: ${{ steps.deploy.outputs.edge_ip }}
+      edge_cert_state: ${{ steps.deploy.outputs.edge_cert_state }}
+      console_url: ${{ steps.deploy.outputs.console_url }}
+      admin_url: ${{ steps.deploy.outputs.admin_url }}
     env:
       # The pinned deployment targets, exported for the whole job because discovery
       # (deploy/gcp/scripts/bootstrap-env.sh) reads them from the environment and DEPLOY_NONINTERACTIVE
@@ -671,23 +842,15 @@ jobs:
       MINIO_BUCKET: ${{ needs.target.outputs.minio_bucket }}
       MINIO_SECRET_KEY_SECRET: ${{ needs.target.outputs.minio_secret_key_secret }}
     steps:
-      # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
-      # that exact commit to stage the native fixtures. Full history so the worktree and the
-      # record's commit/tree assertions have everything they name.
+      # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
+      # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`
+      # dirty check, and promote-release.sh compares that same HEAD against the commit recorded in
+      # release.json - all of which a depth-1 clone answers. It refuses to deploy a record built
+      # from a different commit, which is the assertion that makes handing the record across a job
+      # boundary safe.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
-          fetch-depth: 0
-          # The deploy authenticates to Google by federation, never to GitHub by token; leaving
-          # the checkout credential in .git/config would outlive the step that needed it.
           persist-credentials: false
-
-      # A stock runner has ~14 GB free; the mesh image alone (OpenFOAM 2412 + vmtk + gmsh) is
-      # several of them, and Gate C builds the app image beside it. These four toolchains are
-      # preinstalled on the image and are used by nothing in this repository.
-      - name: Reclaim runner disk for the image builds
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
-          df -h /
 
       # envsubst (gettext-base) is a hard requirement of deploy.sh - it stops with one instruction
       # without it, three stages in. Installed up front so the run fails on the runner image, not
@@ -695,24 +858,20 @@ jobs:
       - name: Install the deploy driver's host tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gettext-base
 
-      - id: python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+      # THE ARTIFACT release BUILT AND PUSHED, by digest. promote-release.sh reads exactly this
+      # file and refuses a record that is not state=published/verdict=passed, or whose commit is
+      # not this HEAD - so a download that silently produced the wrong bytes stops the deploy
+      # rather than shipping them.
+      - name: Fetch the release record
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
-          python-version: "3.11"
-          # NO pip cache here, deliberately. This job builds and publishes the release artifacts,
-          # and a cache is writable by workflows that run on untrusted pull requests - restoring
-          # one into the publishing path is how poisoned bytes reach a registry. A deploy runs
-          # once per release; the seconds a cache saves are not worth that.
-      # The same single pinned environment ci.yml installs. Gate C runs the UI suite on the host
-      # against the containerised app image, so the host needs the test dependencies; no version
-      # is named here, for the same reason ci.yml names none.
-      - run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt
-      - name: Install the meshpipeline distribution (editable)
-        run: pip install -e . --no-deps
+          name: release-record-${{ needs.target.outputs.environment }}-${{ github.sha }}
+          path: deploy/output
 
-      # WORKLOAD IDENTITY FEDERATION. No `credentials_json`, no key file, no long-lived secret:
-      # the provider below only accepts tokens whose `repository` claim is this repository, and
-      # the service account only accepts impersonation from that same principal set.
+      # WORKLOAD IDENTITY FEDERATION, the same exchange release performs and for the same reason:
+      # the provider only accepts tokens whose `repository` claim is this repository, and the
+      # service account only accepts impersonation from that principal set. Two jobs mean two
+      # short-lived tokens, which is strictly better than one long-lived anything.
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
@@ -721,36 +880,11 @@ jobs:
       # deploy.sh is a gcloud program; the auth step above only produces the credentials it uses.
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
 
-      # release-publish pushes with `docker push`, which needs the credential helper for this
-      # registry host. create-artifact-registry.sh configures it too, but that runs INSIDE the
-      # deploy - after publication - so the helper has to exist before Gate C's push, not after.
-      - name: Configure docker for Artifact Registry
-        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
-
-      # GATE C, part 1. Builds the deployable images ONCE from this commit and validates THOSE
-      # artifacts - wheel provenance, both app entrypoints, the mesh toolchain, the vendored
-      # browser assets, the UI in a real browser, and the five-engine native terminal matrix.
-      # RELEASE_PYTHON is the interpreter set up above: the gate otherwise falls through to the
-      # repository virtualenv (absent here) and then to whatever python3 the host resolves to.
-      - name: Validate the release artifact (build the images once, test those exact bytes)
-        env:
-          RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
-        run: make release-validate
-
-      # ARTIFACT VALIDATION, part 2. Pushes the exact image objects just validated - never a rebuild -
-      # and folds the immutable registry digest each push produced into deploy/output/release.json.
-      # The registry is pinned rather than discovered: discovery writes deploy/gcp/generated.env,
-      # which does not exist yet on a fresh runner (the deploy step below is what creates it).
-      - name: Publish the validated images (push, then record their immutable digests)
-        env:
-          RELEASE_PYTHON: ${{ steps.python.outputs.python-path }}
-          RELEASE_REGISTRY: ${{ needs.target.outputs.registry }}
-        run: make release-publish
-
-      # THE ONLY CLOUD MUTATION. deploy.sh is interactive by default - it prints a plan and makes
-      # the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its documented automation
-      # path, which then requires every ambiguous target pinned explicitly (the four exported at
-      # job level). It promotes the digest release-publish just recorded; it never builds.
+      # THE ONLY CLOUD MUTATION IN THIS WORKFLOW. deploy.sh is interactive by default - it prints a
+      # plan and makes the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its
+      # documented automation path, which then requires every ambiguous target pinned explicitly
+      # (the four exported at job level). It promotes the digest release-publish recorded; it
+      # never builds.
       #
       # MESH_INVOKER is deliberately unset: the invoker binding names the principal that SUBMITS
       # mesh jobs, which is the application's runtime identity, not this deployer. Setting it here
@@ -763,10 +897,12 @@ jobs:
           # THE CONSOLE'S IDENTITY PLATFORM CONFIG. `vars` here resolves against the GitHub
           # ENVIRONMENT this job runs under, so dev reads hexera-dev's values and prod reads
           # hexera-506114's without either naming the other - the same per-environment split the
-          # project and region already get from the target job. Deliberately variables and not
-          # secrets: the web API key identifies the project and authorises nothing on its own, it
-          # ships inside the browser bundle, and pretending otherwise would only hide it from the
-          # people who need to read it. What gates signup is CONSOLE_SIGNUP_ENABLED on the API.
+          # project and region already get from the target job. This is also the reason the
+          # environment is named on THIS job and not on release: these values do not exist outside
+          # it. Deliberately variables and not secrets: the web API key identifies the project and
+          # authorises nothing on its own, it ships inside the browser bundle, and pretending
+          # otherwise would only hide it from the people who need to read it. What gates signup is
+          # CONSOLE_SIGNUP_ENABLED on the API.
           #
           # An empty value here is not silent: validate-config.sh refuses a run whose components
           # include the console while any of the three is unset, because a console that deploys
@@ -791,18 +927,42 @@ jobs:
           NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
         run: bash deploy/gcp/scripts/deploy.sh
 
-      # THE ADDRESS AN OPERATOR MUST PUT IN DNS, surfaced where they will see it. create-edge.sh
-      # (Task 4) writes edge_ip and edge_cert_state to $GITHUB_OUTPUT only when the edge stage ran
-      # and declared at least one hostname; this step runs on exactly that condition, so a deploy
-      # whose components never touched the edge leaves it skipped rather than printing an empty
-      # table. Both environments now pin CONSOLE_DOMAIN/ADMIN_DOMAIN, so a release tag's first run
-      # is expected to print this table - with the certificate reporting PROVISIONING until DNS
-      # is pointed at the address it prints.
+      # The record that says what is actually deployed, kept as a build output. Gitignored machine
+      # state, and the live drift it exists to prevent is already documented: deployment.json names
+      # one mesh digest while the job runs another. release.json travels beside it because the two
+      # are only meaningful together - what was validated, and what that turned into.
+      - name: Publish the deployment record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: deploy-records-${{ needs.target.outputs.environment }}-${{ github.sha }}
+          path: |
+            deploy/output/release.json
+            deploy/output/deployment.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  # THE ADDRESS AN OPERATOR MUST PUT IN DNS, surfaced where they will see it. Its own job because
+  # it is the one thing here a human is meant to ACT on, and burying it under a 40-minute deploy
+  # log is how it gets missed - as a row it is either there or it is not.
+  #
+  # create-edge.sh (Task 4) writes edge_ip and edge_cert_state to $GITHUB_OUTPUT only when the edge
+  # stage ran and declared at least one hostname; this job runs on exactly that condition, so a
+  # deploy whose components never touched the edge leaves it skipped rather than printing an empty
+  # table. Both environments now pin CONSOLE_DOMAIN/ADMIN_DOMAIN, so a release tag's first run is
+  # expected to print this table - with the certificate reporting PROVISIONING until DNS is pointed
+  # at the address it prints.
+  edge-dns:
+    name: Edge address for DNS
+    needs: [target, provision]
+    if: needs.provision.outputs.edge_ip != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
       - name: Surface the edge address for DNS
-        if: steps.deploy.outputs.edge_ip != ''
         env:
-          EDGE_IP: ${{ steps.deploy.outputs.edge_ip }}
-          EDGE_CERT_STATE: ${{ steps.deploy.outputs.edge_cert_state }}
+          EDGE_IP: ${{ needs.provision.outputs.edge_ip }}
+          EDGE_CERT_STATE: ${{ needs.provision.outputs.edge_cert_state }}
           CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
           ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
         run: |
@@ -828,41 +988,52 @@ jobs:
             echo "TTL 300 on each A record. \`PROVISIONING\` becomes \`ACTIVE\` on its own, 15-60 min after the record propagates."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
-      # §4): an HTTP check against the console's own dev URL, the one thing nothing before this
-      # step ever proves against a REAL deployed revision - Gate C's console smoke only proves the
-      # image can serve /api/internal/health in isolation, with no Auth.js, no live API origin and
-      # no Cloud Run front end in the loop.
-      #
-      # RUNS ONLY WHEN THE CONSOLE WAS ACTUALLY RECONCILED. create-console-service.sh is the one
-      # place that already resolves the deployed URL (it logs it too), so it writes
-      # console_url to $GITHUB_OUTPUT itself rather than this step re-deriving it - and it does so
-      # from the one line unreachable from its own "no console configured" skip, so a deploy that
-      # never touched the console (components without 'console', or a target - prod today - with
-      # no CLOUDRUN_CONSOLE_SERVICE pinned) leaves this condition false and the step does not run.
-      #
-      # FOUR ASSERTIONS, unauthenticated (no session cookie is presented anywhere below):
-      #   1. GET /                    -> a redirect to /sign-in (Auth.js's own gate, exercised for
-      #                                  real)
-      #   2. GET /sign-in             -> 200, AND the /_next/static assets the rendered page
-      #                                  references also 200 - weak "200 on /sign-in alone" would
-      #                                  miss a broken .next/static or public/ path, which no smoke
-      #                                  has ever covered
-      #   3. GET /api/internal/health -> 200 with a JSON body whose status is "ok" - the same
-      #                                  unauthenticated route Gate C's in-container smoke already
-      #                                  curls, so post-deploy and build-time verification agree on
-      #                                  one endpoint instead of two
-      #   4. GET /readyz              -> 401 unauthenticated. /readyz is deliberately session-gated
-      #                                  - it proxies to the product API presenting MESH_API_KEY -
-      #                                  so a 200 here would mean any caller of this
-      #                                  allUsers-invokable service could spend the console's own
-      #                                  API key against the product API. 401 is the passing case:
-      #                                  it proves the session gate is actually live on the
-      #                                  deployed revision, which a 200-only check never would.
-      - name: Verify the deployed console (design spec §4 - / redirects, /sign-in renders, /api/internal/health 200, /readyz 401)
-        if: steps.deploy.outputs.console_url != ''
+  # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
+  # §4): an HTTP check against the console's own URL, the one thing nothing before this ever proves
+  # against a REAL deployed revision - Gate C's console smoke only proves the image can serve
+  # /api/internal/health in isolation, with no Auth.js, no live API origin and no Cloud Run front
+  # end in the loop.
+  #
+  # ITS OWN JOB, AND NO CREDENTIALS. Every request below is unauthenticated by design, so this
+  # needs neither the OIDC exchange nor gcloud nor a checkout - four curls against a public URL.
+  # It ran back-to-back with the admin check for no reason other than step order; the two share
+  # nothing and now run at the same time.
+  #
+  # RUNS ONLY WHEN THE CONSOLE WAS ACTUALLY RECONCILED. create-console-service.sh is the one
+  # place that already resolves the deployed URL (it logs it too), so it writes console_url to
+  # $GITHUB_OUTPUT itself rather than this job re-deriving it - and it does so from the one line
+  # unreachable from its own "no console configured" skip, so a deploy that never touched the
+  # console (components without 'console', or a target with no CLOUDRUN_CONSOLE_SERVICE pinned)
+  # leaves this condition false and the job does not run.
+  #
+  # FOUR ASSERTIONS, unauthenticated (no session cookie is presented anywhere below):
+  #   1. GET /                    -> a redirect to /sign-in (Auth.js's own gate, exercised for
+  #                                  real)
+  #   2. GET /sign-in             -> 200, AND the /_next/static assets the rendered page
+  #                                  references also 200 - weak "200 on /sign-in alone" would
+  #                                  miss a broken .next/static or public/ path, which no smoke
+  #                                  has ever covered
+  #   3. GET /api/internal/health -> 200 with a JSON body whose status is "ok" - the same
+  #                                  unauthenticated route Gate C's in-container smoke already
+  #                                  curls, so post-deploy and build-time verification agree on
+  #                                  one endpoint instead of two
+  #   4. GET /readyz              -> 401 unauthenticated. /readyz is deliberately session-gated
+  #                                  - it proxies to the product API presenting MESH_API_KEY -
+  #                                  so a 200 here would mean any caller of this
+  #                                  allUsers-invokable service could spend the console's own
+  #                                  API key against the product API. 401 is the passing case:
+  #                                  it proves the session gate is actually live on the
+  #                                  deployed revision, which a 200-only check never would.
+  verify-console:
+    name: Verify the deployed console
+    needs: [provision]
+    if: needs.provision.outputs.console_url != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: / redirects, /sign-in renders, /api/internal/health 200, /readyz 401
         env:
-          CONSOLE_URL: ${{ steps.deploy.outputs.console_url }}
+          CONSOLE_URL: ${{ needs.provision.outputs.console_url }}
         run: |
           set -euo pipefail
           echo "verifying ${CONSOLE_URL}"
@@ -935,13 +1106,33 @@ jobs:
           [ "${rcode}" = "401" ] || { echo "::error::GET /readyz returned ${rcode}, not 401 - the session gate may not be enforced on this revision"; exit 1; }
           echo "OK: /readyz 401 (session gate enforced)"
 
-      # THE ONE CHECK THAT MATTERS. IAP over a service that still carries an allUsers invoker
-      # binding protects nothing - the two are separate gates - and the symptom is silence,
-      # because the page loads and looks fine. Asserted here rather than left to a runbook.
-      - name: Verify the admin console is not publicly reachable
-        if: steps.deploy.outputs.admin_url != ''
+  # THE ONE CHECK THAT MATTERS. IAP over a service that still carries an allUsers invoker binding
+  # protects nothing - the two are separate gates - and the symptom is silence, because the page
+  # loads and looks fine. Asserted here rather than left to a runbook.
+  #
+  # ITS OWN JOB, in parallel with verify-console, because the two share nothing but the deploy that
+  # preceded them. This one DOES need credentials - it reads the live invoker policy - so it
+  # performs its own federated exchange; that is a second short-lived token, not a longer-lived one.
+  # It does NOT name the environment: it reads a target the picker already resolved, so making a
+  # reviewer approve it a second time would gate a read-only assertion behind a human.
+  verify-admin:
+    name: Verify the admin console is private
+    needs: [target, provision]
+    if: needs.provision.outputs.admin_url != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 15
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: ${{ needs.target.outputs.wif_provider }}
+          service_account: ${{ needs.target.outputs.deployer_sa }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+      - name: No anonymous 200, and no public invoker binding
         env:
-          ADMIN_URL: ${{ steps.deploy.outputs.admin_url }}
+          ADMIN_URL: ${{ needs.provision.outputs.admin_url }}
           ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
           REGION: ${{ needs.target.outputs.region }}
           PROJECT: ${{ needs.target.outputs.project }}
@@ -975,16 +1166,64 @@ jobs:
           fi
           echo "OK: no public invoker binding"
 
-      # The two records that say what was validated and what is actually deployed, kept as build
-      # outputs. Both are gitignored machine state, and the live drift they exist to prevent is
-      # already documented: deployment.json names one mesh digest while the job runs another.
-      - name: Publish the release and deployment records
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: deploy-records-${{ needs.target.outputs.environment }}-${{ github.sha }}
-          path: |
-            deploy/output/release.json
-            deploy/output/deployment.json
-          if-no-files-found: warn
-          retention-days: 90
+  # THE AGGREGATE, the same shape ci.yml's ci-gate has and for the same reason: splitting one job
+  # into seven means seven rows somebody would otherwise have to read individually to answer "did
+  # the deploy work". This is the one row that answers it, and a new job joins it by being added to
+  # `needs` and to the list below - not by anyone editing a branch protection rule.
+  deploy-gate:
+    name: hexera/deploy-gate
+    needs:
+      - target
+      - await-ci
+      - release
+      - provision
+      - edge-dns
+      - verify-console
+      - verify-admin
+    # `always()` would also fire for a run the concurrency group cancelled. `!cancelled()` still
+    # runs the gate when a job genuinely fails, which is the entire point of it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every deploy job
+        env:
+          # These two decide whether anything ships, so neither may be anything but green.
+          REQUIRED_RESULTS: |
+            target=${{ needs.target.result }}
+            await-ci=${{ needs.await-ci.result }}
+          # SKIPPED IS A LEGITIMATE OUTCOME for every one of these, and each for its own reason:
+          # release and provision skip when await-ci stood the run down as superseded, and the
+          # three post-deploy jobs skip when the tier they check was not part of this run's
+          # components. `failure` is never legitimate for any of them.
+          SELECTED_RESULTS: |
+            release=${{ needs.release.result }}
+            provision=${{ needs.provision.result }}
+            edge-dns=${{ needs.edge-dns.result }}
+            verify-console=${{ needs.verify-console.result }}
+            verify-admin=${{ needs.verify-admin.result }}
+        run: |
+          set -euo pipefail
+          failures=0
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            name="${entry%%=*}"; result="${entry#*=}"
+            echo "${name}: ${result}"
+            if [ "$result" != "success" ]; then
+              echo "::error title=Required deploy job did not succeed::${name} finished with ${result}"
+              failures=1
+            fi
+          done <<< "$REQUIRED_RESULTS"
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            name="${entry%%=*}"; result="${entry#*=}"
+            echo "${name}: ${result}"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error title=Deploy job did not succeed::${name} finished with ${result}"
+                failures=1
+                ;;
+            esac
+          done <<< "$SELECTED_RESULTS"
+          exit "$failures"

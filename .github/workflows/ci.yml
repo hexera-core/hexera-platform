@@ -18,7 +18,8 @@ run-name: CI (${{ github.head_ref || github.ref_name }})
 # writes contents, packages or statuses.
 # Default for EVERY lane: read the repository and nothing else. The two lanes that upload code
 # scanning results ask for security-events themselves - granting it workflow-wide would hand
-# twelve jobs, most of which run third-party actions, a token that can write security findings.
+# every job in this workflow, most of which run third-party actions, a token that can write
+# security findings.
 permissions:
   contents: read
 
@@ -288,10 +289,39 @@ jobs:
         with:
           category: /language:python
 
+  # ONE IMAGE PER LANE. This used to be a single job that built api, then pipeline, then mesh, then
+  # smoked all three - 9m43s of strictly serial work whose red X said "an image broke" without
+  # saying which, and in which a 20-second api typo waited on the OpenFOAM build to find out. The
+  # three targets share only the Dockerfile they are cut from; nothing about `api` is an input to
+  # `mesh`, so nothing about them should be sequenced. Split, the lane costs its SLOWEST image
+  # rather than their sum, and each row answers one question.
   images:
-    name: Image targets (api / pipeline / mesh)
+    name: Image target (${{ matrix.target }})
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true'
+    strategy:
+      # A sibling that gets CANCELLED mid-build is not an answer to "does the mesh image build",
+      # which is the entire reason these are three lanes and not one. Every target reports.
+      fail-fast: false
+      matrix:
+        include:
+          # The smoke travels WITH the target it belongs to rather than living in a `case` below:
+          # adding a fourth deployable target is then one entry, not an entry plus a branch
+          # somebody forgets to write. An image that builds and cannot import is a green build
+          # and a broken deploy, so no target is listed here without one.
+          - target: api
+            smoke: |
+              docker run --rm --entrypoint python meshpipeline-api:ci \
+                -c "import meshpipeline.runtime.api_server as m; assert m.app"
+          - target: pipeline
+            smoke: |
+              docker run --rm --entrypoint python meshpipeline-pipeline:ci \
+                -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
+          - target: mesh
+            smoke: |
+              docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
+                meshpipeline-mesh:ci bash -lc \
+                'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -305,7 +335,9 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
-    timeout-minutes: 60
+    # One image, not three: the old 60 covered the sum of them. mesh (OpenFOAM 2412 + vmtk + OCC)
+    # is the slowest of the three by a wide margin and is what this ceiling is set for.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -313,26 +345,21 @@ jobs:
           persist-credentials: false
       - name: Resolve the authoritative product version
         run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
-      - name: Build api target (FastAPI + beat + maintenance)
-        run: docker build --target api --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-api:ci .
-      - name: Build pipeline target (Celery worker + render stack)
-        run: docker build --target pipeline --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-pipeline:ci .
-      - name: Build mesh target (OpenFOAM + vmtk + OCC)
-        run: docker build --target mesh --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-mesh:ci .
-      # An image that builds and cannot import is a green build and a broken deploy.
-      - name: Smoke - api entrypoint imports the ASGI app
+      - name: Build the ${{ matrix.target }} target
         run: |
-          docker run --rm --entrypoint python meshpipeline-api:ci \
-            -c "import meshpipeline.runtime.api_server as m; assert m.app"
-      - name: Smoke - pipeline entrypoint imports celery and the render stack
-        run: |
-          docker run --rm --entrypoint python meshpipeline-pipeline:ci \
-            -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
-      - name: Smoke - mesh image carries the native toolchain
-        run: |
-          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-            meshpipeline-mesh:ci bash -lc \
-            'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
+          set -euo pipefail
+          docker build --target "$TARGET" --build-arg APP_VERSION="$APP_VERSION" \
+            -t "meshpipeline-${TARGET}:ci" .
+        env:
+          TARGET: ${{ matrix.target }}
+      # Through the environment rather than interpolated straight into `run:`. The value is a
+      # workflow literal and not attacker-reachable, but a `${{ }}` expansion inside a shell body
+      # is the shape zizmor flags, and the workflow-audit lane is not worth arguing with over a
+      # habit that is right everywhere else.
+      - name: Smoke - the ${{ matrix.target }} image runs what it ships
+        env:
+          SMOKE: ${{ matrix.smoke }}
+        run: bash -euo pipefail -c "$SMOKE"
 
   integration:
     name: Integration tier (real Redis + Postgres + MinIO)
@@ -440,6 +467,11 @@ jobs:
             preflight=${{ needs.preflight.result }}
             workflow-audit=${{ needs.workflow-audit.result }}
           # These are scope-selected: `skipped` is a legitimate outcome, `failure` never is.
+          # `images` is ONE entry for THREE lanes: a matrix job's `result` is the aggregate of
+          # every leg, so api, pipeline and mesh all reach the gate through that single line and
+          # a fourth deployable target changes nothing here. NOTHING BUT `name=result` LINES MAY
+          # GO IN THIS BLOCK - it is parsed, not read, and a comment inside it is an entry whose
+          # result is the comment.
           SELECTED_RESULTS: |
             lint=${{ needs.lint.result }}
             typecheck=${{ needs.typecheck.result }}
