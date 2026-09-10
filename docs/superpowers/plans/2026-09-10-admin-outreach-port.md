@@ -35,7 +35,7 @@ Read from a tarball of `hexera-core/hexera-ops` at `2026-09-02`, and from this r
 - **The SMTP probe stays disabled.** Cloud Run blocks outbound port 25, so every result would be "unknown".
 - **Nothing is hard-deleted.** Contacts are suppressed, enrollments stopped. Preserve that.
 - **One alembic chain, linear.** `lib/db/schema.sql` and `scripts/migrate.ts` are deleted; alembic becomes the authority.
-- **Tables are prefixed `outreach_`.** `events`, `settings`, `contacts` and `templates` are too generic for a shared namespace.
+- **Tables live in an `outreach` SCHEMA, not behind a name prefix.** `events`, `settings`, `contacts` and `templates` are too generic for a shared namespace, and a prefix would make every one of the ~100 SQL strings in the ported code wrong. `search_path = outreach, public` leaves them correct as written. It is also the privilege boundary the console's database role is granted on.
 
 ---
 
@@ -64,7 +64,7 @@ Read from a tarball of `hexera-core/hexera-ops` at `2026-09-02`, and from this r
 
 ## Phase 3 — Call sites
 
-- [ ] **3.1** Port `lib/core`, `lib/analytics`, `lib/inbox`, `lib/ingest`, `lib/prospect`, `lib/verify` to `await` the new API.
+- [ ] **3.1** (No SQL rewriting: the schema keeps table names as the code already writes them.) Port `lib/core`, `lib/analytics`, `lib/inbox`, `lib/ingest`, `lib/prospect`, `lib/verify` to `await` the new API.
 - [ ] **3.2** Port `lib/engine` — `scheduler`, `enroll`, `dispatch`, `sender`, `state`. This is the sending path; treat it as the highest-risk file set.
 - [ ] **3.3** Port `lib/mail` — `gmail`, `mime`, `render`.
 - [ ] **3.4** Typecheck is the gate: a missed `await` on a promise-returning call is a type error, not a runtime surprise. Do not loosen types to move faster.

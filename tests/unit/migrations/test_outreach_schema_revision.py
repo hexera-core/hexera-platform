@@ -14,20 +14,20 @@ REVISION = REPO / "alembic" / "versions" / "0003_outreach_schema.py"
 # The 14 tables hexera-ops' schema.sql defined. Named here rather than counted, so a table that
 # silently fails to be ported is a failure with a name in it.
 _EXPECTED_TABLES = {
-    "outreach_campaigns",
-    "outreach_contacts",
-    "outreach_domain_intel",
-    "outreach_enrollments",
-    "outreach_events",
-    "outreach_messages",
-    "outreach_oauth_tokens",
-    "outreach_replies",
-    "outreach_send_ledger",
-    "outreach_sequence_steps",
-    "outreach_settings",
-    "outreach_suppressions",
-    "outreach_templates",
-    "outreach_verifications",
+    "campaigns",
+    "contacts",
+    "domain_intel",
+    "enrollments",
+    "events",
+    "messages",
+    "oauth_tokens",
+    "replies",
+    "send_ledger",
+    "sequence_steps",
+    "settings",
+    "suppressions",
+    "templates",
+    "verifications",
 }
 
 
@@ -43,7 +43,7 @@ def _table_block(source: str, table: str) -> str:
     the revision names every table too, so a naive `source.index(name)` window reads that tuple and
     the tables that follow it, and then asserts about the wrong code.
     """
-    start = source.index(f"op.create_table(\n        '{table}'")
+    start = source.index(f"op.create_table(\n        '{table}',")
     end = source.find("op.create_table(", start + 1)
     return source[start : end if end != -1 else len(source)]
 
@@ -74,10 +74,36 @@ def test_it_follows_the_api_keys_revision(source: str) -> None:
     assert "revision = '0003_outreach_schema'" in source
 
 
-def test_every_table_is_prefixed(created_tables: set[str]) -> None:
+def test_everything_is_created_inside_its_own_schema(source: str) -> None:
     # `events`, `settings`, `contacts`, `templates` and `messages` are all words this product wants
-    # for something else. Unprefixed, the first of them becomes a migration conflict.
-    assert all(name.startswith("outreach_") for name in created_tables)
+    # for something else, so they cannot join the pipeline's tables in `public`. A schema is what
+    # Postgres provides for that - and unlike a name prefix it leaves the ~100 SQL strings in the
+    # ported code correct as written, resolved by search_path.
+    assert "CREATE SCHEMA IF NOT EXISTS outreach" in source
+    creates = source.count("op.create_table(") + source.count("op.create_index(")
+    assert source.count("schema='outreach'") >= creates, "something is created outside the schema"
+
+
+def test_nothing_is_created_in_public(source: str) -> None:
+    # A single create_table or create_index without the schema kwarg lands in `public`, where it
+    # collides with the product's own names - which is the failure this whole design avoids.
+    for call in ("op.create_table(", "op.create_index("):
+        start = 0
+        while (start := source.find(call, start)) != -1:
+            depth, k = 0, start + len(call) - 1
+            while True:
+                if source[k] == "(":
+                    depth += 1
+                elif source[k] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            assert "schema='outreach'" in source[start : k + 1], (
+                f"a {call} call omits the schema and would create in public: "
+                f"{source[start:start + 90]}"
+            )
+            start = k
 
 
 @pytest.mark.parametrize(
@@ -101,7 +127,7 @@ def test_a_suppression_outlives_the_contact_it_names(source: str) -> None:
     # THE COMPLIANCE-RELEVANT ONE. Every other contact reference cascades. This one must not: a
     # record that someone asked never to be contacted has to survive the deletion of their contact
     # row, or deleting a contact silently re-permits mailing them.
-    block = _table_block(source, "outreach_suppressions")
+    block = _table_block(source, "suppressions")
     assert "ondelete='SET NULL'" in block
     assert "ondelete='CASCADE'" not in block
 
@@ -109,30 +135,31 @@ def test_a_suppression_outlives_the_contact_it_names(source: str) -> None:
 def test_the_audit_spine_carries_no_foreign_keys(source: str) -> None:
     # An event outlives the entity it describes. A cascade here would erase the audit trail along
     # with the record, which is the one thing an append-only spine exists to prevent.
-    assert "ForeignKeyConstraint" not in _table_block(source, "outreach_events")
+    assert "ForeignKeyConstraint" not in _table_block(source, "events")
 
 
-def test_the_view_is_created_and_dropped_before_its_table(source: str) -> None:
+def test_the_view_is_created(source: str) -> None:
     # Application code selects from this view by name; its absence is a runtime error inside a
-    # query rather than a failure the migration reports. On the way down it must go first, because
-    # it depends on a table the downgrade is about to drop.
-    assert "CREATE VIEW outreach_latest_verification" in source
-    drop_view = source.index("DROP VIEW IF EXISTS outreach_latest_verification")
-    drop_tables = source.index("op.drop_table(table)")
-    assert drop_view < drop_tables
+    # query rather than a failure the migration reports. Dropping it is the schema's problem, not
+    # an ordering the downgrade has to get right.
+    assert "CREATE VIEW outreach.latest_verification" in source
 
 
-def test_the_downgrade_drops_everything_it_created(source: str, created_tables: set[str]) -> None:
-    tree = ast.parse(source)
-    listed = {
-        element.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(getattr(target, "id", "") == "_TABLES" for target in node.targets)
-        for element in getattr(node.value, "elts", [])
-        if isinstance(element, ast.Constant)
-    }
-    assert listed == created_tables, "the drop list and the create calls disagree"
+def test_the_downgrade_drops_the_schema_rather_than_a_list(source: str) -> None:
+    # The schema owns every table, index and view the upgrade created, so dropping it is exact and
+    # cannot drift out of step the way a hand-maintained drop list does.
+    assert "DROP SCHEMA IF EXISTS outreach CASCADE" in source
+    assert "op.drop_table(" not in source
+
+
+def test_it_carries_the_columns_added_outside_the_source_schema(source: str) -> None:
+    # The application's migrate() ALTERed in columns after the first release, so schema.sql is not
+    # the whole schema. is_yc is the one that matters: lib/engine/enroll.ts gates auto-fill on
+    # `c.is_yc = 0`, so a missing column breaks enrollment and a wrong default cold-emails warm
+    # contacts reached through Bookface.
+    block = _table_block(source, "contacts")
+    assert "_flag('is_yc')" in block, "is_yc is missing; enrollment queries reference it"
+    assert "ix_outreach_contacts_role_group" in source
 
 
 def test_timestamps_stay_text_so_the_port_changes_one_thing(source: str) -> None:
