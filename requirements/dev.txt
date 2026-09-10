@@ -16,13 +16,13 @@
 # Runtime + test dependencies (including pytest) are in requirements/runtime.txt.
 # See "Dependencies" in docs/development/overview.md.
 
-ruff==0.15.19
-mypy==2.1.0
+ruff==0.16.6
+mypy==2.3.1
 
 # Randomised test ORDER - surfaces inter-test state leakage that a fixed order hides. Auto-active
 # once installed; it prints the seed so any failure is reproducible with --randomly-seed=<n>.
 # `make test-random` runs a fixed seed matrix; CI pins one deterministic seed.
-pytest-randomly==3.16.0
+pytest-randomly==5.0.0
 
 # PEP 517 frontend - builds the wheel in the Dockerfile's `wheel` stage and locally.
-build==1.2.2
+build==1.6.0
