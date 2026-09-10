@@ -1,6 +1,6 @@
 # Responsibility: Verify the identity and credit repositories read and write the rows the services depend on.
-# Boundaries: a dedicated throwaway Postgres, deliberately isolated from tests/integration's shared
-# disposable-database machinery - see the DATABASE_URL_ENV comment below for why.
+# Boundaries: an ordinary member of the integration tier - the tier's own conftest builds the whole
+# schema and this file uses the `db` session it already provides, isolating only its own four tables.
 from __future__ import annotations
 
 import os
@@ -8,8 +8,12 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from tests import harness_provisioning as hp
 
+if not os.getenv("DATABASE_URL"):
+    pytest.skip("a real PostgreSQL endpoint is required", allow_module_level=True)
+
+import meshpipeline.settings.providers as provcfg
 from meshpipeline.persistence.models import CreditEntryType, MembershipRole
 from meshpipeline.persistence.repositories.credit_ledger_repository import (
     CreditLedgerRepository,
@@ -19,42 +23,19 @@ from meshpipeline.persistence.repositories.organization_repository import (
     OrganizationRepository,
 )
 from meshpipeline.persistence.repositories.user_repository import UserRepository
-from meshpipeline.persistence.session import Base
 
-# A DELIBERATELY SEPARATE variable from DATABASE_URL. tests/integration/conftest.py treats
-# DATABASE_URL as the trigger for the shared disposable-database authority (which requires a
-# MESH_TEST_RUN_ID-stamped run database - see tests/disposable_database.py) and for an autouse
-# fixture that runs the FULL Alembic migration against it (tests/harness_provisioning.py). This
-# suite is deliberately smaller than that: four Task 1 tables on a fixed throwaway Postgres that
-# is not, and must not become, the tier's shared run database. Reading a different variable keeps
-# that machinery dormant regardless of whether this file happens to live under tests/integration.
-DATABASE_URL_ENV = "IDENTITY_REPOS_DATABASE_URL"
-
-if not os.getenv(DATABASE_URL_ENV):
-    pytest.skip(f"set {DATABASE_URL_ENV} to a real PostgreSQL endpoint to run this suite",
-                allow_module_level=True)
-
-_TABLE_NAMES = ("organizations", "users", "memberships", "credit_ledger")
+# organizations/users/memberships/credit_ledger are exclusively this suite's within the tier - no
+# other integration test writes a row to any of them - so a per-test TRUNCATE is enough isolation.
+# The schema itself is built once per session by conftest's `_provisioned_stack`/`_schema_present`;
+# this reuses `hp.truncate_tables`, the same helper test_job_transitions_postgres.py uses for its
+# own table, rather than a second schema-management scheme. CASCADE lets one call clear all four
+# regardless of their foreign-key order.
+_TABLES = ("credit_ledger", "memberships", "users", "organizations")
 
 
-@pytest.fixture()
-async def db():
-    # Function-scoped so no test can see another test's rows. Only the four Task 1 tables are
-    # created - never an unqualified create_all(), which would also try to build every
-    # Postgres-specific table this schema owns, most of which nothing here references and none
-    # of which this fixture is responsible for keeping in sync with Alembic.
-    engine = create_async_engine(os.environ[DATABASE_URL_ENV])
-    tables = [Base.metadata.tables[t] for t in _TABLE_NAMES]
-    async with engine.begin() as conn:
-        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=tables))
-    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
-    async with factory() as session:
-        yield session
-    # Drop rather than truncate: the next test creates its own fresh tables, so nothing needs to
-    # persist between them, and a drop also clears out a table this run renamed or resized.
-    async with engine.begin() as conn:
-        await conn.run_sync(lambda c: Base.metadata.drop_all(c, tables=tables))
-    await engine.dispose()
+@pytest.fixture(autouse=True)
+async def _clean_identity_tables():
+    await hp.truncate_tables(provcfg.POSTGRES_DSN, *_TABLES)
 
 
 async def _org_and_user(db, email="owner@example.com", uid="uid-1"):
