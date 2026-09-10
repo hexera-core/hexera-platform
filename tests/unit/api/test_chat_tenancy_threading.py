@@ -19,7 +19,6 @@ from httpx import ASGITransport, AsyncClient
 import meshpipeline.agents.intake.approval as ap
 import meshpipeline.agents.intake.message as msg
 import meshpipeline.agents.intake.unit_clarification as uc
-import meshpipeline.api.v1.chat as chat_mod
 from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.api.v1.chat import router as chat_router
 
