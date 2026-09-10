@@ -100,17 +100,21 @@ async def _organization_for(owner_id: str) -> str:
         # rows like these would also block 0005's NOT NULL. This must page somebody, not sit in
         # a warning stream. Repairing them means re-running 0004's stamping UPDATEs; see
         # docs/deployment/identity-platform.md section 7a.
-        # THE OWNER IS NOT LOGGED, and that is not squeamishness. `verify_identity` returns
-        # `user_id or (x_api_key or "dev-user")`, so on the self-asserted path - USER_TOKEN_SECRET
-        # unset, which is the documented dev posture - owner_id IS the presented API key. Logging
-        # it writes MESH_API_KEY into the log stream in clear text, and raising this line to
-        # `error` made that more likely to reach an aggregator, not less. A truncated digest keeps
-        # the line correlatable across requests and for the 0004 repair without carrying the
-        # credential; the exception's TYPE is kept for the same reason Task 6 refuses the message
-        # text, which can carry a DSN.
-        logger.error("could not resolve an organisation for owner sha256:%s - scoping on owner "
-                     "alone, and any write in this request will be stamped with the owner only "
-                     "(%s)", sha256(owner_id.encode()).hexdigest()[:12], type(exc).__name__)
+        # NEITHER THE OWNER NOR THE EXCEPTION TEXT IS LOGGED, and the owner is not hashed
+        # either. `verify_identity` returns `user_id or (x_api_key or "dev-user")`, so on the
+        # self-asserted path - USER_TOKEN_SECRET unset, the documented dev posture - owner_id IS
+        # the presented API key, and logging it writes MESH_API_KEY out in clear text. A sha256
+        # of it is no better: it is fast by construction, so a digest of an email is recovered
+        # from a wordlist, which is why CodeQL rejects a plain digest of sensitive data too.
+        #
+        # The line does not need an owner. What it must do is page somebody, because the repair -
+        # re-running 0004's stamping UPDATEs, which are `WHERE organization_id IS NULL` - is
+        # GLOBAL, not per-owner (docs/deployment/identity-platform.md section 7a). The exception's
+        # type is kept and its message dropped for the same reason api/auth.py refuses the
+        # decoder's text: it can carry a DSN.
+        logger.error("could not resolve an organisation - scoping on owner alone, and any write "
+                     "in this request will be stamped with the owner only (%s)",
+                     type(exc).__name__)
         return ""
 
 
