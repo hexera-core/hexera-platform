@@ -156,6 +156,60 @@ async def test_a_foreign_owner_cannot_read_a_session_that_exists(api, alphas_ses
             "a foreign session answers differently from an unknown one, which discloses existence")
 
 
+async def _provisioned_owner(db, *, org_name: str) -> str:
+    # A REAL account, unlike _A/_B above: tenant-alpha and tenant-bravo are self-asserted header
+    # identities with no `users` row, so `_organization_for` resolves them to "" and every
+    # assertion above exercises tenant_scope's OWNER fallback, never its organisation branch. This
+    # helper is what lets a test reach the other branch: a genuine user, in a genuine
+    # organisation, so the Principal the route sees carries a real, non-empty organization_id.
+    from meshpipeline.persistence.models import MembershipRole
+    from meshpipeline.persistence.repositories.membership_repository import MembershipRepository
+    from meshpipeline.persistence.repositories.organization_repository import (
+        OrganizationRepository,
+    )
+    from meshpipeline.persistence.repositories.user_repository import UserRepository
+
+    suffix = uuid.uuid4().hex[:12]
+    email = f"{org_name}-{suffix}@example.com"
+    org = await OrganizationRepository().create(db, name=org_name, slug=f"org-{suffix}")
+    user = await UserRepository().create(db, email=email, name="", firebase_uid=f"uid-{suffix}")
+    await MembershipRepository().create(db, user_id=user.id, organization_id=org.id,
+                                        role=MembershipRole.owner)
+    # COMMITTED HERE, not left for fixture teardown: the API subprocess reads through its own
+    # connection, so the row must be visible before the HTTP calls below are made, not after the
+    # test function returns.
+    await db.commit()
+    return email
+
+
+async def test_a_foreign_organisation_cannot_read_a_session_that_exists(api, db):
+    base, _ = api
+    org_a_owner = await _provisioned_owner(db, org_name="org-a")
+    org_b_owner = await _provisioned_owner(db, org_name="org-b")
+
+    async with await _client(base) as c:
+        upload = await c.post("/api/v1/upload/step-file", headers=_headers(org_a_owner),
+                              files={"file": ("part.step", _BODY, "application/octet-stream")})
+        assert upload.status_code == 200, upload.text
+        session_id = upload.json()["session_id"]
+
+        mine = await c.get(f"/api/v1/chat/history/{session_id}", headers=_headers(org_a_owner))
+        assert mine.status_code == 200, mine.text
+
+        # A DIFFERENT owner in a DIFFERENT organisation - not merely a different owner_id. If
+        # tenant_scope ever regressed to matching on owner_id alone, this would still 200 for a
+        # request signed as an org-a owner who is not the session's owner_id; it must not.
+        theirs = await c.get(f"/api/v1/chat/history/{session_id}", headers=_headers(org_b_owner))
+        assert theirs.status_code == 404, theirs.status_code
+        # NON-DISCLOSURE, exactly as the foreign-owner case above: an unknown session must answer
+        # identically to a real one that belongs to another organisation.
+        unknown = await c.get(f"/api/v1/chat/history/{uuid.uuid4()}", headers=_headers(org_b_owner))
+        assert theirs.status_code == unknown.status_code
+        assert theirs.json() == unknown.json(), (
+            "a foreign-organisation session answers differently from an unknown one, "
+            "which discloses existence")
+
+
 async def test_a_foreign_owner_cannot_post_into_a_session_that_exists(api, alphas_session):
     base, _ = api
     async with await _client(base) as c:
