@@ -36,14 +36,6 @@ async def create_session(
         if not x_api_key or not hmac.compare_digest(x_api_key, polcfg.MESH_API_KEY):
             raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
-    # Refused here too, not only inside firebase_token.verify: a deployment with no project
-    # configured must refuse before it even asks the verifier, the same "shape first, refuse
-    # on shape alone" discipline security._principal_from_key applies to a malformed API key -
-    # cheap and certain beats trusting a downstream call to catch the same thing every time.
-    if not polcfg.FIREBASE_PROJECT_ID:
-        logger.info("sign-in refused: token did not verify")
-        raise HTTPException(status_code=401, detail=REFUSAL)
-
     try:
         verified = firebase_token.verify(id_token,
                                          project_id=polcfg.FIREBASE_PROJECT_ID)

@@ -23,6 +23,10 @@ def app(monkeypatch):
     monkeypatch.setattr(polcfg, "FIREBASE_PROJECT_ID", "hexera-dev")
 
     def fake_verify(raw, *, project_id):
+        # Mirrors the real verify(): an unconfigured project refuses before anything else, so
+        # this stub cannot let a test pass that the genuine implementation would fail.
+        if not project_id:
+            raise InvalidToken("no Identity Platform project is configured")
         if raw == "good":
             return VerifiedToken(uid="uid-1", email="person@example.com",
                                  email_verified=True, name="A Person")
