@@ -776,7 +776,13 @@ jobs:
           [ "${code}" = "200" ] || { echo "::error::GET /sign-in returned ${code}, not 200"; exit 1; }
           grep -qi '<html' /tmp/console-verify-signin.html \
             || { echo "::error::/sign-in did not render HTML"; exit 1; }
-          assets="$(grep -oE '/_next/static/[^"]+' /tmp/console-verify-signin.html | sort -u | head -5)"
+          # Next.js embeds asset paths JSON-escaped inside <script> payloads too
+          # (\"/_next/static/chunks/foo.js\"), so a class that only excludes `"` also swallows
+          # the backslash immediately before the closing quote, producing a path ending in `\`
+          # that a real server answers with a redirect rather than 200. Exclude the backslash,
+          # angle brackets and whitespace too, so the match stops at the true end of the path
+          # wherever it sits (quoted attribute, escaped JSON string, or bare in a script body).
+          assets="$(grep -oE '/_next/static/[^"\\<>[:space:]]+' /tmp/console-verify-signin.html | sort -u | head -5)"
           if [ -z "${assets}" ]; then
             echo "::error::/sign-in referenced no /_next/static assets - cannot confirm the asset path works"
             exit 1
