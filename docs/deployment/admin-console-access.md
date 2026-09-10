@@ -366,3 +366,43 @@ read the group's own `status.autoscaler` field rather than assuming the names ma
 returns "no autoscaler" for a group that has one, and for `create-worker-fleet.sh` that would mean
 re-applying a policy the console owns. Both it and `create-queue-depth-publisher.sh` read the
 field.
+
+
+## 12. The billing export
+
+The Costs page's per-service breakdown needs a **BigQuery billing export**, which is the one piece
+of this system that cannot be provisioned from code: there is no `gcloud` subcommand and no method
+on the Cloud Billing API. It is enabled in the Cloud Console under **Billing → Billing export →
+BigQuery export**, and only **Standard usage cost** is turned on — that is the export whose table
+carries `service.description`, `project.id`, `cost`, `credits[].amount` and `usage_start_time`,
+which is everything the query reads. Detailed usage cost, Pricing, FOCUS and the CUD export are
+deliberately off: each is a second copy of the same money in a shape nothing here reads, and each
+costs storage and scan.
+
+**The dataset is `hexera-prod:billing_export`, and it is in prod on purpose.** An export
+accumulates from the day it is switched on and cannot be backfilled, so its history is
+irreplaceable. `hexera-dev` is a shared sandbox that may be rebuilt; a table that disappears with it
+takes every month recorded up to that point. The table name follows the account id with its hyphens
+turned to underscores: `gcp_billing_export_v1_01EFBB_8FF368_9E335F`.
+
+**One billing account bills both projects, so one table holds both.** Three reads had to be scoped
+because of it, and the third was only caught by looking at the deployed page:
+
+| Read | Scope |
+|---|---|
+| `getProjectBillingInfo` | already per-project |
+| `listBudgets` | per billing ACCOUNT — filtered to budgets whose `budgetFilter.projects` names this project, plus account-wide ones |
+| the spend query | per billing ACCOUNT — filtered on `project.id` |
+
+Without the last two, dev's Costs page would have shown prod's budget beside its own and summed
+prod's spend into its total.
+
+**Dev's console reads a table in prod, and that is the only cross-project read in this design.**
+§10's rule is otherwise "own project only". It is accepted here because the exposure was already
+granted: the dev identity holds `roles/billing.viewer` on the shared billing account, so it can
+already see account-wide billing data. The BigQuery grant is dataset-scoped `READER` on this one
+table and reaches nothing that account-level role did not.
+
+**Until the first table is written** — hours after enabling — the page says so, and distinguishes
+"the export is not switched on" from "it is, and the first write is pending". It needs no redeploy
+when the table appears.

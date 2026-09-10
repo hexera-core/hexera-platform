@@ -248,15 +248,23 @@ jobs:
               # create-admin-service.sh and dev's deployment-state manifest have named
               # `dev-admin` since Task 6/7; this line is what tells the deploy job to look for it.
               echo "admin_service=dev-admin"
-              # THE BILLING EXPORT, dev only. A BigQuery billing export is configured per BILLING
-              # ACCOUNT, not per project, and hexera-dev and hexera-prod share one - so this single
-              # table carries both projects' usage and the console's query filters by project.id.
-              # The dataset lives in hexera-dev because that is where it was created; pointing
-              # prod's console at it would be a cross-project read, which the admin console design
-              # (Decision 4) deliberately avoids. That is a decision to make when prod actually has
-              # an admin console; it has none today, so prod's stays empty rather than silently
-              # taking the other posture.
-              echo "billing_export_table=hexera-dev.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"
+              # THE BILLING EXPORT. Configured per BILLING ACCOUNT, not per project: hexera-dev and
+              # hexera-prod share one account, so this single table carries BOTH projects' usage
+              # and the console's query filters on project.id to keep them apart.
+              #
+              # THE DATASET LIVES IN hexera-prod, and that is the one thing about this worth
+              # arguing over. A billing export accumulates from the day it is enabled and CANNOT be
+              # backfilled, which makes its history irreplaceable; hexera-dev is a shared sandbox
+              # that may be torn down and rebuilt, and losing the table with it would lose every
+              # month recorded up to that point. Durability wins.
+              #
+              # The cost is that dev's console reads a table in prod - a cross-project read the
+              # admin console design (Decision 4) otherwise avoids. It is accepted HERE and nowhere
+              # else, because the exposure is already granted: dev's identity holds
+              # roles/billing.viewer on the shared billing ACCOUNT, so it can already see
+              # account-wide billing data. The BigQuery grant is dataset-scoped READER on this one
+              # table and adds nothing it could not already reach.
+              echo "billing_export_table=hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"
               # The custom hostnames, PINNED, dev only - same reasoning as console_service and
               # admin_service immediately above. create-edge.sh (Task 4) only provisions the load
               # balancer, address and certificate when it is handed a domain; this is what hands
@@ -349,9 +357,9 @@ jobs:
             # APIs in March 2026, so it cannot be scripted). Until that brand exists, `--iap` on
             # this service will not work - see docs/deployment/console-domains.md.
             echo "admin_service=prod-admin"
-            # Deliberately empty - see the dev block. The export dataset is in hexera-dev, and
-            # reading it from prod is a cross-project read this design does not take by default.
-            echo "billing_export_table="
+            # The same table the dev block names, and for prod it is not even a cross-project
+            # read - the dataset lives here.
+            echo "billing_export_table=hexera-prod.billing_export.gcp_billing_export_v1_01EFBB_8FF368_9E335F"
             # THE CUSTOM HOSTNAMES, NOW PINNED - the same reasoning as console_service and
             # admin_service immediately above: naming them here is what lets create-edge.sh
             # provision the load balancer, reserved global address and managed certificate these
