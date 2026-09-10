@@ -62,6 +62,12 @@ class GeometrySource(Base):
 
     id:            Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id:      Mapped[str]       = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     # What the user called it. Display only - never used to open a file, never trusted as a path.
     original_filename: Mapped[str]   = mapped_column(String(512), nullable=False)
     # UNTRUSTED FILENAME HINT. The lowercase suffix the upload arrived with (".step", ".vtp", …).
@@ -104,6 +110,12 @@ class SimulationJob(Base):
 
     id:              Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id:        Mapped[str]       = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     status:          Mapped[JobStatus] = mapped_column(Enum(JobStatus), nullable=False, default=JobStatus.pending)
     created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -208,6 +220,12 @@ class ChatSession(Base):
 
     id:                Mapped[uuid.UUID]      = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id:          Mapped[str]            = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     messages:          Mapped[list]           = mapped_column(JSONB, nullable=False, default=list)
     request_txt:       Mapped[str | None]     = mapped_column(Text, nullable=True)
     review_brief_txt:  Mapped[str | None]     = mapped_column(Text, nullable=True)
@@ -344,6 +362,12 @@ class GeometryInterpretationRow(Base):
     id:        Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
                                                  default=uuid.uuid4)
     owner_id:  Mapped[str]       = mapped_column(String(256), nullable=False)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     geometry_source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("geometry_sources.id", ondelete="RESTRICT"),
         nullable=False)
@@ -378,6 +402,12 @@ class CaptureOperation(Base):
     seq:       Mapped[int]       = mapped_column(BigInteger, Identity(always=False), nullable=False,
                                                  unique=True)
     owner_id:  Mapped[str]       = mapped_column(String(256), nullable=False)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     job_id:    Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("simulation_jobs.id", ondelete="CASCADE"), nullable=False)
     execution_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
@@ -418,6 +448,12 @@ class ArtifactReconciliation(Base):
 
     id:            Mapped[uuid.UUID]  = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id:      Mapped[str]        = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     job_id:        Mapped[uuid.UUID]  = mapped_column(UUID(as_uuid=True), ForeignKey("simulation_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
     delivery_attempt: Mapped[int]     = mapped_column(Integer, nullable=False, default=0)
     logical_key:   Mapped[str]        = mapped_column(String(128), nullable=False)
@@ -459,6 +495,12 @@ class SourceObjectCleanup(Base):
 
     id:          Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id:    Mapped[str]       = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on. Nullable through
+    # this cycle: 0004 migrates before the new image ships, so the old revision briefly inserts
+    # rows that name no organisation, and NOT NULL would fail those inserts. 0005 closes it.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     # The source row this object was going to belong to. Maintenance asks whether that row exists
     # before deleting anything, so a legitimate upload can never be reclaimed by its own intent.
     source_id:   Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -492,12 +534,11 @@ class ApiKey(Base):
     # THE TENANT this key authenticates as, in the same String(256) shape every other table scopes
     # on. A key resolves to an owner_id and everything downstream is unchanged.
     owner_id:  Mapped[str]       = mapped_column(String(256), nullable=False, index=True)
-    # WHICH ORGANISATION that owner belongs to. Nullable and unconstrained because organisations do
-    # not exist yet; indexed because it becomes the tenant filter when they do. The foreign key
-    # arrives with the organisations migration - declaring one now would require inventing the
-    # table it points at. Nothing reads this column today; owner_id remains authoritative.
-    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True,
-                                                              index=True)
+    # WHICH ORGANISATION that owner belongs to. The foreign key 0002 promised arrives in 0004,
+    # with the table it points at. Still nullable: a key issued before the backfill names none.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
     #: what the holder calls it. Display only - never used to find a key, never trusted.
     name:      Mapped[str]       = mapped_column(String(128), nullable=False, server_default="")
     # THE LOOKUP KEY: the public "hx_live_<identifier>" half. Unique because two rows sharing it
