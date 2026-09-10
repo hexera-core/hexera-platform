@@ -100,9 +100,17 @@ async def _organization_for(owner_id: str) -> str:
         # rows like these would also block 0005's NOT NULL. This must page somebody, not sit in
         # a warning stream. Repairing them means re-running 0004's stamping UPDATEs; see
         # docs/deployment/identity-platform.md section 7a.
-        logger.error("could not resolve an organisation for %s - scoping on owner alone, and any "
-                     "write in this request will be stamped with the owner only: %s",
-                     owner_id, exc)
+        # THE OWNER IS NOT LOGGED, and that is not squeamishness. `verify_identity` returns
+        # `user_id or (x_api_key or "dev-user")`, so on the self-asserted path - USER_TOKEN_SECRET
+        # unset, which is the documented dev posture - owner_id IS the presented API key. Logging
+        # it writes MESH_API_KEY into the log stream in clear text, and raising this line to
+        # `error` made that more likely to reach an aggregator, not less. A truncated digest keeps
+        # the line correlatable across requests and for the 0004 repair without carrying the
+        # credential; the exception's TYPE is kept for the same reason Task 6 refuses the message
+        # text, which can carry a DSN.
+        logger.error("could not resolve an organisation for owner sha256:%s - scoping on owner "
+                     "alone, and any write in this request will be stamped with the owner only "
+                     "(%s)", sha256(owner_id.encode()).hexdigest()[:12], type(exc).__name__)
         return ""
 
 

@@ -231,9 +231,13 @@ async def test_api_lists_one_download_per_logical_artifact_and_hides_reconciliat
     signed: list[str] = []
 
     class _Svc:
-        async def get_job(self, db, jid, owner):
+        async def get_job(self, db, jid, owner, *, organization_id=""):
+            # Mirrors JobService.get_job's real signature: the route resolves the organisation
+            # beside the owner and passes it, so a stub that omits it fails the CALL rather than
+            # the assertion - which is how this went unnoticed until the integration tier ran.
             from meshpipeline.application.job_service import JobService
-            return await JobService().get_job(db, jid, owner)
+            return await JobService().get_job(db, jid, owner,
+                                              organization_id=organization_id)
         async def signed_url(self, storage_key):
             signed.append(storage_key)
             return f"https://signed/{storage_key}"
