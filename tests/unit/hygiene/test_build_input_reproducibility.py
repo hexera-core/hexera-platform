@@ -78,7 +78,7 @@ def image_references() -> list[tuple[str, str]]:
 
 
 def ci_renderings() -> list[str]:
-    """The workflow as the RUNNER sees it: one rendering per matrix entry, continuations joined.
+    r"""The workflow as the RUNNER sees it: one rendering per matrix entry, continuations joined.
 
     A matrix lane's `run:` is a template, and scanning the file as written reads it wrong in both
     directions. Where the runner sees `docker build -t meshpipeline-api:ci`, the raw text says
@@ -103,8 +103,8 @@ def ci_renderings() -> list[str]:
     for entry in entries:
         rendered = text
         for key, value in entry.items():
-            rendered = re.sub(r"\$\{\{\s*matrix\.%s\s*\}\}" % re.escape(str(key)),
-                              lambda _m, v=str(value): v, rendered)
+            pattern = rf"\$\{{\{{\s*matrix\.{re.escape(str(key))}\s*\}}\}}"
+            rendered = re.sub(pattern, lambda _m, v=str(value): v, rendered)
         renderings.append(rendered)
     return renderings
 

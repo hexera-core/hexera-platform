@@ -202,19 +202,43 @@ jobs:
             bash -n "$f" || { echo "::error file=$f::does not parse"; exit 1; }
           done
 
+  # 503 FILES IN ONE SESSION was 9m46s, and the lane behind it - every other python lane - finished
+  # inside three minutes. Nothing in the unit tier waits on anything; the files were simply queued
+  # behind each other on one runner. Four shards, and the tier stops being the second-longest thing
+  # in a run.
+  #
+  # THE PARTITION CANNOT DROP A FILE, which is the only real risk here: a test that never ran
+  # reports nothing at all, so a gap is invisible rather than red. devtools/quality/shard_tests.py
+  # takes its inventory from `git ls-files` and assigns every file to exactly one shard by
+  # construction, and tests/unit/hygiene/test_test_sharding_is_total.py asserts that against THIS
+  # matrix's shard count - so raising the count below without the partition still being total is
+  # itself a test failure.
   unit:
-    name: Unit suite
+    name: Unit suite (${{ matrix.shard }}/4)
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
+    strategy:
+      # A cancelled sibling is not an answer to "does this shard pass", and with the suite split
+      # four ways the whole point is to see ALL of the failures in one run rather than the first.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # A quarter of the work, and the old 40 was already generous for the whole of it.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
       - uses: ./.github/actions/setup-hexera
-      - run: make test-fast
+      # SHARDS is spelled out rather than derived, because the shard count has to agree in three
+      # places - this matrix, this argument, and the totality test - and a literal is what the test
+      # reads to check that it does.
+      - name: Unit shard ${{ matrix.shard }} of 4
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: make test-fast-shard SHARD="$SHARD" SHARDS=4
 
   boundary:
     name: Architecture and provider contracts
