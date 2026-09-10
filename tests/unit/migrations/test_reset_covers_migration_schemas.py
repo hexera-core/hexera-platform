@@ -9,6 +9,13 @@ from pathlib import Path
 REPO = Path(__file__).parents[3]
 VERSIONS = REPO / "alembic" / "versions"
 HARNESS = REPO / "tests" / "harness_provisioning.py"
+#: Every place that resets a database to empty. There is more than one, and the integration tier
+#: found that out the hard way: fixing only the harness left the migration wrapper's own fixture
+#: dropping `public` alone, and the same "relation already exists" came back in a different suite.
+_RESET_SITES = (
+    HARNESS,
+    REPO / "tests" / "integration" / "test_migration_wrapper_postgres.py",
+)
 
 #: `CREATE SCHEMA foo` / `CREATE SCHEMA IF NOT EXISTS foo` inside a revision.
 _CREATE_SCHEMA = re.compile(
@@ -21,6 +28,16 @@ def _schemas_migrations_create() -> set[str]:
         found.update(_CREATE_SCHEMA.findall(revision.read_text(encoding="utf-8")))
     # `public` already exists and the reset recreates it explicitly.
     return {name for name in found if name != "public"}
+
+
+def test_every_reset_site_drops_the_migration_owned_schemas() -> None:
+    # A reset site that drops only `public` leaves a migration-created schema standing, and the
+    # upgrade that follows fails on a table that is already there.
+    for site in _RESET_SITES:
+        text = site.read_text(encoding="utf-8")
+        assert "_MIGRATION_OWNED_SCHEMAS" in text, (
+            f"{site.name} resets a database but does not drop the schemas migrations create"
+        )
 
 
 def test_the_reset_drops_every_schema_a_migration_creates() -> None:
