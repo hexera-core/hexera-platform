@@ -88,7 +88,7 @@ Each read from the code in this repository on 2026-09-10, not from documentation
 | 7 | The ledger is append-only with a derived balance | A counter leaks credits on every failure path, and the pipeline has several. Grants, debits, holds and refunds are all rows; the balance is `SUM(amount)`. |
 | 8 | Credits are whole integers of an undenominated unit | Recording a dollar figure would pre-empt a pricing decision nobody has made. An integer count does not. |
 | 9 | Backfilled users link by email on first sign-up | Otherwise a returning owner signs up and lands in a second, empty organisation while their jobs and geometry sit in the first. |
-| 10 | `organization_id` ships nullable; `NOT NULL` is a follow-up `0004` | Carried unchanged from the 09-07 design, decision 10. `deploy.sh` migrates before the new image, so the old revision briefly serves against the new schema and its inserts must not fail. |
+| 10 | `organization_id` ships nullable; `NOT NULL` is a follow-up `0005` | Carried unchanged from the 09-07 design, decision 10. `deploy.sh` migrates before the new image, so the old revision briefly serves against the new schema and its inserts must not fail. |
 
 ## 4. Authentication
 
@@ -155,7 +155,15 @@ whereas anyone can create an Identity Platform account directly against the proj
 API key and present the resulting token. The console reads the same value through
 `GET /api/v1/client-config` to decide whether to render `/sign-up`, so the two cannot disagree.
 
-## 5. Schema — `0003_identity_and_credits.py`
+## 5. Schema — `0003_identity_and_credits.py` and `0004_tenant_columns.py`
+
+Two revisions, not one. `0003` creates the four new tables, which reference nothing existing and
+so are reversible on their own terms exactly as `0002` was. `0004` adds `organization_id` to the
+existing tables and runs the backfill, which is the only part that touches live rows. Splitting
+them means the risky half can be reviewed, rehearsed and rolled back without the safe half moving,
+and `0003` can ship while `0004` is still being rehearsed. The `NOT NULL` follow-up becomes `0005`.
+
+### `0003` — the new tables
 
 - **`organizations`** — id, name, slug (unique), created_at.
 - **`users`** — id, `firebase_uid` (unique, nullable for backfilled rows), email (unique,
@@ -166,11 +174,13 @@ API key and present the resulting token. The console reads the same value throug
 - **`credit_ledger`** — id, organization_id FK, `entry_type` (`grant`|`debit`|`refund`), `amount`
   BigInteger, `reason` String, `created_at`. Indexed on `(organization_id, created_at)`.
   Append-only: no update or delete path is written, and the repository exposes none.
+### `0004` — the tenant columns and the backfill
+
 - `organization_id uuid NULL REFERENCES organizations(id)` added to the seven tables named in §1.
   `api_keys.organization_id` gains the FK its `0002` comment promised.
 - Composite indexes mirroring today's owner indexes, keyed on `organization_id`.
 
-**Backfill**, in the same migration: one organisation, one user and one membership per distinct
+**Backfill**, in this revision: one organisation, one user and one membership per distinct
 existing `owner_id`; then `organization_id` stamped on every existing row from its `owner_id`.
 Backfilled users get `firebase_uid = NULL` and **no credit grant** — a grant is for a new signup,
 and issuing one here would silently hand balances to accounts that predate the feature. The
