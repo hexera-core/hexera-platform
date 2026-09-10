@@ -85,6 +85,11 @@ on:
         required: false
         default: false
         type: boolean
+      console_env_prune:
+        description: "console_env_prune - DROP live console settings this deploy no longer declares (needed once, to retire CONSOLE_AUTH_USERS)"
+        required: false
+        default: false
+        type: boolean
 
 # A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -739,6 +744,13 @@ jobs:
           # An empty value here is not silent: validate-config.sh refuses a run whose components
           # include the console while any of the three is unset, because a console that deploys
           # without them tells every visitor sign-in is not configured.
+          # A DELIBERATE, PER-RUN OPT-IN, never a standing setting. create-console-service.sh
+          # refuses to drop a setting that exists on the live service but not in this
+          # deployment, because the service's environment is declarative and the next revision
+          # would silently lose it. Retiring CONSOLE_AUTH_USERS is exactly that drop and is
+          # intended - once. Pinning this to "1" in the file would retire the guard along with
+          # the setting, so it stays a checkbox that defaults OFF like every tier above.
+          CONSOLE_ENV_PRUNE: ${{ inputs.console_env_prune && '1' || '' }}
           NEXT_PUBLIC_FIREBASE_API_KEY: ${{ vars.NEXT_PUBLIC_FIREBASE_API_KEY }}
           NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
           NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
