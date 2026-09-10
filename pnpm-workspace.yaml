@@ -3,6 +3,10 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+  # protobufjs's postinstall only prints a warning when a dependent pins it with the wrong
+  # version-scheme prefix. It writes nothing and produces no build output, so declining it
+  # costs nothing - the @google-cloud clients load and parse their protos without it.
+  protobufjs: false
   unrs-resolver: true
 minimumReleaseAgeExclude:
   - '@types/node@26.5.0'
