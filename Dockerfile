@@ -183,30 +183,69 @@ ARG OPENFOAM_PKG_VERSION=2412.260127-1
 # instead - which would have left the whole mirror problem in place behind a checksum that no
 # longer described what was installed. dpkg installs exactly these bytes; the follow-up
 # `apt-get -f install` then resolves the remaining dependencies from the pinned Ubuntu archive.
+#
+# The mirror redirect above is not merely slow or occasionally down: SourceForge sometimes answers
+# with HTTP 200 and a small HTML "choose a mirror" page instead of the archive, for either file.
+# `curl -f` only rejects HTTP error status codes, so that page is saved as if it were the .deb and
+# only the checksum step below catches it. A single download-then-verify attempt therefore fails
+# the build on a transient mirror hiccup that a second attempt (very likely against a different
+# mirror) would clear. Each download is wrapped in an until-loop that re-downloads and re-verifies
+# up to 5 times, sleeping between attempts, and only gives up - naming the file and the expected
+# digest - once every attempt has failed. Do not collapse this back to a single curl + sha256sum:
+# that is what silently broke before.
+#
+# The `&&`/`||` chain below is one flat list, and `&&`/`||` are left-associative with EQUAL
+# precedence: `A && B || true && C` parses as `((A && B) || true) && C`, not "`|| true` applies to
+# B alone". A bare `dpkg -i ... || true` at the end of this list - intended only to tolerate the
+# dependency errors `dpkg -i` is expected to report - would therefore swallow the exit status of
+# EVERY command before it, including both `sha256sum -c` checksum gates. That is exactly the bug
+# that shipped: a mismatched checksum printed FAILED, `|| true` absorbed it, and the build ran on
+# to fail three steps later with a misleading "bashrc not found" instead of at the checksum. The
+# fix is to scope `|| true` to the `dpkg -i` command alone with an explicit `{ ...; }` group, and to
+# isolate the whole install chain in its own group terminated by `|| exit 1` BEFORE the final
+# `test -f ... || (echo ... && exit 1)` - otherwise that trailing `||` has the same shape and
+# reports "bashrc not found" for a failure that happened much earlier (e.g. a missing package).
 ARG OPENFOAM_REPO_SCRIPT_SHA256=f7fa288327e936b5a85e3e4a0b29bf039c06d214916f39400b830b63a3310b5b
 ARG OPENFOAM_PUBKEY_FPR=DC93C096174122E256DA24063386DD74948D208F
 ARG OPENFOAM_DEB_BASE=https://dl.openfoam.com/repos/deb/dists/jammy/main/pool/2412_260127
 ARG OPENFOAM_COMMON_DEB_SHA256=956359cdbfd0e3a75ce1dd05e522ddfa43a124c6a087722169f275a5d40d238f
 ARG OPENFOAM_DEB_SHA256=12fab3754b9ae5e2fb19edadf31e4b5e3995c85ac8f8c867bb6064bc2b7993cd
-RUN curl -fsSL https://dl.openfoam.com/add-debian-repo.sh -o /tmp/add-debian-repo.sh \
-    && echo "${OPENFOAM_REPO_SCRIPT_SHA256}  /tmp/add-debian-repo.sh" | sha256sum -c - \
-    && curl -fsSL https://dl.openfoam.com/pubkey.gpg -o /tmp/openfoam-pubkey.gpg \
-    && gpg --show-keys --with-colons /tmp/openfoam-pubkey.gpg \
-         | awk -F: '/^fpr:/{print $10; exit}' | grep -qx "${OPENFOAM_PUBKEY_FPR}" \
-    && bash /tmp/add-debian-repo.sh \
-    && rm -f /tmp/add-debian-repo.sh /tmp/openfoam-pubkey.gpg \
-    && apt-get -o Acquire::Retries=5 update \
-    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/openfoam-common.deb \
-         "${OPENFOAM_DEB_BASE}/binary-all/openfoam${OPENFOAM_SERIES}-common_${OPENFOAM_PKG_VERSION}_all.deb" \
-    && echo "${OPENFOAM_COMMON_DEB_SHA256}  /tmp/openfoam-common.deb" | sha256sum -c - \
-    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/openfoam.deb \
-         "${OPENFOAM_DEB_BASE}/binary-amd64/openfoam${OPENFOAM_SERIES}_${OPENFOAM_PKG_VERSION}_amd64.deb" \
-    && echo "${OPENFOAM_DEB_SHA256}  /tmp/openfoam.deb" | sha256sum -c - \
-    && dpkg -i /tmp/openfoam-common.deb /tmp/openfoam.deb 2>/dev/null || true \
-    && apt-get -o Acquire::Retries=5 -f install -y --no-install-recommends \
-    && dpkg -s "openfoam${OPENFOAM_SERIES}" >/dev/null \
-    && rm -f /tmp/openfoam-common.deb /tmp/openfoam.deb \
-    && rm -rf /var/lib/apt/lists/* \
+RUN { curl -fsSL https://dl.openfoam.com/add-debian-repo.sh -o /tmp/add-debian-repo.sh \
+      && echo "${OPENFOAM_REPO_SCRIPT_SHA256}  /tmp/add-debian-repo.sh" | sha256sum -c - \
+      && curl -fsSL https://dl.openfoam.com/pubkey.gpg -o /tmp/openfoam-pubkey.gpg \
+      && gpg --show-keys --with-colons /tmp/openfoam-pubkey.gpg \
+           | awk -F: '/^fpr:/{print $10; exit}' | grep -qx "${OPENFOAM_PUBKEY_FPR}" \
+      && bash /tmp/add-debian-repo.sh \
+      && rm -f /tmp/add-debian-repo.sh /tmp/openfoam-pubkey.gpg \
+      && apt-get -o Acquire::Retries=5 update \
+      && { n=0; until curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/openfoam-common.deb \
+               "${OPENFOAM_DEB_BASE}/binary-all/openfoam${OPENFOAM_SERIES}-common_${OPENFOAM_PKG_VERSION}_all.deb" \
+             && echo "${OPENFOAM_COMMON_DEB_SHA256}  /tmp/openfoam-common.deb" | sha256sum -c -; do \
+               n=$((n + 1)); \
+               if [ "${n}" -ge 5 ]; then \
+                 echo "ERROR: /tmp/openfoam-common.deb did not verify against sha256 ${OPENFOAM_COMMON_DEB_SHA256} after 5 attempts (SourceForge may be serving a mirror-selection page instead of the package)" >&2; \
+                 exit 1; \
+               fi; \
+               echo "WARN: openfoam-common.deb attempt ${n} failed checksum verification; retrying in 5s..." >&2; \
+               sleep 5; \
+             done; } \
+      && { n=0; until curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o /tmp/openfoam.deb \
+               "${OPENFOAM_DEB_BASE}/binary-amd64/openfoam${OPENFOAM_SERIES}_${OPENFOAM_PKG_VERSION}_amd64.deb" \
+             && echo "${OPENFOAM_DEB_SHA256}  /tmp/openfoam.deb" | sha256sum -c -; do \
+               n=$((n + 1)); \
+               if [ "${n}" -ge 5 ]; then \
+                 echo "ERROR: /tmp/openfoam.deb did not verify against sha256 ${OPENFOAM_DEB_SHA256} after 5 attempts (SourceForge may be serving a mirror-selection page instead of the package)" >&2; \
+                 exit 1; \
+               fi; \
+               echo "WARN: openfoam.deb attempt ${n} failed checksum verification; retrying in 5s..." >&2; \
+               sleep 5; \
+             done; } \
+      && { dpkg -i /tmp/openfoam-common.deb /tmp/openfoam.deb 2>/dev/null || true; } \
+      && apt-get -o Acquire::Retries=5 -f install -y --no-install-recommends \
+      && dpkg -s "openfoam${OPENFOAM_SERIES}" >/dev/null \
+      && rm -f /tmp/openfoam-common.deb /tmp/openfoam.deb \
+      && rm -rf /var/lib/apt/lists/*; \
+    } || exit 1 \
     && test -f "/usr/lib/openfoam/openfoam${OPENFOAM_SERIES}/etc/bashrc" \
     || (echo "ERROR: OpenFOAM bashrc not found at expected path" && exit 1)
 
