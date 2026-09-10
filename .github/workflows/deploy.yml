@@ -28,19 +28,60 @@ on:
   # environment's deployment policy admits `v*` tags only, so a release still cannot be reached
   # from a branch, by anyone, however this workflow is invoked.
   workflow_dispatch:
+    # ONE CHECKBOX PER TIER, every one defaulted OFF. There is no "all" shortcut and no preset
+    # combination: deploying everything costs ticking every box, on purpose - the previous dropdown
+    # let one click reconcile every tier including Cloud SQL and Memorystore, and a mis-click there
+    # was indistinguishable from a deliberate choice. The roster matches deploy.sh's `_known` line
+    # exactly (nine tiers today); the picker step below composes DEPLOY_COMPONENTS from whichever
+    # of these came back 'true', in the same order `_known` lists them.
     inputs:
-      components:
-        description: "Which tiers to deploy. Fewer is faster and cheaper."
+      images:
+        description: "images - the mesh job and the API service (the two workloads that carry an application digest)"
         required: false
-        default: images
-        type: choice
-        options:
-          - images                      # the mesh job and the API service - the usual change
-          - images,migrate              # ...and the schema, when the model moved
-          - images,migrate,workers      # ...and roll the fleet onto the new digest
-          - all                         # every tier, including Cloud SQL and Memorystore
+        default: false
+        type: boolean
+      data:
+        description: "data - Cloud SQL and Memorystore"
+        required: false
+        default: false
+        type: boolean
+      storage:
+        description: "storage - the artifacts bucket and its S3-interoperability credential"
+        required: false
+        default: false
+        type: boolean
+      migrate:
+        description: "migrate - the schema, applied once before anything serves the new image"
+        required: false
+        default: false
+        type: boolean
+      queue:
+        description: "queue - the queue-depth publisher and the autoscaling policy that reads it"
+        required: false
+        default: false
+        type: boolean
+      workers:
+        description: "workers - the managed instance group, rolled onto the new template"
+        required: false
+        default: false
+        type: boolean
+      console:
+        description: "console - the Cloud Run console service, in front of the API"
+        required: false
+        default: false
+        type: boolean
+      admin:
+        description: "admin - the Cloud Run admin console, behind IAP (never publicly reachable)"
+        required: false
+        default: false
+        type: boolean
+      edge:
+        description: "edge - load balancer, reserved address and certificate for both consoles' hostnames"
+        required: false
+        default: false
+        type: boolean
 
-# A deploy MUTATES a cloud project through a 12-stage provisioner. Cancelling one mid-flight
+# A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
 # not resumable from an arbitrary point - so runs QUEUE behind each other instead of replacing
 # each other. This is deliberately the opposite of ci.yml, where cancelling a superseded run of
@@ -76,6 +117,36 @@ jobs:
       # `hexera-dev-` prefix INSIDE it says the same word twice; the hand-made resources that
       # carried one are what made two conventions look like two systems.
       api_service: ${{ steps.pick.outputs.api_service }}
+      # The console, in both environments now. Prod stayed empty only while hexera-prod had no
+      # `prod-console` service account and no secret container it could read - see the reasoning
+      # where prod's pick branch sets it below. Both now exist, so this output is what tells
+      # create-console-service.sh to reconcile hexera-prod's console the same way dev's has been
+      # reconciled since Task 8/12.
+      console_service: ${{ steps.pick.outputs.console_service }}
+      # The admin console, in both environments now - same reasoning as console_service
+      # immediately above: an allUsers-invokable service is fine for the console, whose sign-in
+      # page must be reachable before anyone can authenticate, but the admin console's ONLY gate
+      # is IAP, so this output exists to name the Cloud Run service that gate is applied to, never
+      # to make it public.
+      admin_service: ${{ steps.pick.outputs.admin_service }}
+      # The custom hostnames the edge (Task 4) fronts, in both environments now - same reasoning
+      # as console_service/admin_service above: the prerequisites an owner had to supply by hand
+      # (the service accounts above, and the secret containers each one reads) now exist in
+      # hexera-prod, so a release tag provisioning the load balancer, address and certificate for
+      # these hostnames is provisioning something a human asked for, not a surprise. The IAP OAuth
+      # brand for hexera-prod and the DNS records for these two hostnames are still outstanding -
+      # see docs/deployment/console-domains.md.
+      console_domain: ${{ steps.pick.outputs.console_domain }}
+      admin_domain: ${{ steps.pick.outputs.admin_domain }}
+      # THE RUNTIME HARDENING SWITCH AND THE BROWSER ORIGIN IT ADMITS, pinned per environment for
+      # the same reason every target above is: they have to reach create-api-service.sh, and the
+      # only path that reaches it is this one. bootstrap-env.sh REGENERATES the deployment env on
+      # stage 1 of every run, so a value written into that file by any other means is erased before
+      # stage 2 validates it - which is exactly what happened to a hand-set APP_ENV=prod, leaving
+      # prod both unhardened and undeployable. Emitted here, exported into the deploy job's env
+      # below, and preserved by bootstrap-env.sh's `${APP_ENV:-dev}` idiom.
+      app_env: ${{ steps.pick.outputs.app_env }}
+      api_cors_origins: ${{ steps.pick.outputs.api_cors_origins }}
       cloudsql_instance: ${{ steps.pick.outputs.cloudsql_instance }}
       redis_instance: ${{ steps.pick.outputs.redis_instance }}
       migrate_db_name: ${{ steps.pick.outputs.migrate_db_name }}
@@ -92,7 +163,17 @@ jobs:
       - id: pick
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_COMPONENTS: ${{ github.event.inputs.components }}
+          # Boolean workflow_dispatch inputs arrive as the strings 'true' / 'false' (unset, on any
+          # other trigger, where github.event.inputs is empty).
+          DISPATCH_IMAGES: ${{ github.event.inputs.images }}
+          DISPATCH_DATA: ${{ github.event.inputs.data }}
+          DISPATCH_STORAGE: ${{ github.event.inputs.storage }}
+          DISPATCH_MIGRATE: ${{ github.event.inputs.migrate }}
+          DISPATCH_QUEUE: ${{ github.event.inputs.queue }}
+          DISPATCH_WORKERS: ${{ github.event.inputs.workers }}
+          DISPATCH_CONSOLE: ${{ github.event.inputs.console }}
+          DISPATCH_ADMIN: ${{ github.event.inputs.admin }}
+          DISPATCH_EDGE: ${{ github.event.inputs.edge }}
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
         # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
         # value editable in the GitHub settings UI without a review IS ambient configuration -
@@ -101,14 +182,46 @@ jobs:
           set -euo pipefail
           # A manual run and a merge both target dev; they differ only in HOW MUCH they reconcile.
           # A merge to main takes the cheap path - the two workloads that carry an application
-          # digest, and the schema they may need - because reconciling Cloud SQL, the object-store
-          # credential and the whole worker fleet to ship an image costs minutes and money for
-          # tiers the change did not touch. `all` remains one dispatch away, and every release
-          # takes it.
-          COMPONENTS="${DISPATCH_COMPONENTS:-images,migrate}"
+          # digest, the schema they may need, and the console that fronts them - because
+          # reconciling Cloud SQL, the object-store credential and the whole worker fleet to ship
+          # an image costs minutes and money for tiers the change did not touch. A manual dispatch
+          # instead composes DEPLOY_COMPONENTS from whichever checkboxes were ticked; ticking every
+          # one of them is what a manual run has to do to reconcile everything, and every release
+          # tag does exactly that, unconditionally, below.
           if [ "${GITHUB_REF}" = "refs/heads/main" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+              # Composed in the same order deploy.sh's `_known` line lists them, so the deploy log
+              # reads predictably no matter which boxes were ticked. Every checkbox defaults to
+              # false, so nothing is selected implicitly - there is deliberately no 'all' shortcut.
+              _selected=""
+              [ "${DISPATCH_IMAGES:-false}" = "true" ] && _selected="${_selected}images,"
+              [ "${DISPATCH_DATA:-false}" = "true" ] && _selected="${_selected}data,"
+              [ "${DISPATCH_STORAGE:-false}" = "true" ] && _selected="${_selected}storage,"
+              [ "${DISPATCH_MIGRATE:-false}" = "true" ] && _selected="${_selected}migrate,"
+              [ "${DISPATCH_QUEUE:-false}" = "true" ] && _selected="${_selected}queue,"
+              [ "${DISPATCH_WORKERS:-false}" = "true" ] && _selected="${_selected}workers,"
+              [ "${DISPATCH_CONSOLE:-false}" = "true" ] && _selected="${_selected}console,"
+              [ "${DISPATCH_ADMIN:-false}" = "true" ] && _selected="${_selected}admin,"
+              [ "${DISPATCH_EDGE:-false}" = "true" ] && _selected="${_selected}edge,"
+              _selected="${_selected%,}"
+              # DEPLOYING NOTHING IS A MISTAKE, NOT A VALID REQUEST - fail loudly rather than let an
+              # empty selection reach $GITHUB_OUTPUT. An empty `components=` output would still set
+              # DEPLOY_COMPONENTS in the deploy job's environment (to the empty string, not unset),
+              # and deploy.sh's own default (`DEPLOY_COMPONENTS:-all`) treats an empty variable the
+              # same as an unset one - so silently letting this through would deploy EVERYTHING,
+              # the exact opposite of "nothing ticked", and a run that mutates nothing was never the
+              # risk here; a run that mutates everything by accident was.
+              if [ -z "${_selected}" ]; then
+                echo "::error::no component checkbox was ticked - deploying nothing is not a valid request. Available checkboxes: images, data, storage, migrate, queue, workers, console, admin, edge. Tick every one of them to deploy everything."
+                exit 1
+              fi
+            fi
             {
-              echo "components=${COMPONENTS}"
+              if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+                echo "components=${_selected}"
+              else
+                echo "components=images,migrate,console,admin"
+              fi
               echo "environment=dev"
               echo "deployment_id=dev"
               echo "project=hexera-dev"
@@ -123,10 +236,48 @@ jobs:
               # the one users reach: hexera-dev-api was created by hand, ran an image no release
               # record named, and no workflow could roll it forward.
               echo "api_service=dev-api"
+              # The console, PINNED, for the same reason api_service is: `components=console` has
+              # been selectable since Task 11 and dev's manifest and provisioning script have
+              # named `dev-console` since Task 8/12, but nothing before this line ever told the
+              # deploy job to look for it - so the console stage ran on every dev deploy and
+              # stated its own skip. Pinning it here is what makes "a merge to main reconciles the
+              # console" actually true in dev, matching the api_service precedent above.
+              echo "console_service=dev-console"
+              # The admin console, PINNED, dev only - same reasoning as console_service above.
+              # create-admin-service.sh and dev's deployment-state manifest have named
+              # `dev-admin` since Task 6/7; this line is what tells the deploy job to look for it.
+              echo "admin_service=dev-admin"
+              # The custom hostnames, PINNED, dev only - same reasoning as console_service and
+              # admin_service immediately above. create-edge.sh (Task 4) only provisions the load
+              # balancer, address and certificate when it is handed a domain; this is what hands
+              # it one for dev.
+              echo "console_domain=dev.console.hexera.ai"
+              echo "admin_domain=dev.admin.hexera.ai"
+              # DEV IS UNCHANGED BY BEING STATED. Both values below are create-api-service.sh's
+              # own defaults, which is what dev has been getting all along while nothing named
+              # them; pinning them here makes dev's configuration visible in the same diff prod's
+              # is, without altering a single byte of what the API service receives. `dev` is in
+              # settings/policy.py's exempt set on purpose - a shared dev environment is not
+              # asked to enforce MESH_API_KEY - and `*` is the origin list that goes with it.
+              echo "app_env=dev"
+              echo "api_cors_origins=*"
               # Cloud SQL and Memorystore, by NAME. Their private addresses are resolved from the
               # instances themselves - see the outputs block above.
-              echo "cloudsql_instance=dev-pg"
-              echo "redis_instance=dev-redis"
+              #
+              # NOT dev-pg / dev-redis, for exactly the reason prod's branch below is not
+              # prod-pg / prod-redis - dev was simply missed when that was corrected. Both
+              # instances are STATEFUL and already exist under the older naming: hexera-dev-pg
+              # holds the meshpipeline database this environment's migrations run against.
+              # Neither can be renamed in place and deploy.sh reconciles BY EXACT NAME, so the
+              # tidier name would not rename anything - it would build a SECOND, billed instance
+              # beside the live one on the next `components=all`, and leave every migration
+              # pointing at an empty database. Renaming them is a data migration, not a config
+              # edit, and it is tracked as its own decision.
+              #
+              # This was not merely latent: discovery reported "no hosted database declared" on
+              # every dev deploy, because it was resolving a name nothing answers to.
+              echo "cloudsql_instance=hexera-dev-pg"
+              echo "redis_instance=hexera-dev-redis"
               echo "migrate_db_name=meshpipeline"
               echo "migrate_db_user=meshpipeline"
               # A Secret Manager CONTAINER NAME. No credential value appears in this file.
@@ -169,6 +320,48 @@ jobs:
             # blank while hexera-prod had no data tier and the deploy identity could not create
             # one; it can now, so the first release provisions what it names.
             echo "api_service=prod-api"
+            # THE CONSOLE, NOW PINNED. `components=all` a few lines up means a release tag
+            # reconciles every tier it is told about, and this line is what tells it to reconcile
+            # the console. It stayed empty until the prerequisites an owner had to supply by hand
+            # existed: `prod-console` is now a real service account in hexera-prod, and it holds
+            # `secretmanager.secretAccessor` on the four secret containers (console-auth-secret,
+            # console-auth-users, mesh-api-key, user-token-secret), each with an enabled version.
+            # A name typed here before those existed would have been the same class of mistake
+            # PR #12's naming slip nearly made below - a second, unwanted, paid resource standing
+            # next to the real one - so it waited for a reviewed diff stating the prerequisites
+            # were actually met. This is that diff.
+            echo "console_service=prod-console"
+            # THE ADMIN CONSOLE, NOW PINNED - the same reasoning as console_service immediately
+            # above: `prod-admin` is now a real service account in hexera-prod with the same
+            # secret access. `components=all` means this line is what tells the release to
+            # reconcile it. What is NOT yet true: the IAP OAuth brand for hexera-prod, which has
+            # to be created by hand in the Cloud Console (Google shut down the IAP OAuth Admin
+            # APIs in March 2026, so it cannot be scripted). Until that brand exists, `--iap` on
+            # this service will not work - see docs/deployment/console-domains.md.
+            echo "admin_service=prod-admin"
+            # THE CUSTOM HOSTNAMES, NOW PINNED - the same reasoning as console_service and
+            # admin_service immediately above: naming them here is what lets create-edge.sh
+            # provision the load balancer, reserved global address and managed certificate these
+            # two services front. What is NOT yet true: the DNS A records for these hostnames do
+            # not exist, so the certificate this run provisions will report PROVISIONING until an
+            # operator points DNS at the address this run prints - see
+            # docs/deployment/console-domains.md.
+            echo "console_domain=console.hexera.ai"
+            echo "admin_domain=admin.hexera.ai"
+            # THE HARDENING PROD ACTUALLY DEPLOYS UNDER, and the only place that delivers it.
+            # settings/policy.py exempts {dev, development, local, test, testing, ci} from every
+            # guard it has, so any of those names here is an API that enforces neither MESH_API_KEY
+            # nor USER_TOKEN_SECRET and accepts whatever X-User-Id a caller sends - its own comment
+            # calls that IDOR. `prod` is outside that set, which is what validate-config.sh's
+            # DEPLOYMENT_ID=prod check demands before it will let the deploy past stage 2.
+            #
+            # The CORS list narrows with it: create-api-service.sh defaults to `*`, and a hardened
+            # runtime refuses to start under a wildcard origin, so leaving the default here would
+            # fail the release for a second, unrelated-looking reason. console.hexera.ai is the one
+            # browser origin this API is meant to serve - the same hostname console_domain names
+            # two lines up, so the edge and the API agree on what the front door is.
+            echo "app_env=prod"
+            echo "api_cors_origins=https://console.hexera.ai"
             # NOT prod-pg / prod-redis. These two are STATEFUL and already exist under the older
             # naming - hexera-prod-pg has backups, point-in-time recovery, deletion protection and
             # no public IP, and it holds the meshpipeline database. Cloud SQL and Memorystore
@@ -357,6 +550,27 @@ jobs:
       # THE PUBLIC SURFACE. Without this the deploy provisioned every tier except the one users
       # reach, and the API service stayed whatever a human last clicked into existence.
       CLOUDRUN_API_SERVICE: ${{ needs.target.outputs.api_service }}
+      # THE CONSOLE, pinned in both environments now. See the `console_service` output above for
+      # why prod was empty until now and what changed. bootstrap-env.sh's CLOUDRUN_CONSOLE_SERVICE
+      # carries this straight through; an unset value there is what makes the console stage state
+      # its own skip, and that path is now only reachable if this output is ever unpinned again.
+      CLOUDRUN_CONSOLE_SERVICE: ${{ needs.target.outputs.console_service }}
+      # THE ADMIN CONSOLE, pinned in both environments now, same as CLOUDRUN_CONSOLE_SERVICE
+      # above. bootstrap-env.sh's CLOUDRUN_ADMIN_SERVICE carries this straight through.
+      CLOUDRUN_ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
+      # THE CUSTOM HOSTNAMES, pinned in both environments now, same as CLOUDRUN_CONSOLE_SERVICE
+      # and CLOUDRUN_ADMIN_SERVICE above. create-edge.sh sees both CONSOLE_DOMAIN and ADMIN_DOMAIN
+      # set and provisions the load balancer, address and certificate they front.
+      CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
+      ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
+      # THE RUNTIME HARDENING, carried the same way CLOUDRUN_CONSOLE_SERVICE above is: pinned by
+      # the picker, exported here for the whole job, read out of the ambient environment by
+      # bootstrap-env.sh's generated-env heredoc, and handed to create-api-service.sh as ENV and
+      # CORS_ORIGINS on the service. This is the ONLY path by which either value reaches the API:
+      # stage 1 regenerates the deployment env from that heredoc, so anything written into that
+      # file by another route is gone before stage 2 reads it.
+      APP_ENV: ${{ needs.target.outputs.app_env }}
+      API_CORS_ORIGINS: ${{ needs.target.outputs.api_cors_origins }}
       # THE DATA TIER, BY NAME. create-data-tier.sh reconciles these two instances and writes
       # their resolved PRIVATE addresses back into the deployment env, so MIGRATE_DB_HOST and
       # REDIS_URL are outputs of this run rather than literals that go stale in this file.
@@ -459,10 +673,195 @@ jobs:
       # mesh jobs, which is the application's runtime identity, not this deployer. Setting it here
       # would grant the CI identity a standing right to execute jobs it only exists to provision.
       - name: Provision the deployment (deploy/gcp/scripts/deploy.sh, non-interactive)
+        id: deploy
         env:
           DEPLOY_NONINTERACTIVE: "1"
           DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
         run: bash deploy/gcp/scripts/deploy.sh
+
+      # THE ADDRESS AN OPERATOR MUST PUT IN DNS, surfaced where they will see it. create-edge.sh
+      # (Task 4) writes edge_ip and edge_cert_state to $GITHUB_OUTPUT only when the edge stage ran
+      # and declared at least one hostname; this step runs on exactly that condition, so a deploy
+      # whose components never touched the edge leaves it skipped rather than printing an empty
+      # table. Both environments now pin CONSOLE_DOMAIN/ADMIN_DOMAIN, so a release tag's first run
+      # is expected to print this table - with the certificate reporting PROVISIONING until DNS
+      # is pointed at the address it prints.
+      - name: Surface the edge address for DNS
+        if: steps.deploy.outputs.edge_ip != ''
+        env:
+          EDGE_IP: ${{ steps.deploy.outputs.edge_ip }}
+          EDGE_CERT_STATE: ${{ steps.deploy.outputs.edge_cert_state }}
+          CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
+          ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
+        run: |
+          set -euo pipefail
+          {
+            # edge_cert_state carries one `hostname=STATE` per declared hostname, so the state
+            # belongs in the row for that hostname rather than mashed into one line under the
+            # table -- with per-host certificates the two hostnames reach ACTIVE separately, and
+            # the whole point of reading this table is to see WHICH one is not there yet.
+            _state_of() {
+              for _pair in ${EDGE_CERT_STATE}; do
+                case "${_pair}" in "$1="*) printf '%s' "${_pair#*=}"; return ;; esac
+              done
+              printf 'unknown'
+            }
+            echo "## Edge"
+            echo
+            echo "| Hostname | Record | Value | Certificate |"
+            echo "|---|---|---|---|"
+            [ -n "${CONSOLE_DOMAIN}" ] && echo "| \`${CONSOLE_DOMAIN}\` | A | \`${EDGE_IP}\` | $(_state_of "${CONSOLE_DOMAIN}") |"
+            [ -n "${ADMIN_DOMAIN}" ] && echo "| \`${ADMIN_DOMAIN}\` | A | \`${EDGE_IP}\` | $(_state_of "${ADMIN_DOMAIN}") |"
+            echo
+            echo "TTL 300 on each A record. \`PROVISIONING\` becomes \`ACTIVE\` on its own, 15-60 min after the record propagates."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # POST-DEPLOY VERIFICATION (design spec docs/superpowers/specs/2026-09-07-saas-console-design.md
+      # §4): an HTTP check against the console's own dev URL, the one thing nothing before this
+      # step ever proves against a REAL deployed revision - Gate C's console smoke only proves the
+      # image can serve /api/internal/health in isolation, with no Auth.js, no live API origin and
+      # no Cloud Run front end in the loop.
+      #
+      # RUNS ONLY WHEN THE CONSOLE WAS ACTUALLY RECONCILED. create-console-service.sh is the one
+      # place that already resolves the deployed URL (it logs it too), so it writes
+      # console_url to $GITHUB_OUTPUT itself rather than this step re-deriving it - and it does so
+      # from the one line unreachable from its own "no console configured" skip, so a deploy that
+      # never touched the console (components without 'console', or a target - prod today - with
+      # no CLOUDRUN_CONSOLE_SERVICE pinned) leaves this condition false and the step does not run.
+      #
+      # FOUR ASSERTIONS, unauthenticated (no session cookie is presented anywhere below):
+      #   1. GET /                    -> a redirect to /sign-in (Auth.js's own gate, exercised for
+      #                                  real)
+      #   2. GET /sign-in             -> 200, AND the /_next/static assets the rendered page
+      #                                  references also 200 - weak "200 on /sign-in alone" would
+      #                                  miss a broken .next/static or public/ path, which no smoke
+      #                                  has ever covered
+      #   3. GET /api/internal/health -> 200 with a JSON body whose status is "ok" - the same
+      #                                  unauthenticated route Gate C's in-container smoke already
+      #                                  curls, so post-deploy and build-time verification agree on
+      #                                  one endpoint instead of two
+      #   4. GET /readyz              -> 401 unauthenticated. /readyz is deliberately session-gated
+      #                                  - it proxies to the product API presenting MESH_API_KEY -
+      #                                  so a 200 here would mean any caller of this
+      #                                  allUsers-invokable service could spend the console's own
+      #                                  API key against the product API. 401 is the passing case:
+      #                                  it proves the session gate is actually live on the
+      #                                  deployed revision, which a 200-only check never would.
+      - name: Verify the deployed console (design spec §4 - / redirects, /sign-in renders, /api/internal/health 200, /readyz 401)
+        if: steps.deploy.outputs.console_url != ''
+        env:
+          CONSOLE_URL: ${{ steps.deploy.outputs.console_url }}
+        run: |
+          set -euo pipefail
+          echo "verifying ${CONSOLE_URL}"
+
+          # 1) unauthenticated / redirects to /sign-in. A few retries: the revision was reported
+          #    ready by `gcloud run deploy`, but the very first request can still race a cold
+          #    start behind Cloud Run's own load balancer.
+          ok=0
+          for _try in 1 2 3 4 5; do
+            read -r code location < <(curl -s -o /dev/null --max-time 10 \
+              -w $'%{http_code} %{redirect_url}\n' "${CONSOLE_URL}/")
+            case "${code}" in
+              301|302|303|307|308)
+                case "${location}" in
+                  */sign-in|*/sign-in\?*) ok=1 ;;
+                esac
+                ;;
+            esac
+            [ "${ok}" = "1" ] && break
+            sleep 3
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "::error::unauthenticated GET / did not redirect to /sign-in (last saw: ${code:-?} -> ${location:-<none>})"
+            exit 1
+          fi
+          echo "OK: / -> ${location}"
+
+          # 2) the sign-in page renders - strong enough to notice a broken asset path. Fetching it
+          #    alone proves nothing about .next/static or public/; actually fetching the assets it
+          #    references does.
+          code="$(curl -s -o /tmp/console-verify-signin.html --max-time 10 -w '%{http_code}' \
+            "${CONSOLE_URL}/sign-in")"
+          [ "${code}" = "200" ] || { echo "::error::GET /sign-in returned ${code}, not 200"; exit 1; }
+          grep -qi '<html' /tmp/console-verify-signin.html \
+            || { echo "::error::/sign-in did not render HTML"; exit 1; }
+          # Next.js embeds asset paths JSON-escaped inside <script> payloads too
+          # (\"/_next/static/chunks/foo.js\"), so a class that only excludes `"` also swallows
+          # the backslash immediately before the closing quote, producing a path ending in `\`
+          # that a real server answers with a redirect rather than 200. Exclude the backslash,
+          # angle brackets and whitespace too, so the match stops at the true end of the path
+          # wherever it sits (quoted attribute, escaped JSON string, or bare in a script body).
+          assets="$(grep -oE '/_next/static/[^"\\<>[:space:]]+' /tmp/console-verify-signin.html | sort -u | head -5)"
+          if [ -z "${assets}" ]; then
+            echo "::error::/sign-in referenced no /_next/static assets - cannot confirm the asset path works"
+            exit 1
+          fi
+          while IFS= read -r asset; do
+            [ -n "${asset}" ] || continue
+            acode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}${asset}")"
+            [ "${acode}" = "200" ] || { echo "::error::asset ${asset} returned ${acode}, not 200"; exit 1; }
+          done <<<"${assets}"
+          echo "OK: /sign-in rendered, $(printf '%s\n' "${assets}" | grep -c .) static asset(s) served"
+
+          # 3) /api/internal/health returns 200 with a JSON body whose status is "ok". This route
+          #    is unauthenticated by design and is already what Gate C's in-container smoke curls,
+          #    so post-deploy and build-time verification agree on one endpoint.
+          hcode="$(curl -s -o /tmp/console-verify-health.json --max-time 10 -w '%{http_code}' \
+            "${CONSOLE_URL}/api/internal/health")"
+          [ "${hcode}" = "200" ] || { echo "::error::GET /api/internal/health returned ${hcode}, not 200"; exit 1; }
+          grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/console-verify-health.json \
+            || { echo "::error::/api/internal/health did not report status ok: $(cat /tmp/console-verify-health.json)"; exit 1; }
+          echo "OK: /api/internal/health 200, status ok"
+
+          # 4) /readyz returns 401 unauthenticated. /readyz is not a liveness probe: it requires a
+          #    session and then proxies to the product API presenting MESH_API_KEY, so a 200 here
+          #    unauthenticated would let any caller of this allUsers-invokable service spend the
+          #    console's own API key against the product API. 401 is the passing case - it proves
+          #    the session gate is actually live on the deployed revision.
+          rcode="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${CONSOLE_URL}/readyz")"
+          [ "${rcode}" = "401" ] || { echo "::error::GET /readyz returned ${rcode}, not 401 - the session gate may not be enforced on this revision"; exit 1; }
+          echo "OK: /readyz 401 (session gate enforced)"
+
+      # THE ONE CHECK THAT MATTERS. IAP over a service that still carries an allUsers invoker
+      # binding protects nothing - the two are separate gates - and the symptom is silence,
+      # because the page loads and looks fine. Asserted here rather than left to a runbook.
+      - name: Verify the admin console is not publicly reachable
+        if: steps.deploy.outputs.admin_url != ''
+        env:
+          ADMIN_URL: ${{ steps.deploy.outputs.admin_url }}
+          ADMIN_SERVICE: ${{ needs.target.outputs.admin_service }}
+          REGION: ${{ needs.target.outputs.region }}
+          PROJECT: ${{ needs.target.outputs.project }}
+        run: |
+          set -euo pipefail
+          if ! code="$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${ADMIN_URL}/")"; then
+            echo "::error::curl could not reach ${ADMIN_URL}/ - cannot verify the admin console is not publicly reachable"
+            exit 1
+          fi
+          case "${code}" in
+            200)
+              echo "::error::an anonymous request to ${ADMIN_URL}/ returned 200 - the admin console is publicly reachable"
+              exit 1 ;;
+            *)
+              echo "OK: anonymous request refused (${code})" ;;
+          esac
+          if ! members_raw="$(gcloud run services get-iam-policy "${ADMIN_SERVICE}" \
+            --project "${PROJECT}" --region "${REGION}" \
+            --format='value(bindings.members)' 2>&1)"; then
+            echo "::error::could not read the invoker policy for ${ADMIN_SERVICE} in ${PROJECT}/${REGION} - refusing to report success on the one check that matters when it could not actually run: ${members_raw}"
+            exit 1
+          fi
+          members="$(printf '%s' "${members_raw}" | tr ';' '\n')"
+          if [ -z "$(printf '%s' "${members}" | tr -d '[:space:]')" ]; then
+            echo "::error::the invoker policy for ${ADMIN_SERVICE} came back with no members at all - a working admin service always carries the IAP service agent's own invoker binding, so an empty read is evidence this check did not run, not evidence the service is private"
+            exit 1
+          fi
+          if printf '%s\n' "${members}" | grep -qxE 'allUsers|allAuthenticatedUsers'; then
+            echo "::error::${ADMIN_SERVICE} carries a public invoker binding (allUsers or allAuthenticatedUsers) - IAP is not protecting it"
+            exit 1
+          fi
+          echo "OK: no public invoker binding"
 
       # The two records that say what was validated and what is actually deployed, kept as build
       # outputs. Both are gitignored machine state, and the live drift they exist to prevent is

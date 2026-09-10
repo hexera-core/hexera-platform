@@ -12,7 +12,9 @@ inventory: individual modules carry their own architectural headers.
 | `devtools/` | tools that create, inspect or validate this software, never anything a user's job depends on |
 | `deploy/` | deployment automation and container entrypoints |
 | `alembic/` | the migration authority: a linear chain from `0001_schema_baseline` |
-| `ui/` | the browser client shipped by the API |
+| `apps/` | the Next.js applications: `console/` (the browser front door) and `admin-console/` |
+| `packages/` | code shared between those apps: `hexera-api-client/` |
+| `ui/` | the LEGACY browser client, still served by the API at `/ui` |
 | `docs/` | this manual |
 | `requirements/` | the pinned dependency sets |
 
@@ -67,6 +69,11 @@ Five processes start the product. Everything else is reached from one of them:
 `runtime/composition.py` is what makes these processes differ: the same contracts are bound to
 different adapters depending on how the deployment is configured.
 
+A sixth workload starts none of this and imports no Python: `apps/console` is a Next.js server
+that renders the browser console and proxies its API calls. It is a separate Cloud Run service
+from a separate image, and it reaches the product only over HTTP - which is why it appears in the
+deploy tooling as its own component and nowhere in the table above.
+
 ## Boundaries worth knowing
 
 - **The API never imports a mesher.** It reads the engine catalog to show a menu; importing gmsh,
@@ -76,3 +83,10 @@ different adapters depending on how the deployment is configured.
   and the object store, which is what lets the API and the worker run on different machines.
 - **Nothing under `devtools/` is imported by `src/meshpipeline/`**: shipped in the wheel, or
   present in a runtime image.
+- **The console opens no database and no Redis.** It renders pages and proxies HTTP; everything it
+  knows, it asks the API for. That is what lets it deploy on its own schedule, scale to zero, and
+  stay off the VPC - and it is why a console change can never require a migration.
+- **There are two browser clients, on purpose and temporarily.** `ui/` is the one the API serves at
+  `/ui`; `apps/console/public/static/` is the copy the Next console renders. They will drift, and
+  the plan is to delete both when the console's React rewrite lands. Until then, changing one and
+  not the other is a real bug, not a style question.

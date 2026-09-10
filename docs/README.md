@@ -16,6 +16,11 @@ provisioning → then [Configuration](reference/configuration.md) for every sett
 [Repository map](architecture/repository-map.md) → [Architecture](architecture/overview.md) →
 [Development](development/overview.md) → [Gates](development/gates.md).
 
+**I am working on the browser console.**
+[The front door](architecture/overview.md#the-front-door) for what the console is and what it may
+not do → [Environments and delivery](deployment/environments-and-delivery.md) for how it is
+deployed and which settings reach it.
+
 **I am provisioning the cloud mesh tier, or running the stack for other people.**
 [Setup](getting-started/setup.md) → [Deployment](deployment/overview.md) →
 [Operating modes](architecture/operating-modes.md) → [Security and privacy](deployment/security-and-privacy.md).
@@ -74,6 +79,8 @@ Every document lives in the folder that owns its subject. Nothing sits loose at 
 |---|---|
 | [deployment/overview.md](deployment/overview.md) | the mesh tier's lifecycle, identities, IAM, health, recovery, submission semantics |
 | [deployment/security-and-privacy.md](deployment/security-and-privacy.md) | isolation, redaction, retention, deletion, capture |
+| [deployment/admin-console-access.md](deployment/admin-console-access.md) | locking the admin console behind IAP: setup, granting and revoking people, proving it is not public |
+| [deployment/console-domains.md](deployment/console-domains.md) | giving the consoles a custom hostname: the load balancer, the DNS step, and why a first run's certificate is `PROVISIONING` by design |
 
 ### `reference/`: look a fact up
 | Document | Covers |

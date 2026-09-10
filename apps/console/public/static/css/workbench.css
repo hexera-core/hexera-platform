@@ -1,0 +1,72 @@
+/* Responsibility: Lay out the workbench - the delivered mesh filling the stage, the conversation in a drawer beside it. */
+/* Boundaries: geometry only. The viewer's own chrome, the timeline and the chat keep their own sheets. */
+
+/* /
+   THE WORKBENCH.
+
+   Until a mesh lands the page is a conversation: a column of turns, the brief,
+   the timeline. The moment a mesh is delivered the mesh becomes the page - the
+   way a meshing tool gives its viewport the whole window - and the conversation
+   moves into a drawer on the left, where it can be read, continued or folded
+   away. Nothing in the conversation is rebuilt or lost: the same #stage and the
+   same input bar simply take the drawer's column.
+
+   The grid: the header spans both columns; the drawer column holds the upload
+   bar, the stage and the input bar top to bottom; the workbench column holds
+   the viewer at full height. Folding the drawer collapses its column to zero.
+/ */
+:root{--drawer-w:min(440px,38vw)}
+
+#app.wb{display:grid;
+  grid-template-columns:var(--drawer-w) minmax(0,1fr);
+  grid-template-rows:auto auto auto minmax(0,1fr) auto;
+  grid-template-areas:"hdr hdr" "notice notice" "upload wb" "stage wb" "input wb"}
+#app.wb>header{grid-area:hdr}
+#app.wb>#notice{grid-area:notice}
+#app.wb>#upload-bar{grid-area:upload;border-right:1px solid var(--border)}
+#app.wb>#stage{grid-area:stage;min-height:0;border-right:1px solid var(--border)}
+#app.wb>#input-bar{grid-area:input;border-right:1px solid var(--border)}
+#app.wb>#workbench{grid-area:wb;min-height:0;min-width:0;display:flex;flex-direction:column;
+  background:var(--viewer-canvas)}
+
+/* the drawer folded: the viewport takes the whole width */
+#app.wb.wb-collapsed{grid-template-columns:0 minmax(0,1fr)}
+#app.wb.wb-collapsed>#upload-bar,#app.wb.wb-collapsed>#stage,#app.wb.wb-collapsed>#input-bar{display:none}
+
+/* the conversation column is narrow now, so the turns use its full width */
+#app.wb .chat-col{max-width:none;padding:22px 20px 30px;gap:16px}
+#app.wb #input-inner{max-width:none;padding:0}
+#app.wb .im.user .bub{max-width:88%}
+#app.wb .e-shot img{width:96px;height:72px}
+
+#workbench{display:none}
+#app.wb>#workbench{display:flex}
+#workbench .viewer[hidden]{display:none!important}
+
+/* the viewer, opened as the workbench: viewport left, its panels in a sidebar */
+#workbench .viewer{flex:1;min-height:0;display:grid;margin:0;border:0;border-radius:0;
+  grid-template-columns:minmax(0,1fr) clamp(300px,26vw,380px);grid-template-rows:minmax(0,1fr) auto}
+#workbench .viewer .v-canvas{grid-column:1;grid-row:1/3;height:auto;min-height:0}
+#workbench .viewer .v-bar{grid-column:2;grid-row:1;min-height:0;overflow-y:auto;
+  border-bottom:0;border-left:1px solid var(--border);padding-bottom:18px}
+#workbench .viewer .v-flags{grid-column:2;grid-row:2;max-height:38vh;overflow-y:auto;
+  border-left:1px solid var(--border)}
+#workbench .viewer .v-bnd-cols{grid-template-columns:1fr}
+#workbench .viewer .v-bnd-list{border-right:0;border-bottom:1px solid var(--border);max-height:220px}
+#workbench .viewer .mx-grid{grid-template-columns:repeat(2,1fr)}
+#workbench .viewer .v-dl{flex-wrap:wrap}
+
+/* the header control that folds the drawer - only shown once there is a workbench */
+#wb-toggle{cursor:pointer}
+#wb-toggle[hidden]{display:none}
+
+@media(max-width:900px){
+  #app.wb{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
+    grid-template-areas:"hdr" "notice" "upload" "wb" "stage" "input"}
+  #app.wb>#stage{max-height:34vh;border-right:0;border-top:1px solid var(--border)}
+  #app.wb>#upload-bar,#app.wb>#input-bar{border-right:0}
+  #workbench .viewer{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto}
+  #workbench .viewer .v-canvas{grid-column:1;grid-row:1;min-height:52vh}
+  #workbench .viewer .v-bar{grid-column:1;grid-row:2;border-left:0;border-top:1px solid var(--border);max-height:40vh}
+  #workbench .viewer .v-flags{grid-column:1;grid-row:3;border-left:0}
+}

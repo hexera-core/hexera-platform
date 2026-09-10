@@ -23,6 +23,29 @@ for v in DEPLOYMENT_ID GCP_PROJECT_ID GCP_PROJECT_NUMBER GCP_REGION \
   [ -n "${!v:-}" ] || add "missing required config: ${v}"
 done
 
+# PRODUCTION CANNOT BE ALLOWED TO START UNHARDENED. create-api-service.sh defaults APP_ENV to
+# `dev` when the deployment env does not state one, and settings/policy.py exempts `dev` from
+# every hardening guard - so an unset APP_ENV here is not a missing label, it is an API that
+# accepts whatever X-User-Id a caller sends. The code's own comment calls that IDOR.
+#
+# Checked on DEPLOYMENT_ID rather than on the presence of a service, because the failure is about
+# which environment this is, not which tier it deploys.
+#
+# APP_ENV is matched lower-cased because settings/policy.py lower-cases ENV before comparing it
+# against its dev allowlist - APP_ENV=Dev reaches the API as `dev` regardless of how it was spelled
+# here, so a case-sensitive check here would pass a value that is unhardened at runtime. DEPLOYMENT_ID
+# is matched verbatim: no deploy script normalizes its case before using it, so this check treats it
+# exactly as the rest of the tooling does.
+case "${DEPLOYMENT_ID:-}" in
+  prod|production)
+    case "$(printf '%s' "${APP_ENV:-}" | tr '[:upper:]' '[:lower:]')" in
+      ""|dev|development|local|test|testing|ci)
+        add "DEPLOYMENT_ID is '${DEPLOYMENT_ID}' but APP_ENV is '${APP_ENV:-<unset>}', which
+   settings/policy.py treats as a development environment - MESH_API_KEY and USER_TOKEN_SECRET
+   would not be enforced and the API would accept self-asserted identities. Set APP_ENV=prod." ;;
+    esac ;;
+esac
+
 # Each mesh resource is either created by this tooling or pre-existing and validated. The
 # disposition is recorded per resource, so a project that already owns a mesh job can still let
 # this tooling create the bucket beside it.
@@ -91,6 +114,61 @@ if [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
   # A service reaching a private Cloud SQL and Memorystore needs the network it egresses into.
   [ -n "${VPC_NETWORK:-}" ] && [ -n "${VPC_SUBNET:-}" ] \
     || add "CLOUDRUN_API_SERVICE is set but VPC_NETWORK/VPC_SUBNET are not - the service could not reach the private data tier"
+fi
+
+# THE CONSOLE. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console and
+# the stage is skipped, so nothing below applies. A console that IS declared must be able to reach
+# the API and to resolve its two credentials, because both failures present only at runtime: an
+# unreachable API is a console that renders and then 503s, and a missing AUTH_SECRET is a revision
+# that never becomes ready.
+#
+# console_selected - mirrors deploy.sh's own `want()`: DEPLOY_COMPONENTS is a comma-separated list
+# or `all`, and UNSET means `all`, never "less" (deploy.sh defaults it the same way before
+# exporting it). Only the HEXERA_API_BASE_URL check below is gated on this: it is the one check
+# that depends on a LIVE resource (the API service's discovered URL) rather than static
+# configuration, and on a fresh environment that resource does not exist until stage 14 - twelve
+# stages after this one. A run that selects, say, only 'images' must not be refused at stage 2 for
+# a console it is not touching this run.
+console_selected() {
+  case ",${DEPLOY_COMPONENTS:-all}," in
+    *,all,*) return 0 ;;
+    *,console,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if [ -n "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
+  if console_selected; then
+    [ -n "${HEXERA_API_BASE_URL:-}" ] \
+      || add "CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not - the console's /api/v1 proxy would have no origin to forward to"
+  fi
+  [ -n "${AUTH_SECRET_SECRET:-}" ] \
+    || add "the console is configured but AUTH_SECRET_SECRET names no Secret Manager container - Auth.js refuses to start without a secret"
+  [ -n "${CONSOLE_AUTH_USERS_SECRET:-}" ] \
+    || add "the console is configured but CONSOLE_AUTH_USERS_SECRET names no Secret Manager container - nobody could sign in"
+  if [[ "${CONSOLE_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${CONSOLE_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
+    [ "${CONSOLE_MIN_INSTANCES}" -le "${CONSOLE_MAX_INSTANCES}" ] \
+      || add "CONSOLE_MIN_INSTANCES (${CONSOLE_MIN_INSTANCES}) exceeds CONSOLE_MAX_INSTANCES (${CONSOLE_MAX_INSTANCES})"
+  fi
+fi
+
+# THE ADMIN CONSOLE. Empty CLOUDRUN_ADMIN_SERVICE means this deployment serves none.
+if [ -n "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
+  if [[ "${ADMIN_MIN_INSTANCES:-}" =~ ^[0-9]+$ ]] && [[ "${ADMIN_MAX_INSTANCES:-}" =~ ^[0-9]+$ ]]; then
+    [ "${ADMIN_MIN_INSTANCES}" -le "${ADMIN_MAX_INSTANCES}" ] \
+      || add "ADMIN_MIN_INSTANCES (${ADMIN_MIN_INSTANCES}) exceeds ADMIN_MAX_INSTANCES (${ADMIN_MAX_INSTANCES})"
+  fi
+fi
+
+# A HOSTNAME WITH NOTHING BEHIND IT is a load balancer that answers a real name with a 404, and it
+# is worse than no hostname because the name looks like it works. Each declared domain requires
+# the service it fronts.
+if [ -n "${CONSOLE_DOMAIN:-}" ] && [ -z "${CLOUDRUN_CONSOLE_SERVICE:-}" ]; then
+  add "CONSOLE_DOMAIN is '${CONSOLE_DOMAIN}' but CLOUDRUN_CONSOLE_SERVICE is unset - there is no
+   console for that hostname to reach"
+fi
+if [ -n "${ADMIN_DOMAIN:-}" ] && [ -z "${CLOUDRUN_ADMIN_SERVICE:-}" ]; then
+  add "ADMIN_DOMAIN is '${ADMIN_DOMAIN}' but CLOUDRUN_ADMIN_SERVICE is unset - there is no admin
+   console for that hostname to reach"
 fi
 
 # THE OBJECT STORE. The access key is the PUBLIC half; its secret is a container name. Both or

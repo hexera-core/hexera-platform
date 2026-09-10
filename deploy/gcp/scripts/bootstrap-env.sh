@@ -94,6 +94,11 @@ discover() {
   QUEUE_DEPTH_JOB="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOY_ID}-queue-depth}"
   QUEUE_DEPTH_SA="${QUEUE_DEPTH_SERVICE_ACCOUNT:-${DEPLOY_ID}-queue-depth}"
   QUEUE_DEPTH_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOY_ID}-queue-depth}"
+  # Left empty rather than defaulted to a name: a deployment gets a console because it asked for
+  # one, not because this script invented a service for it.
+  CONSOLE_SERVICE="${CLOUDRUN_CONSOLE_SERVICE:-}"
+  # Same reasoning for the admin console: empty until a deployment states it.
+  ADMIN_SERVICE="${CLOUDRUN_ADMIN_SERVICE:-}"
 
   if gcloud run jobs describe "${MESH_JOB}" --region "${REGION}" >/dev/null 2>&1; then
     MESH_JOB_DISPOSITION=reused
@@ -159,6 +164,33 @@ discover() {
     fi
   fi
 
+  # THE CONSOLE'S API ORIGIN, DISCOVERED THE SAME WAY: HEXERA_API_BASE_URL is an address Google
+  # allocates when the API's Cloud Run service is created, not a name this deployment picks - so
+  # it is read back from the live service here rather than pinned anywhere. What the deployment
+  # DECLARES is CLOUDRUN_API_SERVICE, exactly as CLOUDSQL_INSTANCE and REDIS_INSTANCE are declared
+  # above; this just reads the URL off it. NEXT_PUBLIC_HEXERA_API_BASE_URL defaults to this value
+  # (see emit_env), so resolving it here carries both the server-side proxy target and the
+  # browser-compiled one in one read.
+  #
+  # ONLY ATTEMPTED WHEN A CONSOLE IS ACTUALLY CONFIGURED: a deployment with no console has no
+  # /api/v1 proxy to point anywhere, so there is nothing here worth a gcloud call.
+  #
+  # DEGRADES SILENTLY, ON PURPOSE. The API service may not exist yet - a console can be discovered
+  # before the API tier's first deploy, or this could be a rerun ahead of it - and a name that
+  # does not resolve must never be guessed into a URL. Leaving HEXERA_API_BASE_URL empty here is
+  # exactly what lets validate-config.sh produce its own stated refusal for a console with no API
+  # origin; inventing one would just trade a clear refusal for a broken proxy nobody can explain.
+  if [ -z "${HEXERA_API_BASE_URL:-}" ] && [ -n "${CONSOLE_SERVICE}" ] && [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
+    _API_URL="$(gcloud run services describe "${CLOUDRUN_API_SERVICE}" --region "${REGION}" \
+      --project "${PROJECT_ID}" --format='value(status.url)' 2>/dev/null || true)"
+    if [ -n "${_API_URL}" ]; then
+      HEXERA_API_BASE_URL="${_API_URL}"
+      info "resolved HEXERA_API_BASE_URL=${HEXERA_API_BASE_URL} from Cloud Run ${CLOUDRUN_API_SERVICE}"
+    else
+      info "Cloud Run API service ${CLOUDRUN_API_SERVICE} has no URL yet - the console stage needs HEXERA_API_BASE_URL set before it can proceed"
+    fi
+  fi
+
   return 0
 }
 
@@ -209,6 +241,14 @@ MESH_TIMEOUT_SECONDS=14400
 # The APPLICATION image, written by scripts/promote-release.sh as the validated digest. The API
 # runs it; the migration job and the queue-depth publisher run application code from the same bytes.
 APP_IMAGE=${APP_IMAGE:-}
+
+# The CONSOLE image, written by scripts/promote-release.sh as the validated digest; empty until
+# then, for the same reason MESH_IMAGE and APP_IMAGE start empty. Without this, a fresh
+# regeneration silently dropped a previously promoted console digest - harmless inside deploy.sh
+# (the promote stage re-adds it before the console stage runs) but fatal to running
+# create-console-service.sh standalone right after a bootstrap, where the API and mesh tiers
+# already survive a regeneration and the console did not.
+CONSOLE_IMAGE=${CONSOLE_IMAGE:-}
 
 # the network the private-address tiers below are reached over (Cloud SQL, Memorystore)
 VPC_NETWORK=${VPC_NETWORK:-default}
@@ -276,12 +316,90 @@ MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-}
 # API SERVICE and WORKER FLEET identities (scripts/create-api-service.sh, create-worker-fleet.sh).
 # EMPTY CLOUDRUN_API_SERVICE means this deployment serves no API and that stage is skipped.
 CLOUDRUN_API_SERVICE=${CLOUDRUN_API_SERVICE:-}
+# THE RUNTIME'S OWN HARDENING SWITCH, and it has to be emitted HERE or it does not exist at all.
+# This file is REGENERATED on every deploy (stage 1) before validate-config.sh reads it (stage 2),
+# so a setting this heredoc does not name is erased no matter who wrote it - including a value the
+# workflow exported for exactly this purpose. That is not hypothetical: APP_ENV was set by hand in
+# a prod state file, this template dropped it on the next run, and stage 2's own guard then refused
+# the deploy for its absence - so no production deploy could complete AND none of the hardening
+# reached create-api-service.sh.
+#
+# The defaults below are create-api-service.sh's own (APP_ENV=dev, API_CORS_ORIGINS=*), so a
+# deployment that states neither is byte-identical to what it got before this line existed. The
+# '${VAR:-default}' form is what carries a stated value through regeneration: .github/workflows/
+# deploy.yml exports APP_ENV=prod and API_CORS_ORIGINS=https://console.hexera.ai for prod, and
+# those survive into the regenerated file rather than being overwritten with the defaults.
+#
+# settings/policy.py exempts {dev, development, local, test, testing, ci} from every hardening
+# guard, so APP_ENV is what decides whether the API enforces MESH_API_KEY and USER_TOKEN_SECRET or
+# accepts whatever X-User-Id a caller sends. API_CORS_ORIGINS is quoted for the same reason
+# QUEUE_DEPTH_SCHEDULE above is: its default is a bare '*'.
+APP_ENV=${APP_ENV:-dev}
+API_CORS_ORIGINS="${API_CORS_ORIGINS:-*}"
 API_SERVICE_ACCOUNT=${API_SERVICE_ACCOUNT:-}
 API_MIN_INSTANCES=${API_MIN_INSTANCES:-0}
 API_MAX_INSTANCES=${API_MAX_INSTANCES:-5}
 API_ALLOW_UNAUTHENTICATED=${API_ALLOW_UNAUTHENTICATED:-0}
 WORKER_SERVICE_ACCOUNT=${WORKER_SERVICE_ACCOUNT:-}
 WORKER_ENV_URI=${WORKER_ENV_URI:-}
+
+# THE CONSOLE TIER. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console
+# and that stage is skipped - the same arrangement an API-less deployment uses above.
+CLOUDRUN_CONSOLE_SERVICE=${CONSOLE_SERVICE}
+CONSOLE_SERVICE_ACCOUNT=${CONSOLE_SERVICE_ACCOUNT:-${DEPLOY_ID}-console}
+# Sizing. The console renders pages and proxies; it runs no model call and holds no mesh, so it is
+# deliberately the smallest tier here.
+CONSOLE_CPU=${CONSOLE_CPU:-1}
+CONSOLE_MEMORY=${CONSOLE_MEMORY:-512Mi}
+CONSOLE_CONCURRENCY=${CONSOLE_CONCURRENCY:-80}
+CONSOLE_MIN_INSTANCES=${CONSOLE_MIN_INSTANCES:-0}
+CONSOLE_MAX_INSTANCES=${CONSOLE_MAX_INSTANCES:-3}
+CONSOLE_TIMEOUT_SECONDS=${CONSOLE_TIMEOUT_SECONDS:-300}
+# THE CONSOLE IS THE PUBLIC FRONT DOOR and is invokable by anyone by design: its own Auth.js
+# session is the gate, not Cloud Run's IAM. This is a stated choice, not an inherited default.
+CONSOLE_INGRESS=${CONSOLE_INGRESS:-all}
+CONSOLE_ALLOW_UNAUTHENTICATED=${CONSOLE_ALLOW_UNAUTHENTICATED:-1}
+# NO SECRET VALUES: container names only, in the same <SETTING>_SECRET spelling every other
+# credential here uses. CONSOLE_AUTH_USERS holds scrypt password hashes, which is a credential.
+AUTH_SECRET_SECRET=${AUTH_SECRET_SECRET:-console-auth-secret}
+CONSOLE_AUTH_USERS_SECRET=${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}
+# Where the console reaches the product API. The server-side value is used by the authenticated
+# /api/v1 proxy; the NEXT_PUBLIC_ one is compiled into the browser bundle and is what the
+# WebSocket dials, because the stream goes browser->API directly and not through the proxy.
+HEXERA_API_BASE_URL=${HEXERA_API_BASE_URL:-}
+NEXT_PUBLIC_HEXERA_API_BASE_URL=${NEXT_PUBLIC_HEXERA_API_BASE_URL:-${HEXERA_API_BASE_URL:-}}
+
+# THE ADMIN TIER. Empty CLOUDRUN_ADMIN_SERVICE means this deployment serves no admin console and
+# that stage is skipped, the same arrangement the API and console tiers use.
+#
+# THERE IS DELIBERATELY NO PUBLIC-INVOKER TOGGLE FOR THIS TIER (the console has one, because its
+# sign-in page must be publicly reachable). The admin console's gate is IAP, and IAP in front of a
+# service that still carries an allUsers binding protects nothing - the two are separate checks.
+# Making that a setting would make the protection optional, so it is not one.
+CLOUDRUN_ADMIN_SERVICE=${ADMIN_SERVICE}
+ADMIN_SERVICE_ACCOUNT=${ADMIN_SERVICE_ACCOUNT:-${DEPLOY_ID}-admin}
+# The smallest tier here: it renders pages for a handful of people and runs no model call.
+ADMIN_CPU=${ADMIN_CPU:-1}
+ADMIN_MEMORY=${ADMIN_MEMORY:-512Mi}
+ADMIN_CONCURRENCY=${ADMIN_CONCURRENCY:-80}
+ADMIN_MIN_INSTANCES=${ADMIN_MIN_INSTANCES:-0}
+ADMIN_MAX_INSTANCES=${ADMIN_MAX_INSTANCES:-2}
+ADMIN_INGRESS=${ADMIN_INGRESS:-all}
+# The promoted digest, kept across regeneration exactly as MESH_IMAGE and APP_IMAGE are.
+ADMIN_IMAGE=${ADMIN_IMAGE:-}
+
+# THE EDGE. Empty domains mean this deployment serves no custom hostname and that stage is
+# skipped - the same arrangement every other optional tier uses.
+#
+# Cloud Run hands out no IP, so a hostname is a load balancer: a reserved global address, a
+# serverless NEG per service, a URL map that routes by host, and a Google-managed certificate.
+# The names below are the resources create-edge.sh reconciles; they are stated rather than derived
+# so an operator can find them in the console without reading a script.
+CONSOLE_DOMAIN=${CONSOLE_DOMAIN:-}
+ADMIN_DOMAIN=${ADMIN_DOMAIN:-}
+EDGE_IP_NAME=${EDGE_IP_NAME:-${DEPLOY_ID}-edge-ip}
+EDGE_URL_MAP=${EDGE_URL_MAP:-${DEPLOY_ID}-edge}
+EDGE_CERT=${EDGE_CERT:-${DEPLOY_ID}-edge-cert}
 
 # SECRET CONTAINER NAMES (scripts/create-secrets.sh). Names only, never values - the guard in
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.

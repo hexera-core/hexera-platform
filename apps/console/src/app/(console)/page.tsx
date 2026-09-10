@@ -37,6 +37,15 @@ export default async function ConsolePage() {
             <span className="brand-name">HEXERA</span>
           </div>
           <div className="h-spacer" />
+          <button
+            aria-pressed="false"
+            className="chip"
+            hidden
+            id="wb-toggle"
+            type="button"
+          >
+            Hide conversation
+          </button>
           <div
             aria-live="polite"
             className="chip chip-status"
@@ -66,6 +75,10 @@ export default async function ConsolePage() {
         </div>
 
         <div id="stage" />
+
+        {/* THE WORKBENCH: empty until a mesh is delivered, then the mesh fills it and the
+            conversation above becomes the drawer beside it (see css/workbench.css). */}
+        <div aria-label="Delivered mesh" id="workbench" />
 
         <div id="input-bar">
           <div id="input-inner">

@@ -23,9 +23,11 @@
 #     Redis and MinIO, health-checks them, runs the tier, and removes them from a trap. It cannot
 #     be skipped into a PASS.
 #
-# COMPONENTS. Two images are deployable, each a Dockerfile target:
-#     app  = Dockerfile target `pipeline`  - serves BOTH the API service and the pipeline job
-#     mesh = Dockerfile target `mesh`      - the off-box mesh job
+# COMPONENTS. Four images are deployable, each a Dockerfile target:
+#     app     = Dockerfile target `pipeline`  - serves BOTH the API service and the pipeline job
+#     mesh    = Dockerfile target `mesh`      - the off-box mesh job
+#     console = Dockerfile target `console`   - the console-service web app
+#     admin   = Dockerfile target `admin`     - the admin-service web app
 # `app` is validated with BOTH entrypoints because both run from that one image in production.
 # (Gate C used to build a separate `api`-target image and validate that; nothing ever deployed it.)
 #
@@ -253,9 +255,9 @@ else record "import provenance (site-packages, not the checkout)" failed 1 "${PR
 
 # the deployable images
 stage "images: build each DEPLOYABLE component exactly once"
-declare -A TARGET=( [app]=pipeline [mesh]=mesh )
+declare -A TARGET=( [app]=pipeline [mesh]=mesh [console]=console [admin]=admin )
 declare -A IMAGE_ID=() IMAGE_TAG=()
-for comp in app mesh; do
+for comp in app mesh console admin; do
   tag="meshpipeline-${comp}:${SHORT}"
   IMAGE_TAG["${comp}"]="${tag}"
   # Built unconditionally, from this repository alone - the mesh target builds its own pinned
@@ -318,6 +320,58 @@ print(meshpipeline.__version__, p.parent)" 2>&1)"; then
 else
   record "mesh image checks" not_run 1 "no mesh image was built"
 fi
+if [ -n "${IMAGE_ID[console]}" ]; then
+  # An image that builds and cannot serve is a green gate and a broken deploy. The container is
+  # started on a published port with the two settings Auth.js requires at boot; the values are
+  # deliberately not credentials - nothing here authenticates anyone.
+  _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
+            -e AUTH_SECRET=gate-c-not-a-real-secret -e CONSOLE_AUTH_USERS='[]' \
+            "${IMAGE_TAG[console]}" 2>/dev/null || true)"
+  if [ -n "${_cid}" ]; then
+    _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+    _ok=1
+    for _try in 1 2 3 4 5 6 7 8 9 10; do
+      curl -fsS --max-time 5 "http://127.0.0.1:${_port}/api/internal/health" >/dev/null 2>&1 && { _ok=0; break; }
+      sleep 2
+    done
+    docker rm -f -v "${_cid}" >/dev/null 2>&1 || true
+    if [ "${_ok}" = "0" ]; then
+      record "console image: serves its health route" passed 1
+    else
+      record "console image: serves its health route" failed 1 \
+        "the container started but never answered /api/internal/health"
+    fi
+  else
+    record "console image: serves its health route" failed 1 "the container did not start"
+  fi
+else
+  record "console image: serves its health route" not_run 1 "no console image was built"
+fi
+if [ -n "${IMAGE_ID[admin]}" ]; then
+  # An image that builds and cannot serve is a green gate and a broken deploy. The admin console
+  # needs no credentials to boot - IAP is its gate, and it holds no session of its own.
+  _acid="$(docker run --rm -d --label "amp-release=${STAMP}" -P "${IMAGE_TAG[admin]}" 2>/dev/null || true)"
+  if [ -n "${_acid}" ]; then
+    _aport="$(docker port "${_acid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+    _aok=1
+    for _try in 1 2 3 4 5 6 7 8 9 10; do
+      curl -fsS --max-time 5 "http://127.0.0.1:${_aport}/api/internal/health" >/dev/null 2>&1 \
+        && { _aok=0; break; }
+      sleep 2
+    done
+    docker rm -f -v "${_acid}" >/dev/null 2>&1 || true
+    if [ "${_aok}" = "0" ]; then
+      record "admin image: serves its health route" passed 1
+    else
+      record "admin image: serves its health route" failed 1 \
+        "the container started but never answered /api/internal/health"
+    fi
+  else
+    record "admin image: serves its health route" failed 1 "the container did not start"
+  fi
+else
+  record "admin image: serves its health route" not_run 1 "no admin image was built"
+fi
 
 # 3b. the UI, in a real browser
 # The page is an ARTIFACT too: it is copied into the app image and served from it. An image that
@@ -341,6 +395,25 @@ elif VEND="$(docker run --rm --label "amp-release=${STAMP}" --network none \
 else
   record "vendored browser assets match their pinned checksums (in the app image)" failed 1 \
     "$(echo "${VEND}" | tail -3 | tr '\n' ' ')"
+  KEEP_WORK=1
+fi
+
+# The SAME vendored bundle - byte-identical vtk.js and SHA256SUMS - is ALSO copied into the
+# console image (Dockerfile's console stage: apps/console/public/static/vendor/), and nothing
+# checked it there. Same shape as the app-image check above: `sha256sum -c` runs INSIDE the
+# console image against its own copy, so this proves the artifact the console actually ships
+# carries the pinned bundle - not that the checkout, or the unrelated app image, does.
+if [ -z "${IMAGE_ID[console]}" ]; then
+  record "vendored browser assets match their pinned checksums (in the console image)" not_run 1 \
+    "no console image was built"
+elif CVEND="$(docker run --rm --label "amp-release=${STAMP}" --network none \
+      --entrypoint sh "${IMAGE_TAG[console]}" -c \
+      'cd /srv/apps/console/public/static/vendor && sha256sum -c SHA256SUMS' 2>&1)"; then
+  record "vendored browser assets match their pinned checksums (in the console image)" passed 1 \
+    "$(echo "${CVEND}" | tr '\n' ' ')"
+else
+  record "vendored browser assets match their pinned checksums (in the console image)" failed 1 \
+    "$(echo "${CVEND}" | tail -3 | tr '\n' ' ')"
   KEEP_WORK=1
 fi
 
@@ -777,14 +850,20 @@ fi
 mkdir -p "${OUT_DIR}"
 REC="${OUT_DIR}/release.json"
 COMPONENTS="$(python3 - "${TARGET[app]}" "${IMAGE_TAG[app]:-}" "${IMAGE_ID[app]:-}" \
-                        "${TARGET[mesh]}" "${IMAGE_TAG[mesh]:-}" "${IMAGE_ID[mesh]:-}" <<'PY'
+                        "${TARGET[mesh]}" "${IMAGE_TAG[mesh]:-}" "${IMAGE_ID[mesh]:-}" \
+                        "${TARGET[console]}" "${IMAGE_TAG[console]:-}" "${IMAGE_ID[console]:-}" \
+                        "${TARGET[admin]}" "${IMAGE_TAG[admin]:-}" "${IMAGE_ID[admin]:-}" <<'PY'
 import json, sys
-at, atag, aid, mt, mtag, mid = sys.argv[1:7]
+at, atag, aid, mt, mtag, mid, ct, ctag, cid, dt, dtag, did = sys.argv[1:13]
 print(json.dumps({
-  "app":  {"dockerfile_target": at, "local_tag": atag, "local_image_id": aid,
-           "workloads": ["api-service", "pipeline-job"]},
-  "mesh": {"dockerfile_target": mt, "local_tag": mtag, "local_image_id": mid,
-           "workloads": ["mesh-job"]},
+  "app":     {"dockerfile_target": at, "local_tag": atag, "local_image_id": aid,
+              "workloads": ["api-service", "pipeline-job"]},
+  "mesh":    {"dockerfile_target": mt, "local_tag": mtag, "local_image_id": mid,
+              "workloads": ["mesh-job"]},
+  "console": {"dockerfile_target": ct, "local_tag": ctag, "local_image_id": cid,
+              "workloads": ["console-service"]},
+  "admin":   {"dockerfile_target": dt, "local_tag": dtag, "local_image_id": did,
+              "workloads": ["admin-service"]},
 }))
 PY
 )"
