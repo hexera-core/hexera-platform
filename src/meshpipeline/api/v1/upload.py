@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.settings.runtime as rtcfg
-from meshpipeline.api.security import owner_dep, plan_dep
+from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.contracts.intake_formats import (
     ACCEPTED_SUFFIXES,
     staged_name_for,
@@ -54,6 +54,7 @@ async def upload_step_file(
     file:     UploadFile = File(..., description="Geometry file - a surface (.stl, .vtp) or CAD (.step/.stp, .iges/.igs). The selected engine's staging seam converts it to what that engine meshes."),
     owner_id: str        = Depends(owner_dep),
     plan:     str        = Depends(plan_dep),
+    organization_id: str = Depends(org_dep),
 ):
     filename = file.filename or ""
     import re as _re
@@ -69,7 +70,8 @@ async def upload_step_file(
         _svc = JobService()
         async with get_db() as db:
             await _svc.check_quotas(db, owner_id, plan=plan)
-            session_id = await _svc.create_session(db, owner_id)
+            session_id = await _svc.create_session(db, owner_id,
+                                                    organization_id=organization_id)
             await db.commit()
     except ValueError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
@@ -162,7 +164,8 @@ async def upload_step_file(
     try:
         async with get_db() as db:
             await _cleanup.record_intent(db, owner_id=owner_id, source_id=source_id,
-                                         object_key=object_key)
+                                         object_key=object_key,
+                                         organization_id=organization_id)
             await db.commit()
     except Exception as exc:
         # FAIL CLOSED. Writing bytes that nothing durable names is exactly the state this intent
@@ -192,9 +195,12 @@ async def upload_step_file(
         from sqlalchemy import update as _sa_update
 
         from meshpipeline.persistence.models import ChatSession, GeometrySource
+        from meshpipeline.persistence.repositories import tenant_scope
         async with get_db() as db:
             row = GeometrySource(
-                id=source_id, owner_id=owner_id, original_filename=filename,
+                id=source_id,
+                **tenant_scope.stamp(owner_id=owner_id, organization_id=organization_id),
+                original_filename=filename,
                 suffix_hint=suffix, object_key=object_key, sha256=digest, size_bytes=counted)
             db.add(row)
             await db.flush()
@@ -214,7 +220,8 @@ async def upload_step_file(
                 )
                 recorded = await GeometryInterpretationRepository().record(
                     db, owner_id=owner_id, geometry_source_id=source_id, unit=evidence.unit,
-                    basis=ResolutionBasis.file_declared, evidence=evidence.detail)
+                    basis=ResolutionBasis.file_declared, evidence=evidence.detail,
+                    organization_id=organization_id)
                 interpretation_id = _uuid.UUID(recorded.interpretation_id)
             await db.execute(
                 _sa_update(ChatSession).where(ChatSession.id == session_id)

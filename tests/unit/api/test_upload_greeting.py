@@ -141,7 +141,7 @@ class _SessionStore:
 
     def repo(store):
         class _Repo:
-            async def get_for_owner(self, _db, session_id, owner_id):
+            async def get_for_owner(self, _db, session_id, owner_id, *, organization_id=""):
                 # scoped exactly as the real query is: a foreign owner finds nothing
                 row = store.row if session_id == store.row.id else None
                 return row if row is not None and row.owner_id == owner_id else None
@@ -168,7 +168,7 @@ async def _history(store, owner_id="owner-1"):
     with (patch("meshpipeline.persistence.repositories.session_repository.SessionRepository",
                 store.repo()),
           patch("meshpipeline.persistence.session.get_db", _mock_get_db)):
-        return await get_chat_history(_SESSION_ID, owner_id=owner_id)
+        return await get_chat_history(_SESSION_ID, owner_id=owner_id, organization_id="")
 
 
 def _greetings(history) -> list[str]:

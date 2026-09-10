@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 import meshpipeline.events as E
 import meshpipeline.settings.runtime as rtcfg
-from meshpipeline.api.security import owner_dep
+from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.contracts.event_stream import subscription
 from meshpipeline.trace.policy import project as _trace_project
 
@@ -37,14 +37,16 @@ class _TicketOut(BaseModel):
 
 
 @router.post("/ticket", response_model=_TicketOut)
-async def issue_ws_ticket(body: _TicketIn, owner_id: str = Depends(owner_dep)):
+async def issue_ws_ticket(body: _TicketIn, owner_id: str = Depends(owner_dep),
+                          organization_id: str = Depends(org_dep)):
     if not _UUID_RE.match(body.job_id):
         raise HTTPException(status_code=422, detail="Invalid job_id format")
 
     from meshpipeline.persistence.repositories.job_repository import JobRepository
     from meshpipeline.persistence.session import get_db
     async with get_db() as db:
-        job = await JobRepository().get_for_owner(db, uuid.UUID(body.job_id), owner_id)
+        job = await JobRepository().get_for_owner(db, uuid.UUID(body.job_id), owner_id,
+                                                   organization_id=organization_id)
     # A ticket may only ever be minted for a job the caller owns - this is where "wrong user"
     # is stopped: another user cannot obtain a ticket scoped to someone else's job.
     if not job:
