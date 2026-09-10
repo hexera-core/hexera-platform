@@ -88,6 +88,27 @@ else
        --display-name 'Hexera admin console service'"
 fi
 
+# 1a) THE APIS THE CONSOLE READS. A role grants permission to call an API; it does not turn the
+#     API on, and a disabled API answers PERMISSION_DENIED with a message about enablement that
+#     reads exactly like a missing role. The first real deploy produced precisely that confusion:
+#     the Costs page reported a permission error while every binding it named was correct, because
+#     cloudbilling was simply never enabled on the project.
+#
+#     enable-apis.sh carries what EVERY deployment needs; these two are needed only where an admin
+#     console runs, which is why they are enabled here - the same reasoning create-worker-fleet.sh
+#     applies to compute.googleapis.com.
+#
+#     Monitoring, Compute and Cloud Run are not listed: the tiers that create those resources have
+#     already enabled them, and a deployment with an admin console but no fleet still wants its
+#     Costs page.
+for admin_api in cloudbilling.googleapis.com billingbudgets.googleapis.com; do
+  gc services enable "${admin_api}" >/dev/null 2>&1 \
+    || warn "could not enable ${admin_api}. If it is already on, the Costs page works; if it is not,
+       that page reports a permission error naming an API rather than a role, and this is the
+       command:
+         gcloud services enable ${admin_api} --project ${GCP_PROJECT_ID}"
+done
+
 # 1b) WHAT THE CONSOLE MAY READ, AND WHAT IT MAY CHANGE.
 #
 #     READS are four predefined viewer roles: compute for the group, its autoscaler and its

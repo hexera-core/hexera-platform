@@ -80,10 +80,15 @@ export default async function CostsPage() {
             claim something this page does not know. */}
         {accountError ? (
           <Alert>
-            The billing account could not be read: {accountError}. This needs
-            <code> roles/billing.viewer</code> on the project, which
-            <code> create-admin-service.sh</code> grants. Whether this project has a billing
-            account is unknown until it can be read — it is not being reported as absent.
+            The billing account could not be read: {accountError}
+            <br />
+            Two different things produce a PERMISSION_DENIED here and they need different fixes. If
+            the message mentions an API not being <em>used or enabled</em>, the fix is{" "}
+            <code>gcloud services enable cloudbilling.googleapis.com billingbudgets.googleapis.com</code>
+            . Otherwise it is the grant: <code>roles/billing.viewer</code> on the billing{" "}
+            <strong>account</strong> — not on the project, where the role does not exist. Either
+            way, whether this project has a billing account is unknown until it can be read, and is
+            not being reported as absent.
           </Alert>
         ) : account.enabled ? (
           <FieldList
@@ -103,9 +108,12 @@ export default async function CostsPage() {
           <EmptyState note="Budgets were not read, because the billing account they hang off could not be read. See above." />
         ) : budgetError ? (
           <Alert>
-            Budgets could not be read: {budgetError}. Budgets live on the billing ACCOUNT, not on
-            this project, and a deploy identity has no authority there — so this one grant is made
-            by hand, once. See §10 of <code>docs/deployment/admin-console-access.md</code>.
+            Budgets could not be read: {budgetError}
+            <br />
+            Budgets live on the billing <strong>account</strong>, not on this project, and a deploy
+            identity has no authority there — so that grant is made by hand, once. If the message
+            names an API instead, enable <code>billingbudgets.googleapis.com</code>. See §10 and
+            §11 of <code>docs/deployment/admin-console-access.md</code>.
           </Alert>
         ) : budgets.length === 0 ? (
           <EmptyState note="No budget is set on this billing account. A budget is what turns spend into an alert; without one, an unexpected bill is discovered at the end of the month." />

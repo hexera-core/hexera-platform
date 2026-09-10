@@ -120,6 +120,17 @@ def test_a_deployment_with_no_fleet_still_deploys(run):
     assert "run deploy t-admin" in calls
 
 
+def test_the_apis_the_console_reads_are_enabled(run):
+    # A role grants permission to CALL an API; it does not turn the API on. A disabled API answers
+    # PERMISSION_DENIED with a message about enablement that reads exactly like a missing role -
+    # which is what the first real dev deploy produced on the Costs page while every binding it
+    # named was correct.
+    done, calls = run()
+    assert done.returncode == 0, done.stderr
+    for api in ("cloudbilling.googleapis.com", "billingbudgets.googleapis.com"):
+        assert f"services enable {api}" in calls, f"{api} is never enabled, so the Costs page 403s"
+
+
 def test_read_roles_are_granted(run):
     done, calls = run()
     assert done.returncode == 0, done.stderr

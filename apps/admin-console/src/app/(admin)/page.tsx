@@ -23,13 +23,33 @@ import { ScalingPolicyPanel } from "./_fleet/scaling-policy";
 import { ServiceScalingPanel } from "./_fleet/service-scaling";
 import { WorkerProfilePanel } from "./_fleet/worker-profile";
 
+// The gax status codes worth telling apart. A Compute error's `message` carries the whole JSON body
+// the API returned, which is accurate and unreadable - so the code is used to lead with a sentence,
+// and the raw text is kept underneath for the cases the sentence does not cover.
+const NOT_FOUND = 5;
+const PERMISSION_DENIED = 7;
+
+function explain(error: unknown, target: { migName: string; migZone: string }): string {
+  const code = (error as { code?: number } | null)?.code;
+
+  if (code === NOT_FOUND) {
+    return `There is no managed instance group called ${target.migName} in ${target.migZone}. This deployment names it in WORKER_MIG and WORKER_MIG_ZONE, and this page reads exactly what it is told rather than looking for something similar — so a group under another name is not being shown instead. Check those two variables against the groups that actually exist in this project.`;
+  }
+  if (code === PERMISSION_DENIED) {
+    return `The admin service account may not read ${target.migName}. This is usually roles/compute.viewer, which create-admin-service.sh grants and a deploy identity often cannot — see §11 of docs/deployment/admin-console-access.md. It can also mean the Compute API is not enabled on this project, which produces the same status with a different message.`;
+  }
+  return `This page reads ${target.migName} in ${target.migZone} as the admin service account. The raw error is above.`;
+}
+
 function FleetReadFailure({ error, target }: { error: unknown; target: { migName: string; migZone: string } }) {
+  const message = error instanceof Error ? error.message : String(error);
+
   return (
     <>
       <h1>Fleet</h1>
-      <Alert>{error instanceof Error ? error.message : String(error)}</Alert>
-      <Panel title="What this usually means">
-        <EmptyState note={`This page reads the group ${target.migName} in ${target.migZone} as the admin service account. PERMISSION_DENIED means that account is missing roles/compute.viewer, which create-admin-service.sh grants. NOT_FOUND means the group this deployment names does not exist in this project - check WORKER_MIG and WORKER_MIG_ZONE against what is actually deployed.`} />
+      <Alert>{explain(error, target)}</Alert>
+      <Panel title="What the API returned">
+        <EmptyState note={message} />
       </Panel>
     </>
   );
