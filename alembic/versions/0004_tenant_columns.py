@@ -68,21 +68,30 @@ def _backfill():
     #    gets a row: it owns data, and leaving it unstamped would make that data unreachable
     #    once reads scope on the organisation.
     #
-    #    Every owner_id is LOWERCASED before it is hashed into a slug or matched against `users`.
-    #    This is deliberate and safe for the case that matters - owner_id is email-shaped
-    #    everywhere it is a real identity, and email identity is case-insensitive here (see
-    #    users.email's ck_users_email_lowercased). It is a real, accepted tradeoff for the case
-    #    that does not: two non-email owner_ids differing only in case (e.g. a legacy worker
-    #    identifier) would collapse into the SAME organisation, because their lowercased forms
-    #    hash to the same slug. No current owner_id is known to collide this way, and the
-    #    alternative - hashing the raw value - would instead split ONE real user's data across
-    #    two organisations the moment they logged in with different casing, which is the worse
-    #    failure. Case-sensitive non-email identifiers are out of scope for this migration.
+    #    Every owner_id is LOWERCASED IN THE UNION ITSELF, before it is hashed into a slug or
+    #    matched against `users`. This is deliberate and safe for the case that matters -
+    #    owner_id is email-shaped everywhere it is a real identity, and email identity is
+    #    case-insensitive here (see users.email's ck_users_email_lowercased). It is a real,
+    #    accepted tradeoff for the case that does not: two non-email owner_ids differing only in
+    #    case (e.g. a legacy worker identifier) collapse into the SAME organisation. No current
+    #    owner_id is known to collide this way, and the alternative - hashing the raw value -
+    #    would instead split ONE real user's data across two organisations the moment they logged
+    #    in with different casing, which is the worse failure. Case-sensitive non-email
+    #    identifiers are out of scope for this migration.
+    #
+    #    THE `lower()` MUST BE IN THE SELECT, not only in the slug expression. `SELECT DISTINCT
+    #    owner_id` on the raw value yields BOTH case-variants as separate rows; every insert
+    #    below then keys on lower(owner_id), so both rows pass the same `NOT EXISTS` snapshot -
+    #    which PostgreSQL evaluates once, against the state before the statement - and the second
+    #    violates the unique index on organizations.slug WITHIN THE SAME STATEMENT. The migration
+    #    aborts. Collapsing them here is what makes the comment above true: one row in, one
+    #    organisation out.
     #
     #    `WHERE NOT EXISTS` is what makes the whole backfill idempotent: a second run inserts
     #    nothing, which matters because this migration will be rehearsed more than once.
     owners_union = " UNION ".join(
-        f"SELECT DISTINCT owner_id FROM {table} WHERE owner_id IS NOT NULL AND owner_id <> ''"
+        f"SELECT DISTINCT lower(owner_id) AS owner_id FROM {table} "
+        f"WHERE owner_id IS NOT NULL AND owner_id <> ''"
         for table in _OWNER_SOURCES)
 
     bind.execute(sa.text(f"""

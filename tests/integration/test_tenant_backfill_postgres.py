@@ -230,3 +230,57 @@ def test_an_owner_known_only_through_an_api_key_still_gets_an_organisation(migra
         SELECT organization_id FROM geometry_sources
     """)).scalars().all()
     assert org_id not in other_orgs
+
+
+def _seed_owner(conn, owner: str):
+    conn.execute(text("""
+        INSERT INTO geometry_sources
+            (id, owner_id, original_filename, object_key, sha256, size_bytes)
+        VALUES (:id, :owner, 'part.step', :key, :sha, 10)
+    """), {"id": uuid.uuid4(), "owner": owner, "key": f"k/{owner}/{uuid.uuid4()}",
+           "sha": "0" * 64})
+
+
+def test_two_owner_ids_differing_only_in_case_collapse_into_one_organisation(
+        migrated_to_0003, run_migration):
+    # The union used to SELECT DISTINCT on the RAW owner_id while every insert keyed on
+    # lower(owner_id). Two case-variants therefore arrived as two rows, both passed the same
+    # `NOT EXISTS` snapshot - PostgreSQL evaluates it once, against the pre-statement state - and
+    # the second violated the unique index on organizations.slug INSIDE that one statement:
+    #
+    #   ERROR: duplicate key value violates unique constraint "ix_organizations_slug"
+    #
+    # The migration aborted, which is why this failed closed rather than corrupting anything.
+    # The comment above the union always claimed such owners "collapse into the SAME
+    # organisation"; this is the test that makes that true.
+    _seed_owner(migrated_to_0003, "Casey@Example.com")
+    _seed_owner(migrated_to_0003, "casey@example.com")
+
+    run_migration("0004_tenant_columns")
+
+    orgs = migrated_to_0003.execute(text("SELECT count(*) FROM organizations")).scalar()
+    assert orgs == 1, "two case-variants of one address minted more than one organisation"
+
+    users = migrated_to_0003.execute(text("SELECT count(*) FROM users")).scalar()
+    memberships = migrated_to_0003.execute(text("SELECT count(*) FROM memberships")).scalar()
+    assert (users, memberships) == (1, 1)
+
+    # BOTH rows are stamped, and with the SAME organisation - the stamping UPDATE keys on
+    # lower(owner_id) too, so an owner whose organisation exists is reachable whatever the casing
+    # of the row that produced it.
+    stamps = migrated_to_0003.execute(text("""
+        SELECT organization_id FROM geometry_sources ORDER BY owner_id
+    """)).scalars().all()
+    assert len(stamps) == 2 and all(s is not None for s in stamps), (
+        "a case-variant owner's rows were left unstamped")
+    assert len(set(stamps)) == 1, "one address's rows were split across two organisations"
+
+
+def test_a_case_variant_owner_is_still_idempotent_on_a_re_run(migrated_to_0003, run_migration):
+    _seed_owner(migrated_to_0003, "Casey@Example.com")
+    _seed_owner(migrated_to_0003, "casey@example.com")
+    run_migration("0004_tenant_columns")
+    run_migration("0004_tenant_columns", rerun=True)
+
+    orgs = migrated_to_0003.execute(text("SELECT count(*) FROM organizations")).scalar()
+    assert orgs == 1

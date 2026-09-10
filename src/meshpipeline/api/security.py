@@ -90,8 +90,19 @@ async def _organization_for(owner_id: str) -> str:
         # credential: the caller has already proven who they are, and a lookup that cannot run
         # must degrade to today's owner-only behaviour rather than 500 a proven request. Reads
         # fall back to owner_id when the principal names no organisation (see the repositories).
-        logger.warning("could not resolve an organisation for %s - scoping on owner alone: %s",
-                       owner_id, exc)
+        #
+        # LOGGED AT `error`, NOT `warning`, because failing open here is not symmetric. On a READ
+        # it costs nothing durable - the request is answered owner-scoped and the next one is
+        # answered correctly. On a WRITE the same empty string reaches `tenant_scope.stamp`,
+        # which writes owner_id alone, and that row is then invisible to every later org-scoped
+        # read, forever: 0004's backfill is a one-shot that has already run, so nothing
+        # re-stamps it. A transient database blip therefore leaves permanent damage behind, and
+        # rows like these would also block 0005's NOT NULL. This must page somebody, not sit in
+        # a warning stream. Repairing them means re-running 0004's stamping UPDATEs; see
+        # docs/deployment/identity-platform.md section 7a.
+        logger.error("could not resolve an organisation for %s - scoping on owner alone, and any "
+                     "write in this request will be stamped with the owner only: %s",
+                     owner_id, exc)
         return ""
 
 

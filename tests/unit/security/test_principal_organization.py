@@ -72,3 +72,25 @@ async def test_a_key_caller_keeps_the_organisation_its_row_names(memberships, mo
 async def test_org_dep_reports_what_the_principal_carries():
     from meshpipeline.contracts.identity import Principal
     assert await security.org_dep(Principal(owner_id="x", organization_id="org-9")) == "org-9"
+
+
+async def test_a_failed_lookup_is_logged_at_error_not_warning(memberships, monkeypatch, caplog):
+    # Failing open is right here, but it is not symmetric. On a READ it costs nothing durable.
+    # On a WRITE the same empty organisation reaches `tenant_scope.stamp`, which writes owner_id
+    # alone - and that row is then invisible to every later org-scoped read, forever, because
+    # 0004's backfill is a one-shot that has already run. A transient blip therefore leaves
+    # permanent damage, and rows like these would also block 0005's NOT NULL. That has to page
+    # somebody rather than sit in a warning stream nobody reads.
+    import logging
+
+    async def explode(db, owner_id):
+        raise RuntimeError("the database is having a moment")
+
+    monkeypatch.setattr(security.account_service, "organization_id_for_owner", explode)
+    caplog.set_level(logging.DEBUG, logger=security.logger.name)
+    await security.resolve_principal(None, None, "person@example.com", None)
+
+    records = [r for r in caplog.records if "could not resolve an organisation" in r.getMessage()]
+    assert records, "the fail-open was silent"
+    assert all(r.levelno >= logging.ERROR for r in records), (
+        f"the durable fail-open logged at {records[0].levelname}, not ERROR")

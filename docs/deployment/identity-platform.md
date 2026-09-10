@@ -179,6 +179,37 @@ run unrehearsed. Rehearse it in this order:
 5. Only after dev has run it and been observed working does it go anywhere near **prod** — sized
    and scheduled per the write-stall note above.
 
+### 7a. Before `0005` adds `NOT NULL`
+
+`organization_id` ships nullable and a follow-up `0005` closes it (design decision 10). **Re-run
+`0004`'s stamping `UPDATE`s immediately before adding the constraint, and check that nothing is
+left unstamped afterwards.** The backfill is a one-shot: it stamps the rows that existed when it
+ran, and nothing re-stamps a row written later. Two things can produce an unstamped row after it:
+
+- the deliberate window between stage 220 (migrate) and stage 245 (deploy the API), where the old
+  revision serves against the new schema and writes rows naming no organisation — this is why the
+  column is nullable in the first place;
+- a transient failure of the organisation lookup in `api/security.py::_organization_for`. It fails
+  open to owner scope rather than refusing a request whose caller is already proven, so any write
+  in that request is stamped with the owner alone. It logs at `error` for exactly this reason.
+  Search for `could not resolve an organisation for` to find out whether it has happened.
+
+Either leaves rows that `0005` will refuse, and — more importantly — rows that no org-scoped read
+can see. The repair is the stamping half of `0004`, which is idempotent and safe to run on its own:
+
+```sql
+-- for each of the seven tenant tables, and then api_keys
+UPDATE <table> SET organization_id = g.id
+FROM organizations g
+WHERE g.slug = 'backfill-' || md5(lower(<table>.owner_id))
+  AND <table>.organization_id IS NULL
+  AND <table>.owner_id IS NOT NULL AND <table>.owner_id <> '';
+```
+
+A row whose `owner_id` post-dates the backfill has no `backfill-` organisation to match, so check
+for survivors (`SELECT count(*) ... WHERE organization_id IS NULL`) before adding the constraint
+and mint the missing organisations rather than letting `0005` fail.
+
 ## 8. Retiring `console-auth-users`
 
 `CONSOLE_AUTH_USERS` and its backing secret, `console-auth-users`, are gone from the code
