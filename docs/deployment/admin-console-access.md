@@ -298,3 +298,63 @@ and passes them through unchanged; the three Cloud Run scripts pass `--min-insta
 `--max-instances` only when creating a service. The `WORKER_MIG_*` and `*_MIN_INSTANCES` values in
 `generated.<env>.env` are therefore **creation defaults** — they stop describing the running system
 the moment anyone changes it here. The Fleet page is the authority after that.
+
+
+## 11. What the first real dev deploy found
+
+Recorded 2026-09-10, from run 34456974668 against `hexera-dev`. Every item here is a thing the
+deploy could not do for itself, so each is a command a human runs once.
+
+**The deployer cannot grant IAM, by design.** `github-deployer` holds neither
+`resourcemanager.projectIamAdmin` nor `iam.roles.create` — deliberately, and
+[the build-out plan](platform-buildout-plan.md) §1 explains what its eleven roles do and do not
+include. So `create-admin-service.sh` attempts each grant, warns with the exact fix, and carries
+on. **A green deploy therefore does not mean the console has any authority.** The three project
+viewer roles and the billing-account role were granted by hand after the first deploy; the custom
+role is below.
+
+**Creating the custom role.** The console's controls return `PERMISSION_DENIED` until this exists
+and is bound. Run once per project, as an owner:
+
+```bash
+PROJECT=hexera-dev      # or hexera-prod
+ROLE=dev_admin_console  # or prod_admin_console — it is <DEPLOYMENT_ID>_admin_console
+SA=dev-admin@hexera-dev.iam.gserviceaccount.com   # or prod-admin@hexera-prod...
+
+gcloud iam roles create "$ROLE" --project "$PROJECT" \
+  --title 'Hexera admin console fleet operator' --stage GA \
+  --permissions compute.autoscalers.get,compute.autoscalers.update,\
+compute.instanceGroupManagers.get,compute.instanceGroupManagers.update,\
+compute.instanceTemplates.get,compute.instances.get,compute.instances.list,\
+compute.zoneOperations.get,compute.zones.get,\
+run.services.get,run.services.update,run.revisions.get,run.revisions.list,run.operations.get
+
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:$SA" --role "projects/$PROJECT/roles/$ROLE" --condition None
+```
+
+Granting it is what turns an IAP session into infrastructure authority — §10 states that cost.
+Until then the console reads and reports; it changes nothing.
+
+**`roles/billing.viewer` is a billing-ACCOUNT role.** It cannot be bound to a project at all — the
+API answers `Role roles/billing.viewer is not supported for this resource` — so the script does not
+try. `hexera-dev`'s billing account is `01EFBB-8FF368-9E335F`; the grant command is in §10.
+
+**The fleet name in `deploy.yml` does not match the group that is running.** `deploy.yml` pins
+`worker_mig=dev-workers`, and the only managed instance group in `hexera-dev` is
+`hexera-dev-workers` (size 1, stable, `us-central1-a`). **`dev-workers` is the intended name** —
+the running group is the hand-made legacy one, from before the fleet had a provisioning script, and
+`deploy.yml` is correct about where the fleet is going.
+
+The consequence is that the admin console's Fleet page reports `NOT_FOUND` for `dev-workers` until
+a `workers`-tier deploy creates it. That is the page behaving correctly: it names the group and the
+environment variables it read, rather than quietly showing a different fleet. It is also the first
+thing in the system that reads that name at all, which is why the drift surfaced now and not at the
+next `workers` deploy.
+
+**The autoscaler is not named after its group.** `hexera-dev-workers` is driven by an autoscaler
+called `hexera-dev-workers-9k6e`. Everything that asks "does this group have an autoscaler" must
+read the group's own `status.autoscaler` field rather than assuming the names match — a name guess
+returns "no autoscaler" for a group that has one, and for `create-worker-fleet.sh` that would mean
+re-applying a policy the console owns. Both it and `create-queue-depth-publisher.sh` read the
+field.
