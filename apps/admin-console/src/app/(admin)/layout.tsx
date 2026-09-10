@@ -8,7 +8,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     <div className="admin-shell">
       <aside className="admin-sidebar">
         <p className="admin-brand">Hexera Admin</p>
-        <AdminNav current="/" />
+        <AdminNav />
       </aside>
       <main className="admin-main">{children}</main>
     </div>

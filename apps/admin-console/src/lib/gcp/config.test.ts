@@ -67,6 +67,22 @@ test("the admin service names itself, so its own floor is controllable", () => {
   assert.equal(targets.adminService, "hexera-dev-admin");
 });
 
+test("the billing export is absent unless the deployment names its table", () => {
+  // A BigQuery billing export cannot be backfilled, so most deployments have none. The Costs page
+  // renders that absence as a sentence naming the setting, not as an empty chart.
+  assert.equal(readAdminTargets(BASE).billingExportTable, null);
+  assert.equal(
+    readAdminTargets({ ...BASE, BILLING_EXPORT_TABLE: "acct.export.gcp_billing_export_v1_ABC" })
+      .billingExportTable,
+    "acct.export.gcp_billing_export_v1_ABC",
+  );
+});
+
+test("carries the project number, which only the write path needs", () => {
+  assert.equal(readAdminTargets(BASE).projectNumber, null);
+  assert.equal(readAdminTargets({ ...BASE, GCP_PROJECT_NUMBER: "123456789" }).projectNumber, "123456789");
+});
+
 test("the maximum replica ceiling an operator may request is bounded", () => {
   // The ceiling is the cost ceiling. A typo must not be able to request fifty e2-standard-4 VMs.
   assert.equal(readAdminTargets(BASE).maxAllowedReplicas, 12);

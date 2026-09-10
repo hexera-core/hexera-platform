@@ -163,3 +163,40 @@ export async function readSeries(client: MetricsReader, args: SeriesRequest): Pr
       .reverse(),
   }));
 }
+
+// Two derivations the request graphs need, kept here rather than in the page so they are testable
+// and so "total" means the same thing everywhere.
+//
+// A REQUEST GRAPH SPLIT BY STATUS CLASS DOES NOT WORK AS ONE CHART. Four status classes need four
+// reserved status colours, and that set fails the colour standard's CVD and normal-vision floors -
+// warning and serious are 13.6 apart against this surface, below the floor of 15. The form is
+// wrong, not the palette: total volume and error volume answer different questions and read better
+// as two charts, which is what these two helpers feed.
+
+export function sumSeries(series: readonly Series[], label = ""): Series[] {
+  if (series.length === 0) return [];
+
+  const totals = new Map<string, number>();
+  for (const one of series) {
+    for (const point of one.points) {
+      totals.set(point.at, (totals.get(point.at) ?? 0) + point.value);
+    }
+  }
+
+  return [
+    {
+      label,
+      points: [...totals.entries()]
+        .map(([at, value]) => ({ at, value }))
+        .sort((a, b) => a.at.localeCompare(b.at)),
+    },
+  ];
+}
+
+export function pickSeries(series: readonly Series[], labels: readonly string[]): Series[] {
+  // Ordered by the requested labels, not by what Monitoring happened to return, so the legend
+  // reads the same way on every load.
+  return labels
+    .map((label) => series.find((one) => one.label === label))
+    .filter((one): one is Series => Boolean(one));
+}

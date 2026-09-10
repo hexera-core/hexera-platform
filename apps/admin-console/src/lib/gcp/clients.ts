@@ -1,3 +1,6 @@
+import { BigQuery } from "@google-cloud/bigquery";
+import { CloudBillingClient } from "@google-cloud/billing";
+import { BudgetServiceClient } from "@google-cloud/billing-budgets";
 import {
   AutoscalersClient,
   InstanceGroupManagersClient,
@@ -78,4 +81,23 @@ export function getRunReader(): RunReader {
 export function getRunWriter(): RunWriter {
   runClient ??= new ServicesClient();
   return runClient;
+}
+
+let billingClient: CloudBillingClient | null = null;
+let budgetClient: BudgetServiceClient | null = null;
+let bigqueryClient: BigQuery | null = null;
+
+export function getBillingReader(): CloudBillingClient {
+  billingClient ??= new CloudBillingClient();
+  return billingClient;
+}
+
+export function getBudgetReader(): BudgetServiceClient {
+  budgetClient ??= new BudgetServiceClient();
+  return budgetClient;
+}
+
+export function getSpendReader(projectId: string): BigQuery {
+  bigqueryClient ??= new BigQuery({ projectId });
+  return bigqueryClient;
 }

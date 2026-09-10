@@ -15,12 +15,14 @@ export type FleetTarget = {
 
 export type AdminTargets = {
   adminService: string | null;
+  billingExportTable: string | null;
   apiService: string | null;
   consoleService: string | null;
   deploymentId: string;
   fleet: FleetTarget | null;
   maxAllowedReplicas: number;
   projectId: string;
+  projectNumber: string | null;
   region: string;
 };
 
@@ -63,6 +65,9 @@ export function readAdminTargets(env: Env): AdminTargets {
 
   return {
     adminService: optional(env, "CLOUDRUN_ADMIN_SERVICE"),
+    // Absent unless a BigQuery billing export exists. The Costs page reads its absence as a
+    // statement to make rather than as an error - see costs.ts.
+    billingExportTable: optional(env, "BILLING_EXPORT_TABLE"),
     apiService: optional(env, "CLOUDRUN_API_SERVICE"),
     consoleService: optional(env, "CLOUDRUN_CONSOLE_SERVICE"),
     deploymentId,
@@ -82,6 +87,9 @@ export function readAdminTargets(env: Env): AdminTargets {
         : null,
     maxAllowedReplicas,
     projectId,
+    // Only writes need this: it is half of the audience IAP signs its assertion for. A deployment
+    // missing it can still read; it refuses to mutate rather than trusting an unverified header.
+    projectNumber: optional(env, "GCP_PROJECT_NUMBER"),
     region,
   };
 }

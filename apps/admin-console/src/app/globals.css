@@ -27,10 +27,11 @@ p {
 }
 
 h1 {
-  font-size: clamp(2.5rem, 9vw, 5.5rem);
+  font-size: 2rem;
   font-weight: 760;
-  letter-spacing: 0;
-  line-height: 0.95;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  margin: 0 0 1.5rem;
 }
 
 .admin-shell {
@@ -87,8 +88,8 @@ h1 {
 
 .admin-main {
   margin: 0 auto;
-  max-width: 960px;
-  padding: 5rem 1.5rem;
+  max-width: 74rem;
+  padding: 3rem 2rem 5rem;
 }
 
 @media (max-width: 640px) {
@@ -97,6 +98,296 @@ h1 {
   }
 
   .admin-main {
-    padding: 3rem 1.5rem;
+    padding: 2rem 1.25rem 3rem;
   }
+}
+
+/* Admin page furniture. Chart chrome colours come from the data-visualization reference palette
+   (see _components/chart-palette.ts); everything else is the console's own warm neutral set. */
+
+.admin-lede {
+  color: #52514e;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin: 0 0 1rem;
+  max-width: 60ch;
+}
+
+.admin-panel {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid #ddd9d2;
+  border-radius: 12px;
+  margin: 0 0 1.25rem;
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+.admin-panel-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.admin-panel-title {
+  font-size: 1rem;
+  font-weight: 660;
+  margin: 0;
+}
+
+.admin-panel-heading {
+  color: #898781;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.admin-empty {
+  color: #52514e;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 68ch;
+}
+
+.admin-alert {
+  background: rgba(208, 59, 59, 0.07);
+  border: 1px solid rgba(208, 59, 59, 0.28);
+  border-radius: 8px;
+  color: #8c2626;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+}
+
+.admin-notice {
+  background: rgba(42, 120, 214, 0.07);
+  border: 1px solid rgba(42, 120, 214, 0.26);
+  border-radius: 8px;
+  color: #1c5cab;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+}
+
+.admin-stats {
+  display: grid;
+  gap: 1rem 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  margin: 0 0 1rem;
+}
+
+.admin-stat dt {
+  color: #898781;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.admin-stat dd {
+  font-size: 1.4rem;
+  font-weight: 660;
+  margin: 0.2rem 0 0;
+}
+
+.admin-fields {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+}
+
+.admin-field {
+  display: grid;
+  gap: 0.15rem 1rem;
+  grid-template-columns: 11rem 1fr;
+}
+
+.admin-field dt {
+  color: #898781;
+  font-size: 0.78rem;
+  padding-top: 0.1rem;
+}
+
+.admin-field dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-chart {
+  margin: 0.25rem 0 0;
+}
+
+.admin-tooltip {
+  font-size: 0.8rem;
+}
+
+.admin-tooltip .recharts-default-tooltip {
+  background: #ffffff !important;
+  border: 1px solid #ddd9d2 !important;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(11, 11, 11, 0.08);
+  color: #0b0b0b;
+  padding: 0.5rem 0.7rem !important;
+}
+
+.admin-grid-2 {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(23rem, 1fr));
+  margin: 0 0 1.25rem;
+}
+
+.admin-grid-2 .admin-panel {
+  margin: 0;
+}
+
+.admin-table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  width: 100%;
+}
+
+.admin-table th {
+  border-bottom: 1px solid #ddd9d2;
+  color: #898781;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.4rem 0.75rem 0.4rem 0;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.admin-table td {
+  border-bottom: 1px solid #efece6;
+  padding: 0.55rem 0.75rem 0.55rem 0;
+  vertical-align: top;
+}
+
+.admin-controls {
+  border-top: 1px solid #efece6;
+  display: grid;
+  gap: 1.25rem;
+  margin: 1rem 0 0;
+  padding: 1rem 0 0;
+}
+
+.admin-form {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+}
+
+.admin-form-result {
+  margin: 0;
+  width: 100%;
+}
+
+.admin-field-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  width: 100%;
+}
+
+.admin-field-input {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.admin-field-input > span {
+  color: #52514e;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.admin-field-input input {
+  background: #ffffff;
+  border: 1px solid #ddd9d2;
+  border-radius: 6px;
+  color: #201c1a;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.55rem;
+  width: 100%;
+}
+
+.admin-field-input input:focus-visible {
+  border-color: #536071;
+  outline: 2px solid #536071;
+  outline-offset: 1px;
+}
+
+.admin-field-input small {
+  color: #898781;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.admin-button {
+  background: #201c1a;
+  border: 1px solid #201c1a;
+  border-radius: 6px;
+  color: #f8f7f3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.45rem 0.9rem;
+}
+
+.admin-button:hover:not(:disabled) {
+  background: #3a3330;
+}
+
+.admin-button:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+
+.admin-button:focus-visible {
+  outline: 2px solid #536071;
+  outline-offset: 2px;
+}
+
+.admin-button-danger {
+  background: #d03b3b;
+  border-color: #d03b3b;
+}
+
+.admin-button-danger:hover:not(:disabled) {
+  background: #b32f2f;
+}
+
+.admin-danger-zone {
+  margin: 0.5rem 0 0;
+}
+
+.admin-danger-zone summary {
+  color: #8c2626;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.admin-danger-zone[open] {
+  background: rgba(208, 59, 59, 0.05);
+  border: 1px solid rgba(208, 59, 59, 0.2);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+}
+
+.admin-budget + .admin-budget {
+  border-top: 1px solid #efece6;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.admin-nav a[aria-current="page"] {
+  background: rgba(65, 78, 104, 0.14);
+  font-weight: 600;
 }

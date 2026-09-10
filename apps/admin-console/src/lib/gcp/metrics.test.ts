@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   alignmentSecondsFor,
+  pickSeries,
+  sumSeries,
   instanceGroupSizeFilter,
   queueDepthFilter,
   readSeries,
@@ -147,4 +149,33 @@ test("no data is an empty list, not an error", async () => {
   // "no series" rather than draw a flat line that reads as "we ran zero workers".
   const client = { listTimeSeries: async () => [[], null, {}] as never } as never;
   assert.deepEqual(await readSeries(client, { filter: "f", projectId: "p", window: "1h" }), []);
+});
+
+test("sums the status classes into one total volume series", () => {
+  const total = sumSeries([
+    { label: "2xx", points: [{ at: "t1", value: 10 }, { at: "t2", value: 20 }] },
+    { label: "5xx", points: [{ at: "t1", value: 1 }] },
+  ]);
+
+  assert.equal(total.length, 1);
+  assert.deepEqual(total[0].points, [
+    { at: "t1", value: 11 },
+    { at: "t2", value: 20 },
+  ]);
+});
+
+test("summing nothing yields nothing, so the panel renders its empty state", () => {
+  assert.deepEqual(sumSeries([]), []);
+});
+
+test("picks named series in the order asked for, skipping ones with no data", () => {
+  const picked = pickSeries(
+    [
+      { label: "5xx", points: [{ at: "t1", value: 2 }] },
+      { label: "2xx", points: [{ at: "t1", value: 9 }] },
+    ],
+    ["4xx", "5xx"],
+  );
+
+  assert.deepEqual(picked.map((one) => one.label), ["5xx"]);
 });
