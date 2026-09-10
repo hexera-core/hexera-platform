@@ -1,9 +1,15 @@
 "use client";
 
-// WHAT A FAILED READ LOOKS LIKE. Every page in this console reads Google's APIs, so the errors an
-// operator will actually meet are permission and configuration failures - not bugs. The default
-// error page says "something went wrong", which sends someone to the logs for an answer the error
-// itself already contains.
+// THE LAST RESORT, and deliberately quiet about detail it does not have.
+//
+// Next REDACTS a Server Component's error message before it reaches a client boundary - this
+// component receives "Minified React error #441" and a digest, never the text. Printing that
+// message would be printing a React internals reference in the place an operator looks for the
+// actual failure, which is worse than printing nothing.
+//
+// The pages that read Google's APIs therefore catch their own failures on the server, where the
+// message is still readable, and render it as content. This boundary only catches what those
+// catches did not, so what it can usefully offer is the digest and where to take it.
 export default function AdminError({
   error,
   reset,
@@ -13,17 +19,24 @@ export default function AdminError({
 }) {
   return (
     <>
-      <h1>This page could not be read</h1>
-      <p className="admin-alert">{error.message}</p>
+      <h1>This page could not be rendered</h1>
       <p className="admin-empty">
-        These pages read the Compute, Monitoring, Cloud Run and Billing APIs as the admin service
-        account. A <code>PERMISSION_DENIED</code> here means that account is missing one of the
-        viewer roles <code>create-admin-service.sh</code> grants it. A <code>NOT_FOUND</code> means
-        the resource this deployment names does not exist in this project — check{" "}
-        <code>WORKER_MIG</code>, <code>WORKER_MIG_ZONE</code> and{" "}
-        <code>CLOUDRUN_API_SERVICE</code> against what is actually deployed.
+        Something failed outside the reads this console handles itself. The detail is not available
+        in the browser — Next strips a server error&rsquo;s message before it reaches this page — so
+        it is in Cloud Logging for the admin service, correlated by the id below.
       </p>
-      {error.digest ? <p className="admin-empty">Log correlation id: {error.digest}</p> : null}
+      {error.digest ? (
+        <p className="admin-alert">
+          Log correlation id: <code>{error.digest}</code>
+        </p>
+      ) : null}
+      <p className="admin-empty">
+        Read it with:{" "}
+        <code>
+          gcloud logging read &apos;resource.type=cloud_run_revision AND
+          labels.&quot;run.googleapis.com/execution_name&quot;:*&apos; --limit 20
+        </code>
+      </p>
       <p style={{ marginTop: "1rem" }}>
         <button className="admin-button" onClick={reset} type="button">
           Try again

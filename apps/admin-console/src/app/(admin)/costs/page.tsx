@@ -76,14 +76,16 @@ export default async function CostsPage() {
       <h1>Costs</h1>
 
       <Panel title="Billing account">
+        {/* A failed read is NOT the same statement as "no billing account". Rendering both would
+            claim something this page does not know. */}
         {accountError ? (
           <Alert>
             The billing account could not be read: {accountError}. This needs
             <code> roles/billing.viewer</code> on the project, which
-            <code> create-admin-service.sh</code> grants.
+            <code> create-admin-service.sh</code> grants. Whether this project has a billing
+            account is unknown until it can be read — it is not being reported as absent.
           </Alert>
-        ) : null}
-        {account.enabled ? (
+        ) : account.enabled ? (
           <FieldList
             fields={[
               { label: "Project", value: targets.projectId },
@@ -96,8 +98,10 @@ export default async function CostsPage() {
         )}
       </Panel>
 
-      <Panel heading={budgetError ? undefined : `${budgets.length} configured`} title="Budgets">
-        {budgetError ? (
+      <Panel heading={budgetError || accountError ? undefined : `${budgets.length} configured`} title="Budgets">
+        {accountError ? (
+          <EmptyState note="Budgets were not read, because the billing account they hang off could not be read. See above." />
+        ) : budgetError ? (
           <Alert>
             Budgets could not be read: {budgetError}. Budgets live on the billing ACCOUNT, not on
             this project, and a deploy identity has no authority there — so this one grant is made

@@ -1,8 +1,8 @@
-import { EmptyState, Panel } from "@/app/_components/panel";
+import { Alert, EmptyState, Panel } from "@/app/_components/panel";
 import { TimeSeriesChart } from "@/app/_components/time-series-chart";
 import { getFleetClients, getMetricsReader, getRunReader } from "@/lib/gcp/clients";
 import { readAdminTargets } from "@/lib/gcp/config";
-import { readFleetState } from "@/lib/gcp/fleet";
+import { readFleetState, type FleetState } from "@/lib/gcp/fleet";
 import { listFleetInstances } from "@/lib/gcp/instances";
 import {
   instanceGroupSizeFilter,
@@ -22,6 +22,18 @@ import { InstanceTable } from "./_fleet/instance-table";
 import { ScalingPolicyPanel } from "./_fleet/scaling-policy";
 import { ServiceScalingPanel } from "./_fleet/service-scaling";
 import { WorkerProfilePanel } from "./_fleet/worker-profile";
+
+function FleetReadFailure({ error, target }: { error: unknown; target: { migName: string; migZone: string } }) {
+  return (
+    <>
+      <h1>Fleet</h1>
+      <Alert>{error instanceof Error ? error.message : String(error)}</Alert>
+      <Panel title="What this usually means">
+        <EmptyState note={`This page reads the group ${target.migName} in ${target.migZone} as the admin service account. PERMISSION_DENIED means that account is missing roles/compute.viewer, which create-admin-service.sh grants. NOT_FOUND means the group this deployment names does not exist in this project - check WORKER_MIG and WORKER_MIG_ZONE against what is actually deployed.`} />
+      </Panel>
+    </>
+  );
+}
 
 // Every read on this page is live. Caching a fleet view is caching the answer to "what is it doing
 // right now", which is the only question it is asked.
@@ -47,8 +59,17 @@ export default async function FleetPage() {
   const metrics = getMetricsReader();
   const api = targets.apiService;
 
-  // The fleet state is read first because the worker profile needs the template name it returns.
-  const state = await readFleetState(clients, fleetTarget);
+  // CAUGHT HERE, ON THE SERVER, AND NOT LEFT TO error.tsx. Next redacts a Server Component's error
+  // message before it reaches a client error boundary - the boundary sees "Minified React error
+  // #441" and a digest, never the text. But the text is the entire diagnostic value: it is the
+  // difference between "this page is broken" and "the admin service account is missing
+  // compute.autoscalers.get". So the read is caught where the message is still readable.
+  let state: FleetState;
+  try {
+    state = await readFleetState(clients, fleetTarget);
+  } catch (error) {
+    return <FleetReadFailure error={error} target={fleetTarget} />;
+  }
 
   const [profile, instances, workers, queue, byStatus, latency, runInstances, apiScaling] =
     await Promise.all([
