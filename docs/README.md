@@ -81,6 +81,7 @@ Every document lives in the folder that owns its subject. Nothing sits loose at 
 | [deployment/security-and-privacy.md](deployment/security-and-privacy.md) | isolation, redaction, retention, deletion, capture |
 | [deployment/admin-console-access.md](deployment/admin-console-access.md) | locking the admin console behind IAP: setup, granting and revoking people, proving it is not public |
 | [deployment/console-domains.md](deployment/console-domains.md) | giving the consoles a custom hostname: the load balancer, the DNS step, and why a first run's certificate is `PROVISIONING` by design |
+| [deployment/identity-platform.md](deployment/identity-platform.md) | initialising Identity Platform per project, the console's public web config, the sender domain, `CONSOLE_SIGNUP_ENABLED`/`SIGNUP_GRANT_CREDITS`, the `0004` backfill runbook, and retiring `console-auth-users` |
 
 ### `reference/`: look a fact up
 | Document | Covers |

@@ -195,6 +195,7 @@ In a hardened environment the process refuses to start unless:
 | `MESH_API_KEY` | *(blank)* | **Secret.** Required in every hardened environment |
 | `USER_TOKEN_SECRET` | *(blank)* | **Secret.** Required in every hardened environment: it is not optional there. HMAC-signs `X-User-Id`; without it identity is self-asserted |
 | `CORS_ORIGINS` | `*` | must not be `*` in a hardened environment |
+| `FIREBASE_PROJECT_ID` | *(blank)* | the Identity Platform project whose ID tokens the console signs in with; deploy scripts default it to `GCP_PROJECT_ID` since Identity Platform lives in the same project |
 
 Development keeps the looser behaviour on purpose: a bare clone runs single-tenant with
 self-asserted identity, and the same conditions produce warnings instead of refusals.
@@ -276,6 +277,8 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 |---|---|---|
 | `MAX_JOBS_PER_OWNER` | `5` | concurrent jobs one owner may hold |
 | `MAX_CONCURRENT_JOBS` | `20` | across the deployment |
+| `SIGNUP_GRANT_CREDITS` | `100` | credits a newly provisioned organisation is granted once; `0` disables the grant |
+| `CONSOLE_SIGNUP_ENABLED` | `true` | whether an unknown Identity Platform account may provision itself an organisation on first sign-in; an API setting, not a console one - see [identity-platform.md](../deployment/identity-platform.md#5-opening-and-closing-signup-console_signup_enabled) |
 | `CELERY_WORKER_CONCURRENCY` | `2` | pipeline runs per worker process |
 
 ## Observability

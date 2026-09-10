@@ -118,7 +118,7 @@ fi
 
 # THE CONSOLE. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console and
 # the stage is skipped, so nothing below applies. A console that IS declared must be able to reach
-# the API and to resolve its two credentials, because both failures present only at runtime: an
+# the API and to resolve its credential, because both failures present only at runtime: an
 # unreachable API is a console that renders and then 503s, and a missing AUTH_SECRET is a revision
 # that never becomes ready.
 #
