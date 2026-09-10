@@ -191,9 +191,27 @@ audience matching this exact service — before it is trusted. An unverified hea
 forged by anything that can reach the container directly, which is precisely what IAP is stopping
 at the edge; trusting it unverified moves the trust boundary back inside.
 
-Until the admin console needs per-admin permissions, it does not have to read this at all: IAP
-either let the request through or it did not, and everyone who gets through is an admin. Add
-verification at the point you first need to distinguish one admin from another, not before.
+**The admin console now verifies it, and here is the reason.** It is not to distinguish one admin
+from another — it still does not, and everyone IAP admits is an admin. It is because the console
+can now *change infrastructure*, and every change writes an audit entry naming who made it. That
+record must not rest on `X-Goog-Authenticated-User-Email`, which is plain text and trustworthy only
+for as long as no `allUsers` invoker binding exists. §2 is the whole argument for why that
+invariant is worth holding and how quietly it can break; an audit trail should not depend on it.
+
+So: **reads are gated by IAP alone. Writes verify the assertion** — signature, issuer
+`https://cloud.google.com/iap`, and audience — and take the actor's identity from the verified
+claims. Direct IAP on Cloud Run signs for the service, so the audience is
+`/projects/<PROJECT_NUMBER>/locations/<REGION>/services/<SERVICE>`; the
+`/projects/<n>/global/backendServices/<id>` form belongs to the load-balancer arrangement §1
+declines. `GCP_PROJECT_NUMBER` is therefore load-bearing for writes: a console deployed without it
+cannot compute an audience, and refuses every mutation rather than falling back to the header.
+
+There is no bypass switch. Failing closed means a misconfigured console stops changing things,
+which is the correct direction; the alternative is accepting an unverified actor, which is the
+entire risk this closes.
+
+Server Functions are reachable by direct `POST`, not only through the form that renders them, so
+this verification runs inside every action rather than in the page that displays it.
 
 ## 8. What this does not cover
 
@@ -221,3 +239,62 @@ left deliberately empty in `.github/workflows/deploy.yml`, exactly as `console_s
 a release tag reconciles every tier it is told about, so naming one there would provision a
 billed production service nobody asked for. Prod gets an admin console only when a human pins a
 name there in a reviewed diff, and then repeats §3-§6 against `hexera-prod`.
+
+
+## 10. What the console reads, and what it can change
+
+This section is the authority on the admin service account's authority. It is granted by
+`create-admin-service.sh` on every run; a grant that fails there is reported with the command that
+fixes it, and the console itself is the verdict — a page that cannot read its metric says so.
+
+**Reads** — four predefined viewer roles on the project:
+
+| Role | Serves |
+|---|---|
+| `roles/compute.viewer` | the managed instance group, its autoscaler and its instance template |
+| `roles/monitoring.viewer` | every graph on the Fleet page |
+| `roles/run.viewer` | Cloud Run revisions and current scaling |
+| `roles/billing.viewer` | the Costs page's account state |
+
+Budgets live on the **billing account**, not the project, and a deploy identity has no authority
+there. Grant that one by hand, once:
+
+```bash
+gcloud billing accounts add-iam-policy-binding <BILLING_ACCOUNT_ID> \
+  --member serviceAccount:<DEPLOYMENT_ID>-admin@<PROJECT>.iam.gserviceaccount.com \
+  --role roles/billing.viewer
+```
+
+`roles/bigquery.jobUser` is granted **only** when `BILLING_EXPORT_TABLE` is set. A grant for a
+billing export the deployment does not have is authority nobody asked for.
+
+**Writes** — a project **custom role**, not a predefined one. `roles/compute.instanceAdmin.v1`
+would work and would also grant disk and instance *creation* this console never performs;
+`roles/run.admin` would let an IAP-gated web page deploy arbitrary revisions. The custom role
+carries exactly the verbs the Fleet page's controls issue: `compute.autoscalers.get/update`,
+`compute.instanceGroupManagers.get/update`, `compute.instanceTemplates.get`,
+`compute.instances.get/list`, `compute.zoneOperations.get`, `compute.zones.get`,
+`run.services.get/update`, `run.revisions.get/list`, `run.operations.get`.
+
+**What this costs, stated plainly.** Before this, the worst a stolen admin session could do was
+read. It can now raise the fleet's ceiling to its cap, resize the group, and delete workers. Two
+things bound the damage and neither bounds it to a *subset of admins*, because per-admin
+permissions remain a non-goal:
+
+- `ADMIN_MAX_ALLOWED_REPLICAS` (default 12) caps any ceiling or resize the console will submit.
+- Deleting an instance requires typing its name back.
+
+**The delete confirmation is blind, and the page says so.** The console holds no database
+connection, so it cannot read job leases and cannot tell you the worker you are about to remove is
+four hours into a mesh job. There is also no drain contract yet — the worker is not asked to finish
+first. Closing that gap needs either the read-only database connection or the drain work in
+build-out item 6; neither is in place.
+
+**Who owns the scaling knobs.** The floor, ceiling, cooldown, jobs-per-instance and scale-in
+control belong to **this console**, not to the deploy. `create-worker-fleet.sh` sets them when it
+creates the autoscaler and does not reconcile them afterwards;
+`create-queue-depth-publisher.sh` still repoints the metric filter but reads the live numbers back
+and passes them through unchanged; the three Cloud Run scripts pass `--min-instances` /
+`--max-instances` only when creating a service. The `WORKER_MIG_*` and `*_MIN_INSTANCES` values in
+`generated.<env>.env` are therefore **creation defaults** — they stop describing the running system
+the moment anyone changes it here. The Fleet page is the authority after that.

@@ -267,7 +267,9 @@ done
 #    setting that only ever existed on the live service - and the live hexera-dev-api carries ~150
 #    inline environment variables that no file in this repository describes. So the difference is
 #    computed, named, and refused unless an operator has said to prune it.
+API_SERVICE_EXISTS=0
 if run_svc_exists "${API_SERVICE}"; then
+  API_SERVICE_EXISTS=1
   live_image="$(gc run services describe "${API_SERVICE}" --region "${GCP_REGION}" \
     --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
   if [ "${live_image}" = "${APP_IMAGE}" ]; then
@@ -322,8 +324,6 @@ deploy_args=(
   --memory "${API_MEMORY}"
   --concurrency "${API_CONCURRENCY}"
   --timeout "${API_TIMEOUT_SECONDS}"
-  --min-instances "${API_MIN_INSTANCES}"
-  --max-instances "${API_MAX_INSTANCES}"
   # Startup CPU boost: the container pulls a multi-gigabyte image and then runs an advisory-locked
   # migration check before it listens. Without the boost a cold start spends that on one vCPU.
   --cpu-boost
@@ -335,6 +335,18 @@ deploy_args=(
   --labels "app=hexera,component=api,version=0-0-1,deployment-id=${DEPLOYMENT_ID},managed-by=deploy"
   --set-env-vars "^|^$(IFS='|'; printf '%s' "${API_ENV_PAIRS[*]}")"
 )
+
+# THE SCALING FLAGS ARE CREATE-ONLY. Once the service exists its warm floor and ceiling belong to
+# the ADMIN CONSOLE's Fleet page, and `gcloud run deploy` leaves a flag it is not given untouched -
+# so omitting them is precisely "do not reconcile this". Re-applying them on every deploy is what
+# would silently reset a floor an operator raised, and the symptom - a cold start on the next idle
+# request - arrives long after the deploy that caused it.
+if [ "${API_SERVICE_EXISTS}" = "0" ]; then
+  deploy_args+=(--min-instances "${API_MIN_INSTANCES}" --max-instances "${API_MAX_INSTANCES}")
+  API_SCALING_STATE="${API_MIN_INSTANCES}..${API_MAX_INSTANCES} (set at creation)"
+else
+  API_SCALING_STATE="left as it is - the admin console owns this service's warm floor"
+fi
 if [ ${#SECRET_BINDINGS[@]} -gt 0 ]; then
   # Secret references carry no comma, so the default separator is unambiguous here.
   deploy_args+=(--set-secrets "$(IFS=','; printf '%s' "${SECRET_BINDINGS[*]}")")
@@ -383,7 +395,7 @@ API_URL="$(gc run services describe "${API_SERVICE}" --region "${GCP_REGION}" \
 log "api service     ${API_SERVICE}  (${API_DISPOSITION})"
 log "  identity      ${API_SA_EMAIL}"
 log "  image         ${APP_IMAGE}"
-log "  scaling       ${API_MIN_INSTANCES}..${API_MAX_INSTANCES} instances, concurrency ${API_CONCURRENCY}"
+log "  scaling       ${API_SCALING_STATE}, concurrency ${API_CONCURRENCY}"
 log "  network       ${VPC_NETWORK}/${VPC_SUBNET}, private-ranges-only, ingress ${API_INGRESS}"
 log "  credentials   ${#SECRET_BINDINGS[@]} Secret Manager reference(s) - no value is in the spec"
 log "  invoker       ${INVOKER_STATE}"

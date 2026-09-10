@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that sizes it.
-# Owns: template naming, the rolling update that moves an existing group onto a new digest, and the warm-pool floor.
-# Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted.
+# Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that FIRST sizes it.
+# Owns: template naming, the rolling update that moves an existing group onto a new digest, and the fleet's SHAPE.
+# Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted;
+#             an existing autoscaler's policy belongs to the admin console and is not reconciled here.
 
 # Provision the WORKER FLEET: a digest-pinned instance template, the managed instance group that
 # runs it, and the autoscaler that sizes the group from the queue-depth metric.
@@ -19,6 +20,20 @@
 # instance fetches the value under its own identity, and the value only ever exists in a root-owned
 # file. This script writes the names that contract expects and nothing else; rotating a credential
 # is then a new secret version plus an instance roll, with no template to edit.
+#
+# WHO OWNS THE SCALING KNOBS. The floor, the ceiling, the cooldown and the jobs-per-instance
+# assignment belong to the ADMIN CONSOLE once the autoscaler exists. This script sets them when it
+# CREATES the autoscaler and never touches them again - see step 6.
+#
+# The reason is that two writers of one policy is a race whose loser is silent. Before this split,
+# every run of this script re-applied whatever `generated.<env>.env` said, so a warm floor raised
+# in the console to absorb a demo would be reset by the next unrelated deploy of an unrelated tier,
+# and the symptom would arrive weeks later as a cold start under load. Nothing errored, and nothing
+# said what had happened.
+#
+# The WORKER_MIG_* variables below therefore survive as CREATION DEFAULTS. They are what a fresh
+# environment comes up with, and they stop describing the running fleet the moment anyone changes
+# it from the console. The Fleet page is the authority after that.
 #
 # WHY THE FLOOR DIFFERS BY ENVIRONMENT. Build-out plan, Decision 4: scale-to-zero in dev, a warm
 # pool in prod. Dev is a shared sandbox that is idle most of the day, and the queue-depth metric now
@@ -360,15 +375,35 @@ FILTER="${FILTER} AND resource.labels.location = \"${WORKER_MIG_ZONE}\""
 FILTER="${FILTER} AND resource.labels.namespace = \"${DEPLOYMENT_ID}\""
 FILTER="${FILTER} AND resource.labels.job = \"queue-depth\""
 FILTER="${FILTER} AND resource.labels.task_id = \"${QUEUE_NAME}\""
-info "Reconciling the autoscaling policy for ${WORKER_MIG}"
-gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
-  --zone "${WORKER_MIG_ZONE}" \
-  --min-num-replicas "${WORKER_MIG_MIN_REPLICAS}" \
-  --max-num-replicas "${WORKER_MIG_MAX_REPLICAS}" \
-  --cool-down-period "${WORKER_MIG_COOLDOWN_SECONDS}" \
-  --update-stackdriver-metric "${METRIC}" \
-  --stackdriver-metric-filter "${FILTER}" \
-  --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}"
+
+# DOES THE GROUP ALREADY HAVE AN AUTOSCALER? Read from the group's own `status.autoscaler`, which
+# is the authoritative link, rather than by guessing the autoscaler's name: `set-autoscaling` names
+# it after the group today, but nothing in the API promises that, and a wrong guess here would read
+# as "no autoscaler" and re-apply the policy - the exact failure this check exists to prevent.
+AUTOSCALER_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
+  --zone "${WORKER_MIG_ZONE}" --format='value(status.autoscaler)' 2>/dev/null || true)"
+
+if [ -n "${AUTOSCALER_URL}" ]; then
+  AUTOSCALING_DISPOSITION="left to the console"
+  info "Leaving the autoscaling policy for ${WORKER_MIG} alone"
+  log "autoscaler ${AUTOSCALER_URL##*/} exists - the floor, ceiling, cooldown and jobs-per-instance"
+  log "belong to the ADMIN CONSOLE and are not reconciled here. Two writers of one policy is a race"
+  log "whose loser is silent: a floor raised in the console and reset by this deploy would surface"
+  log "weeks later as a cold start under load."
+  log "The WORKER_MIG_* values in this deployment's env are creation defaults and no longer"
+  log "describe the running fleet - read it on the console's Fleet page."
+else
+  AUTOSCALING_DISPOSITION="created"
+  info "Creating the autoscaling policy for ${WORKER_MIG}"
+  gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
+    --zone "${WORKER_MIG_ZONE}" \
+    --min-num-replicas "${WORKER_MIG_MIN_REPLICAS}" \
+    --max-num-replicas "${WORKER_MIG_MAX_REPLICAS}" \
+    --cool-down-period "${WORKER_MIG_COOLDOWN_SECONDS}" \
+    --update-stackdriver-metric "${METRIC}" \
+    --stackdriver-metric-filter "${FILTER}" \
+    --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}"
+fi
 
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
   FLOOR_STATE="0 - scales to zero (Decision 4: dev pays for nothing while idle)"
@@ -382,5 +417,7 @@ log "  identity      ${WORKER_SA_EMAIL}"
 log "  image         ${APP_IMAGE}"
 log "  floor         ${FLOOR_STATE}"
 log "  ceiling       ${WORKER_MIG_MAX_REPLICAS} instances, one per ${WORKER_JOBS_PER_INSTANCE} queued job(s), cooldown ${WORKER_MIG_COOLDOWN_SECONDS}s"
+log "  scaling       ${AUTOSCALING_DISPOSITION} - the floor/ceiling above are CREATION DEFAULTS; the"
+log "                live policy is the admin console's once the autoscaler exists"
 log "  credentials   ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata - the values are fetched per instance"
 log "done"

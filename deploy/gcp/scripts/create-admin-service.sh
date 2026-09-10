@@ -88,12 +88,118 @@ else
        --display-name 'Hexera admin console service'"
 fi
 
+# 1b) WHAT THE CONSOLE MAY READ, AND WHAT IT MAY CHANGE.
+#
+#     READS are four predefined viewer roles: compute for the group, its autoscaler and its
+#     template; monitoring for every graph; run for revisions and current scaling; billing for the
+#     account and its budgets.
+#
+#     WRITES are a CUSTOM ROLE, and that is deliberate. roles/compute.instanceAdmin.v1 would work
+#     and would also grant disk and instance CREATION this console never performs; roles/run.admin
+#     would let an IAP-gated web page deploy arbitrary revisions. The custom role carries exactly
+#     the verbs the Fleet page's controls issue and nothing else.
+#
+#     WHAT THIS COSTS, STATED PLAINLY: after this grant, a compromised IAP session can raise the
+#     fleet's ceiling to its cap, resize the group and delete workers. The cap in the console's
+#     own configuration and the typed-name confirmation bound the damage; per-admin permissions do
+#     not exist, so it is not bounded to a subset of admins.
+#
+#     A deploy identity may not hold resourcemanager.projectIamAdmin or iam.roles.create. Every
+#     grant here is ATTEMPTED, a failure is reported with the command that fixes it, and the console
+#     itself is the verdict - a page that cannot read its metric says so, and a control whose
+#     permission is missing fails visibly rather than silently.
+ADMIN_ROLE_ID="${ADMIN_CUSTOM_ROLE:-$(printf '%s' "${DEPLOYMENT_ID}" | tr -c 'a-zA-Z0-9' '_')_admin_console}"
+ADMIN_ROLE_PERMISSIONS="compute.autoscalers.get,compute.autoscalers.update,\
+compute.instanceGroupManagers.get,compute.instanceGroupManagers.update,\
+compute.instanceTemplates.get,compute.instances.get,compute.instances.list,\
+compute.zoneOperations.get,compute.zones.get,\
+run.services.get,run.services.update,run.revisions.get,run.revisions.list,run.operations.get"
+
+if gc iam roles describe "${ADMIN_ROLE_ID}" >/dev/null 2>&1; then
+  ADMIN_ROLE_DISPOSITION=updated
+  gc iam roles update "${ADMIN_ROLE_ID}" \
+    --permissions "${ADMIN_ROLE_PERMISSIONS}" \
+    --stage GA >/dev/null 2>&1 \
+    || warn "could not update the custom role ${ADMIN_ROLE_ID}. If its permissions already match,
+       the console's controls still work; if they do not, the control whose permission is missing
+       returns PERMISSION_DENIED on the page."
+else
+  ADMIN_ROLE_DISPOSITION=created
+  gc iam roles create "${ADMIN_ROLE_ID}" \
+    --title "Hexera admin console fleet operator" \
+    --description "Read and resize the worker fleet and Cloud Run scaling from the admin console" \
+    --permissions "${ADMIN_ROLE_PERMISSIONS}" \
+    --stage GA >/dev/null 2>&1 \
+    || warn "could not create the custom role ${ADMIN_ROLE_ID}. Creating roles needs iam.roles.create,
+       which a DEPLOY identity is deliberately not given. The console's READ pages still work; its
+       controls return PERMISSION_DENIED until an owner runs:
+         gcloud iam roles create ${ADMIN_ROLE_ID} --project ${GCP_PROJECT_ID} \\
+           --title 'Hexera admin console fleet operator' --stage GA \\
+           --permissions ${ADMIN_ROLE_PERMISSIONS}"
+fi
+
+ADMIN_PROJECT_ROLES=(
+  roles/compute.viewer
+  roles/monitoring.viewer
+  roles/run.viewer
+  roles/billing.viewer
+  "projects/${GCP_PROJECT_ID}/roles/${ADMIN_ROLE_ID}"
+)
+# Only where a billing export exists. A grant for a dataset this deployment does not have is
+# authority nobody asked for.
+if [ -n "${BILLING_EXPORT_TABLE:-}" ]; then
+  ADMIN_PROJECT_ROLES+=(roles/bigquery.jobUser)
+fi
+
+for admin_role in "${ADMIN_PROJECT_ROLES[@]}"; do
+  if gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+       --member "serviceAccount:${ADMIN_SA_EMAIL}" \
+       --role "${admin_role}" --condition None >/dev/null 2>&1; then
+    log "project += ${admin_role} -> ${ADMIN_SA_EMAIL}"
+  else
+    warn "could not grant ${admin_role} to ${ADMIN_SA_EMAIL}. If the binding is already in place the
+       console still works; if it is not, the pages that need it report the permission error:
+         gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${ADMIN_SA_EMAIL} --role ${admin_role} --condition None"
+  fi
+done
+
+# Budgets live on the BILLING ACCOUNT, not on the project, and a deploy identity has no authority
+# there at all. Stated as a command rather than attempted, because attempting it would always warn.
+log "for the Costs page's budgets, grant roles/billing.viewer on the billing ACCOUNT once:"
+log "  gcloud billing accounts add-iam-policy-binding <BILLING_ACCOUNT_ID> \\"
+log "    --member serviceAccount:${ADMIN_SA_EMAIL} --role roles/billing.viewer"
+
 # 2) THE NON-SECRET SETTINGS. No secret bindings here at all: IAP is this service's gate and it
 #    holds no session of its own, so there is nothing for Secret Manager to hand it.
+#
+#    THE FLEET TARGETS. The console reads the managed instance group and the Cloud Run services BY
+#    NAME rather than discovering them. Discovery would mean listing every group in the project and
+#    guessing which one is ours - a wider IAM grant AND a worse failure mode, because a renamed
+#    group would silently show a different fleet rather than an error.
+#
+#    An empty value is not a hole: the console treats an absent WORKER_MIG as "this deployment runs
+#    no fleet", which is exactly what create-worker-fleet.sh does with the same variable, and its
+#    Fleet page renders that state rather than failing.
+#
+#    GCP_PROJECT_NUMBER IS LOAD-BEARING FOR WRITES. It is half of the audience IAP signs its
+#    assertion for (/projects/<number>/locations/<region>/services/<service>). Without it the
+#    console cannot verify WHO is making a change, and it refuses every mutation rather than falling
+#    back to the plain X-Goog-Authenticated-User-Email header.
 ADMIN_ENV_PAIRS=(
-  "ENV=${APP_ENV}"
+  "BILLING_EXPORT_TABLE=${BILLING_EXPORT_TABLE:-}"
+  "CLOUDRUN_ADMIN_SERVICE=${ADMIN_SERVICE}"
+  "CLOUDRUN_API_SERVICE=${CLOUDRUN_API_SERVICE:-}"
+  "CLOUDRUN_CONSOLE_SERVICE=${CLOUDRUN_CONSOLE_SERVICE:-}"
   "DEPLOYMENT_ID=${DEPLOYMENT_ID}"
+  "ENV=${APP_ENV}"
+  "GCP_PROJECT_ID=${GCP_PROJECT_ID}"
+  "GCP_PROJECT_NUMBER=${GCP_PROJECT_NUMBER}"
+  "GCP_REGION=${GCP_REGION}"
   "NODE_ENV=production"
+  "QUEUE_NAME=${QUEUE_NAME:-simulation_jobs}"
+  "WORKER_MIG=${WORKER_MIG:-}"
+  "WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}"
 )
 DECLARED_ENV_NAMES=()
 for pair in "${ADMIN_ENV_PAIRS[@]}"; do
@@ -108,7 +214,9 @@ done
 #    with exactly what this deployment states. That is what stops drift, and it is also what would
 #    silently delete a setting that only ever existed on the live service. The difference is
 #    computed, named, and refused unless an operator says to prune it.
+ADMIN_SERVICE_EXISTS=0
 if run_svc_exists "${ADMIN_SERVICE}"; then
+  ADMIN_SERVICE_EXISTS=1
   live_image="$(gc run services describe "${ADMIN_SERVICE}" --region "${GCP_REGION}" \
     --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
   if [ "${live_image}" = "${ADMIN_IMAGE}" ]; then
@@ -158,8 +266,6 @@ deploy_args=(
   --memory "${ADMIN_MEMORY}"
   --concurrency "${ADMIN_CONCURRENCY}"
   --timeout "${ADMIN_TIMEOUT_SECONDS}"
-  --min-instances "${ADMIN_MIN_INSTANCES}"
-  --max-instances "${ADMIN_MAX_INSTANCES}"
   --cpu-boost
   --execution-environment gen2
   --ingress "${ADMIN_INGRESS}"
@@ -168,6 +274,18 @@ deploy_args=(
   --no-allow-unauthenticated
   --iap
 )
+
+# THE SCALING FLAGS ARE CREATE-ONLY. Once the service exists its warm floor and ceiling belong to
+# the ADMIN CONSOLE's Fleet page, and `gcloud run deploy` leaves a flag it is not given untouched -
+# so omitting them is precisely "do not reconcile this". Re-applying them on every deploy is what
+# would silently reset a floor an operator raised, and the symptom - a cold start on the next idle
+# request - arrives long after the deploy that caused it.
+if [ "${ADMIN_SERVICE_EXISTS}" = "0" ]; then
+  deploy_args+=(--min-instances "${ADMIN_MIN_INSTANCES}" --max-instances "${ADMIN_MAX_INSTANCES}")
+  ADMIN_SCALING_STATE="${ADMIN_MIN_INSTANCES}..${ADMIN_MAX_INSTANCES} (set at creation)"
+else
+  ADMIN_SCALING_STATE="left as it is - the admin console owns this service's warm floor"
+fi
 
 info "Deploying ${ADMIN_SERVICE} (${ADMIN_DISPOSITION}: ${#ADMIN_ENV_PAIRS[@]} env vars, IAP-gated, never public)"
 gc run deploy "${ADMIN_SERVICE}" "${deploy_args[@]}"
@@ -226,7 +344,8 @@ ADMIN_URL="$(gc run services describe "${ADMIN_SERVICE}" --region "${GCP_REGION}
 log "admin console service ${ADMIN_SERVICE}  (${ADMIN_DISPOSITION})"
 log "  identity      ${ADMIN_SA_EMAIL}"
 log "  image         ${ADMIN_IMAGE}"
-log "  scaling       ${ADMIN_MIN_INSTANCES}..${ADMIN_MAX_INSTANCES} instances, concurrency ${ADMIN_CONCURRENCY}"
+log "  scaling       ${ADMIN_SCALING_STATE}, concurrency ${ADMIN_CONCURRENCY}"
+log "  authority     ${#ADMIN_PROJECT_ROLES[@]} project role(s); custom role ${ADMIN_ROLE_ID} (${ADMIN_ROLE_DISPOSITION})"
 log "  gate          IAP, fronted by roles/run.invoker for ${IAP_AGENT} - ${INVOKER_STATE}"
 log "  url           ${ADMIN_URL:-<not reported>}"
 

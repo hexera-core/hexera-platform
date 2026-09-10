@@ -183,7 +183,9 @@ done
 #    with exactly what this deployment states. That is what stops drift, and it is also what would
 #    silently delete a setting that only ever existed on the live service. The difference is
 #    computed, named, and refused unless an operator says to prune it.
+CONSOLE_SERVICE_EXISTS=0
 if run_svc_exists "${CONSOLE_SERVICE}"; then
+  CONSOLE_SERVICE_EXISTS=1
   live_image="$(gc run services describe "${CONSOLE_SERVICE}" --region "${GCP_REGION}" \
     --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)"
   if [ "${live_image}" = "${CONSOLE_IMAGE}" ]; then
@@ -230,14 +232,24 @@ deploy_args=(
   --memory "${CONSOLE_MEMORY}"
   --concurrency "${CONSOLE_CONCURRENCY}"
   --timeout "${CONSOLE_TIMEOUT_SECONDS}"
-  --min-instances "${CONSOLE_MIN_INSTANCES}"
-  --max-instances "${CONSOLE_MAX_INSTANCES}"
   --cpu-boost
   --execution-environment gen2
   --ingress "${CONSOLE_INGRESS}"
   --labels "app=hexera,component=console,deployment-id=${DEPLOYMENT_ID},managed-by=deploy"
   --set-env-vars "^|^$(IFS='|'; printf '%s' "${CONSOLE_ENV_PAIRS[*]}")"
 )
+
+# THE SCALING FLAGS ARE CREATE-ONLY. Once the service exists its warm floor and ceiling belong to
+# the ADMIN CONSOLE's Fleet page, and `gcloud run deploy` leaves a flag it is not given untouched -
+# so omitting them is precisely "do not reconcile this". Re-applying them on every deploy is what
+# would silently reset a floor an operator raised, and the symptom - a cold start on the next idle
+# request - arrives long after the deploy that caused it.
+if [ "${CONSOLE_SERVICE_EXISTS}" = "0" ]; then
+  deploy_args+=(--min-instances "${CONSOLE_MIN_INSTANCES}" --max-instances "${CONSOLE_MAX_INSTANCES}")
+  CONSOLE_SCALING_STATE="${CONSOLE_MIN_INSTANCES}..${CONSOLE_MAX_INSTANCES} (set at creation)"
+else
+  CONSOLE_SCALING_STATE="left as it is - the admin console owns this service's warm floor"
+fi
 if [ ${#SECRET_BINDINGS[@]} -gt 0 ]; then
   deploy_args+=(--set-secrets "$(IFS=','; printf '%s' "${SECRET_BINDINGS[*]}")")
 else
@@ -277,7 +289,7 @@ CONSOLE_URL="$(gc run services describe "${CONSOLE_SERVICE}" --region "${GCP_REG
 log "console service ${CONSOLE_SERVICE}  (${CONSOLE_DISPOSITION})"
 log "  identity      ${CONSOLE_SA_EMAIL}"
 log "  image         ${CONSOLE_IMAGE}"
-log "  scaling       ${CONSOLE_MIN_INSTANCES}..${CONSOLE_MAX_INSTANCES} instances, concurrency ${CONSOLE_CONCURRENCY}"
+log "  scaling       ${CONSOLE_SCALING_STATE}, concurrency ${CONSOLE_CONCURRENCY}"
 log "  api origin    ${HEXERA_API_BASE_URL}"
 log "  credentials   ${#SECRET_BINDINGS[@]} Secret Manager reference(s) - no value is in the spec"
 log "  invoker       ${INVOKER_STATE}"
