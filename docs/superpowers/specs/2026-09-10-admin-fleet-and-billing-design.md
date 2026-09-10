@@ -1,7 +1,7 @@
 # Admin console: fleet management, cloud cost and customer billing — design
 
 Date: 2026-09-10
-Status: approved
+Status: implemented (see §12 for what implementation changed)
 Scope: one sub-project, **Admin-2 (revised)** — three pages (Fleet, Costs, Billing) and the
 deploy-script ownership change that makes the fleet controls durable.
 
@@ -327,3 +327,49 @@ PR B is the one that changes the security posture, and it is the one to review h
    Setting it protects long mesh jobs from aggressive scale-in, which matters more given there is
    no drain contract — but it is a behaviour change to a live fleet made by a console page, not by
    a deploy.
+
+
+## 12. What implementation changed
+
+Recorded on 2026-09-10, after building it. A design that is not corrected by what building it
+taught is a design nobody read twice.
+
+**§5 named four scripts. There were five.** `create-queue-depth-publisher.sh` also calls
+`set-autoscaling`, unconditionally, and would have clobbered every console change on the next
+deploy of the mesh tier — leaving the split-ownership decision true of one script and false of the
+system. It could not take the same carve-out as the others, either: its actual job is the metric
+*wiring*, and a publisher that changed zone or queue must still be able to repoint the autoscaler
+at the series it writes, or the fleet sits at `CUSTOM_METRIC_INVALID`. Because `set-autoscaling`
+replaces the whole policy, it now reads the live floor, ceiling, cooldown and jobs-per-instance
+back from the autoscaler and passes them through unchanged. It owns the wiring; the console owns
+the numbers.
+
+**The Cloud Run write role is a custom role too.** §7 accepted `roles/run.admin` for
+min-instances while insisting on a custom role for Compute. That was inconsistent — `run.admin`
+lets an IAP-gated web page deploy arbitrary revisions, which is a wider grant than
+`instanceAdmin.v1` would have been on the Compute side. One custom role now carries both.
+
+**Four status classes in one chart is not a colour problem, it is a form problem.** §4.2 specified
+requests grouped by `response_code_class` as a single graph. The reserved status palette fails the
+visualization standard's CVD and normal-vision separation floors at four series — warning and
+serious measure 13.6 apart against this surface, below the floor of 15. Splitting into *API
+requests* (total volume, one series) and *API errors* (4xx and 5xx) passes every check and answers
+the two questions separately, which is what an operator was reading the chart for anyway.
+
+**The chart palette could not be the console's own colours.** The warm slate the rest of the admin
+UI uses fails the chroma floor — it reads as grey and stops carrying identity. Chart series use
+documented palette slots, validated against this app's surface rather than the reference surface.
+
+**Not built: the by-SKU breakdown.** §6 said the Costs page would show spend "by service and by
+SKU". It shows by service. Adding SKU is a `GROUP BY` away, but open question 1 is still open — no
+export is configured on either project — so there is no schema to test the second grouping against,
+and shipping an untested query for data nobody has is worse than shipping neither.
+
+**Open question 3 answered by not answering it.** `scaleInControl` starts unset, exactly as it is
+today. The console can now set it, and the field is on the page with its reasoning next to it. A
+console page that silently changed a live fleet's scale-in behaviour on first deploy would be the
+same class of surprise this whole design exists to remove.
+
+Open questions 1 and 2 remain open: no BigQuery billing export is configured on either project, and
+the ceiling cap ships at a default of 12 (`ADMIN_MAX_ALLOWED_REPLICAS`) rather than a number anyone
+has decided.
