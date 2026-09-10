@@ -17,6 +17,12 @@ async def client_config() -> dict:
         # client that cannot read this is not a hole - it simply offers everything and lets the
         # upload be refused.
         "intake": capability_payload(),
+        # WHETHER THE CONSOLE SHOULD OFFER SIGN-UP. Advisory, exactly like `intake` above: the
+        # real gate is on POST /auth/session, because anyone can create an Identity Platform
+        # account against the project's public web API key without asking this endpoint first.
+        "auth": {
+            "signup_enabled": polcfg.CONSOLE_SIGNUP_ENABLED,
+        },
         "viewer": {
             "grid_px":          polcfg.VIEWER_GRID_PX,
             "fine_fill":        polcfg.VIEWER_FINE_FILL,
