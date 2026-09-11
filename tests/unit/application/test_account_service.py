@@ -47,9 +47,11 @@ class _Fakes:
         user.firebase_uid = firebase_uid
         return True
 
-    async def record_login(self, db, *, user_id, at, email_verified):
+    async def record_login(self, db, *, user_id, at, email_verified, name=""):
         user = next(u for u in self.users if u.id == user_id)
         user.last_login_at = at
+        if name.strip():
+            user.name = name.strip()
         if email_verified and user.email_verified_at is None:
             user.email_verified_at = at
 
@@ -347,3 +349,19 @@ async def test_two_uids_differing_only_in_case_get_different_slugs(fakes):
     # and nothing was inserted. The slug is now injective in the uid.
     assert account_service._slug_for("AbC") != account_service._slug_for("abc")
     assert len(account_service._slug_for("x" * 200)) <= 64
+
+
+async def test_signing_in_again_with_a_changed_display_name_refreshes_the_stored_one(fakes):
+    # users.name was written once, at provisioning. Someone who changed their display name in
+    # Identity Platform - which is exactly what /settings/account does - kept the old one in
+    # every reader of this column, the organisation member list included, indefinitely.
+    await account_service.resolve_or_provision(None, _token(name="Original Name"))
+    await account_service.resolve_or_provision(None, _token(name="Renamed Engineer"))
+    assert fakes.users[0].name == "Renamed Engineer"
+
+
+async def test_a_sign_in_with_no_name_claim_leaves_the_stored_name_alone(fakes):
+    # An absent claim is not an instruction to forget the name on file.
+    await account_service.resolve_or_provision(None, _token(name="Original Name"))
+    await account_service.resolve_or_provision(None, _token(name=""))
+    assert fakes.users[0].name == "Original Name"

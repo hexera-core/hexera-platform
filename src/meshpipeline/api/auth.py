@@ -28,6 +28,7 @@ REFUSAL = "Invalid or expired sign-in token"
 @router.post("/auth/session")
 async def create_session(
     id_token: Annotated[str, Body(embed=True)] = "",
+    organization_name: Annotated[str, Body(embed=True)] = "",
     x_api_key: Annotated[str | None, Header()] = None,
 ) -> dict:
     # THE INTERNAL GATE, checked before anything else. This endpoint accepts a credential minted
@@ -55,7 +56,8 @@ async def create_session(
 
     try:
         async with get_db() as db:
-            account = await account_service.resolve_or_provision(db, verified)
+            account = await account_service.resolve_or_provision(
+                db, verified, organization_name=organization_name)
     except account_service.LinkRefused:
         # THE SAME REFUSAL a forged, expired or malformed token gets, and deliberately so. This
         # branch is reached only when a token names an address that already has an account it has

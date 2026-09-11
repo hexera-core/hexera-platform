@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.application import credit_service
 from meshpipeline.contracts.firebase_token import VerifiedToken
-from meshpipeline.persistence.models import MembershipRole
+from meshpipeline.persistence.models import MembershipRole, Organization
+from meshpipeline.persistence.repositories import tenant_scope
 from meshpipeline.persistence.repositories.membership_repository import MembershipRepository
 from meshpipeline.persistence.repositories.organization_repository import (
     OrganizationRepository,
@@ -58,7 +59,8 @@ class Account:
 
 
 async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
-                               now: datetime | None = None) -> Account:
+                               now: datetime | None = None,
+                               organization_name: str = "") -> Account:
     at = now or datetime.now(UTC)
 
     # 1. THE UID PATH: the ordinary case, every sign-in after the first.
@@ -88,7 +90,7 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
             if not polcfg.CONSOLE_SIGNUP_ENABLED:
                 raise SignupDisabled("this deployment does not provision new accounts")
             try:
-                user = await _provision(db, token)
+                user = await _provision(db, token, organization_name=organization_name)
                 provisioned = True
             except IntegrityError:
                 # A concurrent first sign-in won the unique index on firebase_uid. Roll back to
@@ -105,8 +107,11 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                 if user is None:
                     raise
 
+    # `token.name` travels with the login stamp so a display name changed in Identity Platform
+    # reaches `users.name`, which every reader of this column - the organisation page's member
+    # list above all - would otherwise show as it was at provisioning, forever.
     await user_repo.record_login(db, user_id=user.id, at=at,
-                                 email_verified=token.email_verified)
+                                 email_verified=token.email_verified, name=token.name)
 
     organization_id = await membership_repo.organization_id_for_email(db, token.email)
     return Account(
@@ -157,14 +162,21 @@ async def _link(db: AsyncSession, existing, token: VerifiedToken):
     return existing
 
 
-async def _provision(db: AsyncSession, token: VerifiedToken):
+async def _provision(db: AsyncSession, token: VerifiedToken, *, organization_name: str = ""):
     # ONE TRANSACTION, four writes. The session this runs in is committed by the caller's
     # `get_db()` context, so a failure anywhere here leaves no user without an organisation and
     # no organisation without its grant. That atomicity is the whole reason the grant is issued
     # here rather than by a later, separately-failing step.
+    #
+    # `organization_name` IS CALLER-SUPPLIED and reaches this function on the provision path
+    # ALONE (design decision 6). The uid path resolves an account that already exists and the
+    # linking path attaches a uid to somebody else's backfilled tenant; honouring a name on
+    # either would let any token rename an organisation it did not create. Blank falls back to
+    # the address, which is the behaviour every account provisioned before this cycle got.
+    name = (organization_name or "").strip() or token.email
     user = await user_repo.create(db, email=token.email, name=token.name,
                                   firebase_uid=token.uid)
-    organization = await organization_repo.create(db, name=token.email,
+    organization = await organization_repo.create(db, name=name,
                                                   slug=_slug_for(token.uid))
     await membership_repo.create(db, user_id=user.id, organization_id=organization.id,
                                  role=MembershipRole.owner)
@@ -193,6 +205,58 @@ def _slug_for(firebase_uid: str) -> str:
     # conflict `_provision` can now see is the concurrent-signup one it is written for.
     digest = hashlib.sha256(firebase_uid.encode("utf-8")).hexdigest()[:_SLUG_DIGEST_CHARS]
     return f"org-{firebase_uid.lower()[:_SLUG_UID_CHARS]}-{digest}"
+
+
+@dataclass(frozen=True)
+class Member:
+    """One person who acts within an organisation, already resolved for display.
+
+    Normalised HERE rather than in the route because the degraded view below has no `User` row to
+    render and must still produce a member. A route that received `(User, MembershipRole)` tuples
+    would have to invent one.
+    """
+    email: str
+    name: str
+    role: str
+
+
+@dataclass(frozen=True)
+class OrganizationView:
+    #: the `organizations` row, or None when there is nothing to show - see `organization_view`.
+    organization: Organization | None
+    members: list[Member]
+
+
+async def organization_view(db: AsyncSession, *, owner_id: str,
+                            organization_id: str) -> OrganizationView:
+    """What the console shows the caller about the organisation they act within.
+
+    DECISION 12. An absent or malformed organisation is a deployment between 0004 and the image
+    that fills the column, or a lookup that could not run - the same states `credit_service`
+    answers 0 for. Answering with an empty member list would read to the person whose account it
+    is as though their account had vanished, so the caller is shown themselves: the honest
+    degraded view, and exactly what `tenant_scope`'s owner fallback means everywhere else.
+
+    AN ORGANISATION ID THAT PARSES BUT NAMES SOMEBODY ELSE'S ORGANISATION TAKES THE SAME DEGRADED
+    VIEW, and the membership check below is what makes that true rather than merely stated. The
+    id reaches this function from `org_dep`, which derives it server-side today - but "no caller
+    can currently pass a foreign id" is a property of a dependency somewhere else, and a service
+    that would hand over another tenant's name, slug and full member roster the moment that
+    changes is one refactor away from a disclosure. The caller is shown themselves; nothing about
+    the other tenant is read, let alone materialised.
+    """
+    parsed = tenant_scope.parsed_organization_id(organization_id)
+    own = await membership_repo.organization_id_for_email(db, owner_id) if parsed else None
+    if parsed is None or own != parsed:
+        return OrganizationView(organization=None,
+                                members=[Member(email=owner_id, name=owner_id, role="owner")])
+
+    row = await organization_repo.get_by_id(db, parsed)
+    members = await membership_repo.list_members(db, organization_id=parsed)
+    return OrganizationView(
+        organization=row,
+        members=[Member(email=user.email, name=user.name or user.email,
+                        role=getattr(role, "value", role)) for user, role in members])
 
 
 async def organization_id_for_owner(db: AsyncSession, owner_id: str) -> str:

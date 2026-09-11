@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import ApiKey
@@ -34,11 +34,22 @@ class ApiKeyRepository:
         return res.scalar_one_or_none()
 
     async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
-                             organization_id: str = "") -> list[ApiKey]:
-        res = await db.execute(
+                             organization_id: str = "", limit: int = 25,
+                             before: tuple[datetime, uuid.UUID] | None = None) -> list[ApiKey]:
+        """One page of this tenant's keys, newest first.
+
+        BOUNDED, like every other collection read. Nothing caps how many keys an organisation may
+        mint, so an unbounded read here is a settings page whose cost grows with the age of the
+        account - it loaded and serialised every key an organisation had ever created.
+        """
+        statement = (
             select(ApiKey)
             .where(tenant_scope.scope(ApiKey, owner_id=owner_id, organization_id=organization_id))
-            .order_by(ApiKey.created_at.desc(), ApiKey.id.desc()))
+            .order_by(ApiKey.created_at.desc(), ApiKey.id.desc())
+            .limit(limit))
+        if before is not None:
+            statement = statement.where(tuple_(ApiKey.created_at, ApiKey.id) < before)
+        res = await db.execute(statement)
         return list(res.scalars().all())
 
     async def revoke(self, db: AsyncSession, *, owner_id: str, key_id: uuid.UUID,

@@ -32,7 +32,7 @@ def app(monkeypatch):
                                  email_verified=True, name="A Person")
         raise InvalidToken("no")
 
-    async def fake_resolve(db, token, now=None):
+    async def fake_resolve(db, token, now=None, organization_name=""):
         return _ACCOUNT
 
     class _NullSession:
@@ -96,7 +96,7 @@ async def test_a_closed_signup_answers_403_so_the_console_can_explain_it(app, mo
     # Distinct from 401 on purpose: this is the ONE refusal a user can do something about, and
     # "this deployment is not open" is not a secret. It leaks no account existence - it is the
     # same answer for every unknown token.
-    async def refuse(db, token, now=None):
+    async def refuse(db, token, now=None, organization_name=""):
         raise SignupDisabled("closed")
 
     monkeypatch.setattr(auth_route.account_service, "resolve_or_provision", refuse)
@@ -126,7 +126,7 @@ async def test_a_refused_link_is_indistinguishable_from_a_forged_token(app, monk
     # for which addresses hold accounts here, which is precisely what the refusal exists to deny.
     from meshpipeline.application.account_service import LinkRefused
 
-    async def refuse(db, token, now=None):
+    async def refuse(db, token, now=None, organization_name=""):
         raise LinkRefused("linking an existing account requires a verified address")
 
     monkeypatch.setattr(auth_route.account_service, "resolve_or_provision", refuse)
@@ -141,7 +141,7 @@ async def test_a_refused_link_is_indistinguishable_from_a_forged_token(app, monk
 async def test_the_refused_link_does_not_name_the_address_in_the_response(app, monkeypatch):
     from meshpipeline.application.account_service import LinkRefused
 
-    async def refuse(db, token, now=None):
+    async def refuse(db, token, now=None, organization_name=""):
         raise LinkRefused("this address is already linked to another account")
 
     monkeypatch.setattr(auth_route.account_service, "resolve_or_provision", refuse)

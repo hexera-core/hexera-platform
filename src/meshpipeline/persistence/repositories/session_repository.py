@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import ChatSession
@@ -28,6 +29,29 @@ class SessionRepository:
                 tenant_scope.scope(ChatSession, owner_id=owner_id,
                                    organization_id=organization_id)))
         return res.scalar_one_or_none()
+
+    async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
+                             organization_id: str = "", limit: int = 25,
+                             before: tuple[datetime, uuid.UUID] | None = None
+                             ) -> list[ChatSession]:
+        """One page of this tenant's conversations, newest first.
+
+        Ordered on `created_at` rather than `updated_at` even though the latter is what a user
+        thinks of as recency: `updated_at` moves under the keyset, so a row edited mid-scroll
+        would jump pages and could be served twice or skipped. Recency-ordering is a later
+        decision that needs a stable sort key, not this one.
+        """
+        statement = (
+            select(ChatSession)
+            .where(tenant_scope.scope(ChatSession, owner_id=owner_id,
+                                      organization_id=organization_id))
+            .order_by(ChatSession.created_at.desc(), ChatSession.id.desc())
+            .limit(limit))
+        if before is not None:
+            statement = statement.where(
+                tuple_(ChatSession.created_at, ChatSession.id) < before)
+        result = await db.execute(statement)
+        return list(result.scalars().all())
 
     async def get_internal(self, db: AsyncSession, session_id: uuid.UUID) -> ChatSession | None:
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))

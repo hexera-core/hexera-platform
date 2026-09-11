@@ -105,10 +105,17 @@ def test_the_served_routes_are_exactly_the_supported_set():
     served = {(m.upper(), p)
               for p, ops in app.openapi()["paths"].items() for m in ops}
     expected = {
+        ("GET", "/api/v1/api-keys"),             # the caller's own keys, minus the secret half
+        ("POST", "/api/v1/api-keys"),            # mints a key; console session only
+        ("DELETE", "/api/v1/api-keys/{key_id}"), # revokes a key; console session only
+        ("GET", "/api/v1/chat"),                 # the caller's own conversations, keyset paged
         ("GET", "/api/v1/chat/history/{session_id}"),
         ("POST", "/api/v1/chat/message"),
         ("GET", "/api/v1/client-config"),
         ("GET", "/api/v1/credits"),
+        ("GET", "/api/v1/credits/history"),      # the org's credit ledger, keyset paged
+        ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
+        ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
         ("GET", "/api/v1/simulation/{job_id}/surface"),

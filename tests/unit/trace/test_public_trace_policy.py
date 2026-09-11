@@ -514,3 +514,35 @@ def test_the_trace_never_carries_authorization_material(mode):
     flat = json.dumps(out)
     for sentinel in ("adm_SECRET", "prev_SECRET", "sk-live-SECRET", "hunter2", "sid=SECRET"):
         assert sentinel not in flat
+
+
+def test_a_presented_hexera_api_key_is_redacted_wherever_it_appears(mode):
+    # contracts/api_key.py makes `hx_live_` visible in the credential itself so a leaked key is
+    # recognisable "by a secret scanner, by a log filter, by a person reading a paste". This is
+    # the log filter, and until this pattern existed it was the one reader that could not do it.
+    # The key is MINTED here rather than hand-written: a change to the format that this net no
+    # longer catches must fail here, not in production.
+    from meshpipeline.contracts.api_key import mint
+
+    mode(RAW)
+    key = mint()
+    out = sanitize_payload({
+        "note": f"the caller presented {key.presented} and it was accepted",
+        "argv": ["curl", "-H", f"Authorization: Bearer {key.presented}", "https://api.hexera.ai"],
+    })
+    flat = json.dumps(out)
+    assert key.secret not in flat, "the secret half of a live key reached the public trace"
+    assert key.presented not in flat
+    assert REDACTED in out["note"]
+
+
+def test_the_public_half_of_a_key_survives_so_a_row_can_still_be_told_apart(mode):
+    # `key_prefix` is public by design - /settings/api-keys prints it in every row and it is what
+    # a holder matches their own copy against. Blanking it would be over-redaction that destroys
+    # the only handle on a key without protecting anything.
+    from meshpipeline.contracts.api_key import mint
+
+    mode(RAW)
+    key = mint()
+    out = sanitize_payload({"note": f"key {key.key_prefix} was revoked"})
+    assert key.key_prefix in out["note"]

@@ -9,6 +9,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.api import pagination
+from meshpipeline.api.schemas import listing
 from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, JobStatus_
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application.job_service import JobService
@@ -117,6 +119,37 @@ def _failed_concerns(review: dict, engine: str) -> list[str]:
         out.append(ax.concern if ax and ax.concern
                    else "The reviewer found a problem it could not put in words here")
     return out
+
+
+@router.get("")
+async def list_jobs(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = None,
+                    owner_id: str = Depends(owner_dep),
+                    organization_id: str = Depends(org_dep)) -> dict:
+    # DECLARED BEFORE `/{job_id}`. FastAPI matches in declaration order, so a collection route
+    # placed after that one is unreachable - "" would be captured as a job id.
+    bounded = pagination.clamp_limit(limit)
+    async with get_db() as db:
+        # ONE MORE ROW THAN THE PAGE - see listing.look_ahead. A full page is not evidence that
+        # another page exists, and the difference is what decides whether a cursor is minted.
+        rows = await svc.list_runs(db, owner_id, organization_id=organization_id,
+                                   limit=listing.look_ahead(bounded),
+                                   before=pagination.decode_cursor(cursor))
+    return listing.page(
+        rows, limit=bounded,
+        item=lambda row: {
+            "id": str(row[0].id),
+            "status": getattr(row[0].status, "value", row[0].status),
+            "task_label": row[1],
+            # A DISPUTE CHILD HAS NO SESSION, so it has no label: the re-review creates a fresh
+            # job and links no conversation to it. Saying so is what stops every re-review in the
+            # list reading as an indistinguishable "Untitled study".
+            "is_rerun": row[0].dispute_operation_key is not None,
+            "created_at": row[0].created_at.isoformat() if row[0].created_at else None,
+            "ended_at": row[0].ended_at.isoformat() if row[0].ended_at else None,
+            "attempts": row[0].current_attempt,
+            "failed_reason": getattr(row[0].failed_reason, "value", row[0].failed_reason),
+        },
+        key=lambda row: (row[0].created_at, row[0].id))
 
 
 @router.get("/{job_id}", response_model=JobStatus_)

@@ -13,6 +13,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       // the product API verifies the token. This provider only carries it between the two.
       credentials: {
         idToken: { label: "ID token", type: "text" },
+        organizationName: { label: "Organisation name", type: "text" },
       },
       authorize: (credentials) => authorizeFirebaseSession(credentials),
     }),

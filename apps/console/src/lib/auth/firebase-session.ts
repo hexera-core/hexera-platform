@@ -18,13 +18,15 @@ export class SignupDisabled extends Error {
 }
 
 export async function authorizeFirebaseSession(
-  credentials: Partial<Record<"idToken", unknown>>,
+  credentials: Partial<Record<"idToken" | "organizationName", unknown>>,
   env: ConsoleAuthEnv = process.env,
 ): Promise<ConsoleUser | null> {
   const idToken = credentials.idToken;
   if (typeof idToken !== "string" || !idToken) {
     return null;
   }
+  const organizationName =
+    typeof credentials.organizationName === "string" ? credentials.organizationName : "";
 
   const baseUrl = env.HEXERA_API_BASE_URL;
   if (!baseUrl) {
@@ -41,7 +43,7 @@ export async function authorizeFirebaseSession(
   const response = await fetch(new URL("/auth/session", normalizedBaseUrl(baseUrl)), {
     method: "POST",
     headers,
-    body: JSON.stringify({ id_token: idToken }),
+    body: JSON.stringify({ id_token: idToken, organization_name: organizationName }),
   });
 
   if (response.status === 403) {

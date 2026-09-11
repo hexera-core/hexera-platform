@@ -44,8 +44,24 @@ class UserRepository:
         return bool(res.rowcount)
 
     async def record_login(self, db: AsyncSession, *, user_id: uuid.UUID, at: datetime,
-                           email_verified: bool) -> None:
+                           email_verified: bool, name: str = "") -> None:
+        """Stamp this sign-in, and take the display name the token now carries.
+
+        THE NAME IS REFRESHED HERE because this is the only write on the sign-in path that a
+        returning account reaches. `users.name` was otherwise written once, at provisioning, so
+        somebody who changed their display name in Identity Platform kept the old one forever in
+        every reader of this column - the organisation page's member list above all.
+
+        One UPDATE, not two, and no read first. Deciding "is it different?" in Python would cost
+        a round trip to learn something the row is about to be rewritten for anyway: last_login_at
+        changes on every call, so carrying `name` in the same SET list is free, and re-writing an
+        identical value is a no-op the database already collapses. A BLANK name is never written -
+        a token without the claim must not erase a name the account already has.
+        """
         values: dict = {"last_login_at": at}
+        display_name = (name or "").strip()[:256]
+        if display_name:
+            values["name"] = display_name
         if email_verified:
             # WHEN it was FIRST proven. `is null` keeps the original moment: re-stamping it on
             # every sign-in would turn "verified since" into "last seen", which is what

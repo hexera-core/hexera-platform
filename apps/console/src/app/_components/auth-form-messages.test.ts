@@ -76,3 +76,23 @@ test("messageForSignIn falls back to a generic message for an unrecognised or mi
   );
   assert.equal(messageForSignIn(null), "Could not sign in. Try again.");
 });
+
+test("messageForSignUp explains a password Identity Platform considers too weak", () => {
+  assert.equal(messageForSignUp({ code: "auth/weak-password" }), "Choose a longer password.");
+});
+
+test("messageForSignUp reports an address already in use without inventing a cause", () => {
+  // Firebase applies its own enumeration protection, so echoing this specific code tells an
+  // attacker nothing it would not tell them directly.
+  assert.equal(
+    messageForSignUp({ code: "auth/email-already-in-use" }),
+    "That email already has an account.",
+  );
+});
+
+test("messageForSignUp falls back honestly for a code it does not know", () => {
+  assert.equal(
+    messageForSignUp({ code: "auth/some-future-code" }),
+    "Could not create the account. Try again.",
+  );
+});
