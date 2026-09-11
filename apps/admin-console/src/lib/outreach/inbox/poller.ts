@@ -75,7 +75,9 @@ async function matchEnrollment(message: FetchedMessage, fromEmail: string): Prom
     // preferring the most recently touched live enrollment. For a bounce
     // report, the useful address is the one the mail system says failed;
     // the From line is just the robot that wrote the report.
-    const address = BOUNCE_SENDER.test(fromEmail) ? (failedRecipient(message) ?? fromEmail) : fromEmail;
+    const address = BOUNCE_SENDER.test(fromEmail)
+      ? ((await failedRecipient(message)) ?? fromEmail)
+      : fromEmail;
     enrollment = await get<Enrollment>(
       `SELECT e.* FROM enrollments e
        JOIN contacts c ON c.id = e.contact_id
@@ -111,7 +113,7 @@ async function applyOutcome(
   switch (verdict.classification) {
     case "negative": {
       if (await getBoolSetting(SETTING_KEYS.autoStopOnNegative)) {
-        stopSequence(enrollment.id, "stopped", `negative reply (${verdict.matchedRules.join(", ")})`, "reply-classifier");
+        await stopSequence(enrollment.id, "stopped", `negative reply (${verdict.matchedRules.join(", ")})`, "reply-classifier");
         result.stopped++;
       }
       if (contact.email_normalized) {
@@ -140,13 +142,13 @@ async function applyOutcome(
     case "positive": {
       // Not "stopped" — this is the outcome the campaign exists to produce.
       // A human takes it from here.
-      stopSequence(enrollment.id, "replied", "positive reply — handed to a human", "reply-classifier");
+      await stopSequence(enrollment.id, "replied", "positive reply — handed to a human", "reply-classifier");
       result.stopped++;
       break;
     }
 
     case "neutral": {
-      stopSequence(enrollment.id, "review", "reply needs a human read before continuing", "reply-classifier");
+      await stopSequence(enrollment.id, "review", "reply needs a human read before continuing", "reply-classifier");
       result.stopped++;
       break;
     }
@@ -157,7 +159,7 @@ async function applyOutcome(
       // contact entirely.
       if (enrollment.status === "active" || enrollment.status === "pending") {
         const resumeAt = addSendingDays(new Date(), 7, campaign, 60);
-        transition(enrollment.id, "active", {
+        await transition(enrollment.id, "active", {
           nextSendAt: resumeAt.toISOString(),
           reason: "out-of-office — follow-up deferred",
           actor: "reply-classifier",
@@ -171,7 +173,7 @@ async function applyOutcome(
       break;
 
     case "bounce": {
-      stopSequence(enrollment.id, "bounced", "hard bounce — address is undeliverable", "reply-classifier");
+      await stopSequence(enrollment.id, "bounced", "hard bounce — address is undeliverable", "reply-classifier");
       result.stopped++;
 
       // Gmail accepted the message, then the receiving server refused it. It
@@ -300,7 +302,7 @@ export async function pollReplies(options: PollOptions = {}): Promise<PollResult
             nowIso(),
           ], client);
 
-        recordEvent({
+        await recordEvent({
           type: EVENT_TYPES.replyClassified,
           entityType: "reply",
           entityId: inserted.lastInsertRowid,
@@ -332,7 +334,7 @@ export async function pollReplies(options: PollOptions = {}): Promise<PollResult
       result.byClassification[verdict.classification] =
         (result.byClassification[verdict.classification] ?? 0) + 1;
 
-      applyOutcome(match, verdict, result);
+      await applyOutcome(match, verdict, result);
     } catch (error) {
       result.errors.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
     }

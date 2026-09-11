@@ -21,8 +21,11 @@ const NOW = "2026-09-10T00:00:00.000Z";
 
 test("resolves unprefixed table names through the search path", options, async () => {
   // The whole reason the ported SQL did not have to change.
-  const count = await scalar<string>("SELECT count(*) FROM contacts");
-  assert.equal(typeof count, "string", "count(*) comes back as a bigint string");
+  const count = await scalar<number>("SELECT count(*) FROM contacts");
+  // A NUMBER, not pg's default bigint string. This assertion used to demand the string and so
+  // locked in the defect it should have caught: the analytics page was adding those strings
+  // together and reporting 221 replies out of 5. db.ts registers the parser that fixes it.
+  assert.equal(typeof count, "number", "count(*) must be usable in arithmetic");
 });
 
 test("run() reports the id Postgres assigned", options, async () => {

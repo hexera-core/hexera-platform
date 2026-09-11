@@ -1,4 +1,4 @@
-import { Pool, type PoolClient, type PoolConfig } from "pg";
+import { Pool, types, type PoolClient, type PoolConfig } from "pg";
 
 import { insertNeedingReturningId, toPositionalPlaceholders, withReturningId } from "./sql";
 
@@ -15,6 +15,25 @@ import { insertNeedingReturningId, toPositionalPlaceholders, withReturningId } f
 // without editing a hundred query strings. It is set on the CONNECTION, not per statement: pg
 // hands out pooled connections, so a `SET search_path` issued as a query would apply to whichever
 // connection happened to serve it and not to the next one.
+
+// COUNT(*) MUST COME BACK AS A NUMBER.
+//
+// pg returns int8 and numeric as STRINGS, because either can exceed what a JS number represents
+// exactly. SQLite returned numbers, so every ported aggregate silently changed type: the analytics
+// page added "2" + "2" + "1" and reported 221 replies out of 5, at a reply rate of 2762%. Nothing
+// threw, nothing failed a type check - `n: number` is a claim about the row shape that the driver
+// was never asked to honour - and the figures were merely wrong, which is the worst way for a
+// dashboard to fail.
+//
+// THE PRECISION TRADE-OFF IS EXPLICIT. Parsing as a number is lossy above 2^53. These are counts
+// of contacts, messages and replies in a one-mailbox outreach system, and a verification score
+// between 0 and 100; the bound is nine orders of magnitude away and Gmail's own sending limits
+// make it unreachable. int8 identifiers are covered by the same bound. If a column ever genuinely
+// needs the full range, it must be cast to text in its query rather than by widening this.
+const PG_INT8 = 20;
+const PG_NUMERIC = 1700;
+types.setTypeParser(PG_INT8, (value) => Number(value));
+types.setTypeParser(PG_NUMERIC, (value) => Number(value));
 
 export type Row = Record<string, unknown>;
 

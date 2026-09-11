@@ -158,6 +158,15 @@ jobs:
       worker_env_uri: ${{ steps.pick.outputs.worker_env_uri }}
       outreach_enabled: ${{ steps.pick.outputs.outreach_enabled }}
       outreach_worker_job: ${{ steps.pick.outputs.outreach_worker_job }}
+      outreach_db_host: ${{ steps.pick.outputs.outreach_db_host }}
+      outreach_db_name: ${{ steps.pick.outputs.outreach_db_name }}
+      outreach_db_user: ${{ steps.pick.outputs.outreach_db_user }}
+      outreach_cloudsql_instance: ${{ steps.pick.outputs.outreach_cloudsql_instance }}
+      outreach_db_password_secret: ${{ steps.pick.outputs.outreach_db_password_secret }}
+      outreach_kms_key: ${{ steps.pick.outputs.outreach_kms_key }}
+      google_client_id: ${{ steps.pick.outputs.google_client_id }}
+      google_client_secret_secret: ${{ steps.pick.outputs.google_client_secret_secret }}
+      google_redirect_uri: ${{ steps.pick.outputs.google_redirect_uri }}
       # THE RUNTIME HARDENING SWITCH AND THE BROWSER ORIGIN IT ADMITS, pinned per environment for
       # the same reason every target above is: they have to reach create-api-service.sh, and the
       # only path that reaches it is this one. bootstrap-env.sh REGENERATES the deployment env on
@@ -348,6 +357,17 @@ jobs:
               # Dev runs no outreach - see the prod block. Empty, so the stage states its skip.
               echo "outreach_enabled="
               echo "outreach_worker_job="
+              # Empty with it, for the same reason: naming a database or an OAuth client here would
+              # stand a second mailbox connection up beside the real one.
+              echo "outreach_db_host="
+              echo "outreach_db_name="
+              echo "outreach_db_user="
+              echo "outreach_cloudsql_instance="
+              echo "outreach_db_password_secret="
+              echo "outreach_kms_key="
+              echo "google_client_id="
+              echo "google_client_secret_secret="
+              echo "google_redirect_uri="
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -446,6 +466,39 @@ jobs:
             # OUTREACH IS PROD-ONLY: one partner list, one mailbox. Named here and nowhere else.
             echo "outreach_enabled=1"
             echo "outreach_worker_job=prod-outreach"
+            # THE OUTREACH DATABASE. The `outreach` schema lives INSIDE meshpipeline - alembic
+            # revision 0005 creates it there - so this is the same Cloud SQL instance and the same
+            # database the rest of the platform migrates, reached over the Cloud Run socket.
+            # OUTREACH_DB_HOST doubles as that socket path.
+            #
+            # THE ROLE IS meshpipeline, AND THAT IS A DELIBERATE COMPROMISE, not an oversight. A
+            # dedicated `outreach` role restricted to its own schema is the right shape and is
+            # tracked as a follow-up; what blocks it today is that hexera-prod-pg has no public IP,
+            # so there is no path from a laptop or from CI on which to run the CREATE ROLE and the
+            # GRANTs. Standing one up needs either the Cloud SQL proxy in the deploy job or a
+            # grant step in the migrate job, and neither is a config edit. Until then the outreach
+            # code runs with the same rights as the rest of the platform, which is the same trust
+            # boundary every other service in this project already sits inside.
+            echo "outreach_db_host=/cloudsql/hexera-prod:us-central1:hexera-prod-pg"
+            echo "outreach_db_name=meshpipeline"
+            echo "outreach_db_user=meshpipeline"
+            echo "outreach_cloudsql_instance=hexera-prod:us-central1:hexera-prod-pg"
+            echo "outreach_db_password_secret=postgres-password"
+            # The key the mailbox refresh token is sealed with. create-admin-service.sh provisions
+            # the keyring and key this names and grants the admin identity encrypt/decrypt on it -
+            # never admin, so the console cannot destroy the key its own stored tokens depend on.
+            echo "outreach_kms_key=projects/hexera-prod/locations/us-central1/keyRings/outreach/cryptoKeys/oauth-tokens"
+            # THE OAUTH CLIENT. The id is the PUBLIC half and ships as a plain environment value;
+            # the secret half is a Secret Manager CONTAINER NAME and its value never appears here.
+            # Both are empty until an owner creates a WEB application client in the Cloud Console
+            # carrying the redirect URI below - Google shut down the OAuth client admin APIs, so
+            # this one cannot be scripted. Empty client id means the Mailbox panel says it cannot
+            # connect rather than offering a button that fails.
+            echo "google_client_id="
+            echo "google_client_secret_secret=google-client-secret"
+            # Must match the authorised redirect URI on that client EXACTLY, including the scheme
+            # and the absence of a trailing slash. admin_domain above is the same hostname.
+            echo "google_redirect_uri=https://admin.hexera.ai/outreach/auth/callback"
             # THE OBJECT-STORE KEY THIS DEPLOYMENT ALREADY OWNS, and the only thing that stops a
             # release tag minting a second one. create-object-storage.sh decides "reuse or mint"
             # by testing the RECORDED access id against the live ACTIVE keys; the recording lives
@@ -837,6 +890,15 @@ jobs:
       WORKER_ENV_URI: ${{ needs.target.outputs.worker_env_uri }}
       OUTREACH_ENABLED: ${{ needs.target.outputs.outreach_enabled }}
       OUTREACH_WORKER_JOB: ${{ needs.target.outputs.outreach_worker_job }}
+      OUTREACH_DB_HOST: ${{ needs.target.outputs.outreach_db_host }}
+      OUTREACH_DB_NAME: ${{ needs.target.outputs.outreach_db_name }}
+      OUTREACH_DB_USER: ${{ needs.target.outputs.outreach_db_user }}
+      OUTREACH_CLOUDSQL_INSTANCE: ${{ needs.target.outputs.outreach_cloudsql_instance }}
+      OUTREACH_DB_PASSWORD_SECRET: ${{ needs.target.outputs.outreach_db_password_secret }}
+      OUTREACH_KMS_KEY: ${{ needs.target.outputs.outreach_kms_key }}
+      GOOGLE_CLIENT_ID: ${{ needs.target.outputs.google_client_id }}
+      GOOGLE_CLIENT_SECRET_SECRET: ${{ needs.target.outputs.google_client_secret_secret }}
+      GOOGLE_REDIRECT_URI: ${{ needs.target.outputs.google_redirect_uri }}
       # THE RUNTIME HARDENING, carried the same way CLOUDRUN_CONSOLE_SERVICE above is: pinned by
       # the picker, exported here for the whole job, read out of the ambient environment by
       # bootstrap-env.sh's generated-env heredoc, and handed to create-api-service.sh as ENV and

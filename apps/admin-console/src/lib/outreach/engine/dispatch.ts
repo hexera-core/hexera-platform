@@ -197,7 +197,7 @@ async function runDispatchInner(
   // back is the normal state for most of the day, and recording it every
   // minute would bury the events that matter.
   if (summary.attempted > 0) {
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.dispatchRun,
       entityType: "worker",
       payload: { trigger: options.trigger, ...summary },

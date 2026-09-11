@@ -57,6 +57,34 @@ laptop — carry no prefix, stay readable, and are re-sealed the next time they 
 The key is not rotated automatically. Rotating without re-encrypting the stored rows locks the
 mailbox out, and re-encryption is a migration, not a schedule.
 
+## Connecting the mailbox
+
+On a laptop this was `npm run gmail:auth`: a script that opened a browser, caught the redirect on
+`localhost:5789` and wrote the token to SQLite. None of that survives Cloud Run — no browser to
+open, no loopback port to catch, no filesystem that persists. Hosted, the consent round trip is two
+route handlers:
+
+| | |
+|---|---|
+| `GET /outreach/auth/start` | issues a random `state`, sets it as an `HttpOnly` cookie scoped to `/outreach/auth`, redirects to Google |
+| `GET /outreach/auth/callback` | checks the returned `state` against that cookie, exchanges the code, reads the mailbox address from the token itself, seals and stores it |
+
+Both **require a verified IAP assertion**, the same bar the Fleet page holds VM deletion to —
+granting this app send-as rights over a mailbox is a privileged change, not a page view. Neither
+route trusts the plain `X-Goog-Authenticated-User-Email` header.
+
+The `state` check is what stops another site from handing a signed-in admin an authorization code
+for an **attacker's** mailbox, which the console would otherwise store and start sending from.
+
+The consent URL asks for `access_type=offline` **with** `prompt=consent`. Offline alone is not
+enough: Google returns a refresh token only on a consent it considers new, so a mailbox that was
+ever connected before comes back with an access token that expires in an hour and nothing to renew
+it with. An exchange that yields no refresh token — and where none is already held — is **refused**
+rather than stored, because storing it looks like success and then stops working at lunchtime.
+
+The authorization code and both tokens never reach a log line, an audit entry or a redirect
+parameter. The audit entry records who connected which mailbox with which scopes.
+
 ## The schema
 
 14 tables in an `outreach` **schema**, not an `outreach_` name prefix. The prefix was the first
@@ -80,8 +108,24 @@ Four pieces of SQL had to change, none of which a typechecker can catch:
 ## Still to do by hand
 
 **1. The OAuth client.** The engine used a *desktop* client redirecting to `localhost:5789`. Hosted
-it needs a **web** client whose redirect URI is the admin console's own origin, set as
-`GOOGLE_REDIRECT_URI`. Changing the client type is a Console action; there is no gcloud equivalent.
+it needs a **web** client. Google shut down the OAuth client admin APIs, so this is a Cloud Console
+action with no gcloud equivalent. Three things follow from it:
+
+- Its **authorised redirect URI** must be exactly `https://admin.hexera.ai/outreach/auth/callback`
+  — same scheme, no trailing slash. `deploy.yml` already pins this as `google_redirect_uri`.
+- Its **client id** goes into `deploy.yml` as `google_client_id`, which is currently empty. It is
+  the public half and travels as a plain environment value. Until it is set the Mailbox panel
+  reports that it cannot connect rather than offering a button that fails.
+- Its **client secret** goes into Secret Manager as `google-client-secret`:
+
+```bash
+printf '%s' 'THE-SECRET' | gcloud secrets create google-client-secret \
+  --project hexera-prod --data-file=- --replication-policy=automatic
+```
+
+`create-admin-service.sh` grants the admin identity `secretAccessor` on it. No secret value ever
+appears in `deploy.yml`, and `devtools/quality/check_deploy_secrets.py` is the gate that keeps it
+that way.
 
 **2. The data import.** The contact list, templates, campaigns and history live in one SQLite file
 on one machine. The importer is written and tested; running it needs that file.
@@ -107,6 +151,25 @@ sealed.
 
 Identity sequences are reset at the end. Without that the first row written after the import
 collides with an id the import already used.
+
+## The database role, and a compromise
+
+The `outreach` schema lives **inside `meshpipeline`** — alembic revision `0005` creates it there —
+so outreach reaches the same Cloud SQL instance the rest of the platform does, over the Cloud Run
+socket, and `OUTREACH_DB_HOST` doubles as that socket path.
+
+It connects **as `meshpipeline`**, and that is a deliberate compromise rather than an oversight. A
+dedicated `outreach` role restricted to its own schema is the right shape. What blocks it today is
+that `hexera-prod-pg` has **no public IP**, so there is no path from a laptop or from CI on which to
+run the `CREATE ROLE` and the `GRANT`s. Standing one up needs either the Cloud SQL proxy in the
+deploy job or a grant step in the migrate job, and neither is a config edit. Until then the
+outreach code runs with the same rights as the rest of the platform — the same trust boundary every
+other service in this project already sits inside.
+
+Both the console and the sender job get `--network`, `--subnet` and `--vpc-egress
+private-ranges-only` alongside `--set-cloudsql-instances`. Against a private-IP instance the
+Cloud SQL flag alone is not enough: the connector still needs a route into the VPC, and without it
+every tick fails on connection timeout in a way that reads as "the database is down".
 
 ## Where things are
 

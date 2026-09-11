@@ -39,7 +39,7 @@ export interface StoredToken {
 }
 
 export class GmailNotConnectedError extends Error {
-  constructor(message = "No Gmail account is connected. Run: npm run gmail:auth") {
+  constructor(message = "No Gmail account is connected. Connect one under Settings → Mailbox.") {
     super(message);
     this.name = "GmailNotConnectedError";
   }
@@ -52,7 +52,8 @@ export function oauthClient(): OAuth2Client {
 
   if (!clientId || !clientSecret) {
     throw new GmailNotConnectedError(
-      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set. See README → Connecting Gmail.",
+      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set on this deployment, so no mailbox can " +
+        "be connected. See docs/deployment/outreach.md.",
     );
   }
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
@@ -127,7 +128,9 @@ export async function authorizedClient(accountEmail?: string): Promise<{ client:
   // The library refreshes the access token transparently; persist the new one
   // so a fresh process does not have to refresh again immediately.
   client.on("tokens", (fresh) => {
-    saveToken(token.account_email, fresh as Record<string, unknown>);
+    void saveToken(token.account_email, fresh as Record<string, unknown>).catch((error) => {
+      console.error("could not persist a refreshed Gmail token", error);
+    });
   });
 
   return { client, account: token };

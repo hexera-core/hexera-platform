@@ -53,7 +53,16 @@ function SettingRow({
   );
 }
 
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // The mailbox-connect routes hand their outcome back in the query string, because the browser
+  // arrives here as a fresh navigation from Google rather than as a response to a form post.
+  const params = await searchParams;
+  const justConnected = typeof params.mailbox_connected === "string" ? params.mailbox_connected : null;
+  const connectError = typeof params.mailbox_error === "string" ? params.mailbox_error : null;
   const settings = await allSettings();
   const mode = await sendMode();
   const gmail = await connectionStatus();
@@ -201,12 +210,22 @@ export default async function SettingsPage() {
             <p className="text-[0.6875rem] text-[var(--color-faint)] leading-snug m-0">
               You cannot send from this page, on purpose. Sending means choosing who,
               and choosing who means seeing the list. It lives on the{" "}
-              <a href="/queue" className="underline">Queue</a> page.
+              <a href="/outreach/queue" className="underline">Queue</a> page.
             </p>
           </div>
         </div>
       </Panel>
 
+
+      {(justConnected || connectError) && (
+        <p
+          className="text-[0.75rem] mt-4 mb-0 leading-snug"
+          style={{ color: justConnected ? "var(--color-muted)" : "var(--color-crimson-soft)" }}
+          role="status"
+        >
+          {justConnected ? `Mailbox connected: ${justConnected}` : connectError}
+        </p>
+      )}
 
       <div className="grid gap-4 mt-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
         <Panel title="Mailbox">
@@ -216,10 +235,11 @@ export default async function SettingsPage() {
                 <span className="inline-block w-2 h-2 rounded-full" style={{ background: "var(--color-positive)" }} />
                 <span className="t-mono text-[0.8125rem]">{gmail.account}</span>
               </div>
-              <p className="text-[0.75rem] text-[var(--color-muted)] leading-snug m-0">
+              <p className="text-[0.75rem] text-[var(--color-muted)] leading-snug mt-0 mb-3">
                 Connected with send and read-only scopes. Replies to this mailbox are what stop
                 sequences, so it must be the same address the outreach goes out from.
               </p>
+              <a href="/outreach/auth/start" className="btn">Reconnect</a>
             </>
           ) : (
             <>
@@ -227,10 +247,10 @@ export default async function SettingsPage() {
                 <span className="inline-block w-2 h-2 rounded-full" style={{ background: "var(--color-faint)" }} />
                 <span className="text-[0.8125rem] text-[var(--color-muted)]">Not connected</span>
               </div>
-              <p className="text-[0.75rem] text-[var(--color-muted)] leading-snug">
-                Run <code className="t-mono">npm run gmail:auth</code> in the project directory.
+              <p className="text-[0.75rem] text-[var(--color-muted)] leading-snug mt-0 mb-3">
                 Everything except sending and reply-reading works without it.
               </p>
+              <a href="/outreach/auth/start" className="btn btn-primary">Connect mailbox</a>
               {gmail.error && (
                 <p className="text-[0.6875rem] text-[var(--color-crimson-soft)] m-0">{gmail.error}</p>
               )}
@@ -340,8 +360,7 @@ export default async function SettingsPage() {
               </ActionForm>
             ) : (
               <p className="text-[0.8125rem] text-[var(--color-muted)] leading-snug">
-                No mailbox connected, so there is nothing to test yet. Run{" "}
-                <code className="t-mono">npm run gmail:auth</code> first.
+                No mailbox connected, so there is nothing to test yet. Connect one under Mailbox.
               </p>
             )}
           </div>

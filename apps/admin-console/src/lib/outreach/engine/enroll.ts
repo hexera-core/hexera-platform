@@ -42,7 +42,10 @@ export async function checkEligibility(contact: Contact): Promise<EligibilityRes
     reasons.push("No email address on record");
   }
 
-  if (contact.name_quality === "placeholder" && !getBoolSetting(SETTING_KEYS.allowPlaceholderNames)) {
+  if (
+    contact.name_quality === "placeholder" &&
+    !(await getBoolSetting(SETTING_KEYS.allowPlaceholderNames))
+  ) {
     reasons.push(
       `The sheet lists a job title here ("${contact.full_name ?? "unknown"}") rather than a name, so a personalized greeting would read as automated`,
     );
@@ -62,7 +65,7 @@ export async function checkEligibility(contact: Contact): Promise<EligibilityRes
     if (!verification) {
       reasons.push("Not verified yet. Run verification first.");
     } else {
-      const minScore = getNumberSetting(SETTING_KEYS.minVerificationScore);
+      const minScore = await getNumberSetting(SETTING_KEYS.minVerificationScore);
       if (verification.status === "invalid") {
         reasons.push("Verification says this address is undeliverable");
       } else if (verification.status === "unknown") {
@@ -70,7 +73,7 @@ export async function checkEligibility(contact: Contact): Promise<EligibilityRes
       } else if (verification.score < minScore) {
         reasons.push(`Verification score ${verification.score} is below the ${minScore} threshold`);
       }
-      if (verification.status === "risky" && !getBoolSetting(SETTING_KEYS.allowRiskySends)) {
+      if (verification.status === "risky" && !(await getBoolSetting(SETTING_KEYS.allowRiskySends))) {
         reasons.push("Address is flagged risky and risky sends are switched off");
       }
     }
@@ -149,7 +152,7 @@ export async function enrollContacts(options: EnrollOptions): Promise<EnrollResu
           nowIso(),
         ], client);
 
-      recordEvent({
+      await recordEvent({
         type: EVENT_TYPES.enrollmentCreated,
         entityType: "enrollment",
         entityId: inserted.lastInsertRowid,
@@ -271,7 +274,7 @@ export async function scheduleUnscheduledEnrollments(now = new Date()): Promise<
       nowIso(),
       row.id,
     ]);
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.enrollmentCreated,
       entityType: "enrollment",
       entityId: row.id,

@@ -1,6 +1,14 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { all } from "../db";
+
+// IMPORTED, NOT READ FROM DISK. These three sat beside the code as `lib/prospect/*.json` and were
+// loaded with readFileSync against process.cwd(). That is a laptop assumption: the hosted console
+// runs from Next's standalone output, where cwd is not the repository root and a relative data
+// path resolves to nothing - the Partners page would have thrown on its first read in prod.
+// Importing them makes the bundler responsible for shipping them, which it can verify at build
+// time rather than at 3am.
+import companiesYc from "./companies.yc.json";
+import peopleEnriched from "./people.enriched.json";
+import peopleFound from "./people.found.json";
 
 /**
  * The enrichment backlog, derived live rather than stored.
@@ -61,10 +69,6 @@ interface FoundPerson {
   domain?: string;
 }
 
-function readJson<T>(rel: string): T {
-  return JSON.parse(readFileSync(resolve(process.cwd(), rel), "utf8")) as T;
-}
-
 /** Company-name key: case-, accent- and punctuation-insensitive. */
 function norm(name: string): string {
   return name
@@ -88,21 +92,12 @@ export async function inventory(): Promise<{
     nextWave: number;
   };
 }> {
-  const found = readJson<Record<string, Record<string, FoundPerson[]>>>(
-    "lib/prospect/people.found.json",
-  );
+  const found = peopleFound as Record<string, Record<string, FoundPerson[]>>;
 
-  let enriched: Record<string, { kept?: boolean }[]> = {};
-  try {
-    enriched = readJson("lib/prospect/people.enriched.json");
-  } catch (error) {
-    // A missing file means the first wave has not run: everything surveyed
-    // is inventory, correctly. Anything else — above all a truncated file
-    // from an interrupted write — must fail loud. Swallowing it would
-    // quietly re-list every enriched company as backlog with no error
-    // signal anywhere, which is worse than a 500.
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  // The old code tolerated this file being absent, meaning "the first wave has not run yet". As an
+  // import it is present or the build fails, so the tolerance has moved to where it now belongs:
+  // an empty object still means everything surveyed is inventory, which is the correct reading.
+  const enriched = peopleEnriched as Record<string, { kept?: boolean }[]>;
 
   const done = new Set<string>();
   const attempted = new Set<string>();
@@ -121,7 +116,7 @@ export async function inventory(): Promise<{
     done.add(norm(row.company));
   }
 
-  const yc = readJson<{ batches: Record<string, string> }>("lib/prospect/companies.yc.json");
+  const yc = companiesYc as { batches: Record<string, string> };
   const batches = new Map(Object.entries(yc.batches).map(([k, v]) => [k.toLowerCase(), v]));
 
   const rows: InventoryCompany[] = [];

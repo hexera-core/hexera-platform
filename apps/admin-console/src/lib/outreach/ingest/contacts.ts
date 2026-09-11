@@ -236,7 +236,7 @@ export async function ingestWorkbook(filePath: string): Promise<IngestResult> {
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [...values, now, now], client);
           result.inserted++;
-          recordEvent({
+          await recordEvent({
             type: EVENT_TYPES.contactImported,
             entityType: "contact",
             entityId: inserted.lastInsertRowid,

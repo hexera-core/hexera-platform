@@ -97,11 +97,11 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
   // ── 1. Is there another step? ───────────────────────────────────────────
   const step = await loadStep(campaign.id, nextStepNumber);
   if (!step) {
-    transition(enrollment.id, "completed", {
+    await transition(enrollment.id, "completed", {
       reason: "all sequence steps sent, no reply",
       nextSendAt: null,
     });
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.enrollmentCompleted,
       entityType: "enrollment",
       entityId: enrollment.id,
@@ -114,14 +114,14 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
 
   // ── 2. Follow-ups only when there has been silence ──────────────────────
   if (step.only_if_no_reply && nextStepNumber > 1 && await hasInboundReply(enrollment.id)) {
-    stopSequence(enrollment.id, "replied", "contact replied — follow-ups cancelled");
+    await stopSequence(enrollment.id, "replied", "contact replied — follow-ups cancelled");
     return { kind: "stopped", reason: "contact already replied" };
   }
 
   // ── 3. Suppression, re-checked at the last possible moment ──────────────
   const suppression = await checkSuppressed(contact.email_normalized);
   if (suppression.suppressed) {
-    stopSequence(
+    await stopSequence(
       enrollment.id,
       "suppressed",
       `suppressed (${suppression.scope}: ${suppression.matchedValue}) — ${suppression.reason}`,
@@ -130,7 +130,7 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
   }
 
   if (!contact.email_normalized) {
-    stopSequence(enrollment.id, "review", "contact has no email address");
+    await stopSequence(enrollment.id, "review", "contact has no email address");
     return { kind: "stopped", reason: "no email address" };
   }
 
@@ -165,8 +165,8 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
     const message = error instanceof RenderError ? error.message : String(error);
     // A template that cannot render is an authoring bug affecting every
     // contact — park this one for a human rather than retrying forever.
-    stopSequence(enrollment.id, "review", `template render failed: ${message}`);
-    recordEvent({
+    await stopSequence(enrollment.id, "review", `template render failed: ${message}`);
+    await recordEvent({
       type: EVENT_TYPES.messageFailed,
       entityType: "enrollment",
       entityId: enrollment.id,
@@ -207,7 +207,7 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
     // through step 1 would start at step 2 the moment sending went live and
     // would never receive the opener at all. Rendering the message is the
     // whole point; persisting it was the bug.
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.messageDryRun,
       entityType: "enrollment",
       entityId: enrollment.id,
@@ -234,7 +234,7 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
           result.gmailMessageId, result.gmailThreadId, result.rfc822MessageId,
           enrollment.last_message_id, enrollment.next_send_at, nowIso(), nowIso(),
         ], client);
-      recordEvent({
+      await recordEvent({
         type: EVENT_TYPES.messageSent,
         entityType: "message",
         entityId: inserted.lastInsertRowid,
@@ -245,8 +245,8 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
       return inserted.lastInsertRowid;
     });
 
-    advanceEnrollment(enrollment, campaign, nextStepNumber, result.gmailThreadId, result.rfc822MessageId, now);
-    recordSend(campaign, domain, now);
+    await advanceEnrollment(enrollment, campaign, nextStepNumber, result.gmailThreadId, result.rfc822MessageId, now);
+    await recordSend(campaign, domain, now);
 
     return { kind: "sent", messageId, gmailMessageId: result.gmailMessageId, subject };
   } catch (error) {
@@ -261,7 +261,7 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
         subject, body, contact.email_normalized, fromEmail, message, nowIso(),
       ],
     );
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.messageFailed,
       entityType: "enrollment",
       entityId: enrollment.id,
@@ -276,9 +276,9 @@ export async function sendStep(item: DueItem, options: SendStepOptions = {}): Pr
       [enrollment.id, nextStepNumber],
     );
     if ((alreadyFailed?.n ?? 0) >= 2) {
-      stopSequence(enrollment.id, "review", `send failed twice: ${message}`);
+      await stopSequence(enrollment.id, "review", `send failed twice: ${message}`);
     } else {
-      transition(enrollment.id, "active", {
+      await transition(enrollment.id, "active", {
         nextSendAt: addSendingDays(now, 1, campaign, 60).toISOString(),
       });
     }
@@ -311,14 +311,14 @@ async function advanceEnrollment(
     ? addSendingDays(now, Math.max(1, nextStep.delay_days), campaign, 90).toISOString()
     : null;
 
-  transition(enrollment.id, "active", {
+  await transition(enrollment.id, "active", {
     currentStep: sentStep,
     nextSendAt,
     threadId: threadId ?? enrollment.thread_id,
     lastMessageId: rfc822MessageId ?? enrollment.last_message_id,
   });
 
-  recordEvent({
+  await recordEvent({
     type: EVENT_TYPES.enrollmentStepAdvanced,
     entityType: "enrollment",
     entityId: enrollment.id,

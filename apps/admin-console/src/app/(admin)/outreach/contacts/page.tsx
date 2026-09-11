@@ -12,5 +12,5 @@ export const runtime = "nodejs";
  * every old link and bookmark working rather than greeting them with a 404.
  */
 export default function ContactsRedirect() {
-  redirect("/partners?view=people");
+  redirect("/outreach/partners?view=people");
 }

@@ -149,18 +149,18 @@ export async function dailyActivity(days = 30): Promise<DayPoint[]> {
 
   const sent = Object.fromEntries(
     (await all<{ day: string; n: number }>(
-      `SELECT substr(COALESCE(sent_at, created_at), 1, 10) day, COUNT(*) n
+      `SELECT substr(COALESCE(sent_at, created_at), 1, 10) AS "day", COUNT(*) n
        FROM messages
        WHERE direction = 'outbound' AND status IN ${SENT_STATUSES}
          AND COALESCE(sent_at, created_at) >= ?
-       GROUP BY day`,
+       GROUP BY "day"`,
       [since],
     )).map((r) => [r.day, r.n]),
   );
 
   const replies = await all<{ day: string; classification: string; n: number }>(
-    `SELECT substr(received_at, 1, 10) day, classification, COUNT(*) n
-     FROM replies WHERE received_at >= ? GROUP BY day, classification`,
+    `SELECT substr(received_at, 1, 10) AS "day", classification, COUNT(*) n
+     FROM replies WHERE received_at >= ? GROUP BY "day", classification`,
     [since],
   );
 
@@ -239,7 +239,7 @@ export async function stepFunnel(): Promise<{ step: number; reached: number; rep
        m.step_number AS step,
        COUNT(DISTINCT m.enrollment_id) AS reached,
        COUNT(DISTINCT CASE WHEN r.classification IN ('positive','negative','neutral')
-                           THEN r.enrollment_id END) AS repliedAfter
+                           THEN r.enrollment_id END) AS "repliedAfter"
      FROM messages m
      LEFT JOIN replies r
        ON r.enrollment_id = m.enrollment_id
@@ -322,14 +322,14 @@ export async function byStep(): Promise<StepRow[]> {
   return await all<StepRow>(
     `SELECT
        m.step_number AS step,
-       t.name AS templateName,
+       t.name AS "templateName",
        COUNT(DISTINCT m.id) AS sent,
        COUNT(DISTINCT CASE WHEN r.classification IN ('positive','negative','neutral') THEN r.id END) AS replies,
        COUNT(DISTINCT CASE WHEN r.classification = 'positive' THEN r.id END) AS positive,
        CASE WHEN COUNT(DISTINCT m.id) > 0
             THEN (COUNT(DISTINCT CASE WHEN r.classification IN ('positive','negative','neutral') THEN r.id END) * 100.0)
                  / COUNT(DISTINCT m.id)
-            ELSE 0 END AS replyRate
+            ELSE 0 END AS "replyRate"
      FROM messages m
      LEFT JOIN templates t ON t.id = m.template_id
      -- Attribute a reply to the step that immediately preceded it.
@@ -352,7 +352,7 @@ export interface VerificationBreakdown {
 
 export async function verificationBreakdown(): Promise<VerificationBreakdown[]> {
   return await all<VerificationBreakdown>(
-    `SELECT status, COUNT(*) count, ROUND(AVG(score), 1) avgScore
+    `SELECT status, COUNT(*) count, ROUND(AVG(score)::numeric, 1) AS "avgScore"
      FROM latest_verification GROUP BY status ORDER BY count DESC`,
   );
 }
@@ -361,7 +361,7 @@ export async function verificationFlags() {
   return await get<{ role: number; catchAll: number; free: number; unverified: number }>(
     `SELECT
        (SELECT COUNT(*) FROM latest_verification WHERE is_role = 1) AS role,
-       (SELECT COUNT(*) FROM latest_verification WHERE is_catch_all = 1) AS catchAll,
+       (SELECT COUNT(*) FROM latest_verification WHERE is_catch_all = 1) AS "catchAll",
        (SELECT COUNT(*) FROM latest_verification WHERE is_free_provider = 1) AS free,
        (SELECT COUNT(*) FROM contacts c
          WHERE c.email_normalized IS NOT NULL
@@ -373,7 +373,7 @@ export async function verificationFlags() {
 
 export async function replyMix(): Promise<{ classification: string; count: number; avgConfidence: number }[]> {
   return await all(
-    `SELECT classification, COUNT(*) count, ROUND(AVG(confidence), 2) avgConfidence
+    `SELECT classification, COUNT(*) count, ROUND(AVG(confidence)::numeric, 2) AS "avgConfidence"
      FROM replies GROUP BY classification ORDER BY count DESC`,
   );
 }
@@ -396,13 +396,20 @@ export async function timeToReply(): Promise<{ bucket: string; count: number }[]
      FROM (
        -- julianday() is SQLite's. The columns hold ISO-8601 text, so they are cast to
        -- timestamptz and the interval taken in seconds.
+       --
+       -- MAX, not a bare column. An enrollment has SEVERAL outbound messages, so grouping per
+       -- reply leaves more than one candidate send time. SQLite silently picked one of them,
+       -- which made this chart quietly non-deterministic; Postgres refuses the ambiguity instead.
+       -- The message being answered is the last one sent BEFORE the reply arrived, so that is
+       -- what the window restricts to and what MAX then selects.
        SELECT EXTRACT(EPOCH FROM (r.received_at::timestamptz
-              - COALESCE(m.sent_at, m.created_at)::timestamptz)) / 3600 AS hours
+              - MAX(COALESCE(m.sent_at, m.created_at))::timestamptz)) / 3600 AS hours
        FROM replies r
        JOIN messages m ON m.enrollment_id = r.enrollment_id AND m.direction = 'outbound'
+        AND COALESCE(m.sent_at, m.created_at) <= r.received_at
        WHERE r.classification IN ('positive','negative','neutral')
        GROUP BY r.id
-     )
+     ) AS response_times
      GROUP BY bucket`,
   );
 }
@@ -429,7 +436,7 @@ export async function campaignSummaries() {
     `SELECT
        ca.id, ca.name, ca.status, ca.daily_cap,
        COUNT(DISTINCT CASE WHEN e.status IN ('pending','active') THEN e.id END) AS enrolled,
-       COUNT(DISTINCT e.id) AS everEnrolled,
+       COUNT(DISTINCT e.id) AS "everEnrolled",
        COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN m.id END) AS sent,
        COUNT(DISTINCT CASE WHEN r.classification IN ('positive','negative','neutral') THEN r.id END) AS replies,
        COUNT(DISTINCT CASE WHEN r.classification = 'positive' THEN r.id END) AS positive
@@ -609,7 +616,7 @@ export async function partnersByIndustry(): Promise<PartnerIndustry[]> {
        COUNT(DISTINCT c.id) AS people,
        COUNT(DISTINCT CASE WHEN v.status = 'valid' THEN c.id END) AS deliverable,
        COUNT(DISTINCT CASE WHEN e.status IN ('pending','active') THEN e.id END) AS enrolled,
-       COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN c.id END) AS liveSent,
+       COUNT(DISTINCT CASE WHEN m.status = 'sent' THEN c.id END) AS "liveSent",
        COUNT(DISTINCT CASE WHEN r.classification IN ('positive','negative','neutral') THEN r.id END) AS replies,
        COUNT(DISTINCT CASE WHEN r.classification = 'positive' THEN r.id END) AS positive,
        COUNT(DISTINCT CASE WHEN r.classification = 'negative' THEN r.id END) AS negative,
@@ -617,11 +624,11 @@ export async function partnersByIndustry(): Promise<PartnerIndustry[]> {
          WHERE s.value = MAX(c.domain)
             OR s.value IN (SELECT c2.email_normalized FROM contacts c2 WHERE c2.company = c.company)
        ) AS suppressed,
-       MAX(COALESCE(m.sent_at, m.created_at)) AS lastTouch,
+       MAX(COALESCE(m.sent_at, m.created_at)) AS "lastTouch",
        -- STRING_AGG with an explicit separator; GROUP_CONCAT is SQLite's and defaults to ','.
        STRING_AGG(DISTINCT c.full_name, ',') AS names,
-       COUNT(DISTINCT CASE WHEN c.email_normalized IS NOT NULL THEN c.id END) AS verifiedEmails,
-       MAX(c.is_yc) AS isYc
+       COUNT(DISTINCT CASE WHEN c.email_normalized IS NOT NULL THEN c.id END) AS "verifiedEmails",
+       MAX(c.is_yc) AS "isYc"
      FROM contacts c
      LEFT JOIN latest_verification v ON v.contact_id = c.id
      LEFT JOIN enrollments e ON e.contact_id = c.id

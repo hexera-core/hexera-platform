@@ -161,7 +161,7 @@ export async function verifyEmail(email: string, options: VerifyOptions = {}): P
     base.smtpMessage = probe.message?.slice(0, 500) ?? null;
 
     if (probe.isCatchAll !== null) {
-      setCatchAll(domain, probe.isCatchAll);
+      await setCatchAll(domain, probe.isCatchAll);
       if (probe.isCatchAll) {
         base.isCatchAll = true;
         score = Math.min(score, 55);
@@ -189,7 +189,7 @@ export async function verifyEmail(email: string, options: VerifyOptions = {}): P
       const verdict = await external.verify(email);
       base.provider = external.name;
       if (verdict.isCatchAll !== null) {
-        setCatchAll(domain, verdict.isCatchAll);
+        await setCatchAll(domain, verdict.isCatchAll);
         base.isCatchAll = verdict.isCatchAll;
       }
       // The paid answer is authoritative when it is decisive; otherwise the
@@ -243,7 +243,7 @@ export async function saveVerification(contactId: number, outcome: VerificationO
         nowIso(),
       ], client);
 
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.verificationChecked,
       entityType: "contact",
       entityId: contactId,
@@ -290,14 +290,14 @@ export async function verifyAllContacts(options: VerifyBatchOptions = {}): Promi
         // A forced re-check should re-query DNS too, otherwise it just replays
         // whatever the cache already believed — including a stale mistake.
         const outcome = await verifyEmail(contact.email_normalized!, { forceDns: force });
-        saveVerification(contact.id, outcome);
+        await saveVerification(contact.id, outcome);
         byStatus[outcome.status] = (byStatus[outcome.status] ?? 0) + 1;
         done++;
         onProgress?.(done, contacts.length, contact, outcome);
       } catch (error) {
         byStatus.error = (byStatus.error ?? 0) + 1;
         done++;
-        recordEvent({
+        await recordEvent({
           type: EVENT_TYPES.verificationFailed,
           entityType: "contact",
           entityId: contact.id,

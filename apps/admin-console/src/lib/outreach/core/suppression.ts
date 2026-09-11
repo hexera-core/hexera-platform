@@ -59,7 +59,7 @@ export async function suppress(options: {
   );
 
   if (result.changes > 0) {
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.suppressionAdded,
       entityType: "suppression",
       contactId: options.contactId ?? null,
@@ -74,7 +74,7 @@ export async function unsuppress(scope: SuppressionScope, value: string): Promis
   const normalized = value.trim().toLowerCase();
   const result = await run(`DELETE FROM suppressions WHERE scope = ? AND value = ?`, [scope, normalized]);
   if (result.changes > 0) {
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.suppressionRemoved,
       entityType: "suppression",
       payload: { scope, value: normalized },

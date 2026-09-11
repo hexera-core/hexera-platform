@@ -163,7 +163,7 @@ export default async function OverviewPage() {
       <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(320px, 100%), 1fr))" }}>
         <Panel
           title="Campaigns"
-          actions={<Link href="/settings" className="btn">Manage</Link>}
+          actions={<Link href="/outreach/settings" className="btn">Manage</Link>}
           flush
         >
           <div className="scroll-x">
@@ -205,7 +205,7 @@ export default async function OverviewPage() {
                 : undefined
               : "Nothing queued."
           }
-          actions={<Link href="/queue" className="btn">Full queue</Link>}
+          actions={<Link href="/outreach/queue" className="btn">Full queue</Link>}
           flush
         >
           <div className="scroll-x">

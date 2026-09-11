@@ -82,8 +82,12 @@ export async function getBoolSetting(key: string): Promise<boolean> {
   return (await getSetting(key)).toLowerCase() === "true";
 }
 
-export function getNumberSetting(key: string): number {
-  const parsed = Number(getSetting(key));
+// ASYNC, like everything else that reads the database. It was left synchronous in the port, so
+// `Number(getSetting(key))` was Number(Promise) - NaN - and the guard below quietly substituted
+// the default on EVERY call. The visible effect: raising the minimum verification score on the
+// Settings page changed nothing, and enrolment kept applying the built-in 60.
+export async function getNumberSetting(key: string): Promise<number> {
+  const parsed = Number(await getSetting(key));
   return Number.isFinite(parsed) ? parsed : Number(DEFAULTS[key] ?? 0);
 }
 
@@ -95,7 +99,7 @@ export async function setSetting(key: string, value: string): Promise<void> {
     [key, value, nowIso()],
   );
   if (previous !== value) {
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.settingChanged,
       entityType: "setting",
       // Secrets never belong in an audit payload that the dashboard renders.
@@ -180,7 +184,7 @@ export async function setEnvSendingAllowed(allow: boolean): Promise<boolean> {
   const previous = await envSendingAllowed();
   setEnvFileValue("DRY_RUN", allow ? "false" : "true");
   if (previous !== allow) {
-    recordEvent({
+    await recordEvent({
       type: EVENT_TYPES.settingChanged,
       entityType: "setting",
       payload: { key: "DRY_RUN", from: previous ? "false" : "true", to: allow ? "false" : "true" },

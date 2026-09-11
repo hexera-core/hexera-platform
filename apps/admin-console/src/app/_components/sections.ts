@@ -14,18 +14,28 @@ export type AdminSection = {
   available: boolean;
 };
 
-export const ADMIN_SECTIONS: readonly AdminSection[] = [
-  { href: "/", label: "Fleet", available: true },
-  { href: "/costs", label: "Costs", available: true },
-  { href: "/billing", label: "Billing", available: true },
-  { href: "/activity", label: "Activity", available: false },
-  { href: "/customers", label: "Customers", available: false },
-  // Outreach is PROD-ONLY: one partner list, one mailbox. A dev copy would either duplicate the
-  // real contacts or sit empty, and neither is worth a second Gmail connection. The deployment
-  // says whether it runs here, so the flag decides rather than the hostname.
-  {
-    href: "/outreach",
-    label: "Outreach",
-    available: (process.env.OUTREACH_ENABLED ?? "").trim() === "1",
-  },
-] as const;
+// Takes the environment rather than reading it, so both shapes - the deployment that runs
+// outreach and the one that does not - are reachable from a test. A module-level constant read
+// straight from process.env can only ever be asserted in whichever shape the test runner happens
+// to be started in, which made the assertion below depend on the caller's shell.
+export function buildAdminSections(
+  env: Record<string, string | undefined> = process.env,
+): readonly AdminSection[] {
+  return [
+    { href: "/", label: "Fleet", available: true },
+    { href: "/costs", label: "Costs", available: true },
+    { href: "/billing", label: "Billing", available: true },
+    { href: "/activity", label: "Activity", available: false },
+    { href: "/customers", label: "Customers", available: false },
+    // Outreach is PROD-ONLY: one partner list, one mailbox. A dev copy would either duplicate the
+    // real contacts or sit empty, and neither is worth a second Gmail connection. The deployment
+    // says whether it runs here, so the flag decides rather than the hostname.
+    {
+      href: "/outreach",
+      label: "Outreach",
+      available: (env.OUTREACH_ENABLED ?? "").trim() === "1",
+    },
+  ];
+}
+
+export const ADMIN_SECTIONS: readonly AdminSection[] = buildAdminSections();

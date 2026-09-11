@@ -120,7 +120,7 @@ async function CompaniesView() {
         <span className="env-stat">
           YC <b>{totals.yc}</b>
         </span>
-        <Link href="/partners?view=inventory" className="env-stat hover:text-[var(--color-ink)] transition-colors">
+        <Link href="/outreach/partners?view=inventory" className="env-stat hover:text-[var(--color-ink)] transition-colors">
           in inventory <b>{backlog}</b> →
         </Link>
         <span className="env-stat">
@@ -214,7 +214,7 @@ async function InventoryView({ one }: { one: (key: string) => string | undefined
         </Field>
         <div className="flex items-end gap-2">
           <button type="submit" className="btn btn-primary">Apply</button>
-          <Link href="/partners?view=inventory" className="btn">Reset</Link>
+          <Link href="/outreach/partners?view=inventory" className="btn">Reset</Link>
         </div>
       </form>
 
@@ -427,7 +427,7 @@ async function PeopleView({
         </Field>
         <div className="flex items-end gap-2">
           <button type="submit" className="btn btn-primary">Apply</button>
-          <Link href="/partners?view=people" className="btn">Reset</Link>
+          <Link href="/outreach/partners?view=people" className="btn">Reset</Link>
         </div>
       </form>
 

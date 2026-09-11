@@ -74,6 +74,9 @@ JOB_ENV=(
   "OUTREACH_DB_NAME=${OUTREACH_DB_NAME:-}"
   "OUTREACH_DB_USER=${OUTREACH_DB_USER}"
   "OUTREACH_KMS_KEY=${OUTREACH_KMS_KEY:-}"
+  # The sender refreshes the mailbox token itself, so it needs the same OAuth client the console
+  # used to obtain it.
+  "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}"
   "GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}"
 )
 for entry in "${JOB_ENV[@]}"; do
@@ -108,7 +111,21 @@ job_args=(
 if [ ${#JOB_SECRETS[@]} -gt 0 ]; then
   job_args+=(--set-secrets "$(IFS=,; printf '%s' "${JOB_SECRETS[*]}")")
 fi
-# The database is private-IP only, so the job reaches it the same way the console does.
+# THE PRIVATE ROUTE, the same one create-admin-service.sh gives the console. --set-cloudsql-instances
+# ALONE IS NOT ENOUGH against a private-IP instance: the Cloud SQL connector still needs a route
+# into the VPC, and without these three flags the job starts, finds no path to the socket and fails
+# every tick on connection timeout. The console had them and this did not, which would have read as
+# "the database is down" from a job that was never attached to the network.
+if [ -n "${OUTREACH_DB_HOST:-}" ]; then
+  VPC_NETWORK="${VPC_NETWORK:-default}"
+  VPC_SUBNET="${VPC_SUBNET:-default}"
+  job_args+=(
+    --network "${VPC_NETWORK}"
+    --subnet "${VPC_SUBNET}"
+    --vpc-egress private-ranges-only
+  )
+  log "network       ${VPC_NETWORK}/${VPC_SUBNET}, private-ranges-only"
+fi
 [ -z "${OUTREACH_CLOUDSQL_INSTANCE:-}" ] || job_args+=(--set-cloudsql-instances "${OUTREACH_CLOUDSQL_INSTANCE}")
 
 # MAX-RETRIES 1, NOT THE DEFAULT 3. A tick that fails halfway has already sent whatever it sent;

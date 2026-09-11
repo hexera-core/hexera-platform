@@ -315,6 +315,13 @@ ADMIN_ENV_PAIRS=(
   "QUEUE_NAME=${QUEUE_NAME:-simulation_jobs}"
   "WORKER_MIG=${WORKER_MIG:-}"
   "WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}"
+  # OUTREACH_ENABLED is what makes the Outreach section a LINK rather than dead text. The workflow
+  # sets it for prod and leaves it empty everywhere else; it was exported by the job but never
+  # handed to the service, so the section stayed unavailable on the one deployment that runs it.
+  "OUTREACH_ENABLED=${OUTREACH_ENABLED:-}"
+  # The public half of the OAuth client. The secret half arrives as GOOGLE_CLIENT_SECRET, a Secret
+  # Manager reference below; both are required before a mailbox can be connected.
+  "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}"
   "OUTREACH_KMS_KEY=${OUTREACH_KMS_KEY:-}"
   "OUTREACH_DB_HOST=${OUTREACH_DB_HOST:-}"
   "OUTREACH_DB_NAME=${OUTREACH_DB_NAME:-}"

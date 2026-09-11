@@ -89,7 +89,7 @@ export async function transition(
       ], client);
 
     if (current.status !== to) {
-      recordEvent({
+      await recordEvent({
         type: EVENT_TYPES.enrollmentStatusChanged,
         entityType: "enrollment",
         entityId: enrollmentId,
