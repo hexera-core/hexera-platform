@@ -69,7 +69,7 @@ want() {
 # A typo must not quietly deploy less than the operator asked for. `images` is not `image`, and a
 # run that silently skipped the API service because of a missing 's' is a bad afternoon.
 if [ "${DEPLOY_COMPONENTS}" != "all" ]; then
-  _known="images data storage migrate queue workers console admin edge"
+  _known="images data storage migrate queue workers console admin outreach edge"
   _bad=""
   _good=0
   IFS=',' read -r -a _requested <<< "${DEPLOY_COMPONENTS}"
@@ -273,6 +273,18 @@ if want admin; then
   bash "${S}/create-admin-service.sh"
 else
   skipped admin "the admin console keeps serving whichever digest it already has"
+fi
+
+stage "Outreach sender (the scheduled job, and the schedule that runs it)"
+# AFTER the admin console, because the two share an image, an identity and a database: a sender
+# provisioned against a console that has not rolled yet would run an older engine than the pages
+# showing its results. It is its OWN tier and not part of `admin` on purpose - this is the only
+# thing in the deploy that can email a stranger, and arming it should never be a side effect of
+# shipping a page.
+if want outreach; then
+  bash "${S}/create-outreach-worker.sh"
+else
+  skipped outreach "the outreach sender keeps whatever schedule and digest it already has"
 fi
 
 stage "Worker fleet (template pinned to the digest, and the rolling update onto it)"

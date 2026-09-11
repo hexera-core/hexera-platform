@@ -81,6 +81,11 @@ on:
         required: false
         default: false
         type: boolean
+      outreach:
+        description: "outreach - the cold-outreach sender, as a scheduled job (CAN EMAIL REAL PEOPLE once both switches are on)"
+        required: false
+        default: false
+        type: boolean
       edge:
         description: "edge - load balancer, reserved address and certificate for both consoles' hostnames"
         required: false
@@ -151,6 +156,8 @@ jobs:
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
       billing_export_table: ${{ steps.pick.outputs.billing_export_table }}
       worker_env_uri: ${{ steps.pick.outputs.worker_env_uri }}
+      outreach_enabled: ${{ steps.pick.outputs.outreach_enabled }}
+      outreach_worker_job: ${{ steps.pick.outputs.outreach_worker_job }}
       # THE RUNTIME HARDENING SWITCH AND THE BROWSER ORIGIN IT ADMITS, pinned per environment for
       # the same reason every target above is: they have to reach create-api-service.sh, and the
       # only path that reaches it is this one. bootstrap-env.sh REGENERATES the deployment env on
@@ -192,6 +199,7 @@ jobs:
           DISPATCH_WORKERS: ${{ github.event.inputs.workers }}
           DISPATCH_CONSOLE: ${{ github.event.inputs.console }}
           DISPATCH_ADMIN: ${{ github.event.inputs.admin }}
+          DISPATCH_OUTREACH: ${{ github.event.inputs.outreach }}
           DISPATCH_EDGE: ${{ github.event.inputs.edge }}
         # Every target is a LITERAL here rather than a repository variable. deploy.sh under
         # DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on ambient configuration, and a
@@ -221,6 +229,7 @@ jobs:
               [ "${DISPATCH_WORKERS:-false}" = "true" ] && _selected="${_selected}workers,"
               [ "${DISPATCH_CONSOLE:-false}" = "true" ] && _selected="${_selected}console,"
               [ "${DISPATCH_ADMIN:-false}" = "true" ] && _selected="${_selected}admin,"
+              [ "${DISPATCH_OUTREACH:-false}" = "true" ] && _selected="${_selected}outreach,"
               [ "${DISPATCH_EDGE:-false}" = "true" ] && _selected="${_selected}edge,"
               _selected="${_selected%,}"
               # DEPLOYING NOTHING IS A MISTAKE, NOT A VALID REQUEST - fail loudly rather than let an
@@ -231,7 +240,7 @@ jobs:
               # the exact opposite of "nothing ticked", and a run that mutates nothing was never the
               # risk here; a run that mutates everything by accident was.
               if [ -z "${_selected}" ]; then
-                echo "::error::no component checkbox was ticked - deploying nothing is not a valid request. Available checkboxes: images, data, storage, migrate, queue, workers, console, admin, edge. Tick every one of them to deploy everything."
+                echo "::error::no component checkbox was ticked - deploying nothing is not a valid request. Available checkboxes: images, data, storage, migrate, queue, workers, console, admin, outreach, edge. Tick every one of them to deploy everything."
                 exit 1
               fi
             fi
@@ -336,6 +345,9 @@ jobs:
               # hand. It carries policy, model routing and limits, never a credential: the object
               # and instance metadata are both readable by anyone who can describe the instance.
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
+              # Dev runs no outreach - see the prod block. Empty, so the stage states its skip.
+              echo "outreach_enabled="
+              echo "outreach_worker_job="
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -431,6 +443,9 @@ jobs:
             echo "worker_mig=prod-workers"
             echo "worker_mig_zone=us-central1-a"
             echo "worker_env_uri=gs://prod-artifacts-688073002171/deploy/worker.env"
+            # OUTREACH IS PROD-ONLY: one partner list, one mailbox. Named here and nowhere else.
+            echo "outreach_enabled=1"
+            echo "outreach_worker_job=prod-outreach"
             # THE OBJECT-STORE KEY THIS DEPLOYMENT ALREADY OWNS, and the only thing that stops a
             # release tag minting a second one. create-object-storage.sh decides "reuse or mint"
             # by testing the RECORDED access id against the live ACTIVE keys; the recording lives
@@ -820,6 +835,8 @@ jobs:
       ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
       BILLING_EXPORT_TABLE: ${{ needs.target.outputs.billing_export_table }}
       WORKER_ENV_URI: ${{ needs.target.outputs.worker_env_uri }}
+      OUTREACH_ENABLED: ${{ needs.target.outputs.outreach_enabled }}
+      OUTREACH_WORKER_JOB: ${{ needs.target.outputs.outreach_worker_job }}
       # THE RUNTIME HARDENING, carried the same way CLOUDRUN_CONSOLE_SERVICE above is: pinned by
       # the picker, exported here for the whole job, read out of the ambient environment by
       # bootstrap-env.sh's generated-env heredoc, and handed to create-api-service.sh as ENV and

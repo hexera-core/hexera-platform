@@ -8,7 +8,8 @@
     "dev": "next dev -p 3001",
     "lint": "eslint .",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:worker": "esbuild worker/outreach-worker.ts --bundle --platform=node --target=node24 --format=esm --outfile=outreach-worker.js --packages=external --alias:@=./src"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.117.1",
@@ -35,6 +36,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.7",
+    "esbuild": "0.25.12",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.4",
     "postcss": "8.5.28",

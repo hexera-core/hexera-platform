@@ -151,8 +151,32 @@ export function envSendingAllowed(): boolean {
   return raw.trim().toLowerCase() === "false";
 }
 
-/** Flip switch 1. Returns the value actually written. */
+/** Is this running on Cloud Run, where the filesystem is ephemeral? */
+export function isHosted(): boolean {
+  // K_SERVICE is set by the Cloud Run runtime and by nothing else.
+  return Boolean(process.env.K_SERVICE);
+}
+
+/**
+ * Flip switch 1. Returns the value actually written.
+ *
+ * HOSTED, THIS REFUSES. Switch 1 is `DRY_RUN`, and on a laptop it lives in `.env.local` where
+ * flipping it means editing a file. On Cloud Run the filesystem is ephemeral: the write would
+ * succeed, the page would say sending was armed, and the next container would start dry again -
+ * a toggle that lies about the one setting that decides whether strangers get email.
+ *
+ * So hosted it becomes a DEPLOYMENT setting, which is a stronger interlock rather than a weaker
+ * one: the two switches now require genuinely different access. Arming the campaign is a database
+ * write any admin can make from this page; allowing the machine to send at all takes a deploy.
+ */
 export async function setEnvSendingAllowed(allow: boolean): Promise<boolean> {
+  if (isHosted()) {
+    throw new Error(
+      "DRY_RUN cannot be changed from this page in a hosted deployment - the filesystem is " +
+        "ephemeral, so the change would be lost on the next container. Set DRY_RUN on the Cloud " +
+        "Run service and redeploy.",
+    );
+  }
   const previous = await envSendingAllowed();
   setEnvFileValue("DRY_RUN", allow ? "false" : "true");
   if (previous !== allow) {
