@@ -149,7 +149,6 @@ def _layer_args(s: dict) -> list[str]:
 def build_pype(strategy: dict) -> list[str]:
     s = resolve_strategy(strategy)
     elf = float(s["edge_length_factor"])
-    layers = int(s["boundary_layers"])
     clamps = _clamp_args(s)
     layer_args = _layer_args(s)
     if s.get("sizing_array"):
