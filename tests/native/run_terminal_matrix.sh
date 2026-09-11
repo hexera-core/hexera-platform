@@ -20,7 +20,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 
 MESH_IMAGE="${MESH_IMAGE:-meshpipeline-mesh:native}"
 NET=fm-nt-net; PG=fm-nt-pg; RD=fm-nt-redis; MN=fm-nt-minio
-MINIO_IMAGE=minio/minio:RELEASE.2025-04-22T22-12-26Z
+MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
 EVID="${FM_TERMINAL_EVIDENCE_DIR:-/tmp/fm-nt/evidence}"
 
 # `-v` with `-f`: each disposable service declares an anonymous volume, and `docker rm -f`

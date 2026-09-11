@@ -27,8 +27,8 @@ implied away.
 | Base OS image | `ubuntu:22.04@sha256:0e0a0fc6…` | OCI digest | `Dockerfile` |
 | PostgreSQL | `postgres:16-alpine@sha256:57c72fd2…` | OCI digest | `docker-compose.yml` |
 | Redis | `redis:7-alpine@sha256:6ab0b6e7…` | OCI digest | `docker-compose.yml`, `.github/workflows/ci.yml` |
-| MinIO | `minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa…` | OCI digest | `docker-compose.yml` |
-| MinIO client | `minio/mc@sha256:a7fe349e…` | OCI digest | `docker-compose.yml` |
+| MinIO | `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa…` | OCI digest | `docker-compose.yml` |
+| MinIO client | `quay.io/minio/mc@sha256:a7fe349e…` | OCI digest | `docker-compose.yml` |
 | SearXNG | `searxng/searxng@sha256:3bc6ae0e…` | OCI digest | `docker-compose.yml` |
 | curl (CI) | `curlimages/curl:8.11.1@sha256:c1fe1679…` | OCI digest | `.github/workflows/ci.yml` |
 | CI actions | full 40-character commit SHAs | Git object identity | `.github/workflows/ci.yml` |
