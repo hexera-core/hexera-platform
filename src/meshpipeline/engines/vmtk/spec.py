@@ -268,8 +268,11 @@ SPEC = EngineSpec(
         ),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),
-            run_timeout=lambda: min(1800, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
-            timeout_hint=("Raise edge_length_factor (coarser cells relative to the radius), then "
+            # ONE HOUR: at industry density (13 cells across, 5 layers) the sweep's largest case
+            # (transition_013, a 1 m flat duct) fills in over 30 min; the Cloud Run job allows 4 h.
+            run_timeout=lambda: min(3600, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
+            timeout_hint=("Raise edge_length_factor (coarser cells relative to the radius) - but "
+                          "not past 0.16, the 12-cells-across floor a CFD mesh must keep - then "
                           "run_mesh again."),
             ok_guidance="Valid tetrahedral mesh (no fatal defects) - call submit_mesh.",
             fail_label="vmtk pipeline failed",
