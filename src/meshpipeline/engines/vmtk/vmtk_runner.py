@@ -573,6 +573,8 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
         case = ws / _OPENFOAM_CASE
         (case / "system").mkdir(parents=True, exist_ok=True)
         (case / "constant").mkdir(parents=True, exist_ok=True)
+        # a prior pass's polyMesh must never stand in for this run's
+        shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
         (case / "system" / "controlDict").write_text(_CONTROL_DICT)
         cmd = f"source {bashrc} >/dev/null 2>&1 && gmshToFoam ../{_VOLUME_MSH}"
         proc = run_guarded(["bash", "-lc", cmd], cwd=str(case), env=scrubbed_subprocess_env(),
