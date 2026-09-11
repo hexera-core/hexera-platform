@@ -86,10 +86,12 @@ def test_the_service_offers_no_way_to_spend():
     # database would accept a negative amount, so grant()'s refusal is the only guard. A denylist
     # of names would let `deduct` or `withdraw` past; pinning the whole surface means any new
     # public function has to be justified here first.
+    # `history` was admitted for the console's ledger page: it is a READ - it returns rows and
+    # writes nothing - so it cannot be the way this cycle gains a way to spend.
     names = {n for n, _ in inspect.getmembers(credit_service, inspect.isfunction)
              if not n.startswith("_") and getattr(credit_service, n).__module__ ==
              credit_service.__name__}
-    assert names == {"grant", "balance", "grant_signup_credits"}, names
+    assert names == {"grant", "balance", "grant_signup_credits", "history"}, names
 
 
 def test_the_settings_are_declared_in_the_inventory():
