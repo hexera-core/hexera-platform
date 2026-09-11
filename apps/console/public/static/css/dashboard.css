@@ -8,7 +8,10 @@
 .sidebar{display:flex;flex-direction:column;gap:1.4rem;padding:1.15rem 0;
   background:var(--background);border-right:1px solid var(--border);
   position:sticky;top:0;height:100svh}
-.sidebar__brand{display:flex;align-items:center;gap:.55rem;padding:0 1.15rem;color:var(--text)}
+/* text-decoration: the sidebar's brand is its own class, so chrome.css's reset for `.brand`
+   does not reach it. Without this the wordmark renders browser-underlined. */
+.sidebar__brand{display:flex;align-items:center;gap:.55rem;padding:0 1.15rem;color:var(--text);
+  text-decoration:none}
 .sidebar__brand img{height:20px;width:auto;display:block;flex:none}
 .sidebar__brand span{font-family:var(--sans);font-weight:600;letter-spacing:.24em;font-size:.8rem}
 
@@ -39,13 +42,22 @@
 .sidebar__account small{color:var(--text-faint);font-size:.72rem;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
 
-/* The icon rail the run routes collapse to, so the mesh keeps its width. */
+/* THE ICON. It is what survives every narrowing of this sidebar, so it is never decorative:
+   in the rail it is the only thing identifying a section, which is why every section declares
+   one and why the item also carries a `title`. */
+.sidebar__icon{width:16px;height:16px;flex:none;display:block}
+
+/* The icon rail the run routes collapse to, so the mesh keeps its width.
+   ONLY the label hides - the icon stays, or the nav would be a column of empty boxes. */
 .shell--rail{grid-template-columns:3.25rem 1fr}
 .shell--rail .sidebar__brand span,
 .shell--rail .sidebar__item span,
 .shell--rail .sidebar__group,
 .shell--rail .sidebar__foot{display:none}
-.shell--rail .sidebar__item{justify-content:center;padding:.5rem 0}
+.shell--rail .sidebar__item{justify-content:center;padding:.5rem 0;gap:0;
+  border-left-width:0;border-right:2px solid transparent}
+.shell--rail .sidebar__item--current{border-right-color:var(--accent)}
+.shell--rail .sidebar__brand{justify-content:center;padding:0}
 
 /* Page frame. */
 .main{min-width:0;display:flex;flex-direction:column}
@@ -83,8 +95,34 @@
 
 .empty{padding:2.6rem 0;color:var(--text-faint);font-size:.88rem;line-height:1.75}
 
+/* NARROW VIEWPORTS GET A BAR, NOT A RAIL. Collapsing to the desktop rail here used to hide every
+   item's label AND the whole footer, which on a sidebar with no icons left a column of blank
+   boxes and no reachable sign-out. Icons fixed the blank boxes; the footer is the reason this is
+   a bar instead: a horizontal strip has room to keep the labels, the credit balance and the
+   sign-out control all visible, and it scrolls sideways rather than truncating. */
 @media (max-width:860px){
-  .shell{grid-template-columns:3.25rem 1fr}
-  .sidebar__brand span,.sidebar__item span,.sidebar__group,.sidebar__foot{display:none}
-  .sidebar__item{justify-content:center;padding:.5rem 0}
+  .shell,.shell--rail{grid-template-columns:1fr}
+  .sidebar,.shell--rail .sidebar{position:static;height:auto;flex-direction:row;flex-wrap:wrap;
+    align-items:center;gap:.75rem;padding:.7rem .9rem;
+    border-right:0;border-bottom:1px solid var(--border)}
+  .sidebar__brand{padding:0}
+  .sidebar__nav,.shell--rail .sidebar__nav{flex-direction:row;flex:1 1 100%;order:3;padding:0;
+    gap:.25rem;overflow-x:auto;scrollbar-width:none}
+  .sidebar__nav::-webkit-scrollbar{display:none}
+  .sidebar__group{display:none}
+  .sidebar__item,.shell--rail .sidebar__item{justify-content:flex-start;padding:.45rem .6rem;
+    gap:.45rem;white-space:nowrap;
+    border-left-width:0;border-right-width:0;border-bottom:2px solid transparent}
+  .sidebar__item span,.shell--rail .sidebar__item span{display:inline}
+  .sidebar__item--current,.shell--rail .sidebar__item--current{border-bottom-color:var(--accent)}
+  .sidebar__foot,.shell--rail .sidebar__foot{display:flex;flex-direction:row;align-items:center;
+    gap:.9rem;margin:0 0 0 auto;padding:0;border-top:0}
+  .sidebar__account{flex-direction:row;align-items:center;gap:.6rem}
+  .sidebar__account small{max-width:11rem}
+}
+
+@media (max-width:520px){
+  /* The address is the first thing to go: the sign-out control it sits beside is the one part of
+     the footer a user can be stuck without. */
+  .sidebar__account small{display:none}
 }

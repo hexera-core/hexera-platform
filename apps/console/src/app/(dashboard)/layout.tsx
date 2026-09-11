@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { SignOutButton } from "@/app/_components/auth-buttons";
 import { DashboardStyles } from "@/app/_components/legacy-styles";
+import { Shell } from "@/app/_components/shell";
 import { Sidebar } from "@/app/_components/sidebar";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
@@ -26,14 +27,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
   return (
     <>
       <DashboardStyles />
-      <div className="shell">
+      <Shell>
         <Sidebar
           credits={credits ? `${credits.balance}` : "--"}
           email={ownerId}
           signOut={<SignOutButton />}
         />
         <main className="main">{children}</main>
-      </div>
+      </Shell>
     </>
   );
 }

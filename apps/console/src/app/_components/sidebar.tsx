@@ -62,6 +62,7 @@ function Item({
   if (!section.available) {
     return (
       <span className="sidebar__item sidebar__item--unavailable" title="Not available yet">
+        <Icon section={section} />
         <span>{section.label}</span>
       </span>
     );
@@ -72,8 +73,30 @@ function Item({
       aria-current={isCurrent ? "page" : undefined}
       className={`sidebar__item${isCurrent ? " sidebar__item--current" : ""}`}
       href={section.href}
+      // THE LABEL DISAPPEARS IN THE RAIL, so the accessible name has to come from somewhere that
+      // does not. `title` also gives a sighted rail user a hover tooltip.
+      title={section.label}
     >
+      <Icon section={section} />
       <span>{section.label}</span>
     </Link>
+  );
+}
+
+function Icon({ section }: { section: (typeof CONSOLE_SECTIONS)[number] }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="sidebar__icon"
+      fill="none"
+      focusable="false"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
+      viewBox="0 0 24 24"
+    >
+      <path d={section.icon} />
+    </svg>
   );
 }
