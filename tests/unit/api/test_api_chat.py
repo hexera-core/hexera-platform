@@ -44,10 +44,7 @@ async def test_history_unknown_session_returns_404():
     mock_repo.get_for_owner = AsyncMock(return_value=None)
     with (
         patch("meshpipeline.persistence.session.get_db", _mock_get_db),
-        # `chat.py` now holds `session_repo` at module scope (hoisted so the collection route is
-        # patchable too), so the fixture patches that instance directly rather than the
-        # `SessionRepository` constructor a call-time `import` used to pick up.
-        patch.object(chat_mod, "session_repo", mock_repo),
+        patch("meshpipeline.persistence.repositories.session_repository.SessionRepository", return_value=mock_repo),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
             resp = await c.get(f"/api/v1/chat/history/{_SESSION_ID}")
@@ -67,8 +64,7 @@ async def test_history_known_session_returns_messages():
 
     with (
         patch("meshpipeline.persistence.session.get_db", _mock_get_db),
-        # See the same note in test_history_unknown_session_returns_404.
-        patch.object(chat_mod, "session_repo", mock_repo),
+        patch("meshpipeline.persistence.repositories.session_repository.SessionRepository", return_value=mock_repo),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
             resp = await c.get(f"/api/v1/chat/history/{_SESSION_ID}")

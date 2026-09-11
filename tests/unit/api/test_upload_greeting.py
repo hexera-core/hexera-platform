@@ -165,10 +165,8 @@ async def _upload_into(store, tmp_path, *, greeting_enabled=True):
 
 async def _history(store, owner_id="owner-1"):
     from meshpipeline.api.v1.chat import get_chat_history
-    # `chat.py` now holds `session_repo` at module scope (hoisted so the collection route is
-    # patchable too), so this patches that instance directly rather than the `SessionRepository`
-    # constructor a call-time `import` used to pick up.
-    with (patch("meshpipeline.api.v1.chat.session_repo", store.repo()()),
+    with (patch("meshpipeline.persistence.repositories.session_repository.SessionRepository",
+                store.repo()),
           patch("meshpipeline.persistence.session.get_db", _mock_get_db)):
         return await get_chat_history(_SESSION_ID, owner_id=owner_id, organization_id="")
 

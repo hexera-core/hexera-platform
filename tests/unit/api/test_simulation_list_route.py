@@ -54,7 +54,9 @@ def listing(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(simulation.job_repo, "list_for_owner", fake_list)
+    # THE SERVICE IS THE SEAM. The route is transport over `JobService`, never over a
+    # repository, so the double goes where the route actually reaches - `svc.list_runs`.
+    monkeypatch.setattr(simulation.svc, "list_runs", fake_list)
     monkeypatch.setattr(simulation, "get_db", lambda: _NullSession())
     return store, seen
 

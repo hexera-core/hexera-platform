@@ -15,14 +15,14 @@ from meshpipeline.api.schemas import listing
 from meshpipeline.api.schemas.chat import ChatMessageIn, ChatResponse
 from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.application.intake_brief import build_brief
+from meshpipeline.application.job_service import JobService
 from meshpipeline.errors import classify_api_failure, user_message_for
-from meshpipeline.persistence.repositories.session_repository import SessionRepository
 from meshpipeline.persistence.session import get_db
 from meshpipeline.trace.sink import project_all
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-session_repo = SessionRepository()
+svc = JobService()
 
 
 @router.get("")
@@ -33,9 +33,9 @@ async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | Non
     # collection route placed after that one would never be reached.
     bounded = pagination.clamp_limit(limit)
     async with get_db() as db:
-        rows = await session_repo.list_for_owner(db, owner_id, organization_id=organization_id,
-                                                  limit=bounded,
-                                                  before=pagination.decode_cursor(cursor))
+        rows = await svc.list_conversations(db, owner_id, organization_id=organization_id,
+                                            limit=bounded,
+                                            before=pagination.decode_cursor(cursor))
     items = [{
         "id": str(row.id),
         # The JSON key is "task_label" though the column is `ChatSession.domain`: `domain` is
@@ -55,9 +55,16 @@ async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | Non
 @router.get("/history/{session_id}")
 async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                            organization_id: str = Depends(org_dep)):
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    # CONSTRUCTED HERE, not held at module scope. The import is function-local because
+    # test_no_api_module_imports_a_persistence_repository_at_module_scope forbids the other
+    # shape: an API module is transport over an application service, and the only repository a
+    # route may touch is one it reaches for inside the request it is serving.
+    session_repo = SessionRepository()
     async with get_db() as db:
         session = await session_repo.get_for_owner(db, session_id, owner_id,
-                                                    organization_id=organization_id)
+                                                   organization_id=organization_id)
         if not session:
             raise HTTPException(404, "Session not found")
     return {

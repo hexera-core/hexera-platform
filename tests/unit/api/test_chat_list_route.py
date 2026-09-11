@@ -50,7 +50,9 @@ def listing(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(chat.session_repo, "list_for_owner", fake_list)
+    # THE SERVICE IS THE SEAM. `chat.py` holds no repository; the collection route reaches for
+    # `JobService.list_conversations`, so that is what the double replaces.
+    monkeypatch.setattr(chat.svc, "list_conversations", fake_list)
     monkeypatch.setattr(chat, "get_db", lambda: _NullSession())
     return rows, seen
 

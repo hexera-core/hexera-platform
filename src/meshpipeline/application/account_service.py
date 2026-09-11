@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.application import credit_service
 from meshpipeline.contracts.firebase_token import VerifiedToken
-from meshpipeline.persistence.models import MembershipRole
+from meshpipeline.persistence.models import MembershipRole, Organization
 from meshpipeline.persistence.repositories.membership_repository import MembershipRepository
 from meshpipeline.persistence.repositories.organization_repository import (
     OrganizationRepository,
@@ -201,6 +202,62 @@ def _slug_for(firebase_uid: str) -> str:
     # conflict `_provision` can now see is the concurrent-signup one it is written for.
     digest = hashlib.sha256(firebase_uid.encode("utf-8")).hexdigest()[:_SLUG_DIGEST_CHARS]
     return f"org-{firebase_uid.lower()[:_SLUG_UID_CHARS]}-{digest}"
+
+
+@dataclass(frozen=True)
+class Member:
+    """One person who acts within an organisation, already resolved for display.
+
+    Normalised HERE rather than in the route because the degraded view below has no `User` row to
+    render and must still produce a member. A route that received `(User, MembershipRole)` tuples
+    would have to invent one.
+    """
+    email: str
+    name: str
+    role: str
+
+
+@dataclass(frozen=True)
+class OrganizationView:
+    #: the `organizations` row, or None when there is nothing to show - see `organization_view`.
+    organization: Organization | None
+    members: list[Member]
+
+
+async def organization_view(db: AsyncSession, *, owner_id: str,
+                            organization_id: str) -> OrganizationView:
+    """What the console shows the caller about the organisation they act within.
+
+    DECISION 12. An absent or malformed organisation is a deployment between 0004 and the image
+    that fills the column, or a lookup that could not run - the same states `credit_service`
+    answers 0 for. Answering with an empty member list would read to the person whose account it
+    is as though their account had vanished, so the caller is shown themselves: the honest
+    degraded view, and exactly what `tenant_scope`'s owner fallback means everywhere else.
+
+    An organisation id that parses but names somebody ELSE's organisation is NOT that case: it
+    reads as no organisation and no members, because nothing about another tenant may be
+    materialised here.
+    """
+    parsed = _parsed_organization_id(organization_id)
+    if parsed is None:
+        return OrganizationView(organization=None,
+                                members=[Member(email=owner_id, name=owner_id, role="owner")])
+
+    row = await organization_repo.get_by_id(db, parsed)
+    members = await membership_repo.list_members(db, organization_id=parsed)
+    return OrganizationView(
+        organization=row,
+        members=[Member(email=user.email, name=user.name or user.email,
+                        role=getattr(role, "value", role)) for user, role in members])
+
+
+def _parsed_organization_id(organization_id: str) -> uuid.UUID | None:
+    if not organization_id:
+        return None
+    try:
+        return uuid.UUID(organization_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 async def organization_id_for_owner(db: AsyncSession, owner_id: str) -> str:

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import pytest
 
 from meshpipeline.api.v1 import organization
+from meshpipeline.application import account_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,8 +49,13 @@ def org(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(organization.organization_repo, "get_by_id", fake_get)
-    monkeypatch.setattr(organization.membership_repo, "list_members", fake_members)
+    # THE ROUTE HOLDS NO REPOSITORY. It is transport over `account_service.organization_view`,
+    # which owns the degrade below, so the doubles go at the service's own seam - one level
+    # further in than they used to sit, and the only place the route can still be reached
+    # through. Patching `organization_view` itself instead would move DECISION 12 into this
+    # fixture and leave the two degradation tests asserting against their own stub.
+    monkeypatch.setattr(account_service.organization_repo, "get_by_id", fake_get)
+    monkeypatch.setattr(account_service.membership_repo, "list_members", fake_members)
     monkeypatch.setattr(organization, "get_db", lambda: _NullSession())
     return row
 

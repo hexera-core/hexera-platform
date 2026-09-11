@@ -15,14 +15,12 @@ from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, Job
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application.job_service import JobService
 from meshpipeline.persistence.models import ArtifactType
-from meshpipeline.persistence.repositories.job_repository import JobRepository
 from meshpipeline.persistence.session import get_db
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 svc = JobService()
-job_repo = JobRepository()
 
 
 def _amended_brief(parent_session, mode: str, comment: str) -> str:
@@ -131,9 +129,9 @@ async def list_jobs(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = 
     # placed after that one is unreachable - "" would be captured as a job id.
     bounded = pagination.clamp_limit(limit)
     async with get_db() as db:
-        rows = await job_repo.list_for_owner(db, owner_id, organization_id=organization_id,
-                                             limit=bounded,
-                                             before=pagination.decode_cursor(cursor))
+        rows = await svc.list_runs(db, owner_id, organization_id=organization_id,
+                                   limit=bounded,
+                                   before=pagination.decode_cursor(cursor))
     items = [{
         "id": str(job.id),
         "status": getattr(job.status, "value", job.status),
