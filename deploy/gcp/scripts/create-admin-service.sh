@@ -29,9 +29,15 @@
 # the `<SETTING>_SECRET` convention; a name that is unset is skipped rather than bound empty, so a
 # deployment that runs no outreach binds nothing and this loop stays empty exactly as before.
 #
-# WHY NO VPC EGRESS, NO DATABASE CONNECTION. Those arrive with the next sub-project, alongside the
-# first page that actually queries something. Provisioning them here would be ahead of the feature
-# that needs them.
+# VPC EGRESS AND A DATABASE CONNECTION, and why they were not here before. Everything this console
+# showed until now read Google's own APIs, which are reachable from Cloud Run's default egress -
+# so a VPC route and a database credential would have been an unused network path and an unused
+# secret. Outreach is the first thing that queries a table, and the data tier is private-IP only,
+# so both arrive with it.
+#
+# PRIVATE-RANGES-ONLY, matching the API tier: RFC1918 traffic goes through the VPC, everything else
+# keeps taking the default route. Sending all egress through the VPC would put Google's own APIs
+# behind Cloud NAT for no benefit and a per-byte charge.
 #
 # INPUTS   the deployment env (ADMIN_IMAGE, CLOUDRUN_ADMIN_SERVICE, ADMIN_*, GCP_PROJECT_NUMBER)
 # MUTATES  the admin runtime identity, the Cloud Run service, and its invoker policy. It deletes
@@ -391,6 +397,24 @@ deploy_args=(
 )
 if [ ${#ADMIN_SECRET_BINDINGS[@]} -gt 0 ]; then
   deploy_args+=(--set-secrets "$(IFS=,; printf '%s' "${ADMIN_SECRET_BINDINGS[*]}")")
+fi
+
+# THE PRIVATE ROUTE, added only where something needs it. A deployment with no outreach database
+# keeps the console exactly as it was: no VPC attachment, no Cloud SQL socket, nothing to misroute.
+if [ -n "${OUTREACH_DB_HOST:-}" ]; then
+  VPC_NETWORK="${VPC_NETWORK:-default}"
+  VPC_SUBNET="${VPC_SUBNET:-default}"
+  deploy_args+=(
+    --network "${VPC_NETWORK}"
+    --subnet "${VPC_SUBNET}"
+    --vpc-egress private-ranges-only
+  )
+  # The Cloud SQL socket, when the host is one. OUTREACH_DB_HOST doubles as the socket path -
+  # /cloudsql/<connection-name> - which is how the Cloud Run integration exposes it.
+  case "${OUTREACH_DB_HOST}" in
+    /cloudsql/*) deploy_args+=(--add-cloudsql-instances "${OUTREACH_DB_HOST#/cloudsql/}") ;;
+  esac
+  log "network       ${VPC_NETWORK}/${VPC_SUBNET}, private-ranges-only (the outreach database is private-IP only)"
 fi
 
 # THE SCALING FLAGS ARE CREATE-ONLY. Once the service exists its warm floor and ceiling belong to

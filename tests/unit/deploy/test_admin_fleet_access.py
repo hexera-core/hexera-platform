@@ -213,6 +213,25 @@ def test_bigquery_access_is_granted_only_where_a_billing_export_exists(run):
     assert "BILLING_EXPORT_TABLE=acct.export.gcp_billing_export_v1_ABC" in _deploy_line(with_calls)
 
 
+def test_no_private_network_is_attached_without_a_database(run):
+    # Everything the console showed before outreach read Google's own APIs, which are reachable
+    # from the default egress. A VPC attachment for a deployment with no database to reach is an
+    # unused network path, and one more thing that can misroute.
+    done, calls = run()
+    assert done.returncode == 0, done.stderr
+    assert "--vpc-egress" not in calls
+    assert "--add-cloudsql-instances" not in calls
+
+
+def test_the_private_route_arrives_with_the_database(run):
+    # private-ranges-only, matching the API tier: RFC1918 goes through the VPC and everything else
+    # keeps the default route, so Google's own APIs do not end up behind Cloud NAT for a fee.
+    done, calls = run({"OUTREACH_DB_HOST": "/cloudsql/fake-proj:europe-west1:hexera"})
+    assert done.returncode == 0, done.stderr
+    assert "--vpc-egress private-ranges-only" in calls
+    assert "--add-cloudsql-instances fake-proj:europe-west1:hexera" in calls
+
+
 def test_an_iam_failure_does_not_abort_the_rollout(run):
     # A deploy identity may not hold resourcemanager.projectIamAdmin. The grant is attempted, the
     # failure is reported with the command that fixes it, and the console itself is the verdict -
