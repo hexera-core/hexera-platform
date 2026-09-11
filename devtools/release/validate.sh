@@ -654,7 +654,7 @@ else
   # else owns.
   TERMINAL_RUN_ID="$(printf '%s' "${STAMP}" | tr -cd 'a-z0-9')"
   TERMINAL_DB="meshtest_${TERMINAL_RUN_ID}"
-  MINIO_IMAGE=minio/minio:RELEASE.2025-04-22T22-12-26Z
+  MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
   docker network create --label "amp-release=${STAMP}" "${NET}" >/dev/null 2>&1
   docker run -d --name "${RD}" --label "amp-release=${STAMP}" --network "${NET}" \
     redis:7-alpine >/dev/null 2>&1

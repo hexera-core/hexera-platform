@@ -121,7 +121,7 @@ def _viewer_surface():
 
     def _hook(workspace, *, roles, units, skip_names=()):
         # the tet mesh's boundary surface (mesh.vtu) → the shared kind=stl payload
-        return stl_response(surface_patches(workspace), roles, units, skip_names)
+        return stl_response(surface_patches(workspace, named=True), roles, units, skip_names)
     return _hook
 
 
@@ -180,7 +180,14 @@ SPEC = EngineSpec(
         # INTERNAL only: vmtk tetrahedralizes the lumen ENCLOSED by the surface,
         # sized off its centerline. There is no far-field construction in vmtk.
         capabilities=(MeshCapability("body-surface", "fluid-volume",
-                                     topologies=("internal",)),),
+                                     topologies=("internal",)),
+                      # A DECLARED FLUID DOMAIN (a CAD solid of the fluid region itself): its
+                      # boundary IS the lumen surface - the solid is tessellated to that surface
+                      # and the inside is filled, exactly the body-surface path. Registered so
+                      # the intake stops refusing VMTK for the fluid twins (HEX-11); the delivery
+                      # that backs it is in engines/validation_evidence.json.
+                      MeshCapability("fluid-domain", "fluid-volume",
+                                     topologies=("internal",))),
         input_contract=InputContract(
             dimensionalities=("3D",),
             input_kind="surface",
@@ -248,16 +255,26 @@ SPEC = EngineSpec(
                 M("centerlines.vtp", required=False),
                 M("surface_remeshed.vtp", required=False),
                 M("mesh.msh", required=False),
+                # the same volume as an OpenFOAM case (gmshToFoam in the mesh image, right after
+                # the fill) - the label promises one; a customer got a .vtu and a conversion to do
+                M("mesh_volume.msh", required=False),
+                M("openfoam_case/constant/polyMesh", kind="dir", required=False),
+                M("openfoam_case/system/controlDict", required=False),
             ),
         ),
         downstream=DownstreamTarget(
             # FACTUAL consumers of a VTK-native tet volume mesh - not a domain claim
-            solvers=("SimVascular/svSolver", "FEniCS/dolfinx", "SU2", "Elmer"),
+            solvers=("OpenFOAM", "SimVascular/svSolver", "FEniCS/dolfinx", "SU2", "Elmer"),
         ),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),
-            run_timeout=lambda: min(1800, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
-            timeout_hint=("Raise edge_length_factor (coarser cells relative to the radius), then "
+            # 50 MINUTES: at industry density (13 cells across, 5 layers) the sweep's largest case
+            # (transition_013, a 1 m flat duct) fills in over 30 min; the Cloud Run job allows 4 h,
+            # but the builder's attempt budget is BUILDER_LOOP_TIMEOUT (3600 s) less its feedback
+            # reserve (420 s), so a run may not ask for more than about 3180 s and still report.
+            run_timeout=lambda: min(3000, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
+            timeout_hint=("Raise edge_length_factor (coarser cells relative to the radius) - but "
+                          "not past 0.16, the 12-cells-across floor a CFD mesh must keep - then "
                           "run_mesh again."),
             ok_guidance="Valid tetrahedral mesh (no fatal defects) - call submit_mesh.",
             fail_label="vmtk pipeline failed",

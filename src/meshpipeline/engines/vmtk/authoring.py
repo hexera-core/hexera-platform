@@ -23,9 +23,11 @@ AUTHORING_TOOL: dict = {
                 "edge_length_factor": {
                     "type": "number",
                     "description": ("target edge length as a FRACTION OF THE LOCAL RADIUS "
-                                    "(greater than 0, at most 1.0; 0.3 is the default and vmtk's own "
-                                    "published example). Smaller = finer everywhere, scaled to each "
-                                    "branch's radius. This is vmtk's defining knob."),
+                                    "(greater than 0, at most 1.0). About 2/factor cells across "
+                                    "every passage: 0.15 (the default) gives ~13, 0.1 gives ~20; "
+                                    "the engine rejects a fill under 12 across. Smaller = finer "
+                                    "everywhere, scaled to each branch's radius. This is vmtk's "
+                                    "defining knob."),
                 },
                 "source_ids": {"type": "array", "items": {"type": "integer"},
                                "description": ("OPEN-PROFILE ids (from geometry_report) that seed the "
@@ -38,10 +40,14 @@ AUTHORING_TOOL: dict = {
                 "target_points": {"type": "array", "items": {"type": "number"},
                                   "description": "explicit outlet seed coordinates [x,y,z,...]"},
                 "boundary_layers": {"type": "integer", "description": "near-wall prism layers inside the lumen wall (0=none)"},
-                "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness vs local radius (default 0.2)"},
+                "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness as a fraction of the local radius (default 0.10; layers grow 1.25x away from the wall; thicker stacks fold at wye crotches)"},
                 "cap_openings": {"type": "boolean", "description": "cap the open profiles at the lumen ends into inlet/outlet patches (default true; set false when the lumen is already closed)"},
                 "remesh_surface": {"type": "boolean", "description": "radius-adaptive surface remesh before the volume fill (default true)"},
-                "max_cells": {"type": "integer", "description": "cell budget (default 4e6)"},
+                "max_cells": {"type": "integer", "description": "cell budget (default 8e6)"},
+                "min_edge_length": {"type": "number",
+                                    "description": "ENGINE-STAGED (metres): floor on the radius-adaptive cell size"},
+                "max_edge_length": {"type": "number",
+                                    "description": "ENGINE-STAGED (metres): ceiling on the radius-adaptive cell size"},
             },
             "required": [],
         },
@@ -50,7 +56,8 @@ AUTHORING_TOOL: dict = {
 
 _STRATEGY = {"edge_length_factor", "boundary_layers", "boundary_layer_thickness_factor",
              "cap_openings", "remesh_surface", "max_cells",
-             "source_ids", "target_ids", "source_points", "target_points"}
+             "source_ids", "target_ids", "source_points", "target_points",
+             "min_edge_length", "max_edge_length", "sizing_array", "generator_remesh"}
 _PREAMBLE = {"geometry_file", "wall_patch", "strategy", "wall_layers"}
 _KNOWN = _STRATEGY | _PREAMBLE
 # knobs from the OpenFOAM engines a confused model might send - name them so the redirect helps
@@ -106,7 +113,14 @@ def validate(strategy: dict) -> list[Diagnostic]:
         if not (_num(t) and 0.0 < t < 1.0):
             d.append(Diagnostic("error", "boundary_layer_thickness_factor",
                                 "boundary_layer_thickness_factor must be a number in (0,1) - a fraction of the local radius"))
-    for b in ("cap_openings", "remesh_surface"):
+        elif float(t) < 0.05:
+            # the first sweep job web-searched its way to 0.018: the layer tets came out with a
+            # scaled Jacobian of 0.001 - slivers a solver will feel; the default resolves the wall
+            d.append(Diagnostic("warning", "boundary_layer_thickness_factor",
+                                f"boundary_layer_thickness_factor {t} is very thin - below 0.05 the "
+                                "layer tets are slivers (scaled Jacobian ~0.001). Keep the default "
+                                "0.10 unless the brief asks for a specific first-cell height."))
+    for b in ("cap_openings", "remesh_surface", "generator_remesh"):
         # ECHO WHAT ARRIVED. A live run sent the STRING "false", read the bare
         # "must be true or false" as a validator bug, retried the same string three times,
         # then capitulated to `true` - the wrong answer for a closed lumen. A diagnostic
@@ -118,6 +132,21 @@ def validate(strategy: dict) -> list[Diagnostic]:
                 f"({type(got).__name__}). Send {b}: false, not \"false\".")))
     if "max_cells" in strategy and (not _int(strategy["max_cells"]) or strategy["max_cells"] <= 0):
         d.append(Diagnostic("error", "max_cells", "max_cells must be a positive integer"))
+    for k in ("min_edge_length", "max_edge_length"):
+        v = strategy.get(k)
+        if v is not None and (not _num(v) or not math.isfinite(float(v)) or float(v) <= 0):
+            d.append(Diagnostic("error", k, f"{k} must be a positive length in metres (or omitted "
+                                            f"to keep the engine-staged value) - received {v!r}"))
+    sa = strategy.get("sizing_array")
+    if sa is not None and not isinstance(sa, str):
+        d.append(Diagnostic("error", "sizing_array",
+                            "sizing_array is the engine-staged point array name (a string); "
+                            "leave it out to keep the staged value"))
+    lo, hi = strategy.get("min_edge_length"), strategy.get("max_edge_length")
+    if (isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+            and float(lo) >= float(hi) > 0):
+        d.append(Diagnostic("error", "min_edge_length",
+                            "min_edge_length must be smaller than max_edge_length"))
     d.extend(_validate_seeding(strategy))
     return d
 
@@ -143,20 +172,27 @@ def _validate_seeding(strategy: dict) -> list[Diagnostic]:
         d.append(Diagnostic("error", "source_ids",
                             "supply BOTH source_ids and target_ids (inlet and outlet open-profile ids)"))
     if not pts and not ids:
-        d.append(Diagnostic("error", "source_points",
-                            "centerline seeding is required: give source_points+target_points (any "
-                            "lumen, including a CLOSED one) or source_ids+target_ids (open-profile "
-                            "ids from geometry_report). vmtk's interactive seeding cannot run headless."))
+        # a WARNING, not a refusal: a CAD body with declared ports has its seeds staged by the
+        # engine (geometry_report: staged_ports) and configure_mesh fills them in; when nothing
+        # was staged configure_mesh itself refuses with vmtk_seeds_required
+        d.append(Diagnostic("warning", "source_points",
+                            "no centerline seeds given - they are taken from the engine-staged ports "
+                            "(geometry_report lists them as staged_ports). If none were staged, give "
+                            "source_points+target_points (any lumen, including a CLOSED one) or "
+                            "source_ids+target_ids (open-profile ids from geometry_report); vmtk's "
+                            "interactive seeding cannot run headless."))
     return d
 
 
 #: ENGINE-OWNED mesh-detail mapping. vmtk sizes from the CENTERLINE RADIUS, so the tier moves the
 #: relative edge-length factor (LOWER = finer) and the layer count. Classification: all soft
 #: recommendations; vmtk's own gate still rejects a mesh above CELL_HARD_LIMIT.
+#: Every tier clears the engine's floor of 12 cells across (criteria.PASSAGE_MIN_CELLS_ACROSS):
+#: a "draft" is a layer-free geometry check at the floor, not a coarser core.
 _FIDELITY_VMTK = {
-    "draft":    {"edge_length_factor": 0.5, "boundary_layers": 0},
-    "standard": {"edge_length_factor": 0.3, "boundary_layers": 3},
-    "max":      {"edge_length_factor": 0.2, "boundary_layers": 5},
+    "draft":    {"edge_length_factor": 0.16, "boundary_layers": 0},
+    "standard": {"edge_length_factor": 0.15, "boundary_layers": 5},
+    "max":      {"edge_length_factor": 0.1, "boundary_layers": 8},
 }
 
 
@@ -170,12 +206,13 @@ def recommend(analysis: dict, *, fidelity: str = "standard") -> dict:
         "mesh_detail_preference": str(fidelity or "standard"),
         "edge_length_factor": _f["edge_length_factor"],
         "boundary_layers": _f["boundary_layers"],
-        "boundary_layer_thickness_factor": 0.2,
+        "boundary_layer_thickness_factor": 0.10,
         "cap_openings": True,
         "remesh_surface": True,
         "note": ("vmtk sizes cells from the CENTERLINE RADIUS, so give it a factor, not a length: "
-                 "edge_length_factor≈0.3 puts roughly 6-7 cells across every branch diameter, "
-                 "narrow or wide. Lower it to refine everywhere; do not try to set an absolute "
+                 "edge_length_factor≈0.15 puts roughly 13 cells across every branch diameter, "
+                 "narrow or wide (0.1 gives ~20; the engine rejects a fill under 12 across). "
+                 "Lower it to refine everywhere; do not try to set an absolute "
                  "cell size. Centerline seeding must be EXPLICIT (no interactive picking). These "
                  "layer/capping values assume an OPEN lumen: if geometry_report reports "
                  "closed=true, set cap_openings=false (nothing to cap) and start from "

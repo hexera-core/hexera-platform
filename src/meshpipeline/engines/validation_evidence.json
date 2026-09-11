@@ -148,6 +148,21 @@
           "summary": "blade_row_passage_001 as a fluid solid (annular blade-row passage, 453 mm bore around a 269 mm hub, 5 twisted blades): delivered attempt 1, 567,933 cells, max non-ortho 63.9, max skew 9.3, prism-layer coverage 97.4%; boundary is wall/inlet/outlet only and the seed sits at r=180 mm between hub and shroud. Supersedes job 9bf37dd8 (recorded earlier the same day), which had meshed the HUB BORE: the seed was the axis centroid and the port caps sealed the bore - see cad_tessellate ring-port seed candidates. Same day, same lane: passages 003 (401k cells), 004 (739k), 005 (294k), 006 (559k) delivered; the family had failed 0/6 through gmsh."
         }
       ]
+    },
+    {
+      "engine": "vmtk",
+      "input_kind": "fluid-domain",
+      "output_kind": "fluid-volume",
+      "supported": true,
+      "tier": "T5+T6",
+      "deliveries": [
+        {
+          "purpose": "internal_cfd (fluid twin, HEX-11 assessment)",
+          "job": "43f5835f",
+          "date": "2026-09-11",
+          "summary": "straight_reducer_004 fluid twin (corpus, HEX-11): the engine opened the declared ports, builder attempt 1, Cloud Run 3 min, 97,465 tets, min SJ 0.119 on the isotropic fill, all gates green, reviewer PASS (13 rounds), 502 s end to end; straight_reducer_006 (9dc8f08a) likewise, 148,264 tets"
+        }
+      ]
     }
   ]
 }

@@ -42,6 +42,8 @@ MUST_NOT_DECLARE: dict[str, str] = {
     "parse_layer_coverage":      "cfMesh grows no prism layers - there is no layer log to parse",
     "review_geometry_stls":      "cfMesh assembles exactly one geom.stl; the default is correct",
     "surface_capture_reference": "cfMesh does not body-fit a snapped wall to a reference CAD",
+    "stage_declared":            "cfMesh does not open a CAD body at the declared ports before the "
+                                 "builder starts (vmtk does); the builder hook is optional",
 }
 
 

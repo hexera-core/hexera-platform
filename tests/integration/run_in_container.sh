@@ -35,7 +35,7 @@ PG=ci-local-postgres
 RD=ci-local-redis
 MN=ci-local-minio
 IMG=meshpipeline-pipeline:test
-MINIO_IMAGE=minio/minio:RELEASE.2025-04-22T22-12-26Z
+MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
 # Every resource this script creates carries this label, so teardown can prove ownership instead
 # of subtracting one inventory from another.
 LABEL=hexera-ci-local
