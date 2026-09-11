@@ -465,6 +465,7 @@ def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
 # quality read-back
 
 _VTK_TETRA = 10   # cell type; mesh.vtu also carries the boundary TRIANGLES (type 5)
+_WALL_ENTITY = 1  # vmtk's CellEntityId for the lumen wall; caps are numbered from 2
 
 # TetGen reports a self-intersecting boundary like this and vmtk STILL exits 0, leaving a
 # mesh whose tets are mostly inverted. The exit code alone can never be trusted.
@@ -560,13 +561,21 @@ def check_mesh(workspace) -> dict:
         layer_min_quality = float(layer.min()) if layer.size else None
     except Exception as exc:  # noqa: BLE001 - quality is best-effort evidence, not a crash
         logger.warning("vmtk check_mesh: quality computation failed: %s", exc)
-    layer_coverage = None
-    lr = ws / "layer_report.json"
-    if lr.exists():
-        try:
-            layer_coverage = json.loads(lr.read_text()).get("coverage")
-        except Exception:  # noqa: BLE001
-            layer_coverage = None
+    # LAYER COVERAGE is measured here, from the mesh: the share of wall triangles whose three
+    # vertices belong to boundary-layer tets. The reviewer REQUIRES this metric for its
+    # local_anatomical_fidelity axis (MetricRequirement("layer_coverage")) and nothing had
+    # ever written layer_report.json, so the first delivery through the product
+    # (straight_reducer_006, job 1d414282, 2026-09-11: 150,915 cells, every gate green) died
+    # at the reviewer with "required deterministic evidence missing ('metric:layer_coverage',)".
+    # A layer-free mesh reads 0 % - a number the reviewer can weigh, not a missing fact.
+    layer_coverage, layer_facts = _layer_coverage(mesh, layer_mask)
+    try:
+        (ws / "layer_report.json").write_text(json.dumps(
+            {"coverage": layer_coverage, **layer_facts,
+             "method": "wall triangles whose vertices all belong to boundary-layer tets"},
+            indent=2))
+    except OSError as exc:
+        logger.warning("vmtk check_mesh: could not write layer_report.json: %s", exc)
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
             "layer_coverage": layer_coverage, "mesh_ok": ok,
@@ -620,6 +629,32 @@ def _normalise_orientation(grid):
     flag[np.flatnonzero(tet_rows)[neg]] = 1
     out.cell_data[_LAYER_ARRAY] = flag[order]
     return out, n, neg
+
+
+def _layer_coverage(grid, layer_mask) -> tuple[float, dict]:
+    """(coverage %, facts): the share of wall triangles (CellEntityIds == 1, or every boundary
+    triangle when the mesh carries no ids) whose three vertices all belong to a boundary-layer
+    tet. 0.0 when the mesh has no layer block."""
+    import numpy as np
+    ct = np.asarray(grid.celltypes)
+    tri_rows = ct == 5
+    if not tri_rows.any():
+        return 0.0, {"wall_triangles": 0, "covered_wall_triangles": 0, "layer_tets": 0}
+    tris = np.asarray(grid.cells_dict[5], dtype=np.int64)
+    ids = grid.cell_data.get("CellEntityIds")
+    if ids is not None:
+        wall = np.asarray(ids)[tri_rows] == _WALL_ENTITY
+        tris = tris[wall] if wall.any() else tris
+    n_wall = int(len(tris))
+    if layer_mask is None or not np.asarray(layer_mask).any() or not (ct == _VTK_TETRA).any():
+        return 0.0, {"wall_triangles": n_wall, "covered_wall_triangles": 0, "layer_tets": 0}
+    tets = np.asarray(grid.cells_dict[_VTK_TETRA], dtype=np.int64)[np.asarray(layer_mask)]
+    in_layer = np.zeros(grid.n_points, dtype=bool)
+    in_layer[np.unique(tets)] = True
+    covered = int(in_layer[tris].all(axis=1).sum())
+    pct = 100.0 * covered / n_wall if n_wall else 0.0
+    return round(pct, 2), {"wall_triangles": n_wall, "covered_wall_triangles": covered,
+                          "layer_tets": int(len(tets))}
 
 
 def _overlap_fraction(grid, tet_volume: float) -> float | None:

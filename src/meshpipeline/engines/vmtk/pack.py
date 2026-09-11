@@ -24,7 +24,7 @@ WORKFLOW (linear - do not loop back without a concrete failure):
        * source_points + target_points: explicit [x,y,z,...] coordinates. Use this when geometry_report says the lumen is CLOSED (a closed lumen has no open profiles to select) - pick a point on the surface at each end.
    - edge_length_factor: target edge length as a fraction of the LOCAL RADIUS (0.05-1.0). 0.3 ≈ 6-7 cells across every branch diameter. Lower to refine everywhere. THIS is the sizing knob.
    - boundary_layers: near-wall prism layers inflated inward from the lumen wall (0 = none). Needed whenever wall shear stress or the near-wall gradient matters.
-   - boundary_layer_thickness_factor: total layer thickness as a fraction of the local radius (default 0.2).
+   - boundary_layer_thickness_factor: total layer thickness as a fraction of the local radius (default 0.2). Keep the default unless the brief names a first-cell height; do not research it - below 0.05 the layer tets are slivers.
    - cap_openings: cap the open profiles into inlet/outlet patches (default true). Set it FALSE when geometry_report says the lumen is already CLOSED - there is nothing to cap.
    - remesh_surface: radius-adaptive surface remesh before the volume fill (default true; turn off only if the input surface is already well-graded).
    - max_cells: cell budget (default 4e6).

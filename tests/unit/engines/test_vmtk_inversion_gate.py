@@ -136,6 +136,25 @@ def test_a_tetgen_exception_logged_with_rc0_fails(tmp_path):
     assert q["mesh_ok"] is False
 
 
+def test_layer_coverage_is_measured_from_the_layer_block(tmp_path):
+    # the tet is the layer block (negative order); its faces are the wall (id 1) and one cap (id 2)
+    cells = np.hstack([[4, 1, 0, 2, 3]] + [[3, *f] for f in _TET_FACES]).astype(np.int64)
+    ctypes = np.array([vtk.VTK_TETRA] + [vtk.VTK_TRIANGLE] * 4, dtype=np.uint8)
+    g = pv.UnstructuredGrid(cells, ctypes, _BASE_PTS)
+    g.cell_data["CellEntityIds"] = np.array([0, 1, 1, 1, 2], dtype=np.int32)
+    g.save(str(tmp_path / "mesh.vtu"))
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is True and q["layer_tets"] == 1
+    assert q["layer_coverage"] == 100.0                 # every wall triangle sits on a layer tet
+    import json
+    rep = json.loads((tmp_path / "layer_report.json").read_text())
+    assert rep["coverage"] == 100.0 and rep["wall_triangles"] == 3 and rep["layer_tets"] == 1
+    # a layer-free mesh reads 0 %, never None - the reviewer needs a number to weigh
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
+    q2 = check_mesh(tmp_path)
+    assert q2["layer_coverage"] == 0.0 and q2["layer_tets"] == 0
+
+
 def test_a_cap_wound_the_other_way_does_not_read_as_overlap(tmp_path):
     # vmtk winds cap triangles opposite to the wall; the enclosed volume must not depend on it
     faces = list(_TET_FACES[:3]) + [tuple(reversed(_TET_FACES[3]))]

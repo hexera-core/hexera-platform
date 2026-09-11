@@ -111,6 +111,13 @@ def validate(strategy: dict) -> list[Diagnostic]:
         if not (_num(t) and 0.0 < t < 1.0):
             d.append(Diagnostic("error", "boundary_layer_thickness_factor",
                                 "boundary_layer_thickness_factor must be a number in (0,1) - a fraction of the local radius"))
+        elif float(t) < 0.05:
+            # the first sweep job web-searched its way to 0.018: the layer tets came out with a
+            # scaled Jacobian of 0.001 - slivers a solver will feel; the default resolves the wall
+            d.append(Diagnostic("warning", "boundary_layer_thickness_factor",
+                                f"boundary_layer_thickness_factor {t} is very thin - below 0.05 the "
+                                "layer tets are slivers (scaled Jacobian ~0.001). Keep the default "
+                                "0.2 unless the brief asks for a specific first-cell height."))
     for b in ("cap_openings", "remesh_surface", "generator_remesh"):
         # ECHO WHAT ARRIVED. A live run sent the STRING "false", read the bare
         # "must be true or false" as a validator bug, retried the same string three times,
