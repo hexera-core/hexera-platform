@@ -25,6 +25,8 @@ export type AutoscalerHealth = {
 };
 
 export type FleetState = {
+  // Read from the group, never guessed - see autoscalerNameFrom.
+  autoscalerName: string | null;
   currentActions: Record<string, number>;
   health: AutoscalerHealth;
   isStable: boolean;
@@ -46,15 +48,26 @@ const ACTION_KEYS = [
   "verifying",
 ] as const;
 
-// A NOT_FOUND from the autoscaler read means the group has none, which is a legitimate state -
-// a fleet at a fixed size. Any other code is a real failure and is rethrown, because rendering a
+// A NOT_FOUND means the resource does not exist, which is a legitimate state - a fleet at a fixed
+// size has no autoscaler. Any other code is a real failure and is rethrown, because rendering a
 // permission error as "no scaling policy" states something untrue about the fleet.
-const NOT_FOUND = 5;
+//
+// BOTH SPELLINGS, because the compute client is REST-backed and answers with an HTTP status while
+// the gRPC clients answer with a status code. Checking only for 5 is what let a plain 404 escape
+// this guard and take a whole page down with a raw error body instead of degrading one panel.
+const NOT_FOUND_CODES = new Set<number | string>([5, 404]);
 
 export function isNotFound(error: unknown): boolean {
-  return (
-    typeof error === "object" && error !== null && (error as { code?: number }).code === NOT_FOUND
-  );
+  if (typeof error !== "object" || error === null) return false;
+  return NOT_FOUND_CODES.has((error as { code?: number | string }).code ?? -1);
+}
+
+// THE AUTOSCALER IS NOT NAMED AFTER ITS GROUP. `set-autoscaling` appends a suffix - the live one
+// for `dev-workers` is `dev-workers-eyms` - so guessing the group's name gets a 404 for a group
+// that has an autoscaler. The group's own `status.autoscaler` is the authoritative link, and it is
+// the only thing that should ever be used to find it.
+export function autoscalerNameFrom(manager: { status?: { autoscaler?: string | null } | null }): string | null {
+  return lastSegment(manager.status?.autoscaler);
 }
 
 // Compute returns resource references as full self-links. The last segment is the name, which is
@@ -90,9 +103,12 @@ export async function readFleetState(
   let policy: ScalingPolicy | null = null;
   let health: AutoscalerHealth = { details: [], status: "ABSENT" };
 
+  const autoscalerName = autoscalerNameFrom(manager);
+
   try {
+    if (!autoscalerName) throw Object.assign(new Error("this group has no autoscaler"), { code: 404 });
     const [autoscaler] = await clients.autoscalers.get({
-      autoscaler: target.migName,
+      autoscaler: autoscalerName,
       project: target.projectId,
       zone: target.migZone,
     });
@@ -126,6 +142,7 @@ export async function readFleetState(
   const actions = manager.currentActions ?? {};
 
   return {
+    autoscalerName,
     currentActions: Object.fromEntries(
       ACTION_KEYS.map((key) => [key, toNumber(actions[key]) ?? 0]),
     ),

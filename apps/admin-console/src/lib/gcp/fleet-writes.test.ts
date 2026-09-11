@@ -46,6 +46,18 @@ const LIVE_AUTOSCALER = {
 
 function autoscalerClients(onUpdate?: (request: never) => void) {
   return {
+      // The group names its autoscaler; the writer reads it from here rather than guessing.
+      instanceGroupManagers: {
+        get: async () => [
+          {
+            name: "hexera-dev-workers",
+            status: {
+              autoscaler:
+                "https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-a/autoscalers/hexera-dev-workers-9k6e",
+            },
+          },
+        ] as never,
+      },
     autoscalers: {
       get: async () => [structuredClone(LIVE_AUTOSCALER)] as never,
       update: async (request: never) => {
@@ -97,7 +109,7 @@ test("sends back only the writable fields, and keeps the group it drives", async
   assert.equal(sent.autoscalerResource?.target, LIVE_AUTOSCALER.target);
 });
 
-test("addresses the autoscaler by name and zone", async () => {
+test("addresses the autoscaler the GROUP names, not the group's own name", async () => {
   let sent: { autoscaler?: string; project?: string; zone?: string } = {};
   await updateScalingPolicy(
     autoscalerClients((request) => {
@@ -108,7 +120,11 @@ test("addresses the autoscaler by name and zone", async () => {
     LIMITS,
   );
 
-  assert.equal(sent.autoscaler, "hexera-dev-workers");
+  // This assertion previously read `hexera-dev-workers` and passed, which is how the guessed name
+  // survived to production: an autoscaler is not named after its group, so every scaling control
+  // 404d against a perfectly healthy fleet.
+  assert.equal(sent.autoscaler, "hexera-dev-workers-9k6e");
+  assert.notEqual(sent.autoscaler, TARGET.migName);
   assert.equal(sent.project, "hexera-dev");
   assert.equal(sent.zone, "us-central1-a");
 });

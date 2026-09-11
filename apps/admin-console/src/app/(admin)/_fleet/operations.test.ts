@@ -56,6 +56,17 @@ function harness(overrides: Record<string, unknown> = {}) {
         },
         instanceGroupManagers: {
           deleteInstances: record("deleteInstances"),
+          // The scaling writer reads the group to learn its autoscaler's name, which is not the
+          // group's own.
+          get: async () => [
+            {
+              name: "hexera-dev-workers",
+              status: {
+                autoscaler:
+                  "https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-a/autoscalers/hexera-dev-workers-9k6e",
+              },
+            },
+          ] as never,
           recreateInstances: record("recreateInstances"),
           resize: record("resize"),
         },

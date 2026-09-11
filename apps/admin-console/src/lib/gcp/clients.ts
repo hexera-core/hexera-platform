@@ -40,7 +40,9 @@ export type FleetClients = {
 
 export type FleetWriteClients = {
   autoscalers: AutoscalerWriter;
-  instanceGroupManagers: ManagerWriter;
+  // Reader AND writer: a scaling change has to read the group first to learn its autoscaler's
+  // name, which is not the group's own.
+  instanceGroupManagers: ManagerReader & ManagerWriter;
 };
 
 let compute: {

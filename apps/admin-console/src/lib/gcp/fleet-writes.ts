@@ -1,8 +1,9 @@
 import type { protos as computeProtos } from "@google-cloud/compute";
 import type { protos as runProtos } from "@google-cloud/run";
 
-import type { AutoscalerWriter, ManagerWriter, RunWriter } from "./clients";
+import type { AutoscalerWriter, ManagerReader, ManagerWriter, RunWriter } from "./clients";
 import type { FleetTarget } from "./config";
+import { autoscalerNameFrom } from "./fleet";
 import { serviceResourceName } from "./run";
 
 // THE MUTATIONS. Everything that changes infrastructure passes through this module, so the
@@ -71,7 +72,7 @@ function operationIdOf(operation: { name?: string | null } | undefined): string 
 }
 
 export async function updateScalingPolicy(
-  clients: { autoscalers: AutoscalerWriter },
+  clients: { autoscalers: AutoscalerWriter; instanceGroupManagers: ManagerReader },
   target: FleetTarget,
   update: ScalingUpdate,
   limits: ScalingLimits,
@@ -80,8 +81,24 @@ export async function updateScalingPolicy(
     requireWholeNumber(label, value);
   }
 
+  // THE NAME COMES FROM THE GROUP. An autoscaler is not named after the group it drives -
+  // `set-autoscaling` appends a suffix - so addressing it by the group's name is a 404 against a
+  // group that has one, and every scaling control would fail on a healthy fleet.
+  const [manager] = await clients.instanceGroupManagers.get({
+    instanceGroupManager: target.migName,
+    project: target.projectId,
+    zone: target.migZone,
+  });
+  const autoscalerName = autoscalerNameFrom(manager);
+  if (!autoscalerName) {
+    throw new Error(
+      `${target.migName} has no autoscaler, so there is no scaling policy to change. Its size is ` +
+        `fixed at its target.`,
+    );
+  }
+
   const [live] = await clients.autoscalers.get({
-    autoscaler: target.migName,
+    autoscaler: autoscalerName,
     project: target.projectId,
     zone: target.migZone,
   });
@@ -138,7 +155,7 @@ export async function updateScalingPolicy(
   // `target` is not optional: it is the group this autoscaler drives, and an update that omits it
   // is an autoscaler pointed at nothing.
   const [operation] = await clients.autoscalers.update({
-    autoscaler: target.migName,
+    autoscaler: autoscalerName,
     autoscalerResource: {
       autoscalingPolicy: after,
       description: live.description,
