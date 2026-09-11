@@ -183,12 +183,26 @@ jobs:
       postgres_password_secret: ${{ steps.pick.outputs.postgres_password_secret }}
       worker_mig: ${{ steps.pick.outputs.worker_mig }}
       worker_mig_zone: ${{ steps.pick.outputs.worker_mig_zone }}
-      # THE OBJECT STORE. Only the release-tag branch emits these; a dev run leaves all three
-      # empty, which is what dev has always had - validate-config.sh's object-store rule fires
-      # only when the store is partly stated, so all-empty is skipped rather than refused.
+      # THE OBJECT STORE. BOTH branches emit these now. They used to be prod-only, and that is
+      # exactly what broke dev: the `storage` stage is the only other thing that writes MINIO_*
+      # into the deployment env, a merge to main selects `images,migrate,console,admin` and never
+      # runs it, and create-api-service.sh emits its object-store block only when MINIO_ENDPOINT
+      # is set. So every dev deploy shipped an API with no object-store settings at all, the
+      # adapter fell back to its local-stack defaults and dialled localhost:9000, and every
+      # geometry upload came back 503 "Storage is unavailable - the upload was not saved."
+      # Pinning them here is what makes the API stage self-sufficient: the settings reach the
+      # service whether or not the run that deploys it also reconciles the store.
       minio_access_key: ${{ steps.pick.outputs.minio_access_key }}
       minio_bucket: ${{ steps.pick.outputs.minio_bucket }}
       minio_secret_key_secret: ${{ steps.pick.outputs.minio_secret_key_secret }}
+      # The ADDRESSING half. An access id and a bucket name address nothing on their own, which is
+      # why these three travel with them rather than being left to the stage that happens to run
+      # last: MINIO_ENDPOINT is the gate create-api-service.sh tests, and MINIO_SECURE=true is
+      # required because the adapter defaults to plain HTTP for the local compose stack and
+      # Google's S3-interoperability endpoint serves TLS only.
+      minio_endpoint: ${{ steps.pick.outputs.minio_endpoint }}
+      minio_region: ${{ steps.pick.outputs.minio_region }}
+      minio_secure: ${{ steps.pick.outputs.minio_secure }}
       # NOT pinned, and deliberately: MIGRATE_DB_HOST and REDIS_URL are ADDRESSES, allocated by
       # Google when the instances above are created. create-data-tier.sh resolves them from the
       # live instances and writes them back into the deployment env for the stages that consume
@@ -354,6 +368,31 @@ jobs:
               # hand. It carries policy, model routing and limits, never a credential: the object
               # and instance metadata are both readable by anyone who can describe the instance.
               echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
+              # THE OBJECT STORE DEV ALREADY OWNS. Everything below RESTATES live configuration -
+              # the bucket, the HMAC key and the secret container all exist and the worker fleet
+              # has been reading exactly these values out of worker.env all along. Only the API
+              # was missing them, because the `storage` stage that writes them into the deployment
+              # env is not in a merge's component list (see the outputs block above).
+              #
+              # THE ACCESS ID IS NOT A CREDENTIAL - the settings catalogue marks only
+              # MINIO_SECRET_KEY secret, and create-object-storage.sh records this public half in
+              # the deployment env in the clear on purpose. Recording it is also what stops a run
+              # that DOES select `storage` from minting a second key: that script decides "reuse or
+              # mint" by testing this recorded id against the live ACTIVE keys, and against an
+              # empty string it concludes no usable key exists and tries to mint one - which a
+              # deploy identity is refused, because storage.hmacKeyAdmin is an owner's role.
+              #
+              # THE KEY BELONGS TO 224734058693-compute@, not to dev-api@. An HMAC key is owned by
+              # one service account and whoever presents it authenticates AS that account, so the
+              # bucket grant that makes this work is the one that account already holds. Moving
+              # dev onto a key owned by its own API identity is an owner's one-off act (mint, seal,
+              # retype the id here) and is not what this line is for.
+              echo "minio_access_key=GOOG1EBINWPJ6TMT7VJETWHMRZLC6M2FNQWTMOYSRRDTP4NT7ZWGD5YRZJDHX"
+              echo "minio_bucket=hexera-dev-artifacts-224734058693"
+              echo "minio_secret_key_secret=minio-secret-key"
+              echo "minio_endpoint=storage.googleapis.com"
+              echo "minio_region=us-central1"
+              echo "minio_secure=true"
               # Dev runs no outreach - see the prod block. Empty, so the stage states its skip.
               echo "outreach_enabled="
               echo "outreach_worker_job="
@@ -529,6 +568,14 @@ jobs:
             # DEPLOYMENT_ID + the project number, and defaults the container to minio-secret-key.
             echo "minio_bucket=prod-artifacts-688073002171"
             echo "minio_secret_key_secret=minio-secret-key"
+            # The addressing half, stated for the same reason dev states it: a release reconciles
+            # everything and so the storage stage does run here, but the API stage must not DEPEND
+            # on that ordering - a dispatch that ticks `images` without `storage` would otherwise
+            # roll a prod API with no object store, which is the failure this pair of blocks exists
+            # to make impossible. create-object-storage.sh writes back these same three values.
+            echo "minio_endpoint=storage.googleapis.com"
+            echo "minio_region=us-central1"
+            echo "minio_secure=true"
           } >> "$GITHUB_OUTPUT"
 
   # THE MISSING HALF OF "CI/CD". Until this existed, ci.yml and deploy.yml both triggered on a
@@ -933,6 +980,15 @@ jobs:
       MINIO_ACCESS_KEY: ${{ needs.target.outputs.minio_access_key }}
       MINIO_BUCKET: ${{ needs.target.outputs.minio_bucket }}
       MINIO_SECRET_KEY_SECRET: ${{ needs.target.outputs.minio_secret_key_secret }}
+      # The addressing half, carried the same way. MINIO_ENDPOINT is what create-api-service.sh
+      # tests before it writes the object store onto the service at all, so without this the other
+      # three arrive and are never used. MINIO_PUBLIC_ENDPOINT is the address a BROWSER resolves a
+      # signed URL on - a distinct fact from the one this process dials, and the same here because
+      # both reach Google's interoperability endpoint directly.
+      MINIO_ENDPOINT: ${{ needs.target.outputs.minio_endpoint }}
+      MINIO_PUBLIC_ENDPOINT: ${{ needs.target.outputs.minio_endpoint }}
+      MINIO_REGION: ${{ needs.target.outputs.minio_region }}
+      MINIO_SECURE: ${{ needs.target.outputs.minio_secure }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`
