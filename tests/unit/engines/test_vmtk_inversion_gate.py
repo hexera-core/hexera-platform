@@ -190,6 +190,26 @@ def test_layer_coverage_counts_faces_of_layer_tets_not_vertex_membership():
     assert pct == 50.0
 
 
+def test_the_narrowest_wall_gates_the_resolution_not_the_mesh_wide_median(tmp_path):
+    from meshpipeline.engines.vmtk.vmtk_runner import _local_cells_across
+    # a remeshed wall of unit-edge triangles whose staged radius is 20 on the main run and 0.5
+    # on one branch point: the median says 40 across, the branch says 1
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 0], [2, 1, 0]], float)
+    faces = np.hstack([[3, 0, 1, 2], [3, 1, 3, 2], [3, 1, 4, 3], [3, 4, 5, 3]]).astype(np.int64)
+    surf = pv.PolyData(pts, faces)
+    surf.point_data["LocalRadius"] = np.array([20, 20, 20, 20, 20, 0.5])
+    surf.save(str(tmp_path / "lumen.vtp"))
+    local = _local_cells_across(tmp_path)
+    assert local["median"] > 12 and local["min"] < 2 and local["p05"] < 12
+    # and that is what check_mesh gates on
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
+    (tmp_path / "vmtk_staging.json").write_text(json.dumps({"radius_m": {"median": 10.0}}))
+    q = check_mesh(tmp_path)
+    assert q["passage_cells_across"] > 15                   # the mesh-wide figure looks fine
+    assert q["mesh_ok"] is False
+    assert any("narrowest wall" in f for f in q["fatal"])
+
+
 def test_passage_resolution_is_measured_and_a_coarse_fill_is_rejected(tmp_path):
     # one regular-ish tet of volume 1/6: its edge reads ~1.12; a staged passage of radius 0.5
     # is then under one cell across (fatal), one of radius 10 about 18 across (fine)

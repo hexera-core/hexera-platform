@@ -538,6 +538,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
 
 _OPENFOAM_CASE = "openfoam_case"
 _VOLUME_MSH = "mesh_volume.msh"
+#: what a polyMesh a solver can open consists of; a partial one is removed, never shipped
+_POLYMESH_FILES = ("points", "faces", "owner", "neighbour", "boundary")
 _FLUID_PHYSICAL = 100          # the volume's physical tag in mesh_volume.msh (caps count from 2)
 
 
@@ -575,9 +577,13 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
         cmd = f"source {bashrc} >/dev/null 2>&1 && gmshToFoam ../{_VOLUME_MSH}"
         proc = run_guarded(["bash", "-lc", cmd], cwd=str(case), env=scrubbed_subprocess_env(),
                            capture_output=True, text=True, timeout=timeout)
-        if proc.returncode != 0 or not (case / "constant" / "polyMesh" / "owner").exists():
-            logger.warning("vmtk: gmshToFoam did not write the polyMesh (rc %s): %s",
-                           proc.returncode, (proc.stdout or "")[-600:])
+        missing = [n for n in _POLYMESH_FILES
+                   if not (case / "constant" / "polyMesh" / n).exists()
+                   or (case / "constant" / "polyMesh" / n).stat().st_size == 0]
+        if proc.returncode != 0 or missing:
+            logger.warning("vmtk: gmshToFoam did not write a complete polyMesh (rc %s, missing "
+                           "%s): %s", proc.returncode, missing, (proc.stdout or "")[-600:])
+            shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
             return None
         return _OPENFOAM_CASE
     except Exception:  # noqa: BLE001 - the .vtu is the mesh; the case is a convenience
@@ -676,10 +682,48 @@ _TETGEN_FAILURES = ("invalid plc", "subfaces intersect", "self-intersect",
 def _staged_radius_median(ws: Path) -> float | None:
     from meshpipeline.engines.vmtk.lumen_staging import read_staging
     st = read_staging(ws) or {}
+    value = (st.get("radius_m") or {}).get("median")
+    if value is None:
+        return None
     try:
-        return float((st.get("radius_m") or {}).get("median")) or None
+        return float(value) or None
     except (TypeError, ValueError):
         return None
+
+
+def _local_cells_across(ws: Path) -> dict | None:
+    """Cells across the passage AT EVERY WALL POINT of the remeshed wall (lumen.vtp): twice the
+    point's staged local radius over the mean length of the edges that meet it - the surface
+    edge is what vmtk sizes the tets beside it from. Returns the median and the 5th percentile
+    (the narrowest branch, less a few outliers), or None without a staged radius field. One
+    mesh-wide median hid an under-resolved branch behind a well-resolved main run."""
+    import numpy as np
+    lumen = ws / _LUMEN
+    if not lumen.exists():
+        return None
+    try:
+        surf = _read_surface(lumen).extract_surface().triangulate()
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        return None
+    from meshpipeline.engines.vmtk.lumen_staging import SIZING_ARRAY
+    r = surf.point_data.get(SIZING_ARRAY)
+    if r is None or surf.n_cells == 0:
+        return None
+    r = np.asarray(r, dtype=float)
+    f = np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    pts = np.asarray(surf.points, dtype=float)
+    length = np.linalg.norm(pts[e[:, 1]] - pts[e[:, 0]], axis=1)
+    acc = (np.bincount(e[:, 0], weights=length, minlength=len(pts))
+           + np.bincount(e[:, 1], weights=length, minlength=len(pts)))
+    cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
+    ok = (cnt > 0) & (r > 0.0)
+    if not ok.any():
+        return None
+    across = 2.0 * r[ok] / (acc[ok] / cnt[ok])
+    return {"median": round(float(np.median(across)), 1),
+            "p05": round(float(np.percentile(across, 5)), 1),
+            "min": round(float(across.min()), 1), "points": int(ok.sum())}
 
 
 def check_mesh(workspace) -> dict:
@@ -793,10 +837,17 @@ def check_mesh(workspace) -> dict:
                 passage_cells_across = round(2.0 * r_med / a, 1)
     except Exception as exc:  # noqa: BLE001 - quality is best-effort evidence, not a crash
         logger.warning("vmtk check_mesh: quality computation failed: %s", exc)
-    if passage_cells_across is not None and passage_cells_across < PASSAGE_MIN_CELLS_ACROSS:
-        fatal.append(f"undermeshed: {passage_cells_across:g} cells across the passage - a CFD "
-                     f"mesh needs at least {PASSAGE_MIN_CELLS_ACROSS} (industry practice is "
-                     "20-40); lower edge_length_factor")
+    # THE NARROWEST PASSAGE GATES, not the mesh-wide figure: per wall point (5th percentile) so
+    # an under-resolved branch cannot hide behind a well-resolved main run.
+    local = _local_cells_across(ws)
+    gate = local["p05"] if local else passage_cells_across
+    if gate is not None and gate < PASSAGE_MIN_CELLS_ACROSS:
+        where = (f"{local['p05']:g} cells across at the narrowest wall (5th percentile; "
+                 f"median {local['median']:g})" if local
+                 else f"{passage_cells_across:g} cells across the passage")
+        fatal.append(f"undermeshed: {where} - a CFD mesh needs at least "
+                     f"{PASSAGE_MIN_CELLS_ACROSS} everywhere (industry practice is 20-40); "
+                     "lower edge_length_factor")
     # LAYER COVERAGE is measured here, from the mesh: the share of wall triangles whose three
     # vertices belong to boundary-layer tets. The reviewer REQUIRES this metric for its
     # local_anatomical_fidelity axis (MetricRequirement("layer_coverage")) and nothing had
@@ -818,6 +869,7 @@ def check_mesh(workspace) -> dict:
             # the reviewer's context reads the OpenFOAM engines' key for the same fact
             "layer_coverage_pct": layer_coverage,
             "passage_cells_across": passage_cells_across,
+            "passage_cells_across_local": local,
             "reoriented_tets": n_reoriented,
             "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}

@@ -344,8 +344,17 @@ def test_export_openfoam_case_runs_gmshtofoam_in_a_fresh_case(tmp_path, monkeypa
     def fake_run(argv, **kw):
         import pathlib
         seen.append((argv, kw))
-        (pathlib.Path(kw["cwd"]) / "constant" / "polyMesh").mkdir(parents=True)
-        (pathlib.Path(kw["cwd"]) / "constant" / "polyMesh" / "owner").write_text("faces")
+        pm = pathlib.Path(kw["cwd"]) / "constant" / "polyMesh"
+        pm.mkdir(parents=True, exist_ok=True)
+        for n in ("points", "faces", "owner", "neighbour", "boundary"):
+            (pm / n).write_text(n)
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def fake_run_partial(argv, **kw):
+        import pathlib
+        pm = pathlib.Path(kw["cwd"]) / "constant" / "polyMesh"
+        pm.mkdir(parents=True, exist_ok=True)
+        (pm / "owner").write_text("owner")
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(R, "run_guarded", fake_run)
@@ -354,6 +363,10 @@ def test_export_openfoam_case_runs_gmshtofoam_in_a_fresh_case(tmp_path, monkeypa
     assert "gmshToFoam ../mesh_volume.msh" in argv[-1] and kw["cwd"].endswith("openfoam_case")
     assert (tmp_path / "openfoam_case" / "system" / "controlDict").exists()
     assert (tmp_path / "mesh_volume.msh").exists()
+    # a partial polyMesh (owner only) is not a case: removed, and None
+    monkeypatch.setattr(R, "run_guarded", fake_run_partial)
+    assert R.export_openfoam_case(tmp_path, timeout=300) is None
+    assert not (tmp_path / "openfoam_case" / "constant" / "polyMesh").exists()
     # a failed conversion is a None, never an exception
     monkeypatch.setattr(R, "run_guarded",
                         lambda argv, **kw: sp.CompletedProcess(argv, 1, stdout="boom", stderr=""))

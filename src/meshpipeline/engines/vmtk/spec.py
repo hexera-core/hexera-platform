@@ -268,9 +268,11 @@ SPEC = EngineSpec(
         ),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),
-            # ONE HOUR: at industry density (13 cells across, 5 layers) the sweep's largest case
-            # (transition_013, a 1 m flat duct) fills in over 30 min; the Cloud Run job allows 4 h.
-            run_timeout=lambda: min(3600, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
+            # 50 MINUTES: at industry density (13 cells across, 5 layers) the sweep's largest case
+            # (transition_013, a 1 m flat duct) fills in over 30 min; the Cloud Run job allows 4 h,
+            # but the builder's attempt budget is BUILDER_LOOP_TIMEOUT (3600 s) less its feedback
+            # reserve (420 s), so a run may not ask for more than about 3180 s and still report.
+            run_timeout=lambda: min(3000, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 3),
             timeout_hint=("Raise edge_length_factor (coarser cells relative to the radius) - but "
                           "not past 0.16, the 12-cells-across floor a CFD mesh must keep - then "
                           "run_mesh again."),
