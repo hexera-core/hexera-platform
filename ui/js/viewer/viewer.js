@@ -828,20 +828,50 @@ function initViewer(job,surf,uiCfg){
 
     let legend=null,probeEl=null;
     function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
-    function setMetric(m){
-      if(m===activeMetric)m=null;
-      activeMetric=m;
-      const rp=m?ramp(m):null;
+    /* BAD FACES ONLY. On a million-face mesh the failing faces are a few dozen; with the switch
+       on, every face under the bar goes one flat dark grey and the failures are the only colour
+       left. NEXT BAD SPOT walks the camera from hotspot to hotspot (the red dots the payload
+       already carries, worst first), keeping the current view direction, and lights the one it
+       is on. Both are per-viewer preferences; nothing in the payload changes. */
+    const NEUTRAL=[46,44,40];
+    let badOnly=false,hotIdx=-1,lastFocus=null,curRp=null;
+    function hotsOf(m){return (qf.hotspots||[]).filter(h=>h.metric===m);}
+    function paint(m,rp){const md=qf.metrics[m];
       entries.forEach(en=>{const mp=en.actor.getMapper();
         if(rp&&en.q[m]){
           const v=en.q[m],rgb=new Uint8Array(v.length*3);
-          for(let i=0;i<v.length;i++)rp.color(v[i],rgb,i*3);
+          for(let i=0;i<v.length;i++){
+            if(badOnly&&!(v[i]>md.limit)){rgb[i*3]=NEUTRAL[0];rgb[i*3+1]=NEUTRAL[1];rgb[i*3+2]=NEUTRAL[2];}
+            else rp.color(v[i],rgb,i*3);}
           en.pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
             {name:'quality',values:rgb,numberOfComponents:3}));
           mp.setScalarModeToUseCellData();mp.setColorModeToDirectScalars();
           if(mp.setInterpolateScalarsBeforeMapping)mp.setInterpolateScalarsBeforeMapping(false);
           mp.setScalarVisibility(true);}
-        else mp.setScalarVisibility(false);});
+        else mp.setScalarVisibility(false);});}
+    function lightHot(i){hotActors.forEach((a,k)=>{const pp=a.getProperty();
+      if(k===i)pp.setColor(1.0,1.0,1.0);else pp.setColor(1.0,0.22,0.16);});}
+    function focusHotspot(i){
+      const hots=hotsOf(activeMetric);if(!hots.length)return null;
+      hotIdx=((i%hots.length)+hots.length)%hots.length;
+      const h=hots[hotIdx],f=cam.getFocalPoint(),p=cam.getPosition();
+      const vx=p[0]-f[0],vy=p[1]-f[1],vz=p[2]-f[2],d0=Math.hypot(vx,vy,vz)||1;
+      const r=capRange(),d=Math.max(r[0],Math.min(r[1],diag*0.12));
+      cam.setFocalPoint(h.x,h.y,h.z);
+      cam.setPosition(h.x+vx/d0*d,h.y+vy/d0*d,h.z+vz/d0*d);
+      clampCam();lightHot(hotIdx);
+      const nb=legend&&legend.querySelector('.nxt');
+      if(nb)nb.textContent=`next bad spot ${hotIdx+1}/${hots.length}`;
+      lastFocus={index:hotIdx,x:h.x,y:h.y,z:h.z,patch:h.patch,value:h.value};
+      rw.render();return lastFocus;}
+    function setBadOnly(b){badOnly=!!b;
+      if(activeMetric&&curRp){paint(activeMetric,curRp);
+        const cb=legend&&legend.querySelector('.tog input');if(cb)cb.checked=badOnly;rw.render();}}
+    function setMetric(m){
+      if(m===activeMetric)m=null;
+      activeMetric=m;
+      const rp=m?ramp(m):null;curRp=rp;hotIdx=-1;lastFocus=null;
+      if(rp)paint(m,rp);else entries.forEach(en=>en.actor.getMapper().setScalarVisibility(false));
       if(legend){legend.remove();legend=null;}
       clearHot();hideProbe();
       // edges step back while the faces carry the data, and return when it is switched off
@@ -863,8 +893,14 @@ function initViewer(job,surf,uiCfg){
              ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
              :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
                      :`<span class="ok">none over</span>`)
+          +(md.n_over
+             ?`<label class="tog"><input type="checkbox"${badOnly?' checked':''}> bad faces only</label>`
+              +`<button class="v-btn nxt">next bad spot 0/${hotsOf(m).length}</button>`
+             :'')
           +`<span class="x" title="turn colouring off">✕</span>`;
         legend.querySelector('.x').onclick=()=>setMetric(null);
+        const _cb=legend.querySelector('.tog input');if(_cb)_cb.onchange=()=>setBadOnly(_cb.checked);
+        const _nb=legend.querySelector('.nxt');if(_nb)_nb.onclick=()=>focusHotspot(hotIdx+1);
         host.appendChild(legend);
         hintEl.textContent='click a face to see its numbers · drag still rotates';}
       else hintEl.textContent='rotate: drag · zoom: wheel or right-drag · pan: shift+drag';
@@ -925,6 +961,11 @@ function initViewer(job,surf,uiCfg){
 
     /* support/debug hook - lets the browser tier drive the heatmap without pixel picking */
     window._vdbg[job+':heat']={metrics:avail,set:setMetric,active:()=>activeMetric,
+      badOnly:()=>badOnly,setBadOnly,next:()=>focusHotspot(hotIdx+1),focus:()=>lastFocus,
+      hotN:()=>hotsOf(activeMetric).length,
+      colorOf:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(!en)return null;
+        const a=en.pd.getCellData().getScalars().getData();return [a[cid*3],a[cid*3+1],a[cid*3+2]];},
+      focal:()=>cam.getFocalPoint(),
       probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
       last:()=>lastProbe,legend:()=>!!legend,hotspots:()=>hotActors.length,
       wired:()=>wired};
