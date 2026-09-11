@@ -199,8 +199,6 @@ export default async function FleetPage() {
 
   const requests = sumSeries(byStatus);
   const errors = pickSeries(byStatus, ["4xx", "5xx"]);
-  const perSecond = (value: number) => `${value.toFixed(value < 1 ? 2 : 0)}/s`;
-  const milliseconds = (value: number) => `${Math.round(value)}ms`;
 
   return (
     <>
@@ -231,7 +229,7 @@ export default async function FleetPage() {
         <Panel heading="last 24h, per second" title="API requests">
           <TimeSeriesChart
             emptyNote="No request data. Either this deployment runs no API service, or it has served nothing in the window."
-            format={perSecond}
+            format="perSecond"
             series={requests}
           />
         </Panel>
@@ -239,7 +237,7 @@ export default async function FleetPage() {
         <Panel heading="last 24h, per second" title="API errors">
           <TimeSeriesChart
             emptyNote="No 4xx or 5xx responses in the window."
-            format={perSecond}
+            format="perSecond"
             series={errors}
           />
         </Panel>
@@ -247,7 +245,7 @@ export default async function FleetPage() {
         <Panel heading="last 24h" title="API latency">
           <TimeSeriesChart
             emptyNote="No latency data. A service that has served no requests reports no distribution to take a percentile of."
-            format={milliseconds}
+            format="milliseconds"
             series={latency}
           />
         </Panel>

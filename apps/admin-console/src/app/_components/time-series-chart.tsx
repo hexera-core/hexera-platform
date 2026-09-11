@@ -31,19 +31,44 @@ import type { Series } from "@/lib/gcp/metrics";
 
 export type Marker = { label: string; value: number };
 
+// HOW A VALUE IS WRITTEN, named rather than supplied as a function.
+//
+// This component is a Client Component and the pages using it are Server Components. A function
+// cannot cross that boundary - React refuses with "Functions cannot be passed directly to Client
+// Components", which surfaces as a server error with a digest and no message, because Next strips
+// the text before it reaches the browser. Passing the NAME of a format keeps the prop serializable
+// and keeps the formatting where the rendering is.
+export type ValueFormat = "count" | "milliseconds" | "perSecond";
+
+// How much room the tick labels need. A millisecond value runs to four digits plus its unit, and
+// at the default width the labels are CLIPPED - "1200ms" renders as "200ms", which is not a
+// cosmetic problem: it is a wrong number shown confidently.
+const AXIS_WIDTH: Record<ValueFormat, number> = {
+  count: 40,
+  milliseconds: 64,
+  perSecond: 56,
+};
+
+const FORMATTERS: Record<ValueFormat, (value: number) => string> = {
+  count: (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1)),
+  milliseconds: (value) => `${Math.round(value)}ms`,
+  perSecond: (value) => `${value.toFixed(value < 1 ? 2 : 0)}/s`,
+};
+
 export function TimeSeriesChart({
   emptyNote,
-  format = (value: number) => String(value),
+  format = "count",
   kind = "line",
   markers = [],
   series,
 }: {
   emptyNote: string;
-  format?: (value: number) => string;
+  format?: ValueFormat;
   kind?: "area" | "line";
   markers?: readonly Marker[];
   series: readonly Series[];
 }) {
+  const write = FORMATTERS[format];
   const present = series.filter((one) => one.points.length > 0);
   if (present.length === 0) {
     return <p className="admin-empty">{emptyNote}</p>;
@@ -82,9 +107,9 @@ export function TimeSeriesChart({
           <YAxis
             axisLine={false}
             tick={{ fill: CHROME.muted, fontSize: 11 }}
-            tickFormatter={(value: number) => format(value)}
+            tickFormatter={(value: number) => write(value)}
             tickLine={false}
-            width={44}
+            width={AXIS_WIDTH[format]}
           />
           <Tooltip
             // The crosshair is the point of hovering a time series: it reads every series at one
@@ -92,7 +117,7 @@ export function TimeSeriesChart({
             cursor={{ stroke: CHROME.axis, strokeWidth: 1 }}
             // Recharts types these loosely (ValueType / ReactNode), so they are narrowed here
             // rather than asserted at the call site.
-            formatter={(value, name) => [format(Number(value)), String(name)]}
+            formatter={(value, name) => [write(Number(value)), String(name)]}
             labelFormatter={(at) => new Date(String(at)).toLocaleString()}
             wrapperClassName="admin-tooltip"
           />

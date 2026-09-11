@@ -33,9 +33,11 @@ export default function AdminError({
       <p className="admin-empty">
         Read it with:{" "}
         <code>
-          gcloud logging read &apos;resource.type=cloud_run_revision AND
-          labels.&quot;run.googleapis.com/execution_name&quot;:*&apos; --limit 20
-        </code>
+          gcloud logging read &apos;resource.type=&quot;cloud_run_revision&quot; AND
+          resource.labels.service_name=&quot;dev-admin&quot; AND severity&gt;=ERROR&apos;
+          --project hexera-dev --limit 20
+        </code>{" "}
+        — the digest above appears in the entry alongside the message React stripped.
       </p>
       <p style={{ marginTop: "1rem" }}>
         <button className="admin-button" onClick={reset} type="button">
