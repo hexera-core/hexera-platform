@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { mintFailureMessage, revokeOutcomeMessage } from "@/app/_components/api-key-messages";
+
 type Key = {
   id: string;
   name: string;
@@ -31,11 +33,7 @@ export function ApiKeysPanel({ keys }: { keys: Key[] }) {
         body: JSON.stringify({ name: String(formData.get("name") ?? "") }),
       });
       if (!response.ok) {
-        setError(
-          response.status === 403
-            ? "Only a console session can mint a key."
-            : "Could not mint a key just now. Try again.",
-        );
+        setError(mintFailureMessage(response.status));
         return;
       }
       const body = (await response.json()) as { presented: string };
@@ -50,11 +48,19 @@ export function ApiKeysPanel({ keys }: { keys: Key[] }) {
 
   async function revoke(id: string) {
     setBusy(true);
+    setError(null);
     try {
-      await fetch(`/api/v1/api-keys/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/v1/api-keys/${id}`, { method: "DELETE" });
+      // `revoked` only exists on an ok body -- a 403 or 500 body has no such field, and treating
+      // it as false-by-absence is exactly right: neither carries a revocation either.
+      const revoked = response.ok && ((await response.json()) as { revoked: boolean }).revoked;
+      const message = revokeOutcomeMessage(response.status, revoked);
+      if (message) {
+        setError(message);
+      }
       router.refresh();
     } catch {
-      setError("Could not revoke that key. Try again.");
+      setError("Could not reach the API. Try again.");
     } finally {
       setBusy(false);
     }
