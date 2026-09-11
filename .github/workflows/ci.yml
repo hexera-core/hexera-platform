@@ -18,7 +18,8 @@ run-name: CI (${{ github.head_ref || github.ref_name }})
 # writes contents, packages or statuses.
 # Default for EVERY lane: read the repository and nothing else. The two lanes that upload code
 # scanning results ask for security-events themselves - granting it workflow-wide would hand
-# twelve jobs, most of which run third-party actions, a token that can write security findings.
+# every job in this workflow, most of which run third-party actions, a token that can write
+# security findings.
 permissions:
   contents: read
 
@@ -201,19 +202,43 @@ jobs:
             bash -n "$f" || { echo "::error file=$f::does not parse"; exit 1; }
           done
 
+  # 503 FILES IN ONE SESSION was 9m46s, and the lane behind it - every other python lane - finished
+  # inside three minutes. Nothing in the unit tier waits on anything; the files were simply queued
+  # behind each other on one runner. Four shards, and the tier stops being the second-longest thing
+  # in a run.
+  #
+  # THE PARTITION CANNOT DROP A FILE, which is the only real risk here: a test that never ran
+  # reports nothing at all, so a gap is invisible rather than red. devtools/quality/shard_tests.py
+  # takes its inventory from `git ls-files` and assigns every file to exactly one shard by
+  # construction, and tests/unit/hygiene/test_test_sharding_is_total.py asserts that against THIS
+  # matrix's shard count - so raising the count below without the partition still being total is
+  # itself a test failure.
   unit:
-    name: Unit suite
+    name: Unit suite (${{ matrix.shard }}/4)
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
+    strategy:
+      # A cancelled sibling is not an answer to "does this shard pass", and with the suite split
+      # four ways the whole point is to see ALL of the failures in one run rather than the first.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # A quarter of the work, and the old 40 was already generous for the whole of it.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
       - uses: ./.github/actions/setup-hexera
-      - run: make test-fast
+      # SHARDS is spelled out rather than derived, because the shard count has to agree in three
+      # places - this matrix, this argument, and the totality test - and a literal is what the test
+      # reads to check that it does.
+      - name: Unit shard ${{ matrix.shard }} of 4
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: make test-fast-shard SHARD="$SHARD" SHARDS=4
 
   boundary:
     name: Architecture and provider contracts
@@ -288,10 +313,43 @@ jobs:
         with:
           category: /language:python
 
+  # ONE IMAGE PER LANE. This used to be a single job that built api, then pipeline, then mesh, then
+  # smoked all three - 9m43s of strictly serial work whose red X said "an image broke" without
+  # saying which, and in which a 20-second api typo waited on the OpenFOAM build to find out. The
+  # three targets share only the Dockerfile they are cut from; nothing about `api` is an input to
+  # `mesh`, so nothing about them should be sequenced. Split, the lane costs its SLOWEST image
+  # rather than their sum, and each row answers one question.
   images:
-    name: Image targets (api / pipeline / mesh)
+    name: Image target (${{ matrix.target }})
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true'
+    strategy:
+      # A sibling that gets CANCELLED mid-build is not an answer to "does the mesh image build",
+      # which is the entire reason these are three lanes and not one. Every target reports.
+      fail-fast: false
+      matrix:
+        include:
+          # The image name is a LITERAL on every entry rather than composed from `target` in the
+          # build step. tests/unit/hygiene/test_build_input_reproducibility.py scans this file for
+          # the images the workflow builds and the images it runs, and pairs them up so a genuine
+          # third-party image can never enter unpinned. A name assembled out of shell variables is
+          # invisible to that scan - which the test's own comment already calls out as the failure
+          # mode ("rather than relying on a `docker run` being formatted so the scan misses it").
+          # One literal per entry keeps both halves of the pair legible to it.
+          #
+          # The smoke travels WITH the target it belongs to rather than living in a `case` below:
+          # adding a fourth deployable target is then one entry, not an entry plus a branch
+          # somebody forgets to write. An image that builds and cannot import is a green build
+          # and a broken deploy, so no target is listed here without one.
+          - target: api
+            image: meshpipeline-api:ci
+            smoke: docker run --rm --entrypoint python meshpipeline-api:ci -c "import meshpipeline.runtime.api_server as m; assert m.app"
+          - target: pipeline
+            image: meshpipeline-pipeline:ci
+            smoke: docker run --rm --entrypoint python meshpipeline-pipeline:ci -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
+          - target: mesh
+            image: meshpipeline-mesh:ci
+            smoke: docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x meshpipeline-mesh:ci bash -lc 'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -305,7 +363,9 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
-    timeout-minutes: 60
+    # One image, not three: the old 60 covered the sum of them. mesh (OpenFOAM 2412 + vmtk + OCC)
+    # is the slowest of the three by a wide margin and is what this ceiling is set for.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -313,31 +373,46 @@ jobs:
           persist-credentials: false
       - name: Resolve the authoritative product version
         run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
-      - name: Build api target (FastAPI + beat + maintenance)
-        run: docker build --target api --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-api:ci .
-      - name: Build pipeline target (Celery worker + render stack)
-        run: docker build --target pipeline --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-pipeline:ci .
-      - name: Build mesh target (OpenFOAM + vmtk + OCC)
-        run: docker build --target mesh --build-arg APP_VERSION="$APP_VERSION" -t meshpipeline-mesh:ci .
-      # An image that builds and cannot import is a green build and a broken deploy.
-      - name: Smoke - api entrypoint imports the ASGI app
-        run: |
-          docker run --rm --entrypoint python meshpipeline-api:ci \
-            -c "import meshpipeline.runtime.api_server as m; assert m.app"
-      - name: Smoke - pipeline entrypoint imports celery and the render stack
-        run: |
-          docker run --rm --entrypoint python meshpipeline-pipeline:ci \
-            -c "import meshpipeline.runtime.celery_worker as w; import pyvista; assert w"
-      - name: Smoke - mesh image carries the native toolchain
-        run: |
-          docker run --rm -e DEEPSEEK_API_KEY=x -e DEEPINFRA_API_KEY=x -e POSTGRES_PASSWORD=x \
-            meshpipeline-mesh:ci bash -lc \
-            'test -f /usr/lib/openfoam/openfoam2412/etc/bashrc && command -v vmtk >/dev/null && python -c "import meshpipeline.runtime.mesh_runner"'
+      # ONE LINE, and the tag spelled out. The reproducibility scan pairs each build with the run
+      # that uses its tag, to decide which images are this commit's own rather than third-party
+      # inputs needing a digest; a line continuation between the build and its tag flag hides the
+      # tag from it, which is exactly what broke it.
+      - name: Build the ${{ matrix.target }} target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: docker build --target "$TARGET" --build-arg APP_VERSION="$APP_VERSION" -t ${{ matrix.image }} .
+      # Through the environment rather than interpolated straight into the shell body. The value is
+      # a workflow literal and not attacker-reachable, but a `${{ }}` expansion inside `run:` is the
+      # shape zizmor flags, and the workflow-audit lane is not worth arguing with over a habit that
+      # is right everywhere else.
+      - name: Smoke - the ${{ matrix.target }} image runs what it ships
+        env:
+          SMOKE: ${{ matrix.smoke }}
+        run: bash -euo pipefail -c "$SMOKE"
 
+  # THE LONGEST LANE IN THE RUN at 12m55s, of which 10m26s was one pytest session: 73 files
+  # against one provisioned Postgres/Redis/MinIO stack, strictly serially, while eleven other
+  # lanes sat finished. Each shard provisions its OWN stack and its own disposable database -
+  # which is what run_in_container.sh already does per invocation - so the shards share nothing
+  # and cannot interfere with each other.
+  #
+  # WHAT A SHARD MAY NOT CONCLUDE is that the TIER ran. Split four ways, no single shard executes
+  # the 300-test floor and no single shard holds all three named real-PostgreSQL guarantees; they
+  # live in three different modules. So a shard asserts what is true of a shard - the report
+  # parses, it is not empty, nothing failed, nothing skipped for a reason that is not one of the
+  # two optional fixtures - and `integration-tier` below asserts the two whole-suite claims once,
+  # over the union of every shard's JUnit report. ci-gate waits on that job, so a run in which the
+  # union was never proven is not green. The guard did not get weaker; it moved.
   integration:
-    name: Integration tier (real Redis + Postgres + MinIO)
+    name: Integration tier (${{ matrix.shard }}/4)
     needs: [preflight]
     if: needs.preflight.outputs.run_images == 'true'
+    strategy:
+      # Four shards, four independent verdicts. Cancelling the siblings of the first failure would
+      # throw away three quarters of the evidence AND three quarters of the union the guard needs.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # THE HEAVY LANE. This job builds container images and/or runs the dependency-backed tier,
     # and a 2-core / 14 GB standard runner is what made the deploy job carry a "reclaim runner
     # disk" step before it could build at all. `vars.HEXERA_RUNNER_HEAVY` is the label of a
@@ -367,7 +442,63 @@ jobs:
       # that marker, unsets any ambient DATABASE_URL, health-checks Postgres, Redis and MinIO, and
       # tears the stack down from a trap. Developers run it through `make test-container-integration`;
       # CI running the same command is what keeps the two from diverging again.
-      - run: make test-container-integration
+      - name: Integration shard ${{ matrix.shard }} of 4
+        env:
+          SHARD: ${{ matrix.shard }}
+          # The runner deletes its own scratch directory on exit, which is right for a developer
+          # and wrong here: the union pass runs in another job on another machine and the JUnit
+          # report is all it has.
+          INTEGRATION_REPORT_DIR: ${{ github.workspace }}/integration-reports
+        run: make test-container-integration-shard SHARD="$SHARD" SHARDS=4
+      # `always()`: a shard that FAILED is exactly the shard whose report the union pass most needs
+      # - without it the union reports a missing shard rather than the real failure underneath.
+      - name: Keep this shard's JUnit report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-report-${{ matrix.shard }}
+          path: integration-reports/*.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  # THE CLAIM THE SHARDS CANNOT MAKE INDIVIDUALLY: that the dependency-backed tier actually ran.
+  # It asserts the 300-test floor and the three named real-PostgreSQL guarantees over the UNION of
+  # every shard's report - the same two assertions, on the same evidence, that the single-session
+  # lane made inline. `if-no-files-found: error` above and the merge below are what stop a shard
+  # quietly contributing nothing: a missing report is a failure here, not a smaller union.
+  integration-tier:
+    name: Integration tier is not vacuous
+    needs: [preflight, integration]
+    # `!cancelled()` rather than success(): when a shard fails, its report is precisely what makes
+    # the union legible, and refusing to look at it would replace a real failure with silence. The
+    # shard's own red X still fails the gate on its own.
+    if: ${{ !cancelled() && needs.preflight.outputs.run_images == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: integration-report-*
+          path: integration-reports
+          merge-multiple: true
+      - name: Every shard reported, and the union is not vacuous
+        run: |
+          set -euo pipefail
+          mapfile -t reports < <(find integration-reports -name '*.xml' | sort)
+          echo "reports: ${#reports[@]}"
+          printf '  %s\n' "${reports[@]}"
+          # FOUR SHARDS, FOUR REPORTS. Counting them is not pedantry: the union guard's floor is a
+          # property of the whole tier, and three shards' worth of tests could clear it while a
+          # quarter of the suite never ran at all.
+          if [ "${#reports[@]}" -ne 4 ]; then
+            echo "::error title=A shard contributed no report::expected 4 shard reports, found ${#reports[@]} - the union below would be judging less than the tier"
+            exit 1
+          fi
+          python3 tests/integration/assert_integration_coverage.py "${reports[@]}"
 
   ui:
     name: UI in a real browser
@@ -424,6 +555,7 @@ jobs:
       - codeql
       - images
       - integration
+      - integration-tier
       - ui
       - web
     # `always()` would also fire for a run the concurrency group cancelled, posting a red required
@@ -440,6 +572,11 @@ jobs:
             preflight=${{ needs.preflight.result }}
             workflow-audit=${{ needs.workflow-audit.result }}
           # These are scope-selected: `skipped` is a legitimate outcome, `failure` never is.
+          # `images` is ONE entry for THREE lanes: a matrix job's `result` is the aggregate of
+          # every leg, so api, pipeline and mesh all reach the gate through that single line and
+          # a fourth deployable target changes nothing here. NOTHING BUT `name=result` LINES MAY
+          # GO IN THIS BLOCK - it is parsed, not read, and a comment inside it is an entry whose
+          # result is the comment.
           SELECTED_RESULTS: |
             lint=${{ needs.lint.result }}
             typecheck=${{ needs.typecheck.result }}
@@ -450,6 +587,7 @@ jobs:
             codeql=${{ needs.codeql.result }}
             images=${{ needs.images.result }}
             integration=${{ needs.integration.result }}
+            integration-tier=${{ needs.integration-tier.result }}
             ui=${{ needs.ui.result }}
             web=${{ needs.web.result }}
         run: |

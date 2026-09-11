@@ -1,0 +1,226 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  alignmentSecondsFor,
+  instanceCpuFilter,
+  readLatestByInstance,
+  pickSeries,
+  sumSeries,
+  instanceGroupSizeFilter,
+  queueDepthFilter,
+  readSeries,
+  requestCountFilter,
+  requestLatencyFilter,
+  runInstanceCountFilter,
+} from "./metrics";
+
+const TARGET = {
+  deploymentId: "hexera-dev",
+  migName: "hexera-dev-workers",
+  migZone: "us-central1-a",
+  projectId: "hexera-dev",
+  queueName: "simulation_jobs",
+};
+
+test("the queue-depth filter matches the series create-worker-fleet.sh publishes", () => {
+  // These clauses are copied from the autoscaler's own filter. If they drift, the graph shows a
+  // different series than the one the fleet actually scales on, which is worse than no graph.
+  const filter = queueDepthFilter(TARGET);
+
+  assert.match(filter, /metric\.type = "custom\.googleapis\.com\/hexera\/queue_depth"/);
+  assert.match(filter, /resource\.type = "generic_task"/);
+  assert.match(filter, /resource\.labels\.location = "us-central1-a"/);
+  assert.match(filter, /resource\.labels\.namespace = "hexera-dev"/);
+  assert.match(filter, /resource\.labels\.job = "queue-depth"/);
+  assert.match(filter, /resource\.labels\.task_id = "simulation_jobs"/);
+});
+
+test("the group-size filter names the group", () => {
+  const filter = instanceGroupSizeFilter(TARGET);
+  assert.match(filter, /metric\.type = "compute\.googleapis\.com\/instance_group\/size"/);
+  assert.match(filter, /resource\.labels\.instance_group_name = "hexera-dev-workers"/);
+});
+
+test("the request-count filter names one Cloud Run service", () => {
+  const filter = requestCountFilter("hexera-dev-api");
+  assert.match(filter, /metric\.type = "run\.googleapis\.com\/request_count"/);
+  assert.match(filter, /resource\.labels\.service_name = "hexera-dev-api"/);
+});
+
+test("the latency filter names one Cloud Run service", () => {
+  const filter = requestLatencyFilter("hexera-dev-api");
+  assert.match(filter, /metric\.type = "run\.googleapis\.com\/request_latencies"/);
+  assert.match(filter, /resource\.labels\.service_name = "hexera-dev-api"/);
+});
+
+test("the instance-count filter names one Cloud Run service", () => {
+  const filter = runInstanceCountFilter("hexera-dev-api");
+  assert.match(filter, /metric\.type = "run\.googleapis\.com\/container\/instance_count"/);
+  assert.match(filter, /resource\.labels\.service_name = "hexera-dev-api"/);
+});
+
+test("longer windows align into coarser buckets", () => {
+  // A week at one-minute resolution is ten thousand points per series, which no browser should be
+  // asked to draw and no reader can see.
+  assert.ok(alignmentSecondsFor("1h") < alignmentSecondsFor("24h"));
+  assert.ok(alignmentSecondsFor("24h") < alignmentSecondsFor("7d"));
+});
+
+test("builds a request naming the project, the filter and the window", async () => {
+  let seen: unknown = null;
+  const client = {
+    listTimeSeries: async (request: unknown) => {
+      seen = request;
+      return [[], null, {}] as never;
+    },
+  } as never;
+
+  await readSeries(client, {
+    filter: 'metric.type = "x"',
+    projectId: "hexera-dev",
+    window: "6h",
+  });
+
+  const request = seen as {
+    aggregation: { alignmentPeriod: { seconds: number }; perSeriesAligner: string };
+    filter: string;
+    interval: { endTime: { seconds: number }; startTime: { seconds: number } };
+    name: string;
+  };
+
+  assert.equal(request.name, "projects/hexera-dev");
+  assert.equal(request.filter, 'metric.type = "x"');
+  assert.equal(request.aggregation.perSeriesAligner, "ALIGN_MEAN");
+  assert.equal(request.aggregation.alignmentPeriod.seconds, alignmentSecondsFor("6h"));
+  assert.equal(request.interval.endTime.seconds - request.interval.startTime.seconds, 6 * 3600);
+});
+
+test("turns points into ascending plain values", async () => {
+  // Monitoring returns points NEWEST FIRST. A chart drawn in that order runs backwards, and the
+  // bug is invisible on a flat series.
+  const client = {
+    listTimeSeries: async () =>
+      [
+        [
+          {
+            metric: { labels: { response_code_class: "2xx" } },
+            points: [
+              { interval: { endTime: { seconds: 120 } }, value: { doubleValue: 5 } },
+              { interval: { endTime: { seconds: 60 } }, value: { doubleValue: 3 } },
+            ],
+          },
+        ],
+        null,
+        {},
+      ] as never,
+  } as never;
+
+  const series = await readSeries(client, {
+    filter: "f",
+    groupByFields: ["metric.labels.response_code_class"],
+    projectId: "hexera-dev",
+    window: "1h",
+  });
+
+  assert.equal(series.length, 1);
+  assert.equal(series[0].label, "2xx");
+  assert.deepEqual(
+    series[0].points.map((point) => point.value),
+    [3, 5],
+  );
+  assert.equal(series[0].points[0].at, new Date(60_000).toISOString());
+});
+
+test("reads int64 values, which arrive as strings", async () => {
+  const client = {
+    listTimeSeries: async () =>
+      [
+        [{ points: [{ interval: { endTime: { seconds: 60 } }, value: { int64Value: "7" } }] }],
+        null,
+        {},
+      ] as never,
+  } as never;
+
+  const series = await readSeries(client, { filter: "f", projectId: "p", window: "1h" });
+  assert.equal(series[0].points[0].value, 7);
+});
+
+test("no data is an empty list, not an error", async () => {
+  // The MIG size metric is unverified against the live project. The page must be able to say
+  // "no series" rather than draw a flat line that reads as "we ran zero workers".
+  const client = { listTimeSeries: async () => [[], null, {}] as never } as never;
+  assert.deepEqual(await readSeries(client, { filter: "f", projectId: "p", window: "1h" }), []);
+});
+
+test("sums the status classes into one total volume series", () => {
+  const total = sumSeries([
+    { label: "2xx", points: [{ at: "t1", value: 10 }, { at: "t2", value: 20 }] },
+    { label: "5xx", points: [{ at: "t1", value: 1 }] },
+  ]);
+
+  assert.equal(total.length, 1);
+  assert.deepEqual(total[0].points, [
+    { at: "t1", value: 11 },
+    { at: "t2", value: 20 },
+  ]);
+});
+
+test("summing nothing yields nothing, so the panel renders its empty state", () => {
+  assert.deepEqual(sumSeries([]), []);
+});
+
+test("picks named series in the order asked for, skipping ones with no data", () => {
+  const picked = pickSeries(
+    [
+      { label: "5xx", points: [{ at: "t1", value: 2 }] },
+      { label: "2xx", points: [{ at: "t1", value: 9 }] },
+    ],
+    ["4xx", "5xx"],
+  );
+
+  assert.deepEqual(picked.map((one) => one.label), ["5xx"]);
+});
+
+test("per-instance filters select a zone's instances", () => {
+  const filter = instanceCpuFilter("us-central1-a");
+  assert.match(filter, /metric\.type = "compute\.googleapis\.com\/instance\/cpu\/utilization"/);
+  assert.match(filter, /resource\.labels\.zone = "us-central1-a"/);
+});
+
+test("the latest value per instance is keyed by instance id", async () => {
+  // Keyed by id because that is the label Compute publishes; the table joins it to the row by the
+  // same id, which is why ManagedInstanceRow carries one.
+  const client = {
+    listTimeSeries: async () =>
+      [
+        [
+          {
+            resource: { labels: { instance_id: "111" } },
+            points: [
+              { interval: { endTime: { seconds: 120 } }, value: { doubleValue: 0.42 } },
+              { interval: { endTime: { seconds: 60 } }, value: { doubleValue: 0.11 } },
+            ],
+          },
+          {
+            resource: { labels: { instance_id: "222" } },
+            points: [{ interval: { endTime: { seconds: 60 } }, value: { doubleValue: 0.9 } }],
+          },
+        ],
+        null,
+        {},
+      ] as never,
+  } as never;
+
+  const latest = await readLatestByInstance(client, { filter: "f", projectId: "p" });
+  // Newest point wins: readSeries returns points oldest-first, so the last one is the current value.
+  assert.equal(latest["111"], 0.42);
+  assert.equal(latest["222"], 0.9);
+});
+
+test("an instance with no series is simply absent, not zero", async () => {
+  // A worker whose Ops Agent is not reporting has unknown memory, which is a different statement
+  // from "using none".
+  const client = { listTimeSeries: async () => [[], null, {}] as never } as never;
+  assert.deepEqual(await readLatestByInstance(client, { filter: "f", projectId: "p" }), {});
+});

@@ -181,6 +181,49 @@ print('  provisioned and verified', a.database)
 PASSES="${INTEGRATION_PASSES:-1}"
 case "$PASSES" in ''|*[!0-9]*|0) echo "FATAL: INTEGRATION_PASSES must be a positive integer"; exit 1;; esac
 
+# INTEGRATION_SHARD / INTEGRATION_SHARDS: run one slice of the tier instead of all of it. Unset
+# (the default, and what a developer gets) means the whole tier, exactly as before.
+#
+# THE SLICE IS COMPUTED ON THE HOST, by the same devtools/quality/shard_tests.py the unit lane
+# uses: the inventory is `git ls-files`, so a shard cannot be handed a list that has drifted from
+# the tree, and every file lands in exactly one slice by construction. The paths are rewritten to
+# the mount point the suite is actually bind-mounted at, because the container has no checkout.
+#
+# WHAT A SHARD MAY AND MAY NOT CONCLUDE. Split N ways, no single shard executes MIN_EXECUTED tests
+# and no single shard holds all three named real-PostgreSQL guarantees - they live in three
+# different modules. So a shard runs the guard with --partial, which asserts what is true OF A
+# SHARD (the report parses, it is not empty, nothing failed, nothing skipped for a reason that is
+# not one of the two optional fixtures) and leaves the two whole-suite claims to a union pass over
+# every shard's report. That union pass is a job the gate waits on; it is not optional, and this
+# flag is not a way to reach a PASS without it.
+SHARDS="${INTEGRATION_SHARDS:-1}"
+SHARD="${INTEGRATION_SHARD:-1}"
+case "$SHARDS" in ''|*[!0-9]*|0) echo "FATAL: INTEGRATION_SHARDS must be a positive integer"; exit 1;; esac
+case "$SHARD" in ''|*[!0-9]*|0) echo "FATAL: INTEGRATION_SHARD must be a positive integer"; exit 1;; esac
+[ "$SHARD" -le "$SHARDS" ] || { echo "FATAL: INTEGRATION_SHARD=$SHARD is out of range for INTEGRATION_SHARDS=$SHARDS"; exit 1; }
+
+GUARD_MODE=""
+TARGETS=(/srv/tests/integration)
+if [ "$SHARDS" -gt 1 ]; then
+  # Captured into a variable BEFORE mapfile, not piped into it. A process substitution's exit
+  # status is not mapfile's, so `mapfile < <(python3 ...) || die` reads a failed shard computation
+  # as an empty-but-successful one - and an empty target list is a pytest run that exits 0 having
+  # collected nothing, which is exactly the vacuous pass everything here is built to refuse.
+  if ! _slice_raw="$(python3 devtools/quality/shard_tests.py tests/integration \
+                       --shard "$SHARD" --of "$SHARDS")"; then
+    echo "FATAL: could not compute shard $SHARD/$SHARDS of tests/integration"; exit 1
+  fi
+  mapfile -t _slice <<<"$_slice_raw"
+  [ "${#_slice[@]}" -gt 0 ] && [ -n "${_slice[0]}" ] \
+    || { echo "FATAL: shard $SHARD/$SHARDS selected no files - pytest given nothing exits 0"; exit 1; }
+  # $PWD/tests is bind-mounted at /srv/tests, so a repo-relative tests/integration/test_x.py is
+  # /srv/tests/integration/test_x.py - the prefix is the whole of the mapping.
+  TARGETS=()
+  for _f in "${_slice[@]}"; do [ -n "$_f" ] && TARGETS+=("/srv/${_f}"); done
+  GUARD_MODE="--partial"
+  echo "── shard $SHARD/$SHARDS: ${#TARGETS[@]} of the tier's files ──"
+fi
+
 overall=0
 for pass in $(seq 1 "$PASSES"); do
   if [ "$PASSES" -gt 1 ] && [ "$pass" -eq "$PASSES" ]; then
@@ -232,13 +275,24 @@ for pass in $(seq 1 "$PASSES"); do
      # always run from /srv, and a spawned capture worker derives SRC from its cwd.` \
     -w /srv --entrypoint python "$IMG" \
     -m pytest -q -rs -o asyncio_mode=auto -p no:cacheprovider $order \
-    --junitxml="/srv/report/$(basename "$REPORT")" /srv/tests/integration
+    --junitxml="/srv/report/$(basename "$REPORT")" "${TARGETS[@]}"
   rc=${PIPESTATUS[0]}
   set -e
 
+  # KEEP THE REPORT if the caller asked for it. $RUNDIR is a mktemp directory the exit trap
+  # removes, which is right for a developer and wrong for a sharded CI run: the union pass that
+  # proves the tier is non-vacuous runs in a different job, on a different machine, and the JUnit
+  # report is the only thing it has to go on. Copied BEFORE the guard, so a shard whose guard
+  # fails still contributes its evidence rather than deleting it.
+  if [ -n "${INTEGRATION_REPORT_DIR:-}" ]; then
+    mkdir -p "$INTEGRATION_REPORT_DIR"
+    cp "$REPORT" "$INTEGRATION_REPORT_DIR/report-shard${SHARD}-pass${pass}.xml" \
+      || echo "::warning:: could not keep $REPORT - the union pass will report it missing"
+  fi
+
   # Structured non-vacuity guard. Reads the JUnit report, not the console, so a change in pytest's
   # summary formatting cannot silently disarm it.
-  if ! python3 tests/integration/assert_integration_coverage.py "$REPORT"; then
+  if ! python3 tests/integration/assert_integration_coverage.py $GUARD_MODE "$REPORT"; then
     echo "::error:: integration coverage guard failed on pass $pass ($label)"
     overall=1
   fi

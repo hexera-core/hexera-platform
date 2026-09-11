@@ -39,7 +39,9 @@ exit 0
 
 _ADMIN_DIGEST = "us-central1-docker.pkg.dev/fake-proj/hexera/admin@sha256:c0ffee"
 
-# The three names create-admin-service.sh's own ADMIN_ENV_PAIRS declares (step 2).
+# A subset of the names create-admin-service.sh's own ADMIN_ENV_PAIRS declares (step 2). The drift
+# check refuses names the deployment does NOT declare, so a subset is a valid "no drift" fixture and
+# stays valid as the declared set grows. test_admin_fleet_access.py asserts the full list.
 _DECLARED_ENV_NAMES = "ENV;DEPLOYMENT_ID;NODE_ENV"
 
 _ENV = {

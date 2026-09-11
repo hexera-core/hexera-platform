@@ -51,6 +51,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
+        test-fast-shard test-container-integration-shard \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
         clean-workspaces
@@ -369,6 +370,12 @@ shell-worker: ##! Shell into the worker container
 # test tiers (each its own pytest session; see docs/development/overview.md)
 test-fast: ##! Hermetic unit tier (framework deps stubbed; no services/containers/licensed data)
 	$(PY) -m pytest tests/unit -m "not external_fixture"
+test-fast-shard: ##! One SHARD of SHARDS of the hermetic unit tier, as CI runs it (make test-fast-shard SHARD=1 SHARDS=4)
+	@# The file list comes from `git ls-files`, so a shard cannot be handed a stale inventory, and
+	@# an empty one is refused rather than exiting 0 having run nothing. --null/-0 because a path
+	@# with a space would otherwise become two arguments and pytest would collect neither.
+	$(PY) devtools/quality/shard_tests.py tests/unit --shard $(SHARD) --of $(SHARDS) --null \
+	  | xargs -0 $(PY) -m pytest -m "not external_fixture"
 test-random: ##! Unit tier under a fixed matrix of random ORDER seeds (surfaces inter-test leakage)
 	@for seed in 1 42 8675309; do \
 	  echo "── randomly-seed=$$seed ──"; \
@@ -419,6 +426,15 @@ test-container-integration: ##! DEPENDENCY-BACKED: provision Postgres+Redis+MinI
 	@# Without pytest-randomly the runner's randomised pass silently runs in declaration order.
 	docker build --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
 	@bash tests/integration/run_in_container.sh
+
+test-container-integration-shard: ##! One SHARD of SHARDS of the dependency-backed tier, as CI runs it (make test-container-integration-shard SHARD=1 SHARDS=4)
+	@# Its own provisioned Postgres+Redis+MinIO and its own disposable database, like every other
+	@# invocation of the runner - shards share nothing, so they cannot interfere. What a shard may
+	@# NOT conclude is that the TIER is non-vacuous: the floor and the three named real-PostgreSQL
+	@# guarantees are asserted once, over the union of every shard's JUnit report, by the lane the
+	@# gate waits on. See INTEGRATION_SHARD in tests/integration/run_in_container.sh.
+	docker build --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
+	@INTEGRATION_SHARD=$(SHARD) INTEGRATION_SHARDS=$(SHARDS) bash tests/integration/run_in_container.sh
 
 test-container: test-container-integration ##! Alias of test-container-integration (the full dependency-backed tier). For the hermetic image check use `make test-container-smoke`.
 

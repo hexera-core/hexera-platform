@@ -343,6 +343,33 @@ API_ALLOW_UNAUTHENTICATED=${API_ALLOW_UNAUTHENTICATED:-0}
 WORKER_SERVICE_ACCOUNT=${WORKER_SERVICE_ACCOUNT:-}
 WORKER_ENV_URI=${WORKER_ENV_URI:-}
 
+# THE OUTREACH TIER. Every one of these uses the VAR-or-empty form deliberately: load_env does
+# 'set -a' and sources this file, which
+# makes it win over the environment, so a bare assignment here would CLOBBER the value the
+# workflow exported. Declared rather than omitted so the contract is visible - an undeclared
+# variable that happens to survive is indistinguishable from one nobody meant to pass.
+#
+# Empty OUTREACH_ENABLED means this deployment does not run outreach, and both the section link
+# and the sender stage state their own skip. Outreach is prod-only: one partner list, one mailbox.
+OUTREACH_ENABLED=${OUTREACH_ENABLED:-}
+OUTREACH_WORKER_JOB=${OUTREACH_WORKER_JOB:-}
+# The database. OUTREACH_DB_HOST doubles as the Cloud SQL socket path - /cloudsql/CONNECTION_NAME -
+# which is how the Cloud Run integration exposes it, and create-admin-service.sh adds the instance
+# to the service when it sees that form.
+OUTREACH_DB_HOST=${OUTREACH_DB_HOST:-}
+OUTREACH_DB_NAME=${OUTREACH_DB_NAME:-}
+OUTREACH_DB_USER=${OUTREACH_DB_USER:-}
+OUTREACH_CLOUDSQL_INSTANCE=${OUTREACH_CLOUDSQL_INSTANCE:-}
+# The KMS key the mailbox refresh token is sealed with. Absent, the console REFUSES to store a
+# token rather than writing a usable credential in the clear - see lib/outreach/crypto.ts.
+OUTREACH_KMS_KEY=${OUTREACH_KMS_KEY:-}
+# The OAuth client. GOOGLE_CLIENT_ID is public and travels as a plain value; the secret half is a
+# Secret Manager container name (GOOGLE_CLIENT_SECRET_SECRET), never a value.
+GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
+GOOGLE_CLIENT_SECRET_SECRET=${GOOGLE_CLIENT_SECRET_SECRET:-google-client-secret}
+OUTREACH_DB_PASSWORD_SECRET=${OUTREACH_DB_PASSWORD_SECRET:-outreach-db-password}
+
 # THE CONSOLE TIER. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console
 # and that stage is skipped - the same arrangement an API-less deployment uses above.
 CLOUDRUN_CONSOLE_SERVICE=${CONSOLE_SERVICE}

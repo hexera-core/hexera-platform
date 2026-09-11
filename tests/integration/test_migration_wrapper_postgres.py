@@ -87,6 +87,9 @@ def _schema_fingerprint() -> tuple:
         eng.dispose()
 
 
+from tests.harness_provisioning import _MIGRATION_OWNED_SCHEMAS
+
+
 @pytest.fixture()
 def empty_db():
     try:
@@ -97,6 +100,13 @@ def empty_db():
     try:
         conn.execute(text("DROP SCHEMA public CASCADE"))
         conn.execute(text("CREATE SCHEMA public"))
+        # EVERY SCHEMA THE MIGRATIONS CREATE, not just `public` - the same reason reset_schema in
+        # tests/harness_provisioning.py drops them. A schema left standing survives into the
+        # upgrade this fixture exists to set up, and the first CREATE TABLE inside it fails with
+        # "relation already exists". The list is imported rather than repeated so the two reset
+        # paths cannot disagree about what "empty" means.
+        for schema in _MIGRATION_OWNED_SCHEMAS:
+            conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
     finally:
         conn.close()
         eng.dispose()

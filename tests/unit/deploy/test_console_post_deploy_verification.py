@@ -16,51 +16,80 @@ REPO = Path(__file__).parents[3]
 DEPLOY_WF = REPO / ".github" / "workflows" / "deploy.yml"
 
 
-def _deploy_job() -> dict:
-    doc = yaml.safe_load(DEPLOY_WF.read_text(encoding="utf-8"))
-    return doc["jobs"]["deploy"]
+def _jobs() -> dict:
+    return yaml.safe_load(DEPLOY_WF.read_text(encoding="utf-8"))["jobs"]
 
 
-def _step(name_fragment: str) -> dict:
-    steps = _deploy_job()["steps"]
-    matches = [s for s in steps if s.get("name") and name_fragment in s["name"]]
+def _provision_job() -> dict:
+    # The job that runs deploy.sh. It was called `deploy` until the workflow was split into
+    # release (Gate C + the push) and provision (the only cloud mutation); every assertion in this
+    # file is unchanged, only the job or the context that has to satisfy it.
+    return _jobs()["provision"]
+
+
+def _verify_job() -> dict:
+    """The job that verifies the deployed console.
+
+    The check used to be a step at the end of the deploy job and is now its own job, running
+    beside the admin check instead of behind it. Located by the URL it consumes rather than by a
+    name, so it survives being renamed and still fails loudly if it stops existing.
+    """
+    matches = {name: job for name, job in _jobs().items()
+               if name != "provision" and "console_url" in yaml.dump(job)}
     assert len(matches) == 1, (
-        f"expected exactly one step whose name contains {name_fragment!r}, found {len(matches)}")
-    return matches[0]
+        f"expected exactly one job verifying the deployed console, found {sorted(matches)}")
+    return next(iter(matches.values()))
+
+
+def _verify_run() -> str:
+    steps = _verify_job()["steps"]
+    runs = [s["run"] for s in steps if s.get("run")]
+    assert len(runs) == 1, f"expected one script in the console verification job, found {len(runs)}"
+    return runs[0]
 
 
 def test_the_provisioning_step_publishes_an_id_for_its_output():
-    provision = _step("Provision the deployment")
-    assert provision.get("id") == "deploy", (
-        "the provisioning step has no id: deploy - a later step cannot reference "
-        "steps.deploy.outputs.console_url without one")
+    steps = _provision_job()["steps"]
+    matches = [s for s in steps if s.get("name") and "Provision the deployment" in s["name"]]
+    assert len(matches) == 1, f"expected exactly one provisioning step, found {len(matches)}"
+    assert matches[0].get("id") == "deploy", (
+        "the provisioning step has no id: deploy - the job cannot publish "
+        "steps.deploy.outputs.console_url as an output without one")
 
 
-def test_a_verification_step_exists_gated_on_the_console_actually_being_reconciled():
-    verify = _step("Verify the deployed console")
-    assert verify.get("if") == "steps.deploy.outputs.console_url != ''", (
-        "the verification step must run only when create-console-service.sh actually reported a "
+def test_the_provisioning_job_publishes_the_console_url_as_a_job_output():
+    # The step id alone is no longer enough: the verification runs in a DIFFERENT job now, and a
+    # step output that is never promoted to a job output cannot be read across that boundary.
+    outputs = _provision_job().get("outputs", {})
+    assert outputs.get("console_url") == "${{ steps.deploy.outputs.console_url }}", (
+        "provision does not publish console_url as a job output, so the verification job has no "
+        "way to reach the URL create-console-service.sh resolved")
+
+
+def test_a_verification_job_exists_gated_on_the_console_actually_being_reconciled():
+    verify = _verify_job()
+    assert verify.get("if") == "needs.provision.outputs.console_url != ''", (
+        "the verification must run only when create-console-service.sh actually reported a "
         "URL - i.e. the console was reconciled - not on every deploy regardless of whether the "
         "console was in DEPLOY_COMPONENTS or configured for this target at all")
-    assert verify.get("env", {}).get("CONSOLE_URL") == "${{ steps.deploy.outputs.console_url }}", (
-        "the verification step does not read CONSOLE_URL from steps.deploy.outputs.console_url - "
+    env = yaml.dump(verify["steps"])
+    assert "${{ needs.provision.outputs.console_url }}" in env, (
+        "the verification does not read CONSOLE_URL from needs.provision.outputs.console_url - "
         "it would have to re-derive the URL instead of using the one the script already resolved")
 
 
-def test_the_verification_step_runs_after_provisioning_and_before_always_on_steps():
-    steps = _deploy_job()["steps"]
-    names = [s.get("name") or "" for s in steps]
-    provision_at = next(i for i, n in enumerate(names) if "Provision the deployment" in n)
-    verify_at = next(i for i, n in enumerate(names) if "Verify the deployed console" in n)
-    assert provision_at < verify_at, "verification must run after provisioning, not before"
-    # The verify step must NOT be if:always() - a real deploy failure should still stop it from
-    # being (mis)reported as a console problem when the console was never reached.
-    assert _step("Verify the deployed console").get("if") != "always()"
+def test_the_verification_runs_after_provisioning_and_is_not_always():
+    verify = _verify_job()
+    assert "provision" in verify["needs"], (
+        "verification must run after provisioning, not beside it - a `needs` edge is what "
+        "guarantees that, and it replaced the step ordering the single-job workflow relied on")
+    # It must NOT be always() - a real deploy failure should still stop it from being
+    # (mis)reported as a console problem when the console was never reached.
+    assert "always()" not in (verify.get("if") or "")
 
 
 def test_the_verification_step_checks_all_four_spec_assertions():
-    verify = _step("Verify the deployed console")
-    run = verify["run"]
+    run = _verify_run()
     # 1) unauthenticated / redirects to /sign-in.
     assert "/sign-in" in run and "redirect_url" in run
     # 2) the sign-in page renders, strongly enough to notice a broken asset path: it must fetch
@@ -94,7 +123,7 @@ def test_readyz_route_exists_for_the_check_to_target():
 def _asset_extraction_pattern() -> str:
     """The character class handed to `grep -oE` in the /_next/static asset-extraction line, as
     the literal bytes bash sees (not a Python re-escaped string)."""
-    run = _step("Verify the deployed console")["run"]
+    run = _verify_run()
     m = re.search(r"grep -oE '(/_next/static/[^']+)'", run)
     assert m, (
         "could not find the asset-extraction `grep -oE '/_next/static/...'` call in the verify "

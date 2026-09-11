@@ -191,9 +191,27 @@ audience matching this exact service — before it is trusted. An unverified hea
 forged by anything that can reach the container directly, which is precisely what IAP is stopping
 at the edge; trusting it unverified moves the trust boundary back inside.
 
-Until the admin console needs per-admin permissions, it does not have to read this at all: IAP
-either let the request through or it did not, and everyone who gets through is an admin. Add
-verification at the point you first need to distinguish one admin from another, not before.
+**The admin console now verifies it, and here is the reason.** It is not to distinguish one admin
+from another — it still does not, and everyone IAP admits is an admin. It is because the console
+can now *change infrastructure*, and every change writes an audit entry naming who made it. That
+record must not rest on `X-Goog-Authenticated-User-Email`, which is plain text and trustworthy only
+for as long as no `allUsers` invoker binding exists. §2 is the whole argument for why that
+invariant is worth holding and how quietly it can break; an audit trail should not depend on it.
+
+So: **reads are gated by IAP alone. Writes verify the assertion** — signature, issuer
+`https://cloud.google.com/iap`, and audience — and take the actor's identity from the verified
+claims. Direct IAP on Cloud Run signs for the service, so the audience is
+`/projects/<PROJECT_NUMBER>/locations/<REGION>/services/<SERVICE>`; the
+`/projects/<n>/global/backendServices/<id>` form belongs to the load-balancer arrangement §1
+declines. `GCP_PROJECT_NUMBER` is therefore load-bearing for writes: a console deployed without it
+cannot compute an audience, and refuses every mutation rather than falling back to the header.
+
+There is no bypass switch. Failing closed means a misconfigured console stops changing things,
+which is the correct direction; the alternative is accepting an unverified actor, which is the
+entire risk this closes.
+
+Server Functions are reachable by direct `POST`, not only through the form that renders them, so
+this verification runs inside every action rather than in the page that displays it.
 
 ## 8. What this does not cover
 
@@ -221,3 +239,176 @@ left deliberately empty in `.github/workflows/deploy.yml`, exactly as `console_s
 a release tag reconciles every tier it is told about, so naming one there would provision a
 billed production service nobody asked for. Prod gets an admin console only when a human pins a
 name there in a reviewed diff, and then repeats §3-§6 against `hexera-prod`.
+
+
+## 10. What the console reads, and what it can change
+
+This section is the authority on the admin service account's authority. It is granted by
+`create-admin-service.sh` on every run; a grant that fails there is reported with the command that
+fixes it, and the console itself is the verdict — a page that cannot read its metric says so.
+
+**Reads** — four predefined viewer roles on the project:
+
+| Role | Serves |
+|---|---|
+| `roles/compute.viewer` | the managed instance group, its autoscaler and its instance template |
+| `roles/monitoring.viewer` | every graph on the Fleet page |
+| `roles/run.viewer` | Cloud Run revisions and current scaling |
+| `roles/billing.viewer` | the Costs page's account state |
+
+Budgets live on the **billing account**, not the project, and a deploy identity has no authority
+there. Grant that one by hand, once:
+
+```bash
+gcloud billing accounts add-iam-policy-binding <BILLING_ACCOUNT_ID> \
+  --member serviceAccount:<DEPLOYMENT_ID>-admin@<PROJECT>.iam.gserviceaccount.com \
+  --role roles/billing.viewer
+```
+
+`roles/bigquery.jobUser` is granted **only** when `BILLING_EXPORT_TABLE` is set. A grant for a
+billing export the deployment does not have is authority nobody asked for.
+
+**Writes** — a project **custom role**, not a predefined one. `roles/compute.instanceAdmin.v1`
+would work and would also grant disk and instance *creation* this console never performs;
+`roles/run.admin` would let an IAP-gated web page deploy arbitrary revisions. The custom role
+carries exactly the verbs the Fleet page's controls issue: `compute.autoscalers.get/update`,
+`compute.instanceGroupManagers.get/update`, `compute.instanceTemplates.get`,
+`compute.instances.get/list`, `compute.zoneOperations.get`, `compute.zones.get`,
+`run.services.get/update`, `run.revisions.get/list`, `run.operations.get`.
+
+**What this costs, stated plainly.** Before this, the worst a stolen admin session could do was
+read. It can now raise the fleet's ceiling to its cap, resize the group, and delete workers. Two
+things bound the damage and neither bounds it to a *subset of admins*, because per-admin
+permissions remain a non-goal:
+
+- `ADMIN_MAX_ALLOWED_REPLICAS` (default 12) caps any ceiling or resize the console will submit.
+- Deleting an instance requires typing its name back.
+
+**The delete confirmation is blind, and the page says so.** The console holds no database
+connection, so it cannot read job leases and cannot tell you the worker you are about to remove is
+four hours into a mesh job. There is also no drain contract yet — the worker is not asked to finish
+first. Closing that gap needs either the read-only database connection or the drain work in
+build-out item 6; neither is in place.
+
+**Who owns the scaling knobs.** The floor, ceiling, cooldown, jobs-per-instance and scale-in
+control belong to **this console**, not to the deploy. `create-worker-fleet.sh` sets them when it
+creates the autoscaler and does not reconcile them afterwards;
+`create-queue-depth-publisher.sh` still repoints the metric filter but reads the live numbers back
+and passes them through unchanged; the three Cloud Run scripts pass `--min-instances` /
+`--max-instances` only when creating a service. The `WORKER_MIG_*` and `*_MIN_INSTANCES` values in
+`generated.<env>.env` are therefore **creation defaults** — they stop describing the running system
+the moment anyone changes it here. The Fleet page is the authority after that.
+
+
+## 11. What the first real dev deploy found
+
+Recorded 2026-09-10, from run 34456974668 against `hexera-dev`. Every item here is a thing the
+deploy could not do for itself, so each is a command a human runs once.
+
+**The deployer cannot grant IAM, by design.** `github-deployer` holds neither
+`resourcemanager.projectIamAdmin` nor `iam.roles.create` — deliberately, and
+[the build-out plan](platform-buildout-plan.md) §1 explains what its eleven roles do and do not
+include. So `create-admin-service.sh` attempts each grant, warns with the exact fix, and carries
+on. **A green deploy therefore does not mean the console has any authority.** The three project
+viewer roles and the billing-account role were granted by hand after the first deploy; the custom
+role is below.
+
+**Creating the custom role.** The console's controls return `PERMISSION_DENIED` until this exists
+and is bound. Run once per project, as an owner:
+
+```bash
+PROJECT=hexera-dev      # or hexera-prod
+ROLE=dev_admin_console  # or prod_admin_console — it is <DEPLOYMENT_ID>_admin_console
+SA=dev-admin@hexera-dev.iam.gserviceaccount.com   # or prod-admin@hexera-prod...
+
+gcloud iam roles create "$ROLE" --project "$PROJECT" \
+  --title 'Hexera admin console fleet operator' --stage GA \
+  --permissions compute.autoscalers.get,compute.autoscalers.update,\
+compute.instanceGroupManagers.get,compute.instanceGroupManagers.update,\
+compute.instanceTemplates.get,compute.instances.get,compute.instances.list,\
+compute.zoneOperations.get,compute.zones.get,\
+run.services.get,run.services.update,run.revisions.get,run.revisions.list,run.operations.get
+
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:$SA" --role "projects/$PROJECT/roles/$ROLE" --condition None
+```
+
+Granting it is what turns an IAP session into infrastructure authority — §10 states that cost.
+Until then the console reads and reports; it changes nothing.
+
+**`roles/billing.viewer` is a billing-ACCOUNT role.** It cannot be bound to a project at all — the
+API answers `Role roles/billing.viewer is not supported for this resource` — so the script does not
+try. `hexera-dev`'s billing account is `01EFBB-8FF368-9E335F`; the grant command is in §10.
+
+**The console points at `dev-workers`, which does not exist yet, and that is deliberate.**
+`deploy.yml` pins `worker_mig=dev-workers`; the only managed instance group in `hexera-dev` today
+is `hexera-dev-workers` (size 1, stable, `us-central1-a`), which is the hand-made group from before
+the fleet had a provisioning script.
+
+**`dev-workers` is the name the platform is moving to**, and separate work renames the fleet onto
+it. The admin console is therefore pointed at the DESTINATION name rather than the current one, so
+that the rename needs no change here and no redeploy of this tier: the Fleet page starts reporting
+the moment a group by that name exists. `hexera-prod` already follows the convention — its group is
+`prod-workers` — so prod needed no equivalent decision.
+
+Until the rename lands, the Fleet page reports `NOT_FOUND` for `dev-workers` and names the two
+environment variables it read. That is the page working, not failing: the alternative — quietly
+falling back to a group with a similar name — is how an operator ends up reading one fleet's
+numbers and acting on another's.
+
+If the rename is deferred and dev needs live fleet numbers sooner, the stopgap is a one-line change
+of `worker_mig` to `hexera-dev-workers` in `deploy.yml` plus an `admin`-tier deploy. It is a
+stopgap and not the destination, which is why it is written here rather than done.
+
+**The autoscaler is not named after its group.** `hexera-dev-workers` is driven by an autoscaler
+called `hexera-dev-workers-9k6e`. Everything that asks "does this group have an autoscaler" must
+read the group's own `status.autoscaler` field rather than assuming the names match — a name guess
+returns "no autoscaler" for a group that has one, and for `create-worker-fleet.sh` that would mean
+re-applying a policy the console owns. Both it and `create-queue-depth-publisher.sh` read the
+field.
+
+
+## 12. The billing export
+
+The Costs page's per-service breakdown needs a **BigQuery billing export**, which is the one piece
+of this system that cannot be provisioned from code: there is no `gcloud` subcommand and no method
+on the Cloud Billing API. It is enabled in the Cloud Console under **Billing → Billing export →
+BigQuery export**, and only **Standard usage cost** is turned on — that is the export whose table
+carries `service.description`, `project.id`, `cost`, `credits[].amount` and `usage_start_time`,
+which is everything the query reads. Detailed usage cost, Pricing, FOCUS and the CUD export are
+deliberately off: each is a second copy of the same money in a shape nothing here reads, and each
+costs storage and scan.
+
+**The dataset is `hexera-prod:billing_export`, and it is in prod on purpose.** An export
+accumulates from the day it is switched on and cannot be backfilled, so its history is
+irreplaceable. `hexera-dev` is a shared sandbox that may be rebuilt; a table that disappears with it
+takes every month recorded up to that point.
+
+**`BILLING_EXPORT_TABLE` names the DATASET, not the table**, and the console finds the Standard
+usage cost table inside it. The table's name is derived from the billing account id with its
+hyphens turned to underscores, and deriving it in configuration is a trap: a derived name that is
+wrong fails identically to an export that was never switched on — `Not found: Table` — so the
+mistake is indistinguishable from the state it is legitimately waiting on, and stays that way. An
+exact `project.dataset.table` is still accepted where one is wanted.
+
+**One billing account bills both projects, so one table holds both.** Three reads had to be scoped
+because of it, and the third was only caught by looking at the deployed page:
+
+| Read | Scope |
+|---|---|
+| `getProjectBillingInfo` | already per-project |
+| `listBudgets` | per billing ACCOUNT — filtered to budgets whose `budgetFilter.projects` names this project, plus account-wide ones |
+| the spend query | per billing ACCOUNT — filtered on `project.id` |
+
+Without the last two, dev's Costs page would have shown prod's budget beside its own and summed
+prod's spend into its total.
+
+**Dev's console reads a table in prod, and that is the only cross-project read in this design.**
+§10's rule is otherwise "own project only". It is accepted here because the exposure was already
+granted: the dev identity holds `roles/billing.viewer` on the shared billing account, so it can
+already see account-wide billing data. The BigQuery grant is dataset-scoped `READER` on this one
+table and reaches nothing that account-level role did not.
+
+**Until the first table is written** — hours after enabling — the page says so, and distinguishes
+"the export is not switched on" from "it is, and the first write is pending". It needs no redeploy
+when the table appears.
