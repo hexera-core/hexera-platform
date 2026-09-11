@@ -78,14 +78,14 @@ async def create_key(body: CreateKeyIn,
                      # it resolves from the SAME cached principal - one credential check, not two.
                      owner_id: str = Depends(owner_dep)) -> dict:
     _require_console_session(principal)
-    organization = None
-    if principal.organization_id:
-        try:
-            organization = uuid.UUID(principal.organization_id)
-        except ValueError:
-            # Narrow to no organisation rather than raise, exactly as tenant_scope does. A key
-            # stamped with the owner alone still authenticates; one that 500s is never issued.
-            organization = None
+    # tenant_scope owns this narrowing and now exposes it, so this route uses the rule rather
+    # than restating it: a malformed organisation id stamps the owner alone rather than raising.
+    # A key stamped with the owner alone still authenticates; one that 500s is never issued.
+    # Function-scope, like upload.py's own use of tenant_scope: an API module may not import a
+    # persistence repository at module scope (test_route_transport_only).
+    from meshpipeline.persistence.repositories import tenant_scope
+
+    organization = tenant_scope.parsed_organization_id(principal.organization_id)
 
     async with get_db() as db:
         issued = await api_key_service.issue(db, owner_id=owner_id, name=body.name,

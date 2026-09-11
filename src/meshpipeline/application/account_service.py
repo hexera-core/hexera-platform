@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -16,6 +15,7 @@ import meshpipeline.settings.policy as polcfg
 from meshpipeline.application import credit_service
 from meshpipeline.contracts.firebase_token import VerifiedToken
 from meshpipeline.persistence.models import MembershipRole, Organization
+from meshpipeline.persistence.repositories import tenant_scope
 from meshpipeline.persistence.repositories.membership_repository import MembershipRepository
 from meshpipeline.persistence.repositories.organization_repository import (
     OrganizationRepository,
@@ -245,7 +245,7 @@ async def organization_view(db: AsyncSession, *, owner_id: str,
     changes is one refactor away from a disclosure. The caller is shown themselves; nothing about
     the other tenant is read, let alone materialised.
     """
-    parsed = _parsed_organization_id(organization_id)
+    parsed = tenant_scope.parsed_organization_id(organization_id)
     own = await membership_repo.organization_id_for_email(db, owner_id) if parsed else None
     if parsed is None or own != parsed:
         return OrganizationView(organization=None,
@@ -257,15 +257,6 @@ async def organization_view(db: AsyncSession, *, owner_id: str,
         organization=row,
         members=[Member(email=user.email, name=user.name or user.email,
                         role=getattr(role, "value", role)) for user, role in members])
-
-
-def _parsed_organization_id(organization_id: str) -> uuid.UUID | None:
-    if not organization_id:
-        return None
-    try:
-        return uuid.UUID(organization_id)
-    except (ValueError, AttributeError, TypeError):
-        return None
 
 
 async def organization_id_for_owner(db: AsyncSession, owner_id: str) -> str:

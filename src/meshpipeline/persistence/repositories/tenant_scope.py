@@ -6,13 +6,20 @@ from __future__ import annotations
 import uuid
 
 
-def _parsed(organization_id: str) -> uuid.UUID | None:
-    # FAIL OPEN TO THE OWNER FALLBACK, never to an exception inside a request. Every caller today
-    # hands this a value a Principal produced, which is always either "" or a real UUID string -
-    # but this module is deliberately the one place the rule lives, so a future caller (a new
-    # credential path, an admin tool, a test helper) that passes something unsanitised must not
-    # get an unhandled 500. A malformed id narrows to owner-scoping rather than widening access,
-    # which is the same direction _organization_for already fails in (api/security.py).
+def parsed_organization_id(organization_id: str) -> uuid.UUID | None:
+    """The organisation id as a UUID, or None for absent-or-malformed.
+
+    PUBLIC because it is the one place this narrowing lives, and three callers had written it out
+    for themselves - here, `account_service`, and inline in `api_keys.create_key` - which is three
+    chances for one of them to decide a malformed id is an exception after all.
+
+    FAIL OPEN TO THE OWNER FALLBACK, never to an exception inside a request. Every caller today
+    hands this a value a Principal produced, which is always either "" or a real UUID string -
+    but a future caller (a new credential path, an admin tool, a test helper) that passes
+    something unsanitised must not get an unhandled 500. A malformed id narrows to owner-scoping
+    rather than widening access, which is the same direction _organization_for already fails in
+    (api/security.py).
+    """
     if not organization_id:
         return None
     try:
@@ -31,7 +38,7 @@ def scope(model, *, owner_id: str, organization_id: str = ""):
     path is one we already ship. A MALFORMED organisation id takes the same fallback: it narrows
     to owner-scoping rather than raising inside a request.
     """
-    parsed = _parsed(organization_id)
+    parsed = parsed_organization_id(organization_id)
     if parsed is not None:
         return model.organization_id == parsed
     return model.owner_id == owner_id
@@ -47,7 +54,7 @@ def stamp(*, owner_id: str, organization_id: str = "") -> dict:
     than raising.
     """
     values: dict = {"owner_id": owner_id}
-    parsed = _parsed(organization_id)
+    parsed = parsed_organization_id(organization_id)
     if parsed is not None:
         values["organization_id"] = parsed
     return values

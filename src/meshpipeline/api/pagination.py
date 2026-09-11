@@ -7,7 +7,6 @@ from __future__ import annotations
 import base64
 import binascii
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 
 #: The page size a caller gets without asking, and the ceiling it cannot exceed. The ceiling is
@@ -16,19 +15,6 @@ DEFAULT_LIMIT = 25
 MAX_LIMIT = 100
 
 _SEPARATOR = "|"
-
-
-@dataclass(frozen=True)
-class Page:
-    """One page of rows plus the cursor that reaches the next one.
-
-    `next_cursor` is None on the last page. It is set only when the page came back FULL: a short
-    page cannot have more behind it, and minting a cursor there would give the caller one more
-    round trip that returns nothing.
-    """
-
-    items: list
-    next_cursor: str | None
 
 
 def clamp_limit(limit: int) -> int:
