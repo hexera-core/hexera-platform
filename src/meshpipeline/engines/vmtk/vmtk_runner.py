@@ -38,7 +38,10 @@ OVERLAP_TOLERANCE = 0.02
 _DEFAULTS: dict = {
     "edge_length_factor": 0.15,
     "boundary_layers": 5,
-    "boundary_layer_thickness_factor": 0.15,
+    # 10% of the radius: vmtk's layer generator has no collision handling, and a thicker stack
+    # from both walls of a wye crotch folds into itself (tee_wye_003: 15% overlapped 10.5% of
+    # the volume in the lab). With 1.25x growth the first cell is ~1.2% of the radius.
+    "boundary_layer_thickness_factor": 0.10,
     "cap_openings": True,
     "remesh_surface": True,
     "max_cells": 8_000_000,

@@ -108,7 +108,7 @@ def test_pype_adds_boundary_layers_only_when_requested():
                                                    "boundary_layer_thickness_factor": 0.15}))
     assert "-boundarylayer 1" in with_layers
     # the thickness factor is a fraction of the RADIUS; vmtk wants it against the edge length
-    # (0.15 / the default edge factor 0.15 = 1), and layers grow 1.25x (sublayer ratio 0.8)
+    # (0.15 asked / the default edge factor 0.15 = 1), and layers grow 1.25x (sublayer ratio 0.8)
     assert "-sublayers 4" in with_layers and "-thicknessfactor 1 " in with_layers
     assert "-sublayerratio 0.8" in with_layers
     assert "-boundarylayeroncaps 0" in with_layers   # layers on the wall, not the caps

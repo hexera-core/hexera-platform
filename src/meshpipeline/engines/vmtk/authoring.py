@@ -40,7 +40,7 @@ AUTHORING_TOOL: dict = {
                 "target_points": {"type": "array", "items": {"type": "number"},
                                   "description": "explicit outlet seed coordinates [x,y,z,...]"},
                 "boundary_layers": {"type": "integer", "description": "near-wall prism layers inside the lumen wall (0=none)"},
-                "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness as a fraction of the local radius (default 0.15; layers grow 1.25x away from the wall)"},
+                "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness as a fraction of the local radius (default 0.10; layers grow 1.25x away from the wall; thicker stacks fold at wye crotches)"},
                 "cap_openings": {"type": "boolean", "description": "cap the open profiles at the lumen ends into inlet/outlet patches (default true; set false when the lumen is already closed)"},
                 "remesh_surface": {"type": "boolean", "description": "radius-adaptive surface remesh before the volume fill (default true)"},
                 "max_cells": {"type": "integer", "description": "cell budget (default 8e6)"},
@@ -119,7 +119,7 @@ def validate(strategy: dict) -> list[Diagnostic]:
             d.append(Diagnostic("warning", "boundary_layer_thickness_factor",
                                 f"boundary_layer_thickness_factor {t} is very thin - below 0.05 the "
                                 "layer tets are slivers (scaled Jacobian ~0.001). Keep the default "
-                                "0.15 unless the brief asks for a specific first-cell height."))
+                                "0.10 unless the brief asks for a specific first-cell height."))
     for b in ("cap_openings", "remesh_surface", "generator_remesh"):
         # ECHO WHAT ARRIVED. A live run sent the STRING "false", read the bare
         # "must be true or false" as a validator bug, retried the same string three times,
@@ -206,7 +206,7 @@ def recommend(analysis: dict, *, fidelity: str = "standard") -> dict:
         "mesh_detail_preference": str(fidelity or "standard"),
         "edge_length_factor": _f["edge_length_factor"],
         "boundary_layers": _f["boundary_layers"],
-        "boundary_layer_thickness_factor": 0.15,
+        "boundary_layer_thickness_factor": 0.10,
         "cap_openings": True,
         "remesh_surface": True,
         "note": ("vmtk sizes cells from the CENTERLINE RADIUS, so give it a factor, not a length: "
