@@ -234,12 +234,17 @@ async def organization_view(db: AsyncSession, *, owner_id: str,
     is as though their account had vanished, so the caller is shown themselves: the honest
     degraded view, and exactly what `tenant_scope`'s owner fallback means everywhere else.
 
-    An organisation id that parses but names somebody ELSE's organisation is NOT that case: it
-    reads as no organisation and no members, because nothing about another tenant may be
-    materialised here.
+    AN ORGANISATION ID THAT PARSES BUT NAMES SOMEBODY ELSE'S ORGANISATION TAKES THE SAME DEGRADED
+    VIEW, and the membership check below is what makes that true rather than merely stated. The
+    id reaches this function from `org_dep`, which derives it server-side today - but "no caller
+    can currently pass a foreign id" is a property of a dependency somewhere else, and a service
+    that would hand over another tenant's name, slug and full member roster the moment that
+    changes is one refactor away from a disclosure. The caller is shown themselves; nothing about
+    the other tenant is read, let alone materialised.
     """
     parsed = _parsed_organization_id(organization_id)
-    if parsed is None:
+    own = await membership_repo.organization_id_for_email(db, owner_id) if parsed else None
+    if parsed is None or own != parsed:
         return OrganizationView(organization=None,
                                 members=[Member(email=owner_id, name=owner_id, role="owner")])
 

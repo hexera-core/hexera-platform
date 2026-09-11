@@ -34,13 +34,27 @@ class _User:
 @pytest.fixture
 def org(monkeypatch):
     row = _Org(id=OWN_ORG, name="Acme Aerospace", slug="org-abc-123")
-    members = [(_User(id=uuid.uuid4(), email=OWNER, name="An Engineer"), "owner")]
+    # THE OTHER ORGANISATION IS REAL HERE, and that is the point. When these doubles answered
+    # None and [] for anything that was not OWN_ORG, the "not reachable" test below asserted its
+    # own stub: `organization_view` ran the same unconditional get_by_id + list_members it runs
+    # for your own organisation and the fixture supplied the emptiness. A repository that
+    # actually holds this row makes the refusal the code's, not the fake's.
+    other = _Org(id=OTHER_ORG, name="Rival Dynamics", slug="org-rival-999")
+    members = {
+        OWN_ORG: [(_User(id=uuid.uuid4(), email=OWNER, name="An Engineer"), "owner")],
+        OTHER_ORG: [(_User(id=uuid.uuid4(), email="rival@elsewhere.test", name="A Rival"),
+                     "owner")],
+    }
 
     async def fake_get(db, organization_id):
-        return row if organization_id == OWN_ORG else None
+        return {OWN_ORG: row, OTHER_ORG: other}.get(organization_id)
 
     async def fake_members(db, *, organization_id):
-        return members if organization_id == OWN_ORG else []
+        return members.get(organization_id, [])
+
+    async def fake_org_for_email(db, email):
+        # OWNER belongs to OWN_ORG and to nothing else. This is the seam the refusal reads.
+        return OWN_ORG if email == OWNER else None
 
     class _NullSession:
         async def __aenter__(self):
@@ -56,6 +70,8 @@ def org(monkeypatch):
     # fixture and leave the two degradation tests asserting against their own stub.
     monkeypatch.setattr(account_service.organization_repo, "get_by_id", fake_get)
     monkeypatch.setattr(account_service.membership_repo, "list_members", fake_members)
+    monkeypatch.setattr(account_service.membership_repo, "organization_id_for_email",
+                        fake_org_for_email)
     monkeypatch.setattr(organization, "get_db", lambda: _NullSession())
     return row
 
@@ -68,9 +84,15 @@ async def test_the_organisation_is_the_callers_own(org):
 
 
 async def test_another_organisation_is_not_reachable(org):
+    # The fixture holds a populated "Rival Dynamics" with its own member. The caller is not a
+    # member of it, so the service must refuse rather than render it - and the caller is shown
+    # themselves, the same degraded view an absent organisation gets (decision 12).
     payload = await organization.read_organization(owner_id=OWNER, organization_id=str(OTHER_ORG))
     assert payload["organization"] is None
-    assert payload["members"] == []
+    assert payload["members"] == [{"email": OWNER, "name": OWNER, "role": "owner"}]
+    rendered = repr(payload)
+    for leaked in ("Rival Dynamics", "org-rival-999", "rival@elsewhere.test", "A Rival"):
+        assert leaked not in rendered, f"the other organisation's {leaked} reached the caller"
 
 
 async def test_a_caller_with_no_organisation_sees_themselves_rather_than_an_error(org):
