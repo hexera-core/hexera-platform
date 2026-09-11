@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
@@ -350,15 +351,45 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     # coarser edge length, layers off - and without a recorded pass every run after the first
     # was refused as a conflicting replay of the first one's claim ("claimed for engine 'vmtk'
     # with a different payload"; jobs 73cce02e and 65081ced, 8 Sep). Numbered from the workspace
-    # fact so the count survives the tool being called from a fresh loop.
+    # so the count survives the tool being called from a fresh loop - and numbered BY PAYLOAD,
+    # not by call: an unchanged retry keeps its identity (see _pass_for_payload).
     ws = Path(workspace)
     # Facts are workspace files: recorded when there is a workspace to record them in. A run
     # tool handed a path that does not exist (the dispatch-contract test does) still dispatches
     # through the contract, which then reports the missing case itself.
     if ws.is_dir():
-        note_native_pass(ws, (read_native_pass(ws) or 0) + 1)
-        note_native_payload(ws, _native_payload_members(ws))
+        members = _native_payload_members(ws)
+        note_native_pass(ws, _pass_for_payload(ws, members, read_native_pass))
+        note_native_payload(ws, members)
     return run_mesh(ws, engine="vmtk", timeout=timeout)
+
+
+_RUN_IDENTITY_LEDGER = "vmtk_run_identity.json"   # {digest of the payload, its pass number}
+
+
+def _pass_for_payload(ws: Path, members: list[str], read_native_pass) -> int:
+    """The pass number for THIS payload. The same number as last time when the payload - the
+    spec and the staged lumen - is byte-for-byte what it was, so an unchanged retry after an
+    infrastructure or indeterminate failure replays under its own identity and the submission
+    contract deduplicates it; one more when anything in it changed, so a revised pass claims a
+    run of its own. A bare read-and-increment gave every call a new identity and let an
+    unchanged retry launch the same native workload twice."""
+    import hashlib
+    h = hashlib.sha256()
+    for m in members:
+        h.update(m.encode("utf-8"))
+        h.update((ws / m).read_bytes())
+    digest = h.hexdigest()
+    ledger = ws / _RUN_IDENTITY_LEDGER
+    try:
+        prev = json.loads(ledger.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        prev = {}
+    if prev.get("digest") == digest and isinstance(prev.get("pass"), int):
+        return int(prev["pass"])
+    n = max(int(prev.get("pass") or 0), int(read_native_pass(ws) or 0)) + 1
+    ledger.write_text(json.dumps({"digest": digest, "pass": n}), encoding="utf-8")
+    return n
 
 
 def repair_ladder(strategy: dict) -> list[dict]:
@@ -401,6 +432,11 @@ def _fill_completed(ws: Path, result: dict) -> bool:
     return not any(f in low for f in _TETGEN_FAILURES)
 
 
+_LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
+_LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
+_now = time.monotonic       # the run clock; tests substitute it
+
+
 def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     ws = Path(workspace)
     spec_path = ws / "vmtk_spec.json"
@@ -412,26 +448,41 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     notes: list[str] = []
     result: dict = {}
     staged = bool(resolve_strategy(strategy).get("sizing_array"))
+    # ONE BUDGET for the whole run: the surface stage and every ladder step share `timeout`, so
+    # a staged run cannot outlive the deadline the caller sized it by. Each stage used to get
+    # the full timeout again - up to six times over - and could run past the builder's own
+    # deadline, which then killed the attempt before the builder saw any feedback.
+    deadline = _now() + float(timeout)
+
+    def left() -> int:
+        return max(1, int(deadline - _now()))
+
     if staged:
         # the surface stage once; the generator per ladder step
         surface, _ = build_staged_stages(ladder[0])
-        result = _run_pype(ws, surface, timeout=timeout)
+        result = _run_pype(ws, surface, timeout=left())
         if result.get("rc") not in (0, None) or result.get("timed_out") \
                 or not (ws / _LUMEN).exists():
             (ws / "log.vmtk").write_text(result.get("log_tail") or "")
             return result
-    i = 0
+    floor = min(_LADDER_MIN_SECONDS, _LADDER_MIN_FRACTION * float(timeout))
+    last = 0
     for i, strat in enumerate(ladder):
+        if i and deadline - _now() < floor:
+            notes.append(f"[vmtk] {len(ladder) - i} ladder step(s) not started: under "
+                         f"{floor:g} s of the {int(timeout)} s budget left")
+            break
+        last = i
         argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
-        result = _run_pype(ws, argv, timeout=timeout)
+        result = _run_pype(ws, argv, timeout=left())
         if _fill_completed(ws, result) or i == len(ladder) - 1:
             break
         notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): TetGen did not complete "
                      f"the fill - next: {_step_label(ladder[i + 1])}")
     if notes:
-        effective = dict(ladder[min(i, len(ladder) - 1)])
+        effective = dict(ladder[last])
         effective["repair_note"] = "; ".join(notes)
         # the shipped spec says what was actually run (the deliverable re-runs from it)
         spec_path.write_text(json.dumps(effective, indent=2))
@@ -516,6 +567,19 @@ def check_mesh(workspace) -> dict:
     mesh, n_reoriented, layer_mask = _normalise_orientation(mesh)
     if n_reoriented:
         mesh.save(str(mp))
+        # A NEGATIVE ORDER IS ONLY A LAYER TET WHEN A LAYER EXPLAINS IT. vmtk's layer block
+        # sits on the wall, so every negatively ordered tet must join the wall through other
+        # such tets; one that does not is a genuinely inverted interior tet the flip would
+        # otherwise hide behind the 2% volume tolerance - and when the run grew no layer at
+        # all, every one of them is.
+        if _layers_in_spec(ws) == 0:
+            fatal.append(f"{n_reoriented} inverted tetrahedra (negative node order, and the "
+                         "run grew no boundary layer that could explain it)")
+        else:
+            stray = _stray_inversions(mesh, layer_mask)
+            if stray:
+                fatal.append(f"{stray} inverted interior tetrahedra (negatively ordered, but "
+                             "no chain of layer tets joins them to the wall)")
     tets = mesh.extract_cells_by_type(_VTK_TETRA)
     cells = int(tets.n_cells)
     if cells == 0:
@@ -572,7 +636,7 @@ def check_mesh(workspace) -> dict:
     try:
         (ws / "layer_report.json").write_text(json.dumps(
             {"coverage": layer_coverage, **layer_facts,
-             "method": "wall triangles whose vertices all belong to boundary-layer tets"},
+             "method": "wall triangles that are a face of a boundary-layer tet"},
             indent=2))
     except OSError as exc:
         logger.warning("vmtk check_mesh: could not write layer_report.json: %s", exc)
@@ -631,27 +695,80 @@ def _normalise_orientation(grid):
     return out, n, neg
 
 
-def _layer_coverage(grid, layer_mask) -> tuple[float, dict]:
-    """(coverage %, facts): the share of wall triangles (CellEntityIds == 1, or every boundary
-    triangle when the mesh carries no ids) whose three vertices all belong to a boundary-layer
-    tet. 0.0 when the mesh has no layer block."""
+def _layers_in_spec(ws: Path) -> int | None:
+    """boundary_layers from the shipped spec, or None when there is no spec to read."""
+    try:
+        return int(json.loads((ws / "vmtk_spec.json").read_text()).get("boundary_layers", 0))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _wall_triangles(grid):
+    """The wall triangles of mesh.vtu (CellEntityIds == 1, or every boundary triangle when the
+    mesh carries no ids), or None when it carries no triangles at all."""
     import numpy as np
     ct = np.asarray(grid.celltypes)
     tri_rows = ct == 5
     if not tri_rows.any():
-        return 0.0, {"wall_triangles": 0, "covered_wall_triangles": 0, "layer_tets": 0}
+        return None
     tris = np.asarray(grid.cells_dict[5], dtype=np.int64)
     ids = grid.cell_data.get("CellEntityIds")
     if ids is not None:
         wall = np.asarray(ids)[tri_rows] == _WALL_ENTITY
         tris = tris[wall] if wall.any() else tris
+    return tris
+
+
+def _stray_inversions(grid, layer_mask) -> int:
+    """How many negatively ordered tets no chain of negatively ordered tets joins to the wall.
+    vmtk grows its layer block on the wall, sublayer on sublayer, so a real layer tet always
+    reaches the wall through the block; one that cannot is an inverted interior tet."""
+    import numpy as np
+    if layer_mask is None or not np.asarray(layer_mask).any():
+        return 0
+    flipped = np.asarray(grid.cells_dict[_VTK_TETRA], dtype=np.int64)[np.asarray(layer_mask)]
+    rooted = np.zeros(grid.n_points, dtype=bool)
+    tris = _wall_triangles(grid)
+    if tris is not None:
+        rooted[np.unique(tris)] = True
+    else:
+        rooted[np.asarray(grid.extract_surface().point_data["vtkOriginalPointIds"])] = True
+    reached = np.zeros(len(flipped), dtype=bool)
+    for _ in range(256):          # one sublayer per round; vmtk grows a handful
+        touch = rooted[flipped].any(axis=1) & ~reached
+        if not touch.any():
+            break
+        reached |= touch
+        rooted[np.unique(flipped[touch])] = True
+    return int((~reached).sum())
+
+
+def _layer_coverage(grid, layer_mask) -> tuple[float, dict]:
+    """(coverage %, facts): the share of wall triangles (CellEntityIds == 1, or every boundary
+    triangle when the mesh carries no ids) that are a FACE of a boundary-layer tet. Vertex
+    membership alone overstated it: at a bifurcation, or where the layer collapses locally, a
+    wall triangle's three vertices can each sit in some nearby layer tet while no layer tet
+    stands on that triangle. 0.0 when the mesh has no layer block."""
+    import numpy as np
+    tris = _wall_triangles(grid)
+    if tris is None:
+        return 0.0, {"wall_triangles": 0, "covered_wall_triangles": 0, "layer_tets": 0}
     n_wall = int(len(tris))
+    ct = np.asarray(grid.celltypes)
     if layer_mask is None or not np.asarray(layer_mask).any() or not (ct == _VTK_TETRA).any():
         return 0.0, {"wall_triangles": n_wall, "covered_wall_triangles": 0, "layer_tets": 0}
     tets = np.asarray(grid.cells_dict[_VTK_TETRA], dtype=np.int64)[np.asarray(layer_mask)]
-    in_layer = np.zeros(grid.n_points, dtype=bool)
-    in_layer[np.unique(tets)] = True
-    covered = int(in_layer[tris].all(axis=1).sum())
+    faces = np.sort(np.concatenate([tets[:, [0, 1, 2]], tets[:, [0, 1, 3]],
+                                    tets[:, [0, 2, 3]], tets[:, [1, 2, 3]]]), axis=1)
+    wall = np.sort(tris, axis=1)
+    n = int(grid.n_points)
+    if n < 2_000_000:             # three ids pack into one int64 below this
+        def key(f):
+            return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
+        covered = int(np.isin(key(wall), key(faces)).sum())
+    else:
+        have = {tuple(f) for f in faces.tolist()}
+        covered = sum(tuple(t) in have for t in wall.tolist())
     pct = 100.0 * covered / n_wall if n_wall else 0.0
     return round(pct, 2), {"wall_triangles": n_wall, "covered_wall_triangles": covered,
                           "layer_tets": int(len(tets))}
@@ -793,6 +910,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             patch_entities.update(_ents)
     except Exception:  # noqa: BLE001 - the mesh stands; the review surface is evidence
         logger.exception("vmtk finalize: review surface (mesh.msh) not written")
+    if not (ws / "mesh.msh").exists():
+        # the reviewer REQUIRES mesh_paths.surface: without it the delivery is a review failure
+        # later, not a success now - say so here, where the builder can still act on it
+        q["fatal"] = [*q.get("fatal", []),
+                      "review surface mesh.msh not written - the reviewer requires "
+                      "mesh_paths.surface, so this delivery cannot be reviewed"]
+        q["mesh_ok"] = False
     # PREPARED geometry - the staged lumen surface - kept as preparation evidence (body_bbox).
     surf = _read_surface(ws / _LUMEN).extract_surface() if (ws / _LUMEN).exists() else None
     b = surf.bounds if surf is not None else (0, 1, 0, 1, 0, 1)

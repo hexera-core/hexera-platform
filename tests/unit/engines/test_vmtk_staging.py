@@ -244,6 +244,47 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     assert "next:" in (tmp_path / "log.vmtk").read_text()
 
 
+def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    clock = {"t": 0.0}
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        clock["t"] += 700.0                       # every stage takes 700 s
+        if "vmtksurfaceremeshing" in " ".join(argv):
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+            return sp.CompletedProcess(argv, 0, stdout="Done executing vmtksurfaceprojection.",
+                                       stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="TetGen quit with an exception.", stderr="")
+
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    monkeypatch.setattr(R, "_now", lambda: clock["t"])
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=1000)
+    # the surface stage (700 s) and one generator step (700 s) exhaust the 1000 s budget: the
+    # remaining ladder steps are not started, and the note says so
+    assert len(calls) == 2
+    assert "ladder step(s) not started" in res["repair_note"]
+    assert "of the 1000 s budget left" in res["repair_note"]
+
+
+def test_an_unchanged_retry_keeps_its_pass_identity(tmp_path, monkeypatch):
+    from meshpipeline.contracts import mesh_execution as ME
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    monkeypatch.setattr(ME, "run_mesh", lambda ws, **kw: {"rc": 0})
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps({"edge_length_factor": 0.3}))
+    R.run_cartesian_mesh(tmp_path, timeout=10)
+    R.run_cartesian_mesh(tmp_path, timeout=10)              # an unchanged retry
+    assert ME.read_native_pass(tmp_path) == 1
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps({"edge_length_factor": 0.25}))
+    R.run_cartesian_mesh(tmp_path, timeout=10)              # a revised spec: its own pass
+    assert ME.read_native_pass(tmp_path) == 2
+
+
 def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):
     import subprocess as sp
 
@@ -349,6 +390,25 @@ def test_finalize_writes_the_review_surface_under_the_declared_names(tmp_path):
     man = json.loads((tmp_path / "mesh_manifest.json").read_text())
     assert man["patches"]["inlet"] and man["patches"]["wall"]     # the msh entities
     assert man["mesh_paths"]["surface"].endswith("mesh.msh")
+
+
+def test_finalize_fails_the_delivery_when_the_review_surface_is_not_written(tmp_path, monkeypatch):
+    pytest.importorskip("gmsh")
+    from meshpipeline.render import review_artifacts as RA
+    cap_c = _mesh_with_caps(tmp_path)
+    (tmp_path / LS.STAGING_FACT).write_text(json.dumps({"ports": [
+        {"name": "inlet", "role": "inlet", "centroid": cap_c.tolist(), "size_m": 1.0}]}))
+
+    def boom(*a, **kw):
+        raise RuntimeError("gmsh refused")
+
+    monkeypatch.setattr(RA, "build_review_msh", boom)
+    intake = [{"name": "inlet", "type": "inlet"}, {"name": "wall", "type": "wall"}]
+    out = vmtk_runner.finalize(str(tmp_path), intake, "vmtk", "internal flow", True, {}, "")
+    assert out["success"] is False
+    assert "mesh.msh" in out["output"]
+    man = json.loads((tmp_path / "mesh_manifest.json").read_text())
+    assert any("mesh.msh" in f for f in man["quality"]["fatal"])
 
 
 def test_viewer_names_caps_after_the_staged_ports_but_the_gate_form_keeps_ids(tmp_path):

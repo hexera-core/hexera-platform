@@ -1,6 +1,8 @@
 # Responsibility: Verify the inversion gate uses an explicit signed-volume convention and counts only inverted cells.
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import pyvista as pv
@@ -153,6 +155,39 @@ def test_layer_coverage_is_measured_from_the_layer_block(tmp_path):
     _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
     q2 = check_mesh(tmp_path)
     assert q2["layer_coverage"] == 0.0 and q2["layer_tets"] == 0
+
+
+def test_a_negative_tet_nowhere_near_the_wall_is_an_inversion_not_a_layer(tmp_path):
+    # one negatively ordered tet on the wall (a layer tet) and one floating far away that no
+    # chain of layer tets joins to the wall: the far one is a genuinely inverted interior tet
+    far = _BASE_PTS + 10.0
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(1, 0, 2, 3), (5, 4, 6, 7)], _TET_FACES,
+                     np.vstack([_BASE_PTS, far]))
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps({"boundary_layers": 3}))
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("inverted interior" in f for f in q["fatal"])
+
+
+def test_a_negative_tet_in_a_layer_free_run_is_an_inversion(tmp_path):
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(1, 0, 2, 3)], _TET_FACES, _BASE_PTS)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps({"boundary_layers": 0}))
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("no boundary layer" in f for f in q["fatal"])
+
+
+def test_layer_coverage_counts_faces_of_layer_tets_not_vertex_membership():
+    from meshpipeline.engines.vmtk.vmtk_runner import _layer_coverage
+    # two layer tets sharing the edge 1-2; the wall triangle (0, 1, 4) has every vertex in some
+    # layer tet but is a face of neither, so it is NOT covered; (0, 1, 2) is a face of the first
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 1, 1]], float)
+    cells = np.hstack([[4, 0, 1, 2, 3], [4, 1, 4, 2, 5], [3, 0, 1, 4], [3, 0, 1, 2]]).astype(np.int64)
+    ctypes = np.array([vtk.VTK_TETRA, vtk.VTK_TETRA, vtk.VTK_TRIANGLE, vtk.VTK_TRIANGLE], np.uint8)
+    g = pv.UnstructuredGrid(cells, ctypes, pts)
+    pct, facts = _layer_coverage(g, np.array([True, True]))
+    assert facts["wall_triangles"] == 2 and facts["covered_wall_triangles"] == 1
+    assert pct == 50.0
 
 
 def test_a_cap_wound_the_other_way_does_not_read_as_overlap(tmp_path):

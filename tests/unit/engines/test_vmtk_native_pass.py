@@ -22,18 +22,22 @@ def _workspace(tmp_path: Path) -> Path:
     return ws
 
 
-def test_each_run_in_an_attempt_is_its_own_pass(tmp_path, monkeypatch):
+def test_each_revised_run_in_an_attempt_is_its_own_pass(tmp_path, monkeypatch):
     # jobs 73cce02e / 65081ced: the second run in an attempt, with a revised spec, was refused as
-    # a conflicting replay of the first - because no pass was ever recorded
+    # a conflicting replay of the first - because no pass was ever recorded. A revised payload
+    # claims a pass of its own; an unchanged retry keeps the one it had (replay-deduplicated).
     ws = _workspace(tmp_path)
     seen = []
     monkeypatch.setattr("meshpipeline.contracts.mesh_execution.run_mesh",
                         lambda w, *, engine, timeout: seen.append(read_native_pass(w)) or {"rc": 0})
     assert read_native_pass(ws) is None
     R.run_cartesian_mesh(ws, timeout=10)
+    (ws / "vmtk_spec.json").write_text(json.dumps({"edge_length_factor": 0.25}))
     R.run_cartesian_mesh(ws, timeout=10)
+    R.run_cartesian_mesh(ws, timeout=10)                    # unchanged: the same pass again
+    (ws / "vmtk_spec.json").write_text(json.dumps({"edge_length_factor": 0.2}))
     R.run_cartesian_mesh(ws, timeout=10)
-    assert seen == [1, 2, 3]
+    assert seen == [1, 2, 2, 3]
     assert (ws / NATIVE_PASS_FACT).read_text().strip() == "3"
 
 
