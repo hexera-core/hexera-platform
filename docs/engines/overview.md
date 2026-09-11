@@ -40,7 +40,7 @@ Two standing rules:
 | gmsh | fluid-domain → fluid-volume | mesh a supplied fluid domain for CFD |
 | gmsh | planar-domain → surface-mesh | 2D plane-stress FEA from a flat face |
 | snappy_multiregion | solid-assembly → multiregion-volume | coupled conformal regions (CHT/multi-material); no undeclared region may ship (reconciliation-gated) |
-| vmtk | body-surface → fluid-volume | centerline-based radius-adaptive tets for open vascular lumens |
+| vmtk | body-surface → fluid-volume | radius-adaptive tets with wall layers inside a tubular or branching lumen; a CAD body with declared ports is opened and sized by the engine itself (`engines/vmtk/lumen_staging.py`) |
 
 ## Rejected boundaries (enforced in code)
 
@@ -51,8 +51,12 @@ Two standing rules:
 * **gmsh**: 3D solid→tet and 2D planar→plane-triangle FEA. Advanced modes (periodic,
   transfinite/structured, quad-recombination, embedded curves/surfaces, shell export) are
   not capabilities, the driver rejects unknown spec keys loudly.
-* **vmtk**: requires an open-lumen, non-self-intersecting vascular surface, closed
-  shells, self-intersecting surfaces and nonvascular inputs reject up front.
+* **vmtk**: a supplied surface must be an open, non-self-intersecting lumen - closed
+  shells and self-intersecting surfaces reject up front. A CAD body is different: the
+  engine removes the declared port faces itself (real inlet/outlet holes), bounds the
+  triangle edges, measures the lumen's local radius at every wall point and sizes the
+  cells from it - no centerline seeding is asked of the builder. Ports the user did not
+  declare cannot be opened, so an undeclared opening stays wall.
 * **snappy_multiregion**: requires a true multi-solid assembly yielding a clean declared
   region plan; single-solid input and multi-scale assemblies outside the validated
   envelope reject/fail structured.
@@ -167,7 +171,7 @@ upload (cached; a 25 MB STEP costs seconds).
 | **snappy** | STEP → named STL solids → `snappyHexMeshDict` | `geometry { regions {...} }` + per-region `patchInfo`, and one layer entry per region |
 | **cfMesh** | STEP → named STL solids → `geom.fms` | `renameBoundary` maps each FMS solid to its own patch |
 | **gmsh** | STEP → imported into gmsh's own OCC kernel, **B-rep staged** | physical groups are assigned on CAD topology; no flat surface is involved |
-| **vmtk** | a lumen surface (`.vtp`), not a STEP assembly | `CellEntityIds` carry per-region identity through TetGen |
+| **vmtk** | a lumen surface (`.vtp`), or a STEP body opened at its declared ports (`lumen_open.vtp` + `vmtk_staging.json`) | `CellEntityIds` carry per-region identity through TetGen: 1 = wall, one id per capped port, bound back to the declared names |
 | **snappy_multiregion** | STEP → **volume** regions (fluid/solid) | each region contributes its own named boundary patches |
 
 The two OpenFOAM engines share a shape - named solids in one surface file - and nothing else does.
