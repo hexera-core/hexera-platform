@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatDuration, statusClass } from "./run-status";
+import { formatDuration, runTitle, statusClass } from "./run-status";
 
 test("statusClass maps each terminal state to its own mark", () => {
   assert.equal(statusClass("succeeded"), "status status--ok");
@@ -31,4 +31,18 @@ test("formatDuration reports an unfinished or unstarted run as an em dash", () =
 test("formatDuration does not report a negative duration", () => {
   // Clock skew between the API host and the worker can end a job before it starts on paper.
   assert.equal(formatDuration("2026-09-10T09:00:10Z", "2026-09-10T09:00:00Z"), "—");
+});
+
+test("runTitle uses the study label when the run has one", () => {
+  assert.equal(runTitle({ task_label: "NACA 0012 tunnel", is_rerun: false }), "NACA 0012 tunnel");
+});
+
+test("runTitle names an unlabelled re-review instead of calling it untitled", () => {
+  // A dispute creates a fresh job with no conversation linked, so its label is always null.
+  // Without this every re-review in the list read as an indistinguishable "Untitled study".
+  assert.equal(runTitle({ task_label: null, is_rerun: true }), "Re-review of an earlier run");
+});
+
+test("runTitle still says untitled for a genuinely unlabelled first run", () => {
+  assert.equal(runTitle({ task_label: null, is_rerun: false }), "Untitled study");
 });

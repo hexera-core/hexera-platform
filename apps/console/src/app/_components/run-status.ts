@@ -38,3 +38,17 @@ export function formatDuration(startedIso: string | null, endedIso: string | nul
   }
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
+
+/** What a run is called in a list.
+ *
+ * A dispute creates a FRESH job and links no conversation to it, so the label the run list joins
+ * through `ChatSession` is null for every re-review. Falling through to "Untitled study" made
+ * them all identical and made a deliberate re-run look like a nameless one. The API says which
+ * is which via `is_rerun`; this says it in words.
+ */
+export function runTitle(run: { task_label: string | null; is_rerun?: boolean }): string {
+  if (run.task_label) {
+    return run.task_label;
+  }
+  return run.is_rerun ? "Re-review of an earlier run" : "Untitled study";
+}

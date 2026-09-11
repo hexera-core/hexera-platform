@@ -17,6 +17,7 @@ import {
   messageForSignIn,
   messageForSignUp,
 } from "@/app/_components/auth-form-messages";
+import { resumeInterruptedSignup } from "@/app/_components/signup-recovery";
 
 function Field({
   autoComplete,
@@ -82,6 +83,46 @@ export function SignUpForm() {
       router.push("/verify-email");
       router.refresh();
     } catch (cause) {
+      // A PART-WAY SIGN-UP IS RESUMABLE, and this is the only place it can be resumed from.
+      // `createUserWithEmailAndPassword` is the first of five steps; if a later one failed on an
+      // earlier attempt the credential already exists, every retry is refused with
+      // `auth/email-already-in-use`, and signing in instead would finish the account WITHOUT the
+      // company -- which names the organisation after the address, permanently. The company is
+      // still in this form, so the recovery happens here.
+      if ((cause as { code?: string })?.code === "auth/email-already-in-use") {
+        const outcome = await resumeInterruptedSignup(
+          {
+            signInWithPassword: async (address, secret) => {
+              try {
+                const resumed = await signInWithEmailAndPassword(firebaseAuth(), address, secret);
+                return {
+                  setDisplayName: (displayName) =>
+                    updateProfile(resumed.user, { displayName }),
+                  getIdToken: (force) => resumed.user.getIdToken(force),
+                };
+              } catch {
+                // Not ours to resume: the address belongs to somebody else, or the password is
+                // wrong. Falls through to the ordinary "already has an account" message.
+                return null;
+              }
+            },
+            mintSession: async (idToken, organizationName) => {
+              const result = await signIn("credentials", {
+                idToken,
+                organizationName,
+                redirect: false,
+              });
+              return { error: result?.error ?? undefined };
+            },
+          },
+          { email, password, name, company },
+        );
+        if (outcome === "resumed") {
+          router.push("/verify-email");
+          router.refresh();
+          return;
+        }
+      }
       setError(messageForSignUp(cause));
     } finally {
       setBusy(false);

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { formatDuration, statusClass } from "@/app/_components/run-status";
+import { formatDuration, runTitle, statusClass } from "@/app/_components/run-status";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -10,6 +10,7 @@ type Run = {
   id: string;
   status: string;
   task_label: string | null;
+  is_rerun: boolean;
   created_at: string | null;
   ended_at: string | null;
   attempts: number;
@@ -70,7 +71,7 @@ export default async function RunsPage({
                     <span className={statusClass(run.status)}>{run.status}</span>
                   </td>
                   <td>
-                    <Link href={`/runs/${run.id}`}>{run.task_label ?? "Untitled study"}</Link>
+                    <Link href={`/runs/${run.id}`}>{runTitle(run)}</Link>
                   </td>
                   <td>
                     {run.created_at ? new Date(run.created_at).toLocaleString() : "—"}
