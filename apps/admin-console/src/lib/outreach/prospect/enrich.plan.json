@@ -1,0 +1,302 @@
+[
+ {
+  "segment": "biomedical",
+  "company": "Vektor Medical",
+  "reason": "double-CEO",
+  "people": 2
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Conflux Technology",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Aira",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Aura Aero",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Flying Whales",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Stark",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "aero-startups",
+  "company": "TYTAN Technologies",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Isar Aerospace",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Machina Labs",
+  "reason": "double-CEO",
+  "people": 2
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Quantum Systems",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Shield AI",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Ursa Major",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Zipline International",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "CHAOS Industries",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Rocket Lab",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Dallara",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "RML Group",
+  "reason": "double-CEO",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "DeepDrive",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Everrati",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Blue Current",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Slate Auto",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Iceotope Technologies",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Climeworks",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "newcleo",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Sunfire",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "TAE Technologies",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Zap Energy",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "marine",
+  "company": "Candela",
+  "reason": "double-CEO",
+  "people": 3
+ },
+ {
+  "segment": "marine",
+  "company": "U-Boat Worx",
+  "reason": "double-CEO",
+  "people": 4
+ },
+ {
+  "segment": "yc",
+  "company": "Illuminant Surgical",
+  "reason": "double-CEO",
+  "people": 2
+ },
+ {
+  "segment": "yc",
+  "company": "Remora",
+  "reason": "double-CEO",
+  "people": 5
+ },
+ {
+  "segment": "biomedical",
+  "company": "Magenta Medical",
+  "reason": "prime",
+  "people": 4
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Advanced Thermal Solutions (ATS)",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Castelion",
+  "reason": "prime",
+  "people": 4
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "ADESS",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "CalWave Power Technologies",
+  "reason": "prime",
+  "people": 4
+ },
+ {
+  "segment": "marine",
+  "company": "Artemis Technologies",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "NING Research",
+  "reason": "prime",
+  "people": 4
+ },
+ {
+  "segment": "yc",
+  "company": "Aerones",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "biomedical",
+  "company": "Veryst Engineering",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Exoès",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Muon Space",
+  "reason": "prime",
+  "people": 4
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Drive System Design",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Electric Hydrogen",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "yc",
+  "company": "AirMyne",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "The Exploration Company",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Trackhouse Racing",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Kyoto Fusioneering",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "yc",
+  "company": "Albacore Inc.",
+  "reason": "prime",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Tiberius Aerospace",
+  "reason": "prime",
+  "people": 5
+ }
+]
