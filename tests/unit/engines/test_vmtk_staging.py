@@ -102,6 +102,42 @@ def test_local_radius_is_clipped_and_orientation_agnostic():
     assert np.allclose(lo, 0.08)
 
 
+def _flat_duct(width=0.5, gap=0.1, length=0.6, n=10):
+    # an open rectangular duct (no end caps): four walls of a width x gap section
+    xs = np.linspace(0, length, n + 1)
+    ring = []                                   # section polygon, counter-clockwise
+    for t in np.linspace(0, width, 6)[:-1]:
+        ring.append((t - width / 2, -gap / 2))
+    for t in np.linspace(0, gap, 3)[:-1]:
+        ring.append((width / 2, t - gap / 2))
+    for t in np.linspace(0, width, 6)[:-1]:
+        ring.append((width / 2 - t, gap / 2))
+    for t in np.linspace(0, gap, 3)[:-1]:
+        ring.append((-width / 2, gap / 2 - t))
+    m = len(ring)
+    pts = np.array([[x, y, z] for x in xs for (y, z) in ring])
+    tri = []
+    for i in range(n):
+        for j in range(m):
+            a = i * m + j
+            b = i * m + (j + 1) % m
+            c = a + m
+            d = b + m
+            tri += [[a, b, d], [a, d, c]]
+    return pts, np.asarray(tri, dtype=np.int64)
+
+
+def test_local_radius_lets_a_narrow_gap_govern_the_walls_beside_it():
+    # 500 x 100 mm duct: the wide walls see the 100 mm gap; the 100 mm-tall side walls look across
+    # 500 mm. Without the ring-min the side walls would size 2.5x coarser than the gap allows.
+    pts, tri = _flat_duct()
+    r = LS.local_radius(pts, tri, interior_point=(0.3, 0.0, 0.0), r_lo=0.01, r_hi=0.3)
+    side = np.abs(np.abs(pts[:, 1]) - 0.25) < 1e-9      # points on the two narrow side walls
+    assert side.any()
+    assert r[side].max() <= 0.05 + 0.02                 # the 100 mm gap, within a ring of smoothing
+    assert r[~side].max() <= 0.05 + 0.02
+
+
 def test_the_tessellation_angle_puts_one_remesh_edge_per_rim_chord():
     # chord on the smallest port = D * theta / 2 = D / RIM_DIVISIONS = the remesh edge length
     assert LS.ANGULAR_DEFLECTION == pytest.approx(2.0 / LS.RIM_DIVISIONS)

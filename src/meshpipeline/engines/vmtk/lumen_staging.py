@@ -41,6 +41,13 @@ MAX_EDGE_FRACTION = 0.2
 #: grazes a corner reads near zero, one that crosses a junction into the main run reads the run.
 RADIUS_LO_FRACTION = 0.25
 RADIUS_HI_FRACTION = 0.75
+#: After the ray cast, every point takes the SMALLEST radius within this many mesh rings. A ray
+#: along the normal reads the gap in one direction only: on a wide flat duct (transition_013,
+#: 545 x 88 mm) the top and bottom walls read the 88 mm gap while the 88 mm-tall side walls look
+#: across the 545 mm width, read a radius four times larger, and the remesh graded 13 mm cells
+#: into 55 mm ones over a strip two cells tall - TetGen refused the surface (rc -11, both ladder
+#: modes, 2026-09-11). The gap a wall sees must govern the walls beside it.
+RADIUS_MIN_RINGS = 4
 
 
 def is_cad(path) -> bool:
@@ -149,6 +156,7 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     r = np.clip(r, r_lo, r_hi)
     f = np.asarray(faces, dtype=np.int64)
     e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    r = _ring_min(r, e, len(pts), RADIUS_MIN_RINGS)
     acc = (np.bincount(e[:, 0], weights=r[e[:, 1]], minlength=len(pts))
            + np.bincount(e[:, 1], weights=r[e[:, 0]], minlength=len(pts)))
     cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
@@ -163,6 +171,18 @@ def _measure_opening(poly) -> dict:
     centroid = (cc * ar[:, None]).sum(axis=0) / area if area > 0 else cc.mean(axis=0)
     return {"centroid": [float(v) for v in centroid], "area_m2": area,
             "size_m": 2.0 * float(np.sqrt(area / np.pi))}
+
+
+def _ring_min(values: np.ndarray, edges: np.ndarray, n_points: int, rings: int) -> np.ndarray:
+    """Each point takes the minimum of itself and its neighbours, repeated `rings` times."""
+    out = np.asarray(values, dtype=float).copy()
+    a, b = edges[:, 0], edges[:, 1]
+    for _ in range(int(rings)):
+        nb = np.full(n_points, np.inf)
+        np.minimum.at(nb, a, out[b])
+        np.minimum.at(nb, b, out[a])
+        out = np.minimum(out, nb)
+    return out
 
 
 def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
