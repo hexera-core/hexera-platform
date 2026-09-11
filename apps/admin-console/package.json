@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "build:worker": "esbuild worker/outreach-worker.ts --bundle --platform=node --target=node24 --format=esm --outfile=outreach-worker.js --packages=external --alias:@=./src"
+    "build:worker": "esbuild worker/outreach-worker.ts --bundle --platform=node --target=node24 --format=esm --outfile=outreach-worker.js --packages=external --alias:@=./src",
+    "build:import": "esbuild worker/import-outreach.ts --bundle --platform=node --target=node24 --format=esm --outfile=import-outreach.js --packages=external --alias:@=./src"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.117.1",

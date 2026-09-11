@@ -84,8 +84,29 @@ it needs a **web** client whose redirect URI is the admin console's own origin, 
 `GOOGLE_REDIRECT_URI`. Changing the client type is a Console action; there is no gcloud equivalent.
 
 **2. The data import.** The contact list, templates, campaigns and history live in one SQLite file
-on one machine. Moving them is a one-time script, deliberately not a migration — a migration runs
-everywhere, and this data exists in exactly one place. It is the last phase and needs that machine.
+on one machine. The importer is written and tested; running it needs that file.
+
+```bash
+# a rehearsal first: it reports what it would write and rolls back
+node apps/admin-console/import-outreach.js --from ~/hexera-ops/data/outreach.db --dry-run
+node apps/admin-console/import-outreach.js --from ~/hexera-ops/data/outreach.db
+```
+
+A script and not a migration, deliberately: a migration runs everywhere and describes a change
+every environment needs, while this moves data that exists on exactly one machine, once.
+
+It **refuses to run twice**. The failure mode of a re-run is not an error — it is a duplicate
+contact list, and a contact enrolled twice is a person emailed twice. `--force` empties the tables
+first, for a half-finished import that has to be redone; it truncates rather than merging, because
+merging two partial imports is guesswork about which side is right.
+
+**`oauth_tokens` is deliberately not imported.** The token in the laptop's file is plaintext, and
+importing it would write plaintext into the shared database — the sealing only happens on save.
+Reconnect the mailbox from the Settings page instead: one click, and the token that lands is
+sealed.
+
+Identity sequences are reset at the end. Without that the first row written after the import
+collides with an id the import already used.
 
 ## Where things are
 

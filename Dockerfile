@@ -584,6 +584,9 @@ RUN pnpm --filter @hexera/admin-console build
 # not build it; esbuild resolves its imports into the same tree the console uses, so the job and the
 # pages cannot drift apart on the engine they run.
 RUN pnpm --filter @hexera/admin-console build:worker
+# The one-time importer, bundled the same way. In the image rather than run from a laptop so it
+# resolves the same engine, the same schema and the same connection the console does.
+RUN pnpm --filter @hexera/admin-console build:import
 
 FROM node:24-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS admin
 ARG APP_VERSION
@@ -601,6 +604,7 @@ COPY --from=admin-build /build/apps/admin-console/.next/standalone/ ./
 COPY --from=admin-build /build/apps/admin-console/.next/static/ ./apps/admin-console/.next/static/
 COPY --from=admin-build /build/apps/admin-console/public/ ./apps/admin-console/public/
 COPY --from=admin-build /build/apps/admin-console/outreach-worker.js ./apps/admin-console/outreach-worker.js
+COPY --from=admin-build /build/apps/admin-console/import-outreach.js ./apps/admin-console/import-outreach.js
 # node:24-slim already ships a `node` user at uid 1000; creating another at that uid fails.
 RUN chown -R node:node /srv
 USER node

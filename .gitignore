@@ -50,3 +50,4 @@ node_modules/
 # build time; committing it would mean a second copy of the engine that can silently disagree with
 # the source it was built from.
 /apps/admin-console/outreach-worker.js
+/apps/admin-console/import-outreach.js
