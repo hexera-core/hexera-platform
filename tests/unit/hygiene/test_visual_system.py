@@ -60,3 +60,25 @@ def test_the_auth_title_uses_the_display_face_at_its_thin_weight():
     title = auth[auth.index(".auth__title"):auth.index(".auth__title") + 400]
     assert "var(--display)" in title
     assert "font-weight:300" in title.replace(" ", "")
+
+
+def test_the_dashboard_shell_defines_the_classes_its_pages_consume():
+    dashboard = (CSS / "dashboard.css").read_text()
+    for selector in (".shell", ".sidebar__nav", ".sidebar__item--current",
+                     ".sidebar__item--unavailable", ".page__title", ".table", ".status--fail",
+                     ".empty"):
+        assert selector in dashboard, f"dashboard.css is missing {selector}"
+
+
+def test_the_legacy_component_sheets_keep_the_selectors_main_js_drives():
+    # main.js, stage.js and viewer.js select these at runtime. Restyling moves values; deleting a
+    # selector silently breaks the workbench in a way no unit test would catch.
+    required = {
+        "shell.css": ("#upload-bar", "#stage", ".chat-col", "#notice"),
+        "chat.css": (".im",),
+        "workbench.css": ("#workbench",),
+    }
+    for filename, selectors in required.items():
+        text = (CSS / filename).read_text()
+        for selector in selectors:
+            assert selector in text, f"{filename} lost {selector}"
