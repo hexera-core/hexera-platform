@@ -64,7 +64,7 @@ def provisioning(monkeypatch):
     async def fake_grant(db, *, organization_id):
         return 500
 
-    async def fake_record_login(db, *, user_id, at, email_verified):
+    async def fake_record_login(db, *, user_id, at, email_verified, name=""):
         return None
 
     async def fake_org_for_email(db, email):

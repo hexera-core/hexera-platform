@@ -107,8 +107,11 @@ async def resolve_or_provision(db: AsyncSession, token: VerifiedToken, *,
                 if user is None:
                     raise
 
+    # `token.name` travels with the login stamp so a display name changed in Identity Platform
+    # reaches `users.name`, which every reader of this column - the organisation page's member
+    # list above all - would otherwise show as it was at provisioning, forever.
     await user_repo.record_login(db, user_id=user.id, at=at,
-                                 email_verified=token.email_verified)
+                                 email_verified=token.email_verified, name=token.name)
 
     organization_id = await membership_repo.organization_id_for_email(db, token.email)
     return Account(
