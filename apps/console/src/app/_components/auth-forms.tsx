@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 import {
@@ -8,11 +8,43 @@ import {
   sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
+  updateProfile,
 } from "firebase/auth";
 
 import { firebaseAuth } from "@/lib/firebase/client";
-import { errorStyle, inputStyle, labelStyle, signInFormStyle } from "@/app/_components/auth-form-styles";
-import { explainSessionError, messageForSignIn, messageForSignUp } from "@/app/_components/auth-form-messages";
+import {
+  explainSessionError,
+  messageForSignIn,
+  messageForSignUp,
+} from "@/app/_components/auth-form-messages";
+
+function Field({
+  autoComplete,
+  label,
+  minLength,
+  name,
+  type,
+}: {
+  autoComplete: string;
+  label: string;
+  minLength?: number;
+  name: string;
+  type: string;
+}) {
+  return (
+    <label className="auth__field">
+      <span className="label">{label}</span>
+      <input
+        autoComplete={autoComplete}
+        className="auth__input"
+        minLength={minLength}
+        name={name}
+        required
+        type={type}
+      />
+    </label>
+  );
+}
 
 export function SignUpForm() {
   const router = useRouter();
@@ -22,27 +54,34 @@ export function SignUpForm() {
   async function submit(formData: FormData) {
     setBusy(true);
     setError(null);
+    const name = String(formData.get("name") ?? "").trim();
+    const company = String(formData.get("company") ?? "").trim();
     const email = String(formData.get("email") ?? "");
     const password = String(formData.get("password") ?? "");
     try {
       const credential = await createUserWithEmailAndPassword(firebaseAuth(), email, password);
-      // Sent before the session exists, so a signup that fails at the API still leaves the
-      // person with a verifiable address rather than an account they cannot prove is theirs.
+      // BEFORE the token is minted, so token.name carries the display name into users.name with
+      // no API change. A token minted first would carry the address as the name forever.
+      if (name) {
+        await updateProfile(credential.user, { displayName: name });
+      }
       await sendEmailVerification(credential.user);
-      const idToken = await credential.user.getIdToken();
-      const result = await signIn("credentials", { idToken, redirect: false });
+      const idToken = await credential.user.getIdToken(true);
+      const result = await signIn("credentials", {
+        idToken,
+        organizationName: company,
+        redirect: false,
+      });
       if (result?.error) {
         setError(explainSessionError(result.error, "Could not create the account. Try again."));
         return;
       }
-      // A push (rather than a hard navigation) plus a refresh, so the server components on "/"
-      // re-render against the session cookie signIn() just set instead of a cached RSC payload.
-      router.push("/");
+      // The account exists but the address is not proven, so the dashboard layout will bounce
+      // straight to /verify-email. Going there directly saves the user a redirect they would
+      // otherwise see as a flash of the console they cannot use.
+      router.push("/verify-email");
       router.refresh();
     } catch (cause) {
-      // Firebase's own codes are the only place these distinctions are safe to make: it applies
-      // its own enumeration protection, so echoing its message does not tell an attacker
-      // anything it would not tell them directly.
       setError(messageForSignUp(cause));
     } finally {
       setBusy(false);
@@ -50,28 +89,23 @@ export function SignUpForm() {
   }
 
   return (
-    <form action={submit} style={signInFormStyle}>
-      <label style={labelStyle}>
-        Email
-        <input autoComplete="email" name="email" required style={inputStyle} type="email" />
-      </label>
-      <label style={labelStyle}>
-        Password
-        <input
-          autoComplete="new-password"
-          minLength={8}
-          name="password"
-          required
-          style={inputStyle}
-          type="password"
-        />
-      </label>
+    <form action={submit} className="auth__form">
+      <Field autoComplete="name" label="Full name" name="name" type="text" />
+      <Field autoComplete="organization" label="Company" name="company" type="text" />
+      <Field autoComplete="email" label="Work email" name="email" type="email" />
+      <Field
+        autoComplete="new-password"
+        label="Password"
+        minLength={8}
+        name="password"
+        type="password"
+      />
       {error ? (
-        <div aria-live="polite" role="status" style={errorStyle}>
+        <div aria-live="polite" className="auth__error" role="status">
           {error}
         </div>
       ) : null}
-      <button disabled={busy} id="upload-btn" type="submit">
+      <button className="btn btn--gold" disabled={busy} type="submit">
         {busy ? "Creating account…" : "Create account"}
       </button>
     </form>
@@ -86,10 +120,12 @@ export function SignInForm() {
   async function submit(formData: FormData) {
     setBusy(true);
     setError(null);
-    const email = String(formData.get("email") ?? "");
-    const password = String(formData.get("password") ?? "");
     try {
-      const credential = await signInWithEmailAndPassword(firebaseAuth(), email, password);
+      const credential = await signInWithEmailAndPassword(
+        firebaseAuth(),
+        String(formData.get("email") ?? ""),
+        String(formData.get("password") ?? ""),
+      );
       const idToken = await credential.user.getIdToken();
       const result = await signIn("credentials", { idToken, redirect: false });
       if (result?.error) {
@@ -106,27 +142,15 @@ export function SignInForm() {
   }
 
   return (
-    <form action={submit} style={signInFormStyle}>
-      <label style={labelStyle}>
-        Email
-        <input autoComplete="email" name="email" required style={inputStyle} type="email" />
-      </label>
-      <label style={labelStyle}>
-        Password
-        <input
-          autoComplete="current-password"
-          name="password"
-          required
-          style={inputStyle}
-          type="password"
-        />
-      </label>
+    <form action={submit} className="auth__form">
+      <Field autoComplete="email" label="Email" name="email" type="email" />
+      <Field autoComplete="current-password" label="Password" name="password" type="password" />
       {error ? (
-        <div aria-live="polite" role="status" style={errorStyle}>
+        <div aria-live="polite" className="auth__error" role="status">
           {error}
         </div>
       ) : null}
-      <button disabled={busy} id="upload-btn" type="submit">
+      <button className="btn btn--gold" disabled={busy} type="submit">
         {busy ? "Signing in…" : "Sign in"}
       </button>
     </form>
@@ -140,13 +164,12 @@ export function ForgotPasswordForm() {
   async function submit(formData: FormData) {
     setBusy(true);
     setMessage(null);
-    const email = String(formData.get("email") ?? "");
     try {
-      await sendPasswordResetEmail(firebaseAuth(), email);
+      await sendPasswordResetEmail(firebaseAuth(), String(formData.get("email") ?? ""));
     } catch {
       // Deliberately swallowed. sendPasswordResetEmail does not distinguish "no such account"
-      // from success, and this page must not either -- reporting anything else here would tell
-      // an attacker whether the address has an account, which Firebase itself refuses to do.
+      // from success, and this page must not either -- reporting anything else would tell an
+      // attacker whether the address has an account, which Firebase itself refuses to do.
     } finally {
       setBusy(false);
       setMessage("If that address has an account, a reset link is on its way.");
@@ -154,65 +177,16 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form action={submit} style={signInFormStyle}>
-      <label style={labelStyle}>
-        Email
-        <input autoComplete="email" name="email" required style={inputStyle} type="email" />
-      </label>
+    <form action={submit} className="auth__form">
+      <Field autoComplete="email" label="Email" name="email" type="email" />
       {message ? (
-        <div aria-live="polite" role="status" style={errorStyle}>
+        <div aria-live="polite" className="auth__error auth__note" role="status">
           {message}
         </div>
       ) : null}
-      <button disabled={busy} id="upload-btn" type="submit">
+      <button className="btn btn--gold" disabled={busy} type="submit">
         {busy ? "Sending…" : "Send reset link"}
       </button>
     </form>
-  );
-}
-
-const bannerStyle: CSSProperties = {
-  alignItems: "center",
-  background: "var(--warn-soft)",
-  border: "1px solid var(--warn)",
-  borderRadius: "3px",
-  color: "var(--text)",
-  display: "flex",
-  fontFamily: "var(--sans)",
-  fontSize: "12px",
-  gap: "12px",
-  justifyContent: "space-between",
-  margin: "0 auto",
-  maxWidth: "720px",
-  padding: "10px 14px",
-};
-
-export function VerifyEmailBanner() {
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  async function resend() {
-    setBusy(true);
-    try {
-      const user = firebaseAuth().currentUser;
-      if (user) {
-        await sendEmailVerification(user);
-        setSent(true);
-      }
-    } catch {
-      // Best-effort. Nothing costly is gated on verification yet (see design §4), so a failed
-      // resend is not worth surfacing as an error -- the control stays available to retry.
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div aria-live="polite" role="status" style={bannerStyle}>
-      <span>Verify your email address to secure your account.</span>
-      <button disabled={busy || sent} onClick={resend} type="button">
-        {sent ? "Verification email sent" : busy ? "Sending…" : "Resend verification email"}
-      </button>
-    </div>
   );
 }

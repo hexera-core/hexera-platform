@@ -4,7 +4,6 @@ import Script from "next/script";
 
 import { auth } from "@/auth";
 import { SignOutButton } from "@/app/_components/auth-buttons";
-import { VerifyEmailBanner } from "@/app/_components/auth-forms";
 import { LegacyStyles } from "@/app/_components/legacy-styles";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { proxyProductApiRequest } from "@/lib/product-api/proxy";
@@ -104,8 +103,6 @@ export default async function ConsolePage() {
           </div>
           <SignOutButton />
         </header>
-
-        {session.emailVerified ? null : <VerifyEmailBanner />}
 
         <div aria-live="polite" id="notice" role="status" />
 
