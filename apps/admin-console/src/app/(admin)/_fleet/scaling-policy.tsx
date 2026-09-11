@@ -29,7 +29,7 @@ export function ScalingPolicyPanel({
           {health.details.length > 0
             ? `: ${health.details.map((detail) => `${detail.type} — ${detail.message}`).join("; ")}`
             : "."}{" "}
-          While this persists the group holds at its floor regardless of queue depth.
+Held at the floor regardless of queue depth.
         </Alert>
       ) : null}
 
@@ -60,56 +60,52 @@ export function ScalingPolicyPanel({
               <div className="admin-field-grid">
                 <NumberField
                   defaultValue={policy.minReplicas}
-                  hint="Instances held ready. Above zero costs money while idle and removes the cold start from the first job."
+                  hint="Held ready. Above zero removes the first job's cold start."
                   label="Warm floor"
                   max={maxAllowedReplicas}
                   name="minReplicas"
                 />
                 <NumberField
                   defaultValue={policy.maxReplicas}
-                  hint={`The cost ceiling. This deployment refuses anything above ${maxAllowedReplicas}.`}
+                  hint={`Max ${maxAllowedReplicas}.`}
                   label="Ceiling"
                   max={maxAllowedReplicas}
                   name="maxReplicas"
                 />
                 <NumberField
                   defaultValue={policy.cooldownSeconds}
-                  hint="How long a new instance is given before its load counts. A worker still has to pull a multi-gigabyte image."
+                  hint="Grace before a new instance counts."
                   label="Cooldown (s)"
                   name="cooldownSeconds"
                 />
                 <NumberField
                   defaultValue={policy.jobsPerInstance}
-                  hint="Queued jobs one worker is expected to carry. Lower scales out sooner."
+                  hint="Lower scales out sooner."
                   label="Jobs / instance"
                   name="jobsPerInstance"
                 />
                 <NumberField
                   defaultValue={policy.scaleInMaxReplicas}
-                  hint="Most instances the autoscaler may remove in one window. Mesh work runs for hours; there is no drain contract yet."
+                  hint="Max removed per window. No drain contract yet."
                   label="Scale-in max"
                   max={maxAllowedReplicas}
                   name="scaleInMaxReplicas"
                 />
                 <NumberField
                   defaultValue={policy.scaleInWindowSeconds}
-                  hint="The window that limit applies over."
+                  hint="Window for that limit."
                   label="Scale-in window (s)"
                   name="scaleInWindowSeconds"
                 />
               </div>
-              <p className="admin-empty">
-                A blank field is left as it is. These values belong to this console: the deploy sets
-                them when it creates the autoscaler and does not reconcile them afterwards, so a
-                change here survives the next deploy.
-              </p>
+              <p className="admin-empty">Blank leaves a value unchanged. These knobs survive deploys.</p>
             </ActionForm>
 
             <ActionForm operation="resize" submitLabel="Resize now">
               <div className="admin-field-grid">
                 <NumberField
                   defaultValue={state.targetSize}
-                  hint="Warms the pool ahead of a demo without moving the floor. The autoscaler owns the size again after its cooldown."
+                  hint="Temporary. The autoscaler reclaims it after cooldown."
                   label="Target size now"
                   max={maxAllowedReplicas}
                   name="size"
@@ -119,7 +115,7 @@ export function ScalingPolicyPanel({
           </div>
         </>
       ) : (
-        <EmptyState note="This group has no autoscaler, so its size is fixed at its target and no metric moves it. The scaling knobs below would have nothing to write to." />
+        <EmptyState note="No autoscaler: size is fixed at its target." />
       )}
     </Panel>
   );

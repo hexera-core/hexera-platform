@@ -181,6 +181,12 @@ def test_the_custom_role_carries_the_mutations_the_controls_make(run):
     for permission in (
         "compute.autoscalers.update",
         "compute.instanceGroupManagers.update",
+        # `.update` does not imply `.use`, and without it every scaling change returns 403 on a
+        # role that looks complete. Found by exercising the control, not by reading the reference.
+        "compute.instanceGroupManagers.use",
+        # Deleting and recreating a managed instance touch the instance, not only its group.
+        "compute.instances.delete",
+        "compute.instances.reset",
         "compute.instanceTemplates.get",
         "compute.zoneOperations.get",
         "run.services.update",

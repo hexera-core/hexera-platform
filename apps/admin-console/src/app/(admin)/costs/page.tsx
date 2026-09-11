@@ -106,7 +106,7 @@ export default async function CostsPage() {
             ]}
           />
         ) : (
-          <EmptyState note={`${targets.projectId} has no billing account attached, so there is nothing to report against. Everything it runs is on a free tier or is not running.`} />
+          <EmptyState note={`${targets.projectId} has no billing account attached.`} />
         )}
       </Panel>
 
@@ -123,7 +123,7 @@ export default async function CostsPage() {
             §11 of <code>docs/deployment/admin-console-access.md</code>.
           </Alert>
         ) : budgets.length === 0 ? (
-          <EmptyState note="No budget is set on this billing account. A budget is what turns spend into an alert; without one, an unexpected bill is discovered at the end of the month." />
+          <EmptyState note="No budget set. Without one, an unexpected bill shows up at month end." />
         ) : (
           budgets.map((budget) => (
             <div className="admin-budget" key={budget.displayName}>
@@ -172,17 +172,13 @@ export default async function CostsPage() {
         ) : exportPending ? (
           <EmptyState
             note={
-              `${targets.billingExportTable} does not exist yet, which means one of two things and ` +
-              `neither is broken. Either the BigQuery billing export has not been switched on for ` +
-              `this billing account — it is enabled in the Cloud Console under Billing → Billing ` +
-              `export → BigQuery export, and there is no API or gcloud command for it — or it was ` +
-              `switched on recently and has not written its first table yet, which takes hours. ` +
-              `This page needs no redeployment either way: it starts reporting the moment the ` +
-              `table appears.`
+              `${targets.billingExportTable} has no export table yet. Enable Standard usage cost ` +
+              `under Billing → Billing export (Console only), or wait — a new export takes hours ` +
+              `to write. No redeploy needed either way.`
             }
           />
         ) : spend.length === 0 && !spendError ? (
-          <EmptyState note={`The export at ${targets.billingExportTable} returned no rows for the last ${WINDOW_DAYS} days. An export enabled recently has no history yet.`} />
+          <EmptyState note={`No rows yet. A new export takes up to a day to write its first data.`} />
         ) : spend.length > 0 ? (
           <>
             <StatRow stats={[{ label: `Total, ${WINDOW_DAYS}d`, value: money(total, currency) }]} />
@@ -209,7 +205,7 @@ export default async function CostsPage() {
       </Panel>
 
       <Panel title="What this page does not answer">
-        <EmptyState note="This is 'roughly what, roughly where'. It is not chargeback: costs are not attributed to a customer, a job or an environment, because nothing in the platform tags spend that way yet. The Fleet page's ceiling is the closest thing to a cost control the console offers." />
+        <EmptyState note="Not chargeback — nothing tags spend by customer, job or environment yet." />
       </Panel>
     </>
   );

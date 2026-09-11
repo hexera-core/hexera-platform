@@ -130,9 +130,17 @@ done
 #     itself is the verdict - a page that cannot read its metric says so, and a control whose
 #     permission is missing fails visibly rather than silently.
 ADMIN_ROLE_ID="${ADMIN_CUSTOM_ROLE:-$(printf '%s' "${DEPLOYMENT_ID}" | tr -c 'a-zA-Z0-9' '_')_admin_console}"
+#     THE LIST WAS VALIDATED BY EXERCISING IT, not by reading the API reference. The first attempt
+#     carried `instanceGroupManagers.update` and nothing else, and every scaling change returned
+#     403 asking for `.use` - a separate permission that governs acting ON the group, which
+#     `.update` does not imply. `instances.delete` and `instances.reset` are here for the same
+#     reason: deleting and recreating a managed instance touch the instances themselves, not only
+#     the group that manages them.
 ADMIN_ROLE_PERMISSIONS="compute.autoscalers.get,compute.autoscalers.update,\
 compute.instanceGroupManagers.get,compute.instanceGroupManagers.update,\
+compute.instanceGroupManagers.use,\
 compute.instanceTemplates.get,compute.instances.get,compute.instances.list,\
+compute.instances.delete,compute.instances.reset,\
 compute.zoneOperations.get,compute.zones.get,\
 run.services.get,run.services.update,run.revisions.get,run.revisions.list,run.operations.get"
 

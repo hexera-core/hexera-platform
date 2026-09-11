@@ -31,15 +31,8 @@ export function WorkerProfilePanel({ profile }: { profile: WorkerProfile }) {
         ]}
       />
       <p className="admin-empty">
-        Metadata values are not shown. Instance metadata is readable by anyone holding
-        compute.instances.get, so this console lists what is set, never what it is set to. The
-        application image is the one exception, because which build the fleet runs is the question
-        this panel exists to answer.
-      </p>
-      <p className="admin-empty">
-        Machine type, disk, image and identity belong to the deploy, not to this console. Changing
-        them means a new instance template and a rolling update, which{" "}
-        <code>create-worker-fleet.sh</code> owns.
+        Metadata values are hidden — instance metadata is world-readable to anyone with
+        compute.instances.get. Shape belongs to the deploy, not this console.
       </p>
     </Panel>
   );

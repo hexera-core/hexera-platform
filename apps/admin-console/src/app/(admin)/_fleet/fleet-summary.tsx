@@ -14,10 +14,8 @@ export function FleetSummaryPanel({
     <Panel title="Fleet right now">
       {summary.rotating ? (
         <Alert tone="info">
-          {summary.templateVersions.length} template versions are running at once, so a rotation has
-          not finished: {summary.templateVersions.join(", ")}. A group mid-roll sits above its
-          target while the replacement is created, which is the usual reason the fleet looks
-          oversized.
+          Rotation in flight — {summary.templateVersions.length} template versions running:{" "}
+          {summary.templateVersions.join(", ")}.
         </Alert>
       ) : null}
       {summary.unhealthy > 0 ? (

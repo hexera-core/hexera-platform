@@ -54,7 +54,7 @@ export function InstanceTable({
   return (
     <Panel title={`Instances (${rows.length})`}>
       {rows.length === 0 ? (
-        <EmptyState note="The group is running no instances. At a floor of zero this is what idle looks like, and the first job of the day pays a full VM boot and image pull." />
+        <EmptyState note="No instances. At a floor of zero, the next job pays a full VM boot." />
       ) : (
         <table className="admin-table">
           <thead>
@@ -121,8 +121,8 @@ export function InstanceTable({
                     <ActionForm danger operation="instance.delete" submitLabel="Delete instance">
                       <input name="instance" type="hidden" value={row.name} />
                       <p className="admin-empty">
-                        This console cannot see whether {row.name} is running a job, and the worker
-                        is not drained first. Anything in flight is lost. Type the name to confirm.
+                        Not drained. Work in flight is lost — this console cannot see it. Type the
+                        name to confirm.
                       </p>
                       <label className="admin-field-input">
                         <span>Instance name</span>
@@ -137,9 +137,7 @@ export function InstanceTable({
         </table>
       )}
       <p className="admin-empty" style={{ marginTop: "0.75rem" }}>
-        CPU and memory are the most recent values Monitoring holds, keyed by instance id. Memory is
-        published by the Ops Agent — a worker without it shows “—”, which means not reporting, not
-        idle.
+        Latest values from Monitoring. “—” means not reporting, not idle.
       </p>
     </Panel>
   );

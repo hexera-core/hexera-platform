@@ -55,10 +55,8 @@ export default function BillingPage() {
     <>
       <h1>Billing</h1>
       <p className="admin-lede">
-        Customer billing — what accounts are on, what they have spent, and what they owe. None of it
-        exists yet: there are no user or organisation tables, no credit ledger, and no durable usage
-        record. This page is the shape those things will fill, and it shows no figures until they
-        are real ones.
+        Customer billing. Nothing here exists yet — no accounts, no credit ledger, no durable usage
+        record — so this page shows shape, not figures.
       </p>
       <p className="admin-lede">
         For what the platform itself costs to run, see <a href="/costs">Costs</a>.

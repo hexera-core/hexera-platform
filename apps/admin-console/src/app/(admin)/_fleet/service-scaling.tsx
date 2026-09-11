@@ -31,23 +31,20 @@ export function ServiceScalingPanel({
           <div className="admin-field-grid">
             <NumberField
               defaultValue={scaling.minInstances}
-              hint="Containers held ready. Zero means every request that arrives to an idle service waits for a container start."
+              hint="Zero means idle requests pay a container start."
               label="Warm floor"
               max={maxAllowedReplicas}
               name="minInstances"
             />
             <NumberField
               defaultValue={scaling.maxInstances}
-              hint="Most containers Cloud Run may run at once."
+              hint="Max concurrent containers."
               label="Ceiling"
               max={maxAllowedReplicas}
               name="maxInstances"
             />
           </div>
-          <p className="admin-empty">
-            Applies on the next revision. Like the fleet&rsquo;s knobs, these belong to this console:
-            the deploy passes them when it first creates the service and omits them afterwards.
-          </p>
+          <p className="admin-empty">Applies on the next revision. Survives deploys.</p>
         </ActionForm>
       </div>
     </Panel>
