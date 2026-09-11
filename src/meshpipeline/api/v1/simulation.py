@@ -129,20 +129,27 @@ async def list_jobs(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = 
     # placed after that one is unreachable - "" would be captured as a job id.
     bounded = pagination.clamp_limit(limit)
     async with get_db() as db:
+        # ONE MORE ROW THAN THE PAGE - see listing.look_ahead. A full page is not evidence that
+        # another page exists, and the difference is what decides whether a cursor is minted.
         rows = await svc.list_runs(db, owner_id, organization_id=organization_id,
-                                   limit=bounded,
+                                   limit=listing.look_ahead(bounded),
                                    before=pagination.decode_cursor(cursor))
-    items = [{
-        "id": str(job.id),
-        "status": getattr(job.status, "value", job.status),
-        "task_label": task_label,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
-        "attempts": job.current_attempt,
-        "failed_reason": getattr(job.failed_reason, "value", job.failed_reason),
-    } for job, task_label in rows]
-    last = (rows[-1][0].created_at, rows[-1][0].id) if rows else None
-    return listing.page(items, limit=bounded, last_key=last)
+    return listing.page(
+        rows, limit=bounded,
+        item=lambda row: {
+            "id": str(row[0].id),
+            "status": getattr(row[0].status, "value", row[0].status),
+            "task_label": row[1],
+            # A DISPUTE CHILD HAS NO SESSION, so it has no label: the re-review creates a fresh
+            # job and links no conversation to it. Saying so is what stops every re-review in the
+            # list reading as an indistinguishable "Untitled study".
+            "is_rerun": row[0].dispute_operation_key is not None,
+            "created_at": row[0].created_at.isoformat() if row[0].created_at else None,
+            "ended_at": row[0].ended_at.isoformat() if row[0].ended_at else None,
+            "attempts": row[0].current_attempt,
+            "failed_reason": getattr(row[0].failed_reason, "value", row[0].failed_reason),
+        },
+        key=lambda row: (row[0].created_at, row[0].id))
 
 
 @router.get("/{job_id}", response_model=JobStatus_)

@@ -47,23 +47,37 @@ async def read_history(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None
     # deployment between the migration and the image that fills the column, not a bad request:
     # it reads as an empty ledger, never as a 500 for a caller who has already proven who it is.
     if not organization_id:
-        return listing.page([], limit=bounded, last_key=None)
+        return _empty_ledger()
     try:
         organization = uuid.UUID(organization_id)
     except ValueError:
-        return listing.page([], limit=bounded, last_key=None)
+        return _empty_ledger()
 
     async with get_db() as db:
-        rows = await credit_service.history(db, organization_id=organization, limit=bounded,
+        # ONE MORE ROW THAN THE PAGE - see listing.look_ahead.
+        rows = await credit_service.history(db, organization_id=organization,
+                                            limit=listing.look_ahead(bounded),
                                             before=pagination.decode_cursor(cursor))
-    items = [{
-        "id": str(row.id),
-        "entry_type": getattr(row.entry_type, "value", row.entry_type),
-        # SIGNED, exactly as stored. A grant is positive and a debit negative, so a client sums
-        # the column rather than branching on the type - the same reason the column is signed.
-        "amount": row.amount,
-        "reason": row.reason,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-    } for row in rows]
-    last = (rows[-1].created_at, rows[-1].id) if rows else None
-    return listing.page(items, limit=bounded, last_key=last)
+    return listing.page(
+        rows, limit=bounded,
+        item=lambda row: {
+            "id": str(row.id),
+            "entry_type": getattr(row.entry_type, "value", row.entry_type),
+            # SIGNED, exactly as stored. A grant is positive and a debit negative, so a client
+            # sums the column rather than branching on the type - the same reason it is signed.
+            "amount": row.amount,
+            "reason": row.reason,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        },
+        key=lambda row: (row.created_at, row.id))
+
+
+#: THE DEGRADED LEDGER, stated rather than computed. Routing an empty list through
+#: `listing.page` would mean handing it an `item` and a `key` callable that can never be
+#: invoked - and inventing a return type for a key that never runs is how the two mypy errors
+#: this replaced got written. An empty page has no rows to render and no last row to key on.
+_EMPTY_LEDGER: dict = {"items": [], "next_cursor": None}
+
+
+def _empty_ledger() -> dict:
+    return dict(_EMPTY_LEDGER)

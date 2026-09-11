@@ -33,10 +33,13 @@ async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | Non
     # collection route placed after that one would never be reached.
     bounded = pagination.clamp_limit(limit)
     async with get_db() as db:
+        # ONE MORE ROW THAN THE PAGE - see listing.look_ahead.
         rows = await svc.list_conversations(db, owner_id, organization_id=organization_id,
-                                            limit=bounded,
+                                            limit=listing.look_ahead(bounded),
                                             before=pagination.decode_cursor(cursor))
-    items = [{
+    return listing.page(
+        rows, limit=bounded,
+        item=lambda row: {
         "id": str(row.id),
         # The JSON key is "task_label" though the column is `ChatSession.domain`: `domain` is
         # documented on the model as "DESCRIPTIVE task label from intake ('elbow internal
@@ -47,9 +50,8 @@ async def list_sessions(limit: int = pagination.DEFAULT_LIMIT, cursor: str | Non
         "message_count": len(row.messages or []),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    } for row in rows]
-    last = (rows[-1].created_at, rows[-1].id) if rows else None
-    return listing.page(items, limit=bounded, last_key=last)
+        },
+        key=lambda row: (row.created_at, row.id))
 
 
 @router.get("/history/{session_id}")

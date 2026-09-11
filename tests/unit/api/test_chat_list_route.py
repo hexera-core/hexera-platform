@@ -79,7 +79,8 @@ async def test_the_row_carries_a_message_count_not_the_messages(listing):
 async def test_the_limit_is_clamped_before_it_reaches_the_repository(listing):
     _, seen = listing
     await chat.list_sessions(owner_id=OWNER, organization_id="", limit=100_000)
-    assert seen["limit"] == pagination.MAX_LIMIT
+    # Clamped, then the look-ahead row on top - see listing.look_ahead.
+    assert seen["limit"] == pagination.MAX_LIMIT + 1
 
 
 async def test_a_malformed_cursor_reads_as_the_first_page(listing):
