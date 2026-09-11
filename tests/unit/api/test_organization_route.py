@@ -48,7 +48,7 @@ def org(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(organization.organization_repo, "get", fake_get)
+    monkeypatch.setattr(organization.organization_repo, "get_by_id", fake_get)
     monkeypatch.setattr(organization.membership_repo, "list_members", fake_members)
     monkeypatch.setattr(organization, "get_db", lambda: _NullSession())
     return row

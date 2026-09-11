@@ -34,7 +34,7 @@ async def read_organization(owner_id: Annotated[str, Depends(owner_dep)] = "",
                 "members": [{"email": owner_id, "name": owner_id, "role": "owner"}]}
 
     async with get_db() as db:
-        row = await organization_repo.get(db, parsed)
+        row = await organization_repo.get_by_id(db, parsed)
         members = await membership_repo.list_members(db, organization_id=parsed)
 
     return {
