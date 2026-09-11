@@ -171,7 +171,6 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
       lumen_open.vtp     the fluid WALL only, its port faces removed (real holes), rims refined
       lumen.vtp          the same surface (what geometry_report inspects; the pype overwrites it
                          with the remeshed lumen)
-      input.stl          the same surface as the shared analysis preview
       vmtk_staging.json  ports (declared name, role, centroid, size), seeds, sizing
     Returns the record, or None when this does not apply (not CAD, or nothing declared).
     Geometry failures propagate: a body that cannot be opened is reported, not guessed around."""
@@ -223,7 +222,11 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
     n_loops = int(edges.connectivity().split_bodies().n_blocks) if edges.n_cells else 0
     lumen.save(str(ws / LUMEN_OPEN))
     lumen.save(str(ws / "lumen.vtp"))
-    lumen.save(str(ws / "input.stl"))
+    # input.stl is NOT replaced. It is the CAD surface the engine's admission judges
+    # (require_no_self_intersection): the open wall with its fan-split rims read as
+    # self-intersecting to that check on a rectangular elbow (bend_elbow_003, job c0a6dac1,
+    # 2026-09-11) and run_mesh was refused before the pype ever ran, while the same wall
+    # fills cleanly. The builder's geometry_report reads lumen.vtp, so nothing else needs it.
     src, tgt = seed_points(ports)
     record = {"ports": ports, "source_points": src, "target_points": tgt, **size,
               "sizing_array": SIZING_ARRAY,
