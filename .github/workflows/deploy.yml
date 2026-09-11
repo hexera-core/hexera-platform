@@ -490,11 +490,11 @@ jobs:
             echo "outreach_kms_key=projects/hexera-prod/locations/us-central1/keyRings/outreach/cryptoKeys/oauth-tokens"
             # THE OAUTH CLIENT. The id is the PUBLIC half and ships as a plain environment value;
             # the secret half is a Secret Manager CONTAINER NAME and its value never appears here.
-            # Both are empty until an owner creates a WEB application client in the Cloud Console
-            # carrying the redirect URI below - Google shut down the OAuth client admin APIs, so
-            # this one cannot be scripted. Empty client id means the Mailbox panel says it cannot
-            # connect rather than offering a button that fails.
-            echo "google_client_id="
+            # The web application client was created on 2026-09-10 carrying the redirect URI
+            # below; its secret half lives in Secret Manager as google-client-secret. Google shut
+            # down the OAuth client admin APIs, so neither the client nor a replacement redirect
+            # URI can be scripted - changing either is a Cloud Console action plus a diff here.
+            echo "google_client_id=688073002171-8ouamu2ff8a13s7c1p5hcu1lvtvhqf1q.apps.googleusercontent.com"
             echo "google_client_secret_secret=google-client-secret"
             # Must match the authorised redirect URI on that client EXACTLY, including the scheme
             # and the absence of a trailing slash. admin_domain above is the same hostname.
