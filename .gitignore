@@ -45,3 +45,8 @@ __pycache__/
 node_modules/
 .next/
 .turbo/
+
+# The outreach sender's bundle. Built by `pnpm build:worker` and copied into the image at docker
+# build time; committing it would mean a second copy of the engine that can silently disagree with
+# the source it was built from.
+/apps/admin-console/outreach-worker.js
