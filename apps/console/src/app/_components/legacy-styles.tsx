@@ -31,6 +31,11 @@ const AUTH_SHEETS = [...TOKENS, "/static/css/auth.css", "/static/css/a11y.css"];
 // light-mode literals the component sheets still carry.
 const DASHBOARD_SHEETS = [
   ...TOKENS,
+  // auth.css FIRST, and it is not optional: /settings/api-keys and /settings/account are the
+  // only forms inside the shell, and they are built from auth.css's field, input, form and error
+  // primitives. Without it those two pages render browser-default inputs and an unstyled error
+  // box in the middle of the dashboard.
+  "/static/css/auth.css",
   "/static/css/dashboard.css",
   "/static/css/shell.css",
   "/static/css/chat.css",

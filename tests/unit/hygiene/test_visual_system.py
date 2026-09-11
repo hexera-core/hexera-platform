@@ -8,7 +8,13 @@ from pathlib import Path
 
 REPO = Path(__file__).parents[3]
 CSS = REPO / "ui" / "css"
-LEGACY_STYLES = REPO / "apps" / "console" / "src" / "app" / "_components" / "legacy-styles.tsx"
+CONSOLE_SRC = REPO / "apps" / "console" / "src"
+LEGACY_STYLES = CONSOLE_SRC / "app" / "_components" / "legacy-styles.tsx"
+DASHBOARD_PAGES = CONSOLE_SRC / "app" / "(dashboard)"
+
+_COMMENT = re.compile(r"//[^\n]*")
+_IMPORT_SPEC = re.compile(r"""from\s+["']([^"']+)["']""")
+_CLASS_USE = re.compile(r"\bauth__[A-Za-z0-9_-]+")
 
 
 def test_the_console_requests_the_display_weight_the_site_uses():
@@ -113,3 +119,90 @@ def test_the_legacy_component_sheets_keep_the_selectors_main_js_drives():
         text = (CSS / filename).read_text()
         for selector in selectors:
             assert selector in text, f"{filename} lost {selector}"
+
+
+def _sheet_hrefs(name: str) -> list[str]:
+    """The stylesheet URLs legacy-styles.tsx puts in `name`, spreads resolved.
+
+    Read out of the source rather than restated here: a list this test keeps its own copy of
+    would go on passing after somebody edited the real one, which is the exact failure below.
+    """
+    source = _COMMENT.sub("", LEGACY_STYLES.read_text())
+    block = re.search(rf"const {name} = \[(.*?)\];", source, re.S)
+    assert block, f"legacy-styles.tsx no longer declares {name}"
+    hrefs: list[str] = []
+    for spread, href in re.findall(r'\.\.\.(\w+)|"(/static/css/[^"]+)"', block.group(1)):
+        hrefs.extend(_sheet_hrefs(spread) if spread else [href])
+    return hrefs
+
+
+def _module_for(spec: str, importer: Path) -> Path | None:
+    if spec.startswith("@/"):
+        base = CONSOLE_SRC / spec[2:]
+    elif spec.startswith("."):
+        base = importer.parent / spec
+    else:
+        return None                          # a package, not a file in this app
+    for candidate in (Path(f"{base}.tsx"), Path(f"{base}.ts"), base / "index.tsx"):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _modules_the_dashboard_renders() -> set[Path]:
+    """Every source file a route under (dashboard) reaches, transitively.
+
+    The classes that went unstyled were not IN the pages -- they are in `account-form.tsx` and
+    `api-keys-panel.tsx`, which the pages import. Walking the import graph is what makes this
+    guard see what the browser sees.
+    """
+    pending = [p.resolve() for p in DASHBOARD_PAGES.rglob("*.tsx")]
+    assert pending, "no dashboard routes found -- this guard would pass vacuously"
+    seen: set[Path] = set()
+    while pending:
+        module = pending.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        for spec in _IMPORT_SPEC.findall(module.read_text()):
+            resolved = _module_for(spec, module)
+            if resolved is not None:
+                pending.append(resolved)
+    return seen
+
+
+def test_every_auth_class_a_dashboard_route_uses_is_in_a_sheet_that_route_loads():
+    # THE GUARD THE OLD ONE WAS NOT. Asserting that auth.css DEFINES .auth__input says nothing
+    # about whether the page using it ever downloads auth.css -- and it did not:
+    # /settings/api-keys and /settings/account rendered browser-default inputs and an unstyled
+    # error box because DASHBOARD_SHEETS omitted the sheet. What has to be true is that the
+    # classes a route uses are defined in a sheet DashboardStyles actually lists.
+    loaded = _sheet_hrefs("DASHBOARD_SHEETS")
+    stylesheets = {}
+    for href in loaded:
+        sheet = CSS / Path(href).name
+        assert sheet.is_file(), f"DASHBOARD_SHEETS lists {href}, which ui/css does not have"
+        stylesheets[sheet.name] = sheet.read_text()
+
+    used: dict[str, Path] = {}
+    for module in _modules_the_dashboard_renders():
+        for cls in _CLASS_USE.findall(module.read_text()):
+            used.setdefault(cls, module)
+    assert used, "no auth__ classes found under (dashboard) -- this guard would pass vacuously"
+
+    for cls, module in sorted(used.items()):
+        defined_in = [name for name, text in stylesheets.items()
+                      if re.search(rf"\.{cls}\b", text)]
+        assert defined_in, (
+            f"{module.name} renders .{cls}, which no sheet in DASHBOARD_SHEETS defines -- "
+            f"the dashboard loads {sorted(stylesheets)}"
+        )
+
+
+def test_the_dashboard_style_component_is_the_thing_that_lists_those_sheets():
+    # _sheet_hrefs reads a const; this is what ties that const to the component the layout
+    # renders, so renaming or re-pointing DashboardStyles cannot leave the guard above measuring
+    # a list nothing uses.
+    source = LEGACY_STYLES.read_text()
+    body = source[source.index("export function DashboardStyles"):]
+    assert "DASHBOARD_SHEETS" in body[:200], "DashboardStyles no longer renders DASHBOARD_SHEETS"
