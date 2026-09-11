@@ -94,6 +94,55 @@ export function requestLatencyFilter(service: string): string {
   ].join(" AND ");
 }
 
+// PER-WORKER SERIES. Every Compute instance metric is labelled with the numeric `instance_id`,
+// never the name, which is why ManagedInstanceRow carries the id at all. Reading them one series
+// per instance and grouping by that label is what lets a row in the instance table show the CPU of
+// the machine it names.
+export function instanceCpuFilter(zone: string): string {
+  return [
+    'metric.type = "compute.googleapis.com/instance/cpu/utilization"',
+    `resource.labels.zone = "${zone}"`,
+  ].join(" AND ");
+}
+
+export function instanceMemoryUsedFilter(zone: string): string {
+  // The Ops Agent publishes this; a fleet without the agent simply has no series, which the page
+  // renders as an unknown rather than as zero.
+  return [
+    'metric.type = "compute.googleapis.com/instance/memory/balloon/ram_used"',
+    `resource.labels.zone = "${zone}"`,
+  ].join(" AND ");
+}
+
+export function instanceUptimeFilter(zone: string): string {
+  return [
+    'metric.type = "compute.googleapis.com/instance/uptime_total"',
+    `resource.labels.zone = "${zone}"`,
+  ].join(" AND ");
+}
+
+// The newest value of each per-instance series, keyed by instance id. A table row wants "what is
+// it now", not a shape - the shape is what the graphs above are for.
+export async function readLatestByInstance(
+  client: MetricsReader,
+  args: { filter: string; projectId: string; window?: GraphWindow },
+): Promise<Record<string, number>> {
+  const series = await readSeries(client, {
+    crossSeriesReducer: "REDUCE_NONE",
+    filter: args.filter,
+    groupByFields: ["resource.labels.instance_id"],
+    projectId: args.projectId,
+    window: args.window ?? "1h",
+  });
+
+  const latest: Record<string, number> = {};
+  for (const one of series) {
+    const last = one.points.at(-1);
+    if (one.label && last) latest[one.label] = last.value;
+  }
+  return latest;
+}
+
 export function runInstanceCountFilter(service: string): string {
   return [
     'metric.type = "run.googleapis.com/container/instance_count"',

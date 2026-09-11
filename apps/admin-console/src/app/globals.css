@@ -422,3 +422,14 @@ h1 {
   font-size: 0.92em;
   padding: 0.05em 0.3em;
 }
+
+.admin-subtle {
+  color: #898781;
+  font-size: 0.74rem;
+}
+
+.admin-bad {
+  color: #8c2626;
+  font-size: 0.74rem;
+  font-weight: 600;
+}

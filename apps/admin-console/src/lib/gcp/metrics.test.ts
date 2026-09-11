@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   alignmentSecondsFor,
+  instanceCpuFilter,
+  readLatestByInstance,
   pickSeries,
   sumSeries,
   instanceGroupSizeFilter,
@@ -178,4 +180,47 @@ test("picks named series in the order asked for, skipping ones with no data", ()
   );
 
   assert.deepEqual(picked.map((one) => one.label), ["5xx"]);
+});
+
+test("per-instance filters select a zone's instances", () => {
+  const filter = instanceCpuFilter("us-central1-a");
+  assert.match(filter, /metric\.type = "compute\.googleapis\.com\/instance\/cpu\/utilization"/);
+  assert.match(filter, /resource\.labels\.zone = "us-central1-a"/);
+});
+
+test("the latest value per instance is keyed by instance id", async () => {
+  // Keyed by id because that is the label Compute publishes; the table joins it to the row by the
+  // same id, which is why ManagedInstanceRow carries one.
+  const client = {
+    listTimeSeries: async () =>
+      [
+        [
+          {
+            resource: { labels: { instance_id: "111" } },
+            points: [
+              { interval: { endTime: { seconds: 120 } }, value: { doubleValue: 0.42 } },
+              { interval: { endTime: { seconds: 60 } }, value: { doubleValue: 0.11 } },
+            ],
+          },
+          {
+            resource: { labels: { instance_id: "222" } },
+            points: [{ interval: { endTime: { seconds: 60 } }, value: { doubleValue: 0.9 } }],
+          },
+        ],
+        null,
+        {},
+      ] as never,
+  } as never;
+
+  const latest = await readLatestByInstance(client, { filter: "f", projectId: "p" });
+  // Newest point wins: readSeries returns points oldest-first, so the last one is the current value.
+  assert.equal(latest["111"], 0.42);
+  assert.equal(latest["222"], 0.9);
+});
+
+test("an instance with no series is simply absent, not zero", async () => {
+  // A worker whose Ops Agent is not reporting has unknown memory, which is a different statement
+  // from "using none".
+  const client = { listTimeSeries: async () => [[], null, {}] as never } as never;
+  assert.deepEqual(await readLatestByInstance(client, { filter: "f", projectId: "p" }), {});
 });

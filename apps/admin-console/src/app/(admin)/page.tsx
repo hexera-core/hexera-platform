@@ -3,9 +3,13 @@ import { TimeSeriesChart } from "@/app/_components/time-series-chart";
 import { getFleetClients, getMetricsReader, getRunReader } from "@/lib/gcp/clients";
 import { readAdminTargets } from "@/lib/gcp/config";
 import { readFleetState, type FleetState } from "@/lib/gcp/fleet";
-import { listFleetInstances } from "@/lib/gcp/instances";
+import { listFleetInstances, summariseFleet } from "@/lib/gcp/instances";
 import {
+  instanceCpuFilter,
   instanceGroupSizeFilter,
+  instanceMemoryUsedFilter,
+  instanceUptimeFilter,
+  readLatestByInstance,
   pickSeries,
   queueDepthFilter,
   readSeries,
@@ -18,6 +22,7 @@ import {
 import { readServiceScaling } from "@/lib/gcp/run";
 import { readWorkerProfile } from "@/lib/gcp/worker-profile";
 
+import { FleetSummaryPanel } from "./_fleet/fleet-summary";
 import { InstanceTable } from "./_fleet/instance-table";
 import { ScalingPolicyPanel } from "./_fleet/scaling-policy";
 import { ServiceScalingPanel } from "./_fleet/service-scaling";
@@ -91,8 +96,19 @@ export default async function FleetPage() {
     return <FleetReadFailure error={error} target={fleetTarget} />;
   }
 
-  const [profile, instances, workers, queue, byStatus, latency, runInstances, apiScaling] =
-    await Promise.all([
+  const [
+    profile,
+    instances,
+    workers,
+    queue,
+    byStatus,
+    latency,
+    runInstances,
+    apiScaling,
+    cpu,
+    memoryBytes,
+    uptimeSeconds,
+  ] = await Promise.all([
       state.templateName
         ? readWorkerProfile(clients, fleetTarget.projectId, state.templateName)
         : Promise.resolve(null),
@@ -153,6 +169,21 @@ export default async function FleetPage() {
             service: api,
           })
         : Promise.resolve(null),
+      // Per-worker, keyed by numeric instance id. Read for the whole zone rather than per
+      // instance: one call each instead of three per worker, and the join happens on the id the
+      // instance table already carries.
+      readLatestByInstance(metrics, {
+        filter: instanceCpuFilter(fleetTarget.migZone),
+        projectId: targets.projectId,
+      }),
+      readLatestByInstance(metrics, {
+        filter: instanceMemoryUsedFilter(fleetTarget.migZone),
+        projectId: targets.projectId,
+      }),
+      readLatestByInstance(metrics, {
+        filter: instanceUptimeFilter(fleetTarget.migZone),
+        projectId: targets.projectId,
+      }),
     ]);
 
   // The floor and the ceiling are what turn a worker count into a reading: "we ran five" becomes
@@ -174,6 +205,8 @@ export default async function FleetPage() {
   return (
     <>
       <h1>Fleet</h1>
+
+      <FleetSummaryPanel summary={summariseFleet(instances)} targetSize={state.targetSize} />
 
       <ScalingPolicyPanel maxAllowedReplicas={targets.maxAllowedReplicas} state={state} />
 
@@ -237,7 +270,11 @@ export default async function FleetPage() {
 
       {profile ? <WorkerProfilePanel profile={profile} /> : null}
 
-      <InstanceTable rows={instances} />
+      <InstanceTable
+        metrics={{ cpu, memoryBytes, uptimeSeconds }}
+        projectId={targets.projectId}
+        rows={instances}
+      />
     </>
   );
 }

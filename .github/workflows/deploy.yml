@@ -323,7 +323,16 @@ jobs:
               # A Secret Manager CONTAINER NAME. No credential value appears in this file.
               echo "postgres_password_secret=postgres-password"
               # The fleet the published queue depth scales.
-              echo "worker_mig=dev-workers"
+              # POINTED AT THE GROUP THAT EXISTS, which is not the name this is going to.
+              # `dev-workers` is the destination and the fleet rename lands separately; until it
+              # does, the only managed instance group in hexera-dev is `hexera-dev-workers` - the
+              # hand-made one from before the fleet had a provisioning script. Naming the
+              # destination early meant the admin console's Fleet page reported NOT_FOUND, which
+              # was correct and useless.
+              #
+              # The rename edits this exact line, so there is nothing to remember to undo. If it
+              # lands and this still says hexera-dev-workers, the Fleet page will say so by name.
+              echo "worker_mig=hexera-dev-workers"
               echo "worker_mig_zone=us-central1-a"
             } >> "$GITHUB_OUTPUT"
             exit 0

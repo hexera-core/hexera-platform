@@ -10,6 +10,12 @@ import { lastSegment } from "./fleet";
 
 export type ManagedInstanceRow = {
   currentAction: string;
+  // The NUMERIC id, which is what per-instance Monitoring series are keyed by - `instance_id`, not
+  // the name. Without it a worker's CPU and memory cannot be joined to the row describing it.
+  id: string | null;
+  // DETAILED health, when a health check is configured. `instanceHealth` is absent on groups with
+  // no health checking, which is not the same as unhealthy and is not rendered as such.
+  health: string | null;
   lastErrors: readonly string[];
   name: string;
   status: string;
@@ -38,6 +44,8 @@ export async function listFleetInstances(
   return (instances ?? [])
     .map((instance) => ({
       currentAction: instance.currentAction ?? "UNKNOWN",
+      health: instance.instanceHealth?.[0]?.detailedHealthState ?? null,
+      id: instance.id ? String(instance.id) : null,
       // The errors are nested twice: lastAttempt.errors is a wrapper whose own `errors` field is
       // the list. Reading one level less yields an object that renders as "[object Object]".
       lastErrors: (instance.lastAttempt?.errors?.errors ?? []).map((error) =>
@@ -51,4 +59,41 @@ export async function listFleetInstances(
     // Compute returns instances in no guaranteed order. Sorting means a page that refreshes every
     // few seconds does not reshuffle its rows under the reader's cursor.
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export type FleetSummary = {
+  byAction: readonly { count: number; label: string }[];
+  byStatus: readonly { count: number; label: string }[];
+  rotating: boolean;
+  templateVersions: readonly string[];
+  total: number;
+  unhealthy: number;
+};
+
+// What the instance table adds up to. Counted here rather than in the component so the reading is
+// testable and so "unhealthy" means one thing across the page.
+export function summariseFleet(rows: readonly ManagedInstanceRow[]): FleetSummary {
+  const tally = (values: readonly string[]) => {
+    const counts = new Map<string, number>();
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+    return [...counts.entries()]
+      .map(([label, count]) => ({ count, label }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  };
+
+  const templateVersions = [...new Set(rows.map((row) => row.templateName).filter((n): n is string => Boolean(n)))].sort();
+
+  return {
+    // NONE is the resting state of a managed instance and is not worth a chip of its own.
+    byAction: tally(rows.map((row) => row.currentAction).filter((action) => action !== "NONE")),
+    byStatus: tally(rows.map((row) => row.status)),
+    // More than one template in flight means a rotation has not finished. Nothing else in the
+    // console reports that, and it is the usual reason a fleet looks briefly oversized.
+    rotating: templateVersions.length > 1,
+    templateVersions,
+    total: rows.length,
+    // Only a health check that ran and said UNHEALTHY counts. A group with no health checking
+    // reports null, which is unknown, not unhealthy.
+    unhealthy: rows.filter((row) => row.health !== null && row.health !== "HEALTHY").length,
+  };
 }
