@@ -367,8 +367,25 @@ OUTREACH_KMS_KEY=${OUTREACH_KMS_KEY:-}
 # Secret Manager container name (GOOGLE_CLIENT_SECRET_SECRET), never a value.
 GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
 GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
-GOOGLE_CLIENT_SECRET_SECRET=${GOOGLE_CLIENT_SECRET_SECRET:-google-client-secret}
-OUTREACH_DB_PASSWORD_SECRET=${OUTREACH_DB_PASSWORD_SECRET:-outreach-db-password}
+# `${VAR-default}`, NOT `${VAR:-default}`, and the colon is the whole point. These two name secret
+# containers that exist only where the feature does: dev runs no outreach and has no OAuth client,
+# so its picker states every value in this block as the EMPTY STRING - "this deployment does not
+# have one" - which is a decision, not an omission. `:-` substitutes on unset OR empty, so it
+# overwrote that decision with prod's container names, the admin stage bound them as secret
+# references, and Cloud Run refused the revision:
+#
+#   Permission denied on secret: projects/224734058693/secrets/google-client-secret/versions/latest
+#
+# which reads as a missing IAM grant and is not one - hexera-dev has no such container at all (GCS
+# and Secret Manager both report an absent resource as a permission error rather than confirm it
+# does not exist). Dropping the colon honours a stated empty and still defaults when the variable is
+# genuinely unset, which is the local `make bootstrap` case this default was written for.
+#
+# Every other default in this file is safe under `:-`: they are sizes, or names derived from
+# DEPLOY_ID, or containers that exist in every project. These two are the only ones that name an
+# OPTIONAL feature's secret.
+GOOGLE_CLIENT_SECRET_SECRET=${GOOGLE_CLIENT_SECRET_SECRET-google-client-secret}
+OUTREACH_DB_PASSWORD_SECRET=${OUTREACH_DB_PASSWORD_SECRET-outreach-db-password}
 
 # THE CONSOLE TIER. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console
 # and that stage is skipped - the same arrangement an API-less deployment uses above.
