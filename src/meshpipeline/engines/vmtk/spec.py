@@ -121,7 +121,7 @@ def _viewer_surface():
 
     def _hook(workspace, *, roles, units, skip_names=()):
         # the tet mesh's boundary surface (mesh.vtu) → the shared kind=stl payload
-        return stl_response(surface_patches(workspace), roles, units, skip_names)
+        return stl_response(surface_patches(workspace, named=True), roles, units, skip_names)
     return _hook
 
 

@@ -151,8 +151,11 @@ def test_authoring_redirects_openfoam_knobs():
 
 
 def test_authoring_requires_non_interactive_centerline_seeding():
+    # no seeds at all is a WARNING (the engine stages seeds for a CAD body with declared
+    # ports; configure_mesh refuses when nothing was staged) - never an interactive picker
     d = authoring.validate({"edge_length_factor": 0.3})
-    assert any("seeding is required" in x.message for x in d)
+    assert any("seeds" in x.message and x.severity == "warning" for x in d)
+    assert not [x for x in d if x.severity == "error"]
     half = authoring.validate({"source_ids": [0]})
     assert any("BOTH source_ids and target_ids" in x.message for x in half)
     bad = authoring.validate({"source_points": [1.0, 2.0], "target_points": [3.0, 4.0]})

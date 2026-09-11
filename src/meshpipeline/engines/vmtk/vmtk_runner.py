@@ -24,6 +24,10 @@ _LUMEN = "lumen.vtp"
 _CENTERLINES = "centerlines.vtp"
 _DIST = "lumen_dist.vtp"
 _MESH = "mesh.vtu"
+_LUMEN_OPEN = "lumen_open.vtp"     # the staged open wall (engines/vmtk/lumen_staging.py)
+#: A boundary layer whose tets sum to more than this above the enclosed volume has folded;
+#: tets summing to less than the enclosed volume by more than this never filled it.
+OVERLAP_TOLERANCE = 0.02
 
 _DEFAULTS: dict = {
     "edge_length_factor": 0.3,
@@ -32,6 +36,11 @@ _DEFAULTS: dict = {
     "cap_openings": True,
     "remesh_surface": True,
     "max_cells": 4_000_000,
+    # ENGINE-STAGED sizing. lumen_staging fills these from the declared ports of a CAD body
+    # (configure_mesh merges them); empty = nothing staged, the pype runs on the lumen as given.
+    "sizing_array": "",
+    "min_edge_length": None,
+    "max_edge_length": None,
     # CENTERLINE SEEDING - must be NON-INTERACTIVE. vmtk's 'openprofiles'/'pickpoint'
     # selectors open an X render window and abort in a headless worker (verified: SIGABRT,
     # "bad X server connection"). The non-interactive selectors are:
@@ -78,6 +87,49 @@ def build_pype(strategy: dict) -> list[str]:
     s = resolve_strategy(strategy)
     elf = float(s["edge_length_factor"])
     layers = int(s["boundary_layers"])
+    clamps = [
+        # clamps on the radius-adaptive size: where the sizing field touches zero (a ray that
+        # grazes a corner, centerlines merging) a zero-size target kills the generator
+        *(["-minedgelength", f"{float(s['min_edge_length']):g}"]
+          if s.get("min_edge_length") else []),
+        *(["-maxedgelength", f"{float(s['max_edge_length']):g}"]
+          if s.get("max_edge_length") else []),
+    ]
+    layer_args = ["-boundarylayer", "1" if layers > 0 else "0"]
+    if layers > 0:
+        layer_args += [
+            # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
+            "-sublayers", str(layers),
+            "-thicknessfactor", f"{float(s['boundary_layer_thickness_factor']):g}",
+            # layers belong on the lumen WALL, not across the inlet/outlet caps
+            "-boundarylayeroncaps", "0",
+        ]
+    if s.get("sizing_array"):
+        # STAGED CAD LUMEN. The open wall arrives with its local radius at every point
+        # (engines/vmtk/lumen_staging.py). 1. remesh it radius-adaptively (the staged
+        # triangles are edge-bounded CAD slivers; handing those straight to the generator
+        # left TetGen an inner surface it refused - "Unable to find an edge in subface" on
+        # tee_wye_003 and straight_reducer_004); 2. keep the one lumen and drop the orphan
+        # points the remesher leaves; 3. project the radius array back from the staged wall
+        # (the remesher drops point data); 4. vmtkmeshgenerator caps the declared openings
+        # (one CellEntityId each, from 2), remeshes with the array, grows the layers and fills
+        # the volume. Capping and remeshing are not optional here - the surface is open by
+        # construction - so cap_openings/remesh_surface do not apply. No centerline stage:
+        # vmtkcenterlines was the part that failed (see local_radius).
+        array = str(s["sizing_array"])
+        return [
+            rtcfg.VMTK_BIN,
+            "vmtksurfaceremeshing", "-ifile", _LUMEN_OPEN,
+            "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
+            "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
+            "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
+            "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
+            "--pipe", "vmtkmeshgenerator", "-ifile", _LUMEN,
+            "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
+            "-edgelengthfactor", f"{elf:g}", *clamps,
+            "-skipcapping", "0", "-skipremeshing", "0", *layer_args,
+            "-tetrahedralize", "1", "-ofile", _MESH,
+        ]
     argv: list[str] = [
         rtcfg.VMTK_BIN,
         # 1. centerlines of the lumen, seeded NON-INTERACTIVELY
@@ -90,20 +142,12 @@ def build_pype(strategy: dict) -> list[str]:
         "--pipe", "vmtkmeshgenerator", "-ifile", _DIST,
         "-elementsizemode", "edgelengtharray",
         "-edgelengtharray", "DistanceToCenterlines",
-        "-edgelengthfactor", f"{elf:g}",
+        "-edgelengthfactor", f"{elf:g}", *clamps,
         # vmtkmeshgenerator expresses these as the INVERSE (skip-*) booleans
         "-skipcapping", "0" if s["cap_openings"] else "1",
         "-skipremeshing", "0" if s["remesh_surface"] else "1",
-        "-boundarylayer", "1" if layers > 0 else "0",
+        *layer_args,
     ]
-    if layers > 0:
-        argv += [
-            # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
-            "-sublayers", str(layers),
-            "-thicknessfactor", f"{float(s['boundary_layer_thickness_factor']):g}",
-            # layers belong on the lumen WALL, not across the inlet/outlet caps
-            "-boundarylayeroncaps", "0",
-        ]
     argv += ["-tetrahedralize", "1", "-ofile", _MESH]
     return argv
 
@@ -170,6 +214,33 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
                              "n_edge_cells": int(b.n_cells)})
     b = surf.bounds
     diag = ((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2) ** 0.5
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    staged = read_staging(ws)
+    if staged and staged.get("ports"):
+        return {
+            "closed": len(profiles) == 0,
+            "open_profiles": profiles,
+            "n_open_profiles": len(profiles),
+            "bbox": [b[0], b[2], b[4], b[1], b[3], b[5]],
+            "diag": diag,
+            "n_surface_cells": int(surf.n_cells),
+            # the engine opened the declared ports itself: name, role, where, how big
+            "staged_ports": [{"name": p["name"], "role": p["role"],
+                              "centroid": [round(float(v), 6) for v in p["centroid"]],
+                              "equivalent_diameter_m": round(float(p["size_m"]), 6)}
+                             for p in staged["ports"]],
+            "seeds_staged": bool(staged.get("source_points") and staged.get("target_points")),
+            "sizing_staged": bool(staged.get("sizing_array")),
+            "local_radius_m": staged.get("radius_m"),
+            "note": ("The engine has ALREADY opened this CAD body at the declared inlet/outlet "
+                     "faces (lumen.vtp is the fluid wall with real holes) and measured the "
+                     "lumen's local radius at every wall point, which is what the cells are "
+                     "sized from (edge_length_factor x local radius, clamped by "
+                     "min_edge_length / max_edge_length). No centerline seeds are needed: "
+                     "configure_mesh takes the staged sizing - leave seeds and the clamps out "
+                     "unless a run_mesh failure names one to change. Each staged port becomes "
+                     "one capped patch under its declared name."),
+        }
     return {
         "closed": len(profiles) == 0,
         "open_profiles": profiles,
@@ -209,9 +280,28 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "lumen with its terminal openings present (the inlet and outlet cut "
                           "open, not sealed), or mesh the sealed solid with a volume engine "
                           "instead.")}
-    s = resolve_strategy(strategy)
+    from meshpipeline.engines.vmtk.lumen_staging import merge_staged, read_staging
+    s = resolve_strategy(merge_staged(strategy, read_staging(ws)))
+    if not s.get("sizing_array") and not ((s["source_points"] and s["target_points"])
+                                          or (s["source_ids"] and s["target_ids"])):
+        return {"code": "vmtk_seeds_required",
+                "error": ("centerline seeding is required and nothing was staged for this "
+                          "geometry: give source_points+target_points (coordinates on the "
+                          "inlet and outlet ends) or source_ids+target_ids (open-profile ids "
+                          "from geometry_report). Interactive seeding cannot run headless.")}
     (ws / "vmtk_spec.json").write_text(json.dumps(s, indent=2))
     return {"spec": s, "pype": " ".join(build_pype(s))}
+
+
+# staging (builder attempt seam): open the declared ports of a CAD body before anything runs
+
+def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
+                   input_kind: str = "") -> dict | None:
+    """Deterministic lumen preparation - see engines/vmtk/lumen_staging.py. Returns the
+    staging record, or None when it does not apply (a surface input, nothing declared)."""
+    from meshpipeline.engines.vmtk.lumen_staging import stage_lumen
+    return stage_lumen(workspace, geometry_path, prepared=prepared,
+                       intake_patches=intake_patches, input_kind=input_kind)
 
 
 # run (isolated subprocess)
@@ -283,7 +373,10 @@ _VTK_TETRA = 10   # cell type; mesh.vtu also carries the boundary TRIANGLES (typ
 
 # TetGen reports a self-intersecting boundary like this and vmtk STILL exits 0, leaving a
 # mesh whose tets are mostly inverted. The exit code alone can never be trusted.
-_TETGEN_FAILURES = ("invalid plc", "subfaces intersect", "self-intersect")
+_TETGEN_FAILURES = ("invalid plc", "subfaces intersect", "self-intersect",
+                    # vmtkmeshgenerator catches the exception, exits 0 and writes the boundary
+                    # layer alone ("Will only output surface mesh and boundary layer")
+                    "tetgen quit with an exception", "error occurred during tetrahedralization")
 
 
 def check_mesh(workspace) -> dict:
@@ -317,6 +410,16 @@ def check_mesh(workspace) -> dict:
             fatal.append("TetGen rejected the boundary as self-intersecting (Invalid PLC) - "
                          "the volume fill did not complete even though vmtk exited 0")
     mesh = _read_surface(mp)
+    # NODE ORDER. vmtk writes its boundary-layer tets with the opposite node order from
+    # TetGen's interior tets: every layer tet has a NEGATIVE signed volume while the layer
+    # block itself is sound (the |volumes| sum to what the boundary encloses within 1%,
+    # straight_reducer_004 and s_duct_001, 2026-09-11). Read as "inverted" that made every
+    # layered mesh a fatal defect and taught the builder to drop layers. Normalise the order
+    # once (idempotent) so the deliverable and the numbers below are right; a layer that
+    # really folded is caught by the overlap test, which the sign cannot tell.
+    mesh, n_reoriented, layer_mask = _normalise_orientation(mesh)
+    if n_reoriented:
+        mesh.save(str(mp))
     tets = mesh.extract_cells_by_type(_VTK_TETRA)
     cells = int(tets.n_cells)
     if cells == 0:
@@ -331,6 +434,7 @@ def check_mesh(workspace) -> dict:
         return {"cells": 0, "fatal": fatal, "min_quality": None,
                 "layer_coverage": None, "mesh_ok": False}
     min_quality = None
+    layer_min_quality = None
     try:
         import numpy as np
         vol = np.asarray(tets.compute_cell_sizes(length=False, area=False,
@@ -338,9 +442,27 @@ def check_mesh(workspace) -> dict:
         n_inverted = int((vol <= 0.0).sum())
         if n_inverted:
             fatal.append(f"{n_inverted} inverted/degenerate tetrahedra (non-positive volume)")
+        overlap = _overlap_fraction(mesh, float(np.abs(vol).sum()))
+        if overlap is not None and overlap > OVERLAP_TOLERANCE:
+            fatal.append(f"tetrahedra overlap: their volumes sum to {overlap * 100:.1f}% more "
+                         "than the boundary encloses - the boundary layer folded into itself")
+        elif overlap is not None and overlap < -OVERLAP_TOLERANCE:
+            fatal.append(f"the volume fill is incomplete: the tetrahedra fill only "
+                         f"{(1.0 + overlap) * 100:.0f}% of what the boundary encloses - TetGen "
+                         "did not complete (a boundary layer alone is not a mesh)")
         # pyvista >=0.45: DataSet.cell_quality(measure) -> array named after the measure
         sj = np.asarray(tets.cell_quality("scaled_jacobian").cell_data["scaled_jacobian"])
-        min_quality = float(sj.min()) if sj.size else None
+        # THE FLOOR JUDGES THE ISOTROPIC FILL. A boundary-layer tet is a thin slab split three
+        # ways - its scaled Jacobian is about thickness over edge length (median 0.08, a few
+        # below 0.01 on manifold_002) BY DESIGN, not by defect; judged with the interior it
+        # failed every layered mesh and taught the builder to drop layers. The layer block is
+        # the block vmtk wrote negatively ordered (identified above); its own worst value is
+        # reported alongside, and a collapsed layer still fails on volume or overlap.
+        interior = sj[~layer_mask] if layer_mask is not None and layer_mask.size == sj.size else sj
+        layer = sj[layer_mask] if layer_mask is not None and layer_mask.size == sj.size else sj[:0]
+        min_quality = float(interior.min()) if interior.size else (
+            float(layer.min()) if layer.size else None)
+        layer_min_quality = float(layer.min()) if layer.size else None
     except Exception as exc:  # noqa: BLE001 - quality is best-effort evidence, not a crash
         logger.warning("vmtk check_mesh: quality computation failed: %s", exc)
     layer_coverage = None
@@ -352,7 +474,56 @@ def check_mesh(workspace) -> dict:
             layer_coverage = None
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
-            "layer_coverage": layer_coverage, "mesh_ok": ok}
+            "layer_coverage": layer_coverage, "mesh_ok": ok,
+            "reoriented_tets": n_reoriented, "layer_tets": int(n_reoriented),
+            "layer_min_quality": layer_min_quality}
+
+
+def _normalise_orientation(grid):
+    """(grid, n, mask) with every negative-volume tetrahedron's node order flipped (nodes 1 and
+    2 swapped); `mask` marks those tets in tet order (vmtk's boundary-layer block), or is None
+    when there was nothing to flip. Other cell types, cell data and point data ride along."""
+    import numpy as np
+    import pyvista as pv
+    ct = np.asarray(grid.celltypes)
+    if not (ct == _VTK_TETRA).any():
+        return grid, 0, None
+    cd = grid.cells_dict
+    tets = np.asarray(cd[_VTK_TETRA], dtype=np.int64)
+    p = np.asarray(grid.points, dtype=float)
+    a, b, c, d = (p[tets[:, k]] for k in range(4))
+    vol = np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)
+    neg = vol < 0.0
+    n = int(neg.sum())
+    if n == 0:
+        return grid, 0, None
+    tets = tets.copy()
+    tets[neg, 1], tets[neg, 2] = tets[neg, 2].copy(), tets[neg, 1].copy()
+    types = [int(t) for t in np.unique(ct)]
+    cells = {t: (tets if t == _VTK_TETRA else np.asarray(cd[t])) for t in types}
+    out = pv.UnstructuredGrid(cells, p)
+    # the dict constructor lays cells out type by type; regroup the arrays the same way
+    order = np.concatenate([np.flatnonzero(ct == t) for t in types])
+    for name in list(grid.cell_data.keys()):
+        out.cell_data[name] = np.asarray(grid.cell_data[name])[order]
+    for name in list(grid.point_data.keys()):
+        out.point_data[name] = np.asarray(grid.point_data[name])
+    return out, n, neg
+
+
+def _overlap_fraction(grid, tet_volume: float) -> float | None:
+    """How much the tetrahedra's summed volume exceeds what the mesh's own boundary triangles
+    enclose (0 = they tile it exactly); None when there is no closed boundary to measure."""
+    try:
+        tris = grid.extract_cells_by_type(5).extract_surface().triangulate()
+        if tris.n_cells == 0:
+            return None
+        enclosed = abs(float(tris.volume))
+    except Exception:  # noqa: BLE001 - evidence, never a crash
+        return None
+    if enclosed <= 0.0:
+        return None
+    return tet_volume / enclosed - 1.0
 
 
 
@@ -435,6 +606,11 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             _n_tgt = len(_spec.get("target_ids") or []) or len(_spec.get("target_points") or []) // 3
             if _n_src + _n_tgt:
                 q["expected_caps"] = _n_src + _n_tgt
+        from meshpipeline.engines.vmtk.lumen_staging import read_staging as _read_staging
+        _staged = _read_staging(ws)
+        if _staged and _staged.get("ports"):
+            # the engine opened exactly these ports; each must come back as one cap
+            q["expected_caps"] = len(_staged["ports"])
     except Exception:
         logger.warning("vmtk finalize: actual-boundary extraction failed (non-fatal)")
     # the contracted patches: the lumen wall + each capped opening (roles come from intake)

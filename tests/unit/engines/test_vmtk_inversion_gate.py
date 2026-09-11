@@ -46,11 +46,20 @@ def test_a_single_positively_oriented_tet_passes(tmp_path):
     assert q["min_quality"] is not None and q["min_quality"] > 0.01
 
 
-def test_two_swapped_vertices_is_flagged_inverted(tmp_path):
+def test_two_swapped_vertices_is_reoriented_not_rejected(tmp_path):
+    # A negative signed volume is a NODE ORDER, not a geometry: the same four points bound the
+    # same tetrahedron. vmtk writes its whole boundary-layer block that way (every layer tet
+    # negative, the block tiling the enclosed volume exactly), so the sign alone must not be
+    # fatal. The order is normalised on disk; a real fold shows up as OVERLAP instead.
     _write_tet_vtu(tmp_path / "mesh.vtu", [(1, 0, 2, 3)])
     q = check_mesh(tmp_path)
-    assert q["mesh_ok"] is False
-    assert any("inverted" in f.lower() or "non-positive" in f.lower() for f in q["fatal"])
+    assert q["mesh_ok"] is True
+    assert q["fatal"] == []
+    assert q["reoriented_tets"] == 1
+    saved = pv.read(str(tmp_path / "mesh.vtu"))
+    vol = saved.compute_cell_sizes(length=False, area=False, volume=True).cell_data["Volume"]
+    assert float(vol[0]) > 0                              # the deliverable was fixed, once
+    assert check_mesh(tmp_path)["reoriented_tets"] == 0   # idempotent
 
 
 def test_several_valid_tets_all_pass(tmp_path):
@@ -72,16 +81,62 @@ def test_several_valid_tets_all_pass(tmp_path):
     assert q["mesh_ok"] is True
 
 
-def test_a_mixed_valid_and_inverted_set_fails_and_counts_only_the_inverted(tmp_path):
+def test_a_mixed_set_reorients_only_the_negative_ones(tmp_path):
     extra = np.array([[0.3, 0.3, 1.0]], float)   # a 5th point for a 2nd/3rd tet
     tets = [(0, 1, 2, 3),            # positive
-            (1, 0, 2, 4),            # inverted (swapped) using the extra apex
-            (2, 1, 0, 3)]            # inverted (swapped)
+            (1, 0, 2, 4),            # negative order (swapped) using the extra apex
+            (2, 1, 0, 3)]            # negative order (swapped)
     _write_tet_vtu(tmp_path / "mesh.vtu", tets, pts=_BASE_PTS, extra_pts=extra)
     q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is True and q["fatal"] == []
+    assert q["reoriented_tets"] == 2 and q["cells"] == 3
+    # the floor judges the isotropic fill; the reoriented (layer) block is reported apart
+    assert q["layer_tets"] == 2 and q["layer_min_quality"] is not None
+    assert q["min_quality"] is not None
+
+
+def _write_mixed_vtu(path, tets, tris, pts):
+    cells = np.hstack([[4, *t] for t in tets] + [[3, *t] for t in tris]).astype(np.int64)
+    ctypes = np.array([vtk.VTK_TETRA] * len(tets) + [vtk.VTK_TRIANGLE] * len(tris), dtype=np.uint8)
+    pv.UnstructuredGrid(cells, ctypes, pts).save(str(path))
+
+
+_TET_FACES = [(0, 2, 1), (0, 1, 3), (1, 2, 3), (0, 3, 2)]   # the boundary of tet (0,1,2,3)
+
+
+def test_tets_that_tile_their_boundary_pass_the_overlap_test(tmp_path):
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is True and q["fatal"] == []
+
+
+def test_an_incomplete_fill_is_rejected(tmp_path):
+    # the boundary of a tet twice the size, but only the small tet inside: TetGen wrote the
+    # boundary layer and gave up on the interior (vmtkmeshgenerator still exits 0)
+    big = np.vstack([_BASE_PTS, 2.0 * _BASE_PTS])
+    faces = [tuple(4 + i for i in f) for f in _TET_FACES]
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], faces, big)
+    q = check_mesh(tmp_path)
     assert q["mesh_ok"] is False
-    inv = [f for f in q["fatal"] if "inverted" in f.lower() or "non-positive" in f.lower()]
-    assert inv and "2 inverted" in inv[0]
+    assert any("incomplete" in f.lower() for f in q["fatal"])
+
+
+def test_a_tetgen_exception_logged_with_rc0_fails(tmp_path):
+    _write_tet_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)])
+    (tmp_path / "log.vmtk").write_text("vtkvmtkTetGenWrapper: TetGen quit with an exception.\n"
+                                       "An error occurred during tetrahedralization. Will only "
+                                       "output surface mesh and boundary layer.\n")
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+
+
+def test_overlapping_tets_are_rejected_even_when_positively_oriented(tmp_path):
+    # the same tetrahedron twice: both positive, but together they fill the boundary's volume
+    # twice over - what a boundary layer folded back through the wall looks like
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3), (0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is False
+    assert any("overlap" in f.lower() for f in q["fatal"])
 
 
 def test_a_degenerate_zero_volume_tet_is_rejected_by_explicit_policy(tmp_path):

@@ -42,6 +42,10 @@ AUTHORING_TOOL: dict = {
                 "cap_openings": {"type": "boolean", "description": "cap the open profiles at the lumen ends into inlet/outlet patches (default true; set false when the lumen is already closed)"},
                 "remesh_surface": {"type": "boolean", "description": "radius-adaptive surface remesh before the volume fill (default true)"},
                 "max_cells": {"type": "integer", "description": "cell budget (default 4e6)"},
+                "min_edge_length": {"type": "number",
+                                    "description": "ENGINE-STAGED (metres): floor on the radius-adaptive cell size"},
+                "max_edge_length": {"type": "number",
+                                    "description": "ENGINE-STAGED (metres): ceiling on the radius-adaptive cell size"},
             },
             "required": [],
         },
@@ -50,7 +54,8 @@ AUTHORING_TOOL: dict = {
 
 _STRATEGY = {"edge_length_factor", "boundary_layers", "boundary_layer_thickness_factor",
              "cap_openings", "remesh_surface", "max_cells",
-             "source_ids", "target_ids", "source_points", "target_points"}
+             "source_ids", "target_ids", "source_points", "target_points",
+             "min_edge_length", "max_edge_length", "sizing_array"}
 _PREAMBLE = {"geometry_file", "wall_patch", "strategy", "wall_layers"}
 _KNOWN = _STRATEGY | _PREAMBLE
 # knobs from the OpenFOAM engines a confused model might send - name them so the redirect helps
@@ -118,6 +123,21 @@ def validate(strategy: dict) -> list[Diagnostic]:
                 f"({type(got).__name__}). Send {b}: false, not \"false\".")))
     if "max_cells" in strategy and (not _int(strategy["max_cells"]) or strategy["max_cells"] <= 0):
         d.append(Diagnostic("error", "max_cells", "max_cells must be a positive integer"))
+    for k in ("min_edge_length", "max_edge_length"):
+        v = strategy.get(k)
+        if v is not None and (not _num(v) or not math.isfinite(float(v)) or float(v) <= 0):
+            d.append(Diagnostic("error", k, f"{k} must be a positive length in metres (or omitted "
+                                            f"to keep the engine-staged value) - received {v!r}"))
+    sa = strategy.get("sizing_array")
+    if sa is not None and not isinstance(sa, str):
+        d.append(Diagnostic("error", "sizing_array",
+                            "sizing_array is the engine-staged point array name (a string); "
+                            "leave it out to keep the staged value"))
+    lo, hi = strategy.get("min_edge_length"), strategy.get("max_edge_length")
+    if (isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+            and float(lo) >= float(hi) > 0):
+        d.append(Diagnostic("error", "min_edge_length",
+                            "min_edge_length must be smaller than max_edge_length"))
     d.extend(_validate_seeding(strategy))
     return d
 
@@ -143,10 +163,15 @@ def _validate_seeding(strategy: dict) -> list[Diagnostic]:
         d.append(Diagnostic("error", "source_ids",
                             "supply BOTH source_ids and target_ids (inlet and outlet open-profile ids)"))
     if not pts and not ids:
-        d.append(Diagnostic("error", "source_points",
-                            "centerline seeding is required: give source_points+target_points (any "
-                            "lumen, including a CLOSED one) or source_ids+target_ids (open-profile "
-                            "ids from geometry_report). vmtk's interactive seeding cannot run headless."))
+        # a WARNING, not a refusal: a CAD body with declared ports has its seeds staged by the
+        # engine (geometry_report: staged_ports) and configure_mesh fills them in; when nothing
+        # was staged configure_mesh itself refuses with vmtk_seeds_required
+        d.append(Diagnostic("warning", "source_points",
+                            "no centerline seeds given - they are taken from the engine-staged ports "
+                            "(geometry_report lists them as staged_ports). If none were staged, give "
+                            "source_points+target_points (any lumen, including a CLOSED one) or "
+                            "source_ids+target_ids (open-profile ids from geometry_report); vmtk's "
+                            "interactive seeding cannot run headless."))
     return d
 
 
