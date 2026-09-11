@@ -16,6 +16,7 @@
     "@google-cloud/billing": "6.1.0",
     "@google-cloud/billing-budgets": "7.1.0",
     "@google-cloud/compute": "7.3.0",
+    "@google-cloud/kms": "5.3.0",
     "@google-cloud/monitoring": "6.1.0",
     "@google-cloud/run": "4.1.0",
     "@hexera/api-client": "workspace:*",

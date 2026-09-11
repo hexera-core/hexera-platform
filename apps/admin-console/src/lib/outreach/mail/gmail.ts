@@ -9,6 +9,8 @@
  * Scopes are minimal on purpose — send and read, never modify or delete.
  */
 import { google } from "googleapis";
+
+import { decryptSecret, encryptSecret, kmsKeyName } from "../crypto";
 import type { OAuth2Client } from "google-auth-library";
 import type { gmail_v1 } from "googleapis";
 import { get, run } from "../db";
@@ -56,10 +58,20 @@ export function oauthClient(): OAuth2Client {
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 }
 
+/** Reads the stored token and opens its sealed fields. Nothing else should read the table. */
 export async function storedToken(accountEmail?: string): Promise<StoredToken | undefined> {
-  return accountEmail
+  const row = accountEmail
     ? await get<StoredToken>(`SELECT * FROM oauth_tokens WHERE account_email = ?`, [accountEmail])
     : await get<StoredToken>(`SELECT * FROM oauth_tokens ORDER BY updated_at DESC LIMIT 1`);
+  if (!row) return undefined;
+
+  // Opened HERE and nowhere else, so there is exactly one place a sealed token becomes readable.
+  const key = kmsKeyName(process.env);
+  return {
+    ...row,
+    access_token: await decryptSecret(row.access_token, key),
+    refresh_token: await decryptSecret(row.refresh_token, key),
+  };
 }
 
 export async function saveToken(accountEmail: string, tokens: Record<string, unknown>): Promise<void> {
@@ -79,8 +91,8 @@ export async function saveToken(accountEmail: string, tokens: Record<string, unk
        updated_at = excluded.updated_at`,
     [
       accountEmail,
-      (tokens.access_token as string) ?? null,
-      (tokens.refresh_token as string) ?? null,
+      await encryptSecret((tokens.access_token as string) ?? null, kmsKeyName(process.env)),
+      await encryptSecret((tokens.refresh_token as string) ?? null, kmsKeyName(process.env)),
       (tokens.scope as string) ?? null,
       (tokens.token_type as string) ?? null,
       (tokens.expiry_date as number) ?? null,

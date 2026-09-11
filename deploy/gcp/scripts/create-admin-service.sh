@@ -22,8 +22,12 @@
 # actively removes one it finds, and has no setting to turn the behaviour off. See
 # docs/deployment/admin-console-access.md.
 #
-# WHY NO SECRET BINDINGS. IAP is this service's gate and it holds no session of its own - there is
-# nothing here for Secret Manager to hand it, so that loop is omitted rather than carried empty.
+# THE SECRETS IT DOES HOLD, and why it holds any. IAP is this service's gate and it keeps no
+# session of its own, so nothing here authenticates a USER. What it does need is credentials for
+# the things it talks to on the operator's behalf: the outreach engine's Google OAuth client, its
+# database role, and the model and enrichment providers. Each is a Secret Manager REFERENCE under
+# the `<SETTING>_SECRET` convention; a name that is unset is skipped rather than bound empty, so a
+# deployment that runs no outreach binds nothing and this loop stays empty exactly as before.
 #
 # WHY NO VPC EGRESS, NO DATABASE CONNECTION. Those arrive with the next sub-project, alongside the
 # first page that actually queries something. Provisioning them here would be ahead of the feature
@@ -75,6 +79,24 @@ info "Admin console service ${ADMIN_SERVICE} in ${GCP_REGION} (${GCP_PROJECT_ID}
 log "image (validated digest): ${ADMIN_IMAGE}"
 
 # 1) the admin runtime identity - a named account, not the default compute service account.
+# 0) THE CREDENTIALS, as references. `RUNTIME_VAR:ENV_VAR_HOLDING_THE_SECRET_NAME` - the same
+#    shape the console tier and the worker startup script read theirs from. Resolved before
+#    anything is mutated, so a misconfiguration is caught before an identity or a binding exists.
+ADMIN_SECRET_BINDINGS=()
+ADMIN_SECRET_NAMES=()
+for pair in "GOOGLE_CLIENT_SECRET:GOOGLE_CLIENT_SECRET_SECRET" \
+            "OUTREACH_DB_PASSWORD:OUTREACH_DB_PASSWORD_SECRET" \
+            "ANTHROPIC_API_KEY:ANTHROPIC_API_KEY_SECRET" \
+            "APOLLO_API_KEY:APOLLO_API_KEY_SECRET" \
+            "VERIFIER_API_KEY:VERIFIER_API_KEY_SECRET"; do
+  runtime_var="${pair%%:*}"
+  holder="${pair##*:}"
+  secret_name="${!holder:-}"
+  [ -n "${secret_name}" ] || continue
+  ADMIN_SECRET_BINDINGS+=("${runtime_var}=${secret_name}:latest")
+  ADMIN_SECRET_NAMES+=("${secret_name}")
+done
+
 if sa_exists "${ADMIN_SA_EMAIL}"; then
   log "admin identity ${ADMIN_SA_EMAIL} (exists)"
 else
@@ -108,6 +130,41 @@ for admin_api in cloudbilling.googleapis.com billingbudgets.googleapis.com; do
        command:
          gcloud services enable ${admin_api} --project ${GCP_PROJECT_ID}"
 done
+
+# 1a2) THE KEY THAT SEALS THE MAILBOX CREDENTIAL. Outreach stores a Gmail REFRESH TOKEN, which is
+#      long-lived access to the sending mailbox. On the laptop it lived in a local SQLite file;
+#      hosted, it lives in a shared database whose backups, replicas and dumps all inherit it.
+#      Envelope-encrypting it with KMS is what stops a database dump from being a mailbox
+#      compromise.
+#
+#      Created only where an outreach console runs. The key is NOT rotated automatically: a
+#      rotation that re-keys without re-encrypting the stored rows would lock the mailbox out, and
+#      re-encryption is a migration, not a schedule.
+if [ -n "${OUTREACH_KMS_KEY:-}" ]; then
+  gc services enable cloudkms.googleapis.com >/dev/null 2>&1 || true
+  OUTREACH_KMS_KEYRING="${OUTREACH_KMS_KEYRING:-outreach}"
+  OUTREACH_KMS_KEY_ID="${OUTREACH_KMS_KEY_ID:-oauth-tokens}"
+
+  gc kms keyrings create "${OUTREACH_KMS_KEYRING}" --location "${GCP_REGION}" >/dev/null 2>&1 \
+    || log "kms keyring ${OUTREACH_KMS_KEYRING} (exists)"
+  gc kms keys create "${OUTREACH_KMS_KEY_ID}" \
+    --location "${GCP_REGION}" --keyring "${OUTREACH_KMS_KEYRING}" --purpose encryption >/dev/null 2>&1 \
+    || log "kms key ${OUTREACH_KMS_KEY_ID} (exists)"
+
+  #   ENCRYPTER/DECRYPTER ONLY. Not admin: the console must never be able to destroy or rotate the
+  #   key that its stored tokens depend on.
+  gc kms keys add-iam-policy-binding "${OUTREACH_KMS_KEY_ID}" \
+    --location "${GCP_REGION}" --keyring "${OUTREACH_KMS_KEYRING}" \
+    --member "serviceAccount:${ADMIN_SA_EMAIL}" \
+    --role roles/cloudkms.cryptoKeyEncrypterDecrypter >/dev/null 2>&1 \
+    && log "kms key ${OUTREACH_KMS_KEY_ID} += cryptoKeyEncrypterDecrypter -> ${ADMIN_SA_EMAIL}" \
+    || warn "could not grant cryptoKeyEncrypterDecrypter on ${OUTREACH_KMS_KEY_ID}. The outreach
+       pages refuse to store a mailbox token without it, which is the correct failure, and this is
+       the command:
+         gcloud kms keys add-iam-policy-binding ${OUTREACH_KMS_KEY_ID} --project ${GCP_PROJECT_ID} \\
+           --location ${GCP_REGION} --keyring ${OUTREACH_KMS_KEYRING} \\
+           --member serviceAccount:${ADMIN_SA_EMAIL} --role roles/cloudkms.cryptoKeyEncrypterDecrypter"
+fi
 
 # 1b) WHAT THE CONSOLE MAY READ, AND WHAT IT MAY CHANGE.
 #
@@ -179,6 +236,17 @@ fi
 # API refuses it on a project outright - "Role roles/billing.viewer is not supported for this
 # resource" - so including it here could only ever produce a warning that never becomes a grant.
 # Both Costs reads need it, and both are covered by the one manual command printed below.
+for secret_name in ${ADMIN_SECRET_NAMES[@]+"${ADMIN_SECRET_NAMES[@]}"}; do
+  gc secrets add-iam-policy-binding "${secret_name}" \
+    --member "serviceAccount:${ADMIN_SA_EMAIL}" \
+    --role roles/secretmanager.secretAccessor >/dev/null 2>&1 \
+    && log "secret/${secret_name} += secretAccessor -> ${ADMIN_SA_EMAIL}" \
+    || warn "could not grant secretAccessor on ${secret_name}. If the binding exists the service
+       still starts; if it does not, Cloud Run refuses the revision:
+         gcloud secrets add-iam-policy-binding ${secret_name} --project ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${ADMIN_SA_EMAIL} --role roles/secretmanager.secretAccessor"
+done
+
 ADMIN_PROJECT_ROLES=(
   roles/compute.viewer
   roles/monitoring.viewer
@@ -241,6 +309,12 @@ ADMIN_ENV_PAIRS=(
   "QUEUE_NAME=${QUEUE_NAME:-simulation_jobs}"
   "WORKER_MIG=${WORKER_MIG:-}"
   "WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}"
+  "OUTREACH_KMS_KEY=${OUTREACH_KMS_KEY:-}"
+  "OUTREACH_DB_HOST=${OUTREACH_DB_HOST:-}"
+  "OUTREACH_DB_NAME=${OUTREACH_DB_NAME:-}"
+  "OUTREACH_DB_USER=${OUTREACH_DB_USER:-}"
+  "GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}"
+  "DRY_RUN=${DRY_RUN:-1}"
 )
 DECLARED_ENV_NAMES=()
 for pair in "${ADMIN_ENV_PAIRS[@]}"; do
@@ -315,6 +389,9 @@ deploy_args=(
   --no-allow-unauthenticated
   --iap
 )
+if [ ${#ADMIN_SECRET_BINDINGS[@]} -gt 0 ]; then
+  deploy_args+=(--set-secrets "$(IFS=,; printf '%s' "${ADMIN_SECRET_BINDINGS[*]}")")
+fi
 
 # THE SCALING FLAGS ARE CREATE-ONLY. Once the service exists its warm floor and ceiling belong to
 # the ADMIN CONSOLE's Fleet page, and `gcloud run deploy` leaves a flag it is not given untouched -
