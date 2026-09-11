@@ -12,12 +12,17 @@
    design's section 10.
 / */
 
-/* The still background the site's non-hero pages use. No canvas - see decision 3. */
+/* The still background the site's non-hero pages use. No canvas - see decision 3.
+   This is the site's OWN .page-bg (styles.css:441-447): two soft glows over the canvas, not
+   the hero's .vignette (a darkening fade) - an earlier draft of this file ported the wrong
+   rule. Same positions, sizes and stops as the site; the site hardcodes its literal teal and
+   amber here even though orange-theme.css retires both everywhere else, so the colours are
+   re-expressed in the current palette (steel, then the one accent) at the same opacities. */
 .page-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
-  background:var(--canvas);
-  background-image:
-    radial-gradient(120% 90% at 72% 40%,transparent 0%,transparent 42%,rgba(8,8,7,.45) 74%,rgba(6,6,5,.9) 100%),
-    linear-gradient(100deg,rgba(7,7,6,.92) 0%,rgba(11,11,10,.6) 34%,transparent 70%)}
+  background:
+    radial-gradient(115% 80% at 82% -12%,rgba(109,139,175,.12),transparent 56%),
+    radial-gradient(95% 70% at -5% 6%,rgba(255,79,0,.07),transparent 52%),
+    var(--canvas)}
 
 .grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.04;mix-blend-mode:screen;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
@@ -25,7 +30,9 @@
 /* Nav - the site's fixed bar, used by the auth pages. */
 .nav{position:fixed;top:0;left:0;right:0;height:4.5rem;z-index:20;
   display:flex;align-items:center;justify-content:space-between;gap:1.5rem;
-  padding:0 clamp(1.25rem,4vw,4rem);border-bottom:1px solid transparent}
+  padding:0 clamp(1.25rem,4vw,4rem);border-bottom:1px solid transparent;
+  transition:background .4s cubic-bezier(.16,1,.3,1),border-color .4s cubic-bezier(.16,1,.3,1),
+             backdrop-filter .4s cubic-bezier(.16,1,.3,1)}
 .nav.is-stuck{background:rgba(13,13,12,.9);backdrop-filter:blur(14px) saturate(1.1);
   border-bottom-color:var(--border)}
 

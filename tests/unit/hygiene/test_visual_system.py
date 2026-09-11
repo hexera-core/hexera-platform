@@ -32,6 +32,29 @@ def test_the_chrome_carries_the_sites_primitives():
         assert selector in chrome, f"chrome.css is missing {selector}"
 
 
+def test_the_page_bg_layers_two_glows_not_a_darkening_vignette():
+    # hexera-site is not available in CI, so this cannot verify fidelity against the live site --
+    # that gap is an accepted cost, not something this test pretends to close. What it CAN pin is
+    # the shape of the primitive that was wrong once already: the site's own .page-bg (a still
+    # background with two soft radial glows) got confused with its .vignette (a hero-only
+    # darkening fade) in an earlier draft. Presence-only checks let that pass; this pins values.
+    chrome = (CSS / "chrome.css").read_text()
+    start = chrome.index(".page-bg{")
+    block = chrome[start:start + 400]
+    assert block.count("radial-gradient(") == 2, ".page-bg should layer exactly two glows"
+    for darkening_literal in ("rgba(8,8,7", "rgba(6,6,5", "rgba(7,7,6", "rgba(11,11,10"):
+        assert darkening_literal not in block, (
+            f".page-bg still carries the vignette's darkening literal {darkening_literal}"
+        )
+
+
+def test_the_nav_bar_eases_into_its_stuck_state():
+    chrome = (CSS / "chrome.css").read_text()
+    start = chrome.index(".nav{")
+    base_nav = chrome[start:start + 300]
+    assert "transition" in base_nav, ".nav lost the transition that eases it into .is-stuck"
+
+
 def test_the_console_ships_no_second_accent():
     # One hot colour. A stray hex that is neither the accent, the steel linework nor a status
     # role is how a palette becomes six colours nobody chose.
