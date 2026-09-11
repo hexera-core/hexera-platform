@@ -21,7 +21,9 @@ def test_vmtk_is_an_implemented_engine():
     assert "vmtk" in ec.engine_names()
     sp = ec.get_spec("vmtk")
     assert sp.implemented
-    assert [(c.input_kind, c.output_kind) for c in sp.capabilities] == [("body-surface", "fluid-volume")]
+    # a surface, or a declared fluid solid whose boundary IS that surface (HEX-11)
+    assert [(c.input_kind, c.output_kind) for c in sp.capabilities] == [
+        ("body-surface", "fluid-volume"), ("fluid-domain", "fluid-volume")]
 
 
 def test_engine_is_the_tool_the_domain_is_the_purpose():

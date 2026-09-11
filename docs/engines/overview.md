@@ -40,7 +40,7 @@ Two standing rules:
 | gmsh | fluid-domain → fluid-volume | mesh a supplied fluid domain for CFD |
 | gmsh | planar-domain → surface-mesh | 2D plane-stress FEA from a flat face |
 | snappy_multiregion | solid-assembly → multiregion-volume | coupled conformal regions (CHT/multi-material); no undeclared region may ship (reconciliation-gated) |
-| vmtk | body-surface → fluid-volume | radius-adaptive tets with wall layers inside a tubular or branching lumen; a CAD body with declared ports is opened and sized by the engine itself (`engines/vmtk/lumen_staging.py`) |
+| vmtk | body-surface → fluid-volume; fluid-domain → fluid-volume | radius-adaptive tets with wall layers inside a tubular or branching lumen; a CAD body with declared ports is opened and sized by the engine itself (`engines/vmtk/lumen_staging.py`) |
 
 ## Rejected boundaries (enforced in code)
 
