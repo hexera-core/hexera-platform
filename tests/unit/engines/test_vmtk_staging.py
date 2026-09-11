@@ -298,6 +298,23 @@ def _mesh_with_caps(ws):
     return pts[[0, 3, 2]].mean(axis=0)           # centroid of the cap face
 
 
+def test_finalize_writes_the_review_surface_under_the_declared_names(tmp_path):
+    pytest.importorskip("gmsh")
+    cap_c = _mesh_with_caps(tmp_path)
+    (tmp_path / LS.STAGING_FACT).write_text(json.dumps({"ports": [
+        {"name": "inlet", "role": "inlet", "centroid": cap_c.tolist(), "size_m": 1.0}]}))
+    intake = [{"name": "inlet", "type": "inlet"}, {"name": "wall", "type": "wall"}]
+    out = vmtk_runner.finalize(str(tmp_path), intake, "vmtk", "internal flow", True, {}, "")
+    assert out["success"] is True
+    msh = tmp_path / "mesh.msh"
+    assert msh.exists() and msh.read_bytes().startswith(b"$MeshFormat")
+    text = msh.read_text(errors="replace")
+    assert '"inlet"' in text and '"wall"' in text and "cap_0" not in text
+    man = json.loads((tmp_path / "mesh_manifest.json").read_text())
+    assert man["patches"]["inlet"] and man["patches"]["wall"]     # the msh entities
+    assert man["mesh_paths"]["surface"].endswith("mesh.msh")
+
+
 def test_viewer_names_caps_after_the_staged_ports_but_the_gate_form_keeps_ids(tmp_path):
     from meshpipeline.engines.vmtk.viewer_surface import surface_patches
     cap_c = _mesh_with_caps(tmp_path)

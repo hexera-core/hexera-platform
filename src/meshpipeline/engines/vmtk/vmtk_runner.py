@@ -777,6 +777,22 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # the contracted patches: the lumen wall + each capped opening (roles come from intake)
     patch_types = {str(p.get("name")): str(p.get("type"))
                    for p in (intake_patches or []) if p.get("name")}
+    # THE REVIEW SURFACE. The reviewer requires mesh_paths.surface (a gmsh .msh, one physical
+    # group per patch - engines/vmtk/_shared.py) and refused every vmtk delivery without it
+    # ("required artifact 'mesh_paths.surface' does not exist", straight_reducer_014, job
+    # 98ec197e, 2026-09-11). Written with the writer the OpenFOAM engines use, from the
+    # delivered boundary under the DECLARED names (caps bound to their ports); cap_0 is the
+    # tets' own outer faces, the same surface again, and is left out.
+    patch_entities: dict = {n: [] for n in patch_types}
+    try:
+        from meshpipeline.engines.vmtk.viewer_surface import surface_patches as _named_patches
+        from meshpipeline.render.review_artifacts import build_review_msh
+        _review = {n: t for n, t in _named_patches(ws, named=True).items() if n != "cap_0"}
+        if _review:
+            _ents, _ = build_review_msh(ws, _review)
+            patch_entities.update(_ents)
+    except Exception:  # noqa: BLE001 - the mesh stands; the review surface is evidence
+        logger.exception("vmtk finalize: review surface (mesh.msh) not written")
     # PREPARED geometry - the staged lumen surface - kept as preparation evidence (body_bbox).
     surf = _read_surface(ws / _LUMEN).extract_surface() if (ws / _LUMEN).exists() else None
     b = surf.bounds if surf is not None else (0, 1, 0, 1, 0, 1)
@@ -793,7 +809,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     write_manifest(
         ws,
         patch_types=patch_types,
-        patch_entities={n: [] for n in patch_types},
+        patch_entities=patch_entities,
         bbox=bbox,
         quality=q,
         domain=domain or "internal flow through a lumen",
