@@ -46,3 +46,17 @@ def test_no_stylesheet_reaches_for_the_hero_canvas():
     # 40 KB and the console already ships vtk.js.
     for sheet in CSS.glob("*.css"):
         assert "fluid" not in sheet.read_text().lower(), f"{sheet.name} references the hero canvas"
+
+
+def test_the_auth_surface_defines_the_classes_its_pages_consume():
+    auth = (CSS / "auth.css").read_text()
+    for selector in (".auth__panel", ".auth__title", ".auth__form", ".auth__field",
+                     ".auth__input", ".auth__error", ".auth__alt"):
+        assert selector in auth, f"auth.css is missing {selector}"
+
+
+def test_the_auth_title_uses_the_display_face_at_its_thin_weight():
+    auth = (CSS / "auth.css").read_text()
+    title = auth[auth.index(".auth__title"):auth.index(".auth__title") + 400]
+    assert "var(--display)" in title
+    assert "font-weight:300" in title.replace(" ", "")

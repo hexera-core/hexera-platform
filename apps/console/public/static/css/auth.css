@@ -1,0 +1,54 @@
+/* Responsibility: Style the four unauthenticated pages - the column, its panel and its form. */
+/* Boundaries: the auth surface only; it defines no colour of its own and no dashboard rule. */
+
+/* /
+   These pages used to borrow the console's chat scaffold - #app, #stage, .chat-col, #empty -
+   and style their inputs from a CSSProperties object in auth-form-styles.ts. A login form
+   rendered inside a conversation column is why the surface read as unfinished. This sheet is
+   the surface's own, and it sits on the site's chrome rather than the product's.
+/ */
+
+.auth{position:relative;z-index:10;min-height:100svh;display:flex;align-items:center;
+  justify-content:center;padding:calc(4.5rem + 4vh) clamp(1.25rem,4vw,4rem) 4vh}
+
+.auth__panel{width:100%;max-width:26rem;display:flex;flex-direction:column;gap:1.5rem}
+
+/* Saira 300 - the site's display voice. A page title is the ONE place it appears in the
+   console; everything else is Geist or the mono readout. */
+.auth__title{font-family:var(--display);font-weight:300;font-size:clamp(2rem,1.2rem+2.4vw,2.9rem);
+  line-height:1.02;letter-spacing:0;color:var(--text-bright)}
+.auth__title em{font-style:normal;color:var(--accent)}
+
+.auth__sub{color:var(--text-muted);font-size:.95rem;line-height:1.6}
+
+.auth__form{display:flex;flex-direction:column;gap:.85rem}
+.auth__field{display:flex;flex-direction:column;gap:.4rem}
+.auth__field > .label{color:var(--text-faint)}
+
+.auth__input{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius);
+  color:var(--text);font-family:var(--sans);font-size:.95rem;line-height:1.5;padding:.8rem .9rem;
+  transition:border-color .25s cubic-bezier(.16,1,.3,1)}
+.auth__input:hover{border-color:var(--border-strong)}
+.auth__input::placeholder{color:var(--text-faint)}
+
+/* The error is mono, like every other machine-emitted line in this product, and it carries a
+   mark as well as a colour - meaning is never in the hue alone. */
+.auth__error{display:flex;align-items:flex-start;gap:.5rem;font-family:var(--mono);
+  font-size:.72rem;line-height:1.55;letter-spacing:.02em;color:var(--danger);
+  background:var(--danger-soft);border:1px solid var(--danger);
+  border-radius:var(--radius-tight);padding:.6rem .7rem}
+.auth__error::before{content:"!";flex:none;font-weight:500}
+.auth__note{border-color:var(--steel);background:var(--steel-soft);color:var(--steel-bright)}
+.auth__note::before{content:"i"}
+
+.auth__alt{display:flex;flex-wrap:wrap;gap:1rem;font-size:.85rem;color:var(--text-muted)}
+.auth__alt a{color:var(--text);text-decoration:none;border-bottom:1px solid var(--border-strong);
+  padding-bottom:1px}
+.auth__alt a:hover{border-bottom-color:var(--accent)}
+
+.auth__foot{margin-top:.5rem;color:var(--text-faint);font-size:.78rem;line-height:1.6}
+
+@media (max-width:520px){
+  .auth{padding-top:calc(4.5rem + 2vh)}
+  .auth__panel{max-width:100%}
+}
