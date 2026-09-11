@@ -93,6 +93,14 @@ def test_the_dashboard_shell_defines_the_classes_its_pages_consume():
         assert selector in dashboard, f"dashboard.css is missing {selector}"
 
 
+def test_main_js_accepts_a_server_injected_job_as_well_as_the_query_string():
+    main = (REPO / "ui" / "js" / "main.js").read_text()
+    assert "__HEXERA_BOOT_JOB__" in main
+    assert "__HEXERA_ROUTED__" in main
+    # ui/index.html sets neither and must keep working exactly as it does today.
+    assert 'params.get("job")' in main
+
+
 def test_the_legacy_component_sheets_keep_the_selectors_main_js_drives():
     # main.js, stage.js and viewer.js select these at runtime. Restyling moves values; deleting a
     # selector silently breaks the workbench in a way no unit test would catch.

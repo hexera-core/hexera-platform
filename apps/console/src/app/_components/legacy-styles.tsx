@@ -49,7 +49,3 @@ export function AuthStyles() {
 export function DashboardStyles() {
   return <Sheets hrefs={DASHBOARD_SHEETS} />;
 }
-
-/** Transitional: the auth pages and (console)/page.tsx still import this name. Tasks 11 and
- *  13 move those callers onto AuthStyles/DashboardStyles, and this alias goes with them. */
-export const LegacyStyles = DashboardStyles;
