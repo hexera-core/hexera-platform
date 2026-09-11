@@ -190,6 +190,23 @@ def test_layer_coverage_counts_faces_of_layer_tets_not_vertex_membership():
     assert pct == 50.0
 
 
+def test_passage_resolution_is_measured_and_a_coarse_fill_is_rejected(tmp_path):
+    # one regular-ish tet of volume 1/6: its edge reads ~1.12; a staged passage of radius 0.5
+    # is then under one cell across (fatal), one of radius 10 about 18 across (fine)
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
+    (tmp_path / "vmtk_staging.json").write_text(json.dumps({"radius_m": {"median": 0.5}}))
+    q = check_mesh(tmp_path)
+    assert q["passage_cells_across"] < 12 and q["mesh_ok"] is False
+    assert any("undermeshed" in f for f in q["fatal"])
+    (tmp_path / "vmtk_staging.json").write_text(json.dumps({"radius_m": {"median": 10.0}}))
+    q = check_mesh(tmp_path)
+    assert 15 < q["passage_cells_across"] < 20 and q["mesh_ok"] is True
+    assert q["layer_coverage_pct"] == q["layer_coverage"]
+    # nothing staged: no figure, no verdict
+    (tmp_path / "vmtk_staging.json").unlink()
+    assert check_mesh(tmp_path)["passage_cells_across"] is None
+
+
 def test_a_cap_wound_the_other_way_does_not_read_as_overlap(tmp_path):
     # vmtk winds cap triangles opposite to the wall; the enclosed volume must not depend on it
     faces = list(_TET_FACES[:3]) + [tuple(reversed(_TET_FACES[3]))]

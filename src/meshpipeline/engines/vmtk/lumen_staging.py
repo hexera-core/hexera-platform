@@ -41,13 +41,14 @@ MAX_EDGE_FRACTION = 0.2
 #: grazes a corner reads near zero, one that crosses a junction into the main run reads the run.
 RADIUS_LO_FRACTION = 0.25
 RADIUS_HI_FRACTION = 0.75
-#: After the ray cast, every point takes the SMALLEST radius within this many mesh rings. A ray
-#: along the normal reads the gap in one direction only: on a wide flat duct (transition_013,
-#: 545 x 88 mm) the top and bottom walls read the 88 mm gap while the 88 mm-tall side walls look
-#: across the 545 mm width, read a radius four times larger, and the remesh graded 13 mm cells
-#: into 55 mm ones over a strip two cells tall - TetGen refused the surface (rc -11, both ladder
-#: modes, 2026-09-11). The gap a wall sees must govern the walls beside it.
-RADIUS_MIN_RINGS = 4
+#: After the ray cast, every point takes the SMALLEST radius found within this many times its
+#: own radius. A ray along the normal reads the gap in one direction only: on a wide flat duct
+#: (transition_013, 545 x 88 mm) the top and bottom walls read the 88 mm gap while the 88 mm-tall
+#: side walls look across the 545 mm width and read a radius four times larger, so the remesh
+#: graded 13 mm cells into 55 mm ones over a strip two cells tall. The gap a wall sees must
+#: govern the walls beside it: a point claiming radius R has no narrower gap within R of it. A
+#: ball in metres, not mesh rings - the staged wall is as coarse as MAX_EDGE_FRACTION allows.
+RADIUS_MIN_REACH = 1.0
 
 
 def is_cad(path) -> bool:
@@ -107,8 +108,9 @@ def sizing(ports: list[dict]) -> dict:
 def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: float,
                  r_hi: float) -> np.ndarray:
     """The lumen's local radius at every wall point: half the chord from the point along its
-    INWARD normal to the opposite wall, clipped to [r_lo, r_hi] and smoothed once over the
-    1-ring. Rays that leave through an open port borrow the nearest measured value.
+    INWARD normal to the opposite wall, clipped to [r_lo, r_hi], floored to the smallest radius
+    within RADIUS_MIN_REACH of its own, and smoothed once over the 1-ring. Rays that leave
+    through an open port borrow the nearest measured value.
 
     WHY NOT vmtk's centerline: vmtkcenterlines traces a steepest descent on the Voronoi diagram
     of the surface, and on a uniformly remeshed straight run the diagram is degenerate - the
@@ -154,9 +156,9 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
         for i in np.flatnonzero(miss):
             r[i] = rv[loc.FindClosestPoint(pts[i])]
     r = np.clip(r, r_lo, r_hi)
+    r = _ball_min(pts, r, RADIUS_MIN_REACH)
     f = np.asarray(faces, dtype=np.int64)
     e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
-    r = _ring_min(r, e, len(pts), RADIUS_MIN_RINGS)
     acc = (np.bincount(e[:, 0], weights=r[e[:, 1]], minlength=len(pts))
            + np.bincount(e[:, 1], weights=r[e[:, 0]], minlength=len(pts)))
     cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
@@ -173,15 +175,29 @@ def _measure_opening(poly) -> dict:
             "size_m": 2.0 * float(np.sqrt(area / np.pi))}
 
 
-def _ring_min(values: np.ndarray, edges: np.ndarray, n_points: int, rings: int) -> np.ndarray:
-    """Each point takes the minimum of itself and its neighbours, repeated `rings` times."""
-    out = np.asarray(values, dtype=float).copy()
-    a, b = edges[:, 0], edges[:, 1]
-    for _ in range(int(rings)):
-        nb = np.full(n_points, np.inf)
-        np.minimum.at(nb, a, out[b])
-        np.minimum.at(nb, b, out[a])
-        out = np.minimum(out, nb)
+def _ball_min(pts: np.ndarray, r: np.ndarray, reach: float) -> np.ndarray:
+    """Each point takes the smallest radius over every point (itself included) within `reach`
+    times its own radius. The wall is first binned into voxels the size of the smallest radius
+    (one minimum per voxel), so a 185 mm ball on a 5 mm wall reads a few hundred voxels, not a
+    few thousand points; the ball is padded by a voxel diagonal so the read stays inclusive."""
+    from scipy.spatial import cKDTree
+    r = np.asarray(r, dtype=float)
+    cell = float(r.min())
+    _, inv = np.unique(np.floor(pts / cell).astype(np.int64), axis=0, return_inverse=True)
+    inv = inv.ravel()
+    n = int(inv.max()) + 1
+    vmin = np.full(n, np.inf)
+    np.minimum.at(vmin, inv, r)
+    centre = np.zeros((n, 3))
+    np.add.at(centre, inv, pts)
+    centre /= np.bincount(inv, minlength=n)[:, None]
+    tree = cKDTree(centre)
+    pad = cell * np.sqrt(3.0)
+    out = r.copy()
+    step = 4096
+    for i in range(0, len(pts), step):
+        balls = tree.query_ball_point(pts[i:i + step], r[i:i + step] * float(reach) + pad)
+        out[i:i + step] = [min(out[i + j], vmin[b].min()) for j, b in enumerate(balls)]
     return out
 
 
@@ -224,14 +240,16 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
     size = sizing(ports)
     from typing import Any
 
-    from meshpipeline.engines.vmtk.rims import split_long_edges
+    from meshpipeline.engines.vmtk.rims import bound_edges
     wall: Any = pv.read(str(stls["wall"])).clean()
     # OCP tessellates a straight cylinder as slivers spanning its whole length (min angle 0.001
-    # degrees on the tee): vmtksurfaceremeshing corrupts the rims of such input. Bounding every
-    # edge - rims and interior alike - to the remesh length first turns each sliver into short
-    # pieces of sane aspect ratio (see rims.py for why not a subdivision filter).
-    pts, tri = split_long_edges(np.asarray(wall.points), wall.faces.reshape(-1, 4)[:, 1:],
-                                size["edge_bound"])
+    # degrees on the tee), a flat 545 mm wall as a handful of giant triangles (transition_013)
+    # and the foot of a manifold stub as 50 x 0.8 mm needles (manifold_002): vmtksurfaceremeshing
+    # pinches the rims of such input into zero-area non-manifold triangles and the generator
+    # segfaults. The rims are cut to the remesh length, the interior only to the coarsest cell
+    # the remesh may produce, and nothing needle-shaped is left anywhere (rims.py says why each).
+    pts, tri = bound_edges(np.asarray(wall.points), wall.faces.reshape(-1, 4)[:, 1:],
+                           h_wall=size["max_edge_length"], h_rim=size["edge_bound"])
     lumen: Any = pv.PolyData(pts, np.hstack([np.full((len(tri), 1), 3, dtype=np.int64),
                                              tri]).ravel()).clean()
     radius = local_radius(np.asarray(lumen.points), lumen.faces.reshape(-1, 4)[:, 1:],

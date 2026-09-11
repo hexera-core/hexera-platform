@@ -129,7 +129,7 @@ def _flat_duct(width=0.5, gap=0.1, length=0.6, n=10):
 
 def test_local_radius_lets_a_narrow_gap_govern_the_walls_beside_it():
     # 500 x 100 mm duct: the wide walls see the 100 mm gap; the 100 mm-tall side walls look across
-    # 500 mm. Without the ring-min the side walls would size 2.5x coarser than the gap allows.
+    # 500 mm. Without the ball-min the side walls would size 2.5x coarser than the gap allows.
     pts, tri = _flat_duct()
     r = LS.local_radius(pts, tri, interior_point=(0.3, 0.0, 0.0), r_lo=0.01, r_hi=0.3)
     side = np.abs(np.abs(pts[:, 1]) - 0.25) < 1e-9      # points on the two narrow side walls
@@ -223,7 +223,8 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
                                        stderr="")
         if "-skipremeshing 0" in joined:            # the generator's own remesh: TetGen gives up
             (tmp_path / "mesh.vtu").write_text("layers only")
-            return sp.CompletedProcess(argv, 0, stdout="TetGen quit with an exception.", stderr="")
+            return sp.CompletedProcess(argv, 0, stdout="Generating volume mesh\nTetGen quit "
+                                       "with an exception.", stderr="")
         (tmp_path / "mesh.vtu").write_text("filled")
         return sp.CompletedProcess(argv, 0, stdout="Done executing vmtkmeshgenerator.", stderr="")
 
@@ -237,6 +238,7 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     assert calls[1][1] == "vmtkmeshgenerator" and calls[2][1] == "vmtkmeshgenerator"
     assert "-skipremeshing 1" in " ".join(calls[2]) and "-sublayers 3" in " ".join(calls[2])
     assert "generator remesh off" in res["repair_note"]
+    assert "last generator stage: Generating volume mesh" in res["repair_note"]
     shipped = json.loads((tmp_path / "vmtk_spec.json").read_text())
     assert shipped["generator_remesh"] is False and shipped["boundary_layers"] == 3
     assert "repair_note" in shipped
@@ -283,6 +285,79 @@ def test_an_unchanged_retry_keeps_its_pass_identity(tmp_path, monkeypatch):
     (tmp_path / "vmtk_spec.json").write_text(json.dumps({"edge_length_factor": 0.25}))
     R.run_cartesian_mesh(tmp_path, timeout=10)              # a revised spec: its own pass
     assert ME.read_native_pass(tmp_path) == 2
+
+
+def test_a_completed_fill_is_also_written_as_an_openfoam_case(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    exported: list = []
+
+    def fake_run(argv, **kw):
+        if "vmtksurfaceremeshing" in " ".join(argv):
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+        else:
+            (tmp_path / "mesh.vtu").write_text("filled")
+        return sp.CompletedProcess(argv, 0, stdout="Done executing.", stderr="")
+
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    monkeypatch.setattr(R, "export_openfoam_case", lambda ws, **kw: exported.append(kw) or "openfoam_case")
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=900)
+    assert res["rc"] == 0 and res["openfoam_case"] == "openfoam_case"
+    assert len(exported) == 1 and 0 < exported[0]["timeout"] <= 900
+
+
+def test_the_gmsh_volume_file_names_every_patch(tmp_path):
+    from meshpipeline.engines.vmtk.vmtk_runner import _write_gmsh_volume
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    faces = [(0, 2, 1), (0, 1, 3), (1, 2, 3), (0, 3, 2)]
+    cells = np.hstack([[4, 0, 1, 2, 3]] + [[3, *f] for f in faces]).astype(np.int64)
+    ctypes = np.array([vtk.VTK_TETRA] + [vtk.VTK_TRIANGLE] * 4, dtype=np.uint8)
+    g = pv.UnstructuredGrid(cells, ctypes, pts)
+    g.cell_data["CellEntityIds"] = np.array([0, 1, 1, 1, 2], dtype=np.int32)
+    facts = _write_gmsh_volume(g, {1: "wall", 2: "inlet"}, tmp_path / "mesh_volume.msh")
+    text = (tmp_path / "mesh_volume.msh").read_text()
+    assert facts == {"nodes": 4, "tets": 1, "triangles": 4, "patches": {1: "wall", 2: "inlet"}}
+    assert text.startswith("$MeshFormat\n2.2 0 8")
+    assert '2 1 "wall"' in text and '2 2 "inlet"' in text and '3 100 "fluid"' in text
+    assert "$Nodes\n4\n" in text and "$Elements\n5\n" in text
+    # the cap triangle carries tag 2, the tet the fluid tag, both 1-based node ids
+    lines = text.split("$Elements\n5\n", 1)[1].splitlines()
+    assert lines[3].split()[3:5] == ["2", "2"] and lines[4].split()[1:5] == ["4", "2", "100", "100"]
+
+
+def test_export_openfoam_case_runs_gmshtofoam_in_a_fresh_case(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    faces = [(0, 2, 1), (0, 1, 3), (1, 2, 3), (0, 3, 2)]
+    cells = np.hstack([[4, 0, 1, 2, 3]] + [[3, *f] for f in faces]).astype(np.int64)
+    ctypes = np.array([vtk.VTK_TETRA] + [vtk.VTK_TRIANGLE] * 4, dtype=np.uint8)
+    g = pv.UnstructuredGrid(cells, ctypes, pts)
+    g.cell_data["CellEntityIds"] = np.array([0, 1, 1, 1, 2], dtype=np.int32)
+    g.save(str(tmp_path / "mesh.vtu"))
+    seen: list = []
+
+    def fake_run(argv, **kw):
+        import pathlib
+        seen.append((argv, kw))
+        (pathlib.Path(kw["cwd"]) / "constant" / "polyMesh").mkdir(parents=True)
+        (pathlib.Path(kw["cwd"]) / "constant" / "polyMesh" / "owner").write_text("faces")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    assert R.export_openfoam_case(tmp_path, timeout=300) == "openfoam_case"
+    argv, kw = seen[0]
+    assert "gmshToFoam ../mesh_volume.msh" in argv[-1] and kw["cwd"].endswith("openfoam_case")
+    assert (tmp_path / "openfoam_case" / "system" / "controlDict").exists()
+    assert (tmp_path / "mesh_volume.msh").exists()
+    # a failed conversion is a None, never an exception
+    monkeypatch.setattr(R, "run_guarded",
+                        lambda argv, **kw: sp.CompletedProcess(argv, 1, stdout="boom", stderr=""))
+    assert R.export_openfoam_case(tmp_path, timeout=300) is None
 
 
 def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):

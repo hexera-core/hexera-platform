@@ -23,9 +23,11 @@ AUTHORING_TOOL: dict = {
                 "edge_length_factor": {
                     "type": "number",
                     "description": ("target edge length as a FRACTION OF THE LOCAL RADIUS "
-                                    "(greater than 0, at most 1.0; 0.3 is the default and vmtk's own "
-                                    "published example). Smaller = finer everywhere, scaled to each "
-                                    "branch's radius. This is vmtk's defining knob."),
+                                    "(greater than 0, at most 1.0). About 2/factor cells across "
+                                    "every passage: 0.15 (the default) gives ~13, 0.1 gives ~20; "
+                                    "the engine rejects a fill under 12 across. Smaller = finer "
+                                    "everywhere, scaled to each branch's radius. This is vmtk's "
+                                    "defining knob."),
                 },
                 "source_ids": {"type": "array", "items": {"type": "integer"},
                                "description": ("OPEN-PROFILE ids (from geometry_report) that seed the "
@@ -38,10 +40,10 @@ AUTHORING_TOOL: dict = {
                 "target_points": {"type": "array", "items": {"type": "number"},
                                   "description": "explicit outlet seed coordinates [x,y,z,...]"},
                 "boundary_layers": {"type": "integer", "description": "near-wall prism layers inside the lumen wall (0=none)"},
-                "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness vs local radius (default 0.2)"},
+                "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness as a fraction of the local radius (default 0.15; layers grow 1.25x away from the wall)"},
                 "cap_openings": {"type": "boolean", "description": "cap the open profiles at the lumen ends into inlet/outlet patches (default true; set false when the lumen is already closed)"},
                 "remesh_surface": {"type": "boolean", "description": "radius-adaptive surface remesh before the volume fill (default true)"},
-                "max_cells": {"type": "integer", "description": "cell budget (default 4e6)"},
+                "max_cells": {"type": "integer", "description": "cell budget (default 8e6)"},
                 "min_edge_length": {"type": "number",
                                     "description": "ENGINE-STAGED (metres): floor on the radius-adaptive cell size"},
                 "max_edge_length": {"type": "number",
@@ -117,7 +119,7 @@ def validate(strategy: dict) -> list[Diagnostic]:
             d.append(Diagnostic("warning", "boundary_layer_thickness_factor",
                                 f"boundary_layer_thickness_factor {t} is very thin - below 0.05 the "
                                 "layer tets are slivers (scaled Jacobian ~0.001). Keep the default "
-                                "0.2 unless the brief asks for a specific first-cell height."))
+                                "0.15 unless the brief asks for a specific first-cell height."))
     for b in ("cap_openings", "remesh_surface", "generator_remesh"):
         # ECHO WHAT ARRIVED. A live run sent the STRING "false", read the bare
         # "must be true or false" as a validator bug, retried the same string three times,
@@ -185,10 +187,12 @@ def _validate_seeding(strategy: dict) -> list[Diagnostic]:
 #: ENGINE-OWNED mesh-detail mapping. vmtk sizes from the CENTERLINE RADIUS, so the tier moves the
 #: relative edge-length factor (LOWER = finer) and the layer count. Classification: all soft
 #: recommendations; vmtk's own gate still rejects a mesh above CELL_HARD_LIMIT.
+#: Every tier clears the engine's floor of 12 cells across (criteria.PASSAGE_MIN_CELLS_ACROSS):
+#: a "draft" is a layer-free geometry check at the floor, not a coarser core.
 _FIDELITY_VMTK = {
-    "draft":    {"edge_length_factor": 0.5, "boundary_layers": 0},
-    "standard": {"edge_length_factor": 0.3, "boundary_layers": 3},
-    "max":      {"edge_length_factor": 0.2, "boundary_layers": 5},
+    "draft":    {"edge_length_factor": 0.16, "boundary_layers": 0},
+    "standard": {"edge_length_factor": 0.15, "boundary_layers": 5},
+    "max":      {"edge_length_factor": 0.1, "boundary_layers": 8},
 }
 
 
@@ -202,12 +206,13 @@ def recommend(analysis: dict, *, fidelity: str = "standard") -> dict:
         "mesh_detail_preference": str(fidelity or "standard"),
         "edge_length_factor": _f["edge_length_factor"],
         "boundary_layers": _f["boundary_layers"],
-        "boundary_layer_thickness_factor": 0.2,
+        "boundary_layer_thickness_factor": 0.15,
         "cap_openings": True,
         "remesh_surface": True,
         "note": ("vmtk sizes cells from the CENTERLINE RADIUS, so give it a factor, not a length: "
-                 "edge_length_factor≈0.3 puts roughly 6-7 cells across every branch diameter, "
-                 "narrow or wide. Lower it to refine everywhere; do not try to set an absolute "
+                 "edge_length_factor≈0.15 puts roughly 13 cells across every branch diameter, "
+                 "narrow or wide (0.1 gives ~20; the engine rejects a fill under 12 across). "
+                 "Lower it to refine everywhere; do not try to set an absolute "
                  "cell size. Centerline seeding must be EXPLICIT (no interactive picking). These "
                  "layer/capping values assume an OPEN lumen: if geometry_report reports "
                  "closed=true, set cap_openings=false (nothing to cap) and start from "

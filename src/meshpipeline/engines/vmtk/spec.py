@@ -255,11 +255,16 @@ SPEC = EngineSpec(
                 M("centerlines.vtp", required=False),
                 M("surface_remeshed.vtp", required=False),
                 M("mesh.msh", required=False),
+                # the same volume as an OpenFOAM case (gmshToFoam in the mesh image, right after
+                # the fill) - the label promises one; a customer got a .vtu and a conversion to do
+                M("mesh_volume.msh", required=False),
+                M("openfoam_case/constant/polyMesh", kind="dir", required=False),
+                M("openfoam_case/system/controlDict", required=False),
             ),
         ),
         downstream=DownstreamTarget(
             # FACTUAL consumers of a VTK-native tet volume mesh - not a domain claim
-            solvers=("SimVascular/svSolver", "FEniCS/dolfinx", "SU2", "Elmer"),
+            solvers=("OpenFOAM", "SimVascular/svSolver", "FEniCS/dolfinx", "SU2", "Elmer"),
         ),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),

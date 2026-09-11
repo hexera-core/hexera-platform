@@ -30,13 +30,18 @@ _LUMEN_OPEN = "lumen_open.vtp"     # the staged open wall (engines/vmtk/lumen_st
 #: tets summing to less than the enclosed volume by more than this never filled it.
 OVERLAP_TOLERANCE = 0.02
 
+#: INDUSTRY DENSITY BY DEFAULT (2026-09-11). The first sweep shipped 0.3 / 3 layers / 0.2: about
+#: seven cells across every passage and a layer stack six percent of the radius deep - a preview
+#: mesh, not one a CFD run can use (industry RANS practice is 20-40 cells across, 5-10 layers
+#: over 10-20% of the radius). 0.15 puts ~13 cells across (2 / edge_length_factor) and stays
+#: inside the run budget on the sweep's largest cases; the floor below is 12 (criteria.py).
 _DEFAULTS: dict = {
-    "edge_length_factor": 0.3,
-    "boundary_layers": 3,
-    "boundary_layer_thickness_factor": 0.2,
+    "edge_length_factor": 0.15,
+    "boundary_layers": 5,
+    "boundary_layer_thickness_factor": 0.15,
     "cap_openings": True,
     "remesh_surface": True,
-    "max_cells": 4_000_000,
+    "max_cells": 8_000_000,
     # ENGINE-STAGED sizing. lumen_staging fills these from the declared ports of a CAD body
     # (configure_mesh merges them); empty = nothing staged, the pype runs on the lumen as given.
     "sizing_array": "",
@@ -133,14 +138,26 @@ def _clamp_args(s: dict) -> list[str]:
     ]
 
 
+#: growth of successive wall layers away from the wall (vmtk takes its inverse as -sublayerratio;
+#: its own default 0.5 doubles each layer - far steeper than the 1.2-1.3 CFD practice wants)
+LAYER_GROWTH_RATIO = 1.25
+
+
 def _layer_args(s: dict) -> list[str]:
     layers = int(s["boundary_layers"])
     out = ["-boundarylayer", "1" if layers > 0 else "0"]
     if layers > 0:
+        # vmtk's -thicknessfactor multiplies the LOCAL EDGE LENGTH (edge_length_factor x radius),
+        # while the strategy field is documented, validated and reasoned about as a fraction of
+        # the local RADIUS. Dividing by the edge factor makes the field mean what it says: 0.15
+        # is a stack fifteen percent of the radius deep whatever the cell size. Passed straight
+        # through, the first sweep's 0.2 came out six percent deep.
+        vs_edge = float(s["boundary_layer_thickness_factor"]) / float(s["edge_length_factor"])
         out += [
             # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
             "-sublayers", str(layers),
-            "-thicknessfactor", f"{float(s['boundary_layer_thickness_factor']):g}",
+            "-thicknessfactor", f"{vs_edge:g}",
+            "-sublayerratio", f"{1.0 / LAYER_GROWTH_RATIO:g}",
             # layers belong on the lumen WALL, not across the inlet/outlet caps
             "-boundarylayeroncaps", "0",
         ]
@@ -436,6 +453,22 @@ _LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budge
 _LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
 _now = time.monotonic       # the run clock; tests substitute it
 
+#: vmtkmeshgenerator announces each stage on its own line; the last one seen says where a run
+#: that did not fill actually died. transition_013 died in "Remeshing surface" - the generator's
+#: own remesh segfaulting on a pinched rim - while the note blamed TetGen (2026-09-11).
+_GENERATOR_STAGES = ("Not capping surface", "Capping surface", "Remeshing surface",
+                     "Generating boundary layer", "Capping inner surface", "Remeshing endcaps",
+                     "Computing sizing function", "Converting surface to mesh",
+                     "Generating volume mesh")
+
+
+def _last_stage(result: dict) -> str:
+    last = ""
+    for line in (result.get("log_tail") or "").splitlines():
+        if line.strip() in _GENERATOR_STAGES:
+            last = line.strip()
+    return last
+
 
 def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     ws = Path(workspace)
@@ -479,8 +512,9 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         result = _run_pype(ws, argv, timeout=left())
         if _fill_completed(ws, result) or i == len(ladder) - 1:
             break
-        notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): TetGen did not complete "
-                     f"the fill - next: {_step_label(ladder[i + 1])}")
+        notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill did not complete "
+                     f"(last generator stage: {_last_stage(result) or 'unknown'}) - next: "
+                     f"{_step_label(ladder[i + 1])}")
     if notes:
         effective = dict(ladder[last])
         effective["repair_note"] = "; ".join(notes)
@@ -489,7 +523,117 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         result["log_tail"] = "\n".join(notes) + "\n" + (result.get("log_tail") or "")
         result["repair_note"] = effective["repair_note"]
     (ws / "log.vmtk").write_text(result.get("log_tail") or "")
+    if _fill_completed(ws, result):
+        # THE OPENFOAM CASE ships with the mesh. vmtk writes VTK only; the customer of an
+        # "OpenFOAM case" bundle (the deliverable's label) got a .vtu and a conversion to do.
+        # The mesh image has OpenFOAM, the worker (where finalize runs) does not, so it is
+        # written here, with whatever budget the fill left. A miss is a note, never a failure:
+        # the volume mesh stands on its own.
+        result["openfoam_case"] = export_openfoam_case(ws, timeout=left())
     return result
+
+
+_OPENFOAM_CASE = "openfoam_case"
+_VOLUME_MSH = "mesh_volume.msh"
+_FLUID_PHYSICAL = 100          # the volume's physical tag in mesh_volume.msh (caps count from 2)
+
+
+def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
+                         timeout: int = 600) -> str | None:
+    """Write the delivered volume as an OpenFOAM case: openfoam_case/constant/polyMesh next to
+    mesh.vtu, one patch per delivered boundary (wall, then each cap under its declared port
+    name), converted by gmshToFoam from a gmsh 2.2 volume file (mesh_volume.msh) of the same
+    tets and triangles. The node order is normalised first (vmtk's layer tets come out
+    negatively ordered - check_mesh does the same, idempotently). Returns the case directory
+    relative to the workspace, or None when it could not be written (logged, non-fatal)."""
+    ws = Path(workspace)
+    mp = ws / _MESH
+    if not mp.exists() or timeout < _LADDER_MIN_SECONDS:
+        return None
+    try:
+        from meshpipeline.engines.vmtk.viewer_surface import _staged_cap_names
+        from meshpipeline.sandbox.safe_exec import scrubbed_subprocess_env
+        grid, n_flipped, _mask = _normalise_orientation(_read_surface(mp))
+        if n_flipped:
+            grid.save(str(mp))
+        surf = grid.extract_surface().triangulate()
+        ids = surf.cell_data.get("CellEntityIds")
+        names: dict[int, str] = {_WALL_ENTITY: "wall"}
+        if ids is not None:
+            cap_names = _staged_cap_names(ws, surf, ids)
+            for eid in sorted({int(v) for v in ids}):
+                if eid != _WALL_ENTITY:
+                    names[eid] = cap_names.get(eid, f"cap_{eid}")
+        _write_gmsh_volume(grid, names, ws / _VOLUME_MSH)
+        case = ws / _OPENFOAM_CASE
+        (case / "system").mkdir(parents=True, exist_ok=True)
+        (case / "constant").mkdir(parents=True, exist_ok=True)
+        (case / "system" / "controlDict").write_text(_CONTROL_DICT)
+        cmd = f"source {bashrc} >/dev/null 2>&1 && gmshToFoam ../{_VOLUME_MSH}"
+        proc = run_guarded(["bash", "-lc", cmd], cwd=str(case), env=scrubbed_subprocess_env(),
+                           capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0 or not (case / "constant" / "polyMesh" / "owner").exists():
+            logger.warning("vmtk: gmshToFoam did not write the polyMesh (rc %s): %s",
+                           proc.returncode, (proc.stdout or "")[-600:])
+            return None
+        return _OPENFOAM_CASE
+    except Exception:  # noqa: BLE001 - the .vtu is the mesh; the case is a convenience
+        logger.exception("vmtk: OpenFOAM case export failed")
+        return None
+
+
+_CONTROL_DICT = """FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+application     none;
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         0;
+deltaT          1;
+writeControl    timeStep;
+writeInterval   1;
+"""
+
+
+def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
+    """mesh.vtu as a gmsh 2.2 ASCII volume mesh: the tets (physical FLUID) and the boundary
+    triangles, each triangle under the physical tag of its CellEntityId (1 = wall, caps from 2)
+    and each tag named in $PhysicalNames, which is what gmshToFoam turns into patch names."""
+    import numpy as np
+    ct = np.asarray(grid.celltypes)
+    cd = grid.cells_dict
+    tets = np.asarray(cd.get(_VTK_TETRA, np.zeros((0, 4), np.int64)), dtype=np.int64)
+    tris = np.asarray(cd.get(5, np.zeros((0, 3), np.int64)), dtype=np.int64)
+    ids = grid.cell_data.get("CellEntityIds")
+    tri_tag = (np.asarray(ids)[ct == 5].astype(np.int64) if ids is not None
+               else np.full(len(tris), _WALL_ENTITY, dtype=np.int64))
+    pts = np.asarray(grid.points, dtype=float)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$PhysicalNames\n{len(names) + 1}\n")
+        for tag in sorted(names):
+            f.write(f'2 {tag} "{names[tag]}"\n')
+        f.write(f'3 {_FLUID_PHYSICAL} "fluid"\n$EndPhysicalNames\n$Nodes\n{len(pts)}\n')
+        np.savetxt(f, np.column_stack([np.arange(1, len(pts) + 1), pts]), fmt="%d %.10g %.10g %.10g")
+        f.write(f"$EndNodes\n$Elements\n{len(tets) + len(tris)}\n")
+        n = 0
+        if len(tris):
+            rows = np.column_stack([np.arange(1, len(tris) + 1), np.full(len(tris), 2),
+                                    np.full(len(tris), 2), tri_tag, tri_tag, tris + 1])
+            np.savetxt(f, rows, fmt="%d")
+            n = len(tris)
+        if len(tets):
+            rows = np.column_stack([np.arange(n + 1, n + len(tets) + 1), np.full(len(tets), 4),
+                                    np.full(len(tets), 2), np.full(len(tets), _FLUID_PHYSICAL),
+                                    np.full(len(tets), _FLUID_PHYSICAL), tets + 1])
+            np.savetxt(f, rows, fmt="%d")
+        f.write("$EndElements\n")
+    return {"nodes": int(len(pts)), "tets": int(len(tets)), "triangles": int(len(tris)),
+            "patches": {int(k): v for k, v in names.items()}}
 
 
 def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
@@ -526,8 +670,17 @@ _TETGEN_FAILURES = ("invalid plc", "subfaces intersect", "self-intersect",
                     "tetgen quit with an exception", "error occurred during tetrahedralization")
 
 
+def _staged_radius_median(ws: Path) -> float | None:
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    st = read_staging(ws) or {}
+    try:
+        return float((st.get("radius_m") or {}).get("median")) or None
+    except (TypeError, ValueError):
+        return None
+
+
 def check_mesh(workspace) -> dict:
-    from meshpipeline.engines.vmtk.criteria import QUALITY_FLOOR
+    from meshpipeline.engines.vmtk.criteria import PASSAGE_MIN_CELLS_ACROSS, QUALITY_FLOOR
     ws = Path(workspace)
     mp = ws / _MESH
     if not mp.exists():
@@ -595,6 +748,7 @@ def check_mesh(workspace) -> dict:
                 "layer_coverage": None, "mesh_ok": False}
     min_quality = None
     layer_min_quality = None
+    passage_cells_across = None
     try:
         import numpy as np
         vol = np.asarray(tets.compute_cell_sizes(length=False, area=False,
@@ -623,8 +777,23 @@ def check_mesh(workspace) -> dict:
         min_quality = float(interior.min()) if interior.size else (
             float(layer.min()) if layer.size else None)
         layer_min_quality = float(layer.min()) if layer.size else None
+        # PASSAGE RESOLUTION, measured: cells across the local passage diameter = twice the
+        # staged median radius over the median interior cell size (the edge of a regular tet
+        # of the median interior volume). The builder's edge factor puts about 2/factor here;
+        # this reads what the fill actually delivered. Staged (CAD) runs only.
+        r_med = _staged_radius_median(ws)
+        interior_vol = (np.abs(vol[~layer_mask]) if layer_mask is not None
+                        and layer_mask.size == vol.size else np.abs(vol))
+        if r_med and interior_vol.size:
+            a = float((6.0 * np.sqrt(2.0) * np.median(interior_vol)) ** (1.0 / 3.0))
+            if a > 0.0:
+                passage_cells_across = round(2.0 * r_med / a, 1)
     except Exception as exc:  # noqa: BLE001 - quality is best-effort evidence, not a crash
         logger.warning("vmtk check_mesh: quality computation failed: %s", exc)
+    if passage_cells_across is not None and passage_cells_across < PASSAGE_MIN_CELLS_ACROSS:
+        fatal.append(f"undermeshed: {passage_cells_across:g} cells across the passage - a CFD "
+                     f"mesh needs at least {PASSAGE_MIN_CELLS_ACROSS} (industry practice is "
+                     "20-40); lower edge_length_factor")
     # LAYER COVERAGE is measured here, from the mesh: the share of wall triangles whose three
     # vertices belong to boundary-layer tets. The reviewer REQUIRES this metric for its
     # local_anatomical_fidelity axis (MetricRequirement("layer_coverage")) and nothing had
@@ -643,6 +812,9 @@ def check_mesh(workspace) -> dict:
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
             "layer_coverage": layer_coverage, "mesh_ok": ok,
+            # the reviewer's context reads the OpenFOAM engines' key for the same fact
+            "layer_coverage_pct": layer_coverage,
+            "passage_cells_across": passage_cells_across,
             "reoriented_tets": n_reoriented,
             "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}
