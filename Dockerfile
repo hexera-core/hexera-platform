@@ -77,6 +77,42 @@ FROM ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce51
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
+# THE UBUNTU ARCHIVE MIRROR, chosen for availability rather than left to DNS. `archive.ubuntu.com`
+# is a round-robin over six addresses, and apt resolves the host once and then retries the address
+# it already picked - the same failure shape recorded for dl.openfoam.com in
+# docs/reference/build-inputs.md, one layer further down. On 2026-09-11 the hosted runners resolved
+# to 91.189.91.82, which was refusing connections; apt retried that one address three times
+# (`Ign:` `Ign:` `Ign:` then `Err: Connection failed [IP: 91.189.91.82 80]`) and every apt-get in
+# every Ubuntu stage ended at exit 100. CI and the release build both stopped, and `Acquire::Retries`
+# could not have helped: the dead address is chosen before the first retry. Only a different host
+# recovers, so the host is a build input here and not an accident of resolution.
+#
+# The default is Canonical's Azure archive, which is network-local to the GitHub-hosted runners
+# this project builds on - so it is the reachable host AND the fast one - and which carries the
+# security suite too, so no stage is left pointing at a host this does not cover. It is a MIRROR,
+# not another source: apt verifies every index and package against the Ubuntu signing keys already
+# in the image, so this decides which host may ANSWER and never what it may serve. Override
+# UBUNTU_MIRROR / UBUNTU_SECURITY_MIRROR to build against a different archive.
+#
+# This runs in its own layer, before the first apt-get, because every later Ubuntu stage derives
+# FROM base and inherits the rewritten file - one rewrite covers all seven apt-get sites. Keep it
+# free of the words `curl` and `wget`: test_every_direct_download_is_content_verified scans any RUN
+# block mentioning either for URLs and would read the mirror as an unverified download.
+#
+# The grep asserts the rewrite actually landed - a silently unmatched sed would leave the build
+# pointing at the host this exists to avoid, and it would only be noticed during the next outage.
+# It is anchored to `//` because the default mirror CONTAINS the string it is checking for:
+# `azure.archive.ubuntu.com` ends in `archive.ubuntu.com`, so an unanchored pattern matches the
+# rewritten line and fails the build every time.
+ARG UBUNTU_MIRROR=http://azure.archive.ubuntu.com/ubuntu
+ARG UBUNTU_SECURITY_MIRROR=http://azure.archive.ubuntu.com/ubuntu
+RUN sed -i -e "s|http://archive\.ubuntu\.com/ubuntu|${UBUNTU_MIRROR}|g" \
+           -e "s|http://security\.ubuntu\.com/ubuntu|${UBUNTU_SECURITY_MIRROR}|g" \
+           /etc/apt/sources.list \
+    && ! grep -qE '^deb .*//(archive|security)\.ubuntu\.com' /etc/apt/sources.list \
+    && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+         > /etc/apt/apt.conf.d/99-hexera-acquire
+
 # deadsnakes FIRST: 22.04's own python3.11 is 3.11.0rc1; the PPA provides current stable
 # 3.11.x (same cp311 ABI, so every pinned wheel is unchanged).
 RUN apt-get update && apt-get install -y --no-install-recommends \
