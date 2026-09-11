@@ -518,6 +518,11 @@ def _overlap_fraction(grid, tet_volume: float) -> float | None:
         tris = grid.extract_cells_by_type(5).extract_surface().triangulate()
         if tris.n_cells == 0:
             return None
+        # vmtk winds its caps the opposite way from the wall: measured as written, the caps
+        # cancel part of the wall in the divergence sum and a sound mesh reads as 4-5% over
+        # (bend_elbow_003, tee_wye_003, s_duct_001 - all exactly 0.0% once oriented)
+        tris = tris.compute_normals(auto_orient_normals=True, consistent_normals=True,
+                                    cell_normals=True, point_normals=False)
         enclosed = abs(float(tris.volume))
     except Exception:  # noqa: BLE001 - evidence, never a crash
         return None

@@ -130,6 +130,14 @@ def test_a_tetgen_exception_logged_with_rc0_fails(tmp_path):
     assert q["mesh_ok"] is False
 
 
+def test_a_cap_wound_the_other_way_does_not_read_as_overlap(tmp_path):
+    # vmtk winds cap triangles opposite to the wall; the enclosed volume must not depend on it
+    faces = list(_TET_FACES[:3]) + [tuple(reversed(_TET_FACES[3]))]
+    _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], faces, _BASE_PTS)
+    q = check_mesh(tmp_path)
+    assert q["mesh_ok"] is True and q["fatal"] == []
+
+
 def test_overlapping_tets_are_rejected_even_when_positively_oriented(tmp_path):
     # the same tetrahedron twice: both positive, but together they fill the boundary's volume
     # twice over - what a boundary layer folded back through the wall looks like
