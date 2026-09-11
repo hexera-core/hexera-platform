@@ -44,6 +44,13 @@ _VALUE_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"https?://[^\s\"']*[?&](?:X-Amz-Signature|X-Goog-Signature|"
                 r"Signature|sig|token|access_key|AWSAccessKeyId|Expires)=[^\s\"'&]+[^\s\"']*",
                 re.I), REDACTED),
+    # THIS PRODUCT'S OWN KEYS. contracts/api_key.py makes `hx_live_` visible in the credential
+    # precisely so a leaked key is recognisable "by a secret scanner, by a log filter, by a
+    # person reading a paste" - and this is the log filter. The shape is
+    # hx_live_<12 base62>_<url-safe secret>, and the SECRET HALF IS REQUIRED here: `key_prefix`
+    # alone is public, it is what /settings/api-keys prints in every row, and redacting it would
+    # blank the one thing that lets somebody tell their keys apart.
+    (re.compile(r"\bhx_live_[A-Za-z0-9]{12}_[A-Za-z0-9_\-]{16,}"), REDACTED),
     # long opaque credentials with a recognisable prefix
     (re.compile(r"\b(?:sk|pk|rk|api|tok|ghp|gho|xox[abps])[-_][A-Za-z0-9_\-]{16,}"), REDACTED),
     # jwt
