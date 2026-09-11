@@ -150,6 +150,7 @@ jobs:
       console_domain: ${{ steps.pick.outputs.console_domain }}
       admin_domain: ${{ steps.pick.outputs.admin_domain }}
       billing_export_table: ${{ steps.pick.outputs.billing_export_table }}
+      worker_env_uri: ${{ steps.pick.outputs.worker_env_uri }}
       # THE RUNTIME HARDENING SWITCH AND THE BROWSER ORIGIN IT ADMITS, pinned per environment for
       # the same reason every target above is: they have to reach create-api-service.sh, and the
       # only path that reaches it is this one. bootstrap-env.sh REGENERATES the deployment env on
@@ -329,6 +330,12 @@ jobs:
               # having a provisioning script.
               echo "worker_mig=dev-workers"
               echo "worker_mig_zone=us-central1-a"
+              # THE WORKER'S NON-SECRET SETTINGS, as a GCS object the instance fetches at startup.
+              # create-worker-fleet.sh requires it, which is why the workers tier could never run
+              # from CI before this line existed - and why the fleet in this project was built by
+              # hand. It carries policy, model routing and limits, never a credential: the object
+              # and instance metadata are both readable by anyone who can describe the instance.
+              echo "worker_env_uri=gs://dev-transfer-224734058693/worker.env"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -423,6 +430,7 @@ jobs:
             echo "postgres_password_secret=postgres-password"
             echo "worker_mig=prod-workers"
             echo "worker_mig_zone=us-central1-a"
+            echo "worker_env_uri=gs://prod-artifacts-688073002171/deploy/worker.env"
             # THE OBJECT-STORE KEY THIS DEPLOYMENT ALREADY OWNS, and the only thing that stops a
             # release tag minting a second one. create-object-storage.sh decides "reuse or mint"
             # by testing the RECORDED access id against the live ACTIVE keys; the recording lives
@@ -811,6 +819,7 @@ jobs:
       CONSOLE_DOMAIN: ${{ needs.target.outputs.console_domain }}
       ADMIN_DOMAIN: ${{ needs.target.outputs.admin_domain }}
       BILLING_EXPORT_TABLE: ${{ needs.target.outputs.billing_export_table }}
+      WORKER_ENV_URI: ${{ needs.target.outputs.worker_env_uri }}
       # THE RUNTIME HARDENING, carried the same way CLOUDRUN_CONSOLE_SERVICE above is: pinned by
       # the picker, exported here for the whole job, read out of the ambient environment by
       # bootstrap-env.sh's generated-env heredoc, and handed to create-api-service.sh as ENV and
