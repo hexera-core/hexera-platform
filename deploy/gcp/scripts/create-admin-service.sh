@@ -103,6 +103,41 @@ for pair in "GOOGLE_CLIENT_SECRET:GOOGLE_CLIENT_SECRET_SECRET" \
   ADMIN_SECRET_NAMES+=("${secret_name}")
 done
 
+# REFUSE A KNOWN-ABSENT CONTAINER BEFORE ANY MUTATION - the same gate create-console-service.sh
+# already carries, and for the reason this stage demonstrated by not having it. A container that is
+# not there is not refused by Cloud Run as "missing"; it is refused as
+#
+#   Permission denied on secret: projects/224734058693/secrets/google-client-secret/versions/latest
+#   ... must be granted the 'Secret Manager Secret Accessor' role
+#
+# because Secret Manager reports an absent resource as a permission error rather than confirm it does
+# not exist. Read literally that sends an operator to grant a role on a secret nobody ever created,
+# and it arrives only AFTER the identity, five project bindings and two secret grants already exist.
+#
+# ONLY A CONFIRMED ABSENCE STOPS THE DEPLOY (secret_confirmed_absent, not secret_exists): a failed
+# read is also what this identity lacking secretmanager.viewer looks like, and that ambiguity must
+# not be read as proof the container is missing.
+ABSENT_ADMIN_SECRETS=()
+for secret_name in ${ADMIN_SECRET_NAMES[@]+"${ADMIN_SECRET_NAMES[@]}"}; do
+  secret_confirmed_absent "${secret_name}" && ABSENT_ADMIN_SECRETS+=("${secret_name}")
+done
+if [ ${#ABSENT_ADMIN_SECRETS[@]} -gt 0 ]; then
+  MSG="the admin console references ${#ABSENT_ADMIN_SECRETS[@]} secret container(s) confirmed absent in ${GCP_PROJECT_ID}:"
+  for secret_name in "${ABSENT_ADMIN_SECRETS[@]}"; do MSG="${MSG}
+     ${secret_name}"; done
+  MSG="${MSG}
+   Either this deployment does not run the feature that needs them - in which case its picker should
+   state the holder as the EMPTY STRING and this stage will skip it - or the container has to be
+   created once, as an owner (create-secrets.sh declares them but is owner-run, not a deploy.sh
+   stage, so nothing in a deploy creates them):"
+  for secret_name in "${ABSENT_ADMIN_SECRETS[@]}"; do
+    MSG="${MSG}
+     gcloud secrets create ${secret_name} --project ${GCP_PROJECT_ID} --replication-policy=automatic
+     gcloud secrets versions add ${secret_name} --project ${GCP_PROJECT_ID} --data-file=-"
+  done
+  die "${MSG}"
+fi
+
 if sa_exists "${ADMIN_SA_EMAIL}"; then
   log "admin identity ${ADMIN_SA_EMAIL} (exists)"
 else
