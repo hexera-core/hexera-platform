@@ -153,6 +153,60 @@ def test_pype_without_staging_is_unchanged():
     assert "-minedgelength" not in joined and "-edgelengtharray DistanceToCenterlines" in joined
 
 
+def test_repair_ladder_thins_then_drops_layers_for_staged_runs_only():
+    steps = LS and vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 3,
+                                              "boundary_layer_thickness_factor": 0.2})
+    assert [s["boundary_layers"] for s in steps] == [3, 3, 0]
+    assert [s["boundary_layer_thickness_factor"] for s in steps] == [0.2, 0.1, 0.2]
+    assert len(vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 0})) == 1
+    assert len(vmtk_runner.repair_ladder({"source_ids": [0], "target_ids": [1]})) == 1
+
+
+def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        joined = " ".join(argv)
+        if "-thicknessfactor 0.2" in joined:
+            (tmp_path / "mesh.vtu").write_text("layers only")
+            return sp.CompletedProcess(argv, 0, stdout="TetGen quit with an exception.", stderr="")
+        (tmp_path / "mesh.vtu").write_text("filled")
+        return sp.CompletedProcess(argv, 0, stdout="Done executing vmtkmeshgenerator.", stderr="")
+
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=10)
+    assert res["rc"] == 0 and len(calls) == 2
+    assert "-thicknessfactor 0.1" in " ".join(calls[1])
+    assert "retrying with half the layer thickness" in res["repair_note"]
+    shipped = json.loads((tmp_path / "vmtk_spec.json").read_text())
+    assert shipped["boundary_layer_thickness_factor"] == 0.1 and "repair_note" in shipped
+    assert (tmp_path / "mesh.vtu").read_text() == "filled"
+    assert "retrying" in (tmp_path / "log.vmtk").read_text()
+
+
+def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return sp.CompletedProcess(argv, 0, stdout="TetGen quit with an exception.", stderr="")
+
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps({"source_ids": [0], "target_ids": [1],
+                                                        "boundary_layers": 3}))
+    res = R._run_vmtk_local(tmp_path, timeout=10)
+    assert len(calls) == 1 and "repair_note" not in res
+
+
 def _open_lumen(ws):
     # a single triangle: an open surface with one boundary loop
     tri = pv.PolyData(np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float), np.array([3, 0, 1, 2]))

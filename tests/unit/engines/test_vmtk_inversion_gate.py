@@ -93,6 +93,12 @@ def test_a_mixed_set_reorients_only_the_negative_ones(tmp_path):
     # the floor judges the isotropic fill; the reoriented (layer) block is reported apart
     assert q["layer_tets"] == 2 and q["layer_min_quality"] is not None
     assert q["min_quality"] is not None
+    # a SECOND check (finalize runs one after the run tool) judges the same tets the same way:
+    # the sign is gone from disk, the BoundaryLayer array is not
+    q2 = check_mesh(tmp_path)
+    assert q2["reoriented_tets"] == 0 and q2["layer_tets"] == 2
+    assert q2["min_quality"] == q["min_quality"]
+    assert "BoundaryLayer" in pv.read(str(tmp_path / "mesh.vtu")).cell_data
 
 
 def _write_mixed_vtu(path, tets, tris, pts):

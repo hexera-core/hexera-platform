@@ -337,6 +337,34 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     return run_mesh(ws, engine="vmtk", timeout=timeout)
 
 
+def repair_ladder(strategy: dict) -> list[dict]:
+    """The strategies a staged run tries in order when TetGen refuses the layered inner
+    surface: as given; half the layer thickness; no layers. On a branched lumen the inward
+    offset of two walls meets at the junction crease and TetGen finds an inner surface it
+    cannot bound ("Unable to find an edge in subface" / "Invalid PLC") - vmtkmeshgenerator
+    then exits 0 with the layer block alone. The staged wall is clean (the same surface fills
+    without layers), so the engine walks the ladder itself instead of spending builder turns:
+    a thinner layer clears the crease on most shapes, and a layer-free radius-adaptive fill is
+    a valid deliverable. Unstaged runs (a user's own .vtp) keep the single attempt."""
+    s = resolve_strategy(strategy)
+    if not s.get("sizing_array") or int(s.get("boundary_layers") or 0) <= 0:
+        return [s]
+    thinner = dict(s)
+    thinner["boundary_layer_thickness_factor"] = float(s["boundary_layer_thickness_factor"]) / 2.0
+    bare = dict(s)
+    bare["boundary_layers"] = 0
+    return [s, thinner, bare]
+
+
+def _fill_completed(ws: Path, result: dict) -> bool:
+    if result.get("rc") not in (0, None) or result.get("timed_out"):
+        return False
+    if not (ws / _MESH).exists():
+        return False
+    low = (result.get("log_tail") or "").lower()
+    return not any(f in low for f in _TETGEN_FAILURES)
+
+
 def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     ws = Path(workspace)
     spec_path = ws / "vmtk_spec.json"
@@ -344,17 +372,40 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         return {"rc": 1, "timed_out": False,
                 "log_tail": "vmtk_spec.json missing - call configure_mesh before run_mesh"}
     strategy = json.loads(spec_path.read_text())
-    argv = build_pype(strategy)
+    ladder = repair_ladder(strategy)
+    notes: list[str] = []
+    result: dict = {}
+    for i, strat in enumerate(ladder):
+        argv = build_pype(strat)
+        if i:
+            (ws / _MESH).unlink(missing_ok=True)
+        result = _run_pype(ws, argv, timeout=timeout)
+        if _fill_completed(ws, result) or i == len(ladder) - 1:
+            break
+        notes.append(f"[vmtk] attempt {i + 1} (layers={strat['boundary_layers']}, thickness "
+                     f"factor {strat['boundary_layer_thickness_factor']:g}): TetGen did not "
+                     f"complete the fill - retrying with "
+                     + ("half the layer thickness" if i == 0 else "no boundary layers"))
+    if notes:
+        effective = dict(ladder[min(i, len(ladder) - 1)])
+        effective["repair_note"] = "; ".join(notes)
+        # the shipped spec says what was actually run (the deliverable re-runs from it)
+        spec_path.write_text(json.dumps(effective, indent=2))
+        result["log_tail"] = "\n".join(notes) + "\n" + (result.get("log_tail") or "")
+        result["repair_note"] = effective["repair_note"]
+    (ws / "log.vmtk").write_text(result.get("log_tail") or "")
+    return result
+
+
+def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
     try:
         proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout)
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         # Signal interpretation is the SHARED seam's, not this bundle's. It lived here first,
         # which meant vmtk explained a SIGSEGV while the other four engines returned a bare
         # negative rc for the same event.
-        result = describe_native_result(returncode=proc.returncode, args=argv,
-                                        stage="vmtk pype", output=tail)
-        (ws / "log.vmtk").write_text(result["log_tail"])
-        return result
+        return describe_native_result(returncode=proc.returncode, args=argv,
+                                      stage="vmtk pype", output=tail)
     except FileNotFoundError:
         return {"rc": 127, "timed_out": False,
                 "log_tail": (f"vmtk binary {rtcfg.VMTK_BIN!r} not found - the container's vmtk "
@@ -475,18 +526,27 @@ def check_mesh(workspace) -> dict:
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
             "layer_coverage": layer_coverage, "mesh_ok": ok,
-            "reoriented_tets": n_reoriented, "layer_tets": int(n_reoriented),
+            "reoriented_tets": n_reoriented,
+            "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}
+
+
+_LAYER_ARRAY = "BoundaryLayer"   # cell data on mesh.vtu: 1 = a boundary-layer tet, 0 = anything else
 
 
 def _normalise_orientation(grid):
     """(grid, n, mask) with every negative-volume tetrahedron's node order flipped (nodes 1 and
-    2 swapped); `mask` marks those tets in tet order (vmtk's boundary-layer block), or is None
-    when there was nothing to flip. Other cell types, cell data and point data ride along."""
+    2 swapped); `mask` marks the boundary-layer tets in tet order, or is None when the mesh
+    carries no layer. The flipped block is remembered in the BoundaryLayer cell array, so a
+    later check (finalize runs one after the run tool's) judges the same tets the same way;
+    with the sign gone, the second check used to fold the layer into the isotropic floor
+    (bend_elbow_003: 0.0707 on the first check, 0.0064 on the second). Other cell types, cell
+    data and point data ride along."""
     import numpy as np
     import pyvista as pv
     ct = np.asarray(grid.celltypes)
-    if not (ct == _VTK_TETRA).any():
+    tet_rows = ct == _VTK_TETRA
+    if not tet_rows.any():
         return grid, 0, None
     cd = grid.cells_dict
     tets = np.asarray(cd[_VTK_TETRA], dtype=np.int64)
@@ -496,7 +556,11 @@ def _normalise_orientation(grid):
     neg = vol < 0.0
     n = int(neg.sum())
     if n == 0:
-        return grid, 0, None
+        flag = grid.cell_data.get(_LAYER_ARRAY)
+        if flag is None:
+            return grid, 0, None
+        mask = np.asarray(flag)[tet_rows] > 0
+        return grid, 0, (mask if mask.any() else None)
     tets = tets.copy()
     tets[neg, 1], tets[neg, 2] = tets[neg, 2].copy(), tets[neg, 1].copy()
     types = [int(t) for t in np.unique(ct)]
@@ -508,6 +572,9 @@ def _normalise_orientation(grid):
         out.cell_data[name] = np.asarray(grid.cell_data[name])[order]
     for name in list(grid.point_data.keys()):
         out.point_data[name] = np.asarray(grid.point_data[name])
+    flag = np.zeros(len(ct), dtype=np.int8)
+    flag[np.flatnonzero(tet_rows)[neg]] = 1
+    out.cell_data[_LAYER_ARRAY] = flag[order]
     return out, n, neg
 
 
@@ -550,6 +617,16 @@ def run_enricher(R, workspace, res: dict, q: dict, out: dict) -> None:
     fatal = out.get("fatal_defects") or []
     if out.get("success"):
         out["guidance"] = pol.ok_guidance
+        return
+    staged = (Path(workspace) / "vmtk_staging.json").exists() if workspace else False
+    if staged and any(("self-intersect" in f.lower()) or ("invalid plc" in f.lower())
+                      or ("incomplete" in f.lower()) for f in fatal):
+        out["guidance"] = (
+            "TetGen did not complete the fill even after the engine's own repair ladder (thinner "
+            "layers, then no layers) - the staged wall itself is clean. ONE move per attempt: "
+            "nudge edge_length_factor (0.3 -> 0.35, then 0.25) so the surface remesh lands "
+            "differently at the junctions; keep everything else as staged. If that fails twice, "
+            "report the failure - do not permute other fields.")
         return
     if any(("self-intersect" in f.lower()) or ("invalid plc" in f.lower()) for f in fatal):
         out["guidance"] = (
