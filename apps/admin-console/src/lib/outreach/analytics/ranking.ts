@@ -129,7 +129,8 @@ export async function companyScores(): Promise<Map<string, CompanyScore>> {
     `SELECT company,
             MAX(industry) AS industry,
             MAX(tier) AS tier,
-            GROUP_CONCAT(role, '|') AS roles
+            -- STRING_AGG, not GROUP_CONCAT: SQLite's spelling, which Postgres does not have.
+            STRING_AGG(role, '|') AS roles
      FROM contacts GROUP BY company`,
   );
 

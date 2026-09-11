@@ -394,7 +394,10 @@ export async function timeToReply(): Promise<{ bucket: string; count: number }[]
        END AS bucket,
        COUNT(*) AS count
      FROM (
-       SELECT (julianday(r.received_at) - julianday(COALESCE(m.sent_at, m.created_at))) * 24 AS hours
+       -- julianday() is SQLite's. The columns hold ISO-8601 text, so they are cast to
+       -- timestamptz and the interval taken in seconds.
+       SELECT EXTRACT(EPOCH FROM (r.received_at::timestamptz
+              - COALESCE(m.sent_at, m.created_at)::timestamptz)) / 3600 AS hours
        FROM replies r
        JOIN messages m ON m.enrollment_id = r.enrollment_id AND m.direction = 'outbound'
        WHERE r.classification IN ('positive','negative','neutral')
@@ -482,7 +485,7 @@ export async function contactRows(filter: ContactFilter = {}) {
   const limit = filter.limit ?? 100;
   const offset = filter.offset ?? 0;
 
-  const rows = all<Record<string, unknown>>(
+  const rows = await all<Record<string, unknown>>(
     `SELECT
        c.id, c.company, c.full_name, c.first_name, c.name_quality, c.role, c.role_group,
        c.industry, c.tier, c.email_normalized AS email, c.domain,
@@ -502,7 +505,9 @@ export async function contactRows(filter: ContactFilter = {}) {
      LEFT JOIN enrollments e ON e.contact_id = c.id
      LEFT JOIN campaigns ca ON ca.id = e.campaign_id
      WHERE ${where.join(" AND ")}
-     ORDER BY c.company COLLATE NOCASE, c.full_name COLLATE NOCASE
+     -- LOWER(), not COLLATE NOCASE: that collation is SQLite's and Postgres rejects the
+     -- statement outright rather than ignoring it.
+     ORDER BY LOWER(c.company), LOWER(c.full_name)
      LIMIT ? OFFSET ?`,
     [...params, limit, offset],
   );
@@ -613,7 +618,8 @@ export async function partnersByIndustry(): Promise<PartnerIndustry[]> {
             OR s.value IN (SELECT c2.email_normalized FROM contacts c2 WHERE c2.company = c.company)
        ) AS suppressed,
        MAX(COALESCE(m.sent_at, m.created_at)) AS lastTouch,
-       GROUP_CONCAT(DISTINCT c.full_name) AS names,
+       -- STRING_AGG with an explicit separator; GROUP_CONCAT is SQLite's and defaults to ','.
+       STRING_AGG(DISTINCT c.full_name, ',') AS names,
        COUNT(DISTINCT CASE WHEN c.email_normalized IS NOT NULL THEN c.id END) AS verifiedEmails,
        MAX(c.is_yc) AS isYc
      FROM contacts c

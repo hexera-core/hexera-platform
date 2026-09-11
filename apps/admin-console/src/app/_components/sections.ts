@@ -20,5 +20,12 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
   { href: "/billing", label: "Billing", available: true },
   { href: "/activity", label: "Activity", available: false },
   { href: "/customers", label: "Customers", available: false },
-  { href: "/outreach", label: "Outreach", available: false },
+  // Outreach is PROD-ONLY: one partner list, one mailbox. A dev copy would either duplicate the
+  // real contacts or sit empty, and neither is worth a second Gmail connection. The deployment
+  // says whether it runs here, so the flag decides rather than the hostname.
+  {
+    href: "/outreach",
+    label: "Outreach",
+    available: (process.env.OUTREACH_ENABLED ?? "").trim() === "1",
+  },
 ] as const;
