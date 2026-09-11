@@ -179,9 +179,38 @@ grant_bucket "serviceAccount:${OBJECT_STORE_SA_EMAIL}" "roles/storage.legacyBuck
 # it is announced; the old key is left ACTIVE, because deleting a credential something might still be
 # holding is not this script's decision.
 RECORDED_ACCESS_ID="${MINIO_ACCESS_KEY:-}"
+# ONLY A CONFIRMED EMPTY LIST MAY MEAN "no usable key", the same distinction secret_confirmed_absent
+# draws one section below and for the identical reason. `2>/dev/null || true` collapses a FAILED read
+# into an empty one, and an empty list is what sends this straight to the mint branch - so an
+# identity that merely cannot SEE the keys behaves exactly like an account that has none.
+#
+# That is not hypothetical: roles/storage.admin carries no storage.hmacKeys.* permission at all (only
+# roles/storage.hmacKeyAdmin does), so the deploy identity's list returned PERMISSION_DENIED, this
+# read it as "no ACTIVE key matches", announced a repair, and tried to mint - which the same missing
+# permission then refused. The prod release stopped at this stage with an error about minting, while
+# the actual fault was that the key it already had was unreadable. The key was ACTIVE and correctly
+# paired the whole time.
+#
+# So the exit status is kept. A read that failed is INCONCLUSIVE, and the one thing it must never do
+# is mint a second credential against an account whose keys it could not enumerate.
+HMAC_LIST_READ_OK=1
 ACTIVE_IDS="$(gc storage hmac list --service-account="${OBJECT_STORE_SA_EMAIL}" \
-  --filter='state=ACTIVE' --format='value(accessId)' 2>/dev/null || true)"
+  --filter='state=ACTIVE' --format='value(accessId)' 2>/dev/null)" || { HMAC_LIST_READ_OK=0; ACTIVE_IDS=""; }
 ACTIVE_COUNT="$(printf '%s' "${ACTIVE_IDS}" | grep -c . || true)"
+
+if [ "${HMAC_LIST_READ_OK}" = "0" ]; then
+  die "could not list the HMAC keys of ${OBJECT_STORE_SA_EMAIL}, so whether the recorded
+   MINIO_ACCESS_KEY='${RECORDED_ACCESS_ID:-<unset>}' is still usable cannot be decided. This is NOT the
+   same as that account having no keys, and it must not be treated as one: minting from here would
+   add a second credential beside one that may be working, or fail with a message about creating a
+   key when the real fault is that the existing key cannot be read.
+   Listing needs storage.hmacKeys.list, which roles/storage.admin does NOT include - only
+   roles/storage.hmacKeyAdmin does. Grant it to the identity running this deploy:
+     gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} \\
+       --member serviceAccount:<DEPLOY_IDENTITY> --role roles/storage.hmacKeyAdmin
+   Then re-run. No credential was created or changed - the bucket and its role bindings above were
+   reconciled to the state they already described, and this stage is idempotent."
+fi
 
 SECRET_HAS_VERSION=0
 if secret_exists "${HMAC_SECRET_NAME}" && [ -n "$(gc secrets versions list "${HMAC_SECRET_NAME}" \
