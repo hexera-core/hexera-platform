@@ -2,8 +2,7 @@
 # Boundaries: mounting only; every endpoint, schema and guard belongs to the module being mounted.
 from fastapi import APIRouter
 
-from meshpipeline.api.v1 import (api_keys, chat, client_config, credits, organization,
-                                 simulation, upload, ws)
+from meshpipeline.api.v1 import api_keys, chat, client_config, credits, organization, simulation, upload, ws
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(upload.router,     prefix="/upload",     tags=["upload"])
