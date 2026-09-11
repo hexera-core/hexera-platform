@@ -153,13 +153,23 @@ def test_pype_without_staging_is_unchanged():
     assert "-minedgelength" not in joined and "-edgelengtharray DistanceToCenterlines" in joined
 
 
-def test_repair_ladder_thins_then_drops_layers_for_staged_runs_only():
-    steps = LS and vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 3,
-                                              "boundary_layer_thickness_factor": 0.2})
-    assert [s["boundary_layers"] for s in steps] == [3, 3, 0]
-    assert [s["boundary_layer_thickness_factor"] for s in steps] == [0.2, 0.1, 0.2]
-    assert len(vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 0})) == 1
+def test_repair_ladder_varies_the_generator_remesh_then_the_layers_for_staged_runs_only():
+    steps = vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 3,
+                                       "boundary_layer_thickness_factor": 0.2})
+    assert [(s["boundary_layers"], s["boundary_layer_thickness_factor"], s["generator_remesh"])
+            for s in steps] == [(3, 0.2, True), (3, 0.2, False), (3, 0.1, False),
+                                (0, 0.2, True), (0, 0.2, False)]
+    bare = vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 0})
+    assert [s["generator_remesh"] for s in bare] == [True, False]
     assert len(vmtk_runner.repair_ladder({"source_ids": [0], "target_ids": [1]})) == 1
+
+
+def test_staged_stages_split_the_surface_from_the_generator():
+    surface, generate = vmtk_runner.build_staged_stages(
+        {"sizing_array": "LocalRadius", "generator_remesh": False, "boundary_layers": 0})
+    assert surface[1] == "vmtksurfaceremeshing" and surface[-2:] == ["-ofile", "lumen.vtp"]
+    assert generate[1] == "vmtkmeshgenerator" and "-skipremeshing 1" in " ".join(generate)
+    assert "-boundarylayer 0" in " ".join(generate) and "-sublayers" not in " ".join(generate)
 
 
 def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
@@ -171,7 +181,11 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     def fake_run(argv, **kw):
         calls.append(list(argv))
         joined = " ".join(argv)
-        if "-thicknessfactor 0.2" in joined:
+        if "vmtksurfaceremeshing" in joined:
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+            return sp.CompletedProcess(argv, 0, stdout="Done executing vmtksurfaceprojection.",
+                                       stderr="")
+        if "-skipremeshing 0" in joined:            # the generator's own remesh: TetGen gives up
             (tmp_path / "mesh.vtu").write_text("layers only")
             return sp.CompletedProcess(argv, 0, stdout="TetGen quit with an exception.", stderr="")
         (tmp_path / "mesh.vtu").write_text("filled")
@@ -181,13 +195,17 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
     res = R._run_vmtk_local(tmp_path, timeout=10)
-    assert res["rc"] == 0 and len(calls) == 2
-    assert "-thicknessfactor 0.1" in " ".join(calls[1])
-    assert "retrying with half the layer thickness" in res["repair_note"]
+    # the surface stage once, then two generator attempts
+    assert res["rc"] == 0 and len(calls) == 3
+    assert calls[0][1] == "vmtksurfaceremeshing"
+    assert calls[1][1] == "vmtkmeshgenerator" and calls[2][1] == "vmtkmeshgenerator"
+    assert "-skipremeshing 1" in " ".join(calls[2]) and "-sublayers 3" in " ".join(calls[2])
+    assert "generator remesh off" in res["repair_note"]
     shipped = json.loads((tmp_path / "vmtk_spec.json").read_text())
-    assert shipped["boundary_layer_thickness_factor"] == 0.1 and "repair_note" in shipped
+    assert shipped["generator_remesh"] is False and shipped["boundary_layers"] == 3
+    assert "repair_note" in shipped
     assert (tmp_path / "mesh.vtu").read_text() == "filled"
-    assert "retrying" in (tmp_path / "log.vmtk").read_text()
+    assert "next:" in (tmp_path / "log.vmtk").read_text()
 
 
 def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):

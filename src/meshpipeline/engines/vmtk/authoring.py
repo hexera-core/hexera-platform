@@ -55,7 +55,7 @@ AUTHORING_TOOL: dict = {
 _STRATEGY = {"edge_length_factor", "boundary_layers", "boundary_layer_thickness_factor",
              "cap_openings", "remesh_surface", "max_cells",
              "source_ids", "target_ids", "source_points", "target_points",
-             "min_edge_length", "max_edge_length", "sizing_array"}
+             "min_edge_length", "max_edge_length", "sizing_array", "generator_remesh"}
 _PREAMBLE = {"geometry_file", "wall_patch", "strategy", "wall_layers"}
 _KNOWN = _STRATEGY | _PREAMBLE
 # knobs from the OpenFOAM engines a confused model might send - name them so the redirect helps
@@ -111,7 +111,7 @@ def validate(strategy: dict) -> list[Diagnostic]:
         if not (_num(t) and 0.0 < t < 1.0):
             d.append(Diagnostic("error", "boundary_layer_thickness_factor",
                                 "boundary_layer_thickness_factor must be a number in (0,1) - a fraction of the local radius"))
-    for b in ("cap_openings", "remesh_surface"):
+    for b in ("cap_openings", "remesh_surface", "generator_remesh"):
         # ECHO WHAT ARRIVED. A live run sent the STRING "false", read the bare
         # "must be true or false" as a validator bug, retried the same string three times,
         # then capitulated to `true` - the wrong answer for a closed lumen. A diagnostic

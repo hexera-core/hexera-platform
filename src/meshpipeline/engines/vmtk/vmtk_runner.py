@@ -41,6 +41,9 @@ _DEFAULTS: dict = {
     "sizing_array": "",
     "min_edge_length": None,
     "max_edge_length": None,
+    # staged route only: whether vmtkmeshgenerator remeshes the (already remeshed) surface
+    # again before capping and filling; the repair ladder toggles it
+    "generator_remesh": True,
     # CENTERLINE SEEDING - must be NON-INTERACTIVE. vmtk's 'openprofiles'/'pickpoint'
     # selectors open an X render window and abort in a headless worker (verified: SIGABRT,
     # "bad X server connection"). The non-interactive selectors are:
@@ -83,53 +86,75 @@ def _seed_args(s: dict) -> list[str]:
         "(geometry_report lists them). Interactive seeding is impossible in a headless worker.")
 
 
-def build_pype(strategy: dict) -> list[str]:
+def build_staged_stages(strategy: dict) -> tuple[list[str], list[str]]:
+    """The STAGED CAD LUMEN route as two argv lists: the surface stage, run once, and the
+    generator stage, run per repair-ladder step. The open wall arrives with its local radius
+    at every point (engines/vmtk/lumen_staging.py).
+    Surface: 1. remesh it radius-adaptively (the staged triangles are edge-bounded CAD
+    slivers; handing those straight to the generator left TetGen an inner surface it refused -
+    "Unable to find an edge in subface" on tee_wye_003 and straight_reducer_004); 2. keep the
+    one lumen and drop the orphan points the remesher leaves; 3. project the radius array back
+    from the staged wall (the remesher drops point data).
+    Generate: vmtkmeshgenerator caps the declared openings (one CellEntityId each, from 2),
+    optionally remeshes with the array again, grows the layers and fills the volume. Capping is
+    not optional here - the surface is open by construction - so cap_openings does not apply;
+    generator_remesh stands in for remesh_surface. No centerline stage: vmtkcenterlines was the
+    part that failed (see local_radius)."""
     s = resolve_strategy(strategy)
     elf = float(s["edge_length_factor"])
-    layers = int(s["boundary_layers"])
-    clamps = [
-        # clamps on the radius-adaptive size: where the sizing field touches zero (a ray that
-        # grazes a corner, centerlines merging) a zero-size target kills the generator
+    array = str(s["sizing_array"])
+    surface = [
+        rtcfg.VMTK_BIN,
+        "vmtksurfaceremeshing", "-ifile", _LUMEN_OPEN,
+        "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
+        "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
+        "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
+        "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
+    ]
+    generate = [
+        rtcfg.VMTK_BIN, "vmtkmeshgenerator", "-ifile", _LUMEN,
+        "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
+        "-edgelengthfactor", f"{elf:g}", *_clamp_args(s),
+        "-skipcapping", "0", "-skipremeshing", "0" if s.get("generator_remesh", True) else "1",
+        *_layer_args(s), "-tetrahedralize", "1", "-ofile", _MESH,
+    ]
+    return surface, generate
+
+
+def _clamp_args(s: dict) -> list[str]:
+    # clamps on the radius-adaptive size: where the sizing field touches zero (a ray that
+    # grazes a corner, centerlines merging) a zero-size target kills the generator
+    return [
         *(["-minedgelength", f"{float(s['min_edge_length']):g}"]
           if s.get("min_edge_length") else []),
         *(["-maxedgelength", f"{float(s['max_edge_length']):g}"]
           if s.get("max_edge_length") else []),
     ]
-    layer_args = ["-boundarylayer", "1" if layers > 0 else "0"]
+
+
+def _layer_args(s: dict) -> list[str]:
+    layers = int(s["boundary_layers"])
+    out = ["-boundarylayer", "1" if layers > 0 else "0"]
     if layers > 0:
-        layer_args += [
+        out += [
             # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
             "-sublayers", str(layers),
             "-thicknessfactor", f"{float(s['boundary_layer_thickness_factor']):g}",
             # layers belong on the lumen WALL, not across the inlet/outlet caps
             "-boundarylayeroncaps", "0",
         ]
+    return out
+
+
+def build_pype(strategy: dict) -> list[str]:
+    s = resolve_strategy(strategy)
+    elf = float(s["edge_length_factor"])
+    layers = int(s["boundary_layers"])
+    clamps = _clamp_args(s)
+    layer_args = _layer_args(s)
     if s.get("sizing_array"):
-        # STAGED CAD LUMEN. The open wall arrives with its local radius at every point
-        # (engines/vmtk/lumen_staging.py). 1. remesh it radius-adaptively (the staged
-        # triangles are edge-bounded CAD slivers; handing those straight to the generator
-        # left TetGen an inner surface it refused - "Unable to find an edge in subface" on
-        # tee_wye_003 and straight_reducer_004); 2. keep the one lumen and drop the orphan
-        # points the remesher leaves; 3. project the radius array back from the staged wall
-        # (the remesher drops point data); 4. vmtkmeshgenerator caps the declared openings
-        # (one CellEntityId each, from 2), remeshes with the array, grows the layers and fills
-        # the volume. Capping and remeshing are not optional here - the surface is open by
-        # construction - so cap_openings/remesh_surface do not apply. No centerline stage:
-        # vmtkcenterlines was the part that failed (see local_radius).
-        array = str(s["sizing_array"])
-        return [
-            rtcfg.VMTK_BIN,
-            "vmtksurfaceremeshing", "-ifile", _LUMEN_OPEN,
-            "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
-            "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
-            "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
-            "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
-            "--pipe", "vmtkmeshgenerator", "-ifile", _LUMEN,
-            "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
-            "-edgelengthfactor", f"{elf:g}", *clamps,
-            "-skipcapping", "0", "-skipremeshing", "0", *layer_args,
-            "-tetrahedralize", "1", "-ofile", _MESH,
-        ]
+        surface, generate = build_staged_stages(s)
+        return surface + ["--pipe"] + generate[1:]
     argv: list[str] = [
         rtcfg.VMTK_BIN,
         # 1. centerlines of the lumen, seeded NON-INTERACTIVELY
@@ -338,22 +363,34 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
 
 
 def repair_ladder(strategy: dict) -> list[dict]:
-    """The strategies a staged run tries in order when TetGen refuses the layered inner
-    surface: as given; half the layer thickness; no layers. On a branched lumen the inward
-    offset of two walls meets at the junction crease and TetGen finds an inner surface it
-    cannot bound ("Unable to find an edge in subface" / "Invalid PLC") - vmtkmeshgenerator
-    then exits 0 with the layer block alone. The staged wall is clean (the same surface fills
-    without layers), so the engine walks the ladder itself instead of spending builder turns:
-    a thinner layer clears the crease on most shapes, and a layer-free radius-adaptive fill is
-    a valid deliverable. Unstaged runs (a user's own .vtp) keep the single attempt."""
+    """The generator strategies a staged run tries in order when TetGen does not complete:
+    as given; without the generator's second remesh; that with half the layer thickness; no
+    layers; no layers and no second remesh. TetGen's verdict on this class of surface flips on
+    near-identical input - manifold_002 filled in the lab, refused the same wall (exception,
+    then a segfault without layers) in the image, and filled again in 8 s once the generator
+    skipped its own remesh - so the ladder varies the surface it sees, not just the layers.
+    The staged wall is clean; the engine walks the ladder itself instead of spending builder
+    turns, and a layer-free radius-adaptive fill is a valid deliverable. Unstaged runs (a
+    user's own .vtp) keep the single attempt."""
     s = resolve_strategy(strategy)
-    if not s.get("sizing_array") or int(s.get("boundary_layers") or 0) <= 0:
+    if not s.get("sizing_array"):
         return [s]
-    thinner = dict(s)
-    thinner["boundary_layer_thickness_factor"] = float(s["boundary_layer_thickness_factor"]) / 2.0
-    bare = dict(s)
-    bare["boundary_layers"] = 0
-    return [s, thinner, bare]
+    steps = [s]
+    if s.get("generator_remesh", True):
+        steps.append({**s, "generator_remesh": False})
+    if int(s.get("boundary_layers") or 0) > 0:
+        steps.append({**s, "generator_remesh": False,
+                      "boundary_layer_thickness_factor":
+                          float(s["boundary_layer_thickness_factor"]) / 2.0})
+        steps.append({**s, "boundary_layers": 0})
+        steps.append({**s, "boundary_layers": 0, "generator_remesh": False})
+    return steps
+
+
+def _step_label(strat: dict) -> str:
+    return (f"layers={strat['boundary_layers']}, thickness factor "
+            f"{float(strat['boundary_layer_thickness_factor']):g}, generator remesh "
+            f"{'on' if strat.get('generator_remesh', True) else 'off'}")
 
 
 def _fill_completed(ws: Path, result: dict) -> bool:
@@ -375,17 +412,25 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     ladder = repair_ladder(strategy)
     notes: list[str] = []
     result: dict = {}
+    staged = bool(resolve_strategy(strategy).get("sizing_array"))
+    if staged:
+        # the surface stage once; the generator per ladder step
+        surface, _ = build_staged_stages(ladder[0])
+        result = _run_pype(ws, surface, timeout=timeout)
+        if result.get("rc") not in (0, None) or result.get("timed_out") \
+                or not (ws / _LUMEN).exists():
+            (ws / "log.vmtk").write_text(result.get("log_tail") or "")
+            return result
+    i = 0
     for i, strat in enumerate(ladder):
-        argv = build_pype(strat)
+        argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
         result = _run_pype(ws, argv, timeout=timeout)
         if _fill_completed(ws, result) or i == len(ladder) - 1:
             break
-        notes.append(f"[vmtk] attempt {i + 1} (layers={strat['boundary_layers']}, thickness "
-                     f"factor {strat['boundary_layer_thickness_factor']:g}): TetGen did not "
-                     f"complete the fill - retrying with "
-                     + ("half the layer thickness" if i == 0 else "no boundary layers"))
+        notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): TetGen did not complete "
+                     f"the fill - next: {_step_label(ladder[i + 1])}")
     if notes:
         effective = dict(ladder[min(i, len(ladder) - 1)])
         effective["repair_note"] = "; ".join(notes)
