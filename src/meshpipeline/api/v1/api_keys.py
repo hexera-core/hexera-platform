@@ -10,6 +10,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from meshpipeline.api import pagination
+from meshpipeline.api.schemas import listing
 from meshpipeline.api.security import owner_dep, principal_dep
 from meshpipeline.application import api_key_service
 from meshpipeline.contracts.identity import Credential, Principal
@@ -62,12 +64,19 @@ def _row(row) -> dict:
 
 @router.get("")
 async def list_keys(principal: Annotated[Principal, Depends(principal_dep)],
+                    limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = None,
                     owner_id: str = Depends(owner_dep)) -> dict:
     _require_console_session(principal)
+    bounded = pagination.clamp_limit(limit)
     async with get_db() as db:
+        # ONE MORE ROW THAN THE PAGE - see listing.look_ahead. Nothing bounds how many keys an
+        # organisation may mint, so this read is paged like every other collection rather than
+        # serialising an account's entire history of keys into one settings page.
         rows = await api_key_service.list_for_owner(
-            db, owner_id=owner_id, organization_id=principal.organization_id)
-    return {"items": [_row(row) for row in rows]}
+            db, owner_id=owner_id, organization_id=principal.organization_id,
+            limit=listing.look_ahead(bounded), before=pagination.decode_cursor(cursor))
+    return listing.page(rows, limit=bounded, item=_row,
+                        key=lambda row: (row.created_at, row.id))
 
 
 @router.post("", status_code=201)

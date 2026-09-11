@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import HTTPException
 
+from meshpipeline.api import pagination
 from meshpipeline.api.v1 import api_keys
 from meshpipeline.contracts.identity import Credential, Principal
 
@@ -58,8 +59,11 @@ def keys(monkeypatch):
                  created_at=NOW, last_used_at=None, revoked_at=None, expires_at=None)]
     revoked: list = []
 
-    async def fake_list(db, *, owner_id, organization_id=""):
-        return rows if owner_id == OWNER else []
+    seen: dict = {}
+
+    async def fake_list(db, *, owner_id, organization_id="", limit=25, before=None):
+        seen["limit"] = limit
+        return (rows if owner_id == OWNER else [])[:limit]
 
     async def fake_issue(db, *, owner_id, name="", plan="", organization_id=None,
                          expires_at=None):
@@ -83,11 +87,11 @@ def keys(monkeypatch):
     monkeypatch.setattr(api_keys.api_key_service, "issue", fake_issue)
     monkeypatch.setattr(api_keys.api_key_service, "revoke", fake_revoke)
     monkeypatch.setattr(api_keys, "get_db", lambda: _NullSession())
-    return rows, revoked
+    return rows, revoked, seen
 
 
 async def test_the_list_is_the_callers_own_keys_and_carries_no_secret(keys):
-    rows, _ = keys
+    rows, _, _ = keys
     payload = await api_keys.list_keys(principal=_console_principal(), owner_id=OWNER)
     assert [item["key_prefix"] for item in payload["items"]] == [rows[0].key_prefix]
     serialised = repr(payload)
@@ -105,7 +109,7 @@ async def test_creating_a_key_returns_the_presented_secret_exactly_once(keys):
 
 
 async def test_revoking_reports_whether_a_live_key_was_revoked(keys):
-    rows, _ = keys
+    rows, _, _ = keys
     assert await api_keys.revoke_key(key_id=rows[0].id, principal=_console_principal(),
                                      owner_id=OWNER) == {"revoked": True}
     assert await api_keys.revoke_key(key_id=uuid.uuid4(), principal=_console_principal(),
@@ -142,3 +146,18 @@ async def test_the_refusal_names_the_credential_rather_than_pretending_the_key_i
         await api_keys.create_key(body=api_keys.CreateKeyIn(name="x"),
                                    principal=_key_principal(), owner_id=OWNER)
     assert "console" in caught.value.detail.lower()
+
+
+async def test_the_key_listing_is_bounded_rather_than_unbounded(keys):
+    # Nothing caps how many keys an organisation may mint, so an unbounded read here was a
+    # settings page whose cost grew with the age of the account. The route asks for a page plus
+    # the one look-ahead row that says whether another page exists.
+    _, _, seen = keys
+    await api_keys.list_keys(principal=_console_principal(), owner_id=OWNER)
+    assert seen["limit"] == pagination.DEFAULT_LIMIT + 1
+
+
+async def test_the_key_listing_clamps_an_absurd_limit(keys):
+    _, _, seen = keys
+    await api_keys.list_keys(principal=_console_principal(), owner_id=OWNER, limit=100_000)
+    assert seen["limit"] == pagination.MAX_LIMIT + 1

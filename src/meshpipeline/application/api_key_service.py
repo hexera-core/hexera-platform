@@ -61,9 +61,11 @@ async def revoke(db: AsyncSession, *, owner_id: str, key_id: uuid.UUID,
                                      at=now or _now())
 
 
-async def list_for_owner(db: AsyncSession, *, owner_id: str,
-                         organization_id: str = "") -> list:
-    return await api_key_repo.list_for_owner(db, owner_id, organization_id=organization_id)
+async def list_for_owner(db: AsyncSession, *, owner_id: str, organization_id: str = "",
+                         limit: int = 25,
+                         before: tuple[datetime, uuid.UUID] | None = None) -> list:
+    return await api_key_repo.list_for_owner(db, owner_id, organization_id=organization_id,
+                                             limit=limit, before=before)
 
 
 async def authenticate(db: AsyncSession, presented: str | None, *,
