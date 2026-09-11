@@ -10,6 +10,17 @@
 
 **Spec:** [`docs/superpowers/specs/2026-09-10-console-dashboard-design.md`](../specs/2026-09-10-console-dashboard-design.md)
 
+> **CORRECTION (applied during execution, 2026-09-10).** Tasks 1, 2 and 4 as written below violate two architecture gates this repository enforces, and were reworked after Task 6:
+>
+> - `tests/unit/architecture/test_route_transport_only.py` forbids ANY module under `src/meshpipeline/api/` from importing `meshpipeline.persistence.repositories` at module scope. An API module is transport over an **application service**, never over a repository — which is why `credits.py` and `api_keys.py` never offended. The collection routes are served through `JobService.list_runs` / `JobService.list_conversations` and `account_service.organization_view`; route tests patch the **service**.
+> - `tests/unit/architecture/test_tenant_scoped_reads.py` forbids any repository method named `get`. Task 4's `OrganizationRepository.get` is `get_by_id`.
+>
+> Consequently Task 2's instruction to hoist `session_repo` to module scope in `chat.py` is **withdrawn** — `get_chat_history`'s function-local construction is a deliberate boundary, not an accident — as are the patch-target changes to `test_api_chat.py` and `test_upload_greeting.py`, which were reverted.
+>
+> Also: verification must run the WHOLE `tests/unit` suite. Sub-directory runs are how both gates got past six tasks. And a failure COUNT is not sufficient — `test_mypy_baseline_ratchet` is already red on a pre-existing macOS `os.O_PATH` issue, so new mypy errors can hide inside it; read its error list.
+>
+> See `.superpowers/sdd/2026-09-10-console-dashboard/progress.md` for the rulings.
+
 ## Global Constraints
 
 - **No migration.** Five endpoints, four repository methods, one service method. Schema is untouched. (Spec §2, decision 9.)
