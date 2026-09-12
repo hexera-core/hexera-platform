@@ -71,6 +71,53 @@ def test_the_staged_wall_is_read_open_from_a_point_found_via_the_ports(tmp_path)
     assert P.passage_of_stls([tmp_path / "missing.stl"], interior_point=[0, 0, 0]) == {}
 
 
+def test_a_wall_of_separately_wound_pieces_is_oriented_before_the_chords_are_cast(tmp_path):
+    import pyvista as pv
+    # three axial tubes with their own points (CAD faces do not share vertices), the middle
+    # one wound inward
+    pieces, all_pts, offset = [], [], 0
+    for k in range(3):
+        pts, faces = _cylinder(radius=0.05, length=1.0 / 3.0, n_around=48, n_along=27)
+        wall = faces[: -(2 * 48)].copy()
+        if k == 1:
+            wall[:, [1, 2]] = wall[:, [2, 1]]
+        pieces.append(wall + offset)
+        all_pts.append(pts + [k / 3.0, 0.0, 0.0])
+        offset += len(pts)
+    P2 = np.concatenate(all_pts)
+    F2 = np.concatenate(pieces)
+    ports = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+    P3, oriented = P.orient_wall_faces(P2, F2, ports)
+    poly = pv.PolyData(P3, np.hstack([np.full((len(oriented), 1), 3), oriented]).ravel())
+    cn = np.asarray(poly.compute_normals(cell_normals=True, point_normals=False,
+                                         consistent_normals=False, auto_orient_normals=False)["Normals"])
+    centres = P3[oriented].mean(axis=1)
+    radial = centres[:, 1:] / np.linalg.norm(centres[:, 1:], axis=1, keepdims=True)
+    assert (np.einsum("ij,ij->i", cn[:, 1:], radial) > 0.9).all(), "every piece must point out"
+    pv.PolyData(P2, np.hstack([np.full((len(F2), 1), 3), F2]).ravel()).save(str(tmp_path / "wall.stl"))
+    r = P.passage_of_stls([tmp_path / "wall.stl"], port_centroids=ports)
+    assert 0.04 < r["p05"] <= r["median"] < 0.06, r
+
+
+def test_a_flanged_wall_is_read_on_its_bore_skin_only(tmp_path):
+    import pyvista as pv
+    # bore skin (r 50 mm) plus an outer skin 9 mm away, both open tubes, plus the bore caps
+    pts_in, faces_in = _cylinder(radius=0.05, n_around=48, n_along=80)
+    pts_out, faces_out = _cylinder(radius=0.059, n_around=48, n_along=80)
+    wall_in, wall_out = faces_in[: -(2 * 48)], faces_out[: -(2 * 48)]
+    wall_pts = np.concatenate([pts_in, pts_out])
+    wall_faces = np.concatenate([wall_in, wall_out + len(pts_in)])
+    pv.PolyData(wall_pts, np.hstack([np.full((len(wall_faces), 1), 3), wall_faces]).ravel()).save(str(tmp_path / "wall.stl"))
+    caps = pv.PolyData(pts_in, np.hstack([np.full((2 * 48, 1), 3), faces_in[-(2 * 48):]]).ravel())
+    caps.save(str(tmp_path / "caps.stl"))
+    ports = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+    r = P.passage_of_stls([tmp_path / "wall.stl"], cap_paths=[tmp_path / "caps.stl"], port_centroids=ports)
+    assert 0.04 < r["p05"] <= r["median"] < 0.06, r    # half the bore, not the 9 mm skin gap
+    skin_pts, skin_faces = P.cavity_skin(wall_pts, wall_faces, [caps])
+    radii = np.linalg.norm(skin_pts[np.unique(skin_faces)][:, 1:], axis=1)
+    assert radii.max() < 0.055, "the outer skin must not be part of the cavity skin"
+
+
 def test_size_caps_put_thirteen_across_the_narrowest_and_typical_passage():
     caps = P.size_caps({"p05": 0.05, "median": 0.10})
     assert np.isclose(caps["wall_cell"], 2 * 0.05 / 13)
