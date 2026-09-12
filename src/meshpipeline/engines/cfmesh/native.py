@@ -89,6 +89,14 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         try:
             q = check_mesh(ws, bashrc=bashrc)
             if q:
+                # the passage measure beside the mesh too: cells across the local passage at
+                # every boundary point (flow_gates.resolution_floor holds 12 at the narrowest)
+                try:
+                    from meshpipeline.engines.passage import passage_of_polymesh
+                    if (ws / "flow_topology").read_text().strip().lower() == "internal":
+                        q.update(passage_of_polymesh(ws))
+                except Exception:  # noqa: BLE001 - evidence, not a verdict
+                    logger.warning("passage measure after meshing failed; omitted", exc_info=True)
                 out["quality"] = q
                 (ws / QUALITY_FILE).write_text(json.dumps(q, default=str))
         except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
