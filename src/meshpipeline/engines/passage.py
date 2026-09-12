@@ -120,6 +120,82 @@ def interior_from_ports(wall_points, cap_points, port_centroids):
     return best
 
 
+def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0):
+    """The part of a staged wall that bounds the FLUID: a hollow solid with flanges stages its
+    bore skin, its outer skin and the annular flange faces all as 'wall' (straight_reducer_006:
+    8.6 mm between the skins, and every chord stopped there). Split the wall at sharp edges,
+    keep the smooth pieces that hold a point of a port cap's rim (the bore skin meets the caps;
+    the outer skin meets the flange annulus only). Returns (points, faces) of those pieces, or
+    the input unchanged when no piece touches a rim."""
+    import pyvista as pv
+    from scipy.spatial import cKDTree
+    pts = np.asarray(points, dtype=float)
+    f = np.asarray(faces, dtype=np.int64)
+    rims = []
+    for cap in cap_polys:
+        try:
+            edge = cap.extract_feature_edges(boundary_edges=True, feature_edges=False,
+                                             manifold_edges=False, non_manifold_edges=False)
+            if edge.n_points:
+                rims.append(np.asarray(edge.points, dtype=float))
+        except Exception:  # noqa: BLE001 - a cap that yields no rim is skipped
+            logger.debug("cap rim extraction failed; cap skipped", exc_info=True)
+    if not rims or len(f) == 0:
+        return pts, f
+    rim = np.concatenate(rims)
+    poly = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    split = poly.compute_normals(cell_normals=False, point_normals=True, split_vertices=True,
+                                 feature_angle=feature_angle, consistent_normals=False,
+                                 auto_orient_normals=False)
+    conn = split.connectivity(extraction_mode="all")
+    cpts = np.asarray(conn.points, dtype=float)
+    cf = np.asarray(conn.faces).reshape(-1, 4)[:, 1:]
+    region = np.asarray(conn.cell_data["RegionId"], dtype=np.int64)
+    b = np.asarray(poly.bounds, dtype=float)
+    tol = float(np.linalg.norm(b[1::2] - b[0::2])) * 1e-4
+    d, _ = cKDTree(rim).query(cpts)
+    touching = d <= tol                                   # points that sit on a cap rim
+    keep_regions = np.unique(region[touching[cf].any(axis=1)])
+    if len(keep_regions) == 0:
+        return pts, f
+    keep = np.isin(region, keep_regions)
+    return cpts, cf[keep]
+
+
+def orient_wall_faces(points, faces, port_centroids):
+    """The staged wall STL is a set of separately wound CAD faces: after cleaning, each is its own
+    connected component, and their windings disagree (production reducers: half outward, half
+    inward, mean radial normal 0.0). Every component is flipped or kept by its own majority vote,
+    each point judged against the port centroid nearest to it (a point on that point's branch
+    axis), so that every face normal points OUT of the fluid. Returns (points, faces) in the
+    connectivity filter's order - the faces index THOSE points."""
+    import pyvista as pv
+    from scipy.spatial import cKDTree
+    pts = np.asarray(points, dtype=float)
+    f = np.asarray(faces, dtype=np.int64).copy()
+    if len(f) == 0 or len(port_centroids) == 0:
+        return pts, f
+    poly = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    conn = poly.connectivity(extraction_mode="all")
+    # the connectivity filter RE-ORDERS cells: read regions, normals and faces off its output
+    f = np.asarray(conn.faces).reshape(-1, 4)[:, 1:].copy()
+    pts = np.asarray(conn.points, dtype=float)
+    region = np.asarray(conn.cell_data["RegionId"], dtype=np.int64)
+    # cell normals from the winding as it stands (vtk computes them per polygon, not by vote)
+    cn = np.asarray(conn.compute_normals(cell_normals=True, point_normals=False,
+                                         consistent_normals=False,
+                                         auto_orient_normals=False)["Normals"], dtype=float)
+    centres = pts[f].mean(axis=1)
+    _, near = cKDTree(np.asarray(port_centroids, dtype=float)).query(centres)
+    toward = np.asarray(port_centroids, dtype=float)[near] - centres
+    inward = np.einsum("ij,ij->i", cn, toward) > 0.0        # normal points toward the fluid
+    for rid in np.unique(region):
+        cells = region == rid
+        if inward[cells].mean() > 0.5:                        # majority inward: flip the piece
+            f[cells, 1], f[cells, 2] = f[cells, 2].copy(), f[cells, 1].copy()
+    return pts, f
+
+
 def passage_of_surface(points, faces) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
     at every point of a closed triangulated boundary, and the cells-across it implies."""
@@ -194,11 +270,15 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
         caps = [pv.read(str(p)) for p in cap_paths if Path(p).exists()]
         cap_pts = (np.concatenate([np.asarray(c.points, dtype=float) for c in caps])
                    if caps else np.zeros((0, 3)))
+        if caps:
+            pts, faces = cavity_skin(pts, faces, caps)
         deep = interior_from_ports(pts, cap_pts, list(port_centroids)) if len(port_centroids) else None
         if deep is None and interior_point is not None:
             deep = np.asarray(interior_point, dtype=float)
         if deep is None:
             return passage_of_surface(pts, faces).get("passage_radius") or {}
+        if len(port_centroids):
+            pts, faces = orient_wall_faces(pts, faces, list(port_centroids))
         b = np.asarray(merged.bounds, dtype=float)
         diag = float(np.linalg.norm(b[1::2] - b[0::2]))
         r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0)
@@ -208,6 +288,6 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
         return {}
 
 
-__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "inside_point", "interior_from_ports",
-           "measure_passage", "passage_of_polymesh", "passage_of_stls", "passage_of_surface",
-           "radius_stats", "size_caps"]
+__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "cavity_skin", "inside_point",
+           "interior_from_ports", "measure_passage", "orient_wall_faces", "passage_of_polymesh",
+           "passage_of_stls", "passage_of_surface", "radius_stats", "size_caps"]
