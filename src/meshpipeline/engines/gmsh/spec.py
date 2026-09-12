@@ -223,9 +223,14 @@ SPEC = EngineSpec(
         ),
         run_policy=RunPolicy(
             required_files=("gmsh_spec.json",),
-            run_timeout=lambda: min(420, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
-            timeout_hint=("Raise size.value in gmsh_spec.json (coarser elements), "
-                          "then run_mesh again."),
+            # 25 MINUTES: at industry density the passage field (driver.PASSAGE_CELLS_ACROSS)
+            # fills a volute in 7-8 min of single-threaded gmsh (volute_scroll_007: 2.57M tets in
+            # 442 s), right at the old 420 s; the builder loop is 3600 s, validated >= 2x this.
+            run_timeout=lambda: min(1500, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
+            timeout_hint=("The passage field holds ~13 cells across every passage, so a fill that "
+                          "does not finish in 25 min is a domain too large for that density "
+                          "(a long flat duct): raise size.value only if the brief allows a coarser "
+                          "mesh, otherwise report the limit; then run_mesh again."),
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="gmsh driver failed",
             fail_hint=("Adjust gmsh_spec.json (raise size.value to coarsen; keep "
