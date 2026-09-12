@@ -376,8 +376,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
     from meshpipeline.engines.passage import passage_of_stls
-    _stl_paths = [p for v in _srcs.values() for p in (v if isinstance(v, list) else [v])]
-    passage_radius = passage_of_stls(_stl_paths) or None
+    _wall_src = _srcs.get(_wall_key) or []
+    _wall_paths = _wall_src if isinstance(_wall_src, list) else [_wall_src]
+    passage_radius = passage_of_stls(_wall_paths, interior_point=t.get("interior_point")) or None
 
     _patches = list(contract_patches or [])
     if not _patches:
