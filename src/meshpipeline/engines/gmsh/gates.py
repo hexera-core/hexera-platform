@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 #: 6 is the floor; the driver aims for 8 with margin.
 RESOLUTION_FLOOR_CELLS = 6
 
+#: The floor for a FLUID DOMAIN measured where it matters: cells across the local passage at
+#: the narrowest wall (5th percentile over the boundary points). The same bar VMTK fills to
+#: (engines/vmtk/criteria.py PASSAGE_MIN_CELLS_ACROSS); industry practice is 20-40.
+PASSAGE_FLOOR_CELLS = 12
+
 
 def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
     ws = Path(ctx.workspace)
@@ -77,6 +82,19 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     quality.json already carries (size_h, bounds), so no mesh-image change is
     required for it to take effect."""
     q = (ctx.manifest_or_load().get("quality") or {})
+    # THE MEASURED PASSAGE GATES when the driver could measure it: an under-resolved branch
+    # or scroll cannot hide behind a well-resolved main run or a wide bounding box.
+    local = q.get("passage_cells_across_local") or {}
+    p05 = local.get("p05")
+    if p05 is not None and float(p05) < PASSAGE_FLOOR_CELLS:
+        return False, (
+            f"[RESOLUTION] undermeshed: {float(p05):g} cells across the passage at the "
+            f"narrowest wall (5th percentile; median {local.get('median')}) - a CFD mesh needs "
+            f"at least {PASSAGE_FLOOR_CELLS} everywhere (industry practice is 20-40). Fix in "
+            "gmsh_spec.json: lower size.value (the passage field only tightens gmsh's own "
+            "size, it cannot refine past size.mode='absolute' values that are too large), and "
+            "run_mesh again."
+        )
     h = q.get("size_h")
     bounds = q.get("bounds")
     # An older deck without these fields is not judged here (the manifest/sicn

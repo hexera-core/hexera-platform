@@ -13,6 +13,16 @@ SICN_FLOOR = 0.1   # shared with the executor gate + quality criteria
 # standalone script inside the mesh image, decoupled from the settings inventory.
 MIN_CELLS_ACROSS = 8
 
+#: INDUSTRY DENSITY for a fluid domain: elements sized so about this many span the LOCAL
+#: passage (twice the local radius), the same target VMTK meshes to (2 / edge_length_factor
+#: 0.15). The old clamp put 8 across the smallest port or bbox extent and nothing across a
+#: passage that narrows inside (a volute scroll: 2-4 cells at the narrowest wall). The
+#: resolution_floor gate rejects a fill under PASSAGE_FLOOR_CELLS at the narrowest wall.
+PASSAGE_CELLS_ACROSS = 13
+#: the finest the passage field may ask for, as a fraction of the clamp size h: a chord that
+#: grazes a sharp corner reads as a tiny radius, and 2r/13 of that would never finish
+PASSAGE_MIN_SIZE_FRACTION = 1.0 / 30.0
+
 #: A bounding-box extent below this fraction of the diagonal is noise, not a dimension of
 #: the part: a planar face reports a thickness of ~1e-9 m, and clamping to eight cells
 #: across THAT is a mesh that never finishes (the committed 2D fixture ran past its 300 s
@@ -115,6 +125,116 @@ def _final_node_bounds(gmsh) -> list[float]:
     xs, ys, zs = coords[0::3], coords[1::3], coords[2::3]
     return [float(xs.min()), float(ys.min()), float(zs.min()),
             float(xs.max()), float(ys.max()), float(zs.max())]
+
+
+def _read_flow_topology(ws) -> str:
+    try:
+        return (Path(ws) / "flow_topology").read_text().strip().lower()
+    except OSError:
+        return ""
+
+
+def _boundary_triangles(gmsh):
+    """Node coordinates and the 3-node boundary triangles of the current mesh, as arrays
+    indexed into the node array (gmsh tags are not contiguous)."""
+    import numpy as np
+    tags, coords, _ = gmsh.model.mesh.getNodes()
+    pts = np.asarray(coords, dtype=float).reshape(-1, 3)
+    idx = np.zeros(int(max(tags)) + 1 if len(tags) else 1, dtype=np.int64)
+    idx[np.asarray(tags, dtype=np.int64)] = np.arange(len(tags))
+    tris = []
+    etypes, _etags, enodes = gmsh.model.mesh.getElements(2)
+    for et, en in zip(etypes, enodes, strict=True):
+        nn = gmsh.model.mesh.getElementProperties(et)[3]
+        conn = np.asarray(en, dtype=np.int64).reshape(-1, nn)[:, :3]   # corners of tri3/tri6
+        tris.append(idx[conn])
+    faces = np.concatenate(tris) if tris else np.zeros((0, 3), dtype=np.int64)
+    return pts, faces
+
+
+def _interior_point(gmsh):
+    """The centroid of one volume element: a point that is certainly inside the fluid."""
+    import numpy as np
+    tags, coords, _ = gmsh.model.mesh.getNodes()
+    pts = np.asarray(coords, dtype=float).reshape(-1, 3)
+    idx = {int(t): i for i, t in enumerate(tags)}
+    etypes, _etags, enodes = gmsh.model.mesh.getElements(3)
+    for et, en in zip(etypes, enodes, strict=True):
+        nn = gmsh.model.mesh.getElementProperties(et)[3]
+        first = np.asarray(en[:nn], dtype=np.int64)
+        return pts[[idx[int(t)] for t in first]].mean(axis=0)
+    return pts.mean(axis=0)
+
+
+def passage_sizes(radius, *, target: float = PASSAGE_CELLS_ACROSS, h_max: float,
+                  h_min: float):
+    """Element size at each wall point: 2r / target, held within [h_min, h_max]."""
+    import numpy as np
+    r = np.asarray(radius, dtype=float)
+    return np.clip(2.0 * r / float(target), h_min, h_max)
+
+
+def passage_size_callback(points, sizes):
+    """A gmsh size callback that only TIGHTENS: the size of the nearest wall point, or what
+    gmsh already wanted, whichever is smaller. Mid-passage points sit about one radius from
+    the nearest wall, whose radius IS the local passage radius, so the field carries inward."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    tree = cKDTree(np.asarray(points, dtype=float))
+    s = np.asarray(sizes, dtype=float)
+
+    def _cb(dim, tag, x, y, z, lc):
+        _, i = tree.query((x, y, z))
+        return min(float(lc), float(s[i]))
+    return _cb
+
+
+def measure_passage(points, faces, radius) -> dict:
+    """Cells across the passage at every boundary point: twice the local radius over the mean
+    length of the boundary edges meeting the point (the surface edge is what sizes the tets
+    beside it). Median, 5th percentile (the narrowest wall, less a few outliers) and min."""
+    import numpy as np
+    pts = np.asarray(points, dtype=float)
+    f = np.asarray(faces, dtype=np.int64)
+    r = np.asarray(radius, dtype=float)
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    length = np.linalg.norm(pts[e[:, 1]] - pts[e[:, 0]], axis=1)
+    acc = (np.bincount(e[:, 0], weights=length, minlength=len(pts))
+           + np.bincount(e[:, 1], weights=length, minlength=len(pts)))
+    cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
+    ok = (cnt > 0) & (r > 0.0)
+    if not ok.any():
+        return {}
+    across = 2.0 * r[ok] / (acc[ok] / cnt[ok])
+    return {"median": round(float(np.median(across)), 1),
+            "p05": round(float(np.percentile(across, 5)), 1),
+            "min": round(float(across.min()), 1), "points": int(ok.sum())}
+
+
+def _passage_field(gmsh, ws, h: float, diag: float) -> tuple:
+    """For an internal-flow fluid domain: mesh once coarsely at the clamp size h, measure the
+    local passage radius on that boundary (engines/vmtk/lumen_staging.local_radius: half the
+    inward chord to the opposite wall), and return (callback, surface_points, radius, note).
+    Anything missing (no flow_topology, no pyvista, a surface the chord cannot read) returns
+    (None, None, None, why) and the clamp sizing stands - the gate still measures the result."""
+    if _read_flow_topology(ws) != "internal":
+        return None, None, None, "not an internal-flow domain"
+    try:
+        from meshpipeline.engines.vmtk.lumen_staging import local_radius
+    except Exception as exc:  # noqa: BLE001 - standalone use without pyvista
+        return None, None, None, f"local radius unavailable ({type(exc).__name__})"
+    try:
+        gmsh.model.mesh.generate(3)
+        pts, faces = _boundary_triangles(gmsh)
+        if len(faces) < 4:
+            return None, None, None, "no boundary triangles on the coarse mesh"
+        r = local_radius(pts, faces, _interior_point(gmsh), diag * 1e-5, diag / 2.0)
+        sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+        gmsh.model.mesh.clear()
+        return passage_size_callback(pts, sizes), pts, r, "local radius"
+    except Exception as exc:  # noqa: BLE001 - a sizing aid must never lose the mesh
+        gmsh.model.mesh.clear()
+        return None, None, None, f"passage field failed ({type(exc).__name__}: {exc})"
 
 
 def _allowed_roles() -> set:
@@ -402,9 +522,33 @@ def main(workspace: str) -> int:
             gmsh.model.addPhysicalGroup(2, leftover,
                                         name=str(spec.get("default_group", "free")))
 
+        # PASSAGE SIZING (fluid domains): elements from the local radius, about
+        # PASSAGE_CELLS_ACROSS across every passage, instead of one size for the whole part.
+        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag)
+        _passage: dict = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS}
+        if _cb is not None:
+            gmsh.model.mesh.setSizeCallback(_cb)
+        else:
+            print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
         gmsh.model.mesh.generate(3)
+        if _cb is not None:
+            gmsh.model.mesh.removeSizeCallback()
         if spec.get("optimize", True):
             gmsh.model.mesh.optimize("Netgen")
+        if _srad is not None:
+            # measured on the FINAL boundary: the radius field carried over from the coarse
+            # surface (nearest point; the radius does not change with refinement)
+            try:
+                import numpy as np
+                from scipy.spatial import cKDTree
+                _fpts, _ffaces = _boundary_triangles(gmsh)
+                _, _near = cKDTree(np.asarray(_spts)).query(_fpts)
+                _passage["passage_cells_across_local"] = measure_passage(
+                    _fpts, _ffaces, np.asarray(_srad)[_near])
+                print(f"[GMSH] passage resolution: {_passage['passage_cells_across_local']}",
+                      file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - evidence, not a verdict
+                print(f"[GMSH] passage measurement failed: {exc}", file=sys.stderr)
         order = int(spec.get("element_order", 2))
         if order > 1:
             gmsh.model.mesh.setOrder(order)
@@ -442,6 +586,7 @@ def main(workspace: str) -> int:
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": h,
             **_resolution,
+            **_passage,
             "bounds": _final_node_bounds(gmsh),
             # groups = the ACTUAL physical groups present in the meshed model (read back),
             # role-annotated from the spec - the manifest must reflect the artifact, not
