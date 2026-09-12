@@ -73,18 +73,23 @@ def inside_point(surface):
     import pyvista as pv
     s = surface.compute_normals(cell_normals=True, point_normals=False,
                                 auto_orient_normals=True, consistent_normals=True)
+    from scipy.spatial import cKDTree
     centres = np.asarray(s.cell_centers().points, dtype=float)
     normals = np.asarray(s["Normals"], dtype=float)
     sizes = np.sqrt(np.asarray(s.compute_cell_sizes(length=False, volume=False)["Area"]))
     rng = np.random.default_rng(0)
     pick = rng.choice(len(centres), size=min(64, len(centres)), replace=False)
-    cands = np.concatenate([centres[pick] - normals[pick] * sizes[pick, None],
-                            centres[pick] + normals[pick] * sizes[pick, None]])
+    # both ways off each sampled cell, at several depths: the DEEPEST enclosed candidate wins.
+    # A point one cell off the wall is inside but useless - the orientation vote that decides
+    # which way the chords run needs a point the wall normals agree about, near the axis.
+    cands = np.concatenate([centres[pick] + sgn * k * normals[pick] * sizes[pick, None]
+                            for sgn in (-1.0, 1.0) for k in (1.0, 3.0, 10.0, 30.0, 100.0)])
     sel = pv.PolyData(cands).select_enclosed_points(surface, check_surface=False)
     inside = np.asarray(sel["SelectedPoints"]).astype(bool)
     if not inside.any():
         return None
-    return cands[np.argmax(inside)]
+    depth, _ = cKDTree(np.asarray(surface.points, dtype=float)).query(cands[inside])
+    return cands[inside][int(np.argmax(depth))]
 
 
 def passage_of_surface(points, faces) -> dict:
@@ -106,7 +111,11 @@ def passage_of_surface(points, faces) -> dict:
 
 
 def _triangles(poly):
-    poly = poly.triangulate().clean()
+    # the staged STLs share their rim points only approximately: merge within 1e-5 of the diagonal
+    # so the caps close the wall (an open rim leaks every chord that runs through it)
+    b = np.asarray(poly.bounds, dtype=float)
+    diag = float(np.linalg.norm(b[1::2] - b[0::2])) or 1.0
+    poly = poly.triangulate().clean(tolerance=diag * 1e-5, absolute=True)
     faces = np.asarray(poly.faces).reshape(-1, 4)[:, 1:]
     return np.asarray(poly.points, dtype=float), faces
 
@@ -136,17 +145,29 @@ def passage_of_polymesh(workspace) -> dict:
         return {}
 
 
-def passage_of_stls(paths) -> dict:
-    """The radius statistics of the staged boundary (wall + port caps, one STL each) BEFORE
-    meshing, for sizing. {} when the surfaces do not close or cannot be read."""
+def passage_of_stls(paths, *, interior_point=None) -> dict:
+    """The radius statistics of the staged WALL (open at the ports) BEFORE meshing, for sizing.
+    With the tessellation's interior point the chords are read the way VMTK's staging reads
+    them (a ray leaving through a port borrows its neighbour); the staged caps do not stitch to
+    the wall rim exactly, so a merged 'closed' surface would leak every chord (the pilot read a
+    6 mm radius on a 173 mm bore that way). Without an interior point the surfaces are merged
+    and one is searched for. {} when nothing can be read."""
     import pyvista as pv
+
+    from meshpipeline.engines.vmtk.lumen_staging import local_radius
     try:
         parts = [pv.read(str(p)) for p in paths if Path(p).exists()]
         if not parts:
             return {}
         merged = parts[0].merge(parts[1:]) if len(parts) > 1 else parts[0]
         pts, faces = _triangles(merged.extract_surface())
-        return passage_of_surface(pts, faces).get("passage_radius") or {}
+        if interior_point is None:
+            return passage_of_surface(pts, faces).get("passage_radius") or {}
+        b = np.asarray(merged.bounds, dtype=float)
+        diag = float(np.linalg.norm(b[1::2] - b[0::2]))
+        r = local_radius(pts, faces, np.asarray(interior_point, dtype=float), diag * 1e-5,
+                         diag / 2.0)
+        return radius_stats(r)
     except Exception:  # noqa: BLE001 - sizing aid, not a verdict
         logger.warning("passage radius of the staged surface failed", exc_info=True)
         return {}
