@@ -88,10 +88,10 @@ def test_a_wall_of_separately_wound_pieces_is_oriented_before_the_chords_are_cas
     F2 = np.concatenate(pieces)
     ports = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
     P3, oriented = P.orient_wall_faces(P2, F2, ports)
-    poly = pv.PolyData(P3, np.hstack([np.full((len(oriented), 1), 3), oriented]).ravel())
-    cn = np.asarray(poly.compute_normals(cell_normals=True, point_normals=False,
-                                         consistent_normals=False, auto_orient_normals=False)["Normals"])
-    centres = P3[oriented].mean(axis=1)
+    tri = P3[oriented]
+    cn = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    cn /= np.linalg.norm(cn, axis=1, keepdims=True)
+    centres = tri.mean(axis=1)
     radial = centres[:, 1:] / np.linalg.norm(centres[:, 1:], axis=1, keepdims=True)
     assert (np.einsum("ij,ij->i", cn[:, 1:], radial) > 0.9).all(), "every piece must point out"
     pv.PolyData(P2, np.hstack([np.full((len(F2), 1), 3), F2]).ravel()).save(str(tmp_path / "wall.stl"))

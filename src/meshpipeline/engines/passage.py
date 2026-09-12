@@ -232,11 +232,12 @@ def orient_wall_faces(points, faces, port_centroids):
     f = np.asarray(conn.faces).reshape(-1, 4)[:, 1:].copy()
     pts = np.asarray(conn.points, dtype=float)
     region = np.asarray(conn.cell_data["RegionId"], dtype=np.int64)
-    # cell normals from the winding as it stands (vtk computes them per polygon, not by vote)
-    cn = np.asarray(conn.compute_normals(cell_normals=True, point_normals=False,
-                                         consistent_normals=False,
-                                         auto_orient_normals=False)["Normals"], dtype=float)
-    centres = pts[f].mean(axis=1)
+    # cell normals straight from the winding (numpy cross products: vtkPolyDataNormals was
+    # not deterministic here - a third of a piece came back flipped on some runs)
+    tri = pts[f]
+    cn = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    cn /= np.linalg.norm(cn, axis=1, keepdims=True).clip(1e-30)
+    centres = tri.mean(axis=1)
     _, near = cKDTree(np.asarray(port_centroids, dtype=float)).query(centres)
     toward = np.asarray(port_centroids, dtype=float)[near] - centres
     inward = np.einsum("ij,ij->i", cn, toward) > 0.0        # normal points toward the fluid
