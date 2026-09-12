@@ -203,3 +203,46 @@ def test_the_native_phase_returns_facts_and_never_a_verdict(tmp_path, spawns):
     out = N._run_cartesian_mesh_local(tmp_path)
     assert "success" not in out, "the native phase declared success on its own"
     assert set(out) >= {"rc", "outcome", "log_tail"}
+
+
+# 7-9: the measurement beside the mesh (HEX-6 pilot: a built mesh refused for missing evidence)
+def _finished_mesh(ws):
+    (ws / "constant" / "polyMesh").mkdir(parents=True)
+    (ws / "constant" / "polyMesh" / "owner").write_text("owner")
+
+
+def test_a_finished_mesh_is_measured_beside_itself_and_the_figures_travel_home(tmp_path, spawns,
+                                                                               monkeypatch):
+    import json
+    _finished_mesh(tmp_path)
+    seen = []
+    monkeypatch.setattr(N, "check_mesh", lambda ws, **kw: (seen.append(ws), {
+        "mesh_ok": True, "max_non_ortho": 41.5, "max_skewness": 2.1, "cells": 1200})[1])
+    monkeypatch.setattr(N, "export_volume_vtk", lambda ws, **kw: "VTK/case_0/internal.vtu")
+    out = N._run_cartesian_mesh_local(tmp_path)
+    assert out["rc"] == 0 and seen == [tmp_path], "checkMesh did not run beside the mesh"
+    assert out["quality"]["max_non_ortho"] == 41.5
+    on_disk = json.loads((tmp_path / N.QUALITY_FILE).read_text())
+    assert on_disk["max_non_ortho"] == 41.5 and on_disk["cells"] == 1200, (
+        "the measurement must be written next to the polyMesh so the worker can read it")
+
+
+def test_a_failed_measurement_never_loses_the_finished_mesh(tmp_path, spawns, monkeypatch):
+    _finished_mesh(tmp_path)
+
+    def _boom(ws, **kw):
+        raise RuntimeError("checkMesh exploded")
+    monkeypatch.setattr(N, "check_mesh", _boom)
+    monkeypatch.setattr(N, "export_volume_vtk", _boom)
+    out = N._run_cartesian_mesh_local(tmp_path)
+    assert out["rc"] == 0 and out["outcome"] == NativeOutcome.ok.value
+    assert "quality" not in out and not (tmp_path / N.QUALITY_FILE).exists()
+
+
+def test_nothing_is_measured_when_the_mesher_left_no_mesh(tmp_path, spawns, monkeypatch):
+    called = []
+    monkeypatch.setattr(N, "check_mesh", lambda ws, **kw: called.append("check") or {})
+    monkeypatch.setattr(N, "export_volume_vtk", lambda ws, **kw: called.append("vtk"))
+    N._run_cartesian_mesh_local(tmp_path)
+    assert called == [], "a measurement ran on a workspace with no polyMesh"
+    assert len(spawns) == 1
