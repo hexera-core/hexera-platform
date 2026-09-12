@@ -238,7 +238,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
                        cell_budget: int | None = None,
-                       default_boundary: bool = True) -> dict:
+                       default_boundary: bool = True,
+                       passage_radius: dict | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -259,13 +260,24 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # wall refinement cell (absolute m): default L/20, never finer than
     # max_cell/16 (cfMesh halves - an unreachable size just wastes the run).
     wall_cell = float(strategy.get("wall_cell", L / 20.0))
+    # PASSAGE CAPS (internal flow): whatever the strategy asked for, the wall band is no
+    # coarser than 13 cells across the narrowest passage and the background no coarser than
+    # 13 across the typical one, with the band one radius thick so a narrow passage is filled
+    # at the wall size end to end. L/20 put 2.7 cells across a 173 mm bore on a 1.26 m reducer.
+    _caps: dict = {}
+    if passage_radius and passage_radius.get("p05") and passage_radius.get("median"):
+        from meshpipeline.engines.passage import size_caps
+        _caps = size_caps(passage_radius)
+        max_cell = min(max_cell, _caps["max_cell"])
+        wall_cell = min(wall_cell, _caps["wall_cell"])
     wall_cell = max(wall_cell, max_cell / 16.0)
+    _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     dict_parts = [
         _MESHDICT_HDR,
         f'surfaceFile "{surface_file}";\n',
         f"maxCellSize {max_cell:.6g};\n",
-        f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g}; }}\n}}\n",
+        f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n}}\n",
     ]
     _obj = _render_object_refinements(strategy.get("features") or [])
     if _obj:
@@ -311,7 +323,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     est_bg = int(vol / max(max_cell, 1e-30) ** 3)
     return {"max_cell_size": round(max_cell, 6), "wall_cell_size": round(wall_cell, 6),
             "n_layers": n_layers, "features": len(strategy.get("features") or []),
-            "est_background_cells": est_bg}
+            "est_background_cells": est_bg,
+            "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None}
 
 
 def _bind_intake_shared(t: dict, declaration: list):
@@ -360,6 +373,11 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     prep = prepare_surface_internal(
         workspace, surfaces_src=_srcs,
         feature_angle=float(args.get("feature_angle", 30.0)))
+    # the local passage radius of the staged boundary (wall + port caps close it) sizes the
+    # wall band and the background; {} when the surfaces do not close, and the strategy stands
+    from meshpipeline.engines.passage import passage_of_stls
+    _stl_paths = [p for v in _srcs.values() for p in (v if isinstance(v, list) else [v])]
+    passage_radius = passage_of_stls(_stl_paths) or None
 
     _patches = list(contract_patches or [])
     if not _patches:
@@ -370,9 +388,10 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     summary = render_cfmesh_case(
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=L,
-        domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget)
+        domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
+        passage_radius=passage_radius)
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
-            "openings": t.get("openings"), **summary,
+            "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
             "next": "meshDict written for the enclosed cavity (valid + budget-clamped). "
                     "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure."}
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.engines.gates import GateCtx, GateSpec
+from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,26 @@ def _gate_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
     return ok, ("" if ok else f"[MANIFEST_VALIDATION_FAILED] {err}")
 
 
+def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
+    """The fill must span the passage where it matters: cells across the local passage at the
+    narrowest wall (5th percentile of the boundary points, measured beside the mesh). A mesh
+    without the measure (an older image) is not judged here."""
+    q = (ctx.manifest_or_load().get("quality") or {})
+    local = q.get("passage_cells_across_local") or {}
+    p05 = local.get("p05")
+    if p05 is None:
+        return True, ""
+    if float(p05) < PASSAGE_FLOOR_CELLS:
+        return False, (
+            f"[RESOLUTION] undermeshed: {float(p05):g} cells across the passage at the narrowest "
+            f"wall (5th percentile; median {local.get('median')}) - a CFD mesh needs at least "
+            f"{PASSAGE_FLOOR_CELLS} everywhere (industry practice is 20-40). Fix in meshDict: "
+            "lower the wall localRefinement cellSize to about 2 x (narrowest radius) / 13 with "
+            "refinementThickness about one radius, lower maxCellSize, and run_mesh again."
+        )
+    return True, ""
+
+
 def _gate_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
     manifest = ctx.manifest_or_load()
     if not (manifest and ctx.intake_patches):
@@ -141,6 +162,10 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
              proves="The mesh clears every quality bar cfMesh requires - no fatal topology defects"),
+    # Well-shaped is not adequately resolved: after the quality floor (a broken mesh is the
+    # worse news), before naming (an under-resolved mesh is not worth patch-checking).
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor, section="MESH",
+             proves="Every passage is spanned by enough cells to carry the flow (12 at the narrowest wall)"),
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
              proves="Every boundary you named exists in the mesh, and carries real faces"),
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
