@@ -152,18 +152,36 @@ def _boundary_triangles(gmsh):
     return pts, faces
 
 
-def _interior_point(gmsh):
-    """The centroid of one volume element: a point that is certainly inside the fluid."""
+def deepest_point(candidates, boundary_points):
+    """The candidate farthest from the boundary: the point the wall normals agree about. The
+    chord orientation is a majority vote against this point; one a cell off the wall is inside
+    but useless, and a wrong vote flips every chord the radius is read from."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    c = np.asarray(candidates, dtype=float)
+    depth, _ = cKDTree(np.asarray(boundary_points, dtype=float)).query(c)
+    return c[int(np.argmax(depth))]
+
+
+def _interior_point(gmsh, boundary_points):
+    """The centroid of a volume element deep inside the fluid (see deepest_point)."""
     import numpy as np
     tags, coords, _ = gmsh.model.mesh.getNodes()
     pts = np.asarray(coords, dtype=float).reshape(-1, 3)
-    idx = {int(t): i for i, t in enumerate(tags)}
+    idx = np.zeros(int(max(tags)) + 1 if len(tags) else 1, dtype=np.int64)
+    idx[np.asarray(tags, dtype=np.int64)] = np.arange(len(tags))
     etypes, _etags, enodes = gmsh.model.mesh.getElements(3)
+    cents = []
     for et, en in zip(etypes, enodes, strict=True):
         nn = gmsh.model.mesh.getElementProperties(et)[3]
-        first = np.asarray(en[:nn], dtype=np.int64)
-        return pts[[idx[int(t)] for t in first]].mean(axis=0)
-    return pts.mean(axis=0)
+        conn = idx[np.asarray(en, dtype=np.int64).reshape(-1, nn)[:, :4]]
+        cents.append(pts[conn].mean(axis=1))
+    if not cents:
+        return pts.mean(axis=0)
+    c = np.concatenate(cents)
+    if len(c) > 20000:
+        c = c[np.random.default_rng(0).choice(len(c), size=20000, replace=False)]
+    return deepest_point(c, boundary_points)
 
 
 def passage_sizes(radius, *, target: float = PASSAGE_CELLS_ACROSS, h_max: float,
@@ -228,7 +246,7 @@ def _passage_field(gmsh, ws, h: float, diag: float) -> tuple:
         pts, faces = _boundary_triangles(gmsh)
         if len(faces) < 4:
             return None, None, None, "no boundary triangles on the coarse mesh"
-        r = local_radius(pts, faces, _interior_point(gmsh), diag * 1e-5, diag / 2.0)
+        r = local_radius(pts, faces, _interior_point(gmsh, pts), diag * 1e-5, diag / 2.0)
         sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
         gmsh.model.mesh.clear()
         return passage_size_callback(pts, sizes), pts, r, "local radius"
