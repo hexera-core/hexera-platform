@@ -77,3 +77,9 @@ def test_the_narrowest_wall_gates_a_fluid_mesh():
 def test_without_a_passage_measure_the_bbox_floor_still_applies():
     ok, fb = G._gate_resolution_floor(_ctx({"size_h": 0.040, "bounds": [0, 0, 0, 1.0, 0.05, 0.05]}))
     assert not ok and "narrowest" in fb
+
+
+def test_the_orientation_point_is_the_one_farthest_from_the_wall():
+    pts, _ = _cylinder(radius=0.05)
+    cands = np.array([[0.5, 0.049, 0.0], [0.5, 0.0, 0.0], [0.5, 0.0, 0.045]])
+    assert np.allclose(D.deepest_point(cands, pts), [0.5, 0.0, 0.0])
