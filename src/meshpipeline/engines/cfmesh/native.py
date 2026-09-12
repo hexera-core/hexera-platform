@@ -2,11 +2,18 @@
 # Boundaries: the native seam: it executes the real mesher and returns the shared result contract. It judges nothing.
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from pathlib import Path
 
-from meshpipeline.engines.cfmesh.foam_exec import _DEFAULT_BASHRC, _foam_env, scan_case_dicts
+from meshpipeline.engines.cfmesh.foam_exec import (
+    _DEFAULT_BASHRC,
+    _foam_env,
+    check_mesh,
+    export_volume_vtk,
+    scan_case_dicts,
+)
 from meshpipeline.sandbox.safe_exec import NativeOutcome, describe_native_result, run_guarded
 
 logger = logging.getLogger(__name__)
@@ -26,6 +33,9 @@ RC_DICTS_REJECTED = -2
 
 #: How much of the native log travels back with the result.
 LOG_TAIL_LINES = 25
+
+#: The measurement taken beside the mesh; foam_exec.check_mesh reads it before shelling out.
+QUALITY_FILE = "mesh_quality.json"
 
 
 def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC,
@@ -64,10 +74,33 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         tail = "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
     # The SHARED reading of a native result - signal vs ordinary failure vs timeout - so this
     # bundle does not carry its own interpretation of a negative return code.
-    return describe_native_result(
+    out = describe_native_result(
         returncode=rc, args=["bash", "-lc", cmd], stage=binary, output=tail,
         outcome=NativeOutcome.timed_out if timed_out else None)
+    # QUALITY IS MEASURED HERE, beside the mesh, and travels home with it. finalize and the
+    # solvability gate call check_mesh on the worker, which carries no OpenFOAM: on the Cloud
+    # Run path every figure came back empty and the reviewer refused a finished, paid-for mesh
+    # for "required deterministic evidence missing ('metric:max_non_ortho',)" (HEX-6 pilot,
+    # job 90f39982). Same remedy as engines/snappy/native.py: measure where the binary and the
+    # bytes both are, write the figures next to the polyMesh, and read them back on the far
+    # side (foam_exec.check_mesh prefers the file). The volume VTK the reviewer slices is
+    # written by foamToVTK - another binary that exists only here - for the same reason.
+    if rc == 0 and not timed_out and (ws / "constant" / "polyMesh" / "owner").exists():
+        try:
+            q = check_mesh(ws, bashrc=bashrc)
+            if q:
+                out["quality"] = q
+                (ws / QUALITY_FILE).write_text(json.dumps(q, default=str))
+        except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
+            logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)
+        try:
+            if export_volume_vtk(ws, bashrc=bashrc):
+                logger.info("volume VTK exported beside the mesh for review")
+        except Exception:  # noqa: BLE001 - an export must never lose a finished mesh
+            logger.warning("foamToVTK after meshing failed; the reviewer will have no volume "
+                           "to slice", exc_info=True)
+    return out
 
 
 __all__ = ["CARTESIAN_2D_MESH", "CARTESIAN_MESH", "CREATE_PATCH_TIMEOUT_S", "LOG_TAIL_LINES",
-           "RC_DICTS_REJECTED", "TWO_D_MARKER", "run_cartesian_mesh"]
+           "QUALITY_FILE", "RC_DICTS_REJECTED", "TWO_D_MARKER", "run_cartesian_mesh"]
