@@ -92,6 +92,34 @@ def inside_point(surface):
     return cands[inside][int(np.argmax(depth))]
 
 
+def interior_from_ports(wall_points, cap_points, port_centroids):
+    """A point deep inside the passage, from the ports: each port centroid lies on its branch
+    axis at the fluid boundary; step a tenth of the way toward the wall's centroid (into the
+    fluid for any duct), then walk away from the nearest boundary point until the distance
+    stops growing (the caps count as boundary, so the walk cannot leave through a port). The
+    deepest of the per-port results wins. None without ports."""
+    from scipy.spatial import cKDTree
+    wall = np.asarray(wall_points, dtype=float)
+    caps = np.asarray(cap_points, dtype=float).reshape(-1, 3)
+    if len(wall) == 0 or len(port_centroids) == 0:
+        return None
+    tree = cKDTree(np.concatenate([wall, caps]) if len(caps) else wall)
+    wc = wall.mean(axis=0)
+    best, best_d = None, -1.0
+    for c in port_centroids:
+        p = np.asarray(c, dtype=float) + 0.1 * (wc - np.asarray(c, dtype=float))
+        d, i = tree.query(p)
+        for _ in range(40):
+            q = p + 0.5 * (p - tree.data[i])
+            dq, iq = tree.query(q)
+            if dq <= d:
+                break
+            p, d, i = q, dq, iq
+        if d > best_d:
+            best, best_d = p, d
+    return best
+
+
 def passage_of_surface(points, faces) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
     at every point of a closed triangulated boundary, and the cells-across it implies."""
@@ -145,13 +173,15 @@ def passage_of_polymesh(workspace) -> dict:
         return {}
 
 
-def passage_of_stls(paths, *, interior_point=None) -> dict:
-    """The radius statistics of the staged WALL (open at the ports) BEFORE meshing, for sizing.
-    With the tessellation's interior point the chords are read the way VMTK's staging reads
-    them (a ray leaving through a port borrows its neighbour); the staged caps do not stitch to
-    the wall rim exactly, so a merged 'closed' surface would leak every chord (the pilot read a
-    6 mm radius on a 173 mm bore that way). Without an interior point the surfaces are merged
-    and one is searched for. {} when nothing can be read."""
+def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=()) -> dict:
+    """The radius statistics of the staged WALL (open at the ports) BEFORE meshing, for sizing,
+    read the way VMTK's staging reads them (a ray leaving through a port borrows its neighbour).
+    The chords are oriented from a point deep in the cavity found from the port centroids
+    (interior_from_ports); the tessellation's own interior point is NOT trusted - for a hollow
+    wall solid it sits inside the wall material, a wall thickness off the cavity surface, and
+    the orientation vote from there is a coin toss (production read a 6 mm radius on a 173 mm
+    bore and cartesianMesh was killed at 1 mm cells). The staged caps do not stitch to the wall
+    rim exactly, so a merged 'closed' surface is only the last resort. {} when nothing reads."""
     import pyvista as pv
 
     from meshpipeline.engines.vmtk.lumen_staging import local_radius
@@ -161,18 +191,23 @@ def passage_of_stls(paths, *, interior_point=None) -> dict:
             return {}
         merged = parts[0].merge(parts[1:]) if len(parts) > 1 else parts[0]
         pts, faces = _triangles(merged.extract_surface())
-        if interior_point is None:
+        caps = [pv.read(str(p)) for p in cap_paths if Path(p).exists()]
+        cap_pts = (np.concatenate([np.asarray(c.points, dtype=float) for c in caps])
+                   if caps else np.zeros((0, 3)))
+        deep = interior_from_ports(pts, cap_pts, list(port_centroids)) if len(port_centroids) else None
+        if deep is None and interior_point is not None:
+            deep = np.asarray(interior_point, dtype=float)
+        if deep is None:
             return passage_of_surface(pts, faces).get("passage_radius") or {}
         b = np.asarray(merged.bounds, dtype=float)
         diag = float(np.linalg.norm(b[1::2] - b[0::2]))
-        r = local_radius(pts, faces, np.asarray(interior_point, dtype=float), diag * 1e-5,
-                         diag / 2.0)
+        r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0)
         return radius_stats(r)
     except Exception:  # noqa: BLE001 - sizing aid, not a verdict
         logger.warning("passage radius of the staged surface failed", exc_info=True)
         return {}
 
 
-__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "inside_point", "measure_passage",
-           "passage_of_polymesh", "passage_of_stls", "passage_of_surface", "radius_stats",
-           "size_caps"]
+__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "inside_point", "interior_from_ports",
+           "measure_passage", "passage_of_polymesh", "passage_of_stls", "passage_of_surface",
+           "radius_stats", "size_caps"]

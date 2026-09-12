@@ -47,14 +47,27 @@ def test_the_radius_is_read_from_a_closed_tube_with_a_point_found_inside():
     assert out["passage_cells_across_local"]["points"] == len(pts)
 
 
-def test_the_staged_wall_is_read_open_with_the_tessellation_interior_point(tmp_path):
+def test_the_staged_wall_is_read_open_from_a_point_found_via_the_ports(tmp_path):
     import pyvista as pv
     pts, faces = _cylinder(radius=0.05, n_around=48, n_along=80)
     wall_faces = faces[: -(2 * 48)]                     # drop the two cap fans: an open tube
     tube = pv.PolyData(pts, np.hstack([np.full((len(wall_faces), 1), 3), wall_faces]).ravel())
     tube.save(str(tmp_path / "wall.stl"))
-    r = P.passage_of_stls([tmp_path / "wall.stl"], interior_point=[0.5, 0.0, 0.0])
+    cap = pv.PolyData(pts, np.hstack([np.full((2 * 48, 1), 3), faces[-(2 * 48):]]).ravel())
+    cap.save(str(tmp_path / "caps.stl"))
+    # the port centroids sit on the axis at the ends; the deep point lands on the axis
+    deep = P.interior_from_ports(np.asarray(tube.points), np.asarray(cap.points),
+                                 [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    assert np.linalg.norm(deep[1:]) < 0.005 and 0.05 < deep[0] < 0.95, deep
+    r = P.passage_of_stls([tmp_path / "wall.stl"], cap_paths=[tmp_path / "caps.stl"],
+                          port_centroids=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
     assert 0.04 < r["p05"] <= r["median"] < 0.06, r  # half the 100 mm bore, end to end
+    # a point inside the WALL MATERIAL (what the tessellation hands a hollow solid) must not
+    # be what orients the chords: the ports win over it
+    r2 = P.passage_of_stls([tmp_path / "wall.stl"], interior_point=[0.5, 0.0501, 0.0],
+                           cap_paths=[tmp_path / "caps.stl"],
+                           port_centroids=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    assert r2 == r
     assert P.passage_of_stls([tmp_path / "missing.stl"], interior_point=[0, 0, 0]) == {}
 
 
