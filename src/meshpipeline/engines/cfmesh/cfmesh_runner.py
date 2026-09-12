@@ -378,7 +378,12 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     from meshpipeline.engines.passage import passage_of_stls
     _wall_src = _srcs.get(_wall_key) or []
     _wall_paths = _wall_src if isinstance(_wall_src, list) else [_wall_src]
-    passage_radius = passage_of_stls(_wall_paths, interior_point=t.get("interior_point")) or None
+    _cap_paths = [p for k, v in _srcs.items() if k != _wall_key
+                  for p in (v if isinstance(v, list) else [v])]
+    _centroids = [o.get("centroid") for o in (t.get("openings") or {}).values()
+                  if isinstance(o, dict) and o.get("centroid")]
+    passage_radius = passage_of_stls(_wall_paths, cap_paths=_cap_paths,
+                                     port_centroids=_centroids) or None
 
     _patches = list(contract_patches or [])
     if not _patches:
