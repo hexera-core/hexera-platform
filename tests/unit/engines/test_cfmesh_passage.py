@@ -118,6 +118,24 @@ def test_a_flanged_wall_is_read_on_its_bore_skin_only(tmp_path):
     assert radii.max() < 0.055, "the outer skin must not be part of the cavity skin"
 
 
+def test_the_ports_vouch_for_the_chord_reading_or_replace_it():
+    openings = {"inlet": {"centroid": [0, 0, 0], "area": np.pi * 0.10 ** 2},
+                "outlet": {"centroid": [1, 0, 0], "opening": {"area": np.pi * 0.05 ** 2}}}
+    ports = P.port_radius_stats(openings)
+    assert np.isclose(ports["p05"], 0.05) and np.isclose(ports["max"], 0.10) and ports["source"] == "ports"
+    good = {"p05": 0.048, "median": 0.07}
+    assert P.plausible_radius(good, ports)
+    assert P.choose_passage_radius(good, ports)["source"] == "chord"
+    outer_skin = {"p05": 0.21, "median": 0.336}        # straight_reducer_015's reading
+    wall_gap = {"p05": 0.0043, "median": 0.0043}       # straight_reducer_006's first reading
+    for bad in (outer_skin, wall_gap):
+        assert not P.plausible_radius(bad, ports)
+        assert P.choose_passage_radius(bad, ports) == ports
+    assert P.choose_passage_radius(good, {})["source"] == "chord-unchecked"
+    assert P.choose_passage_radius({}, {}) is None
+    assert P.port_radius_stats({"x": {"area": "junk"}}) == {}
+
+
 def test_size_caps_put_thirteen_across_the_narrowest_and_typical_passage():
     caps = P.size_caps({"p05": 0.05, "median": 0.10})
     assert np.isclose(caps["wall_cell"], 2 * 0.05 / 13)

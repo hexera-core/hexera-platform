@@ -375,15 +375,21 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         feature_angle=float(args.get("feature_angle", 30.0)))
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
-    from meshpipeline.engines.passage import passage_of_stls
+    from meshpipeline.engines.passage import (
+        choose_passage_radius,
+        passage_of_stls,
+        port_radius_stats,
+    )
     _wall_src = _srcs.get(_wall_key) or []
     _wall_paths = _wall_src if isinstance(_wall_src, list) else [_wall_src]
     _cap_paths = [p for k, v in _srcs.items() if k != _wall_key
                   for p in (v if isinstance(v, list) else [v])]
     _centroids = [o.get("centroid") for o in (t.get("openings") or {}).values()
                   if isinstance(o, dict) and o.get("centroid")]
-    passage_radius = passage_of_stls(_wall_paths, cap_paths=_cap_paths,
-                                     port_centroids=_centroids) or None
+    _chord = passage_of_stls(_wall_paths, cap_paths=_cap_paths, port_centroids=_centroids)
+    # the ports vouch for the chord reading; a reading off the outer skin or the wall thickness
+    # is replaced by the port radii (the gate still measures the delivered mesh)
+    passage_radius = choose_passage_radius(_chord, port_radius_stats(t.get("openings")))
 
     _patches = list(contract_patches or [])
     if not _patches:
