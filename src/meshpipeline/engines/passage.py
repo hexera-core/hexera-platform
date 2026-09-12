@@ -56,6 +56,57 @@ def radius_stats(radius) -> dict:
             "points": int(len(r))}
 
 
+def port_radius_stats(openings) -> dict:
+    """Equivalent radii of the bound openings (sqrt(area / pi) each): the passage radius AT the
+    ports, always readable, the yardstick for the chord reading. {} without areas."""
+    radii = []
+    for rec in (openings or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        area = (rec.get("opening") or {}).get("area") if isinstance(rec.get("opening"), dict) else None
+        if area is None:
+            area = rec.get("area")
+        if area is None:
+            continue
+        try:
+            a = float(area)
+        except (TypeError, ValueError):
+            continue
+        if a > 0.0:
+            radii.append(float(np.sqrt(a / np.pi)))
+    if not radii:
+        return {}
+    r = np.asarray(radii, dtype=float)
+    return {"min": round(float(r.min()), 6), "p05": round(float(r.min()), 6),
+            "median": round(float(np.median(r)), 6), "max": round(float(r.max()), 6),
+            "points": int(len(r)), "source": "ports"}
+
+
+def plausible_radius(chord: dict, ports: dict, *, low: float = 0.3, high: float = 1.5) -> bool:
+    """A chord reading is trusted only when its 5th percentile sits within low..high times the
+    smallest port radius: a reading off the outer skin (straight_reducer_015: 210 mm on a
+    ~100 mm bore) or the wall thickness (006: 4 mm) is not the passage."""
+    try:
+        c, p = float(chord["p05"]), float(ports["p05"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return p > 0.0 and low * p <= c <= high * p
+
+
+def choose_passage_radius(chord: dict | None, ports: dict | None) -> dict | None:
+    """The radius statistics the size caps use: the chord reading when the ports vouch for it,
+    the port figures otherwise, None without either."""
+    chord = chord or {}
+    ports = ports or {}
+    if chord and ports and plausible_radius(chord, ports):
+        return {**chord, "source": "chord"}
+    if chord and not ports:
+        return {**chord, "source": "chord-unchecked"}
+    if ports:
+        return ports
+    return None
+
+
 def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS) -> dict:
     """The largest cells that still put `target` across the passage: the wall band at the
     narrowest passage (5th-percentile radius), the background at the typical one (median),
@@ -288,6 +339,7 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
         return {}
 
 
-__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "cavity_skin", "inside_point",
-           "interior_from_ports", "measure_passage", "orient_wall_faces", "passage_of_polymesh",
-           "passage_of_stls", "passage_of_surface", "radius_stats", "size_caps"]
+__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "cavity_skin", "choose_passage_radius",
+           "inside_point", "interior_from_ports", "measure_passage", "orient_wall_faces",
+           "passage_of_polymesh", "passage_of_stls", "passage_of_surface", "plausible_radius",
+           "port_radius_stats", "radius_stats", "size_caps"]
