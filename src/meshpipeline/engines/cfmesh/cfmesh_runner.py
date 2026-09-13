@@ -201,7 +201,8 @@ def domain_from_strategy(body_bbox, L: float, strategy: dict | None = None) -> t
     return dmin, dmax
 
 
-def _render_object_refinements(features: list) -> str:
+def _render_object_refinements(features: list, *, cell_floor: float = 0.0) -> str:
+    """objectRefinements blocks; no region cuts finer than `cell_floor` (the passage ceiling)."""
     def _v(p) -> str:
         return f"({float(p[0]):.6g} {float(p[1]):.6g} {float(p[2]):.6g})"
     blocks = []
@@ -214,7 +215,7 @@ def _render_object_refinements(features: list) -> str:
         if cs is None:
             continue
         try:
-            cs = float(cs)
+            cs = max(float(cs), float(cell_floor or 0.0))
             if typ == "box":
                 body = (f"type box; cellSize {cs:.6g}; centre {_v(f['centre'])}; "
                         f"lengthX {float(f['lengthX']):.6g}; lengthY {float(f['lengthY']):.6g}; "
@@ -271,6 +272,11 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         max_cell = min(max_cell, _caps["max_cell"])
         wall_cell = min(wall_cell, _caps["wall_cell"])
     wall_cell = max(wall_cell, max_cell / 16.0)
+    # PASSAGE CEILING: neither the wall band nor a refinement box may cut finer than 40 cells
+    # across the narrowest passage (the top of industry practice). A builder that asked for
+    # 79 across turned a tee into 16.4 M hexes, an 886 MB deliverable and a 161-minute run.
+    _floor = float(_caps.get("wall_cell_floor") or 0.0)
+    wall_cell = max(wall_cell, _floor)
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     dict_parts = [
@@ -279,7 +285,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         f"maxCellSize {max_cell:.6g};\n",
         f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n}}\n",
     ]
-    _obj = _render_object_refinements(strategy.get("features") or [])
+    _obj = _render_object_refinements(strategy.get("features") or [], cell_floor=_floor)
     if _obj:
         dict_parts.append(_obj)
 

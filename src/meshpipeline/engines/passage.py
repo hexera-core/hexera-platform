@@ -22,6 +22,11 @@ PASSAGE_CELLS_ACROSS = 13
 #: The floor the resolution_floor gate holds at the narrowest wall (5th percentile of the
 #: boundary points). Industry practice for RANS internal flow is 20-40 across.
 PASSAGE_FLOOR_CELLS = 12
+#: The most cells across the narrowest passage a wall band or a refinement box may ask for:
+#: the top of industry practice. Without it the builder refined a tee to 79 across, a 16.4 M
+#: hex fill that ran cartesianMesh to the edge of its budget, wrote an 886 MB deliverable and
+#: held the mesh service for 161 minutes (2026-09-12); at 40 across the same tee is ~2 M.
+PASSAGE_CEILING_CELLS = 40
 
 #: The chord loop casts one ray per boundary point (about 0.25 ms each). A production fill can
 #: put several hundred thousand points on its boundary, so above this many the surface is
@@ -147,14 +152,17 @@ def choose_passage_radius(chord: dict | None, ports: dict | None) -> dict | None
     return None
 
 
-def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS) -> dict:
+def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS,
+              ceiling: float = PASSAGE_CEILING_CELLS) -> dict:
     """The largest cells that still put `target` across the passage: the wall band at the
     narrowest passage (5th-percentile radius), the background at the typical one (median),
-    and a wall band thick enough to carry the wall size across a narrow passage entirely."""
+    and a wall band thick enough to carry the wall size across a narrow passage entirely.
+    Also the SMALLEST wall cell worth cutting, `wall_cell_floor`: `ceiling` across the
+    narrowest passage, the top of industry practice."""
     p05 = float(passage_radius["p05"])
     med = float(passage_radius["median"])
     return {"wall_cell": 2.0 * p05 / target, "max_cell": 2.0 * med / target,
-            "refinement_thickness": 1.1 * p05}
+            "refinement_thickness": 1.1 * p05, "wall_cell_floor": 2.0 * p05 / ceiling}
 
 
 def inside_point(surface):
@@ -427,8 +435,9 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
         return {}
 
 
-__all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS",
-           "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue", "boundary_triangles_of_polymesh",
+__all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS",
+           "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue",
+           "boundary_triangles_of_polymesh",
            "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
            "measure_deadline", "measure_passage", "orient_wall_faces", "passage_of_polymesh",
            "passage_of_stls", "passage_of_surface", "plausible_radius", "port_radius_stats",

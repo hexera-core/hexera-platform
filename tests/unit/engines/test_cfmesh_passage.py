@@ -141,6 +141,31 @@ def test_size_caps_put_thirteen_across_the_narrowest_and_typical_passage():
     assert np.isclose(caps["wall_cell"], 2 * 0.05 / 13)
     assert np.isclose(caps["max_cell"], 2 * 0.10 / 13)
     assert np.isclose(caps["refinement_thickness"], 0.055)
+    assert np.isclose(caps["wall_cell_floor"], 2 * 0.05 / 40), "40 across is the ceiling"
+
+
+def test_no_refinement_cuts_finer_than_forty_across_the_narrowest_passage(tmp_path):
+    # the builder asked for 3 mm boxes and a 2 mm wall on a 140 mm-radius tee: 79 across,
+    # 16.4 M hexes, 161 minutes (lvsth, 2026-09-12). The ceiling holds both at 40 across.
+    strategy = {"wall_cell": 0.002, "features": [
+        {"name": "junction", "type": "box", "cellSize": 0.003, "centre": [0.5, 0, 0],
+         "lengthX": 0.3, "lengthY": 0.3, "lengthZ": 0.3}]}
+    out = R.render_cfmesh_case(
+        tmp_path, surface_file="geom.fms", wall_patch="wall",
+        patches=[{"name": "wall", "type": "wall"}], body_bbox=([0, 0, 0], [2, 0.4, 0.4]),
+        L=2.0, domain_min=[0, 0, 0], domain_max=[2, 0.4, 0.4], strategy=strategy,
+        cell_budget=8_000_000, passage_radius={"p05": 0.14, "median": 0.19})
+    floor = 2 * 0.14 / 40
+    assert np.isclose(out["wall_cell_size"], round(floor, 6))
+    dic = (tmp_path / "system" / "meshDict").read_text()
+    assert f"junction {{ type box; cellSize {floor:.6g};" in dic
+    # without a passage reading nothing is floored: the builder's sizes stand
+    out = R.render_cfmesh_case(
+        tmp_path, surface_file="geom.fms", wall_patch="wall",
+        patches=[{"name": "wall", "type": "wall"}], body_bbox=([0, 0, 0], [2, 0.4, 0.4]),
+        L=2.0, domain_min=[0, 0, 0], domain_max=[2, 0.4, 0.4], strategy=strategy,
+        cell_budget=8_000_000)
+    assert "cellSize 0.003;" in (tmp_path / "system" / "meshDict").read_text()
 
 
 def _render(tmp_path, **kw):
