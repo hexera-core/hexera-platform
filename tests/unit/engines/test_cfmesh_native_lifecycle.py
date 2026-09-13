@@ -59,6 +59,26 @@ def test_the_2d_merge_is_skipped_when_the_case_declares_no_merge_dict(tmp_path, 
     assert len(spawns) == 1, "createPatch ran without a createPatchDict to run from"
 
 
+def test_every_native_stage_reports_its_wall_time(tmp_path, spawns, monkeypatch):
+    # a 13-second cartesianMesh inside an 18-minute execution was invisible until the stages
+    # after the mesher (checkMesh, the passage measure, foamToVTK) were timed (f5r99, 2026-09-12)
+    import json
+
+    from tests.foam_fixtures import write_row_of_hexes
+    write_row_of_hexes(tmp_path / "constant" / "polyMesh")
+    (tmp_path / "flow_topology").write_text("internal\n")
+    monkeypatch.setattr(N, "check_mesh", lambda ws, **kw: {"cells": 3})
+    monkeypatch.setattr(N, "export_volume_vtk", lambda ws, **kw: "VTK/x.vtu")
+    monkeypatch.setattr("meshpipeline.engines.passage.passage_of_polymesh",
+                        lambda ws, **kw: {"passage_cells_across_local": {"p05": 14.0}})
+    out = N._run_cartesian_mesh_local(tmp_path)
+    t = out["timing"]
+    assert set(t) == {"cartesianMesh_s", "checkMesh_s", "passage_measure_s", "foamToVTK_s", "total_s"}
+    assert all(v >= 0 for v in t.values()) and t["total_s"] >= t["cartesianMesh_s"]
+    assert json.loads((tmp_path / N.TIMING_FILE).read_text()) == t
+    assert out["quality"]["passage_cells_across_local"]["p05"] == 14.0
+
+
 def test_the_command_is_argv_with_the_environment_and_workspace_pinned(tmp_path, spawns):
     N._run_cartesian_mesh_local(tmp_path)
     call = spawns[0]
