@@ -4,9 +4,10 @@
 # beside the mesh), gmsh (its driver carries the same measure), and every flow engine's resolution_floor gate.
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
-import tempfile
+import signal
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,50 @@ PASSAGE_CELLS_ACROSS = 13
 #: The floor the resolution_floor gate holds at the narrowest wall (5th percentile of the
 #: boundary points). Industry practice for RANS internal flow is 20-40 across.
 PASSAGE_FLOOR_CELLS = 12
+#: The most cells across the narrowest passage a wall band or a refinement box may ask for:
+#: the top of industry practice. Without it the builder refined a tee to 79 across, a 16.4 M
+#: hex fill that ran cartesianMesh to the edge of its budget, wrote an 886 MB deliverable and
+#: held the mesh service for 161 minutes (2026-09-12); at 40 across the same tee is ~2 M.
+PASSAGE_CEILING_CELLS = 40
+
+#: The chord loop casts one ray per boundary point (about 0.25 ms each). A production fill can
+#: put several hundred thousand points on its boundary, so above this many the surface is
+#: DECIMATED for the chords and the radius is mapped back; the cells-across figure is still
+#: taken at every real boundary point, against the real boundary edges.
+MAX_MEASURE_POINTS = 60_000
+
+#: The measure is evidence beside a finished mesh, never worth more than a few minutes of the
+#: run's budget: past this it is abandoned and the mesh ships without it (the gate then does
+#: not judge resolution). Before this cap the measure read the WHOLE volume through a VTK
+#: OpenFOAM reader with no limit at all, and a 0.8 M-cell cut-cell fill spent 17 minutes there
+#: after a 13-second cartesianMesh (Cloud Run execution f5r99, 2026-09-12); a bigger fill sat
+#: for 161 minutes and held the mesh service's capacity while every other run queued behind it.
+PASSAGE_MEASURE_BUDGET_S = 240.0
+
+
+class MeasureOverdue(Exception):
+    """The passage measure ran past its budget."""
+
+
+@contextlib.contextmanager
+def measure_deadline(seconds: float):
+    """Raise MeasureOverdue inside the block after `seconds` of wall time. SIGALRM, so only in
+    the main thread on a POSIX host; elsewhere the block simply runs unbounded."""
+    usable = (seconds and seconds > 0 and hasattr(signal, "SIGALRM")
+              and threading.current_thread() is threading.main_thread())
+    if not usable:
+        yield
+        return
+
+    def _overdue(signum, frame):
+        raise MeasureOverdue(f"passage measure past its {seconds:.0f} s budget")
+    previous = signal.signal(signal.SIGALRM, _overdue)
+    signal.setitimer(signal.ITIMER_REAL, float(seconds))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def measure_passage(points, faces, radius) -> dict:
@@ -107,14 +152,17 @@ def choose_passage_radius(chord: dict | None, ports: dict | None) -> dict | None
     return None
 
 
-def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS) -> dict:
+def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS,
+              ceiling: float = PASSAGE_CEILING_CELLS) -> dict:
     """The largest cells that still put `target` across the passage: the wall band at the
     narrowest passage (5th-percentile radius), the background at the typical one (median),
-    and a wall band thick enough to carry the wall size across a narrow passage entirely."""
+    and a wall band thick enough to carry the wall size across a narrow passage entirely.
+    Also the SMALLEST wall cell worth cutting, `wall_cell_floor`: `ceiling` across the
+    narrowest passage, the top of industry practice."""
     p05 = float(passage_radius["p05"])
     med = float(passage_radius["median"])
     return {"wall_cell": 2.0 * p05 / target, "max_cell": 2.0 * med / target,
-            "refinement_thickness": 1.1 * p05}
+            "refinement_thickness": 1.1 * p05, "wall_cell_floor": 2.0 * p05 / ceiling}
 
 
 def inside_point(surface):
@@ -248,9 +296,14 @@ def orient_wall_faces(points, faces, port_centroids):
     return pts, f
 
 
-def passage_of_surface(points, faces) -> dict:
+def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
-    at every point of a closed triangulated boundary, and the cells-across it implies."""
+    at every point of a closed triangulated boundary, and the cells-across it implies.
+
+    Above `max_points` boundary points the chords are cast on a decimated copy of the surface
+    (vtkQuadricDecimation keeps the shape; the radius varies over metres, not over one cell)
+    and each real point takes the radius of its nearest decimated point. The cells-across
+    figure is always measured on the real boundary, against the real boundary edges."""
     import pyvista as pv
 
     from meshpipeline.engines.vmtk.lumen_staging import local_radius
@@ -261,7 +314,18 @@ def passage_of_surface(points, faces) -> dict:
     if interior is None:
         return {}
     diag = float(np.linalg.norm(np.asarray(surf.bounds[1::2]) - np.asarray(surf.bounds[0::2])))
-    r = local_radius(pts, f, interior, diag * 1e-5, diag / 2.0)
+    if max_points and len(pts) > max_points:
+        from scipy.spatial import cKDTree
+        coarse = surf.decimate(1.0 - max_points / float(len(pts))).clean()
+        cpts = np.asarray(coarse.points, dtype=float)
+        cf = np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+        if len(cf) < 4:
+            return {}
+        r = local_radius(cpts, cf, interior, diag * 1e-5, diag / 2.0)
+        r = r[cKDTree(cpts).query(pts)[1]]
+        logger.info("passage measure: %d boundary points, chords cast on %d", len(pts), len(cpts))
+    else:
+        r = local_radius(pts, f, interior, diag * 1e-5, diag / 2.0)
     return {"passage_radius": radius_stats(r),
             "passage_cells_across_local": measure_passage(pts, f, r)}
 
@@ -276,26 +340,57 @@ def _triangles(poly):
     return np.asarray(poly.points, dtype=float), faces
 
 
-def passage_of_polymesh(workspace) -> dict:
-    """The passage measure of the polyMesh under <workspace>/constant, read through a
-    scratch case directory of symlinks (the reader wants a .foam stub beside `constant`).
-    {} when anything is missing - a measurement never loses a finished mesh."""
-    import pyvista as pv
+def boundary_triangles_of_polymesh(polymesh) -> tuple[np.ndarray, np.ndarray]:
+    """The boundary of an OpenFOAM polyMesh as triangles, read straight from its `points`,
+    `faces` and `boundary` files (the boundary faces are the tail of the faces list, one run
+    per patch). Polygons are fanned from their first vertex; only the points the boundary
+    uses are kept. Never the volume: a VTK OpenFOAM reader decomposes every polyhedron of
+    the fill to hand back a surface that is a few percent of it."""
+    from meshpipeline.engines.cfmesh.polymesh_surface import (
+        read_boundary_faces,
+        read_boundary_patches,
+        read_points,
+    )
+    pm = Path(polymesh)
+    patches = read_boundary_patches(pm)
+    empty = (np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64))
+    if not patches:
+        return empty
+    points = np.asarray(read_points(pm), dtype=float)
+    first = min(p["start_face"] for p in patches)
+    last = max(p["start_face"] + p["n_faces"] for p in patches)
+    polys = [f for f in read_boundary_faces(pm, first, last - first) if len(f) >= 3]
+    if not polys:
+        return empty
+    sizes = np.fromiter((len(f) for f in polys), dtype=np.int64, count=len(polys))
+    fans = []
+    for n in np.unique(sizes):
+        ids = np.asarray([polys[i] for i in np.flatnonzero(sizes == n)], dtype=np.int64)
+        for k in range(1, int(n) - 1):
+            fans.append(np.stack([ids[:, 0], ids[:, k], ids[:, k + 1]], axis=1))
+    tri = np.concatenate(fans)
+    used, inv = np.unique(tri, return_inverse=True)
+    return points[used], inv.reshape(tri.shape)
+
+
+def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S) -> dict:
+    """The passage measure of the polyMesh under <workspace>/constant, from its boundary
+    files alone, abandoned past `budget_s`. {} when anything is missing or the budget runs
+    out - a measurement never loses a finished mesh."""
     ws = Path(workspace)
-    if not (ws / "constant" / "polyMesh" / "owner").exists():
+    pm = ws / "constant" / "polyMesh"
+    if not (pm / "owner").exists():
         return {}
     try:
-        with tempfile.TemporaryDirectory(prefix="passage-") as case:
-            os.symlink(str(ws / "constant"), os.path.join(case, "constant"))
-            foam = os.path.join(case, "case.foam")
-            open(foam, "a").close()
-            rd = pv.OpenFOAMReader(foam)
-            mb = rd.read()
-            grid = mb["internalMesh"] if "internalMesh" in mb.keys() else mb[0]
-            if not isinstance(grid, pv.DataSet):
+        with measure_deadline(budget_s):
+            pts, faces = boundary_triangles_of_polymesh(pm)
+            if len(faces) < 4:
                 return {}
-            pts, faces = _triangles(grid.extract_surface())
             return passage_of_surface(pts, faces)
+    except MeasureOverdue:
+        logger.warning("passage measure abandoned after %.0f s; the mesh ships without it",
+                       budget_s)
+        return {}
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("passage measure of the polyMesh failed", exc_info=True)
         return {}
@@ -340,7 +435,10 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
         return {}
 
 
-__all__ = ["PASSAGE_CELLS_ACROSS", "PASSAGE_FLOOR_CELLS", "cavity_skin", "choose_passage_radius",
-           "inside_point", "interior_from_ports", "measure_passage", "orient_wall_faces",
-           "passage_of_polymesh", "passage_of_stls", "passage_of_surface", "plausible_radius",
-           "port_radius_stats", "radius_stats", "size_caps"]
+__all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS",
+           "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue",
+           "boundary_triangles_of_polymesh",
+           "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
+           "measure_deadline", "measure_passage", "orient_wall_faces", "passage_of_polymesh",
+           "passage_of_stls", "passage_of_surface", "plausible_radius", "port_radius_stats",
+           "radius_stats", "size_caps"]

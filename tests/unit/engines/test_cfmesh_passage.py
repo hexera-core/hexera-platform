@@ -141,6 +141,31 @@ def test_size_caps_put_thirteen_across_the_narrowest_and_typical_passage():
     assert np.isclose(caps["wall_cell"], 2 * 0.05 / 13)
     assert np.isclose(caps["max_cell"], 2 * 0.10 / 13)
     assert np.isclose(caps["refinement_thickness"], 0.055)
+    assert np.isclose(caps["wall_cell_floor"], 2 * 0.05 / 40), "40 across is the ceiling"
+
+
+def test_no_refinement_cuts_finer_than_forty_across_the_narrowest_passage(tmp_path):
+    # the builder asked for 3 mm boxes and a 2 mm wall on a 140 mm-radius tee: 79 across,
+    # 16.4 M hexes, 161 minutes (lvsth, 2026-09-12). The ceiling holds both at 40 across.
+    strategy = {"wall_cell": 0.002, "features": [
+        {"name": "junction", "type": "box", "cellSize": 0.003, "centre": [0.5, 0, 0],
+         "lengthX": 0.3, "lengthY": 0.3, "lengthZ": 0.3}]}
+    out = R.render_cfmesh_case(
+        tmp_path, surface_file="geom.fms", wall_patch="wall",
+        patches=[{"name": "wall", "type": "wall"}], body_bbox=([0, 0, 0], [2, 0.4, 0.4]),
+        L=2.0, domain_min=[0, 0, 0], domain_max=[2, 0.4, 0.4], strategy=strategy,
+        cell_budget=8_000_000, passage_radius={"p05": 0.14, "median": 0.19})
+    floor = 2 * 0.14 / 40
+    assert np.isclose(out["wall_cell_size"], round(floor, 6))
+    dic = (tmp_path / "system" / "meshDict").read_text()
+    assert f"junction {{ type box; cellSize {floor:.6g};" in dic
+    # without a passage reading nothing is floored: the builder's sizes stand
+    out = R.render_cfmesh_case(
+        tmp_path, surface_file="geom.fms", wall_patch="wall",
+        patches=[{"name": "wall", "type": "wall"}], body_bbox=([0, 0, 0], [2, 0.4, 0.4]),
+        L=2.0, domain_min=[0, 0, 0], domain_max=[2, 0.4, 0.4], strategy=strategy,
+        cell_budget=8_000_000)
+    assert "cellSize 0.003;" in (tmp_path / "system" / "meshDict").read_text()
 
 
 def _render(tmp_path, **kw):
@@ -178,3 +203,47 @@ def test_the_narrowest_wall_gates_the_fill():
     # snappy holds the same bar with the same measure
     assert not SG._gate_resolution_floor(_ctx({"passage_cells_across_local": {"median": 9, "p05": 5}}))[0]
     assert SG._gate_resolution_floor(_ctx({"passage_cells_across_local": {"median": 20, "p05": 13}}))[0]
+
+
+# The measure beside the mesh once read the WHOLE volume through a VTK OpenFOAM reader, with
+# no limit: a 0.8 M-cell fill spent 17 minutes there after a 13-second cartesianMesh, and a
+# 16 M-cell fill sat for 161 minutes holding the mesh service (2026-09-12). It now reads the
+# boundary files alone, decimates a big boundary for the chords, and gives up on a budget.
+def test_the_polymesh_boundary_is_read_from_its_files_alone(tmp_path):
+    from tests.foam_fixtures import write_row_of_hexes
+    pm = tmp_path / "constant" / "polyMesh"
+    write_row_of_hexes(pm)
+    pts, faces = P.boundary_triangles_of_polymesh(pm)
+    assert len(pts) == 16, "a row of three unit hexes has every point on its boundary"
+    assert len(faces) == 2 * 14, "fourteen boundary quads, fanned into two triangles each"
+    assert faces.min() == 0 and faces.max() == 15
+    out = P.passage_of_polymesh(tmp_path)
+    assert out["passage_cells_across_local"]["points"] == 16
+    assert 0.3 < out["passage_radius"]["median"] < 0.7, "half of a unit cross-section"
+
+
+def test_a_big_boundary_is_decimated_for_the_chords_but_measured_in_full():
+    pts, faces = _cylinder(radius=0.05, n_around=48, n_along=80)
+    full = P.passage_of_surface(pts, faces)
+    coarse = P.passage_of_surface(pts, faces, max_points=len(pts) // 8)
+    assert coarse["passage_cells_across_local"]["points"] == len(pts)
+    assert abs(coarse["passage_radius"]["median"] - full["passage_radius"]["median"]) < 0.01
+    assert abs(coarse["passage_cells_across_local"]["median"]
+               - full["passage_cells_across_local"]["median"]) < 1.5
+
+
+def test_the_measure_gives_up_on_its_budget_and_ships_the_mesh_without_it(tmp_path, monkeypatch):
+    import time
+
+    from tests.foam_fixtures import write_row_of_hexes
+    write_row_of_hexes(tmp_path / "constant" / "polyMesh")
+
+    def _slow(points, faces, **kw):
+        time.sleep(5.0)
+        return {"passage_radius": {"median": 0.5}}
+    monkeypatch.setattr(P, "passage_of_surface", _slow)
+    t0 = time.monotonic()
+    assert P.passage_of_polymesh(tmp_path, budget_s=0.2) == {}
+    assert time.monotonic() - t0 < 3.0, "the budget did not cut the measure short"
+    assert P.passage_of_polymesh(tmp_path, budget_s=0) == {"passage_radius": {"median": 0.5}}, \
+        "no budget means the measure runs unbounded, as before"
