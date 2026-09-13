@@ -220,6 +220,25 @@ def test_the_polymesh_boundary_is_read_from_its_files_alone(tmp_path):
     out = P.passage_of_polymesh(tmp_path)
     assert out["passage_cells_across_local"]["points"] == 16
     assert 0.3 < out["passage_radius"]["median"] < 0.7, "half of a unit cross-section"
+    wpts, wfaces = P.boundary_triangles_of_polymesh(pm, wall_only=True)
+    assert len(wfaces) == 2 * 12 and len(wpts) == 16, "the twelve side quads are the wall"
+
+
+def test_the_passage_is_measured_at_wall_points_against_wall_faces_only():
+    # a cut-cell fill's port cap can be a stepped sheet of tiny faces: a chord cast from one
+    # step hits the next a couple of millimetres away, and bend_elbow_014 read 0.5 cells across
+    # at its 'narrowest wall' from its caps while every wall point read 28 (2026-09-13)
+    pts, faces = _cylinder(radius=0.05, n_around=48, n_along=80)
+    n_cap = 2 * 48
+    wall_faces = faces[:-n_cap]
+    full = P.passage_of_surface(pts, faces)
+    used = np.unique(wall_faces)
+    wall = (pts[used], np.searchsorted(used, wall_faces))
+    out = P.passage_of_surface(pts, faces, wall=wall)
+    assert out["passage_cells_across_local"]["points"] == len(used) == len(pts) - 2, \
+        "the two cap centres are not wall points"
+    assert abs(out["passage_radius"]["median"] - full["passage_radius"]["median"]) < 0.005
+    assert out["passage_radius"]["p05"] > 0.04, "rim chords that leave through a port borrow a neighbour"
 
 
 def test_a_big_boundary_is_decimated_for_the_chords_but_measured_in_full():

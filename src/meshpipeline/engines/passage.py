@@ -296,11 +296,22 @@ def orient_wall_faces(points, faces, port_centroids):
     return pts, f
 
 
-def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS) -> dict:
+def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
+                       wall=None) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
     at every point of a closed triangulated boundary, and the cells-across it implies.
 
-    Above `max_points` boundary points the chords are cast on a decimated copy of the surface
+    `wall`, when given as (points, faces), is the WALL part of that boundary: the chords are
+    cast at its points and against its faces only, and the cells-across figure is taken
+    there. The full closed boundary is still what locates the interior point. Port caps are
+    not walls: on a cut-cell fill a cap can be a stepped sheet of tiny faces, and a chord
+    cast from one step hits the next step a couple of millimetres away - the elbow
+    bend_elbow_014 read 0.5 cells across at its narrowest 'wall' that way (99% of its cap
+    points at a 2 mm chord) while every wall point read 28 (2026-09-13). A wall chord that
+    leaves through an open port misses and borrows its neighbour's radius, as it does for
+    VMTK's staged lumen.
+
+    Above `max_points` points the chords are cast on a decimated copy of the surface
     (vtkQuadricDecimation keeps the shape; the radius varies over metres, not over one cell)
     and each real point takes the radius of its nearest decimated point. The cells-across
     figure is always measured on the real boundary, against the real boundary edges."""
@@ -314,6 +325,12 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS) -
     if interior is None:
         return {}
     diag = float(np.linalg.norm(np.asarray(surf.bounds[1::2]) - np.asarray(surf.bounds[0::2])))
+    if wall is not None:
+        pts = np.asarray(wall[0], dtype=float)
+        f = np.asarray(wall[1], dtype=np.int64)
+        if len(f) < 4:
+            return {}
+        surf = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     if max_points and len(pts) > max_points:
         from scipy.spatial import cKDTree
         coarse = surf.decimate(1.0 - max_points / float(len(pts))).clean()
@@ -340,12 +357,18 @@ def _triangles(poly):
     return np.asarray(poly.points, dtype=float), faces
 
 
-def boundary_triangles_of_polymesh(polymesh) -> tuple[np.ndarray, np.ndarray]:
+#: OpenFOAM patch types that are a wall of the flow passage (everything else - `patch` ports,
+#: `empty`, `symmetry` - is an opening or a plane the flow crosses, not a wall).
+WALL_PATCH_TYPES = frozenset({"wall"})
+
+
+def boundary_triangles_of_polymesh(polymesh, *, wall_only: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """The boundary of an OpenFOAM polyMesh as triangles, read straight from its `points`,
     `faces` and `boundary` files (the boundary faces are the tail of the faces list, one run
     per patch). Polygons are fanned from their first vertex; only the points the boundary
-    uses are kept. Never the volume: a VTK OpenFOAM reader decomposes every polyhedron of
-    the fill to hand back a surface that is a few percent of it."""
+    uses are kept. `wall_only` keeps the patches typed `wall` (empty when there are none).
+    Never the volume: a VTK OpenFOAM reader decomposes every polyhedron of the fill to hand
+    back a surface that is a few percent of it."""
     from meshpipeline.engines.cfmesh.polymesh_surface import (
         read_boundary_faces,
         read_boundary_patches,
@@ -354,12 +377,17 @@ def boundary_triangles_of_polymesh(polymesh) -> tuple[np.ndarray, np.ndarray]:
     pm = Path(polymesh)
     patches = read_boundary_patches(pm)
     empty = (np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64))
+    if wall_only:
+        patches = [p for p in patches if p["type"] in WALL_PATCH_TYPES]
     if not patches:
         return empty
     points = np.asarray(read_points(pm), dtype=float)
     first = min(p["start_face"] for p in patches)
     last = max(p["start_face"] + p["n_faces"] for p in patches)
-    polys = [f for f in read_boundary_faces(pm, first, last - first) if len(f) >= 3]
+    tail = read_boundary_faces(pm, first, last - first)
+    polys = [f for p in patches
+             for f in tail[p["start_face"] - first:p["start_face"] - first + p["n_faces"]]
+             if len(f) >= 3]
     if not polys:
         return empty
     sizes = np.fromiter((len(f) for f in polys), dtype=np.int64, count=len(polys))
@@ -386,7 +414,8 @@ def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S
             pts, faces = boundary_triangles_of_polymesh(pm)
             if len(faces) < 4:
                 return {}
-            return passage_of_surface(pts, faces)
+            wall = boundary_triangles_of_polymesh(pm, wall_only=True)
+            return passage_of_surface(pts, faces, wall=wall if len(wall[1]) >= 4 else None)
     except MeasureOverdue:
         logger.warning("passage measure abandoned after %.0f s; the mesh ships without it",
                        budget_s)
