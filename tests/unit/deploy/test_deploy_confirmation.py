@@ -38,8 +38,13 @@ exit 0
 """
 
 # Fake curl: the read-only testIamPermissions probe reports every required permission granted.
+# This list has to keep pace with preflight.sh's PERM_LIST. These tests assert the CONFIRMATION
+# gate, so a permission missing from here fails them for a reason that has nothing to do with what
+# they cover - the per-component permissions below were added when the preflight learned to ask
+# about the object store, the queue-depth publisher, the data tier, the fleet and the edge. This
+# run leaves DEPLOY_COMPONENTS unset, which means `all`, so every one of them is required.
 _FAKE_CURL = r"""#!/usr/bin/env bash
-printf '%s' '{"permissions":["run.services.setIamPolicy","run.services.create","run.jobs.create","artifactregistry.repositories.create","secretmanager.secrets.create","storage.buckets.create","serviceusage.services.enable","resourcemanager.projects.setIamPolicy","iam.serviceAccounts.create"]}'
+printf '%s' '{"permissions":["run.services.setIamPolicy","run.services.create","run.jobs.create","artifactregistry.repositories.create","secretmanager.secrets.create","storage.buckets.create","serviceusage.services.enable","resourcemanager.projects.setIamPolicy","iam.serviceAccounts.create","storage.hmacKeys.list","cloudscheduler.jobs.create","cloudsql.instances.create","redis.instances.create","compute.instanceTemplates.create","compute.urlMaps.create"]}'
 """
 
 # Repository-controlled envsubst so these tests do NOT depend on host-installed gettext (they must

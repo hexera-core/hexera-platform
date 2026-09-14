@@ -90,6 +90,15 @@ log "image (validated digest): ${ADMIN_IMAGE}"
 #    anything is mutated, so a misconfiguration is caught before an identity or a binding exists.
 ADMIN_SECRET_BINDINGS=()
 ADMIN_SECRET_NAMES=()
+# A SECRET-BACKED SETTING IS STILL A DECLARED SETTING. DECLARED_ENV_NAMES is what the drift check
+# below compares the live service against, and it starts HERE rather than beside ADMIN_ENV_PAIRS,
+# because a name bound with --set-secrets is on the service exactly as much as one set with
+# --set-env-vars. Leaving these out made this stage refuse every service it had ever deployed: the
+# five names below were bound onto the service and then, on the next run, read back as settings
+# "this deployment does not declare" - so a correctly configured prod-admin could not be rolled at
+# all, and the error pointed at ADMIN_ENV_PRUNE as though dropping a working credential were the
+# remedy. create-console-service.sh has always declared its three the same way; this is that loop.
+DECLARED_ENV_NAMES=()
 for pair in "GOOGLE_CLIENT_SECRET:GOOGLE_CLIENT_SECRET_SECRET" \
             "OUTREACH_DB_PASSWORD:OUTREACH_DB_PASSWORD_SECRET" \
             "ANTHROPIC_API_KEY:ANTHROPIC_API_KEY_SECRET" \
@@ -101,6 +110,7 @@ for pair in "GOOGLE_CLIENT_SECRET:GOOGLE_CLIENT_SECRET_SECRET" \
   [ -n "${secret_name}" ] || continue
   ADMIN_SECRET_BINDINGS+=("${runtime_var}=${secret_name}:latest")
   ADMIN_SECRET_NAMES+=("${secret_name}")
+  DECLARED_ENV_NAMES+=("${runtime_var}")
 done
 
 # REFUSE A KNOWN-ABSENT CONTAINER BEFORE ANY MUTATION - the same gate create-console-service.sh
@@ -364,7 +374,9 @@ ADMIN_ENV_PAIRS=(
   "GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}"
   "DRY_RUN=${DRY_RUN:-1}"
 )
-DECLARED_ENV_NAMES=()
+# NOT reset here. The secret-backed names were appended to DECLARED_ENV_NAMES where they were
+# resolved, and re-initialising the array at this point silently discarded them - which is the whole
+# bug: the drift check then saw five settings on the live service that it had itself bound.
 for pair in "${ADMIN_ENV_PAIRS[@]}"; do
   case "${pair}" in
     *"|"*) die "the setting '${pair%%=*}' has a '|' in its value, which is the delimiter this
