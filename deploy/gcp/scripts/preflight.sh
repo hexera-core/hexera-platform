@@ -64,10 +64,16 @@ esac
 #
 # A COMPONENT'S PERMISSIONS ARE ASKED ABOUT ONLY WHEN THAT COMPONENT IS SELECTED, so a run that
 # deploys `images,migrate,console,admin` is not failed for lacking Cloud Scheduler it will never
-# call. One permission per component is enough: these roles are coarse (cloudscheduler.admin,
-# storage.hmacKeyAdmin), so the question is really "does this identity hold the role", and a
-# representative permission answers it without enumerating every verb each stage might reach for.
-PERM_LIST='"run.services.create","run.services.update","run.services.setIamPolicy","run.jobs.create","run.jobs.run","artifactregistry.repositories.create","secretmanager.secrets.create","secretmanager.versions.add","iam.serviceAccounts.create","iam.serviceAccounts.actAs","resourcemanager.projects.setIamPolicy","storage.buckets.create","serviceusage.services.enable","storage.hmacKeys.list","cloudscheduler.jobs.create","cloudsql.instances.create","redis.instances.create","compute.instanceTemplates.create","compute.urlMaps.create"'
+# call.
+#
+# EVERY RESOURCE TYPE A STAGE MUTATES IS LISTED, not one permission standing in for a role.
+# testIamPermissions answers only about the permission it is asked about, so a representative grant
+# proves nothing about its neighbours: an identity holding compute.instanceTemplates.create but not
+# compute.instanceGroupManagers.update passes a template-only check and then fails while rolling the
+# fleet - mid-deploy, which is the exact failure this preflight exists to prevent. The lists below
+# are derived from the gcloud calls each stage makes, one entry per distinct resource type it
+# creates or updates.
+PERM_LIST='"run.services.create","run.services.update","run.services.setIamPolicy","run.jobs.create","run.jobs.run","artifactregistry.repositories.create","secretmanager.secrets.create","secretmanager.versions.add","iam.serviceAccounts.create","iam.serviceAccounts.actAs","resourcemanager.projects.setIamPolicy","storage.buckets.create","serviceusage.services.enable","storage.buckets.update","storage.buckets.setIamPolicy","storage.hmacKeys.list","storage.hmacKeys.create","cloudsql.instances.create","cloudsql.databases.create","cloudsql.users.create","cloudsql.users.update","redis.instances.create","compute.addresses.create","servicenetworking.services.addPeering","cloudscheduler.jobs.create","cloudscheduler.jobs.update","compute.instanceGroupManagers.update","compute.autoscalers.update","compute.instanceTemplates.create","compute.urlMaps.create","compute.urlMaps.update","compute.backendServices.create","compute.sslCertificates.create","compute.targetHttpsProxies.create","compute.globalForwardingRules.create","compute.regionNetworkEndpointGroups.create"'
 if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/dev/null 2>&1; then
   GRANTED="$(curl -sS -X POST \
     "https://cloudresourcemanager.googleapis.com/v1/projects/${GCP_PROJECT_ID}:testIamPermissions" \
@@ -91,13 +97,29 @@ if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/de
   }
   _needed() {  # _needed <permission> -> 0 if this run needs it
     case "$1" in
-      # Per-component. Each is the permission whose absence stopped a real release, or the
-      # equivalent first call the tier makes; see the note on PERM_LIST above.
-      storage.hmacKeys.list)             _selected storage ;;
-      cloudscheduler.jobs.create)        _selected queue ;;
-      cloudsql.instances.create|redis.instances.create) _selected data ;;
-      compute.instanceTemplates.create)  _selected workers ;;
-      compute.urlMaps.create)            _selected edge ;;
+      # PER-COMPONENT, one arm per tier, listing every resource type that tier mutates. Grouped by
+      # component rather than by service so that adding a stage means adding its resources here.
+      storage.buckets.update|storage.buckets.setIamPolicy|\
+      storage.hmacKeys.list|storage.hmacKeys.create)
+        _selected storage ;;
+      cloudsql.instances.create|cloudsql.databases.create|\
+      cloudsql.users.create|cloudsql.users.update|\
+      redis.instances.create|compute.addresses.create|\
+      servicenetworking.services.addPeering)
+        _selected data ;;
+      cloudscheduler.jobs.create|cloudscheduler.jobs.update)
+        _selected queue ;;
+      # The fleet is rolled by BOTH the queue tier (which resizes it) and the workers tier (which
+      # replaces its template), so either selection requires the group and autoscaler permissions.
+      compute.instanceGroupManagers.update|compute.autoscalers.update)
+        _selected queue || _selected workers ;;
+      compute.instanceTemplates.create)
+        _selected workers ;;
+      compute.urlMaps.create|compute.urlMaps.update|\
+      compute.backendServices.create|compute.sslCertificates.create|\
+      compute.targetHttpsProxies.create|compute.globalForwardingRules.create|\
+      compute.regionNetworkEndpointGroups.create)
+        _selected edge ;;
       # Always: the deploy updates the service and its IAM, and acts as the runtime identity.
       run.services.setIamPolicy|run.services.create|run.services.update|iam.serviceAccounts.actAs) return 0 ;;
       # enable-apis.sh runs every time and is idempotent, but only mutates when one is off.
@@ -121,13 +143,31 @@ if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/de
       2>/dev/null | grep -q "${_api}" || _APIS_MISSING="yes"
   done
 
-  for perm in run.services.setIamPolicy run.services.create run.jobs.create \
+  # EVERY permission PERM_LIST asks about is reported. Five were queried and then discarded -
+  # run.services.update, run.jobs.run, iam.serviceAccounts.actAs, secretmanager.secrets.create and
+  # secretmanager.versions.add - so testIamPermissions answered for them and nothing read the answer.
+  # A permission that is asked about but never reported is indistinguishable from one that was never
+  # asked about, which is the same failure as an incomplete list.
+  for perm in run.services.setIamPolicy run.services.create run.services.update \
+              run.jobs.create run.jobs.run \
               artifactregistry.repositories.create \
+              secretmanager.secrets.create secretmanager.versions.add \
+              iam.serviceAccounts.actAs \
               storage.buckets.create serviceusage.services.enable \
               resourcemanager.projects.setIamPolicy iam.serviceAccounts.create \
-              storage.hmacKeys.list cloudscheduler.jobs.create \
-              cloudsql.instances.create redis.instances.create \
-              compute.instanceTemplates.create compute.urlMaps.create; do
+              storage.buckets.update storage.buckets.setIamPolicy \
+              storage.hmacKeys.list storage.hmacKeys.create \
+              cloudsql.instances.create cloudsql.databases.create \
+              cloudsql.users.create cloudsql.users.update \
+              redis.instances.create compute.addresses.create \
+              servicenetworking.services.addPeering \
+              cloudscheduler.jobs.create cloudscheduler.jobs.update \
+              compute.instanceGroupManagers.update compute.autoscalers.update \
+              compute.instanceTemplates.create \
+              compute.urlMaps.create compute.urlMaps.update \
+              compute.backendServices.create compute.sslCertificates.create \
+              compute.targetHttpsProxies.create compute.globalForwardingRules.create \
+              compute.regionNetworkEndpointGroups.create; do
     if ! _needed "${perm}"; then
       pend "permission not required for this run: ${perm}"
     elif printf '%s' "${GRANTED}" | grep -q "\"${perm}\""; then
@@ -136,6 +176,22 @@ if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/de
       bad "permission MISSING: ${perm} - without it the API service cannot be made public. Grant roles/run.admin to ${ACCOUNT} (roles/editor does NOT include setIamPolicy)."
     elif [ "${perm}" = "resourcemanager.projects.setIamPolicy" ]; then
       bad "permission MISSING: ${perm} - IAM between the API/pipeline/mesh identities cannot be applied. Grant roles/resourcemanager.projectIamAdmin to ${ACCOUNT}."
+    elif [ "${perm}" = "storage.hmacKeys.create" ]; then
+      bad "permission MISSING: ${perm} - a first deploy cannot mint the object-store credential. Grant roles/storage.hmacKeyAdmin to ${ACCOUNT} (roles/storage.admin does NOT include it)."
+    elif [ "${perm}" = "storage.buckets.update" ] || [ "${perm}" = "storage.buckets.setIamPolicy" ]; then
+      bad "permission MISSING: ${perm} - the artifacts bucket cannot be hardened or granted to the object-store identity. Grant roles/storage.admin to ${ACCOUNT}."
+    elif [ "${perm}" = "cloudsql.databases.create" ] || [ "${perm}" = "cloudsql.users.create" ] || [ "${perm}" = "cloudsql.users.update" ]; then
+      bad "permission MISSING: ${perm} - the schema's database and user cannot be reconciled. Grant roles/cloudsql.admin to ${ACCOUNT}."
+    elif [ "${perm}" = "compute.addresses.create" ] || [ "${perm}" = "servicenetworking.services.addPeering" ]; then
+      bad "permission MISSING: ${perm} - the private-services peering the data tier sits behind cannot be established. Grant roles/compute.networkAdmin and roles/servicenetworking.networksAdmin to ${ACCOUNT}."
+    elif [ "${perm}" = "cloudscheduler.jobs.update" ]; then
+      bad "permission MISSING: ${perm} - an existing queue-depth schedule cannot be reconciled. Grant roles/cloudscheduler.admin to ${ACCOUNT}."
+    elif [ "${perm}" = "compute.instanceGroupManagers.update" ] || [ "${perm}" = "compute.autoscalers.update" ]; then
+      bad "permission MISSING: ${perm} - the worker fleet cannot be resized or its autoscaler updated, which BOTH the queue and workers tiers do. Grant roles/compute.instanceAdmin.v1 to ${ACCOUNT}."
+    elif [ "${perm}" = "compute.urlMaps.update" ] || [ "${perm}" = "compute.backendServices.create" ] \
+      || [ "${perm}" = "compute.sslCertificates.create" ] || [ "${perm}" = "compute.targetHttpsProxies.create" ] \
+      || [ "${perm}" = "compute.globalForwardingRules.create" ] || [ "${perm}" = "compute.regionNetworkEndpointGroups.create" ]; then
+      bad "permission MISSING: ${perm} - the edge load balancer cannot be assembled. Grant roles/compute.loadBalancerAdmin and roles/compute.networkAdmin to ${ACCOUNT}."
     elif [ "${perm}" = "storage.hmacKeys.list" ]; then
       # roles/storage.admin does NOT carry storage.hmacKeys.* - only roles/storage.hmacKeyAdmin
       # does. Naming the wrong one costs a release, because storage.admin is the role anyone

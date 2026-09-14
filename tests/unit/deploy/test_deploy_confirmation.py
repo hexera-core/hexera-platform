@@ -38,14 +38,28 @@ exit 0
 """
 
 # Fake curl: the read-only testIamPermissions probe reports every required permission granted.
-# This list has to keep pace with preflight.sh's PERM_LIST. These tests assert the CONFIRMATION
-# gate, so a permission missing from here fails them for a reason that has nothing to do with what
-# they cover - the per-component permissions below were added when the preflight learned to ask
-# about the object store, the queue-depth publisher, the data tier, the fleet and the edge. This
-# run leaves DEPLOY_COMPONENTS unset, which means `all`, so every one of them is required.
-_FAKE_CURL = r"""#!/usr/bin/env bash
-printf '%s' '{"permissions":["run.services.setIamPolicy","run.services.create","run.jobs.create","artifactregistry.repositories.create","secretmanager.secrets.create","storage.buckets.create","serviceusage.services.enable","resourcemanager.projects.setIamPolicy","iam.serviceAccounts.create","storage.hmacKeys.list","cloudscheduler.jobs.create","cloudsql.instances.create","redis.instances.create","compute.instanceTemplates.create","compute.urlMaps.create"]}'
-"""
+#
+# DERIVED FROM preflight.sh, never restated. These tests assert the CONFIRMATION gate; a permission
+# the preflight asks about but this fixture omits fails them for a reason that has nothing to do
+# with what they cover. A hand-written copy went stale twice in one afternoon - once when the
+# preflight learned to ask about the per-component tiers, and again when it stopped standing one
+# permission in for a whole role - so the list is read from the script under test instead. These
+# runs leave DEPLOY_COMPONENTS unset, which means `all`, so every permission is required.
+def _granted_permissions() -> str:
+    """Every permission PERM_LIST asks about, as the JSON array testIamPermissions returns."""
+    import re
+    text = (SCRIPTS / "preflight.sh").read_text(encoding="utf-8")
+    match = re.search(r"^PERM_LIST='(.*)'$", text, re.M)
+    assert match, "preflight.sh no longer defines PERM_LIST as a single-quoted assignment"
+    perms = re.findall(r'"([a-z]+\.[A-Za-z.]+)"', match.group(1))
+    assert perms, "PERM_LIST parsed to no permissions - the fixture would grant nothing"
+    return ",".join(f'"{p}"' for p in perms)
+
+
+_FAKE_CURL = (
+    "#!/usr/bin/env bash\n"
+    f"printf '%s' '{{\"permissions\":[{_granted_permissions()}]}}'\n"
+)
 
 # Repository-controlled envsubst so these tests do NOT depend on host-installed gettext (they must
 # behave identically in make check, CI, and the API/pipeline images). It faithfully substitutes
