@@ -472,3 +472,37 @@ def test_the_documented_first_deploy_does_not_select_the_console():
         "refuses - the API has no URL yet")
     assert "# 2." in first and "console=true" in first, (
         "new-env.sh must still show the second run that deploys the console")
+
+
+def test_the_runtime_identities_are_created_by_an_owner_not_by_the_deploy():
+    """create-workload-identity.sh withholds iam.serviceAccountAdmin so a compromised workflow run
+    cannot mint an identity. Every stage that needs a runtime identity therefore expects to FIND
+    one - in the shared environments they were created by hand long before this was scripted,
+    which is why nothing noticed until a genuinely empty project ran preflight:
+
+        FAIL permission MISSING: iam.serviceAccounts.create
+
+    preflight.sh requires that permission only when the mesh identity's disposition is `created`,
+    so creating the identities up front is what makes a personal environment pass under the SAME
+    roster prod deploys with - as opposed to widening the deploy identity to match.
+    """
+    text = NEW_ENV.read_text(encoding="utf-8")
+    assert "iam service-accounts create" in text, (
+        "new-env.sh creates no runtime identities, so the first deploy fails preflight on "
+        "iam.serviceAccounts.create - a permission the deploy identity must not be given")
+    for role in ("-mesh", "-api", "-console", "-migrate", "-queue-depth", "-workers"):
+        assert f'"${{DEPLOYMENT_ID}}{role}' in text, f"no runtime identity created for {role}"
+    wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
+    assert "iam.serviceAccountAdmin" not in wif.split("DEPLOYER_ROLES=(")[1].split(")")[0], (
+        "the deploy identity must not be granted authority to mint identities")
+
+
+def test_the_deployer_can_schedule_the_queue_depth_publisher():
+    """The `queue` stage creates a Cloud Scheduler job, and no other role in the roster carries
+    cloudscheduler.jobs.create - so a release tag, which selects every component through `all`,
+    could not complete. preflight.sh has been naming roles/cloudscheduler.admin in its remediation
+    text all along, and its own header records this costing a v0.1.4 rerun at stage 13/19."""
+    wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
+    roster = wif.split("DEPLOYER_ROLES=(")[1].split("\n)")[0]
+    assert "roles/cloudscheduler.admin" in roster, (
+        "the deploy identity cannot create the queue-depth schedule the `queue` component needs")

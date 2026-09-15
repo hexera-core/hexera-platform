@@ -371,6 +371,45 @@ else
            --member serviceAccount:${DEPLOYER_SA_EMAIL} --role roles/artifactregistry.reader"
 fi
 
+# THE RUNTIME IDENTITIES, created here because the DEPLOY IDENTITY MAY NOT CREATE THEM.
+#
+# create-workload-identity.sh's roster deliberately withholds iam.serviceAccountAdmin, so that a
+# compromised workflow run cannot mint a new identity. Every stage that needs a runtime identity
+# therefore expects to FIND one - in hexera-dev and hexera-prod they were created once, by hand,
+# long before any of this was scripted, which is why nothing noticed the gap until a genuinely
+# empty project ran preflight:
+#
+#   FAIL permission MISSING: iam.serviceAccounts.create
+#
+# The right fix is to create them as an owner, here, rather than to widen the deploy identity -
+# a personal environment is a rehearsal of a real deploy, and a deploy that can mint identities
+# is not the deploy prod runs.
+#
+# `dev-api` is normally already present by now (create-object-storage.sh makes it, because the
+# object-store key belongs to it), and creating an account that exists is skipped rather than an
+# error, so this is stated in full rather than made conditional on which step ran first.
+info "Runtime identities the deploy expects to find"
+for _sa_spec in \
+  "${DEPLOYMENT_ID}-mesh|runs the mesh job" \
+  "${DEPLOYMENT_ID}-api|runs the API service and owns the object-store key" \
+  "${DEPLOYMENT_ID}-console|runs the console" \
+  "${DEPLOYMENT_ID}-migrate|runs the schema migration job" \
+  "${DEPLOYMENT_ID}-queue-depth|publishes queue depth for the autoscaler" \
+  "${DEPLOYMENT_ID}-workers|runs the celery worker fleet"; do
+  _sa="${_sa_spec%%|*}"
+  _sa_purpose="${_sa_spec##*|}"
+  if sa_exists "${_sa}@${PROJECT_ID}.iam.gserviceaccount.com"; then
+    log "identity        ${_sa}  (exists)"
+  else
+    gc iam service-accounts create "${_sa}" \
+      --display-name "Hexera ${_sa_purpose}" >/dev/null 2>&1 \
+      || die "could not create the runtime identity ${_sa} in ${PROJECT_ID}.
+   Creating identities needs iam.serviceAccountAdmin, which is an owner's role - the deploy
+   identity is deliberately built without it. Rerun this script as yourself."
+    log "identity        ${_sa}  (created - ${_sa_purpose})"
+  fi
+done
+
 # THE WORKER FLEET'S NON-SECRET SETTINGS. create-worker-fleet.sh requires WORKER_ENV_URI and
 # refuses to run without it, so a personal environment that never got this object could provision
 # everything except the thing that actually executes jobs.
