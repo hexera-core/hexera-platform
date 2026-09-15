@@ -454,6 +454,7 @@ EDGE_CERT=${EDGE_CERT:-${DEPLOY_ID}-edge-cert}
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.
 DEEPINFRA_API_KEY_SECRET=${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}
 DEEPSEEK_API_KEY_SECRET=${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}
+OPENAI_API_KEY_SECRET=${OPENAI_API_KEY_SECRET:-openai-api-key}
 MESH_API_KEY_SECRET=${MESH_API_KEY_SECRET:-mesh-api-key}
 USER_TOKEN_SECRET_SECRET=${USER_TOKEN_SECRET_SECRET:-user-token-secret}
 

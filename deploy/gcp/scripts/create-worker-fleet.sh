@@ -228,7 +228,8 @@ WORKER_SECRET_NAMES=()
 for pair in "postgres-password-secret:POSTGRES_PASSWORD_SECRET" \
             "minio-secret-key-secret:MINIO_SECRET_KEY_SECRET" \
             "deepinfra-api-key-secret:DEEPINFRA_API_KEY_SECRET" \
-            "deepseek-api-key-secret:DEEPSEEK_API_KEY_SECRET"; do
+            "deepseek-api-key-secret:DEEPSEEK_API_KEY_SECRET" \
+            "openai-api-key-secret:OPENAI_API_KEY_SECRET"; do
   meta_key="${pair%%:*}"
   holder="${pair##*:}"
   secret_name="${!holder:-}"
