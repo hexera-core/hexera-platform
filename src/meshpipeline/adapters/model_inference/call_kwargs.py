@@ -100,9 +100,30 @@ def _openai_wire(target: RouteTarget, spec: SamplingSpec) -> dict:
     return kw
 
 
+def _openai_native(target: RouteTarget, spec: SamplingSpec) -> dict:
+    """OpenAI proper. Same wire format, STRICTER parameter set: an unknown top-level or
+    extra_body field is a 400, not an ignored hint. So the vendor sampler extensions
+    (min_p, top_k) and DeepSeek's thinking switch are dropped rather than forwarded."""
+    # NOTE: `max_tokens` is what Step 3 of the plan specifies. Whether the live API still
+    # accepts it or requires `max_completion_tokens` instead was never checked (no
+    # OPENAI_API_KEY was available) - this is UNVERIFIED against the real endpoint.
+    kw: dict = {"model": target.model, "max_tokens": spec.max_tokens}
+    if spec.temperature is not None:
+        kw["temperature"] = spec.temperature
+    if spec.top_p is not None:
+        kw["top_p"] = spec.top_p
+    if spec.presence_penalty is not None:
+        kw["presence_penalty"] = spec.presence_penalty
+    if spec.stream:
+        kw["stream"] = True
+        kw["stream_options"] = {"include_usage": True}
+    return kw
+
+
 _BUILDERS = {
     "deepinfra": _openai_wire,
     "deepseek": _openai_wire,
+    "openai": _openai_native,
 }
 
 
