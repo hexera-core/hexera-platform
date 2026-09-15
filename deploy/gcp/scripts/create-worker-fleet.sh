@@ -95,6 +95,35 @@ WORKER_ROLLING_MAX_SURGE="${WORKER_ROLLING_MAX_SURGE:-1}"
 WORKER_ROLLING_MAX_UNAVAILABLE="${WORKER_ROLLING_MAX_UNAVAILABLE:-0}"
 WORKER_ROLLING_MIN_READY_SECONDS="${WORKER_ROLLING_MIN_READY_SECONDS:-180}"
 
+# Set updatePolicy.minReadySec on a managed instance group. gcloud exposes no flag for it on any
+# track (see the roll below), so this goes through the Compute API.
+#
+# THE EXISTING POLICY IS READ AND MERGED, never assumed. A PATCH on instanceGroupManagers replaces
+# a nested object wholesale rather than merging into it, so sending `{"updatePolicy":{"minReadySec":
+# N}}` on its own would silently discard maxSurge, maxUnavailable, replacementMethod and type - the
+# very settings set immediately above - and leave the fleet rolling under defaults nobody chose.
+# Reading first and writing the union keeps this additive.
+_mig_patch_min_ready() {  # <mig> <zone> <seconds>
+  local mig="$1" zone="$2" secs="$3" token url policy
+  token="$(gcloud auth print-access-token 2>/dev/null)" || return 1
+  [ -n "${token}" ] || return 1
+  url="https://compute.googleapis.com/compute/v1/projects/${GCP_PROJECT_ID}/zones/${zone}/instanceGroupManagers/${mig}"
+  policy="$(curl -sS -f -H "Authorization: Bearer ${token}" "${url}" 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    current = json.load(sys.stdin).get("updatePolicy", {})
+except Exception:
+    sys.exit(1)
+current["minReadySec"] = int(sys.argv[1])
+json.dump({"updatePolicy": current}, sys.stdout)
+' "${secs}")" || return 1
+  [ -n "${policy}" ] || return 1
+  curl -sS -f -X PATCH "${url}" \
+    -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
+    -d "${policy}" >/dev/null 2>&1
+}
+
 # THE ENDPOINTS THE INSTANCE WILL READ FROM METADATA, checked before anything is created.
 #
 # A CREDENTIALED BROKER URL IS A SECRET whatever the settings catalogue calls the setting, and
@@ -331,14 +360,37 @@ if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_
   else
     MIG_DISPOSITION=rolled
     info "Rolling ${WORKER_MIG} from ${CURRENT_TEMPLATE:-<unknown>} onto ${TEMPLATE}"
+    # MIN-READY IS SET THROUGH THE API, NOT THE CLI. `--min-ready` was a flag on
+    # `rolling-action start-update` and gcloud has removed it - it is absent from the GA track, from
+    # beta, and from `instance-groups managed update`'s `--update-policy-*` family, which exposes
+    # surge, unavailable, minimal-action and replacement-method and nothing for this. Passing it now
+    # aborts the command with `unrecognized arguments: --min-ready`, exit 2, which is what stopped
+    # the v0.1.5 release at stage 18/19. Only a RELEASE reaches this stage - a merge to main deploys
+    # `images,migrate,console,admin` and never rolls the fleet - so the flag went stale unnoticed.
+    #
+    # updatePolicy.minReadySec is still a Compute API field, so the guard is kept rather than
+    # dropped: it is PATCHed onto the group first, then the roll reads it. Without it the next
+    # instance can be replaced the moment its successor reports RUNNING, which for a worker is
+    # before it has pulled a single job - the roll would march through the fleet at boot speed and
+    # leave nothing draining the queue.
+    gc compute instance-groups managed update "${WORKER_MIG}" \
+      --zone "${WORKER_MIG_ZONE}" \
+      --update-policy-max-surge "${WORKER_ROLLING_MAX_SURGE}" \
+      --update-policy-max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}" \
+      --update-policy-replacement-method "${REPLACEMENT_METHOD}" \
+      --update-policy-type "${WORKER_ROLLING_TYPE}" >/dev/null \
+      || die "could not set the fleet's update policy on ${WORKER_MIG}"
+    _mig_patch_min_ready "${WORKER_MIG}" "${WORKER_MIG_ZONE}" "${WORKER_ROLLING_MIN_READY_SECONDS}" \
+      || die "could not set updatePolicy.minReadySec=${WORKER_ROLLING_MIN_READY_SECONDS} on ${WORKER_MIG}.
+   The roll was NOT started: without it an instance is considered available the moment it reports
+   RUNNING, which for a worker is before it has pulled a job."
     gc compute instance-groups managed rolling-action start-update "${WORKER_MIG}" \
       --zone "${WORKER_MIG_ZONE}" \
       --version "template=${TEMPLATE}" \
       --type "${WORKER_ROLLING_TYPE}" \
       --replacement-method "${REPLACEMENT_METHOD}" \
       --max-surge "${WORKER_ROLLING_MAX_SURGE}" \
-      --max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}" \
-      --min-ready "${WORKER_ROLLING_MIN_READY_SECONDS}s"
+      --max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}"
     log "fleet           ${WORKER_MIG}  (rolled - surge ${WORKER_ROLLING_MAX_SURGE}, unavailable ${WORKER_ROLLING_MAX_UNAVAILABLE},"
     log "                min-ready ${WORKER_ROLLING_MIN_READY_SECONDS}s, ${WORKER_ROLLING_TYPE}/${REPLACEMENT_METHOD})"
     log "                the roll runs asynchronously; watch it with:"
