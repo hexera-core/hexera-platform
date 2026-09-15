@@ -9,7 +9,14 @@ below rather than quietly corrected.
 
 ---
 
-## 1. The two environments
+## 1. The two SHARED environments
+
+There is a third kind, documented separately: a **personal environment** is one developer's own
+project, `hexera-dev-<slug>`, created by `make new-env SLUG=<slug>` and deleted by
+`make destroy-env SLUG=<slug>`. It is deployed to by the same workflow, from any branch, by naming
+a slug. Nothing in this file describes one — see
+[personal-environments.md](personal-environments.md).
+
 
 | | `hexera-dev` | `hexera-prod` |
 | --- | --- | --- |
