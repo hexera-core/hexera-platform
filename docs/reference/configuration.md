@@ -403,13 +403,15 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (213 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (215 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
 | `DEEPSEEK_API_KEY` | template | app | yes |
 | `DEEPSEEK_BASE_URL` | template | app |  |
 | `DEEPSEEK_MODEL` | template | app |  |
+| `OPENAI_API_KEY` | template | app | yes |
+| `OPENAI_BASE_URL` | template | app |  |
 | `BUILDER_MAX_TOKENS` | template | app |  |
 | `DEEPINFRA_API_KEY` | template | app | yes |
 | `DEEPINFRA_BASE_URL` | template | app |  |

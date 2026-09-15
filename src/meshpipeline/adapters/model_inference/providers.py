@@ -16,9 +16,12 @@ def client_for(target: RouteTarget):
     if target.provider == "deepseek":
         from meshpipeline.adapters.model_inference.deepseek import get_deepseek_client
         return get_deepseek_client()
+    if target.provider == "openai":
+        from meshpipeline.adapters.model_inference.openai_api import get_openai_client
+        return get_openai_client()
     raise ValueError(
         f"no adapter for provider {target.provider!r} (route target {target.label}). "
-        "Configured providers: deepinfra, deepseek.")
+        "Configured providers: deepinfra, deepseek, openai.")
 
 
 def classify(exc: BaseException) -> FailureCategory:

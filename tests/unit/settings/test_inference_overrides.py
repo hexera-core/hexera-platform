@@ -78,9 +78,9 @@ def test_an_empty_setting_is_no_overrides(price):
 # the schema refuses everything it does not support
 
 def test_an_unsupported_provider_is_refused(price):
-    assert "openai" not in LLM_PROVIDER_KEY_ENV
+    assert "cohere" not in LLM_PROVIDER_KEY_ENV
     with pytest.raises(ConfigurationError, match="not a provider this product supports"):
-        price("openai:gpt-4=1,2,3")
+        price("cohere:gpt-4=1,2,3")
 
 
 @pytest.mark.parametrize("bad,match", [
@@ -102,7 +102,7 @@ def test_malformed_prices_are_refused(price, bad, match):
 def test_a_refusal_never_echoes_a_credential(price, monkeypatch):
     monkeypatch.setenv("DEEPINFRA_API_KEY", "sk-super-secret-value")
     with pytest.raises(ConfigurationError) as exc:
-        price("openai:gpt-4=1,2,3")
+        price("cohere:gpt-4=1,2,3")
     assert "sk-super-secret" not in str(exc.value)
 
 
@@ -135,7 +135,7 @@ def test_an_unknown_domain_falls_back_without_reading_the_environment(monkeypatc
 
 @pytest.mark.parametrize("bad,match", [
     ("deepinfra:default=4", "not 'provider:account:model'"),
-    ("openai:default:m=4", "not a provider this product supports"),
+    ("cohere:default:m=4", "not a provider this product supports"),
     ("deepinfra:default:m=zero", "not a whole number"),
     ("deepinfra:default:m=0", "must be positive"),
     ("deepinfra:default:m=-3", "must be positive"),

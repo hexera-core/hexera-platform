@@ -20,6 +20,8 @@ DEEPSEEK_BASE_URL: str = optional_env("DEEPSEEK_BASE_URL", "https://api.deepseek
 DEEPSEEK_MODEL: str    = optional_env("DEEPSEEK_MODEL",    "deepseek-v4-pro")
 DEEPINFRA_API_KEY: str  = optional_env("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL: str = optional_env("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
+OPENAI_API_KEY: str  = optional_env("OPENAI_API_KEY", "")
+OPENAI_BASE_URL: str = optional_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 DEEPINFRA_CALL_TIMEOUT: int      = int(optional_env("DEEPINFRA_CALL_TIMEOUT",      "1800"))
 DEEPINFRA_CONNECT_TIMEOUT: float = float(optional_env("DEEPINFRA_CONNECT_TIMEOUT", "15"))
@@ -168,4 +170,5 @@ LANGFUSE_HOST: str       = optional_env("LANGFUSE_HOST", "")
 LLM_PROVIDER_KEY_ENV: dict[str, str] = {
     "deepinfra": "DEEPINFRA_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "openai": "OPENAI_API_KEY",
 }

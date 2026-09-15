@@ -177,7 +177,7 @@ def test_the_documented_examples_parse(setting, monkeypatch):
 
 @pytest.mark.parametrize("setting,bad", [
     ("MODEL_PRICE_OVERRIDES", "deepinfra:m=1,2"),
-    ("MODEL_PRICE_OVERRIDES", "openai:gpt-4=1,2,3"),
+    ("MODEL_PRICE_OVERRIDES", "cohere:gpt-4=1,2,3"),
     ("MODEL_DOMAIN_BUDGETS", "deepinfra:default:m=0"),
     ("MODEL_DOMAIN_BUDGETS", "deepinfra:default=4"),
 ])

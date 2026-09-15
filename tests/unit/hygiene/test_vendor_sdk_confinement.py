@@ -48,6 +48,7 @@ VENDOR_ALLOWLIST: dict[str, set[str]] = {
         # a NEUTRAL FailureCategory. That translation is the reason nothing above the adapter
         # needs the SDK's exception types to decide whether a failure may fail over.
         "adapters/model_inference/providers.py",
+        "adapters/model_inference/openai_api.py",
     },
     # Google Cloud: the object store + the Cloud Run mesh/pipeline adapters, and the one
     # adapter that verifies a Google Identity Platform ID token.
