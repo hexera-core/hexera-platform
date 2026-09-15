@@ -49,21 +49,69 @@ Probed against `api.openai.com` with the production key on 2026-09-15, not read 
 Intake, builder, planner and reviewer all call tools. Choosing Chat Completions means choosing
 no reasoning for four of five roles; choosing Responses means a translation layer.
 
-### Not yet verified — these block implementation
+### Verified on the Responses API
 
-`gcloud` reauthentication expired mid-probe, so four facts remain unread. **Task 1 resolves them
-before any code is written** (see §8). They are listed here so nobody mistakes them for settled:
+The four unknowns that blocked this design are resolved. Probed against `api.openai.com/v1/responses`
+with the production key on 2026-09-15.
 
-| Unknown | Why it matters |
+**Tools and reasoning coexist — this is the finding the design rests on.**
+
+| Request | Result |
 |---|---|
-| `usage` field names on Responses | `_usage_from` maps them into `ModelRoundResult`; wrong names meter every OpenAI call at zero, exactly like the reviewer's `$0.00` bug this branch just fixed |
-| The image-input item shape | `visual_reviewer` sends a rendered view; the reviewer role cannot move without it |
-| Streaming event type names | a second stream consumer is the single largest piece of work here |
-| Whether `reasoning_effort` and tools coexist **on Responses** | if they do not, the whole reason for choosing Responses over `reasoning_effort:"none"` evaporates and this design should be reconsidered |
+| tools, no `reasoning` field | 200 — output items `['reasoning', 'function_call']` |
+| tools + `reasoning:{effort:"low"}` | 200 — same |
+| tools + `reasoning:{effort:"high"}` | 200 — same |
 
-The last one is load-bearing. Stage 1 shipped a guessed parameter name because its verification
-step was optional; it cost a Critical at final review. This design makes the equivalent step
-blocking.
+Chat Completions refuses exactly this. It is the whole reason to pay for a second protocol.
+
+**Usage** — maps cleanly onto `Usage` and `ModelRoundResult`, and `reasoning_tokens` is a real
+number rather than an absence to be invented:
+
+```json
+"usage": {"input_tokens": 7,
+          "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+          "output_tokens": 11,
+          "output_tokens_details": {"reasoning_tokens": 0},
+          "total_tokens": 18}
+```
+
+Confirmed non-zero on a reasoning prompt (`"reasoning_tokens": 50`). Usage arrives on the final
+`response.completed` event when streaming.
+
+**Image input** is flat, and the text part is renamed too:
+
+```json
+{"type": "input_text",  "text": "colour?"}
+{"type": "input_image", "image_url": "data:image/png;base64,…"}
+```
+
+The chat shape `{"type":"image_url","image_url":{"url":…}}` is refused: *"Invalid value: 'image_url'.
+Supported values are: 'input_text', 'input_image', …"*. So `ContentPart` needs translating in both
+name and nesting, not just nesting.
+
+**Streaming events** observed:
+
+| Group | Events |
+|---|---|
+| lifecycle | `response.created`, `response.in_progress`, `response.completed` |
+| items | `response.output_item.added` / `.done` |
+| content | `response.content_part.added` / `.done` |
+| text | `response.output_text.delta` / `.done` |
+| reasoning | `response.reasoning_summary_part.added` / `.done`, `response.reasoning_summary_text.delta` / `.done` |
+| tools | `response.function_call_arguments.delta` / `.done` |
+
+A tool call streams as `function_call_arguments.delta` fragments terminated by `.done` — the
+arguments arrive as a JSON string to accumulate, the same shape `streaming.py` already handles for
+chat, under different event names.
+
+**One honest mismatch.** The reasoning stream is `reasoning_summary_text`, a *summary*.
+`ModelRoundResult.reasoning_text` is documented as "the model's chain-of-thought … (DeepInfra's
+`reasoning_content`)". A summary is not a chain of thought. The field is transport-only and never
+reaches a user, so carrying the summary there is defensible — but the docstring must be amended to
+say so rather than letting two different things quietly share a name.
+
+**Sampling is refused on Responses too** — `temperature` 400, `top_p` 400, `presence_penalty` 400.
+So §6 stands unchanged; switching protocol does not buy sampling control back.
 
 ### The shape difference
 
@@ -185,8 +233,9 @@ to a run.
 
 ## 8. Delivery
 
-1. **Resolve the four unknowns** (§1) against the live API and write them into this document.
-   **Blocking** — no code until they are facts. Needs `gcloud auth login`.
+1. ~~**Resolve the four unknowns** against the live API.~~ **DONE 2026-09-15** — all four are
+   now verified facts in §1, including the load-bearing one: tools and reasoning coexist on
+   Responses, so this design is sound rather than merely plausible.
 2. **Extract the protocol seam.** Move today's code behind `protocols/chat_completions.py` with
    no behaviour change; golden tests and `test_invocation_equivalence.py` are the proof.
 3. **Responses adapter: request + non-streaming + normalisation.** Intake and summarizer are the
@@ -221,7 +270,6 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
 
 ## 11. Open questions
 
-- The four unknowns in §1.
 - Silent drop vs. loud refusal for inexpressible sampling (§6) — recommendation stated.
 - Which model each role gets. `gpt-5.6-luna` is chosen for intake and summarizer; builder, planner
   and visual_reviewer are unspecified, and moving them is a 4–17× increase in output cost.
