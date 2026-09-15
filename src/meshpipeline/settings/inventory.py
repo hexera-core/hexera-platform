@@ -374,6 +374,8 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_MEASUREMENT_SYNC_MAX_MB", "4", kind="float", help="under this the measurement runs in the upload request; at or above it a worker takes it"),
         EnvVar("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900", kind="int", help="one measurement's deadline; past it the row records the failure and the conversation is unaffected"),
         EnvVar("GEOMETRY_REPORT_READERS_ENABLED", "false", kind="bool", help="whether intake, the mesh planner and the admission slot ACT on a stored measurement; separate from writing one, and off on its own"),
+        EnvVar("GEOMETRY_VISION_ENABLED", "false", kind="bool", help="after the measurement, describe the part from rendered views with a vision model and store the words in the same row; does nothing unless GEOMETRY_MEASUREMENT_ENABLED is also true"),
+        EnvVar("GEOMETRY_VISION_TIMEOUT_SECONDS", "180", kind="int", help="one look's deadline, render included; past it the row keeps the measurement and the look is abandoned"),
     ]),
 
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[

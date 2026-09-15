@@ -279,7 +279,123 @@ def _render(document: dict) -> str:
         "    not invented and it is not theirs either - so you may SAY it and ask them to confirm it, and",
         "    you may put it in a patch only once they have confirmed it in their own words.",
     ])
+    lines.extend(look_lines(document))
     return "\n".join(lines)
+
+
+# -------------------------------------------------------------------------------------------------
+# WHAT THE PART LOOKS LIKE
+#
+# A second, separate block, and separate is the point. Everything above is a measurement of the file.
+# This is a vision model's words about rendered views of it: no number, nothing that can be checked,
+# and a per-field record of how often each thing it says has been right.
+#
+# THE TIERS ARE NOT THIS MODULE'S. The measurement package measured them over 322 parts and carries
+# them in the stored block; `geometry_agent.vision.trust.for_model` is what strips the fields that only
+# ever lied before anything here can see them. So `defects` cannot reach a customer through this block
+# - it is not in the dict that arrives - and nor can a guessed inlet, which is the field that would do
+# the most damage in a conversation whose whole job is to settle which opening is which.
+# -------------------------------------------------------------------------------------------------
+
+#: How many phrases of one candidate list are worth showing. A model that lists nine internal features
+#: from one look is listing wordings, not findings (Jaccard 0.31 to 0.46 on a repeat).
+MAX_LOOK_PHRASES = 4
+
+
+def look_at_it(document: dict | None) -> dict | None:
+    """What the look may say to a model, or None. Never raises.
+
+    None is the fail-open at this boundary, and it is the answer to all of: the vision setting off, a
+    look that was never attempted, a look that failed, a row written before the look existed, and an
+    image without the measurement package. In each case the block below is not rendered and the system
+    prompt is character-for-character the prompt with no look.
+    """
+    if not isinstance(document, dict):
+        return None
+    look = document.get("look")
+    if not isinstance(look, dict) or look.get("status") != "ok":
+        return None
+    block = (document.get("planner_block") or {})
+    if isinstance(block, dict) and isinstance(block.get("look"), dict):
+        # Composed once, at measurement time, by the package that owns the tiers. Preferred over
+        # anything recomposed here, for the same reason the planner's block is.
+        return block["look"]
+    try:
+        from geometry_agent.vision.trust import for_model
+        return for_model(look.get("impression"), model=str(look.get("model") or ""))
+    except Exception as exc:                       # noqa: BLE001 - a description is never worth a turn
+        logger.info("intake geometry brief: the look could not be read (%s)", exc)
+        return None
+
+
+def _phrases(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        items = [str(v).strip() for v in value if str(v).strip()]
+        return "; ".join(items[:MAX_LOOK_PHRASES])
+    if isinstance(value, dict):
+        return "; ".join(f"{k} {v}" for k, v in list(value.items())[:MAX_LOOK_PHRASES])
+    return str(value or "").strip()
+
+
+#: One label column for both groups, so the two read as one table and a reader sees at a glance which
+#: half a line is in.
+_LABEL_WIDTH = 22
+
+
+def _row(label: str, value: str) -> str:
+    return f"  {label + ':':<{_LABEL_WIDTH}}{value}"
+
+
+def look_lines(document: dict | None) -> list[str]:
+    """The look, as lines appended under the measured table. Empty list when there is no look."""
+    try:
+        seen = look_at_it(document)
+    except Exception:                              # noqa: BLE001 - never worth a turn
+        return []
+    if not seen:
+        return []
+    relied = seen.get("relied_on") or {}
+    candidates = seen.get("candidates") or {}
+    lines = ["",
+             "## WHAT IT LOOKS LIKE - a vision model's words from rendered views of the same file",
+             "This is NOT a measurement and it holds no number: every digit was removed before you saw it.",
+             "The two groups below are not a tone, they are a measurement of how often each was right.",
+             ""]
+    strong: list[str] = []
+    if relied.get("attachments"):
+        strong.append(_row("flanges and fittings", _phrases(relied["attachments"])))
+    if relied.get("openings_seen"):
+        strong.append(_row("openings it can see", _phrases(relied["openings_seen"])))
+    if relied.get("inside_is_plain"):
+        strong.append(_row("inside the passage", "plain, nothing across it"))
+    elif relied.get("internal_features"):
+        strong.append(_row("inside the passage", _phrases(relied["internal_features"])))
+    if strong:
+        lines.append("  YOU MAY STATE THESE (measured to be right often enough to say out loud):")
+        lines.extend(strong)
+        lines.append("")
+    weak: list[str] = []
+    if candidates.get("looks_like"):
+        weak.append(_row("it looks like", str(candidates["looks_like"])))
+    for key, label in (("internal_features", "inside the passage"),
+                       ("sharp_edges", "sharp edges and lips"),
+                       ("thin_parts", "thin walls and plates"),
+                       ("opening_mouths", "how the mouths sit")):
+        if candidates.get(key):
+            weak.append(_row(label, _phrases(candidates[key])))
+    if weak:
+        lines.append("  ASK, NEVER ASSERT (right often enough to be worth raising, not to be stated):")
+        lines.extend(weak)
+        lines.append("")
+    lines.extend([
+        "  HOW TO USE IT: it changes what you can OFFER, never what you submit. Say what it saw and invite",
+        "  a correction (\"it looks like a manifold with a flange at each end - is that right?\"). The",
+        "  customer's word wins over it instantly and without argument. It does NOT tell you which opening",
+        "  is the inlet, which way the part faces, whether it is symmetric or whether the file is sound:",
+        "  the measured table above has the first three exactly, and the picture has been wrong about all",
+        "  of them. Put nothing from here in a patch.",
+    ])
+    return lines
 
 
 #: What each representation means in a sentence a customer would recognise. The word itself is the
@@ -410,5 +526,5 @@ def _match(patch: dict, rows: list[dict], diagonal: Any) -> str | None:
     return None
 
 
-__all__ = ["MAX_TABLE_ROWS", "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL",
-           "SIZE_TOLERANCE", "bind_patches", "opening_rows", "render_block"]
+__all__ = ["MAX_LOOK_PHRASES", "MAX_TABLE_ROWS", "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL",
+           "SIZE_TOLERANCE", "bind_patches", "look_at_it", "look_lines", "opening_rows", "render_block"]

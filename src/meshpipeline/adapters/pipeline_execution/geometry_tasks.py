@@ -24,3 +24,22 @@ def enqueue(source_id: str, owner_id: str, *, purpose: str) -> None:
     measure_source.apply_async(args=[str(source_id), str(owner_id)], kwargs={"purpose": purpose},
                                queue="geometry_measurement")
     logger.info("geometry measurement queued - source_id=%s", source_id)
+
+
+# MAX_RETRIES 0 for the same reason as the measurement, and one more: a look costs a provider call, and
+# a task that retries a provider outage three times is three calls for one description nobody is
+# waiting on. The look's own client already retries inside the deadline. A look that did not happen
+# leaves the row exactly as the measurement wrote it, and the next upload of the same bytes tries again.
+#
+# ITS OWN QUEUE, so a backlog of looks cannot delay a measurement. The measurement is the thing a
+# conversation opens holding; the look is the thing it is better for having.
+@celery_app.task(name="tasks.geometry.look_at_source", bind=False, max_retries=0,
+                 soft_time_limit=600, time_limit=900, queue="geometry_look")
+def look_at_source(source_id: str, owner_id: str) -> dict:
+    from meshpipeline.application import geometry_vision as _look
+    return _look.look_and_store_blocking(source_id, owner_id)
+
+
+def enqueue_look(source_id: str, owner_id: str) -> None:
+    look_at_source.apply_async(args=[str(source_id), str(owner_id)], queue="geometry_look")
+    logger.info("geometry look queued - source_id=%s", source_id)

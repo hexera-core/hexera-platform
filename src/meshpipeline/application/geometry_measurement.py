@@ -241,8 +241,35 @@ async def measure_and_store(source_id: str, owner_id: str, *,
 
     logger.info("geometry measurement: %s - source_id=%s sha=%s seconds=%s",
                 document.get("status"), source_id, ref.sha256[:12], document.get("seconds"))
+    try:
+        looked = _queue_the_look(str(source_id), owner_id, str(document.get("status") or ""))
+    except Exception as exc:                       # noqa: BLE001 - a description is never worth a measurement
+        logger.warning("geometry look: could not be queued - source_id=%s: %s", source_id, exc)
+        looked = "skipped"
     return {"status": document.get("status"), "source_id": str(source_id),
-            "seconds": document.get("seconds")}
+            "seconds": document.get("seconds"), "look": looked}
+
+
+def _queue_the_look(source_id: str, owner_id: str, status: str) -> str:
+    """Hand the look to a worker, now that there is a row for it to attach to. Never raises.
+
+    HERE, and only here. Both paths into a measurement come through `measure_and_store`, so one call
+    site covers the upload that measured inline and the upload that went to a worker, and in both cases
+    the row is already committed when this runs. Queueing it from the upload instead would race: the
+    look would arrive at a row that does not exist yet and skip.
+
+    Returns what happened, for the caller's log line: `off`, `queued`, `skipped` or `not_measured`.
+    """
+    from meshpipeline.application import geometry_vision
+
+    if not geometry_vision.look_enabled():
+        return "off"
+    if status != STATUS_OK:
+        # Nothing to describe. A failed measurement has no facts to label the views with and no
+        # document for the words to sit beside.
+        return "not_measured"
+    from meshpipeline.contracts.geometry_measurement import enqueue_look
+    return "queued" if enqueue_look(source_id, owner_id) else "skipped"
 
 
 async def _interpretation_for(db, owner_id: str, source_uuid) -> tuple[str | None, float | None]:

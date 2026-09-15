@@ -123,6 +123,11 @@ GEOMETRY_AGENT_BLOCK_KEYS = (
     "agent_forecast_cells", "agent_forecast_low", "agent_forecast_basis", "forecast_calibration",
     "customer_cell_cap", "inlet_bore_m", "inlet_opening_id", "smallest_port_min_dim_m",
     "places", "source_sha256", "agent_git_sha", "units",
+    #: WORDS, never a number. The measurement package removes every digit from the description before
+    #: it is stored, and it strips out the fields its own ledger found untrustworthy before the block
+    #: is composed, so what arrives under this key is already the part a planner may act on. The key is
+    #: absent when nothing looked, which is what leaves the prompt where it is today.
+    "look",
 )
 
 #: What the planner is never handed, whatever the block says, with the reason it is refused.
@@ -144,6 +149,21 @@ ABOUT "geometry_agent" IN THE DICT ABOVE: it is a separate measurement of the cu
 - places are MEASURED locations that cost cells, not suggestions. A port mouth tilted off the background grid is cut by stair-stepped cells (this is the mechanism behind most poor carves); a thin region is where prism layers collapse. Name them in "focus" and size for them.
 - status "degraded" means the listed fields in "missing" could not be measured. Fields that are absent were not measured; do not infer a value for them.
 - If this block and the customer's own text disagree, the CUSTOMER is right: they can see the part and this is a measurement of a file."""
+
+#: How to read `look`, sent ONLY when a look is present. It rides with the look and not with the block,
+#: because a note describing a key the model will not find is the failure the block's own note avoids.
+#:
+#: The two tiers are the whole of it. A look is words from rendered views and it carries no number; what
+#: separates the two groups is not confidence, it is a measurement of how often each field was right over
+#: 322 parts, and the block already states which group each field is in. Nothing here asks the model to
+#: judge that for itself.
+_AGENT_LOOK_NOTE = """
+
+ABOUT "look" INSIDE "geometry_agent": a vision model was shown rendered views of this part and described it in words. It is NOT a measurement and it contains no number - every digit was removed before it was stored.
+- "relied_on" was measured against 322 parts and earned its place. Attachments and flanges in particular are found at full recall and no measurement reports them at all, so if one is named, it is there. An "inside_is_plain" of true means nothing was seen across the passage, and nothing has been.
+- "candidates" are places to look at, not facts. The identity is right about two times in three and is not reproducible; an internal feature repeats as a finding but not as a wording. Size for them if it is cheap to; do not justify a level by one of them alone.
+- "withheld" lists what the look said that you are NOT being shown, with the reason. Do not ask for it and do not infer it. The measured dict above already has the orientation, the symmetry and the opening classes exactly.
+- The look never overrides a measured number, a port, a bore or a count. Where the two disagree, the measurement is right."""
 
 
 def _validated_agent_block(block: object, job_id: str) -> dict | None:
@@ -275,6 +295,11 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         # with no block it would describe a key the model will not find, and a prompt that promises
         # a measurement that is not there is the exact failure this phase exists to remove.
         _agent_note = _AGENT_BLOCK_NOTE if _agent_block is not None else ""
+        # The look's note rides with the look, one gate further in than the block's own note. With the
+        # vision setting off, or a look that failed, the block carries no `look` key and this string is
+        # empty, so the user message is byte for byte the message with only the measurement.
+        if _agent_block is not None and _agent_block.get("look"):
+            _agent_note += _AGENT_LOOK_NOTE
         user = ("REQUEST:\n" + (request_txt or "").strip()[:2000]
                 + "\n\nMEASURED GEOMETRY (metres):\n" + json.dumps(metrics, indent=1)
                 + _agent_note + _fid_note)

@@ -280,7 +280,8 @@ services:
   # queue nobody drains. This image does not carry the geometry-agent distribution, so until it
   # does the task records a refusal naming the missing package - which is visible, where an
   # undrained queue is not. The whole path is behind GEOMETRY_MEASUREMENT_ENABLED and nothing is
-  # ever enqueued with it off.
+  # ever enqueued with it off. geometry_look is the same arrangement one step further on: it is
+  # drained here, it is behind GEOMETRY_VISION_ENABLED as well, and with that off it stays empty.
   worker-utility:
     build:
       context: .
@@ -289,7 +290,7 @@ services:
     entrypoint: ["/srv/worker_entrypoint.sh"]
     command: >
       celery -A meshpipeline.runtime.celery_worker worker
-      --queues cleanup_tasks,training_export,geometry_measurement
+      --queues cleanup_tasks,training_export,geometry_measurement,geometry_look
       --concurrency 2
       --loglevel info
       --hostname utility@%h

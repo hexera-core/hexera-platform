@@ -80,6 +80,34 @@ GEOMETRY_MEASUREMENT_SYNC_MAX_MB: float = float(optional_env("GEOMETRY_MEASUREME
 GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS: int = int(
     optional_env("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900"))
 
+# LOOKING AT THE FILE, which is a THIRD gate and off by default on its own. It only does anything when
+# GEOMETRY_MEASUREMENT_ENABLED is already true, and the `and` below is where that is enforced rather
+# than in a comment: there is nothing for a look to be attached to without a measurement row, and the
+# renders are labelled with the openings the measurement found.
+#
+# What it turns on: after a file is measured and its row is written, a background task renders the part
+# and asks a vision model to describe it in words, and those words are stored in the same row. It never
+# runs in the upload request and it never delays an upload - the look is queued behind the measurement,
+# has its own deadline, and a failure leaves the row exactly as the measurement left it.
+#
+# What it costs: one provider call per uploaded file. Measured on six corpus parts with gpt-5.6-luna on
+# OpenAI, 2026-09-15: 18.2 to 29.1 seconds of wall clock including the render, 7,308 to 7,350 prompt
+# tokens and 1,334 to 2,565 completion tokens. NO DOLLAR FIGURE, deliberately: that model id has no
+# confirmed price in adapters/inference_telemetry/pricing.py, and that module's own rule is that an
+# unconfirmed price is left out rather than guessed. A second job against the same upload pays nothing
+# at all, and not because of a render cache: the look is stored in the measurement row and keyed the
+# same way, so the task reads one row and stops, having fetched no bytes and called no provider.
+#
+# What it never does: produce a number. Every digit is removed from the description before it is stored,
+# and the fields the measurement found untrustworthy are kept out of every prompt by the measurement
+# package's own trust tiers rather than by anything here.
+GEOMETRY_VISION_ENABLED: bool = (
+    optional_env("GEOMETRY_VISION_ENABLED", "false").lower() == "true"
+    and GEOMETRY_MEASUREMENT_ENABLED)
+#: One look's wall clock, render included. Past it the look is abandoned, the row keeps the measurement
+#: it already had, and the conversation is exactly what it is with the look switched off.
+GEOMETRY_VISION_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_VISION_TIMEOUT_SECONDS", "180"))
+
 # WHO READS THE STORED MEASUREMENT. Deliberately a SECOND gate, and off by default on its own.
 # `GEOMETRY_MEASUREMENT_ENABLED` decides whether a file is measured and a row written; this decides
 # whether anything acts on that row. They are separable because the first can run for a week

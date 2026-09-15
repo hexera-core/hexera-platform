@@ -30,12 +30,19 @@ celery_app.conf.update(
         # behind a multi-hour mesh, nor delay one. A deployment that has not turned the feature on
         # never enqueues to it and the queue stays empty.
         "tasks.geometry.measure_source": {"queue": "geometry_measurement"},
+        # And its own again: a look is a render plus a provider call, tens of seconds, and nothing
+        # is waiting on it. Behind its own queue it can back up without holding a measurement, which
+        # somebody IS waiting on. Off by default, so with the feature off this queue stays empty.
+        "tasks.geometry.look_at_source": {"queue": "geometry_look"},
     },
     task_queue_max_priority={
         "training_export": 9,
         # Above a mesh, because somebody is waiting on the conversation this answers and nobody is
         # watching a queued mesh start one minute sooner.
         "geometry_measurement": 7,
+        # Below the measurement and below a mesh: a description is the last thing to run and the
+        # first thing to give way.
+        "geometry_look": 3,
         "simulation_jobs": 5,
         "cleanup_tasks":   1,
     },

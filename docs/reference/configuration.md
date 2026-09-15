@@ -278,6 +278,71 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 | `MAX_CONCURRENT_JOBS` | `20` | across the deployment |
 | `CELERY_WORKER_CONCURRENCY` | `2` | pipeline runs per worker process |
 
+## Measuring and looking at an uploaded geometry
+
+Three gates, each off by default, and each one only does anything when the one before it is on.
+
+| Key | Default | Notes |
+|---|---|---|
+| `GEOMETRY_MEASUREMENT_ENABLED` | `false` | measure an uploaded file and store the report against its sha256 |
+| `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | `4` | under this the measurement runs in the upload request; at or above it a worker takes it |
+| `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | `900` | one measurement's deadline |
+| `GEOMETRY_REPORT_READERS_ENABLED` | `false` | whether intake, the mesh planner and the admission slot ACT on a stored measurement |
+| `GEOMETRY_VISION_ENABLED` | `false` | after the measurement, describe the part from rendered views and store the words in the same row |
+| `GEOMETRY_VISION_TIMEOUT_SECONDS` | `180` | one look's deadline, render included |
+
+### What the look is
+
+With `GEOMETRY_VISION_ENABLED` on, a background task renders nine views of the measured file, asks a
+vision model what it is looking at, and stores the answer in the same `geometry_measurements` row.
+It needs `GEOMETRY_MEASUREMENT_ENABLED` as well: there is no row for a look to attach to without a
+measurement, and the views are labelled with the openings the measurement found.
+
+It produces no number. Every digit is removed from the description before it is stored, so nothing
+in it can be mistaken for a measurement, and the measurement package's own trust tiers decide which
+fields may reach a model at all. What the vision model says about defects, about which opening is an
+inlet, about the orientation and about the symmetry is kept in the row for a person to read and is
+not put in front of the mesh planner or the intake conversation. The first has never once been
+right; the other three the measurement already has exactly.
+
+### What it costs
+
+One provider call per uploaded file. Measured on seven corpus export parts, at least one of each
+representation, with `gpt-5.6-luna` on OpenAI on 2026-09-15: 18.2 to 29.1 seconds of wall clock
+including the render, 7,306 to 7,350 prompt tokens and 1,301 to 2,565 completion tokens, of which
+1,024 to 2,049 were reasoning tokens. Seven looks, seven succeeded.
+
+**The dollar figure is not stated here because it has not been confirmed.** `openai:gpt-5.6-luna` is
+not in `adapters/inference_telemetry/pricing.py`, and that module's own rule is that an unconfirmed
+price is left out rather than guessed. The token counts above are what a rate multiplies: at a rate
+of *(in, out)* dollars per million tokens the cost of one look is `7.317 * in / 1000 + 1.894 * out /
+1000` dollars at the measured medians (7,317 prompt tokens and 1,894 completion tokens). Add the id
+and its rate to the price table to have the look costed automatically like every other model call.
+
+A second job against the same upload costs nothing at all: the look is stored with the measurement
+and keyed the same way, so the task reads one row and stops, having fetched no bytes, rendered
+nothing and called no provider.
+
+It adds 2,591 to 3,083 characters to the mesh planner's user message and 1,232 to 1,584 characters to
+the intake system prompt, and only on a file where the look succeeded. Both figures were measured by
+rendering the real prompt on each of the seven parts with the look and again with it stripped out.
+
+In the database it adds 8.2 to 9.4 KB of JSON to the `geometry_measurements.document` of a file that
+was looked at, of which 5.1 to 5.6 KB is the measurement package's trust table, repeated in each row
+so a reader of one row never has to fetch anything else to know which fields it may act on. No new
+column and no migration: `document` is already JSONB and already has a `look` key, written as
+"nothing looked" since the measurement path shipped.
+
+### When the provider is down
+
+Nothing happens, and nothing breaks. A provider error, a missing key, a reply that is not JSON, a
+file this image cannot render and a look that outlives its deadline are all recorded as a look that
+did not work. The measurement row keeps the measurement it already had, the mesh planner's block
+carries no look key, intake renders no look lines, and the conversation and the mesh are exactly what
+they are with `GEOMETRY_VISION_ENABLED` off. A queue with no worker draining it is the same answer.
+The upload is never affected in any case: the look is always a queued task and never runs in a
+request.
+
 ## Observability
 
 | Key | Default | Notes |
@@ -400,7 +465,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (208 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (210 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -490,6 +555,8 @@ Every supported setting (208 entries). `template` settings are the ones `.env.ex
 | `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | template | app |  |
 | `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | template | app |  |
 | `GEOMETRY_REPORT_READERS_ENABLED` | template | app |  |
+| `GEOMETRY_VISION_ENABLED` | template | app |  |
+| `GEOMETRY_VISION_TIMEOUT_SECONDS` | template | app |  |
 | `PIPELINE_BACKEND` | template | app |  |
 | `REQUIRE_DURABLE_CHECKPOINTER` | template | app |  |
 | `WORKER_HEARTBEAT_SECONDS` | template | app |  |

@@ -126,6 +126,35 @@ def enqueue_measurement(source_id: str, owner_id: str, *, purpose: str) -> bool:
         return False
 
 
+#: THE SECOND QUEUE SEAM, for the look. Separate from the measurement's because it is a separate job
+#: with a separate gate: the look runs AFTER a measurement row exists, never instead of one, and never
+#: in a request. Bound in runtime/composition.py beside the first. With nothing bound the enqueue is a
+#: logged no-op, which is the same answer as the look never having been attempted.
+_look_enqueuer = None
+
+
+def set_look_enqueuer(enqueuer) -> None:
+    global _look_enqueuer
+    _look_enqueuer = enqueuer
+
+
+def enqueue_look(source_id: str, owner_id: str) -> bool:
+    """Hand one look to a worker. True when something took it. Never raises.
+
+    A broker that will not accept the task is a look that does not happen, and a look that does not
+    happen leaves the stored measurement exactly as the measurement wrote it.
+    """
+    if _look_enqueuer is None:
+        logger.info("geometry look: no enqueuer configured - source_id=%s", source_id)
+        return False
+    try:
+        _look_enqueuer(source_id, owner_id)
+        return True
+    except Exception as exc:                       # noqa: BLE001 - fail open, never the upload
+        logger.warning("geometry look: could not enqueue - source_id=%s: %s", source_id, exc)
+        return False
+
+
 def projection_of(document: dict | None) -> dict | None:
     """What an engine's admission reads off `surface_analysis`, or None when nothing was measured.
 

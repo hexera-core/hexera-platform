@@ -53,6 +53,11 @@ def _enqueue_geometry_measurement(source_id: str, owner_id: str, *, purpose: str
     enqueue(source_id, owner_id, purpose=purpose)
 
 
+def _enqueue_geometry_look(source_id: str, owner_id: str) -> None:
+    from meshpipeline.adapters.pipeline_execution.geometry_tasks import enqueue_look
+    enqueue_look(source_id, owner_id)
+
+
 def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
@@ -92,6 +97,9 @@ def install_adapters() -> None:
     # GEOMETRY_MEASUREMENT_ENABLED false nothing ever calls it, and binding it here means an
     # operator who does turn it on does not also have to redeploy a different composition.
     geometry_measurement.set_measurement_enqueuer(_enqueue_geometry_measurement)
+    # The same reasoning one gate further on: bound always, called only with GEOMETRY_VISION_ENABLED
+    # on AND a measurement row already written.
+    geometry_measurement.set_look_enqueuer(_enqueue_geometry_look)
     mesh_execution.set_mesh_executor(build_mesh_executor())
 
     # The narrow Redis-backed capabilities. Each is its own port: a capability can move off
