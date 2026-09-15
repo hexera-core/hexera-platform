@@ -468,14 +468,27 @@ cat <<NEXT
   Project     ${PROJECT_ID}  (${GCP_PROJECT_NUMBER})
   Console     https://console.cloud.google.com/home/dashboard?project=${PROJECT_ID}
 
-  DEPLOY INTO IT - from any branch, as often as you like:
+  DEPLOY INTO IT - from any branch, as often as you like.
+
+  THE FIRST DEPLOY IS TWO RUNS, and the second one is the console. A console has to be told the
+  origin of the API it proxies to, that origin is the API service's Cloud Run URL, and Google does
+  not assign one until the service exists - so on an environment where the API has never been
+  deployed there is nothing to tell it. Stage 2 refuses the run rather than letting the console
+  roll out pointing at nothing.
+
+    # 1. the API and the schema. Creates Cloud SQL and Memorystore: roughly half an hour.
+    gh workflow run deploy.yml --ref "\$(git branch --show-current)" \\
+      -f slug=${SLUG} -f images=true -f data=true -f migrate=true -f queue=true -f workers=true
+
+    # 2. the console, now that discovery can find the API's URL
+    gh workflow run deploy.yml --ref "\$(git branch --show-current)" \\
+      -f slug=${SLUG} -f console=true
+
+  After that it is one run for everything, and a fast one: leave \`data\` unticked and it is
+  images, schema and a rollout.
 
     gh workflow run deploy.yml --ref "\$(git branch --show-current)" \\
-      -f slug=${SLUG} -f images=true -f data=true -f storage=true -f migrate=true \\
-      -f queue=true -f workers=true -f console=true
-
-  The first run creates Cloud SQL and Memorystore and takes roughly half an hour. Every run
-  after that skips them - leave \`data\` unticked and it is images, schema and a rollout.
+      -f slug=${SLUG} -f images=true -f migrate=true -f console=true
 
   DESTROY IT when you are done with it:
 

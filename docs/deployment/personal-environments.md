@@ -11,9 +11,16 @@ and without breaking it for everybody else."
 
 ```bash
 make new-env SLUG=pranav                  # once, ~5 minutes
+
+# the first deploy is TWO runs - the console needs an API that exists. See section 4.
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f images=true -f data=true -f storage=true \
-  -f migrate=true -f queue=true -f workers=true -f console=true
+  -f slug=pranav -f images=true -f data=true -f migrate=true -f queue=true -f workers=true
+gh workflow run deploy.yml --ref "$(git branch --show-current)" -f slug=pranav -f console=true
+
+# every deploy after that: one run, and a fast one
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=pranav -f images=true -f migrate=true -f console=true
+
 make destroy-env SLUG=pranav              # when you are done
 ```
 
@@ -71,12 +78,24 @@ The real cost control is `make destroy-env`. An environment nobody is using shou
 
 ## 4. The first run, and every run after
 
-The **first** deploy creates Cloud SQL and Memorystore and takes roughly half an hour; most of
-that is Google creating the database instance. Tick `data` for it.
+**The first deploy is two runs, and the second one is the console.** A console has to be told the
+origin of the API it proxies to; that origin is the API service's Cloud Run URL; and Google does not
+assign one until the service exists. On an environment where the API has never been deployed there
+is nothing to tell it, so `validate-config.sh` refuses at stage 2 rather than let a console roll out
+pointing at nothing:
 
-**Every run after that should leave `data` unticked.** A typical iteration is
-`images,migrate,console` — build, move the schema if it moved, roll the services. Cloud SQL and
-Memorystore are reused untouched.
+> `CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not`
+
+Run one creates the API; run two deploys the console, by which time discovery can find its URL.
+This is not specific to personal environments — it is what any environment's *first* console deploy
+has to do. Shared dev simply passed that point long ago.
+
+Run one also creates Cloud SQL and Memorystore and takes roughly half an hour, most of it Google
+creating the database instance. Tick `data` for it.
+
+**Every run after that should leave `data` unticked**, and can do everything in one go. A typical
+iteration is `images,migrate,console` — build, move the schema if it moved, roll the services.
+Cloud SQL and Memorystore are reused untouched.
 
 Image builds are cached in Artifact Registry, and a brand-new environment reads shared dev's cache
 on its first build (`RELEASE_BUILD_CACHE_FROM` in `deploy.yml`), so it starts warm rather than
@@ -232,6 +251,7 @@ until the window closes.
 | `registered without an object-store access id` | The entry is `slug=number` with no `:accessId`. Re-record it by rerunning `make new-env SLUG=<slug>` — it is resumable and will not re-create what exists. |
 | `slug '<x>' is reserved` | You typed a shared environment's name. Leave the slug **empty** for shared dev; prod is reached only by a `v*` tag. |
 | A provider key is reported EMPTY | `seed-secrets.sh` could not read it from `hexera-dev`. Supply it: `DEEPINFRA_API_KEY=... make seed-secrets SLUG=<slug>`. |
+| `CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not` | The API has never been deployed here, so it has no URL for the console to proxy to. Deploy without `console` first — see section 4. |
 | `could not list the HMAC keys` | You ticked `storage` on a later run. Don't — the object store is established once, at creation (§6). |
 | The console renders sign-up but submitting fails | Identity Platform is enabled but not **initialised** in your project. One-time console action — see §5. |
 | The deploy authenticates as the wrong project | The register's project number is wrong. Check it against `gcloud projects describe hexera-dev-<slug>`. |

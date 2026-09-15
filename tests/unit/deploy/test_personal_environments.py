@@ -450,3 +450,25 @@ def test_a_personal_run_states_every_target_an_unattended_deploy_requires(tmp_pa
         assert key, f"deploy.sh now requires {var}, which this test does not know how to map"
         assert out.get(key), (
             f"a personal run states no {key}, so deploy.sh refuses to start: it requires {var}")
+
+
+def test_the_documented_first_deploy_does_not_select_the_console():
+    """A console is given the origin of the API it proxies to, that origin is the API service's
+    Cloud Run URL, and Google assigns one only once the service exists - so on an environment
+    where the API has never been deployed, validate-config.sh refuses at stage 2:
+
+        CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
+
+    That gate is correct and deliberate (see its own comment about stage 14 being twelve stages
+    away). What was wrong was the instructions: both this script's closing message and the guide
+    told people to tick `console` on the very first run, which cannot work. The first deploy is
+    two runs.
+    """
+    text = NEW_ENV.read_text(encoding="utf-8")
+    first = text[text.index("DEPLOY INTO IT"):]
+    first_cmd = first[:first.index("# 2.")]
+    assert "-f console=true" not in first_cmd, (
+        "new-env.sh tells the operator to deploy the console on the first run, which stage 2 "
+        "refuses - the API has no URL yet")
+    assert "# 2." in first and "console=true" in first, (
+        "new-env.sh must still show the second run that deploys the console")
