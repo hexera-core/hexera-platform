@@ -348,3 +348,35 @@ def test_the_deploy_passes_a_cache_to_the_release_job():
     assert "RELEASE_BUILD_CACHE" in body, (
         "nothing passes a cache reference to the release job, so every run still rebuilds the "
         "native toolchain from scratch on a fresh runner")
+
+
+# ---------------------------------------------------------------------------------------------
+# 7. lessons from the first real run
+
+
+def test_bootstrap_lets_an_explicit_project_outrank_the_ambient_one():
+    """`gcloud config get-value project` answers "what did this machine last `gcloud config set`",
+    which is a fact about a developer's shell rather than about what a run was asked to do.
+
+    Reading only that refused the first real `make new-env`: it provisions a project which is
+    deliberately NOT the one the operator's gcloud points at, and the guard rejected it naming a
+    project the caller had never mentioned. CI has no ambient config at all.
+    """
+    text = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
+    assert '_REQ_PROJECT="${GCP_PROJECT_ID:-}"' in text, (
+        "bootstrap-env.sh must capture an explicitly requested project BEFORE sourcing the env "
+        "file overwrites it - the region check beside it already does")
+    assert '_ambient_project="${_REQ_PROJECT:-' in text, (
+        "an explicit GCP_PROJECT_ID must outrank the ambient gcloud config, the same precedence "
+        "lib.sh's load_env applies")
+
+
+def test_new_env_hands_bootstrap_a_path_not_an_empty_file():
+    """bootstrap-env.sh branches on whether its target EXISTS. `mktemp` creates the file, so an
+    empty-but-present one sends it down the "reuse what is already configured" path, where it
+    sources nothing and discovers nothing."""
+    text = NEW_ENV.read_text(encoding="utf-8")
+    assert "mktemp -d" in text, (
+        "new-env.sh must use a temporary DIRECTORY; `mktemp` creates a file, and a present-but-"
+        "empty env file makes bootstrap-env.sh reuse a configuration that describes no project")
+    assert 'OBJECT_STORE_ENV="${OBJECT_STORE_DIR}/generated.env"' in text

@@ -267,8 +267,14 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
 # and the one at deploy/gcp/generated.env belongs to whatever environment this developer last
 # worked on - overwriting it as a side effect of creating a different environment is exactly the
 # class of mix-up lib.sh's project check exists to catch.
-OBJECT_STORE_ENV="$(mktemp)"
-trap 'rm -f "${OBJECT_STORE_ENV}"' EXIT
+# A temporary DIRECTORY, and the env file is a path INSIDE it that does not exist yet. `mktemp`
+# alone would create the file, and bootstrap-env.sh branches on whether its target EXISTS: an
+# empty-but-present file sends it down the "reuse what is already configured" path, where it
+# sources nothing, discovers nothing, and then measures the environment it was handed against a
+# file that describes no project at all.
+OBJECT_STORE_DIR="$(mktemp -d)"
+OBJECT_STORE_ENV="${OBJECT_STORE_DIR}/generated.env"
+trap 'rm -rf "${OBJECT_STORE_DIR}"' EXIT
 info "Discovering ${PROJECT_ID}"
 DEPLOY_ENV_FILE="${OBJECT_STORE_ENV}" bash "${DEPLOY_DIR}/scripts/bootstrap-env.sh" >/dev/null \
   || die "could not discover ${PROJECT_ID}. Every step above succeeded, so this is recoverable -

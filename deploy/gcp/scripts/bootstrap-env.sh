@@ -476,6 +476,7 @@ if [ -f "${ENV_FILE}" ] && [ "${FORCE}" -eq 0 ]; then
   info "Reusing existing ${ENV_FILE} (pass --force to regenerate)"
   # Capture what the OPERATOR explicitly requested BEFORE sourcing the file overwrites it.
   _REQ_REGION="${GCP_REGION:-}"
+  _REQ_PROJECT="${GCP_PROJECT_ID:-}"
   set -a
   # shellcheck disable=SC1090  # path is chosen at runtime (DEPLOY_ENV_FILE)
   . "${ENV_FILE}"
@@ -485,14 +486,26 @@ if [ -f "${ENV_FILE}" ] && [ "${FORCE}" -eq 0 ]; then
   # generated.env is BOUND to the project (and region) that produced it. If the active gcloud
   # project - or an explicitly requested region - has since changed, reusing this file would
   # silently deploy to the OLD target. Reject it and make the operator rediscover ON PURPOSE,
-  # rather than deploy somewhere they did not intend. `gcloud config get-value` is read from the
-  # live session, INDEPENDENT of the sourced file, so it is a true "what is active now" signal.
-  _ambient_project="$(gcloud config get-value project 2>/dev/null || true)"
+  # rather than deploy somewhere they did not intend.
+  #
+  # AN EXPLICIT REQUEST OUTRANKS THE AMBIENT CONFIG, and reading only the ambient one was a bug.
+  # `gcloud config get-value project` answers "which project did this machine last `gcloud config
+  # set`" - a fact about the developer's shell, not about what this run was asked to do. A caller
+  # that exports GCP_PROJECT_ID has SAID which project it means. That is how CI runs (no ambient
+  # config exists there at all) and how new-env.sh provisions a project which is deliberately NOT
+  # the one the operator's gcloud happens to point at - and reading the ambient value there refused
+  # a run whose target was never in doubt, in a message naming a project the caller never mentioned.
+  #
+  # This is the precedence lib.sh's load_env already applies, and the same treatment the region
+  # check below has always had through _REQ_REGION; the project simply never got it. The protection
+  # is unchanged when nothing was requested: with no GCP_PROJECT_ID the ambient project is still
+  # the signal, so a developer who switched projects and forgot is still caught.
+  _ambient_project="${_REQ_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}"
   if [ -n "${_ambient_project}" ] && [ "${_ambient_project}" != "(unset)" ] \
      && [ -n "${GCP_PROJECT_ID:-}" ] && [ "${_ambient_project}" != "${GCP_PROJECT_ID}" ]; then
-    die "${ENV_FILE} is bound to project '${GCP_PROJECT_ID}', but gcloud is now on '${_ambient_project}'.
+    die "${ENV_FILE} is bound to project '${GCP_PROJECT_ID}', but '${_ambient_project}' was requested.
    Refusing to deploy to a different project than the generated state was built for. Either:
-     - switch back:      gcloud config set project ${GCP_PROJECT_ID}
+     - point at the file's project:  GCP_PROJECT_ID=${GCP_PROJECT_ID}
      - or regenerate:    bash $(basename "${BASH_SOURCE[0]}") --force   (rediscovers for ${_ambient_project})"
   fi
   # Region: only an EXPLICIT request - the operator's own GCP_REGION (captured above) or a set

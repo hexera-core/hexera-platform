@@ -101,6 +101,16 @@ changes that.
 
 **A custom hostname.** See §2.
 
+**An initialised Identity Platform.** `new-env.sh` enables `identitytoolkit.googleapis.com`, which
+is *not* the same as Identity Platform being initialised — and there is no working `gcloud
+identity-platform` command to do it. Until you do it once, by hand, the console renders its sign-up
+page and **fails on submit**. It is a one-time console action per project:
+
+> https://console.cloud.google.com/customer-identity/providers?project=hexera-dev-&lt;slug&gt;
+
+Enable the Email/Password provider there. `new-env.sh` prints this reminder as it runs. You only
+need it if you intend to sign in to the console; the API and the mesh job do not care.
+
 ---
 
 ## 6. How it is put together, and why
@@ -223,6 +233,7 @@ until the window closes.
 | `slug '<x>' is reserved` | You typed a shared environment's name. Leave the slug **empty** for shared dev; prod is reached only by a `v*` tag. |
 | A provider key is reported EMPTY | `seed-secrets.sh` could not read it from `hexera-dev`. Supply it: `DEEPINFRA_API_KEY=... make seed-secrets SLUG=<slug>`. |
 | `could not list the HMAC keys` | You ticked `storage` on a later run. Don't — the object store is established once, at creation (§6). |
+| The console renders sign-up but submitting fails | Identity Platform is enabled but not **initialised** in your project. One-time console action — see §5. |
 | The deploy authenticates as the wrong project | The register's project number is wrong. Check it against `gcloud projects describe hexera-dev-<slug>`. |
 
 `new-env.sh` is **resumable**: every step tests for what it is about to create and skips it if
