@@ -290,3 +290,13 @@ Stages 1–2 deliver the provider choice even if 3–4 slip; stage 1 alone fixes
   narrowing it to a curated set per role is a product call, not a technical one.
 - Whether `visual_reviewer`'s unpriced Qwen model should be re-identified on DeepInfra's catalogue
   or simply replaced during stage 1.
+- **Stage 2 must validate a route's provider name at construction.** `settings/routes.py:104`
+  (`provider=_v("PROVIDER")`) and `:123` (the standby) accept any string. `BUILDER_PROVIDER=deepsek`,
+  or `anthropic` named before its adapter exists, passes hardened startup validation in full and
+  first surfaces at the model call as an unroutable-provider `KeyError` — which the error taxonomy
+  classifies as an application defect and retries with backoff, once per attempt. That is a
+  configuration typo diagnosed as a product bug: the exact misdiagnosis this design exists to
+  remove, reintroduced at a seam the design did not close. The registry to validate against is
+  `providers.LLM_PROVIDER_KEY_ENV` — the same one §8 credentials from and
+  `inference_overrides._supported_providers()` already refuses unknown providers with. It belongs
+  with the admin swap-validation in stage 2, where a provider name first becomes operator input.

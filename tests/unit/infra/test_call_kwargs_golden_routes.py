@@ -9,6 +9,8 @@
 # moves the expectation instead of silently invalidating it.
 from __future__ import annotations
 
+import pytest
+
 import meshpipeline.agents.builder.settings as bcfg
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.agents.reviewer.settings as rcfg
@@ -84,3 +86,19 @@ def test_summarizer_route_golden_kwargs():
         "max_tokens": provcfg.SEARCH_SUMMARIZER_MAX_TOKENS,
         "extra_body": dict(_THINKING_OFF),
     }
+
+
+# The five cases above name their routes, so a SIXTH role would never reach them - the header's
+# first guarantee was written for a test that enumerates, which cannot see what it does not name.
+# These two close that: one walks the registry itself, the other pins the refusal at the far end.
+def test_every_configured_route_has_a_sampling_spec():
+    from meshpipeline.adapters.model_inference.routes import all_routes
+    for role, route in sorted(all_routes().items()):
+        ck.spec_for(route.role)       # KeyError here means a role was added without a branch
+
+
+def test_an_unknown_role_is_refused_rather_than_defaulted():
+    # A role with no branch must FAIL, never fall back to some other role's sampling: silently
+    # meshing at another role's temperature is the kind of wrong answer nobody goes looking for.
+    with pytest.raises(KeyError, match="summariser"):
+        ck.spec_for("summariser")     # British spelling is not a role

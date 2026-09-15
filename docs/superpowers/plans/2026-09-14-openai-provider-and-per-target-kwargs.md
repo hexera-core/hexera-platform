@@ -97,7 +97,14 @@ and in `LLM_PROVIDER_KEY_ENV` at the end of the same file, add one entry:
 
 `LLM_PROVIDER_KEY_ENV` is read by `routes.missing_provider_credentials()` and by
 `inference_overrides._supported_providers()`, so this one line is what makes `openai` a provider an
-operator may name in `MODEL_PRICE_OVERRIDES`. No other registration exists or is needed.
+operator may name in `MODEL_PRICE_OVERRIDES`. It is not sufficient on its own:
+`missing_provider_credentials()` must resolve the credential's VALUE through the registry too —
+reading it by the name the registry supplies — rather than through a second hardcoded env-name-to-
+value map, which is a copy of the registry and reports every provider it was never updated for as
+uncredentialed. (This paragraph originally read "No other registration exists or is needed." That
+was wrong: a second map did exist in `missing_provider_credentials()`, the implementer followed
+this sentence faithfully, and an `openai` route was consequently always reported as missing its
+key and refused boot under `APP_ENV=prod`. Caught by the final whole-branch review and fixed.)
 
 - [ ] **Step 4: Declare them in the inventory**
 

@@ -39,6 +39,24 @@ def test_a_disabled_provider_is_never_required(monkeypatch):
     assert routecfg.missing_provider_credentials() == []
 
 
+def test_an_openai_profile_is_satisfied_by_its_own_key(monkeypatch):
+    # openai is SELECTABLE, so a profile may enable it. The credential must be resolved through
+    # LLM_PROVIDER_KEY_ENV itself - a second roster of env-name-to-value silently reports every
+    # provider it was never updated for as uncredentialed, and prod then refuses to boot.
+    monkeypatch.setattr(routecfg, "enabled_llm_providers", lambda: {"openai"})
+    monkeypatch.setattr(provcfg, "WEB_SEARCH_PROVIDER", "searxng")
+    monkeypatch.setattr(provcfg, "OPENAI_API_KEY", "sk-real")
+    assert routecfg.missing_provider_credentials() == []
+
+
+def test_an_openai_profile_without_its_key_is_reported(monkeypatch):
+    monkeypatch.setattr(routecfg, "enabled_llm_providers", lambda: {"openai"})
+    monkeypatch.setattr(provcfg, "WEB_SEARCH_PROVIDER", "searxng")
+    monkeypatch.setattr(provcfg, "OPENAI_API_KEY", "")
+    missing = routecfg.missing_provider_credentials()
+    assert any("openai" in m and "OPENAI_API_KEY" in m for m in missing)
+
+
 def test_tavily_key_is_required_only_when_tavily_search_is_enabled(monkeypatch):
     monkeypatch.setattr(provcfg, "DEEPINFRA_API_KEY", "x")
     monkeypatch.setattr(provcfg, "DEEPSEEK_API_KEY", "y")

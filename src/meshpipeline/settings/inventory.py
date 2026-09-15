@@ -244,6 +244,8 @@ INVENTORY: list[Group] = [
         EnvVar("DEEPSEEK_API_KEY", "", required=True, secret=True, help="real key from platform.deepseek.com"),
         EnvVar("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
         EnvVar("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+    ]),
+    Group("LLM: OpenAI (optional - no role targets it by default)", note="Selectable, not selected: any role's route may be pointed at the openai provider, and then this key is required. Leave both blank if none is.", vars=[
         EnvVar("OPENAI_API_KEY", "", secret=True, help="required only when a route resolves to the openai provider"),
         EnvVar("OPENAI_BASE_URL", "https://api.openai.com/v1", help="override only to reach an OpenAI-compatible gateway"),
     ]),

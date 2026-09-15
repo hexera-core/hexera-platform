@@ -16,7 +16,7 @@
 #
 # WHY METADATA CARRIES NAMES AND NOT VALUES. `gcloud compute instances describe` is readable by
 # anyone holding compute.instances.get, and so is the template. deploy/gcp/worker/startup.sh
-# already reads its four credentials BY NAME - metadata says `postgres-password-secret`, the
+# already reads its five credentials BY NAME - metadata says `postgres-password-secret`, the
 # instance fetches the value under its own identity, and the value only ever exists in a root-owned
 # file. This script writes the names that contract expects and nothing else; rotating a credential
 # is then a new secret version plus an instance roll, with no template to edit.
@@ -220,7 +220,7 @@ fi
 WORKER_SCOPES="${WORKER_SCOPES:-https://www.googleapis.com/auth/cloud-platform}"
 
 # 2) the credentials the instance will fetch, BY NAME. Each entry is
-#    `METADATA_KEY:ENV_VAR_HOLDING_THE_SECRET_NAME`, and the metadata keys are exactly the four
+#    `METADATA_KEY:ENV_VAR_HOLDING_THE_SECRET_NAME`, and the metadata keys are exactly the five
 #    deploy/gcp/worker/startup.sh already reads. A credential this deployment does not use has no
 #    key at all - startup.sh treats an absent key as "not used here" and carries on.
 WORKER_SECRET_METADATA=()

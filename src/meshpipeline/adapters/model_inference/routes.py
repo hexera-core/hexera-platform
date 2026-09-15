@@ -90,11 +90,14 @@ def enabled_llm_providers() -> set[str]:
 def missing_provider_credentials() -> list[str]:
     import meshpipeline.settings.providers as p
 
-    key_value = {"DEEPINFRA_API_KEY": p.DEEPINFRA_API_KEY, "DEEPSEEK_API_KEY": p.DEEPSEEK_API_KEY}
     missing: list[str] = []
     for prov in sorted(enabled_llm_providers()):
         env = p.LLM_PROVIDER_KEY_ENV.get(prov)
-        if env and not key_value.get(env, ""):
+        # The registry names the variable and the module holds its value, so the value is read
+        # BY that name. A second env-name-to-value map here is a copy of the registry that nobody
+        # updates when a provider is added, and it reports the new provider as uncredentialed
+        # however well it is configured - which is how `openai` could never start a route.
+        if env and not getattr(p, env, ""):
             missing.append(f"{prov} inference (set {env})")
     if p.WEB_SEARCH_ENABLED and p.WEB_SEARCH_PROVIDER == "tavily" and not p.TAVILY_API_KEY:
         missing.append("tavily web search (set TAVILY_API_KEY)")

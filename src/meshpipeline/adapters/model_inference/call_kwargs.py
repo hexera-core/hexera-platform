@@ -55,15 +55,22 @@ def spec_for(role: str) -> SamplingSpec:
                             temperature=pcfg.PLANNER_TEMPERATURE,
                             top_p=pcfg.PLANNER_TOP_P, min_p=pcfg.PLANNER_MIN_P, stream=True)
     if role == "visual_reviewer":
+        # temperature 0.7 / top_p 0.8 / top_k 20 are Qwen's OWN recommended parameters for the
+        # Thinking variant, not tuning this project arrived at. Changing them needs a source.
         return SamplingSpec(max_tokens=rcfg.REVIEWER_MAX_TOKENS,
                             temperature=rcfg.REVIEWER_TEMPERATURE,
                             top_p=rcfg.REVIEWER_TOP_P, top_k=rcfg.REVIEWER_TOP_K,
                             presence_penalty=rcfg.REVIEWER_PRESENCE_PENALTY, stream=True)
     if role == "intake":
+        # DeepSeek's API ACCEPTS min_p, but whether its backend actually applies it is
+        # provider-dependent (DeepInfra definitely does), so sending it is deliberate, not proven.
         return SamplingSpec(max_tokens=icfg.INTAKE_MAX_TOKENS,
                             temperature=icfg.INTAKE_TEMPERATURE,
                             min_p=icfg.INTAKE_MIN_P, thinking_off=True)
     if role == "summarizer":
+        # Reading provcfg rather than the role's own settings module is not an oversight:
+        # agent_tools.shared.settings defines SUMMARIZER_TEMPERATURE/SUMMARIZER_MAX_TOKENS from
+        # the SAME env names, so the two can never diverge and neither is the "real" one.
         return SamplingSpec(max_tokens=provcfg.SEARCH_SUMMARIZER_MAX_TOKENS,
                             temperature=provcfg.SEARCH_SUMMARIZER_TEMPERATURE,
                             thinking_off=True)
@@ -104,9 +111,13 @@ def _openai_native(target: RouteTarget, spec: SamplingSpec) -> dict:
     """OpenAI proper. Same wire format, STRICTER parameter set: an unknown top-level or
     extra_body field is a 400, not an ignored hint. So the vendor sampler extensions
     (min_p, top_k) and DeepSeek's thinking switch are dropped rather than forwarded."""
-    # NOTE: `max_tokens` is what Step 3 of the plan specifies. Whether the live API still
-    # accepts it or requires `max_completion_tokens` instead was never checked (no
-    # OPENAI_API_KEY was available) - this is UNVERIFIED against the real endpoint.
+    # UNVERIFIED against the real endpoint - the WHOLE parameter set below, not only the output
+    # cap. No OPENAI_API_KEY was available while this was written, so nothing here was exercised
+    # against the live API. Two open questions, of equal standing: whether `max_tokens` (what Step
+    # 3 of the plan specifies) is still accepted or has become `max_completion_tokens`, and
+    # whether `temperature` and `top_p` are accepted at all, since several OpenAI reasoning-class
+    # models reject a non-default `temperature` outright. Do not read the emphasis on the cap as
+    # evidence that the samplers were checked; none of it was.
     kw: dict = {"model": target.model, "max_tokens": spec.max_tokens}
     if spec.temperature is not None:
         kw["temperature"] = spec.temperature
