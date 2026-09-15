@@ -109,6 +109,19 @@ def test_a_balance_error_is_not_a_transient_provider_fault():
     assert providers.classify(exc) is FC.INSUFFICIENT_BALANCE
 
 
+def test_a_402_is_an_exhausted_account_not_an_application_defect():
+    """DeepSeek answers an empty account with 402 Payment Required, for which the OpenAI SDK
+    has no dedicated subclass - it raises a bare APIStatusError. Falling through to
+    APPLICATION_DEFECT logged 'unclassified APIStatusError' and made an out-of-credit account
+    read as a bug in this product, which is what sent an operator digging through Cloud Run
+    logs instead of the billing page."""
+    o = _openai()
+    resp = SimpleNamespace(status_code=402, headers={},
+                           request=SimpleNamespace(method="POST", url="/chat/completions"))
+    exc = o.APIStatusError("402 Payment Required", response=resp, body=None)
+    assert providers.classify(exc) is FC.INSUFFICIENT_BALANCE
+
+
 # end-to-end: exception -> the EXACT established marker (was TestCall*FailureReason)
 BUILDER_CASES = [
     ("rate_limit",  "<<API_FAILURE:builder_rate_limit>>"),

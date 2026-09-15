@@ -45,6 +45,13 @@ def classify(exc: BaseException) -> FailureCategory:
             # temporarily withdrawn is not. We cannot tell them apart from a 404, so we take the
             # conservative reading: do NOT fail over, surface the misconfiguration.
             return FailureCategory.INVALID_REQUEST
+        # 402 Payment Required is how DeepSeek answers an exhausted account. The SDK has no
+        # subclass for it, so it arrives as a bare APIStatusError and used to fall all the way
+        # through to APPLICATION_DEFECT below - logging "unclassified APIStatusError" and making
+        # an unpaid bill look like a bug in this product. Checked after every specific subclass
+        # above (each of which IS an APIStatusError) so this can only catch what they do not.
+        if isinstance(exc, openai.APIStatusError) and getattr(exc, "status_code", None) == 402:
+            return FailureCategory.INSUFFICIENT_BALANCE
  # transient: the provider is having a bad moment
         if isinstance(exc, openai.RateLimitError):
             return FailureCategory.RATE_LIMIT
