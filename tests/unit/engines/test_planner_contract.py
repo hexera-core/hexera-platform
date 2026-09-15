@@ -103,25 +103,32 @@ def test_planner_never_raises_it_returns_none_on_internal_error(monkeypatch, tmp
 # Config independence from the Builder
 def test_planner_call_kwargs_read_planner_settings_not_builder():
     import meshpipeline.engines.snappy.settings as pcfg
-    from meshpipeline.adapters.model_inference.deepinfra import BUILDER_CALL_KWARGS, _planner_call_kwargs
-    pk = _planner_call_kwargs()
-    assert pk is not BUILDER_CALL_KWARGS
+    from meshpipeline.adapters.model_inference.call_kwargs import kwargs_for, spec_for
+    target = pcfg.PLANNER_ROUTE.primary
+    pk = kwargs_for(target, spec_for("planner"))
+    # Nothing is shared with the builder any more - each role's kwargs are built fresh, so the
+    # builder's call can neither alias nor mutate the planner's, even on the same target.
+    bk = kwargs_for(target, spec_for("builder"))
+    assert pk is not bk and pk["extra_body"] is not bk["extra_body"]
     assert set(pk) >= {"model", "temperature", "max_tokens", "top_p", "extra_body"}
     # the VALUES are the planner's own, sourced from PLANNER_* (a builder-temp mutation would break this)
     assert pk["temperature"] == pcfg.PLANNER_TEMPERATURE
     assert pk["max_tokens"] == pcfg.PLANNER_MAX_TOKENS
     assert pk["top_p"] == pcfg.PLANNER_TOP_P
     assert pk["extra_body"]["min_p"] == pcfg.PLANNER_MIN_P
-    assert pk["model"] == pcfg.PLANNER_MODEL
+    # `model` comes from the RESOLVED TARGET now, not from PLANNER_MODEL: the route says which
+    # model serves the planner, and PLANNER_MODEL only seeds that route's primary.
+    assert pk["model"] == target.model
 
 
 def test_planner_kwargs_follow_a_distinct_planner_temperature(monkeypatch):
     import meshpipeline.engines.snappy.settings as pcfg
-    from meshpipeline.adapters.model_inference.deepinfra import _planner_call_kwargs
+    from meshpipeline.adapters.model_inference.call_kwargs import kwargs_for, spec_for
     monkeypatch.setenv("PLANNER_TEMPERATURE", "0.71")
     importlib.reload(pcfg)
     try:
-        assert _planner_call_kwargs()["temperature"] == pytest.approx(0.71)
+        kw = kwargs_for(pcfg.PLANNER_ROUTE.primary, spec_for("planner"))
+        assert kw["temperature"] == pytest.approx(0.71)
     finally:
         monkeypatch.delenv("PLANNER_TEMPERATURE", raising=False)
         importlib.reload(pcfg)

@@ -64,10 +64,11 @@ def _usage_from(response) -> Usage:
     )
 
 
-def _for_target(base: dict, target: RouteTarget) -> dict:
-    kw = dict(base)
-    kw["model"] = target.model
-    return kw
+def _for_target(role: str, target: RouteTarget) -> dict:
+    # The sampling parameters a call may carry depend on WHO IS SERVING IT, not only on the
+    # role. Built per attempt, because a retry may land on a different target than the first try.
+    from meshpipeline.adapters.model_inference.call_kwargs import kwargs_for, spec_for
+    return kwargs_for(target, spec_for(role))
 
 
 async def _streamed(target: RouteTarget, messages: list, call_kw: dict, label: str, lf: dict,
@@ -150,17 +151,11 @@ async def _run_glm_stream(route, label, messages: Conversation,
                           tools: list[ToolDefinition] | None, tool_choice: ToolChoice,
                           job_id: str, user_id: str,
                           parallel_tool_calls: ParallelToolCalls = None,
-                          *, call_kwargs: dict | None = None,
-                          on_reasoning: ReasoningSink = None) -> ModelRoundResult:
-    from meshpipeline.adapters.model_inference.deepinfra import BUILDER_CALL_KWARGS
+                          *, on_reasoning: ReasoningSink = None) -> ModelRoundResult:
     from meshpipeline.adapters.model_inference.tracing import langfuse_kwargs
 
-    # The base sampling kwargs are role-specific. The builder uses BUILDER_CALL_KWARGS; the
-    # planner passes its OWN PLANNER kwargs, so a BUILDER_* change never moves the planner.
-    _base = BUILDER_CALL_KWARGS if call_kwargs is None else call_kwargs
-
     async def _invoke(target: RouteTarget):
-        call_kw = _with_tool_kwargs(_for_target(_base, target), tools, tool_choice,
+        call_kw = _with_tool_kwargs(_for_target(route.role, target), tools, tool_choice,
                                     parallel_tool_calls)
         response = await _streamed(
             target, messages, call_kw, f"{label}:{job_id[:8]}",
@@ -189,11 +184,9 @@ async def call_planner_model(messages: Conversation, tools: list[ToolDefinition]
                              user_id: str = "",
                              parallel_tool_calls: ParallelToolCalls = None, on_reasoning: ReasoningSink = None) -> ModelRoundResult:
     import meshpipeline.engines.snappy.settings as pcfg
-    from meshpipeline.adapters.model_inference.deepinfra import _planner_call_kwargs
     return await _run_glm_stream(pcfg.PLANNER_ROUTE, "Planner",
                                  messages, tools, tool_choice, job_id, user_id,
-                                 parallel_tool_calls,
-                                 call_kwargs=_planner_call_kwargs(), on_reasoning=on_reasoning)
+                                 parallel_tool_calls, on_reasoning=on_reasoning)
 
 
 # reviewers (streaming, tools)
@@ -201,13 +194,12 @@ async def _run_reviewer(route, label, messages: Conversation, tools: list[ToolDe
                         job_id: str, user_id: str,
                         parallel_tool_calls: ParallelToolCalls = None,
                         on_reasoning: ReasoningSink = None) -> ModelRoundResult:
-    from meshpipeline.adapters.model_inference.deepinfra import REVIEWER_CALL_KWARGS
     from meshpipeline.adapters.model_inference.tracing import langfuse_kwargs
 
     async def _invoke(target: RouteTarget):
         # tool_choice stays "auto" for the reviewer: whether this model honours a FORCED
         # function choice is unverified, so nothing depends on it yet.
-        call_kw = _with_tool_kwargs(_for_target(REVIEWER_CALL_KWARGS, target), tools, "auto",
+        call_kw = _with_tool_kwargs(_for_target(route.role, target), tools, "auto",
                                     parallel_tool_calls)
         response = await _streamed(
             target, messages, call_kw, f"{label}:{job_id[:8]}",
@@ -231,13 +223,13 @@ async def call_reviewer_with_tools(messages: Conversation, tools: list[ToolDefin
 
 
 # intake (non-streaming)
-async def _run_chat(route, base_kwargs, label, messages: Conversation, job_id: str,
+async def _run_chat(route, label, messages: Conversation, job_id: str,
                     user_id: str, tools: list[ToolDefinition] | None = None,
                     parallel_tool_calls: ParallelToolCalls = None) -> ModelRoundResult:
     from meshpipeline.adapters.model_inference.tracing import langfuse_kwargs
 
     async def _invoke(target: RouteTarget):
-        call_kw = _with_tool_kwargs(_for_target(base_kwargs, target), tools, "auto",
+        call_kw = _with_tool_kwargs(_for_target(route.role, target), tools, "auto",
                                     parallel_tool_calls)
         response = await _chat(
             target, messages, call_kw,
@@ -252,18 +244,15 @@ async def _run_chat(route, base_kwargs, label, messages: Conversation, job_id: s
 async def call_intake_model(messages: Conversation, job_id: str = "", user_id: str = "",
                             name: str = "Intake",
                             tools: list[ToolDefinition] | None = None) -> ModelRoundResult:
-    from meshpipeline.adapters.model_inference.deepseek import INTAKE_CALL_KWARGS
-    return await _run_chat(icfg.INTAKE_ROUTE, INTAKE_CALL_KWARGS, name,
-                           messages, job_id, user_id, tools=tools)
+    return await _run_chat(icfg.INTAKE_ROUTE, name, messages, job_id, user_id, tools=tools)
 
 
 # search summarizer (non-streaming; respond-or-RAISE)
 async def call_summarizer_model(messages: Conversation, job_id: str = "") -> ModelRoundResult:
     import meshpipeline.agent_tools.shared.settings as scfg
-    from meshpipeline.adapters.model_inference.deepseek import SUMMARIZER_CALL_KWARGS
 
     async def _invoke(target: RouteTarget):
-        call_kw = _for_target(SUMMARIZER_CALL_KWARGS, target)
+        call_kw = _for_target(scfg.SUMMARIZER_ROUTE.role, target)
         response = await _chat(target, messages, call_kw, {})
         if not (response and response.choices):
             raise _EmptyResponse("summarizer: no choices")
