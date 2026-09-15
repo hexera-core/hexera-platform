@@ -52,6 +52,25 @@ if has "run services describe"; then
   exit "${FAKE_SVC_EXISTS_RC:-1}"
 fi
 if has "run services get-iam-policy"; then printf '%s\n' "${FAKE_POLICY_MEMBERS:-}"; exit 0; fi
+# The fleet roll sets updatePolicy.minReadySec through the Compute API, because gcloud exposes no
+# flag for it on any track. That path needs a token; without one the script refuses to start a roll
+# under a policy it did not choose, which is correct behaviour and not what these tests exercise.
+if has "auth print-access-token"; then printf 'fake-token\n'; exit 0; fi
+exit 0
+"""
+
+# Fake curl: the Compute API read-then-PATCH that applies updatePolicy.minReadySec. The GET returns
+# a policy with the other knobs already on it, so a PATCH that replaced the object instead of
+# merging into it would be visible here as a lost field rather than passing quietly.
+_FAKE_CURL = r"""#!/usr/bin/env bash
+STATE="${FAKE_GCP_STATE:?}"; mkdir -p "${STATE}"
+printf '%s\n' "$*" >> "${STATE}/curl.log"
+case "$*" in
+  *"-X PATCH"*) exit 0 ;;
+  *instanceGroupManagers*)
+    printf '%s' '{"updatePolicy":{"type":"PROACTIVE","minimalAction":"REPLACE","maxSurge":{"fixed":1},"maxUnavailable":{"fixed":0},"replacementMethod":"SUBSTITUTE"}}'
+    exit 0 ;;
+esac
 exit 0
 """
 
@@ -88,6 +107,8 @@ def run(tmp_path):
     bin_dir.mkdir()
     (bin_dir / "gcloud").write_text(_FAKE_GCLOUD, encoding="utf-8")
     (bin_dir / "gcloud").chmod(0o755)
+    (bin_dir / "curl").write_text(_FAKE_CURL, encoding="utf-8")
+    (bin_dir / "curl").chmod(0o755)
 
     counter = {"n": 0}
 
