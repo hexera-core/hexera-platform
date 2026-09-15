@@ -234,8 +234,8 @@ GCP_MESH_BUCKET=${MESH_BUCKET}
 MESH_SERVICE_ACCOUNT=${MESH_SA}
 
 # mesh job sizing
-MESH_CPU=4
-MESH_MEMORY=8Gi
+MESH_CPU=8
+MESH_MEMORY=16Gi
 MESH_TIMEOUT_SECONDS=14400
 
 # The APPLICATION image, written by scripts/promote-release.sh as the validated digest. The API

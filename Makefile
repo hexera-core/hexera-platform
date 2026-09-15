@@ -503,6 +503,10 @@ wheel: ##! Build + validate the distribution wheel, then remove all local build 
 clean-workspaces: ##! Remove all job workspaces (failed jobs) from the worker
 	docker compose exec worker find /srv/workspaces -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 
+gcloud-auth:
+	gcloud auth login
+	gcloud auth application-default login
+
 # Help
 
 help: ## Show the common developer commands
