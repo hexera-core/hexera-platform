@@ -292,3 +292,18 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
 - With DeepSeek abandoned and DeepInfra unused, OpenAI becomes a single point of failure with no
   funded standby — structurally the position that caused this outage. Stage 3 of the parent spec
   (per-role standby) is the answer and is not yet built.
+- The dropped-sampling WARNING in `responses_request._warn_on_dropped_sampling` is keyed by
+  `target.label` (`provider/model`), not by role, because `build_request`'s signature carries no
+  role. `ROUTE_MATRIX` already has `builder` and `planner` on the identical
+  `deepinfra`/`zai-org/GLM-5.2` pair with identical tuned values, so the day two roles share an
+  `openai` model, one WARNING will not tell an operator that a *second* role's tuning was also
+  discarded — it will look like the field was warned about once and is now fine. Not fixed here;
+  fixing it means threading a role name into `build_request`, which task 5 deliberately does not do.
+- A `max_output_tokens` truncation on a streamed Responses call surfaces as `_EmptyResponse` →
+  `FailureCategory.EMPTY_RESPONSE` and burns a retry, rather than reporting
+  `finish_reason="incomplete"`: `consume_responses_stream` (protocols/responses_stream.py) only
+  acts on `response.completed`, so a stream that ends via `response.incomplete` or
+  `response.failed` falls through to "no response.completed seen" and raises. That is the safe
+  fallthrough for what was actually probed, but it means retry budget is spent on a request that
+  in fact answered, just short. Whoever tunes retries later should know this before treating an
+  EMPTY_RESPONSE burst on `openai` as a liveness problem instead of an output-cap problem.

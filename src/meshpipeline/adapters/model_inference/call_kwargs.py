@@ -107,34 +107,17 @@ def _openai_wire(target: RouteTarget, spec: SamplingSpec) -> dict:
     return kw
 
 
-def _openai_native(target: RouteTarget, spec: SamplingSpec) -> dict:
-    """OpenAI proper. Same wire format, STRICTER parameter set: an unknown top-level or
-    extra_body field is a 400, not an ignored hint. So the vendor sampler extensions
-    (min_p, top_k) and DeepSeek's thinking switch are dropped rather than forwarded."""
-    # UNVERIFIED against the real endpoint - the WHOLE parameter set below, not only the output
-    # cap. No OPENAI_API_KEY was available while this was written, so nothing here was exercised
-    # against the live API. Two open questions, of equal standing: whether `max_tokens` (what Step
-    # 3 of the plan specifies) is still accepted or has become `max_completion_tokens`, and
-    # whether `temperature` and `top_p` are accepted at all, since several OpenAI reasoning-class
-    # models reject a non-default `temperature` outright. Do not read the emphasis on the cap as
-    # evidence that the samplers were checked; none of it was.
-    kw: dict = {"model": target.model, "max_tokens": spec.max_tokens}
-    if spec.temperature is not None:
-        kw["temperature"] = spec.temperature
-    if spec.top_p is not None:
-        kw["top_p"] = spec.top_p
-    if spec.presence_penalty is not None:
-        kw["presence_penalty"] = spec.presence_penalty
-    if spec.stream:
-        kw["stream"] = True
-        kw["stream_options"] = {"include_usage": True}
-    return kw
-
-
+# `openai` is DELIBERATELY ABSENT from _BUILDERS. It used to map to `_openai_native`, a
+# parameter-only translation written before the Responses API's shape was known - and it guessed
+# wrong (design doc §1): OpenAI does not take a chat-completions-shaped kwargs dict at all, it
+# takes a differently-structured Responses request (system prompt as top-level `instructions`,
+# `max_output_tokens` not `max_tokens`, tools flattened, no `stream_options`). That translation
+# now lives in protocols/responses_request.py:build_request, called by protocols/responses.py
+# per attempt exactly as ChatCompletions calls kwargs_for() - so `openai` never reaches this
+# function at all. Leaving a second, half-right builder here would invite someone to call it.
 _BUILDERS = {
     "deepinfra": _openai_wire,
     "deepseek": _openai_wire,
-    "openai": _openai_native,
 }
 
 

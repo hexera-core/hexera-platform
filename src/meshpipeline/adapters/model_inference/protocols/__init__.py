@@ -59,15 +59,14 @@ def _registry() -> dict[str, WireProtocol]:
     # implementations importing each other; and asking "who speaks what" would drag in every
     # protocol's SDK-facing helpers whether or not the caller's provider speaks that protocol.
     from meshpipeline.adapters.model_inference.protocols.chat_completions import ChatCompletions
+    from meshpipeline.adapters.model_inference.protocols.responses import Responses
     chat = ChatCompletions()
-    # `openai` is DELIBERATELY ABSENT until the Responses protocol is registered. A route pointed
-    # at it resolves no protocol, so protocol_for() raises KeyError and router._classify reports a
-    # terminal APPLICATION_DEFECT: no retry, no failover, and the message names what does exist.
-    # That loud refusal is the intended state. The alternative - registering ChatCompletions for
-    # openai because it would "probably work" - sends a chat-shaped request to an API whose
-    # request and response are different on every axis the product uses, which fails later, more
-    # confusingly, and only after the tokens are paid for.
-    return {"deepinfra": chat, "deepseek": chat}
+    # `openai` now resolves to its own protocol rather than being absent. Registering
+    # ChatCompletions for it - because it would "probably work" - would send a chat-shaped
+    # request to an API whose request and response are different on every axis the product uses,
+    # which fails later, more confusingly, and only after the tokens are paid for. No role is
+    # routed at "openai" yet (ROUTE_MATRIX is unchanged); this only makes the provider callable.
+    return {"deepinfra": chat, "deepseek": chat, "openai": Responses()}
 
 
 _CACHE: dict[str, WireProtocol] | None = None
