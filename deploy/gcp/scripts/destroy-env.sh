@@ -160,7 +160,7 @@ if [ -n "${SLUG}" ]; then
     _current="$(gh variable get "${VAR_NAME}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true)"
     _remaining="$(printf '%s' "${_current}" | tr ', ' '\n' | grep -v "^${SLUG}=" | grep . || true)"
     if printf '%s' "${_remaining}" | gh variable set "${VAR_NAME}" \
-         --repo "${GITHUB_REPOSITORY}" --body-file - 2>/dev/null; then
+         --repo "${GITHUB_REPOSITORY}" 2>/dev/null; then
       _deregistered=1
       log "${VAR_NAME}   ${SLUG} removed"
     fi

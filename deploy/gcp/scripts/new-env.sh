@@ -272,6 +272,18 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
 # empty-but-present file sends it down the "reuse what is already configured" path, where it
 # sources nothing, discovers nothing, and then measures the environment it was handed against a
 # file that describes no project at all.
+VAR_NAME="HEXERA_PERSONAL_ENVS"
+
+# Defined here rather than beside its other caller further down, because the object-store step
+# below CALLS it: a shell function has to be defined before the line that calls it runs, not
+# merely somewhere in the same file.
+register_entry() {  # register_entry - this slug's `projectNumber:accessId`, or nothing
+  command -v gh >/dev/null 2>&1 || return 0
+  gh auth status >/dev/null 2>&1 || return 0
+  gh variable get "${VAR_NAME}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null \
+    | tr ', ' '\n' | sed -n "s/^${SLUG}=//p" | head -1
+}
+
 OBJECT_STORE_DIR="$(mktemp -d)"
 OBJECT_STORE_ENV="${OBJECT_STORE_DIR}/generated.env"
 trap 'rm -rf "${OBJECT_STORE_DIR}"' EXIT
@@ -295,6 +307,25 @@ info "Artifact Registry - where this environment's images are pushed"
 DEPLOY_ENV_FILE="${OBJECT_STORE_ENV}" bash "${DEPLOY_DIR}/scripts/create-artifact-registry.sh" \
   || die "could not create the Artifact Registry repository in ${PROJECT_ID}.
    Without it the first deploy fails when it pushes. Rerun this script; it is resumable."
+
+# RERUNNING THIS SCRIPT MUST NOT MINT A SECOND OBJECT-STORE KEY, and without the four lines below
+# it does - which is not a hypothetical, it is what the first rerun of this script actually did.
+#
+# create-object-storage.sh decides "reuse or mint" by testing the MINIO_ACCESS_KEY recorded in the
+# deployment env against the live ACTIVE keys. This script deliberately hands it a FRESH temporary
+# env every time (see above - so that it never touches the developer's own generated.env), and a
+# fresh env records nothing. So every rerun looked like a first run, minted another key, and walked
+# the account toward Google's limit of five - at which point the stage stops dead and an owner has
+# to go and retire keys by hand.
+#
+# The register is the memory this script has. Seeding the recorded id from it before the stage runs
+# is what makes "rerun it, it is resumable" true of the object store as well as of everything else.
+_prev_entry="$(register_entry)"
+_prev_access="${_prev_entry#*:}"
+if [ -n "${_prev_entry}" ] && [ "${_prev_access}" != "${_prev_entry}" ] && [ -n "${_prev_access}" ]; then
+  printf 'MINIO_ACCESS_KEY=%s\n' "${_prev_access}" >> "${OBJECT_STORE_ENV}"
+  log "object store    reusing the registered access id (this environment already has a key)"
+fi
 
 info "Object store: bucket, identity and the HMAC key this environment authenticates with"
 DEPLOY_ENV_FILE="${OBJECT_STORE_ENV}" bash "${DEPLOY_DIR}/scripts/create-object-storage.sh" \
@@ -394,7 +425,6 @@ log "worker settings ${WORKER_ENV_URI}"
 # perfectly able to create a project, and failing the whole run at this point would mean tearing
 # down a finished environment over a CLI that is not installed. The command to run by hand is
 # printed instead.
-VAR_NAME="HEXERA_PERSONAL_ENVS"
 register_environment() {
   local current merged
   command -v gh >/dev/null 2>&1 || return 1
@@ -407,7 +437,7 @@ register_environment() {
   merged="$(printf '%s' "${current}" | tr ', ' '\n' | grep -v "^${SLUG}=" | grep . || true)"
   merged="$(printf '%s\n%s=%s:%s\n' "${merged}" "${SLUG}" "${GCP_PROJECT_NUMBER}" \
               "${MINIO_ACCESS_KEY}" | grep . | sort)"
-  printf '%s' "${merged}" | gh variable set "${VAR_NAME}" --repo "${GITHUB_REPOSITORY}" --body-file - 2>/dev/null
+  printf '%s' "${merged}" | gh variable set "${VAR_NAME}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null
 }
 info "Registering ${SLUG} so the deploy workflow can resolve it"
 if register_environment; then

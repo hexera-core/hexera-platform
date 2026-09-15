@@ -265,7 +265,15 @@ def test_creating_an_environment_is_not_something_ci_can_do():
     federated deploy identity is deliberately built without any of them, and new-env.sh refuses
     to run as a service account rather than failing obscurely partway through."""
     text = NEW_ENV.read_text(encoding="utf-8")
-    assert "gserviceaccount.com" in text and "owner's acts" in text
+    # Asserted on the REFUSAL, not on the service-account domain that appears in it. Testing for
+    # the domain read as a URL-sanitisation check to CodeQL (py/incomplete-url-substring-
+    # sanitization, high) - and it was the weaker assertion anyway: the domain is an incidental
+    # token that appears elsewhere in this script, whereas this message only exists on the path
+    # that turns a service-account caller away.
+    assert "this is running as the service account" in text, (
+        "new-env.sh must refuse to run as a service account - creating a project, minting an "
+        "identity and seeding secret values are authorities the deploy identity is built without")
+    assert "owner's acts" in text
 
 
 def test_the_project_display_name_uses_only_characters_google_accepts():
@@ -380,3 +388,38 @@ def test_new_env_hands_bootstrap_a_path_not_an_empty_file():
         "new-env.sh must use a temporary DIRECTORY; `mktemp` creates a file, and a present-but-"
         "empty env file makes bootstrap-env.sh reuse a configuration that describes no project")
     assert 'OBJECT_STORE_ENV="${OBJECT_STORE_DIR}/generated.env"' in text
+
+
+def test_rerunning_creation_reuses_the_object_store_key():
+    """The first rerun of `make new-env` minted a SECOND HMAC key, walking the account toward
+    Google's limit of five - past which the storage stage stops dead and an owner has to retire
+    keys by hand.
+
+    create-object-storage.sh decides "reuse or mint" from the MINIO_ACCESS_KEY recorded in the
+    deployment env, and new-env.sh deliberately hands it a FRESH temporary env each run (so it
+    never touches the developer's own generated.env). A fresh env records nothing, so every rerun
+    looked like a first run. The register is the only memory this script has of a key it already
+    minted, so it seeds the recorded id from there before the stage runs.
+    """
+    text = NEW_ENV.read_text(encoding="utf-8")
+    assert "register_entry" in text and "MINIO_ACCESS_KEY=%s" in text, (
+        "new-env.sh must seed the recorded access id from the register before running the object-"
+        "store stage, or every rerun mints another HMAC key")
+    # A shell function must be DEFINED before the line that calls it runs, not merely somewhere in
+    # the file - getting this wrong failed with `register_entry: command not found` mid-run.
+    assert text.index("register_entry()") < text.index("$(register_entry)"), (
+        "register_entry is defined after the line that calls it")
+
+
+def test_the_generated_env_heredoc_does_not_execute_its_own_prose():
+    """`emit_env` writes generated.env from an UNQUOTED heredoc, because it interpolates real
+    values. Its prose quotes shell snippets in backticks - which an unquoted heredoc runs as
+    command substitution. The run printed `default: command not found` and
+    `make: No rule to make target 'bootstrap'`, and the comments it wrote were the OUTPUT of
+    those commands rather than the text."""
+    text = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
+    body = text[text.index("emit_env() {"):text.index("\nENVFILE\n}")]
+    unescaped = [ln for ln in body.splitlines()
+                 if "`" in ln.replace("\\`", "")]
+    assert not unescaped, (
+        f"unescaped backticks inside emit_env's heredoc execute as commands: {unescaped[:3]}")
