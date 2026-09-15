@@ -231,14 +231,14 @@ def measure_passage(points, faces, radius) -> dict:
 
 def _passage_field(gmsh, ws, h: float, diag: float) -> tuple:
     """For an internal-flow fluid domain: mesh once coarsely at the clamp size h, measure the
-    local passage radius on that boundary (engines/vmtk/lumen_staging.local_radius: half the
+    local passage radius on that boundary (engines/radius_field.local_radius: half the
     inward chord to the opposite wall), and return (callback, surface_points, radius, note).
     Anything missing (no flow_topology, no pyvista, a surface the chord cannot read) returns
     (None, None, None, why) and the clamp sizing stands - the gate still measures the result."""
     if _read_flow_topology(ws) != "internal":
         return None, None, None, "not an internal-flow domain"
     try:
-        from meshpipeline.engines.vmtk.lumen_staging import local_radius
+        from meshpipeline.engines.radius_field import local_radius
     except Exception as exc:  # noqa: BLE001 - standalone use without pyvista
         return None, None, None, f"local radius unavailable ({type(exc).__name__})"
     try:
