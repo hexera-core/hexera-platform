@@ -233,10 +233,12 @@ GCP_MESH_BUCKET=${MESH_BUCKET}
 # the mesh runtime identity (ID; email derived <id>@<project>.iam.gserviceaccount.com)
 MESH_SERVICE_ACCOUNT=${MESH_SA}
 
-# mesh job sizing
-MESH_CPU=4
-MESH_MEMORY=8Gi
-MESH_TIMEOUT_SECONDS=14400
+# mesh job sizing. 8 vCPU / 16 GiB is what the engine assessments ran on (a 5 to 7 M-hex cfMesh
+# fill or a 4 M-tet VMTK fill needs more than 8 GiB); a deploy may override any of the three
+# from its environment. generated.prod.env pins prod's own values and is not affected.
+MESH_CPU=${MESH_CPU:-8}
+MESH_MEMORY=${MESH_MEMORY:-16Gi}
+MESH_TIMEOUT_SECONDS=${MESH_TIMEOUT_SECONDS:-14400}
 
 # The APPLICATION image, written by scripts/promote-release.sh as the validated digest. The API
 # runs it; the migration job and the queue-depth publisher run application code from the same bytes.
