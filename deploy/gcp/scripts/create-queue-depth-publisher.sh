@@ -181,22 +181,29 @@ FILTER="${FILTER} AND resource.labels.location = \"${WORKER_MIG_ZONE}\""
 FILTER="${FILTER} AND resource.labels.namespace = \"${DEPLOYMENT_ID}\""
 FILTER="${FILTER} AND resource.labels.job = \"queue-depth\""
 FILTER="${FILTER} AND resource.labels.task_id = \"${QUEUE_NAME}\""
-# The live numbers, if there are any. Read from the autoscaler the group actually points at -
-# `status.autoscaler` is the authoritative link, rather than assuming the autoscaler shares the
-# group's name.
-AUTOSCALER_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
-  --zone "${WORKER_MIG_ZONE}" --format='value(status.autoscaler)' 2>/dev/null || true)"
+# The live numbers, if there are any. Read OFF THE GROUP, not from `compute autoscalers describe`.
+#
+# THAT COMMAND NO LONGER EXISTS. `gcloud compute autoscalers` is absent from GA, beta and alpha
+# (582.0.0 answers `Invalid choice: 'autoscalers'`), so every read of it failed into the `|| true`
+# below and returned an empty string. LIVE_MIN..LIVE_ASSIGNMENT were therefore ALWAYS empty, the
+# fallbacks on the next lines handed this deployment's env values to `set-autoscaling`, and because
+# set-autoscaling replaces the whole policy the floor, ceiling, cooldown and jobs-per-instance the
+# admin console owns were silently overwritten on every run - the precise outcome the paragraph
+# above says must not happen. It was invisible because the fallbacks make a total failure to read
+# look exactly like "there is no autoscaler yet".
+#
+# `instance-groups managed describe` annotates the group with the autoscaler that TARGETS it (the
+# same link `status.autoscaler` names), so this still assumes nothing about the autoscaler's name.
+as_field() {
+  gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" \
+    --format="value($1)" 2>/dev/null || true
+}
 LIVE_MIN=""; LIVE_MAX=""; LIVE_COOLDOWN=""; LIVE_ASSIGNMENT=""
-if [ -n "${AUTOSCALER_URL}" ]; then
-  AUTOSCALER_NAME="${AUTOSCALER_URL##*/}"
-  as_field() {
-    gc compute autoscalers describe "${AUTOSCALER_NAME}" --zone "${WORKER_MIG_ZONE}" \
-      --format="value($1)" 2>/dev/null || true
-  }
-  LIVE_MIN="$(as_field autoscalingPolicy.minNumReplicas)"
-  LIVE_MAX="$(as_field autoscalingPolicy.maxNumReplicas)"
-  LIVE_COOLDOWN="$(as_field autoscalingPolicy.coolDownPeriodSec)"
-  LIVE_ASSIGNMENT="$(as_field 'autoscalingPolicy.customMetricUtilizations[0].singleInstanceAssignment')"
+if [ -n "$(as_field autoscaler.name)" ]; then
+  LIVE_MIN="$(as_field autoscaler.autoscalingPolicy.minNumReplicas)"
+  LIVE_MAX="$(as_field autoscaler.autoscalingPolicy.maxNumReplicas)"
+  LIVE_COOLDOWN="$(as_field autoscaler.autoscalingPolicy.coolDownPeriodSec)"
+  LIVE_ASSIGNMENT="$(as_field 'autoscaler.autoscalingPolicy.customMetricUtilizations[0].singleInstanceAssignment')"
 fi
 
 AS_MIN="${LIVE_MIN:-${WORKER_MIG_MIN_REPLICAS:-1}}"

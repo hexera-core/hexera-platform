@@ -1028,6 +1028,18 @@ jobs:
       # deploy.sh is a gcloud program; the auth step above only produces the credentials it uses.
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
 
+      # BEFORE ANYTHING IS MUTATED: does the gcloud that was just installed still accept what the
+      # deploy scripts pass it? gcloud removes flags, a removed flag is not an error in a shell
+      # script, and the runner installs the LATEST CLI on every run - so this is the one place the
+      # question can be asked against the exact binary that will run the deploy.
+      #
+      # It is here and not in CI because only a deploy has a gcloud. `--min-ready` aborted v0.1.5 at
+      # stage 18 of 19, with the images built and the schema already migrated; `--limit` on
+      # `storage ls` and the removed `compute autoscalers` group failed SILENTLY into `|| true` and
+      # changed what the deploy did. Thirteen seconds of `--help` ahead of a two-hour job.
+      - name: The deploy's gcloud arguments still exist (devtools/quality/check_gcloud_flags.py)
+        run: python3 devtools/quality/check_gcloud_flags.py
+
       # THE ONLY CLOUD MUTATION IN THIS WORKFLOW. deploy.sh is interactive by default - it prints a
       # plan and makes the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its
       # documented automation path, which then requires every ambiguous target pinned explicitly

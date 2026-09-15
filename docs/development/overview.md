@@ -246,16 +246,17 @@ software, never anything a user's job depends on. One directory per capability; 
 | group | holds | run by |
 |---|---|---|
 | `env/` | `setup.sh`, `doctor.sh` | `make setup`, `make dev-doctor` |
-| `quality/` | `check_dependency_drift.py`, `mypy_ratchet.py` + `mypy_baseline.txt` | `make check`, CI |
+| `quality/` | `check_dependency_drift.py`, `check_gcloud_flags.py`, `mypy_ratchet.py` + `mypy_baseline.txt` | `make check`, `make gcloud-flags`, CI |
 | `release/` | `validate.sh`, `publish.sh`, `record.py` | `make release-validate`, `make release-publish`, the deploy scripts |
 
-The two quality gates are the ones a machine runs and a human reads only when they fail:
+These quality gates are the ones a machine runs and a human reads only when they fail:
 
 | gate | enforces |
 |---|---|
 | `devtools/quality/mypy_ratchet.py` | exit 0 while the known baseline of pre-existing type errors holds; FAIL on any NEW one, on a baseline entry whose file no longer exists (a rename without re-keying), and `--update` refuses in an environment missing a canonical dependency (mypy sees fewer errors there: a baseline rewritten in a thin env breaks CI) |
 | `devtools/quality/mypy_baseline.txt` | data for the ratchet: the accepted pre-existing errors, normalized (path, code, message); canonical to the FULL dependency set |
 | `devtools/quality/check_dependency_drift.py` | one dependency source of truth: no inline pins in CI/Makefile/Dockerfile, no package pinned twice, no runtime pins in pyproject |
+| `devtools/quality/check_gcloud_flags.py` | every argument the deploy scripts pass to `gcloud` is one the INSTALLED gcloud still accepts. gcloud removes flags, a removed flag is not an error in shell, and a stage that only runs on a release finds out during one - `--min-ready` aborted v0.1.5 at stage 18 of 19. Run by `make gcloud-flags`, by Gate D, and by the deploy workflow against the CLI it just installed |
 
 Nothing in CI or `make` may depend on the hand-run groups. A test harness is not a
 developer tool: it belongs with its tier (`tests/native/run_tier.sh`,
