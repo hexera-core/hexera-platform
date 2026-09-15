@@ -6,6 +6,9 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
+from meshpipeline.adapters.model_inference.protocols import _EmptyResponse
 from meshpipeline.adapters.model_inference.protocols import responses_normalize as rn
 from meshpipeline.adapters.model_inference.protocols.responses_stream import (
     consume_responses_stream,
@@ -85,10 +88,51 @@ def test_reasoning_summary_deltas_reach_the_sink_cumulatively_as_they_arrive():
     assert seen == ["think", "thinking"]
 
 
-def test_a_stream_with_no_completed_event_does_not_invent_a_result():
-    # A truncated stream must not look like a successful empty answer - the caller's
-    # _EmptyResponse path exists for exactly this and classifies to EMPTY_RESPONSE.
-    import pytest
-    with pytest.raises(Exception):
+def test_a_stream_with_no_terminal_event_at_all_does_not_invent_a_result():
+    # A DEAD stream - no terminal event of any kind, so no output and no usage - must not look
+    # like a successful empty answer. The caller's _EmptyResponse path exists for exactly this
+    # and classifies to EMPTY_RESPONSE, retryable against the same target.
+    with pytest.raises(_EmptyResponse):
         asyncio.run(consume_responses_stream(_iter([_ev("response.created")]),
                                              label="t", on_reasoning=None))
+
+
+def test_a_truncated_stream_returns_its_partial_answer_instead_of_being_thrown_away():
+    # Probed 2026-09-15 with max_output_tokens=16: a truncated stream NEVER emits
+    # response.completed - it terminates on response.incomplete, whose .response carries the
+    # partial output[], status="incomplete" and the real usage. Acting only on
+    # response.completed discarded a request the account had already paid for and burned two
+    # more retries on an output cap that no retry can lift.
+    events = [
+        _ev("response.created"),
+        _ev("response.output_text.delta", delta="Turbulence mod"),
+        _ev("response.incomplete", response=SimpleNamespace(
+            output=[{"type": "message",
+                     "content": [{"type": "output_text", "text": "Turbulence mod"}]}],
+            usage={"input_tokens": 16, "output_tokens": 16,
+                   "input_tokens_details": {"cached_tokens": 0},
+                   "output_tokens_details": {"reasoning_tokens": 16}},
+            status="incomplete", incomplete_details={"reason": "max_output_tokens"})),
+    ]
+    assembled = asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
+    result = rn.normalize(assembled, TARGET, 1)
+    assert result.assistant_text == "Turbulence mod"
+    assert result.output_tokens == 16, "the round is billed whether or not it finished"
+    # The whole point of returning it: agents/builder/loop.py:91 reads this word.
+    assert result.finish_reason == "length"
+
+
+def test_a_failed_stream_is_raised_rather_than_normalised_as_a_successful_answer():
+    # response.failed reports a SERVER-SIDE ERROR, not a short answer. Returning it would
+    # normalise to ok=True carrying whatever fragment preceded the failure - a broken reply
+    # presented as a complete one.
+    events = [
+        _ev("response.created"),
+        _ev("response.failed", response=SimpleNamespace(
+            output=[{"type": "message",
+                     "content": [{"type": "output_text", "text": "half an ans"}]}],
+            usage=None, status="failed",
+            error={"code": "server_error", "message": "boom"})),
+    ]
+    with pytest.raises(_EmptyResponse, match="response.failed"):
+        asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))

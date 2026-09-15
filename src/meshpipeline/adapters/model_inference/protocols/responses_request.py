@@ -1,9 +1,9 @@
 # Responsibility: Turn a neutral Conversation into the exact JSON body the OpenAI Responses API
 # accepts - a pure function from the product's own vocabulary to one provider's wire shape.
 # Boundaries: translation only. No network call, no SDK object, no streaming and no reading of a
-# response - that is protocols/responses.py's job once it exists (task 4).
+# response - that is protocols/responses.py's job.
 # Collaborates with: call_kwargs.SamplingSpec for sampling intent, contracts/model_routing.py for
-# the target being addressed, and protocols/responses.py, which will call build_request() per
+# the target being addressed, and protocols/responses.py, which calls build_request() per
 # attempt exactly as chat_completions.py calls kwargs_for().
 
 # WHY THIS IS ITS OWN MODULE. Chat Completions and Responses disagree on every axis this file
@@ -103,6 +103,26 @@ def to_responses_tools(tools: list[ToolDefinition]) -> list[dict]:
     return out
 
 
+def to_responses_tool_choice(tool_choice: ToolChoice) -> ToolChoice:
+    """Flatten a FORCED tool choice the same way the tool declaration above is flattened.
+
+    `agents/loop/provider_round.py:62-64` builds chat's externally-tagged
+    `{"type":"function","function":{"name":...}}` whenever a policy forces a tool, and
+    `agents/builder/loop_policy.py` returns a real forced tool - so the builder's first forced
+    round would have carried it verbatim. Probed 2026-09-15 against /v1/responses: that shape is
+    a 400, *"Missing required parameter: 'tool_choice.name'"*, while the flat
+    `{"type":"function","name":"get_x"}` is accepted. The string forms ("auto", "required",
+    "none") are identical on both protocols and pass through untouched; so does any other dict
+    shape (`{"type":"mcp",...}` and friends), which this product does not build and must not
+    have guessed at here.
+    """
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        fn = tool_choice.get("function")
+        if isinstance(fn, dict):
+            return {"type": "function", **fn}
+    return tool_choice
+
+
 # Every one of these is a 400 on the Responses API, on all four priced models, verified
 # 2026-09-15 (design doc §1): `temperature` at any non-default value, `top_p` and
 # `presence_penalty` outright, `min_p` and `top_k` as unknown parameters. SamplingSpec keeps
@@ -133,14 +153,25 @@ def _warn_on_dropped_sampling(target: RouteTarget, spec: SamplingSpec) -> None:
             target.label, field, value)
 
 
+# THE REASONING SUMMARY IS OPT-IN, AND WITHOUT THIS FIELD NOTHING PRODUCES ONE. Probed
+# 2026-09-15 on gpt-5.6-luna: `reasoning:{"effort":"high"}` alone returns a reasoning item whose
+# `summary` is `[]` and streams zero `response.reasoning_summary_text.delta` events, while
+# `{"summary":"auto"}` returns `summary_text` parts and streamed 84 deltas for the same prompt.
+# So the whole reasoning chain - the stream sink, the cumulative text, normalize's
+# `_summary_text_from_reasoning` - has no producer at all unless this is sent. Accepted (200) on
+# all four priced models and alongside tools with a forced tool_choice.
+#
+# EFFORT IS NOT SET HERE. SamplingSpec carries no effort field, so any value would be this
+# module's invention rather than a role's intent; the API's own default stands (design §11).
+_REASONING_SUMMARY = {"summary": "auto"}
+
+
 def build_request(
     target: RouteTarget, conversation: Conversation, *,
     tools: list[ToolDefinition] | None, tool_choice: ToolChoice,
     spec: SamplingSpec, parallel_tool_calls: ParallelToolCalls,
 ) -> dict:
-    """The JSON body for `client.responses.create`. No `reasoning` field yet - a role only needs
-    one once effort tuning lands in task 5, and adding it unused here would be a field nobody
-    reads guarding a behaviour that does not exist yet."""
+    """The JSON body for `client.responses.create`."""
     instructions, items = to_input_items(conversation)
     _warn_on_dropped_sampling(target, spec)
 
@@ -152,10 +183,19 @@ def build_request(
     request["max_output_tokens"] = spec.max_tokens
     if spec.stream:
         request["stream"] = True
+    # Gated on the ONE reasoning-related intent SamplingSpec carries. `thinking_off` is how
+    # intake and the summarizer say they want no chain-of-thought (it becomes DeepSeek's
+    # `thinking: {"type": "disabled"}` on the chat path), and asking OpenAI to narrate reasoning
+    # a role has declared it does not want would be incoherent - and billed, since summary text
+    # is output tokens. Read this for exactly what it is: NOT a claim that `thinking_off` is
+    # honoured here. It is not - OpenAI reasons at its own default either way, and this only
+    # decides whether a summary of that reasoning is requested back.
+    if not spec.thinking_off:
+        request["reasoning"] = dict(_REASONING_SUMMARY)
 
     if tools:
         request["tools"] = to_responses_tools(tools)
-        request["tool_choice"] = tool_choice
+        request["tool_choice"] = to_responses_tool_choice(tool_choice)
         if parallel_tool_calls is not None:
             request["parallel_tool_calls"] = parallel_tool_calls
     return request

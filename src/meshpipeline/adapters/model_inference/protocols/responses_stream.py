@@ -18,11 +18,25 @@ logger = logging.getLogger(__name__)
 
 _HEARTBEAT_SECONDS = 15.0
 
+# The events that end a Responses stream WITH AN ANSWER attached - the SDK's assembled
+# `response` object. `response.incomplete` is here, not treated as a dead stream: probed
+# 2026-09-15 with max_output_tokens=16, a truncated stream terminates on `response.incomplete`
+# whose `.response` holds the partial `output[]`, `status="incomplete"` and the REAL usage - a
+# request the account has already paid for and the model has already partly answered. Acting
+# only on `response.completed` raised _EmptyResponse for it, throwing that answer away and
+# burning two more retries on an output-cap problem no retry can fix. Returned instead, it
+# reaches responses_normalize, which turns `incomplete` into finish_reason="length" so the
+# builder's truncation recovery runs.
+# `response.failed` is DELIBERATELY absent: it reports a server-side error, not a short answer,
+# and returning it would normalise to ok=True carrying whatever fragment preceded the failure.
+# It is raised below instead, so the same target is retried.
+_TERMINAL_EVENTS = ("response.completed", "response.incomplete")
+
 
 async def consume_responses_stream(stream: Any, *, label: str = "stream",
                                    on_reasoning: ReasoningSink = None) -> Any:
-    # The terminal `response.completed` event carries the SDK's own assembled `response` object -
-    # final output[] and usage already resolved. That is what responses_normalize.normalize() reads,
+    # A terminal event (_TERMINAL_EVENTS) carries the SDK's own assembled `response` object -
+    # output[] and usage already resolved. That is what responses_normalize.normalize() reads,
     # so this function's only job for the OUTPUT is to wait for that event and hand its `.response`
     # straight through, unmodified. Every delta below exists for liveness and the reasoning sink,
     # never for reconstructing output[] - the API already did that reconstruction; redoing it here
@@ -33,7 +47,9 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
     _n_events = 0
     _reasoning_parts: list[str] = []
 
-    completed_response: Any = None
+    terminal_response: Any = None
+    terminal_event: str = ""
+    failure_detail: Any = None
 
     async for event in stream:
         _n_events += 1
@@ -71,28 +87,40 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
                         await _emitted
                 except Exception:            # never let a trace failure break the stream
                     on_reasoning = None
-        elif event_type == "response.completed":
-            completed_response = getattr(event, "response", None)
+        elif event_type in _TERMINAL_EVENTS:
+            terminal_response = getattr(event, "response", None)
+            terminal_event = event_type
+        elif event_type == "response.failed":
+            failure_detail = getattr(getattr(event, "response", None), "error", None)
 
     _elapsed = time.monotonic() - _t_start
     _ttfe = (_t_first_event - _t_start) if _t_first_event is not None else -1.0
 
-    if completed_response is None:
-        # A stream that ends without response.completed is truncated, not empty-by-design. Raising
+    if terminal_response is None:
+        # A stream that ends with no answer attached - either no terminal event at all (a dead
+        # stream: no output, no usage, nothing to bill against) or response.failed. Raising
         # _EmptyResponse - rather than returning something normalize() would happily read as a
         # successful but empty answer - lets router._classify route this to
-        # FailureCategory.EMPTY_RESPONSE, the same outcome an empty chat-completions body gets.
+        # FailureCategory.EMPTY_RESPONSE, retryable against the same target, the same outcome an
+        # empty chat-completions body gets.
         logger.info(
-            "consume_responses_stream[%s]: no response.completed - events=%d elapsed=%.1fs "
+            "consume_responses_stream[%s]: no answer - failed=%s events=%d elapsed=%.1fs "
             "ttfe=%.1fs reasoning=%dch",
-            label, _n_events, _elapsed, _ttfe, sum(len(p) for p in _reasoning_parts),
+            label, failure_detail is not None, _n_events, _elapsed, _ttfe,
+            sum(len(p) for p in _reasoning_parts),
         )
+        if failure_detail is not None:
+            raise _EmptyResponse(
+                f"responses stream [{label}] ended in response.failed after {_n_events} "
+                f"events: {failure_detail}")
         raise _EmptyResponse(
-            f"responses stream [{label}] ended without a response.completed event "
+            f"responses stream [{label}] ended without a terminal response event "
             f"after {_n_events} events")
 
     logger.info(
-        "consume_responses_stream[%s]: done events=%d elapsed=%.1fs ttfe=%.1fs reasoning=%dch",
-        label, _n_events, _elapsed, _ttfe, sum(len(p) for p in _reasoning_parts),
+        "consume_responses_stream[%s]: done via %s events=%d elapsed=%.1fs ttfe=%.1fs "
+        "reasoning=%dch",
+        label, terminal_event, _n_events, _elapsed, _ttfe,
+        sum(len(p) for p in _reasoning_parts),
     )
-    return completed_response
+    return terminal_response

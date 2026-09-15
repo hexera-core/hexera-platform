@@ -129,6 +129,46 @@ say so rather than letting two different things quietly share a name.
 **Sampling is refused on Responses too** — `temperature` 400, `top_p` 400, `presence_penalty` 400.
 So §6 stands unchanged; switching protocol does not buy sampling control back.
 
+**`tool_choice` is flattened exactly like a tool declaration.** Probed 2026-09-15 at the pinned
+SDK version, on `gpt-5.6-luna`:
+
+| `tool_choice` sent | Result |
+|---|---|
+| `{"type":"function","function":{"name":"get_x"}}` (chat's forced shape) | **400** — *"Missing required parameter: `tool_choice.name`"* |
+| `{"type":"function","name":"get_x"}` | 200 — output `['function_call']` |
+| `"auto"` | 200 — output `['reasoning','function_call']` |
+| `"required"` | 200 — output `['function_call']` |
+| `"none"` | 200 — output `['reasoning','message']` |
+
+`agents/loop/provider_round.py:62-64` builds the chat shape whenever a policy forces a tool, so
+the builder's first forced round is a 400 without this translation. The string forms are
+identical on both protocols. Handled in `responses_request.to_responses_tool_choice`.
+
+**Reasoning summaries are opt-in; nothing produces one unless `reasoning.summary` is sent.**
+Probed 2026-09-15 on `gpt-5.6-luna`, same prompt each time:
+
+| Request | Reasoning item | Summary |
+|---|---|---|
+| no `reasoning` field | absent on a simple prompt; present with tools | — |
+| `reasoning:{"effort":"high"}` | present, `reasoning_tokens=37` | `summary: []`, **0** stream deltas |
+| `reasoning:{"effort":"high","summary":"auto"}` | present | `summary_text` parts; **84** `response.reasoning_summary_text.delta` events |
+| `reasoning:{"summary":"auto"}` | accepted 200 on luna / terra / sol / astra, and alongside tools with a forced `tool_choice` | `summary_text` parts |
+
+So the whole reasoning chain — the stream sink, the cumulative text,
+`_summary_text_from_reasoning` — had no producer. Every summary part came back typed
+`summary_text`. `build_request` now sends `reasoning: {"summary": "auto"}`; see §11 for the
+effort question and for the roles it is deliberately NOT sent for.
+
+**A truncated response is `incomplete`, not an absence.** Probed 2026-09-15 with
+`max_output_tokens=16`:
+
+| Path | What arrives |
+|---|---|
+| non-streamed | `status="incomplete"`, `incomplete_details.reason="max_output_tokens"`, `output=['reasoning']`, real usage |
+| streamed | terminal event `response.incomplete` (never `response.completed`), whose `.response` carries exactly the same |
+
+Both map onto `finish_reason="length"`, the word `agents/builder/loop.py:91` already reads.
+
 ### The shape difference
 
 From OpenAI's own migration guide, corroborated against the reference:
@@ -211,7 +251,8 @@ happened.
 ## 5. What the Responses adapter owns
 
 - **Request**: `instructions` split from `input`; conversation turns → input items; tool
-  definitions flattened; `max_output_tokens`; `reasoning_effort` (pending the §1 unknown).
+  definitions AND a forced `tool_choice` flattened; `max_output_tokens`; `reasoning.summary`
+  (§1 — without it no reasoning summary is ever produced). Not `reasoning.effort`: see §11.
 - **Tool round-trip**: `function_call` items out; `function_call_output` items back in, correlated
   by `call_id`. Stateless — full history resent each turn, no `previous_response_id`. The product
   already owns the transcript and a server-side conversation handle would be a second source of
@@ -299,11 +340,44 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
   `openai` model, one WARNING will not tell an operator that a *second* role's tuning was also
   discarded — it will look like the field was warned about once and is now fine. Not fixed here;
   fixing it means threading a role name into `build_request`, which task 5 deliberately does not do.
-- A `max_output_tokens` truncation on a streamed Responses call surfaces as `_EmptyResponse` →
-  `FailureCategory.EMPTY_RESPONSE` and burns a retry, rather than reporting
-  `finish_reason="incomplete"`: `consume_responses_stream` (protocols/responses_stream.py) only
-  acts on `response.completed`, so a stream that ends via `response.incomplete` or
-  `response.failed` falls through to "no response.completed seen" and raises. That is the safe
-  fallthrough for what was actually probed, but it means retry budget is spent on a request that
-  in fact answered, just short. Whoever tunes retries later should know this before treating an
-  EMPTY_RESPONSE burst on `openai` as a liveness problem instead of an output-cap problem.
+- ~~A `max_output_tokens` truncation on a streamed Responses call surfaces as
+  `_EmptyResponse`~~ — **CLOSED.** `consume_responses_stream` now returns the `.response` of a
+  `response.incomplete` event, and `responses_normalize` maps that status onto
+  `finish_reason="length"`, so a truncated round reaches the builder's truncation recovery
+  instead of burning two retries. `response.failed` still raises: it reports a server-side
+  error rather than a short answer, and returning it would normalise to `ok=True` carrying
+  whatever fragment preceded the failure.
+
+- **`reasoning.effort` is not sent, and will not be until a role can express one.** §5 listed it
+  as something this adapter owns, but `SamplingSpec` carries no effort field: any value here
+  would be this module's invention rather than a role's intent, so the API's default stands.
+  What IS sent is `reasoning: {"summary": "auto"}` — the opt-in §1 proves the reasoning chain
+  needs — and only when the role has not set `thinking_off`.
+
+  **Consequence, stated rather than left implicit:** `ModelRoundResult.reasoning_text` is
+  permanently `""` for **intake and the search summarizer** on `openai`. Those are the two roles
+  that set `thinking_off=True` (their chat path sends DeepSeek's `thinking: {"type":"disabled"}`),
+  and they are also the two non-streaming roles — the ones §8 moves first. Asking OpenAI to
+  narrate reasoning a role has declared it does not want would be incoherent, and summary text
+  is billed as output tokens. Read `thinking_off` here for what it is: it does **not** disable
+  reasoning on OpenAI — the model still reasons at its own default — it only decides whether a
+  summary of that reasoning is requested back. Builder, planner and visual_reviewer do get
+  summaries, which is where the Task-4 reasoning sink actually runs.
+
+- **Langfuse does not trace the Responses path at all.** `tracing.langfuse_kwargs()` returns
+  `{session_id, user_id, name}`, which are not OpenAI parameters: they survive on the chat path
+  only because `langfuse.openai`'s wrapper patches the completions methods and strips them
+  before the SDK sees them. The pinned `langfuse==2.36.2` patches `Completions`,
+  `AsyncCompletions`, `ChatCompletion` and `Completion` — `responses.create` is untouched, and
+  passing them to it raises `TypeError`, which `providers.classify` reads as
+  `APPLICATION_DEFECT`: terminal, no retry, no failover. `protocols/responses.py` therefore does
+  not forward `trace`. Nothing traceable is lost — an unpatched method emits no langfuse
+  generation either way — but an operator who enables `LANGFUSE_SECRET_KEY` (it is already in
+  `create-api-service.sh`'s secret list) will see DeepInfra and DeepSeek generations and no
+  OpenAI ones. OpenTelemetry instruments httpx, not the SDK, and is unaffected.
+
+- **The SDK floor is now load-bearing.** `client.responses` first shipped in `openai-python`
+  1.66.0; the previous pin, 1.59.3, has no `responses` resource at all, so every OpenAI call in
+  production would have raised `AttributeError` → `APPLICATION_DEFECT` → one attempt, terminal.
+  Pinned at 1.109.1 (the last release before the 2.0.0 major). `tests/unit/infra/
+  test_openai_provider.py` asserts the client exposes `responses`, so a downgrade fails in CI.

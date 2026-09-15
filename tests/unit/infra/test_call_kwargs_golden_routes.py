@@ -17,6 +17,8 @@ import meshpipeline.agents.reviewer.settings as rcfg
 import meshpipeline.engines.snappy.settings as pcfg
 import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.model_inference import call_kwargs as ck
+from meshpipeline.adapters.model_inference import protocols
+from meshpipeline.adapters.model_inference.protocols.chat_completions import ChatCompletions
 from meshpipeline.agent_tools.shared.settings import SUMMARIZER_ROUTE
 from meshpipeline.agents.builder.settings import BUILDER_ROUTE
 from meshpipeline.agents.intake.settings import INTAKE_ROUTE
@@ -27,6 +29,19 @@ _THINKING_OFF = {"thinking": {"type": "disabled"}}
 
 
 def _kwargs_for_route(route):
+    # PROTOCOL-BLIND UNTIL NOW. Every expectation in this file is a chat-completions kwargs dict,
+    # and kwargs_for only serves the providers that speak that format - `openai` is deliberately
+    # absent from _BUILDERS because a Responses request is not a kwargs dict at all. So the first
+    # role pointed at `openai` would have hard-failed this golden guard with a KeyError in the
+    # middle of a cutover, which reads as "the cutover broke sampling" rather than "this test
+    # asks a question that does not apply to that wire format". The protocol seam is the
+    # authority on which question applies, so ask it rather than listing provider names here.
+    protocol = protocols.protocol_for(route.primary.provider)
+    if not isinstance(protocol, ChatCompletions):
+        pytest.skip(
+            f"{route.role} is routed at {route.primary.label}, which speaks "
+            f"{type(protocol).__name__}, not chat completions - its request shape is pinned by "
+            "tests/unit/infra/test_responses_request.py, not by a kwargs golden")
     # The point of using route.role (not a literal) is that this line is the only thing binding
     # ROUTE_MATRIX's roles to spec_for's roles - a role added to one without the other fails
     # here with a clear KeyError instead of surfacing as a per-attempt KeyError in production.
