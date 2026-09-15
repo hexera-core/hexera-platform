@@ -575,3 +575,26 @@ def test_the_queue_depth_publisher_can_write_its_metric():
         "new-env.sh does not grant the queue-depth publisher permission to write its metric, so "
         "the first deploy selecting `queue` dies at stage 13 with HTTP 403")
     assert "-queue-depth@" in text
+
+
+def test_the_data_tier_exchanges_custom_routes_so_memorystore_is_reachable():
+    """Without this, Memorystore is unreachable from Cloud Run and the symptom is misleading:
+    Cloud SQL on the SAME reserved range, over the SAME Cloud Run VPC egress, works - the schema
+    migration connects and completes - while every Redis connection times out. Range, peering,
+    egress setting and firewall all look correct, because they are.
+
+    Never hit before because hexera-dev's Memorystore predates this script: it was made by hand in
+    DIRECT_PEERING mode with its own `redis-peer-...` peering and never used the servicenetworking
+    path. This script has always created Memorystore with PRIVATE_SERVICE_ACCESS, so the first
+    environment provisioned end to end BY the script is the first to exercise the combination.
+
+    Verified live: enabling the exchange turned a timing-out job into `queue_depth=0 published`.
+    """
+    text = (SCRIPTS / "create-data-tier.sh").read_text(encoding="utf-8")
+    assert "--export-custom-routes" in text and "--import-custom-routes" in text, (
+        "the servicenetworking peering does not exchange custom routes, so Memorystore is "
+        "unreachable from Cloud Run while Cloud SQL on the same range works")
+    # Applied unconditionally: an environment built before this existed needs it too, and the
+    # update is idempotent.
+    peering_block = text[text.index("PEERING_DISPOSITION=created"):text.index("# 2) the Cloud SQL")]
+    assert "peerings update" in peering_block

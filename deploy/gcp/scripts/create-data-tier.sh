@@ -162,6 +162,40 @@ else
   log "peering         servicenetworking <-> ${VPC_NETWORK}  (created)"
 fi
 
+# CUSTOM ROUTE EXCHANGE, without which MEMORYSTORE IS UNREACHABLE from Cloud Run.
+#
+# This is not a hardening nicety; it is the difference between a broker that answers and one that
+# times out. The symptom is specific and misleading: Cloud SQL on the SAME reserved range, reached
+# by the SAME Cloud Run VPC egress, works - the schema migration connects and runs to completion -
+# while every Redis connection from a Cloud Run job times out. So the range, the peering, the
+# egress setting and the firewall all look correct, because they are.
+#
+# Cloud SQL's private IP is reachable over the plain peering; Memorystore's needs the route to be
+# exchanged. Enabling both directions is what makes `redis://<private-ip>` resolve to something
+# that answers.
+#
+# WHY IT HAS NEVER BEEN HIT. hexera-dev's Memorystore predates this script - it was made by hand in
+# DIRECT_PEERING mode and carries its own `redis-peer-...` peering, so it never used the
+# servicenetworking path at all. This script has always created Memorystore with
+# PRIVATE_SERVICE_ACCESS, and the first environment ever provisioned end to end BY the script is
+# the first to exercise that combination.
+#
+# Applied on every run, not only when the peering was created here, because an environment built
+# before this line existed needs it too - and it is idempotent. Non-fatal: a deployment whose
+# operator manages peering by hand should not be stopped, and the failure it prevents is loud and
+# specific enough to diagnose from the warning.
+if gc compute networks peerings update servicenetworking-googleapis-com \
+     --network="${VPC_NETWORK}" --export-custom-routes --import-custom-routes >/dev/null 2>&1; then
+  log "peering routes  custom routes exchanged both ways (Memorystore is reachable from Cloud Run)"
+else
+  warn "could not enable custom route exchange on the servicenetworking peering. Cloud SQL will
+       still be reachable and MEMORYSTORE WILL NOT: every Redis connection from a Cloud Run job
+       times out while everything else looks correct. The command:
+         gcloud compute networks peerings update servicenetworking-googleapis-com \\
+           --network=${VPC_NETWORK} --project ${GCP_PROJECT_ID} \\
+           --export-custom-routes --import-custom-routes"
+fi
+
 # ---------------------------------------------------------------------------------------------
 # 2) the Cloud SQL instance.
 if gc sql instances describe "${CLOUDSQL_INSTANCE}" >/dev/null 2>&1; then
