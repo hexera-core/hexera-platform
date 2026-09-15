@@ -59,13 +59,14 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
             _reasoning_parts.append(delta)
             if on_reasoning is not None:
                 try:
-                    # The Responses delta is already an incremental fragment (unlike chat's
-                    # reasoning_content, which repeats from empty each chunk), so the fragment
-                    # itself is what gets forwarded here - accumulating first would double it up.
-                    # The two-coloured handshake still matches consume_chat_stream's in
-                    # streaming.py: sinks come in both colours, so await what comes back when the
-                    # sink is a coroutine function rather than inventing a third convention.
-                    _emitted = on_reasoning(delta)
+                    # The sink contract is cumulative, not per-fragment: ReasoningSink is
+                    # documented (contracts/model_inference.py:55-56) as receiving "the reasoning
+                    # so far, as it arrives", and consume_chat_stream's identical handshake in
+                    # streaming.py sends "".join(reasoning_parts) rather than the bare chunk. The
+                    # two-coloured await handshake matches consume_chat_stream's in streaming.py:
+                    # sinks come in both colours, so await what comes back when the sink is a
+                    # coroutine function rather than inventing a third convention.
+                    _emitted = on_reasoning("".join(_reasoning_parts))
                     if inspect.isawaitable(_emitted):
                         await _emitted
                 except Exception:            # never let a trace failure break the stream

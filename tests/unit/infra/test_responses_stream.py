@@ -25,7 +25,11 @@ def _ev(t, **kw):
     return SimpleNamespace(type=t, **kw)
 
 
-def test_text_deltas_assemble_and_usage_arrives_on_completed():
+def test_the_terminal_completed_event_wins_over_disagreeing_deltas():
+    # Deltas deliberately DISAGREE with the completed event's text ("Hello" vs "Hello, world") so
+    # an implementation that reconstructed assistant_text from deltas - rather than trusting
+    # response.completed as the sole source of output[] - would fail this, pinning the design
+    # decision instead of merely being consistent with it.
     events = [
         _ev("response.created"),
         _ev("response.output_text.delta", delta="Hel"),
@@ -33,7 +37,7 @@ def test_text_deltas_assemble_and_usage_arrives_on_completed():
         _ev("response.output_text.done"),
         _ev("response.completed", response=SimpleNamespace(
             output=[{"type": "message",
-                     "content": [{"type": "output_text", "text": "Hello"}]}],
+                     "content": [{"type": "output_text", "text": "Hello, world"}]}],
             usage={"input_tokens": 4, "output_tokens": 2,
                    "input_tokens_details": {"cached_tokens": 0},
                    "output_tokens_details": {"reasoning_tokens": 0}},
@@ -41,11 +45,14 @@ def test_text_deltas_assemble_and_usage_arrives_on_completed():
     ]
     assembled = asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
     result = rn.normalize(assembled, TARGET, 1)
-    assert result.assistant_text == "Hello"
+    assert result.assistant_text == "Hello, world"
     assert (result.input_tokens, result.output_tokens) == (4, 2)
 
 
-def test_tool_call_argument_deltas_accumulate_into_one_call():
+def test_the_terminal_completed_event_wins_over_disagreeing_tool_call_deltas():
+    # Same pin as above, for tool-call arguments: function_call_arguments.delta fragments are
+    # ignored (this module keeps no accumulator for them) and the completed event's arguments
+    # string is what reaches the caller, deliberately disagreeing with the deltas' concatenation.
     events = [
         _ev("response.output_item.added",
             item={"type": "function_call", "call_id": "call_2", "name": "get_x"}),
@@ -54,15 +61,19 @@ def test_tool_call_argument_deltas_accumulate_into_one_call():
         _ev("response.function_call_arguments.done", arguments='{"a":"1"}'),
         _ev("response.completed", response=SimpleNamespace(
             output=[{"type": "function_call", "call_id": "call_2", "name": "get_x",
-                     "arguments": '{"a":"1"}'}],
+                     "arguments": '{"a":"2"}'}],
             usage=None, status="completed")),
     ]
     assembled = asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
     result = rn.normalize(assembled, TARGET, 1)
-    assert [(c.name, c.arguments) for c in result.tool_calls] == [("get_x", '{"a":"1"}')]
+    assert [(c.name, c.arguments) for c in result.tool_calls] == [("get_x", '{"a":"2"}')]
 
 
-def test_reasoning_summary_deltas_reach_the_sink_as_they_arrive():
+def test_reasoning_summary_deltas_reach_the_sink_cumulatively_as_they_arrive():
+    # ReasoningSink's contract (contracts/model_inference.py:55-56) is "the reasoning so far", the
+    # same convention consume_chat_stream uses for chat - so each call carries the running total,
+    # not just the newest fragment. Pinned as an exact sequence, mirroring
+    # test_live_reasoning_stream.py's ["a", "ab"].
     seen = []
     events = [
         _ev("response.reasoning_summary_text.delta", delta="think"),
@@ -71,7 +82,7 @@ def test_reasoning_summary_deltas_reach_the_sink_as_they_arrive():
             output=[], usage=None, status="completed")),
     ]
     asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=seen.append))
-    assert "".join(seen) == "thinking"
+    assert seen == ["think", "thinking"]
 
 
 def test_a_stream_with_no_completed_event_does_not_invent_a_result():
