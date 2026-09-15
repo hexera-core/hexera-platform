@@ -558,3 +558,20 @@ def test_the_database_password_is_left_to_the_data_tier():
         "needing versions.access that the deploy identity does not hold")
     assert 'ensure_container "${PG_SECRET}"' in text, (
         "the container must still exist so the data tier can add a version to it")
+
+
+def test_the_queue_depth_publisher_can_write_its_metric():
+    """create-queue-depth-publisher.sh attempts this grant and says plainly what happens when it
+    cannot: "project-level IAM is exactly what the deployer was deliberately not given ... the
+    SMOKE RUN below is the verdict."
+
+    That verdict arrived as a Cloud Run job failing with HTTP 403 from the Monitoring API,
+    thirteen stages into a deploy, after Cloud SQL and Memorystore had been built. In the shared
+    environments an owner granted it by hand years before any of this was scripted; a new project
+    has nobody to have done that.
+    """
+    text = NEW_ENV.read_text(encoding="utf-8")
+    assert "roles/monitoring.metricWriter" in text, (
+        "new-env.sh does not grant the queue-depth publisher permission to write its metric, so "
+        "the first deploy selecting `queue` dies at stage 13 with HTTP 403")
+    assert "-queue-depth@" in text

@@ -410,6 +410,31 @@ for _sa_spec in \
   fi
 done
 
+# THE ONE PROJECT-LEVEL GRANT A RUNTIME IDENTITY NEEDS, made here for the same reason the
+# identities themselves are: the deploy cannot make it.
+#
+# create-queue-depth-publisher.sh attempts it and says plainly what happens when it cannot -
+# "project-level IAM is exactly what the deployer was deliberately not given ... the SMOKE RUN
+# below is the verdict". That verdict arrived as a Cloud Run job failing with HTTP 403 from the
+# Monitoring API, eleven stages into a deploy, after Cloud SQL and Memorystore had been built.
+#
+# metricWriter is the narrowest role that lets the publisher write the queue-depth metric, and it
+# reads nothing. In the shared environments an owner granted it by hand years before this script
+# existed; a new project has nobody to have done that.
+info "Project roles the runtime identities need and the deploy cannot grant"
+if gc projects add-iam-policy-binding "${PROJECT_ID}" \
+     --member "serviceAccount:${DEPLOYMENT_ID}-queue-depth@${PROJECT_ID}.iam.gserviceaccount.com" \
+     --role roles/monitoring.metricWriter --condition=None >/dev/null 2>&1; then
+  log "project += roles/monitoring.metricWriter -> ${DEPLOYMENT_ID}-queue-depth"
+else
+  warn "could not grant roles/monitoring.metricWriter to ${DEPLOYMENT_ID}-queue-depth.
+       The queue-depth publisher's first run will fail with HTTP 403 and the deploy will stop at
+       stage 13. The command:
+         gcloud projects add-iam-policy-binding ${PROJECT_ID} \\
+           --member serviceAccount:${DEPLOYMENT_ID}-queue-depth@${PROJECT_ID}.iam.gserviceaccount.com \\
+           --role roles/monitoring.metricWriter"
+fi
+
 # THE WORKER FLEET'S NON-SECRET SETTINGS. create-worker-fleet.sh requires WORKER_ENV_URI and
 # refuses to run without it, so a personal environment that never got this object could provision
 # everything except the thing that actually executes jobs.
