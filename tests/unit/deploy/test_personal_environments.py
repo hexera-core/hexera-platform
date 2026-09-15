@@ -506,3 +506,34 @@ def test_the_deployer_can_schedule_the_queue_depth_publisher():
     roster = wif.split("DEPLOYER_ROLES=(")[1].split("\n)")[0]
     assert "roles/cloudscheduler.admin" in roster, (
         "the deploy identity cannot create the queue-depth schedule the `queue` component needs")
+
+
+def test_discovery_is_pinned_to_the_project_it_is_discovering():
+    """Discovery asks gcloud a dozen questions - does this job exist, does this bucket, has this
+    instance an address - and a bare `gcloud` answers them about whichever project the MACHINE
+    last selected. In CI the two always agree because the auth action sets CLOUDSDK_CORE_PROJECT
+    from the deploy target; on a laptop they routinely do not, and new-env.sh runs on a laptop.
+
+    The failure is silent and lies in the convincing direction: discovering hexera-dev-pranav from
+    a shell pointed at hexera-dev reported `mesh job dev-mesh exists - reusing it`, because
+    dev-mesh exists in hexera-dev.
+    """
+    text = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
+    assert 'export CLOUDSDK_CORE_PROJECT="${PROJECT_ID}"' in text, (
+        "bootstrap-env.sh does not pin gcloud to the project it is discovering, so its probes "
+        "answer about whatever project the machine last selected")
+
+
+def test_the_mesh_identity_disposition_is_probed_not_inferred_from_the_job():
+    """The mesh job is created at stage 10; its runtime identity may exist long before that, and
+    in a project stood up by new-env.sh it always does - creating identities needs an owner.
+
+    Inferring one disposition from the other made preflight demand iam.serviceAccounts.create on
+    every run that had not yet made the job, and refuse the deploy for a permission it would never
+    exercise: the account it was going to create was already there.
+    """
+    text = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
+    branch = text[text.index("MESH_JOB_DISPOSITION=created"):]
+    branch = branch[:branch.index("info \"mesh job")]
+    assert "iam service-accounts describe" in branch, (
+        "the mesh identity's disposition is assumed from the job's absence rather than probed")

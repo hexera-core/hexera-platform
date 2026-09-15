@@ -44,6 +44,17 @@ $(printf '%s\n' "${cands}" | sed 's/^/    /')"
 # the discovered facts
 discover() {
   PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
+  # EVERY PROBE BELOW IS PINNED TO THAT PROJECT, and this one line is what pins them. Discovery
+  # asks gcloud a dozen questions - does this job exist, does this bucket, has this instance an
+  # address - and a bare `gcloud` answers them about whichever project the MACHINE last selected,
+  # not the one being discovered. In CI the two always agree, because the auth action sets
+  # CLOUDSDK_CORE_PROJECT from the deploy target; on a developer's laptop they routinely do not.
+  #
+  # The failure is silent and it lies in the convincing direction: discovering hexera-dev-pranav
+  # from a shell pointed at hexera-dev reported "mesh job dev-mesh exists - reusing it", because
+  # dev-mesh exists in hexera-dev. A generated.env built from another project's answers is bound
+  # to the right project and describes the wrong one.
+  export CLOUDSDK_CORE_PROJECT="${PROJECT_ID}"
   [ -n "${PROJECT_ID}" ] && [ "${PROJECT_ID}" != "(unset)" ] \
     || die "no GCP project set - run: gcloud config set project <PROJECT_ID>"
 
@@ -111,8 +122,24 @@ discover() {
     info "mesh job ${MESH_JOB} exists in ${REGION} - reusing it (identity ${MESH_SA})"
   else
     MESH_JOB_DISPOSITION=created
-    MESH_SA_DISPOSITION=created
-    info "mesh job ${MESH_JOB} not found in ${REGION} - it will be created"
+    # THE ACCOUNT IS NOT THE JOB, and inferring one disposition from the other was wrong. The mesh
+    # job is created at stage 10; its runtime identity may already exist long before that - and in
+    # a project stood up by new-env.sh it always does, because creating identities needs
+    # iam.serviceAccountAdmin, which the deploy identity is deliberately never given and an owner
+    # therefore does up front.
+    #
+    # Declaring the account `created` here made preflight demand iam.serviceAccounts.create on
+    # every run that had not yet made the job, and refuse the deploy for a permission it would
+    # never have exercised - the account it was going to create was already sitting there. Probed
+    # rather than assumed.
+    if gcloud iam service-accounts describe \
+         "${MESH_SA}@${PROJECT_ID}.iam.gserviceaccount.com" --project "${PROJECT_ID}" \
+         >/dev/null 2>&1; then
+      MESH_SA_DISPOSITION=reused
+    else
+      MESH_SA_DISPOSITION=created
+    fi
+    info "mesh job ${MESH_JOB} not found in ${REGION} - it will be created (identity ${MESH_SA}: ${MESH_SA_DISPOSITION})"
   fi
 
   if gcloud storage buckets describe "gs://${MESH_BUCKET}" >/dev/null 2>&1; then
