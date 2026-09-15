@@ -22,7 +22,7 @@
 #
 # TWO KINDS OF CREDENTIAL, and the difference is the whole design:
 #
-#   GENERATED  POSTGRES_PASSWORD, MESH_API_KEY, USER_TOKEN_SECRET, AUTH_SECRET.
+#   GENERATED  MESH_API_KEY, USER_TOKEN_SECRET, AUTH_SECRET.
 #              These are randomness. Nothing outside the environment knows or needs to know them,
 #              so a personal environment mints its own and they are isolated by construction -
 #              a slug environment cannot sign a token another environment accepts.
@@ -130,8 +130,22 @@ MISSING=()
 # other; a weak one there is not a cosmetic problem.
 gen_secret() { openssl rand -base64 32 | tr -d '\n'; }
 
+# POSTGRES_PASSWORD IS NOT SEEDED HERE, and that is the point rather than an omission.
+#
+# create-data-tier.sh owns that credential end to end: it decides the user and the password
+# TOGETHER, because they are one credential - "an account without the password its runtimes hold is
+# no more usable than a password with no account". Its first-run path generates the password, stores
+# it, and creates the user with it, in that order, needing only versions.add - which the deploy
+# identity has.
+#
+# Seeding it here manufactured the one state that path cannot recover from: a stored version with no
+# database user. That is read as "the runtimes already hold this password, so create the user WITH
+# it" - which requires versions.access, which the deploy identity is deliberately never given. The
+# result was a deploy that created Cloud SQL, created the database, and then died one step short of
+# the user, needing an owner to intervene on every single new environment.
+#
+# The container is created below so the deploy finds one; the VALUE is the data tier's to write.
 for entry in \
-  "${PG_SECRET}|the database password this environment's Postgres user is created with" \
   "${MESH_API_KEY_SECRET_NAME}|the key the API presents when it submits a mesh job" \
   "${USER_TOKEN_SECRET_NAME}|the HMAC key user tokens are signed with" \
   "${AUTH_SECRET_NAME}|the key Auth.js signs console session cookies with"; do
@@ -198,6 +212,9 @@ copy_secret "${DEEPSEEK_SECRET}"  DEEPSEEK_API_KEY  "the model provider intake a
 # script knows the access id that goes with it. Creating the container now means the deploy finds
 # it rather than needing container-creation authority at that moment.
 ensure_container "${MINIO_SECRET_KEY_SECRET:-minio-secret-key}"
+# Likewise the database password's container - see the note above the generated block. Empty here;
+# create-data-tier.sh writes the version at the moment it creates the user that answers to it.
+ensure_container "${PG_SECRET}"
 
 # ---------------------------------------------------------------------------------------------
 info "Seeding summary for ${GCP_PROJECT_ID}"

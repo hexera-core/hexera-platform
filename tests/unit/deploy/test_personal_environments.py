@@ -537,3 +537,24 @@ def test_the_mesh_identity_disposition_is_probed_not_inferred_from_the_job():
     branch = branch[:branch.index("info \"mesh job")]
     assert "iam service-accounts describe" in branch, (
         "the mesh identity's disposition is assumed from the job's absence rather than probed")
+
+
+def test_the_database_password_is_left_to_the_data_tier():
+    """create-data-tier.sh owns that credential end to end, because the user and the password are
+    one credential - "an account without the password its runtimes hold is no more usable than a
+    password with no account". Its first-run path generates, stores and creates the user in that
+    order, needing only versions.add, which the deploy identity has.
+
+    Seeding a value here manufactured the one state that path cannot recover from: a stored
+    version with no database user. That reads as "the runtimes already hold this password, so
+    create the user WITH it" - which needs versions.access, deliberately withheld from the deploy
+    identity. The deploy created Cloud SQL, created the database, then died one step short of the
+    user, needing an owner on every new environment.
+    """
+    text = (SCRIPTS / "seed-secrets.sh").read_text(encoding="utf-8")
+    generated = text[text.index("for entry in"):text.index("# ------", text.index("for entry in"))]
+    assert "PG_SECRET" not in generated, (
+        "seed-secrets.sh seeds a database password, which strands create-data-tier.sh in a branch "
+        "needing versions.access that the deploy identity does not hold")
+    assert 'ensure_container "${PG_SECRET}"' in text, (
+        "the container must still exist so the data tier can add a version to it")
