@@ -2,6 +2,7 @@
 # Boundaries: it reads the workflow and the scripts, and RUNS the target picker as a program; it deploys nothing.
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -265,6 +266,23 @@ def test_creating_an_environment_is_not_something_ci_can_do():
     to run as a service account rather than failing obscurely partway through."""
     text = NEW_ENV.read_text(encoding="utf-8")
     assert "gserviceaccount.com" in text and "owner's acts" in text
+
+
+def test_the_project_display_name_uses_only_characters_google_accepts():
+    """A project's DISPLAY NAME has different rules from its id: letters, digits, single quotes,
+    hyphens, spaces and exclamation points, 4-30 characters, and nothing else. Parentheses are
+    rejected - which cost the first real run of this script, failing with `INVALID_ARGUMENT: field
+    [display_name] has issue`, an error that names the field but never the character.
+    """
+    text = NEW_ENV.read_text(encoding="utf-8")
+    name = re.search(r'--name "([^"]*)"', text)
+    assert name, "new-env.sh passes no --name to `gcloud projects create`"
+    literal = name.group(1).replace("${SLUG}", "")
+    assert not set(literal) & set("()[]{}<>/\\:;,.?*&%$#@+=|~`\"_"), (
+        f"the project display name {name.group(1)!r} carries punctuation Google rejects")
+    # 11 for "Hexera dev " plus a slug of at most 19 is exactly the 30 the field allows.
+    assert len(literal) + 19 <= 30, (
+        f"display name prefix {literal!r} plus a maximum-length slug exceeds the 30-character limit")
 
 
 def test_creation_establishes_what_the_first_deploy_cannot():

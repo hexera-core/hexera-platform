@@ -182,14 +182,26 @@ if gcloud projects describe "${PROJECT_ID}" >/dev/null 2>&1; then
   log "project         ${PROJECT_ID}  (reused - untouched)"
 else
   info "Creating project ${PROJECT_ID}"
+  # THE DISPLAY NAME HAS ITS OWN RULES, and they are NOT the project id's. It permits letters,
+  # digits, single quotes, hyphens, spaces and exclamation points, in 4-30 characters - and
+  # nothing else. Parentheses are rejected, which is not documented anywhere a reader would look
+  # and which fails as `INVALID_ARGUMENT: field [display_name] has issue`, an error that names the
+  # field but not the character. So: no punctuation beyond a space.
+  #
+  # The length works out because the slug is already bounded above: "Hexera dev " is 11 characters
+  # and the slug can be at most ${_max}, which is exactly the 30 this field allows. That is a
+  # coincidence of the two limits rather than a margin, so a longer PROJECT_PREFIX would need this
+  # rechecked.
   gcloud projects create "${PROJECT_ID}" \
     --organization "${GCP_ORG_ID}" \
-    --name "Hexera dev (${SLUG})" \
+    --name "Hexera dev ${SLUG}" \
     --labels "app=hexera,environment=dev,personal=true,owner-slug=${SLUG}" >/dev/null \
-    || die "could not create ${PROJECT_ID}. This needs resourcemanager.projectCreator on the
-   organisation, and organisations have a project QUOTA - if the id is free and the role is held,
-   the quota is the next thing to check:
-     gcloud alpha resource-manager quotas list --organization ${GCP_ORG_ID}"
+    || die "could not create ${PROJECT_ID} - gcloud's own error is immediately above this, and it
+   names the actual cause. The usual ones, in the order worth checking:
+     * the id is taken, or was deleted inside the last 30 days and is still reserved
+     * this account lacks resourcemanager.projectCreator on organisation ${GCP_ORG_ID}
+     * the organisation is at its project QUOTA:
+         gcloud alpha resource-manager quotas list --organization ${GCP_ORG_ID}"
   log "project         ${PROJECT_ID}  (created)"
 fi
 
