@@ -10,7 +10,8 @@ celery_app = Celery(
     broker=provcfg.REDIS_URL,
     backend=provcfg.REDIS_URL,
     include=["meshpipeline.adapters.pipeline_execution.celery",
-             "meshpipeline.adapters.pipeline_execution.maintenance_tasks"],
+             "meshpipeline.adapters.pipeline_execution.maintenance_tasks",
+             "meshpipeline.adapters.pipeline_execution.geometry_tasks"],
 )
 
 celery_app.conf.update(
@@ -25,9 +26,16 @@ celery_app.conf.update(
         "tasks.cleanup.reap_stalled_jobs":         {"queue": "cleanup_tasks"},
         "tasks.cleanup.reconcile_orphan_artifacts": {"queue": "cleanup_tasks"},
         "tasks.export_conversation_data.export_conversation_sample": {"queue": "training_export"},
+        # Its own queue: a measurement is seconds of native tessellation and it must never sit
+        # behind a multi-hour mesh, nor delay one. A deployment that has not turned the feature on
+        # never enqueues to it and the queue stays empty.
+        "tasks.geometry.measure_source": {"queue": "geometry_measurement"},
     },
     task_queue_max_priority={
         "training_export": 9,
+        # Above a mesh, because somebody is waiting on the conversation this answers and nobody is
+        # watching a queued mesh start one minute sooner.
+        "geometry_measurement": 7,
         "simulation_jobs": 5,
         "cleanup_tasks":   1,
     },

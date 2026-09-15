@@ -369,6 +369,13 @@ INVENTORY: list[Group] = [
         EnvVar("PIPELINE_TOTAL_TIMEOUT_SECONDS", "21600", kind="int", help="one absolute wall-clock ceiling for an ENTIRE job across every attempt, retry and restart"),
     ]),
 
+    Group("Geometry measurement at upload", note="OFF by default. With it off an upload behaves exactly as it did before this path existed: nothing is imported, no task is queued and no row is written. Turning it on needs the geometry-agent distribution installed in the image that runs it.", vars=[
+        EnvVar("GEOMETRY_MEASUREMENT_ENABLED", "false", kind="bool", help="measure an uploaded file and store the report against its sha256"),
+        EnvVar("GEOMETRY_MEASUREMENT_SYNC_MAX_MB", "4", kind="float", help="under this the measurement runs in the upload request; at or above it a worker takes it"),
+        EnvVar("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900", kind="int", help="one measurement's deadline; past it the row records the failure and the conversation is unaffected"),
+        EnvVar("GEOMETRY_REPORT_READERS_ENABLED", "false", kind="bool", help="whether intake, the mesh planner and the admission slot ACT on a stored measurement; separate from writing one, and off on its own"),
+    ]),
+
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[
         EnvVar("WORKER_LEASE_SECONDS", "900", kind="int"),
         EnvVar("WORKER_HEARTBEAT_SECONDS", "60", kind="int", help="must be well under WORKER_LEASE_SECONDS (validated at import)"),

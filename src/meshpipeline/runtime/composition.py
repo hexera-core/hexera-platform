@@ -48,6 +48,11 @@ def _enqueue_training_export(job_id: str, state: dict, *, created_at=None, ended
     )
 
 
+def _enqueue_geometry_measurement(source_id: str, owner_id: str, *, purpose: str) -> None:
+    from meshpipeline.adapters.pipeline_execution.geometry_tasks import enqueue
+    enqueue(source_id, owner_id, purpose=purpose)
+
+
 def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
@@ -64,6 +69,7 @@ def install_adapters() -> None:
         dead_letter,
         delivery_guard,
         event_stream,
+        geometry_measurement,
         inference_telemetry,
         mesh_execution,
         mesh_timing,
@@ -82,6 +88,10 @@ def install_adapters() -> None:
     object_storage.set_object_store(build_object_store())
     search.set_web_search_provider(build_web_search_provider())
     training_export.set_export_enqueuer(_enqueue_training_export)
+    # Bound whether or not the feature is on. Binding a seam is not turning anything on: with
+    # GEOMETRY_MEASUREMENT_ENABLED false nothing ever calls it, and binding it here means an
+    # operator who does turn it on does not also have to redeploy a different composition.
+    geometry_measurement.set_measurement_enqueuer(_enqueue_geometry_measurement)
     mesh_execution.set_mesh_executor(build_mesh_executor())
 
     # The narrow Redis-backed capabilities. Each is its own port: a capability can move off

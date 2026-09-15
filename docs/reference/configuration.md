@@ -400,7 +400,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (204 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (208 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -486,6 +486,10 @@ Every supported setting (204 entries). `template` settings are the ones `.env.ex
 | `PIPELINE_TOTAL_TIMEOUT_SECONDS` | template | app |  |
 | `STALLED_JOB_TIMEOUT_HOURS` | template | app |  |
 | `UPLOAD_RETENTION_DAYS` | template | app |  |
+| `GEOMETRY_MEASUREMENT_ENABLED` | template | app |  |
+| `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | template | app |  |
+| `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | template | app |  |
+| `GEOMETRY_REPORT_READERS_ENABLED` | template | app |  |
 | `PIPELINE_BACKEND` | template | app |  |
 | `REQUIRE_DURABLE_CHECKPOINTER` | template | app |  |
 | `WORKER_HEARTBEAT_SECONDS` | template | app |  |

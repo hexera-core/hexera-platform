@@ -273,8 +273,14 @@ services:
       - beat_data:/data/beat
     restart: unless-stopped
 
-  # Worker Utility - Celery cleanup + training-export tasks (lightweight, scalable)
-  # Beat scheduler is now a separate 'beat' service - do NOT add --beat here.
+  # Worker Utility - Celery cleanup + training-export + geometry-measurement tasks
+  # (lightweight, scalable). Beat scheduler is now a separate 'beat' service - do NOT add --beat here.
+  #
+  # geometry_measurement is listed so a queued measurement is CONSUMED rather than sitting in a
+  # queue nobody drains. This image does not carry the geometry-agent distribution, so until it
+  # does the task records a refusal naming the missing package - which is visible, where an
+  # undrained queue is not. The whole path is behind GEOMETRY_MEASUREMENT_ENABLED and nothing is
+  # ever enqueued with it off.
   worker-utility:
     build:
       context: .
@@ -283,7 +289,7 @@ services:
     entrypoint: ["/srv/worker_entrypoint.sh"]
     command: >
       celery -A meshpipeline.runtime.celery_worker worker
-      --queues cleanup_tasks,training_export
+      --queues cleanup_tasks,training_export,geometry_measurement
       --concurrency 2
       --loglevel info
       --hostname utility@%h

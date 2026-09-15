@@ -46,6 +46,48 @@ def _declared_evidence(state, engine: str):
     )
 
 
+# THE SLOT STAYS, AND IT READS.
+#
+# This node is the cheap second line, not the first. The measurement package refuses a bad file at
+# step 2, seconds after the upload and before the customer has written a sentence, so nothing that
+# gets this far should be a surprise. What the slot is for is the job that reached dispatch WITHOUT
+# having been through step 2: an older session, a measurement that was switched off that week, a
+# path someone adds later. Deleting it would remove the only check those jobs get.
+#
+# So it reads a stored verdict and computes nothing new. That is the whole change here, and it
+# matters for a reason the plan's own summary got wrong: the slot is NOT a no-op today.
+# `engines/vmtk/spec.py:190` declares `require_no_self_intersection=True` and vmtk is
+# `implemented=True`, so a vmtk job stages a surface and probes it on this path right now. It is a
+# no-op on the 322 corpus cases because they are all snappy and gmsh.
+
+async def _stored_analysis(state, job_id: str) -> dict | None:
+    """What the upload was measured to be, if anything. Never raises, never computes.
+
+    None means nothing was stored and the caller falls through to the probe it has always run. A
+    dict always carries `status`, so a rule never infers a verdict from an absent key.
+    """
+    import meshpipeline.settings.policy as polcfg
+
+    if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
+        return None
+    try:
+        from meshpipeline.cad.regions import reading_for_source
+        from meshpipeline.pipeline.geometry_state import geometry_ref
+
+        ref = geometry_ref(state)
+        if ref is None:
+            return None
+        analysis = await reading_for_source(ref)
+        if analysis is not None:
+            logger.info("geometry_admission: read the stored measurement rather than probing - "
+                        "job_id=%s status=%s", job_id, analysis.get("status"))
+        return analysis
+    except Exception as exc:                       # noqa: BLE001 - never block a build on a read
+        logger.warning("geometry_admission: the stored measurement could not be read (%s) - "
+                       "falling through to the probe - job_id=%s", exc, job_id)
+        return None
+
+
 async def node_geometry_admission(state: PipelineState) -> dict:
     import dataclasses
 
@@ -62,28 +104,42 @@ async def node_geometry_admission(state: PipelineState) -> dict:
     if ic is None or not (ic.require_no_self_intersection or ic.min_thickness_ratio > 0):
         return {}
 
+    # READ FIRST. A measurement made at upload against these exact bytes answers the same question
+    # the probe below answers, and it is already paid for. Only when there is none does this stage
+    # a surface and measure one.
+    analysis = await _stored_analysis(state, job_id)
+
     # Admission MEASURES the geometry, so it needs the same metre-normalised surface the builder
     # gets - an extent gate comparing millimetre numbers against metre thresholds would reject
     # sound geometry and admit unsound geometry, each by a factor of a thousand.
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
     _geometry = _materialized(state)
     source_path = _geometry.path if _geometry else ""
-    if not source_path or not Path(source_path).exists():
+    if analysis is None and (not source_path or not Path(source_path).exists()):
         # Nothing to inspect here (e.g. a programmatic submit without an upload path). The
         # builder's run_mesh gate remains the backstop, so never block on a missing file.
         return {}
 
-    with tempfile.TemporaryDirectory(prefix="admission-") as td:
-        dest = Path(td) / "input.stl"
-        try:
-            _prepared = prepare_surface(_geometry, dest, engine=engine)
-        except Exception as exc:  # a staging hiccup is a system issue - defer, never reject
-            logger.warning("geometry_admission: could not stage surface for %s (%s) - "
-                           "deferring to the builder - job_id=%s", engine, exc, job_id)
-            return {}
-        analysis = surface_analysis_for(spec, _prepared)
+    if analysis is None:
+        with tempfile.TemporaryDirectory(prefix="admission-") as td:
+            dest = Path(td) / "input.stl"
+            try:
+                _prepared = prepare_surface(_geometry, dest, engine=engine)
+            except Exception as exc:  # a staging hiccup is a system issue - defer, never reject
+                logger.warning("geometry_admission: could not stage surface for %s (%s) - "
+                               "deferring to the builder - job_id=%s", engine, exc, job_id)
+                return {}
+            analysis = surface_analysis_for(spec, _prepared)
 
     if analysis is None:  # analysis unavailable/failed - defer to the builder, don't blame the user
+        return {}
+    from meshpipeline.contracts.geometry_measurement import STATUS_OK
+    if analysis.get("status") not in (None, STATUS_OK):
+        # The measurement ran and could not finish. It carries `status` and `reason` and no numbers,
+        # so there is nothing to judge: defer to the builder exactly as an unavailable probe does,
+        # and never blame the customer for a step of ours that failed.
+        logger.info("geometry_admission: the stored measurement did not succeed (%s) - deferring "
+                    "to the builder - job_id=%s", analysis.get("status"), job_id)
         return {}
 
     # The SAME EngineSpec.admit(), now with the full declared context PLUS the measured surface

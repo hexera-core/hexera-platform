@@ -68,6 +68,18 @@ class IntakeExecutionState:
     selection: dict | None = None
     approval: dict | None = None
 
+    # WHAT THE FILE IS, read once per turn before the loop starts and handed in here rather than
+    # fetched by a handler. Two readers want it - the admission preview wants five keys, the system
+    # prompt wants the opening table - and a second fetch inside a tool call would read the same row
+    # twice in one turn and could disagree with the table the model is already holding.
+    #
+    # `None` means the measured phase did not run, which is the common case and never an error. A
+    # dict always carries `status`: see `cad/regions.py`. Nothing downstream may infer a verdict
+    # from an absent key.
+    geometry_reading: dict | None = None
+    #: The whole stored measurement, for what the conversation says. None when there is none.
+    geometry_document: dict | None = None
+
     # TURN-SCOPED, never round-scoped. Once a recommendation happens in this invocation, nothing
     # may escalate to selection or submission for the REST of the invocation - not merely for the
     # rest of the round. A comparison the user asked for can never become a choice they did not
@@ -123,12 +135,25 @@ class IntakeToolExecutor:
         self._trace = trace
 
 
-    def _geometry_facts(self) -> dict:
-        # What the uploaded CAD actually distinguishes, read from the staged file beside the
-        # session. Without it a refusal can only describe the engine, so a user whose export named
-        # nothing is told the system cannot do what they asked - when the missing part is theirs.
-        # Never fatal and never blocking: no file, or a file this cannot describe, simply says
-        # nothing and the verdict is what it always was.
+    def _geometry_facts(self) -> dict | None:
+        """What the uploaded geometry is, for the engine's admission rules. Never fatal, never blocking.
+
+        `None` IS A VALUE HERE, and it was not before. This used to return `{}` on every path - no
+        file, an unreadable file, any exception - and `engines/base.py:430-434` tests only
+        `surface_analysis is not None`, so `{}` passed the measured gate carrying nothing and three
+        situations arrived as one: never measured, measurement failed, and measured with nothing
+        unusual about it. `None` now means the measured phase did not run and a dict always carries
+        `status`, so no rule infers a verdict from an absent key.
+
+        With `GEOMETRY_REPORT_READERS_ENABLED` off this is exactly what it was, including the empty
+        dict, because that is what every engine rule on this path has always been handed.
+        """
+        import meshpipeline.settings.policy as polcfg
+
+        if polcfg.GEOMETRY_REPORT_READERS_ENABLED:
+            # Read before the loop, in `node_intake`. Absent means nothing was measured and nothing
+            # could be read off the durable bytes, which is a legitimate outcome and not an error.
+            return self.state.geometry_reading
         try:
             import meshpipeline.settings.runtime as rtcfg
             from meshpipeline.cad.regions import regions_for_session
@@ -138,6 +163,29 @@ class IntakeToolExecutor:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
+
+    def _patch_binding(self, patches) -> dict:
+        """Which declared flow boundaries resolved to a measured opening. Never fatal.
+
+        Off, or with no measurement, this is `{"checked": False, ...}` and the customer is told the
+        geometry was not measured - which is what has been true on every job ever run.
+        """
+        import meshpipeline.settings.policy as polcfg
+
+        if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
+            return {"checked": False}
+        try:
+            from meshpipeline.agents.intake.geometry_brief import bind_patches
+
+            bound = bind_patches(self.state.geometry_document, patches)
+            if bound.get("unbound"):
+                logger.info("Intake: %d declared boundary/boundaries did not bind to a measured "
+                            "opening - job_id=%s: %s", len(bound["unbound"]), self._job_id,
+                            [b["name"] for b in bound["unbound"]])
+            return bound
+        except Exception as exc:                   # noqa: BLE001 - a claim is never worth a turn
+            logger.debug("Intake: patch binding unavailable (%s)", exc)
+            return {"checked": False}
 
     async def run(self, tool: str, args: dict | None) -> IntakeToolResult:
         st = self.state
@@ -397,9 +445,16 @@ class IntakeToolExecutor:
             proposal_revision=st.revision, proposal_msg_count=st.user_msg_count)
         logger.info("Intake: pending approval %s created - job_id=%s",
                     st.approval["id"], self._job_id)
+        # WHAT WAS ACTUALLY CHECKED. `geometry_checked` is true only when a measurement exists AND
+        # every declared inlet and outlet resolved to an opening in it. Until this phase nothing
+        # could ever bind, so the sentence the customer read was false on every job; the foundations
+        # phase made it say what happened, and this is what lets it say the true version - and only
+        # then. A partial binding is false: a check of some of the patches is not a check.
+        _bound = self._patch_binding(args.get("patches"))
         _R.intake_requirements_finalized(
             self._trace, patches=len(args.get("patches") or []),
-            dimensionality=str(args.get("dimensionality") or ""))
+            dimensionality=str(args.get("dimensionality") or ""),
+            geometry_checked=bool(_bound.get("checked")))
         _R.intake_submission(self._trace, authorized=True)
         return IntakeToolResult(tool="submit_requirements", accepted=True, advanced=True, content=(
             "Authorized. The application will show the user the canonical confirmation summary; "

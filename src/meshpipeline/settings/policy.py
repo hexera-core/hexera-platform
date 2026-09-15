@@ -63,6 +63,38 @@ FAILED_JOB_RETENTION_HOURS: int = int(optional_env("FAILED_JOB_RETENTION_HOURS",
 UPLOAD_RETENTION_DAYS: int      = int(optional_env("UPLOAD_RETENTION_DAYS", "30"))
 STALLED_JOB_TIMEOUT_HOURS: int  = int(optional_env("STALLED_JOB_TIMEOUT_HOURS", "4"))
 
+# GEOMETRY MEASUREMENT AT UPLOAD. One gate over the whole path: with it off, an upload does exactly
+# what it did before this existed - no import of the measurement package, no task, no row, no column
+# read. It is off by default because the measurement runs a separate pinned distribution that an
+# image need not carry, and because nothing downstream requires the row: every reader treats an
+# absent measurement as "not attempted" and proceeds.
+GEOMETRY_MEASUREMENT_ENABLED: bool = optional_env("GEOMETRY_MEASUREMENT_ENABLED", "false").lower() == "true"
+#: Under this many mebibytes the measurement runs inside the upload request, so the conversation
+#: opens holding the table; at or above it the request returns immediately and a worker measures.
+#: The split is a wait, not a capability: 44 corpus files measure at a median of 1.11 s and a p90 of
+#: 3.91 s, and the one 12.32 s case is 55,946 faces. A customer will not wait for the tail.
+GEOMETRY_MEASUREMENT_SYNC_MAX_MB: float = float(optional_env("GEOMETRY_MEASUREMENT_SYNC_MAX_MB", "4"))
+#: How long one measurement may run before it is abandoned, matching the measurement package's own
+#: default deadline. A measurement that outlives it is recorded as a failure and the conversation
+#: proceeds exactly as it does with no measurement at all.
+GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS: int = int(
+    optional_env("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900"))
+
+# WHO READS THE STORED MEASUREMENT. Deliberately a SECOND gate, and off by default on its own.
+# `GEOMETRY_MEASUREMENT_ENABLED` decides whether a file is measured and a row written; this decides
+# whether anything acts on that row. They are separable because the first can run for a week
+# producing rows nobody reads - which is how you learn what the measurement costs and what it says
+# before a customer's conversation depends on it - and because turning the reading off is then one
+# variable rather than a redeploy without the distribution.
+#
+# With this off, all four readers behave exactly as they do today: intake lists the staging
+# directory, the mesh planner composes the same eight-key dict, the admission slot stages and
+# measures the surface itself, and the finalised-requirements sentence says the geometry was not
+# measured. With it on and no row present, each one falls back to precisely the same behaviour: a
+# missing measurement is never an error, only an absence.
+GEOMETRY_REPORT_READERS_ENABLED: bool = (
+    optional_env("GEOMETRY_REPORT_READERS_ENABLED", "false").lower() == "true")
+
 # durable graph checkpointing is MANDATORY outside genuinely-local dev/test. A silent
 # fallback from AsyncPostgresSaver to MemorySaver would make a mid-run restart re-run from scratch
 # (duplicate native/model work), lose in-flight state, or drop durable worker fencing - with NO

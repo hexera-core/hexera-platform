@@ -369,6 +369,7 @@ def _compose_test_adapters():
     from meshpipeline.adapters.ws_ticket.memory import MemoryWsTicketStore
     from meshpipeline.contracts import (
         event_stream,
+        geometry_measurement,
         model_inference,
         object_storage,
         search,
@@ -409,6 +410,10 @@ def _compose_test_adapters():
 
     # training export: no-op by default; export-behaviour tests inject a capturing enqueuer.
     training_export.set_export_enqueuer(lambda *a, **k: None)
+    # geometry measurement: UNBOUND, so nothing in the hermetic tier can reach a real broker even
+    # if a test composed the runtime adapters. Unbound is also a real deployment state - a process
+    # that composed no adapters - and the contract's answer for it is a logged no-op.
+    geometry_measurement.set_measurement_enqueuer(None)
     yield
 
 

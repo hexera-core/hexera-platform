@@ -367,6 +367,71 @@ class GeometryInterpretationRow(Base):
     )
 
 
+class GeometryMeasurement(Base):
+    """WHAT THE FILE IS, measured once from the bytes and never from the conversation.
+
+    ONE ROW PER UPLOADED SOURCE, because the measurement is a pure function of the bytes: the same
+    file uploaded twice by the same tenant is the same answer. `sha256` is carried on the row as
+    well as the foreign key so a reader can refuse a document that does not describe the bytes in
+    front of it without joining, and a document whose sha does not match the session's source is
+    never read.
+
+    `owner_id` is on the row so a second tenant uploading the same bytes gets its own row: sharing
+    one would make another tenant's upload observable, and the measurement is cheap enough that
+    deduplicating across tenants buys nothing worth that.
+
+    RESTRICT, matching `ChatSession.geometry_source_id` - a measurement is lineage and deleting a
+    source must not silently destroy the record of what was measured.
+
+    The row is NOT deleted when the bytes are purged at the end of the retention window. The
+    document is a description, not a copy: the geometry itself is gone, and what was measured is
+    still true and still the thing an old conversation referred to.
+    """
+
+    __tablename__ = "geometry_measurements"
+
+    id:                 Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                          default=uuid.uuid4)
+    geometry_source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("geometry_sources.id", ondelete="RESTRICT"),
+        nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    #: The digest of the bytes this document describes, copied from the source row at write time.
+    sha256:   Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: What the file was measured FOR. Only two fields of the measurement touch it (the mixed-scale
+    #: warnings and the cell estimates), which is why the measurement can run at upload before
+    #: anyone has said what the file is for; the assumed purpose is recorded rather than implied.
+    purpose:  Mapped[str] = mapped_column(String(32), nullable=False, server_default="")
+    #: "ok" | "refused" | "measurement_failed". A present row always carries one: absence means the
+    #: measurement was never attempted, and the two are different answers to different questions.
+    status:   Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Why, when the status is not ok. Empty on success. A short sentence, never a stack trace, a
+    #: path or anything a provider message could carry.
+    reason:   Mapped[str] = mapped_column(String(512), nullable=False, server_default="")
+    #: The measurement itself. `jsonb` rather than an object round trip: 321 cached facts documents
+    #: run from 5,755 bytes to 59,703, median 10,292.
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: WHICH STAMP THIS WAS WRITTEN UNDER. No stored artefact is read by code whose stamp differs
+    #: from the one it was written under unless the reader says out loud that it is reading across
+    #: a version boundary, and a reader cannot say that without these two.
+    facts_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    agent_git_sha: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    #: How long the measurement took, so the wait a customer paid for is a recorded number.
+    measure_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False,
+                                                 server_default=func.now())
+
+    __table_args__: tuple = (
+        # ONE measurement per upload: two rows for one source would be two answers to a question
+        # with one answer, and nothing downstream could choose between them.
+        UniqueConstraint("geometry_source_id", name="uq_geometry_measurement_source"),
+        # The digest is the identity of the bytes; a row whose text is not one is not a measurement
+        # of anything.
+        CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="ck_geometry_measurements_sha256_shape"),
+        Index("ix_geometry_measurements_owner_sha", "owner_id", "sha256"),
+    )
+
+
 class CaptureOperation(Base):
 
     __tablename__ = "capture_operations"

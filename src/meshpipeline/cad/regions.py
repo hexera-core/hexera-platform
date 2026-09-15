@@ -1,12 +1,13 @@
-# Responsibility: Report the separately named regions a CAD file carries, and hand that same reading to whoever tessellates it.
-# Owns: the assembly/component read, the vocabulary for what was found, and the per-upload cache.
+# Responsibility: Report what an uploaded geometry is, from the stored measurement when there is one and from the bytes when there is not.
+# Owns: the assembly/component read, the vocabulary for what was found, the per-upload cache, and the reading a session gets.
 # Boundaries: it reads and describes; it tessellates nothing and decides no engine's capability.
-# Collaborates with: cad/cad_tessellate.py, which writes the components this reports.
+# Collaborates with: cad/cad_tessellate.py, which writes the components this reports, and application/geometry_materializer.py for the durable bytes.
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,10 @@ def regions_of(path) -> CadRegions:
     return CadRegions()
 
 
-__all__ = ["CadRegions", "components_of", "regions_for_session", "regions_of"]
+__all__ = ["CadRegions", "MEASURED_NOT_ATTEMPTED", "agent_block_for_state", "components_of",
+           "reading_for_source",
+           "regions_for_session", "regions_of", "stored_document_for_source",
+           "surface_analysis_from_document"]
 
 
 #: Keyed by (path, size, mtime) so a replaced upload is re-read rather than answered from a stale
@@ -133,8 +137,18 @@ _CACHE: dict[tuple[str, int, int], CadRegions] = {}
 
 
 def regions_for_session(session_id: str, jobs_dir) -> CadRegions:
-    # The staged upload, read where the API already wrote it. This is deliberately not a database
-    # lookup: the bytes are on disk beside the session, so the facts need no schema of their own.
+    """The staged upload, read where the API used to leave it.
+
+    THIS READS A DIRECTORY THAT IS EMPTY BY DESIGN. `api/v1/upload.py:253` unlinks the staging
+    buffer at the end of every successful upload, because the durable copy is the object in
+    storage; this lists that same directory. It has therefore returned an empty `CadRegions` on
+    every job ever run, which is why the admission preview has always compared the customer's
+    declaration against nothing and why `contracts/rationale.py` told them otherwise.
+
+    It is kept, unchanged, for the one case it still answers: a file staged and not yet cleaned up,
+    which is what an in-process test and a local run without object storage have. `reading_for_source`
+    below is the reader that actually sees a customer's geometry.
+    """
     from meshpipeline.contracts.intake_formats import format_for_suffix
 
     root = Path(jobs_dir) / str(session_id or "")
@@ -150,3 +164,204 @@ def regions_for_session(session_id: str, jobs_dir) -> CadRegions:
     if key not in _CACHE:
         _CACHE[key] = regions_of(path)
     return _CACHE[key]
+
+
+# -------------------------------------------------------------------------------------------------
+# THE READING A SESSION GETS
+#
+# Three situations used to arrive as one value. `regions_for_session` returned an empty `CadRegions`
+# whether the file had no named regions, the directory was gone, or the read threw; intake's
+# `_geometry_facts` then turned every exception into `{}`; and `engines/base.py:430-434` only tests
+# `surface_analysis is not None`, so `{}` passed the gate carrying nothing. A reader could not tell
+# "measured and unremarkable" from "never measured".
+#
+# The contract here, from docs/pipeline.md section 2.3:
+#   None                      the measured phase did not run. Not an error, and the common case.
+#   {"status": "..."} + keys  it ran. `status` always present, so no verdict is inferred from an
+#                             absent key.
+# -------------------------------------------------------------------------------------------------
+
+#: What a reader is handed when nothing was measured and nothing could be read. It is `None`, and
+#: this name exists so the intent is greppable rather than a bare literal at four call sites.
+MEASURED_NOT_ATTEMPTED = None
+
+#: The five keys `engines/base.py` reads off `surface_analysis`, plus the `status` that makes the
+#: three situations distinguishable. `region_count` and `region_names` at `base.py:172-178`,
+#: `self_intersecting` at `:565`, `diag` and `thin_gap` at `:573-574`.
+_PROJECTION_KEYS = ("region_names", "region_count", "region_source", "diag", "thin_gap")
+
+
+def surface_analysis_from_document(document: Any) -> dict | None:
+    """What the engines read, from a stored measurement document. None when nothing was measured.
+
+    ONE TRANSLATION HAPPENS HERE AND IT IS LOAD-BEARING: `self_intersecting`.
+
+    The measurement package does not test for self-intersection, and says so with the string
+    `"unknown"` rather than `None`, because `None` reads as "not self-intersecting" to a dict `.get`.
+    On this side of the boundary `"unknown"` is worse: `base.py:565` is
+    `if ic.require_no_self_intersection and analysis.get("self_intersecting")`, a truthiness test, and
+    a non-empty string is true. `engines/vmtk/spec.py:190` declares
+    `require_no_self_intersection=True` and vmtk is `implemented=True`, so passing the word through
+    would reject every vmtk upload with "[GEOMETRY_UNSUITABLE] the input surface self-intersects" on
+    the strength of a measurement that never looked.
+
+    So the key is OMITTED when nothing measured it, which is the only value `.get` reads as "no
+    claim", and the package's own word is carried under `self_intersecting_state` where no gate reads
+    it and no information is lost. The day the measurement learns to test for it, a real `True` or
+    `False` comes through here unchanged.
+    """
+    if not isinstance(document, dict) or not document:
+        return None
+    from meshpipeline.contracts.geometry_measurement import STATUS_OK, projection_of
+
+    projection = projection_of(document)
+    if projection is None:
+        return None
+    if projection.get("status") != STATUS_OK:
+        # It ran and could not finish. The dict carries `status` and `reason` and no measurements,
+        # so every engine rule that needs a number sees no number rather than a wrong one.
+        return {"status": projection.get("status"), "reason": str(projection.get("reason") or "")}
+    out: dict = {"status": STATUS_OK}
+    for key in _PROJECTION_KEYS:
+        if key in projection:
+            out[key] = projection[key]
+    claimed = projection.get("self_intersecting")
+    if isinstance(claimed, bool):
+        out["self_intersecting"] = claimed
+    else:
+        out["self_intersecting_state"] = str(claimed or "unknown")
+    out["units"] = projection.get("units") or "file"
+    return out
+
+
+async def reading_for_source(ref, *, sha256: str = "") -> dict | None:
+    """What the uploaded geometry is, for the session that owns `ref`. Never raises.
+
+    THE STORED REPORT FIRST. It is the only reading that costs nothing: the file was measured once,
+    at upload, against these exact bytes, and the row is keyed to their digest.
+
+    THE OBJECT STORE SECOND. When there is no row - the measurement was off when this file landed,
+    or the worker has not reached it yet - the bytes are still there for thirty days and
+    `application/geometry_materializer.fetch_verified_bytes` is a verified route to them. Reading the
+    component structure off a downloaded STEP is a few seconds and it is what the old reader was
+    trying to do before the staging buffer was deleted out from under it.
+
+    NOTHING THIRD. `None` means the measured phase did not run, and every caller renders that as the
+    absence it is. A measurement that describes different bytes is the one condition that is not an
+    absence: `contracts/geometry_measurement.document_for` raises `MeasurementMismatch` for it, and
+    that is caught here and reported as not attempted, because a port table measured off a file the
+    customer replaced is worse than no table.
+    """
+    if ref is None:
+        return MEASURED_NOT_ATTEMPTED
+    digest = str(sha256 or getattr(ref, "sha256", "") or "")
+    document = await _stored_document(ref, digest)
+    if document is not None:
+        analysis = surface_analysis_from_document(document)
+        if analysis is not None:
+            return analysis
+    return await _analysis_from_object_store(ref)
+
+
+async def stored_document_for_source(ref, *, sha256: str = "") -> dict | None:
+    """The whole stored measurement document, or None. Never raises.
+
+    Separate from `reading_for_source` because two different readers want two different things: the
+    engines want five keys, and the conversation wants the opening table. Neither is derivable from
+    the other, and both come from one row.
+    """
+    if ref is None:
+        return None
+    return await _stored_document(ref, str(sha256 or getattr(ref, "sha256", "") or ""))
+
+
+async def agent_block_for_state(state) -> dict | None:
+    """The mesh planner's typed block for the geometry a run's state already names. Never raises.
+
+    It lives here, beside the row read it needs, because `contracts/` may import nothing above
+    itself (`tests/unit/hygiene/test_architecture_boundaries.py::test_contracts_are_neutral`) and
+    the shape of the block is a contract while reading a row is not.
+
+    `None` means the mesh planner adds no key and composes exactly the dict it composes today. It is
+    the answer to every failure: the setting off, no measurement, a row for different bytes, a
+    document written before the block existed in an image without the package, or a read that threw.
+    """
+    import meshpipeline.settings.policy as polcfg
+
+    if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
+        return None
+    try:
+        from meshpipeline.contracts.geometry_agent_block import block_for_document
+        from meshpipeline.contracts.geometry_source import GeometrySourceRef
+
+        payload = ((state or {}).get("geometry") or {}).get("ref")
+        if not payload:
+            return None
+        document = await stored_document_for_source(GeometrySourceRef.from_payload(payload))
+        return block_for_document(document)
+    except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
+        logger.warning("geometry agent block: unavailable for this run (%s) - the planner sees "
+                       "exactly what it sees with no measurement", exc)
+        return None
+
+
+async def _stored_document(ref, digest: str) -> dict | None:
+    from meshpipeline.contracts.geometry_measurement import MeasurementMismatch, document_for
+
+    try:
+        import uuid as _uuid
+
+        from meshpipeline.persistence.repositories.geometry_measurement_repository import (
+            GeometryMeasurementRepository,
+        )
+        from meshpipeline.persistence.session import get_db
+
+        source_uuid = _uuid.UUID(str(getattr(ref, "source_id", "") or ""))
+        async with get_db() as db:
+            row = await GeometryMeasurementRepository().for_source(
+                db, owner_id=str(getattr(ref, "owner_id", "") or ""),
+                geometry_source_id=source_uuid)
+        return document_for(row, sha256=digest)
+    except MeasurementMismatch as exc:
+        # DATA INTEGRITY, and the honest answer is to describe nothing rather than the wrong file.
+        logger.warning("geometry reading: the stored measurement does not describe these bytes - "
+                       "source_id=%s: %s", getattr(ref, "source_id", ""), exc)
+        return None
+    except Exception as exc:                      # noqa: BLE001 - a reading is never worth a turn
+        logger.info("geometry reading: no stored measurement available - source_id=%s (%s)",
+                    getattr(ref, "source_id", ""), exc)
+        return None
+
+
+async def _analysis_from_object_store(ref) -> dict | None:
+    """The components, read off the durable bytes. The fallback the old reader could not take.
+
+    It answers a narrower question than the measurement - which parts a file names, and nothing
+    about openings, thickness or size - so the dict it returns carries only the keys it actually
+    measured. No engine rule is fed a number this did not compute.
+    """
+    import asyncio
+    import tempfile
+
+    def _read() -> dict | None:
+        from meshpipeline.application.geometry_materializer import fetch_verified_bytes
+
+        with tempfile.TemporaryDirectory(prefix="geometry-reading-") as workspace:
+            local = fetch_verified_bytes(ref, workspace=workspace,
+                                         job_id=f"reading:{getattr(ref, 'source_id', '')}")
+            regions = regions_of(local)
+        from meshpipeline.contracts.geometry_measurement import STATUS_OK
+        return {"status": STATUS_OK, "region_names": list(regions.names),
+                "region_count": regions.count, "region_source": regions.source,
+                #: Not measured here, and the key is absent rather than false: see
+                #: `surface_analysis_from_document`. `diag` and `thin_gap` are absent for the same
+                #: reason, so `geometry_unsuitable` computes no ratio from numbers nobody produced.
+                "self_intersecting_state": "unknown", "units": "file",
+                "reading_source": "object_store"}
+
+    try:
+        return await asyncio.to_thread(_read)
+    except Exception as exc:                      # noqa: BLE001 - fail open, always
+        logger.info("geometry reading: the durable bytes could not be described - source_id=%s (%s)",
+                    getattr(ref, "source_id", ""), exc)
+        return MEASURED_NOT_ATTEMPTED

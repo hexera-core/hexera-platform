@@ -254,6 +254,14 @@ async def upload_step_file(
     logger.info("upload_step_file: stored %d bytes as source %s - session_id=%s owner=%s",
                 counted, source_id, session_id, owner_id)
 
+    # WHAT THE FILE IS, measured from the durable bytes. Behind one setting that is off by default,
+    # and everything past that line fails open: a measurement that refuses, breaks, times out or
+    # cannot import its package changes nothing about this response, this session or the
+    # conversation that follows. The order matters - the source is committed first, so the
+    # measurement is keyed to bytes that are already durable and a failure here can never strand an
+    # upload that succeeded.
+    await _measure_geometry(source_id, owner_id, size_bytes=counted, session_id=session_id)
+
     # An upload is an upload. Nothing has been parsed, measured or checked at this point, so the
     # acknowledgement is a fixed server-owned sentence rather than a model turn: with no request
     # text and no materialised file there is nothing for a model to reason about, and the only
@@ -277,6 +285,31 @@ async def upload_step_file(
         trace=_project_trace(_greeting_trace),
     )
 
+
+
+async def _measure_geometry(source_id, owner_id: str, *, size_bytes: int, session_id) -> None:
+    """Measure the upload, or do nothing at all.
+
+    THE GATE IS READ HERE, before anything else, so that with the feature off this function imports
+    no module, touches no queue and reads no column - the upload path is byte for byte what it was
+    before the measurement existed. `tests/unit/api/test_upload_measurement.py` is what holds that
+    claim rather than this comment.
+
+    Nothing below may raise. An upload that stored its bytes and wrote its row has succeeded, and a
+    description of the geometry is not worth turning that into a 500. The only thing a failure
+    costs is the table intake would otherwise have opened with.
+    """
+    import meshpipeline.settings.policy as polcfg
+    if not polcfg.GEOMETRY_MEASUREMENT_ENABLED:
+        return
+    try:
+        from meshpipeline.application.geometry_measurement import on_upload
+        outcome = await on_upload(str(source_id), owner_id, size_bytes=size_bytes)
+        logger.info("upload_step_file: geometry measurement %s - source %s session_id=%s",
+                    outcome, source_id, session_id)
+    except Exception as exc:  # noqa: BLE001 - the upload has already succeeded; this never fails it
+        logger.warning("upload_step_file: the geometry measurement path failed for source %s "
+                       "(the conversation is unaffected): %s", source_id, exc)
 
 
 def _declared_unit_evidence(staged: Path):

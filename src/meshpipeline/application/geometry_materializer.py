@@ -57,17 +57,17 @@ async def resolve_row_ref(db, ref: GeometrySourceRef) -> GeometrySourceRef:
     return GeometrySourceRef.from_row(row)
 
 
-def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRef, *,
-                workspace, row_ref: GeometrySourceRef | None = None,
-                job_id: str = "") -> MaterializedGeometry:
-    if row_ref is not None:
-        drift = ref.disagreements_with(row_ref)
-        if drift:
-            raise GeometrySourceError(
-                "the approved geometry no longer matches the stored source record "
-                f"(differs on: {', '.join(drift)})",
-                failure_class=FailureClass.DATA_INTEGRITY)
+def fetch_verified_bytes(ref: GeometrySourceRef, *, workspace, job_id: str = "") -> Path:
+    """THE retrieval: the exact bytes this row names, in a local file, checked on arrival.
 
+    Separate from `materialize` because there are two different questions and only one of them is
+    about scale. Meshing needs the bytes AND their physical meaning, so `materialize` refuses to
+    hand back a handle without an interpretation. Measuring needs only the bytes: what a file is,
+    how many openings it has and where they sit are properties of the geometry, and the unit is a
+    separate question with a separate lifetime that a measurement can honestly report as unknown.
+    Splitting the retrieval out is what lets the measurement reuse this verified route instead of
+    opening a second one, without weakening the invariant `MaterializedGeometry` exists to hold.
+    """
     ws = Path(workspace)
     ws.mkdir(parents=True, exist_ok=True)
     dest = ws / f"{_BASENAME}{safe_suffix(ref.suffix_hint)}"
@@ -97,6 +97,21 @@ def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRe
             "the retrieved geometry does not match the approved upload",
             failure_class=FailureClass.DATA_INTEGRITY)
     logger.info("geometry materialize: verified %d bytes - job_id=%s", size, job_id)
+    return dest
+
+
+def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRef, *,
+                workspace, row_ref: GeometrySourceRef | None = None,
+                job_id: str = "") -> MaterializedGeometry:
+    if row_ref is not None:
+        drift = ref.disagreements_with(row_ref)
+        if drift:
+            raise GeometrySourceError(
+                "the approved geometry no longer matches the stored source record "
+                f"(differs on: {', '.join(drift)})",
+                failure_class=FailureClass.DATA_INTEGRITY)
+
+    dest = fetch_verified_bytes(ref, workspace=workspace, job_id=job_id)
     return MaterializedGeometry(ref=ref, interpretation=interpretation, local_path=dest)
 
 

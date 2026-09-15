@@ -106,6 +106,74 @@ def clamp_cell_budget(raw: object, *, ceiling: int, default: int = 4_000_000) ->
     return min(iv, ceiling)
 
 
+#: The block's own name. It is written by the measurement package and checked here, so a dict from
+#: some other artefact cannot arrive in the planner's prompt wearing this key.
+GEOMETRY_AGENT_BLOCK_SCHEMA = "geometry_agent.planner_block.v1"
+
+#: Every key the planner is willing to put in front of a model, and nothing else. The block is
+#: composed by a separate pinned distribution: an allowlist is what stops a field added there from
+#: reaching a customer's plan here without anyone deciding it should.
+#:
+#: `seed_point_m` is deliberately absent and its absence is asserted by a test. The seed check has
+#: never run once (dev_plan_v3 W8, the card reads `untestable 240`), the agent's seed differs from
+#: the brief's on 46 of 61 cases with 4 outside the part's own bounding box, and neither planner
+#: prompt has a seed field for it to land in.
+GEOMETRY_AGENT_BLOCK_KEYS = (
+    "status", "missing", "missing_because", "representation",
+    "agent_forecast_cells", "agent_forecast_low", "agent_forecast_basis", "forecast_calibration",
+    "customer_cell_cap", "inlet_bore_m", "inlet_opening_id", "smallest_port_min_dim_m",
+    "places", "source_sha256", "agent_git_sha", "units",
+)
+
+#: What the planner is never handed, whatever the block says, with the reason it is refused.
+GEOMETRY_AGENT_BLOCK_REFUSED = {
+    "seed_point_m": "the seed check has never run and no planner prompt has a field for it",
+    "cell_estimate_refined": "the refinement-ball estimate, off by a median 1.86x and a max 576x",
+}
+
+
+#: How to read the block, sent ONLY when a block is present. It says the two things a model cannot
+#: work out from the keys: that the cell envelope systematically UNDER-counts before a plan exists,
+#: and that the places are measured rather than suggested.
+_AGENT_BLOCK_NOTE = """
+
+ABOUT "geometry_agent" IN THE DICT ABOVE: it is a separate measurement of the customer's own file, in metres, made before any plan existed. Read it as follows.
+- agent_forecast_cells is an ENVELOPE, not an estimate of your plan. forecast_calibration carries its MEASURED error against 263 real jobs: before a plan exists it has come in at about 0.52x the cells actually delivered. So treat it as a FLOOR - the real mesh has usually been about twice it - and do NOT shave max_cells towards it.
+- inlet_bore_m is the bore the builder will size from. cells_across_diameter is defined relative to exactly this number.
+- smallest_port_min_dim_m is the smallest port the mesh has to resolve; your wall cell has to fit several cells across it.
+- places are MEASURED locations that cost cells, not suggestions. A port mouth tilted off the background grid is cut by stair-stepped cells (this is the mechanism behind most poor carves); a thin region is where prism layers collapse. Name them in "focus" and size for them.
+- status "degraded" means the listed fields in "missing" could not be measured. Fields that are absent were not measured; do not infer a value for them.
+- If this block and the customer's own text disagree, the CUSTOMER is right: they can see the part and this is a measurement of a file."""
+
+
+def _validated_agent_block(block: object, job_id: str) -> dict | None:
+    """The measurement package's block, checked before it reaches a prompt. None to add no key.
+
+    Three things are checked and each has cost something before. That the block names itself, so a
+    stray dict cannot ride in under this key. That it declares a `status`, because a partial block
+    silently missing two numbers is read by a model as a part that has neither. And that every key
+    is one this planner chose to show, because the block is authored in a separately pinned
+    distribution that may move without this file.
+    """
+    if not isinstance(block, dict) or not block:
+        return None
+    if str(block.get("schema") or "") != GEOMETRY_AGENT_BLOCK_SCHEMA:
+        logger.warning("Planner: a geometry block named %r was refused - job_id=%s",
+                       block.get("schema"), job_id)
+        return None
+    if str(block.get("status") or "") not in ("ok", "degraded"):
+        # A block with no status is the failure mode this whole contract exists to prevent: the
+        # prompt calls the measured dict complete, so a silent absence reads as a measurement.
+        logger.warning("Planner: a geometry block with no status was refused - job_id=%s", job_id)
+        return None
+    out = {k: block[k] for k in GEOMETRY_AGENT_BLOCK_KEYS if k in block}
+    dropped = sorted(set(block) - set(out) - {"schema", "facts_sha256", "facts_schema_version"})
+    if dropped:
+        logger.info("Planner: geometry block keys with no reader here were dropped - job_id=%s: %s",
+                    job_id, dropped)
+    return out or None
+
+
 def _log_plan_event(job_id: str, payload: dict, op_id: str = "",
                     attempt: int | None = None) -> None:
     try:
@@ -129,11 +197,13 @@ async def make_mesh_plan(*, workspace, job_id: str, request_txt: str,
                          previous_plan: dict | None = None,
                          flow_regime: str = "external",
                          mesh_fidelity: str = "",
+                         geometry_agent: dict | None = None,
                          surface=None) -> dict | None:
     return (await plan_with_accounting(
         workspace=workspace, job_id=job_id, request_txt=request_txt,
         prior_feedback=prior_feedback, previous_plan=previous_plan,
-        flow_regime=flow_regime, mesh_fidelity=mesh_fidelity, surface=surface)).plan
+        flow_regime=flow_regime, mesh_fidelity=mesh_fidelity,
+        geometry_agent=geometry_agent, surface=surface)).plan
 
 
 async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
@@ -145,6 +215,7 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
                                attempt: int = 1,
                                native_attempt: int = 1,
                                plan_call: int = 0,
+                               geometry_agent: dict | None = None,
                                surface=None) -> PlanOutcome:
     stl = Path(workspace) / "input.stl"
     if not stl.exists():
@@ -171,6 +242,23 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
             "affordable_level_at_4M_cells": r.get("afford_level"),
             "max_cells_HARD_CEILING": polcfg.CELL_HARD_LIMIT,   # compute limit - never exceed this
         }
+        # THE SECOND CHANNEL. `user` below cuts `request_txt[:2000]` and then serialises this dict
+        # AFTER the cut, so a key added here is never truncated however long the customer's brief
+        # is. Everything in `docs/handover_consumers.md` section 9 budgeted a block against
+        # `min(700, max(320, 2000 - len - 40))` characters of prose; that scarcity is a property of
+        # the string, not of the handover, and it ends at this line.
+        #
+        # ONE NAMED SUB-OBJECT, not seven loose keys. The prompt above already promises the geometry
+        # "has ALREADY been measured for you" and names four things; seven more bare keys of
+        # different authorship read as more of the same, while one named object carries its own
+        # provenance and, when the agent did not run, is visibly ABSENT rather than silently missing
+        # from a dict the prompt calls complete.
+        #
+        # None is the whole fail-open contract at this boundary: no key, and the dict the planner
+        # serialises is byte-for-byte the dict it serialises today.
+        _agent_block = _validated_agent_block(geometry_agent, job_id)
+        if _agent_block is not None:
+            metrics["geometry_agent"] = _agent_block
         # The mesh-detail preference is qualitative, bounded, advisory context, never a cell target.
         from meshpipeline.pipeline.enums import authoring_tier
         _tier = authoring_tier(mesh_fidelity).value if mesh_fidelity else ""
@@ -183,8 +271,13 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
                 " a little; you may still propose only values the schema allows, max_cells stays bounded"
                 " by max_cells_HARD_CEILING, and the reviewer does NOT check whether a tier-specific"
                 " cell count was reached.")
+        # The note rides with the block and only with it. The system prompt above is not touched:
+        # with no block it would describe a key the model will not find, and a prompt that promises
+        # a measurement that is not there is the exact failure this phase exists to remove.
+        _agent_note = _AGENT_BLOCK_NOTE if _agent_block is not None else ""
         user = ("REQUEST:\n" + (request_txt or "").strip()[:2000]
-                + "\n\nMEASURED GEOMETRY (metres):\n" + json.dumps(metrics, indent=1) + _fid_note)
+                + "\n\nMEASURED GEOMETRY (metres):\n" + json.dumps(metrics, indent=1)
+                + _agent_note + _fid_note)
         if prior_feedback and previous_plan:
             user += ("\n\nYour PREVIOUS plan (which you must REVISE, not repeat) was:\n"
                      + json.dumps(previous_plan, indent=1)

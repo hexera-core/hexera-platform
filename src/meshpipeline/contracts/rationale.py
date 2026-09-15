@@ -71,10 +71,32 @@ def intake_compatibility(publish: Any, *, engine: str, purpose: str,
              explanation or "the engine does not admit this purpose from this input kind")
 
 
-def intake_requirements_finalized(publish: Any, *, patches: int, dimensionality: str) -> None:
+#: WHAT WAS ACTUALLY CHECKED. Until 2026-09-15 this sentence told every customer their boundary
+#: assignments "were checked against the geometry and the selected engine". The engine half was
+#: true. The geometry half was not, on any job ever run: intake's one geometry reader calls
+#: `regions_for_session(session_id, JOBS_DIR)`, and `cad/regions.py:135-151` lists the staging
+#: directory `api/v1/upload.py:253` deletes at the end of every upload, so it always found an empty
+#: `CadRegions` and the check compared the declaration against nothing.
+#:
+#: TWO WAYS TO FIX A FALSE SENTENCE: make it true, or make it say what happened. Making it true is
+#: not this module's to do - it needs intake's reader to go to the stored measurement instead of a
+#: deleted directory, and to bind each declared patch to a measured opening, which is a change to
+#: `agents/intake/` and the phase that owns it. So this says what happened, today, and takes a
+#: keyword that flips it back the moment the check exists. The default is `False` because that is
+#: the truth at every call site right now, and a default that has to be passed to be honest is a
+#: sentence that goes back to lying the first time someone adds a caller.
+_GEOMETRY_CHECKED = ("{patches} boundary assignment(s) and a {dimensionality} domain were checked "
+                     "against the measured geometry and the selected engine")
+_GEOMETRY_NOT_CHECKED = ("{patches} boundary assignment(s) and a {dimensionality} domain were "
+                         "checked against the selected engine; the geometry itself was not "
+                         "measured, so the sizes and positions here are the ones you stated")
+
+
+def intake_requirements_finalized(publish: Any, *, patches: int, dimensionality: str,
+                                  geometry_checked: bool = False) -> None:
+    template = _GEOMETRY_CHECKED if geometry_checked else _GEOMETRY_NOT_CHECKED
     _say(publish, "Requirements are complete and validated.",
-         f"{patches} boundary assignment(s) and a {dimensionality} domain were "
-         "checked against the geometry and the selected engine")
+         template.format(patches=patches, dimensionality=dimensionality))
 
 
 def intake_submission(publish: Any, *, authorized: bool, reason: str = "") -> None:

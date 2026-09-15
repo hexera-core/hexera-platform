@@ -1654,9 +1654,9 @@
   ]
  },
  {
-  "context": "application/geometry_materializer.py::materialize::error#1|NotAPublisher|not-a-publisher|",
+  "context": "application/geometry_materializer.py::fetch_verified_bytes::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_materializer.py",
-  "qualname": "materialize",
+  "qualname": "fetch_verified_bytes",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,

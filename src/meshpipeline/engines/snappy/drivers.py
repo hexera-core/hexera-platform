@@ -35,6 +35,17 @@ if TYPE_CHECKING:
 
 
 
+async def _agent_block(state) -> dict | None:
+    """The measurement package's typed block for this run's geometry, or None.
+
+    None is the whole of the fail-open: the planner adds no key and composes the dict it composes
+    today. It is also the answer with the setting off, with no measurement stored, with a row that
+    describes different bytes, and in an image that does not carry the measurement distribution.
+    """
+    from meshpipeline.cad.regions import agent_block_for_state
+    return await agent_block_for_state(state)
+
+
 def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     """(budget_requested, cells_produced) from the SIBLING attempt this retry follows, else None.
 
@@ -300,6 +311,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 request_txt=state.get("request_txt", ""),
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
                 prior_feedback=feedback, previous_plan=previous_plan,
+                # THE SECOND CHANNEL into the planner: a dict key, added after the 2,000-character
+                # cut, so it is never truncated. None adds no key and the prompt is unchanged.
+                geometry_agent=await _agent_block(state),
                 # a real model round deserves the same public lifecycle
                 publish=publish, attempt=_attempt_of(state),
                 # WHICH re-plan this is. Each meshing pass plans against its own failure, so the
@@ -546,6 +560,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
                 prior_feedback=feedback, previous_plan=previous_plan,
                 flow_regime="internal",
+                geometry_agent=await _agent_block(state),
                 publish=publish, attempt=_attempt_of(state),
                 native_attempt=attempt, plan_call=run.plan_call_index)
             plan = _po.plan
@@ -727,6 +742,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             request_txt=state.get("request_txt", ""),
             mesh_fidelity=state.get("effective_mesh_fidelity", ""), prior_feedback=prior_fb,
             flow_regime="internal" if state.get("flow_topology") == "internal" else "external",
+            geometry_agent=await _agent_block(state),
             # the first plan is a real model round too, and omitting the publisher traces
             # nothing: the plan still succeeds, so the only symptom is a silent card
             publish=publish, attempt=_attempt_of(state), plan_call=run.plan_call_index)

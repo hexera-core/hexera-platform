@@ -553,6 +553,69 @@ def _confirmation_block(state: dict) -> str:
     )
 
 
+# WHAT THE FILE IS, for this turn
+#
+# Intake has been blind since the product shipped, and not for want of data: the bytes are in object
+# storage for thirty days, the measurement is stored against their digest, and `cad/regions.py` was
+# pointed at a staging directory `api/v1/upload.py:253` deletes at the end of every upload. Of the
+# 601 questions intake writes for itself across the 287 stored conversations, 321 name something the
+# file already answers.
+#
+# Both halves of the fix are read here, once, together. A second read inside a tool call could
+# disagree with the table the model is already holding, and a turn where the prompt says one bore and
+# the admission check uses another is worse than either alone.
+
+@dataclasses.dataclass(frozen=True)
+class _GeometryReading:
+
+    #: The five keys the engines read, or None when the measured phase did not run.
+    reading: dict | None = None
+    #: The whole stored measurement document, or None. What the conversation says comes from this.
+    document: dict | None = None
+
+
+async def _geometry_reading(state) -> _GeometryReading:
+    """The stored measurement for this session's upload. Never raises, never blocks, never delays.
+
+    Everything about this is an absence when it is not a success. There is no path here that fails a
+    turn, and there is no path that makes the customer wait: the measurement already ran at upload,
+    and this is a row read by primary key.
+    """
+    import meshpipeline.settings.policy as polcfg
+
+    if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
+        return _GeometryReading()
+    try:
+        from meshpipeline.cad.regions import reading_for_source, stored_document_for_source
+        from meshpipeline.pipeline.geometry_state import geometry_ref
+
+        ref = geometry_ref(state)
+        if ref is None:
+            return _GeometryReading()
+        document = await stored_document_for_source(ref)
+        reading = await reading_for_source(ref)
+        return _GeometryReading(reading=reading, document=document)
+    except Exception as exc:                       # noqa: BLE001 - intake NEVER blocks on this
+        logger.warning("Intake: the stored geometry reading was unavailable (%s) - the "
+                       "conversation proceeds as it does with no measurement", exc)
+        return _GeometryReading()
+
+
+def _geometry_block(geometry: _GeometryReading) -> str:
+    """The opening table, as a prompt block. Empty string when there is nothing measured.
+
+    Empty is the contract: with no block the system prompt is character-for-character the prompt
+    that ships today, so a missing, stale or failed measurement costs the conversation nothing.
+    """
+    try:
+        from meshpipeline.agents.intake.geometry_brief import render_block
+
+        return render_block(geometry.document)
+    except Exception as exc:                       # noqa: BLE001
+        logger.warning("Intake: the geometry block could not be composed (%s)", exc)
+        return ""
+
+
 def _build_llm_messages(system: str, state_messages: list) -> list[dict]:
     messages: list[dict] = [{"role": "system", "content": system}]
     for m in state_messages:
@@ -706,7 +769,15 @@ async def node_intake(state: PipelineState) -> dict:
     logger.info("Intake: starting - job_id=%s session_id=%s confirming=%s",
                 job_id, state.get("session_id", ""), _awaiting_confirmation)
 
+    # WHAT THE FILE IS, read ONCE for this turn, before the prompt is composed and before the loop
+    # starts. Two readers want it and they must agree: the system prompt states the opening table to
+    # the model, and the admission preview hands the same reading to the engine's measured rules.
+    # Off, or with nothing stored and nothing retrievable, both are `None` and every line below runs
+    # exactly as it did before this existed.
+    _geometry = await _geometry_reading(state)
+
     system = compose_intake_system()
+    system += _geometry_block(_geometry)
     if _awaiting_confirmation:
         system += _confirmation_block(state)
     state_messages = state.get("messages", [])
@@ -728,7 +799,8 @@ async def node_intake(state: PipelineState) -> dict:
         session_id=_ctx.session_id, owner_id=_ctx.owner_id, revision=_ctx.revision,
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
-        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval)
+        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
+        geometry_reading=_geometry.reading, geometry_document=_geometry.document)
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)
