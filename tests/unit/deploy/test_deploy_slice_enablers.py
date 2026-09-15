@@ -53,7 +53,7 @@ def test_mesh_launcher_authenticates_via_adc_not_key_file():
 # is empty - production validate() must not reject that (it would crash the API on boot).
 def _validate_boots(extra: dict, tmp: Path) -> tuple[bool, str]:
     env = {
-        "DEEPSEEK_API_KEY": "x", "DEEPINFRA_API_KEY": "x",
+        "OPENAI_API_KEY": "x", "DEEPSEEK_API_KEY": "", "DEEPINFRA_API_KEY": "",
         "ENV": "production", "MESH_API_KEY": "k", "USER_TOKEN_SECRET": "s",
         "CORS_ORIGINS": "https://app.example.com",
         # both data roots, or startup.validate() probes CWD-relative ./data in the checkout

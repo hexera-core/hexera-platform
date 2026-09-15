@@ -96,6 +96,13 @@ source is load-bearing here; §7 verifies capability at swap time instead.
 
 ## 4. Why no default moves
 
+> **Superseded 2026-09-15.** Every default in this section has since moved: all five roles were
+> cut over to `openai` (luna for intake/summarizer, terra for builder/planner/visual_reviewer)
+> after production went down on an unfunded DeepSeek account. The reasoning below is why the
+> increase was worth deliberating over, not a description of the shipped routes — and the
+> per-role control it argues for is exactly what made the cutover a five-row edit. The rates
+> still hold; see `2026-09-15-openai-responses-adapter-design.md` §11.
+
 Output rate dominates: builder and planner stream long agentic turns under a 1800s timeout.
 
 | Role | Today | Out $/1M | OpenAI | Out | Anthropic | Out |

@@ -328,8 +328,11 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
 ## 11. Open questions
 
 - Silent drop vs. loud refusal for inexpressible sampling (§6) — recommendation stated.
-- Which model each role gets. `gpt-5.6-luna` is chosen for intake and summarizer; builder, planner
-  and visual_reviewer are unspecified, and moving them is a 4–17× increase in output cost.
+- ~~Which model each role gets.~~ — **CLOSED.** `ROUTE_MATRIX` now reads
+  `openai/gpt-5.6-luna` for intake and summarizer and `openai/gpt-5.6-terra` for builder, planner
+  and visual_reviewer. The 4–17× output-rate increase for the latter three was accepted, not
+  avoided; `unpriced_route_models()` is `[]` on both sides of the move. All five roles were
+  verified live through their own entry points on 2026-09-15, vision included.
 - With DeepSeek abandoned and DeepInfra unused, OpenAI becomes a single point of failure with no
   funded standby — structurally the position that caused this outage. Stage 3 of the parent spec
   (per-role standby) is the answer and is not yet built.
@@ -340,6 +343,11 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
   `openai` model, one WARNING will not tell an operator that a *second* role's tuning was also
   discarded — it will look like the field was warned about once and is now fine. Not fixed here;
   fixing it means threading a role name into `build_request`, which task 5 deliberately does not do.
+  **That day has arrived:** builder, planner and visual_reviewer all sit on
+  `openai/gpt-5.6-terra`, and the live cutover run logged the drop of `temperature`/`top_p`/`min_p`
+  once (for the builder) and nothing at all for the planner, whose identical tuning was discarded
+  in silence. Still a reporting gap, not a behaviour one — the parameters were always going to be
+  dropped — but it is now observed rather than predicted.
 - ~~A `max_output_tokens` truncation on a streamed Responses call surfaces as
   `_EmptyResponse`~~ — **CLOSED.** `consume_responses_stream` now returns the `.response` of a
   `response.incomplete` event, and `responses_normalize` maps that status onto
@@ -347,6 +355,23 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
   instead of burning two retries. `response.failed` still raises: it reports a server-side
   error rather than a short answer, and returning it would normalise to `ok=True` carrying
   whatever fragment preceded the failure.
+
+- **`DEEPSEEK_MODEL` is now a misleading name for intake's model, and wants retiring.** It
+  defaults to `gpt-5.6-luna` and is read by `application/pipeline_run.py` as intake's capture
+  provenance, so it must agree with `INTAKE_MODEL` — an OpenAI identifier behind a DeepSeek name.
+  Renaming it is a breaking configuration change, not a routing edit: an operator's existing
+  `DEEPSEEK_MODEL=` would have to be refused rather than ignored, which is what
+  `inventory.REMOVED` exists for. It was deliberately left alone in the cutover commit so that
+  commit changes where calls go and nothing else. The replacement is `INTAKE_MODEL`, which is
+  already declared, already in the template, and already the authority the route reads.
+
+- **The two quota domains collapsed, and no budget was retuned to match.** intake and summarizer
+  now share `openai:default:gpt-5.6-luna`; builder, planner and visual_reviewer share
+  `openai:default:gpt-5.6-terra`. `routes.domain_budget` takes the MAX of the roles in a domain,
+  so the shared ceilings are 16 and 8 — where the reviewer previously held 8 in-flight calls of
+  its own, it now competes for the builder's. That is arguably the honest reading (they really do
+  spend one vendor quota), and the per-role `*_ACCOUNT` column is the lever that separates them
+  again, but it is a throughput change nobody chose and it should be measured before load.
 
 - **`reasoning.effort` is not sent, and will not be until a role can express one.** §5 listed it
   as something this adapter owns, but `SamplingSpec` carries no effort field: any value here

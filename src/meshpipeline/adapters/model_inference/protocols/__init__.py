@@ -64,8 +64,9 @@ def _registry() -> dict[str, WireProtocol]:
     # `openai` now resolves to its own protocol rather than being absent. Registering
     # ChatCompletions for it - because it would "probably work" - would send a chat-shaped
     # request to an API whose request and response are different on every axis the product uses,
-    # which fails later, more confusingly, and only after the tokens are paid for. No role is
-    # routed at "openai" yet (ROUTE_MATRIX is unchanged); this only makes the provider callable.
+    # which fails later, more confusingly, and only after the tokens are paid for. Every shipped
+    # route now resolves to "openai", so this entry is the live path; chat serves the two
+    # providers a deployment can still point a role back at.
     return {"deepinfra": chat, "deepseek": chat, "openai": Responses()}
 
 

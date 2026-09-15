@@ -16,10 +16,12 @@ REVIEWER_SETTINGS = (REPO / "src/meshpipeline/agents/reviewer/settings.py").read
 
 #: THE canonical Reviewer model. The reviewer is the VISUAL reviewer - it consumes rendered mesh
 #: screenshots (agents/reviewer/visual.py: _publish.screenshot / initial_screenshot_b64) - so it
-#: MUST be a vision-language model. Qwen3-VL is a VLM; the THINKING variant matches the documented
-#: reviewer sampling params (settings.py: "Qwen3-VL THINKING params"). Kimi-K2.5 (text/agentic) and
-#: the -Instruct variant were the stale disagreements.
-CANONICAL_REVIEWER_MODEL = "Qwen/Qwen3-VL-235B-A22B-Thinking"
+#: MUST be a vision-language model, and a text-only model here is a silent quality failure rather
+#: than an error. gpt-5.6-terra's vision was probed live against api.openai.com before the reviewer
+#: was moved onto it (openai-responses-adapter design doc, section 1). Qwen3-VL-Thinking served
+#: this role until the OpenAI cutover; Kimi-K2.5 (text/agentic) and Qwen's -Instruct variant were
+#: the stale disagreements this check was written to catch.
+CANONICAL_REVIEWER_MODEL = "gpt-5.6-terra"
 
 
 def _compose_default(key: str) -> str | None:

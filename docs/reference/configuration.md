@@ -42,28 +42,70 @@ A dependency that fails repeatedly trips a circuit breaker and the job fails as 
 There is deliberately no fallback model, because a silent substitution changes mesh quality
 without telling anyone.
 
-### DeepSeek: intake and the search summarizer
+Which provider serves a role is a per-role setting: every role declares twelve of them,
+`<ROLE>_PROVIDER` and `<ROLE>_MODEL` among them, and they are listed in `.env.example` and in the
+roster at the end of this document. The shipped routes are:
+
+| Role | Prefix | Provider | Model |
+|---|---|---|---|
+| intake | `INTAKE` | `openai` | `gpt-5.6-luna` |
+| search summarizer | `SEARCH_SUMMARIZER` | `openai` | `gpt-5.6-luna` |
+| builder | `BUILDER` | `openai` | `gpt-5.6-terra` |
+| planner | `PLANNER` | `openai` | `gpt-5.6-terra` |
+| visual reviewer | `VISUAL_REVIEWER` | `openai` | `gpt-5.6-terra` |
+
+Each role also owns a circuit breaker, named for the role and never for its vendor: `intake`,
+`summarizer`, `builder`, `planner`, `reviewer`. Those names appear in the readiness probe's
+`circuits` map, and an open one there names the role whose model is unwell — not the provider.
+
+The tables below are the per-provider connection settings.
+
+### OpenAI: every role
 
 | Key | Default | Notes |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | *(blank)* | **Required, secret.** |
+| `OPENAI_API_KEY` | *(blank)* | **Required, secret.** Every shipped route resolves here. |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | override only to reach an OpenAI-compatible gateway |
+
+OpenAI is served over the **Responses** API, not chat completions — that is what lets the four
+tool-calling roles reason and call tools in the same request. The API rejects `temperature`,
+`top_p`, `presence_penalty`, `min_p` and `top_k`, so the sampling settings below are accepted,
+recorded, and then dropped from the request with a warning. They are not deleted because a route
+pointed back at DeepSeek or DeepInfra still honours every one of them.
+
+### DeepSeek and DeepInfra: supported, unused by the shipped routes
+
+Both remain fully supported: point a role's `<ROLE>_PROVIDER` at either and its key becomes
+required. Neither is required to boot a default deployment.
+
+| Key | Default | Notes |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | *(blank)* | **Secret.** Required only when a route resolves to `deepseek`. |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | |
-| `SEARCH_SUMMARIZER_MODEL` | `deepseek-v4-flash` | distils search results |
+| `DEEPINFRA_API_KEY` | *(blank)* | **Secret.** Required only when a route resolves to `deepinfra`. |
+| `DEEPINFRA_BASE_URL` | `https://api.deepinfra.com/v1/openai` | OpenAI-compatible wire protocol |
 
-### DeepInfra: builder and reviewer
+Only the two keys and the two base URLs belong to those providers. `DEEPSEEK_MODEL` does not,
+despite its name — see below.
+
+### Agent models and sampling
+
+Every setting here is **live**, whichever provider serves the role. Two of them carry a provider's
+name for historical reasons and are listed here rather than under that provider, because filing a
+live setting under a heading the shipped routes do not use is how it gets blanked.
 
 | Key | Default | Notes |
 |---|---|---|
-| `DEEPINFRA_API_KEY` | *(blank)* | **Required, secret.** |
-| `DEEPINFRA_BASE_URL` | `https://api.deepinfra.com/v1/openai` | OpenAI-compatible wire protocol |
-| `BUILDER_MODEL` | `zai-org/GLM-5.2` | |
-| `REVIEWER_MODEL` | `Qwen/Qwen3-VL-235B-A22B-Thinking` | vision-capable: the reviewer looks at images |
-| `BUILDER_MAX_TOKENS` | `16384` | the provider's per-response cap for these models |
-| `REVIEWER_MAX_TOKENS` | `16384` | |
-| `REVIEWER_TEMPERATURE` | `0.7` | reviewer sampling |
-| `REVIEWER_TOP_P` | `0.8` | |
-| `REVIEWER_PRESENCE_PENALTY` | `1.5` | |
+| `DEEPSEEK_MODEL` | `gpt-5.6-luna` | **Not a DeepSeek setting.** It is *intake's* model, under a name from when intake could only be DeepSeek, and it is recorded as intake's capture provenance. Blanking it disables nothing — it writes an empty model into every job's record. Keep it equal to `INTAKE_MODEL`, which is what the route reads. Renaming it is a breaking configuration change and is pending. |
+| `REVIEWER_MODEL` | `gpt-5.6-terra` | the visual reviewer's model for capture provenance; the route reads `VISUAL_REVIEWER_MODEL`, so keep the two equal. Vision-capable: the reviewer looks at images |
+| `BUILDER_MAX_TOKENS` | `16384` | the builder's output ceiling — `max_output_tokens` on a Responses call, `max_tokens` on a chat one |
+| `REVIEWER_MAX_TOKENS` | `16384` | the same ceiling for one review round |
+| `REVIEWER_TEMPERATURE` | `0.7` | reviewer sampling; dropped by OpenAI, honoured by DeepSeek/DeepInfra |
+| `REVIEWER_TOP_P` | `0.8` | dropped by OpenAI |
+| `REVIEWER_PRESENCE_PENALTY` | `1.5` | dropped by OpenAI |
+
+`BUILDER_MODEL` and `SEARCH_SUMMARIZER_MODEL` are not listed here: they are the builder's and the
+summarizer's *route* settings under their own names, and appear in the route table above.
 
 ### Resilience
 
@@ -407,14 +449,14 @@ Every supported setting (215 entries). `template` settings are the ones `.env.ex
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
-| `DEEPSEEK_API_KEY` | template | app | yes |
-| `DEEPSEEK_BASE_URL` | template | app |  |
-| `DEEPSEEK_MODEL` | template | app |  |
 | `OPENAI_API_KEY` | template | app | yes |
 | `OPENAI_BASE_URL` | template | app |  |
-| `BUILDER_MAX_TOKENS` | template | app |  |
+| `DEEPSEEK_API_KEY` | template | app | yes |
+| `DEEPSEEK_BASE_URL` | template | app |  |
 | `DEEPINFRA_API_KEY` | template | app | yes |
 | `DEEPINFRA_BASE_URL` | template | app |  |
+| `BUILDER_MAX_TOKENS` | template | app |  |
+| `DEEPSEEK_MODEL` | template | app |  |
 | `REVIEWER_MAX_TOKENS` | template | app |  |
 | `REVIEWER_MODEL` | template | app |  |
 | `REVIEWER_PRESENCE_PENALTY` | template | app |  |

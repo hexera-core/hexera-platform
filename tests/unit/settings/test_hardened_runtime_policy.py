@@ -25,8 +25,12 @@ UNKNOWN_ENV = "aurora-eu-west-1"
 #: depending on whose machine ran them. python-dotenv's override=False treats a set-but-empty
 #: variable as already configured, so an explicit "" is what actually blocks that leak.
 _BASE = {
-    "DEEPSEEK_API_KEY": "x",
-    "DEEPINFRA_API_KEY": "x",
+    # openai credentials every shipped route; deepseek and deepinfra are supported providers no
+    # route resolves to, and are blanked rather than omitted so this suite proves the enabled
+    # profile boots WITHOUT them instead of leaning on a key the developer's .env happens to hold.
+    "OPENAI_API_KEY": "x",
+    "DEEPSEEK_API_KEY": "",
+    "DEEPINFRA_API_KEY": "",
     "MESH_API_KEY": "",
     "USER_TOKEN_SECRET": "",
     "CORS_ORIGINS": "https://app.example.com",
@@ -125,7 +129,7 @@ def test_missing_database_configuration_is_refused_in_every_hardened_environment
 
 @pytest.mark.parametrize("env_name", [*HOSTED_ENVS, UNKNOWN_ENV])
 def test_an_enabled_provider_without_its_credential_is_refused(env_name, tmp_path):
-    ok, err = _starts(tmp_path, ENV=env_name, DEEPINFRA_API_KEY="", **_SECRETS)
+    ok, err = _starts(tmp_path, ENV=env_name, OPENAI_API_KEY="", **_SECRETS)
     assert not ok, f"ENV={env_name!r} started with an uncredentialed enabled provider"
     assert "ENABLED provider" in err
 

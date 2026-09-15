@@ -38,6 +38,9 @@ INTAKE_GREETING_ON_UPLOAD: bool = optional_env("INTAKE_GREETING_ON_UPLOAD", "tru
 # are interactive, so the timeout is short.
 INTAKE_ROUTE = route_from_catalogue(
     "intake",
-    circuit_group="deepseek",
+    # The operator-facing circuit name, deliberately naming the ROLE and not its vendor. It
+    # was `deepseek` until intake left DeepSeek, at which point an open circuit would have
+    # pointed an incident at a vendor this deployment no longer calls.
+    circuit_group="intake",
     capabilities={Capability.TOOLS, Capability.REASONING_CONTROL},
 )

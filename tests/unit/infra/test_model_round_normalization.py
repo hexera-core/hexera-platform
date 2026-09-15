@@ -1,4 +1,9 @@
 # Responsibility: Verify every provider round normalises to the agreed surface, exposing no provider object.
+# Boundaries: the CHAT-COMPLETIONS reading of a round. The doubles below are chat-shaped, so every
+# role is pinned to a chat provider (pin_chat_routes) rather than left on its live `openai` route,
+# which speaks Responses and would be handed a client with no `.responses` at all. The Responses
+# adapter's own normalisation is pinned by tests/unit/infra/test_responses_normalize.py; what this
+# file owns is that a chat round becomes a ModelRoundResult and no SDK object escapes with it.
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +12,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from test_provider_error_hardening import _exc
+from test_provider_error_hardening import _exc, pin_chat_routes
 
 import meshpipeline.adapters.model_inference.router as router
 from meshpipeline.adapters._shared.resilience import reset_breakers
@@ -28,6 +33,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture(autouse=True)
 def _wired(monkeypatch):
     reset_breakers()
+    pin_chat_routes(monkeypatch)
     model_capacity.set_capacity_controller(LocalCapacityController(poll_interval_s=0.001))
 
     async def _no_sleep(_s, *a, **k):
@@ -38,6 +44,8 @@ def _wired(monkeypatch):
     yield
     model_capacity.set_capacity_controller(None)
     reset_breakers()
+    from meshpipeline.adapters.model_inference import routes as routecfg
+    routecfg._ROUTES = None
 
 
 def _client(create):

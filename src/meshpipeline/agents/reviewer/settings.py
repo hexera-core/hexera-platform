@@ -6,7 +6,7 @@ from meshpipeline.contracts.model_routing import Capability
 from meshpipeline.settings.env import ConfigurationError, optional_env
 from meshpipeline.settings.routes import route_from_catalogue
 
-REVIEWER_MODEL: str = optional_env("REVIEWER_MODEL", "Qwen/Qwen3-VL-235B-A22B-Thinking")
+REVIEWER_MODEL: str = optional_env("REVIEWER_MODEL", "gpt-5.6-terra")
 
 REVIEWER_TEMPERATURE: float      = float(optional_env("REVIEWER_TEMPERATURE",      "0.7"))
 REVIEWER_TOP_P: float            = float(optional_env("REVIEWER_TOP_P",            "0.8"))
@@ -38,12 +38,16 @@ if REVIEWER_TOTAL_TIMEOUT_SECONDS <= 0:
 
 # the two reviewer ROUTES
 # The visual reviewer needs MULTIMODAL: it sends rendered views of the mesh, and its verdict is
-# a quality gate. The audit found no equivalent serverless multimodal model at any other
-# provider, so it is primary-only and a standby must never be configured casually - a different
+# a quality gate. gpt-5.6-terra's vision was probed live before this role was moved onto it
+# (openai-responses-adapter design doc, section 1) - the capability is not assumed from a model
+# card. It is still primary-only, and a standby must never be configured casually: a different
 # model here changes what "PASS" means.
 VISUAL_REVIEWER_ROUTE = route_from_catalogue(
     "visual_reviewer",
-    circuit_group="deepinfra_reviewer",
+    # Role-named, not vendor-named: it was `deepinfra_reviewer` until the reviewer left
+    # DeepInfra. What it announces is "the visual reviewer's model is sick", which is true
+    # whoever serves it.
+    circuit_group="reviewer",
     capabilities={Capability.TOOLS, Capability.STREAMING, Capability.MULTIMODAL},
     rate_limit_backoff_base_s=60.0,
     rate_limit_backoff_max_s=300.0,

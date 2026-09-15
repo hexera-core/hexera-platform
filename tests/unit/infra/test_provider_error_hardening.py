@@ -1,7 +1,15 @@
 # Responsibility: Verify each provider exception normalises to its category, and an unknown one is our defect.
+# Boundaries: ROUTING policy - classification, retry, circuit, marker, telemetry - none of which
+# is a property of a wire format. The doubles below are chat-completions-shaped, so every role is
+# pinned to a chat provider for the duration of a test (see pin_chat_routes): otherwise the live
+# `openai` routes would hand a Responses adapter a client that has no `.responses`, and every
+# case here would pass or fail on an AttributeError instead of on the policy it is about. The
+# Responses adapter's own reading of a response is pinned by tests/unit/infra/test_responses_*.py.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +17,37 @@ import pytest
 from meshpipeline.adapters._shared.resilience import get_breaker, reset_breakers
 from meshpipeline.adapters.model_capacity.local import LocalCapacityController
 from meshpipeline.adapters.model_inference import providers, router
+from meshpipeline.adapters.model_inference import routes as routecfg
 from meshpipeline.contracts import inference_telemetry, model_capacity
 from meshpipeline.contracts.model_routing import FailureCategory as FC
+
+#: Where each role's route LIVES. The router reads these module attributes per call, so rebinding
+#: one redirects the real entry point without touching the catalogue.
+_ROUTE_HOMES = (
+    ("meshpipeline.agents.builder.settings", "BUILDER_ROUTE"),
+    ("meshpipeline.engines.snappy.settings", "PLANNER_ROUTE"),
+    ("meshpipeline.agents.reviewer.settings", "VISUAL_REVIEWER_ROUTE"),
+    ("meshpipeline.agents.intake.settings", "INTAKE_ROUTE"),
+    ("meshpipeline.agent_tools.shared.settings", "SUMMARIZER_ROUTE"),
+)
+
+
+def pin_chat_routes(monkeypatch):
+    """Point every role's route at a chat-completions provider, changing nothing else.
+
+    Only the PROVIDER moves: the role's model, account, circuit group, timeout, retry policy and
+    budget are all still the ones it really declares, so what is exercised is the product's own
+    route. Which chat provider is immaterial here - `deepinfra` and `deepseek` share one adapter,
+    and nothing in these files asserts a vendor-specific parameter.
+    """
+    for mod_name, attr in _ROUTE_HOMES:
+        module = importlib.import_module(mod_name)
+        route = getattr(module, attr)
+        monkeypatch.setattr(module, attr, dataclasses.replace(
+            route, primary=dataclasses.replace(route.primary, provider="deepinfra")))
+    # routes.all_routes() memoises what it reads from those same modules, so a cache filled while
+    # the pin is in place would outlive it and hand the next test a route no deployment declares.
+    monkeypatch.setattr(routecfg, "_ROUTES", None)
 
 
 def _openai():
@@ -40,6 +77,7 @@ def _exc(kind: str):
 @pytest.fixture(autouse=True)
 def _wired(monkeypatch):
     reset_breakers()
+    pin_chat_routes(monkeypatch)
     model_capacity.set_capacity_controller(LocalCapacityController(poll_interval_s=0.001))
     records: list = []
 
@@ -56,6 +94,7 @@ def _wired(monkeypatch):
     inference_telemetry.set_inference_telemetry(None)
     model_capacity.set_capacity_controller(None)
     reset_breakers()
+    routecfg._ROUTES = None
 
 
 def _raising_client(exc):
@@ -198,8 +237,12 @@ async def test_an_open_circuit_fails_fast_without_dialling_the_provider(monkeypa
         dialled += 1
         return _ok_client(_response())
 
+    import meshpipeline.agents.builder.settings as bcfg
+
     monkeypatch.setattr(providers, "client_for", _client)
-    b = get_breaker("deepinfra_builder")
+    # The builder's OWN declared circuit. A restated literal stops testing anything the day the
+    # operator-facing name changes, which is exactly what `deepinfra_builder` -> `builder` did.
+    b = get_breaker(bcfg.BUILDER_ROUTE.primary.circuit_group)
     for _ in range(b.failure_threshold):
         b.record_failure()
 
@@ -264,12 +307,15 @@ async def test_a_successful_call_is_never_executed_twice(monkeypatch):
 
 # telemetry reports what actually happened
 async def test_telemetry_reports_the_actual_provider_and_model_used(_wired, monkeypatch):
+    import meshpipeline.agents.builder.settings as bcfg
+
     _no_stream(monkeypatch)
     monkeypatch.setattr(providers, "client_for", lambda t: _ok_client(_response()))
     await router.call_builder_model([{"role": "user", "content": "x"}], job_id="job-9")
     rec = _wired[-1]
+    target = bcfg.BUILDER_ROUTE.primary      # the target that was really dialled
     assert rec.role == "builder"
-    assert rec.provider == "deepinfra" and rec.model == "zai-org/GLM-5.2"
+    assert rec.provider == target.provider and rec.model == target.model
     assert rec.target == "primary" and rec.failure_category == ""
     assert rec.job_id == "job-9"
 
@@ -312,6 +358,7 @@ async def test_builder_and_planner_contend_for_one_quota_domain(monkeypatch):
 
 # summarizer: respond or raise
 async def test_the_summarizer_raises_and_never_returns_none(monkeypatch):
+    import meshpipeline.agent_tools.shared.settings as scfg
     from meshpipeline.adapters.model_inference.routing import RouteExhausted
 
     original = _exc("connection")
@@ -319,7 +366,11 @@ async def test_the_summarizer_raises_and_never_returns_none(monkeypatch):
     with pytest.raises(RouteExhausted) as ei:
         await router.call_summarizer_model([{"role": "user", "content": "x"}], job_id="j")
     assert ei.value.category is FC.CONNECTION
-    assert ei.value.provider == "deepseek" and ei.value.model == "deepseek-v4-flash"
+    # The target that was really dialled, read off the route rather than restated: this case is
+    # about the summarizer RAISING a structured exception instead of returning None, and it must
+    # not also become a second opinion on which vendor serves the role.
+    target = scfg.SUMMARIZER_ROUTE.primary
+    assert ei.value.provider == target.provider and ei.value.model == target.model
     assert isinstance(ei.value.__cause__, type(original))
 
 
