@@ -51,6 +51,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
+        gcloud-flags \
         test-fast-shard test-container-integration-shard \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
@@ -484,6 +485,16 @@ typecheck: ##! mypy ratchet - 0 exit while the baseline holds, fail on any NEW e
 dependencies: ##! Validate the one dependency source of truth (requirements/runtime.txt + dev.txt)
 	$(PY) devtools/quality/check_dependency_drift.py
 deps: dependencies ##! Alias for `make dependencies`
+# Exit 77 means gcloud is not installed, which is NOT a pass - it is reported as unchecked rather
+# than swallowed, because a green "flags OK" on a machine with no gcloud is the kind of clean
+# result that gets trusted.
+gcloud-flags: ##! Prove every gcloud flag the deploy passes is one the INSTALLED gcloud still accepts
+	@$(PY) devtools/quality/check_gcloud_flags.py; rc=$$?; \
+	 if [ $$rc -eq 77 ]; then \
+	   echo "UNCHECKED: gcloud is not installed here - the deploy's flags were not verified"; \
+	   exit 0; \
+	 fi; \
+	 exit $$rc
 # Maintainer check, not a release step: prove the distribution still builds and still contains
 # exactly ONE top-level package, then delete every artifact. Nothing is uploaded, and nothing is
 # left behind - a stale dist/ shadows the source tree (see test_no_stale_build_artifacts_shadow_

@@ -22,7 +22,9 @@ SCRIPTS = REPO / "deploy" / "gcp" / "scripts"
 
 _APP_DIGEST = "us-central1-docker.pkg.dev/fake-proj/mesh/app@sha256:c0ffee"
 
-# FAKE_AUTOSCALER is the MIG's status.autoscaler field: non-empty means the group already has one.
+# FAKE_AUTOSCALER is the autoscaler the MIG carries: non-empty means the group already has one. It
+# answers both the `status.autoscaler` link and the `autoscaler.*` annotation `instance-groups
+# managed describe` adds, which is where the live policy is now read from.
 _FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
 STATE="${FAKE_GCP_STATE:?}"; mkdir -p "${STATE}"
@@ -32,16 +34,23 @@ if has "iam service-accounts describe"; then exit "${FAKE_SA_RC:-1}"; fi
 if has "instance-templates describe"; then exit 1; fi
 if has "instance-groups managed describe"; then
   if has "status.autoscaler"; then printf '%s\n' "${FAKE_AUTOSCALER:-}"; exit 0; fi
-  if has "versions[0].instanceTemplate"; then printf '%s\n' "${FAKE_LIVE_TEMPLATE:-}"; exit 0; fi
-  if has "instanceTemplate"; then printf '%s\n' "${FAKE_LIVE_TEMPLATE:-}"; exit 0; fi
-  exit "${FAKE_MIG_RC:-1}"
-fi
-if has "compute autoscalers describe"; then
+  if has "autoscaler.name"; then printf '%s\n' "${FAKE_AUTOSCALER:-}"; exit 0; fi
   if has "minNumReplicas"; then printf '%s\n' "${FAKE_AS_MIN:-}"; exit 0; fi
   if has "maxNumReplicas"; then printf '%s\n' "${FAKE_AS_MAX:-}"; exit 0; fi
   if has "coolDownPeriodSec"; then printf '%s\n' "${FAKE_AS_COOLDOWN:-}"; exit 0; fi
   if has "singleInstanceAssignment"; then printf '%s\n' "${FAKE_AS_ASSIGNMENT:-}"; exit 0; fi
-  exit 0
+  if has "versions[0].instanceTemplate"; then printf '%s\n' "${FAKE_LIVE_TEMPLATE:-}"; exit 0; fi
+  if has "instanceTemplate"; then printf '%s\n' "${FAKE_LIVE_TEMPLATE:-}"; exit 0; fi
+  exit "${FAKE_MIG_RC:-1}"
+fi
+# `gcloud compute autoscalers` HAS BEEN REMOVED from the CLI - GA, beta and alpha all answer
+# `Invalid choice: 'autoscalers'`. The fake refuses it the way the real one does. This stub used to
+# ANSWER it, which is how the publisher's read of the live policy came to be dead without any test
+# noticing: the script asked a command that no longer exists, the failure went into `|| true`, and
+# the empty result was indistinguishable from "there is no autoscaler yet".
+if has "compute autoscalers"; then
+  printf "ERROR: (gcloud.compute) Invalid choice: 'autoscalers'.\n" >&2
+  exit 2
 fi
 if has "scheduler jobs describe"; then exit 1; fi
 if has "run jobs describe"; then exit 1; fi

@@ -194,7 +194,7 @@ if gc sql instances describe "${CLOUDSQL_INSTANCE}" >/dev/null 2>&1; then
     warn "it was NOT patched - changing durability settings acts on the instance this deploy is
        about to migrate. Apply it deliberately, when a restart is acceptable:
          gcloud sql instances patch ${CLOUDSQL_INSTANCE} --project ${GCP_PROJECT_ID} \\
-           --backup --backup-start-time=${CLOUDSQL_BACKUP_START_TIME} \\
+           --backup-start-time=${CLOUDSQL_BACKUP_START_TIME} \\
            --retained-backups-count=${CLOUDSQL_RETAINED_BACKUPS} \\
            --retained-transaction-log-days=${CLOUDSQL_RETAINED_TRANSACTION_LOG_DAYS} \\
            --enable-point-in-time-recovery --deletion-protection \\

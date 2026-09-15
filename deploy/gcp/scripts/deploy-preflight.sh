@@ -270,6 +270,27 @@ print(f"{len(revs)} revisions, one head ({sorted(heads)[0]}), chain resolves fro
 PY
 )"; then ok "${MIG}"; else no "alembic chain: ${MIG}"; fi
 
+# THE DEPLOY'S OWN ARGUMENTS, checked against the CLI that will run them.
+#
+# A flag gcloud has removed is not an error in a shell script, and nothing earlier would catch one:
+# the stage that carries it may only run on a release. `--min-ready` was valid on the fleet roll
+# when it was written, was removed from gcloud, and aborted v0.1.5 at stage 18 of 19 - after the
+# images were built and the schema migrated. This asks the INSTALLED gcloud about every flag every
+# deploy script passes, which is the only authority on the question, and it needs no session: it
+# reads `--help` and nothing else.
+stage "the deploy's gcloud arguments"
+if ! command -v gcloud >/dev/null 2>&1; then
+  skip "gcloud not installed - the deploy's gcloud arguments were not checked"
+else
+  FLAG_REPORT="$("${PY}" "${REPO_ROOT}/devtools/quality/check_gcloud_flags.py" 2>&1)"
+  case "$?" in
+    0)  ok "${FLAG_REPORT}" ;;
+    77) skip "gcloud not installed - the deploy's gcloud arguments were not checked" ;;
+    *)  no "the deploy passes arguments this gcloud does not accept - it would abort mid-deploy"
+        printf '%s\n' "${FLAG_REPORT}" | sed 's/^/       /' >&2 ;;
+  esac
+fi
+
 # cloud: registry, IAM, rollback
 stage "target environment (read-only)"
 if ! command -v gcloud >/dev/null 2>&1; then
