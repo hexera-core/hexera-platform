@@ -36,16 +36,21 @@ def _kwargs_for_route(route):
     # middle of a cutover, which reads as "the cutover broke sampling" rather than "this test
     # asks a question that does not apply to that wire format". The protocol seam is the
     # authority on which question applies, so ask it rather than listing provider names here.
+    # ORDER MATTERS, AND IS NOT TIDINESS. spec_for() is resolved BEFORE the skip below, because
+    # using route.role (not a literal) is the only thing binding ROUTE_MATRIX's roles to
+    # spec_for's roles - a role added to one without the other fails here with a clear KeyError
+    # instead of surfacing as a per-attempt KeyError in production. That binding holds for EVERY
+    # protocol: build_request() is handed a SamplingSpec too, so a Responses route consults
+    # spec_for on every attempt exactly as a chat route does. Skipping first would take the
+    # binding check away from the very roles the skip exists for.
+    spec = ck.spec_for(route.role)
     protocol = protocols.protocol_for(route.primary.provider)
     if not isinstance(protocol, ChatCompletions):
         pytest.skip(
             f"{route.role} is routed at {route.primary.label}, which speaks "
             f"{type(protocol).__name__}, not chat completions - its request shape is pinned by "
             "tests/unit/infra/test_responses_request.py, not by a kwargs golden")
-    # The point of using route.role (not a literal) is that this line is the only thing binding
-    # ROUTE_MATRIX's roles to spec_for's roles - a role added to one without the other fails
-    # here with a clear KeyError instead of surfacing as a per-attempt KeyError in production.
-    return ck.kwargs_for(route.primary, ck.spec_for(route.role))
+    return ck.kwargs_for(route.primary, spec)
 
 
 def test_builder_route_golden_kwargs():

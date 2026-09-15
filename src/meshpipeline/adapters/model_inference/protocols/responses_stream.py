@@ -49,6 +49,7 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
 
     terminal_response: Any = None
     terminal_event: str = ""
+    saw_failed: bool = False
     failure_detail: Any = None
 
     async for event in stream:
@@ -91,6 +92,10 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
             terminal_response = getattr(event, "response", None)
             terminal_event = event_type
         elif event_type == "response.failed":
+            # The FACT of the failure is tracked apart from its DETAIL: a response.failed whose
+            # `.response` or `.error` is absent would otherwise be indistinguishable from a
+            # stream that simply stopped, and the raise below would name the wrong cause.
+            saw_failed = True
             failure_detail = getattr(getattr(event, "response", None), "error", None)
 
     _elapsed = time.monotonic() - _t_start
@@ -106,13 +111,13 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
         logger.info(
             "consume_responses_stream[%s]: no answer - failed=%s events=%d elapsed=%.1fs "
             "ttfe=%.1fs reasoning=%dch",
-            label, failure_detail is not None, _n_events, _elapsed, _ttfe,
+            label, saw_failed, _n_events, _elapsed, _ttfe,
             sum(len(p) for p in _reasoning_parts),
         )
-        if failure_detail is not None:
+        if saw_failed:
             raise _EmptyResponse(
                 f"responses stream [{label}] ended in response.failed after {_n_events} "
-                f"events: {failure_detail}")
+                f"events: {failure_detail if failure_detail is not None else 'no error detail'}")
         raise _EmptyResponse(
             f"responses stream [{label}] ended without a terminal response event "
             f"after {_n_events} events")

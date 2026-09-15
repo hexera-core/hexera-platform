@@ -136,3 +136,13 @@ def test_a_failed_stream_is_raised_rather_than_normalised_as_a_successful_answer
     ]
     with pytest.raises(_EmptyResponse, match="response.failed"):
         asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
+
+
+def test_a_failed_stream_with_no_error_detail_still_names_the_failure():
+    # The raise is keyed on having SEEN response.failed, not on being able to read its `.error`.
+    # Reading the detail off `event.response.error` alone meant a failed event whose `.response`
+    # or `.error` was absent fell through to "ended without a terminal response event" - the same
+    # outcome under the wrong name, which is what an operator reads first.
+    events = [_ev("response.created"), _ev("response.failed", response=None)]
+    with pytest.raises(_EmptyResponse, match="response.failed"):
+        asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
