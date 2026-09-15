@@ -26,11 +26,14 @@ def test_the_kwargs_follow_the_target_not_the_roles_default_model():
     assert kw["extra_body"]["thinking"] == {"type": "disabled"}
 
 
-def test_the_router_no_longer_imports_the_shipped_kwargs_dicts():
-    src = (router.__file__)
-    text = open(src, encoding="utf-8").read()
-    for name in ("BUILDER_CALL_KWARGS", "REVIEWER_CALL_KWARGS", "INTAKE_CALL_KWARGS",
-                 "SUMMARIZER_CALL_KWARGS", "_planner_call_kwargs"):
-        assert name not in text, (
-            f"router.py still reaches for {name}; a frozen per-role dict cannot express a "
-            "provider that rejects min_p or top_k")
+def test_the_call_path_no_longer_imports_the_shipped_kwargs_dicts():
+    # BOTH modules, because building the request moved from router.py into the protocol: scanning
+    # only the router would let a frozen dict reappear at the new call site unnoticed.
+    from meshpipeline.adapters.model_inference.protocols import chat_completions
+    for module in (router, chat_completions):
+        text = open(module.__file__, encoding="utf-8").read()
+        for name in ("BUILDER_CALL_KWARGS", "REVIEWER_CALL_KWARGS", "INTAKE_CALL_KWARGS",
+                     "SUMMARIZER_CALL_KWARGS", "_planner_call_kwargs"):
+            assert name not in text, (
+                f"{module.__name__} still reaches for {name}; a frozen per-role dict cannot "
+                "express a provider that rejects min_p or top_k")

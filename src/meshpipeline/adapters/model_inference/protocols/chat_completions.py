@@ -15,6 +15,7 @@ from typing import Any
 from meshpipeline.adapters.model_inference import providers
 from meshpipeline.adapters.model_inference.call_kwargs import SamplingSpec, kwargs_for
 from meshpipeline.adapters.model_inference.messages import to_provider_messages
+from meshpipeline.adapters.model_inference.protocols import _EmptyResponse
 from meshpipeline.adapters.model_inference.routing import Usage
 from meshpipeline.contracts.model_inference import (
     Conversation,
@@ -27,10 +28,6 @@ from meshpipeline.contracts.model_inference import (
     ToolDefinition,
 )
 from meshpipeline.contracts.model_routing import RouteTarget
-
-
-class _EmptyResponse(Exception):
-    pass
 
 
 def _usage_from(response) -> Usage:

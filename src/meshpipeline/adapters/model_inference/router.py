@@ -13,8 +13,7 @@ import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.agents.reviewer.settings as rcfg
 from meshpipeline.adapters.model_inference.call_kwargs import spec_for
 from meshpipeline.adapters.model_inference.failure_markers import marker_for
-from meshpipeline.adapters.model_inference.protocols import protocol_for
-from meshpipeline.adapters.model_inference.protocols.chat_completions import _EmptyResponse
+from meshpipeline.adapters.model_inference.protocols import _EmptyResponse, protocol_for
 from meshpipeline.adapters.model_inference.providers import classify
 from meshpipeline.adapters.model_inference.routing import RouteExhausted, Usage, execute
 from meshpipeline.contracts.model_inference import (

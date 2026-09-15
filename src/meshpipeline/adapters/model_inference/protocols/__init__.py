@@ -25,6 +25,16 @@ from meshpipeline.contracts.model_inference import (
 from meshpipeline.contracts.model_routing import RouteTarget
 
 
+class _EmptyResponse(Exception):
+    """A target answered, but with nothing this protocol can read.
+
+    Lives on the seam rather than in one protocol because it is a statement about the ATTEMPT,
+    not about a wire format: every protocol can be handed an empty body, and router._classify
+    turns this one exception into FailureCategory.EMPTY_RESPONSE for all of them. Keeping it here
+    is also what lets router.py import the seam WITHOUT importing any implementation module.
+    """
+
+
 @runtime_checkable
 class WireProtocol(Protocol):
 
@@ -44,10 +54,19 @@ class WireProtocol(Protocol):
 
 
 def _registry() -> dict[str, WireProtocol]:
-    # Imported lazily: the protocol modules import the SDK-facing helpers, and this module is
-    # imported by router.py at call time.
+    # Imported inside the function, not at module top. The protocol modules import THIS module
+    # (for WireProtocol and _EmptyResponse), so naming them up there would have the seam and its
+    # implementations importing each other; and asking "who speaks what" would drag in every
+    # protocol's SDK-facing helpers whether or not the caller's provider speaks that protocol.
     from meshpipeline.adapters.model_inference.protocols.chat_completions import ChatCompletions
     chat = ChatCompletions()
+    # `openai` is DELIBERATELY ABSENT until the Responses protocol is registered. A route pointed
+    # at it resolves no protocol, so protocol_for() raises KeyError and router._classify reports a
+    # terminal APPLICATION_DEFECT: no retry, no failover, and the message names what does exist.
+    # That loud refusal is the intended state. The alternative - registering ChatCompletions for
+    # openai because it would "probably work" - sends a chat-shaped request to an API whose
+    # request and response are different on every axis the product uses, which fails later, more
+    # confusingly, and only after the tokens are paid for.
     return {"deepinfra": chat, "deepseek": chat}
 
 
