@@ -7,7 +7,7 @@ import pytest
 
 from meshpipeline.adapters._shared.resilience import reset_breakers
 from meshpipeline.adapters.model_capacity.local import LocalCapacityController
-from meshpipeline.adapters.model_inference import router
+from meshpipeline.adapters.model_inference import providers, router
 from meshpipeline.contracts import inference_telemetry, model_capacity
 
 # THE MATRIX, measured from the pre-routing implementation
@@ -64,7 +64,7 @@ def probe(monkeypatch):
     record: dict = {}
     resp = _fake_response(True)
 
-    monkeypatch.setattr(router, "client_for", lambda target: _Recorder(record, resp))
+    monkeypatch.setattr(providers, "client_for", lambda target: _Recorder(record, resp))
     # The stream consumer is exercised in its own tests; here the concern is what was SENT.
     async def _consume(stream, label="", on_reasoning=None):
         return stream
@@ -127,14 +127,14 @@ async def test_the_messages_pass_through_the_neutral_conversion(role, probe):
 
 
 async def test_usage_is_normalised_including_cached_input(probe):
-    from meshpipeline.adapters.model_inference.router import _usage_from
+    from meshpipeline.adapters.model_inference.protocols.chat_completions import _usage_from
 
     u = _usage_from(_fake_response(False))
     assert (u.input_tokens, u.cached_input_tokens, u.output_tokens) == (100, 40, 20)
 
 
 async def test_direct_deepseek_cache_hit_field_is_understood():
-    from meshpipeline.adapters.model_inference.router import _usage_from
+    from meshpipeline.adapters.model_inference.protocols.chat_completions import _usage_from
 
     resp = SimpleNamespace(usage=SimpleNamespace(
         prompt_tokens=80, completion_tokens=10, prompt_cache_hit_tokens=64))
@@ -143,7 +143,7 @@ async def test_direct_deepseek_cache_hit_field_is_understood():
 
 
 async def test_absent_usage_reports_zero_rather_than_guessing():
-    from meshpipeline.adapters.model_inference.router import _usage_from
+    from meshpipeline.adapters.model_inference.protocols.chat_completions import _usage_from
 
     u = _usage_from(SimpleNamespace())
     assert (u.input_tokens, u.cached_input_tokens, u.output_tokens) == (0, 0, 0)

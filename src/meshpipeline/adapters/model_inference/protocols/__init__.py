@@ -1,0 +1,73 @@
+# Responsibility: Say which WIRE PROTOCOL a provider speaks, and hand back the adapter that speaks it.
+# Boundaries: a registry and its contract; no request is built and no call is made here.
+# Collaborates with: router.py, which resolves a protocol per ATTEMPT TARGET.
+
+# WHY THIS EXISTS. Until now a provider was a client plus a parameter set, because both configured
+# providers spoke the OpenAI chat-completions wire format - so the format itself could be assumed
+# in router.py, streaming.py and messages.py without anyone noticing it was an assumption. OpenAI's
+# Responses API is a different protocol on every axis the product uses (see the design doc's §1),
+# and Anthropic is a third. Branching on provider inside each of those seven sites would multiply
+# them; declaring the protocol once, here, does not.
+from __future__ import annotations
+
+from typing import Any, Protocol, runtime_checkable
+
+from meshpipeline.adapters.model_inference.call_kwargs import SamplingSpec
+from meshpipeline.adapters.model_inference.routing import Usage
+from meshpipeline.contracts.model_inference import (
+    Conversation,
+    ModelRoundResult,
+    ParallelToolCalls,
+    ReasoningSink,
+    ToolChoice,
+    ToolDefinition,
+)
+from meshpipeline.contracts.model_routing import RouteTarget
+
+
+@runtime_checkable
+class WireProtocol(Protocol):
+
+    async def invoke(
+        self, target: RouteTarget, conversation: Conversation, *,
+        tools: list[ToolDefinition] | None, tool_choice: ToolChoice,
+        spec: SamplingSpec, parallel_tool_calls: ParallelToolCalls,
+        on_reasoning: ReasoningSink, label: str, trace: dict,
+    ) -> tuple[Any, Usage]:
+        """Make ONE attempt against one target and return what routing.execute expects.
+
+        The returned object is this protocol's own; it is opaque to everything above and is
+        handed straight back to this protocol's normalize()."""
+
+    def normalize(self, response: Any, target: RouteTarget, attempts: int) -> ModelRoundResult:
+        """Turn this protocol's response into the one result type every role shares."""
+
+
+def _registry() -> dict[str, WireProtocol]:
+    # Imported lazily: the protocol modules import the SDK-facing helpers, and this module is
+    # imported by router.py at call time.
+    from meshpipeline.adapters.model_inference.protocols.chat_completions import ChatCompletions
+    chat = ChatCompletions()
+    return {"deepinfra": chat, "deepseek": chat}
+
+
+_CACHE: dict[str, WireProtocol] | None = None
+
+
+def registered() -> list[str]:
+    global _CACHE
+    if _CACHE is None:
+        _CACHE = _registry()
+    return sorted(_CACHE)
+
+
+def protocol_for(provider: str) -> WireProtocol:
+    global _CACHE
+    if _CACHE is None:
+        _CACHE = _registry()
+    try:
+        return _CACHE[provider]
+    except KeyError:
+        raise KeyError(
+            f"no wire protocol registered for provider {provider!r}; providers that have one: "
+            f"{sorted(_CACHE)}") from None

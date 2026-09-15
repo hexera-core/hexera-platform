@@ -1,18 +1,21 @@
 # Responsibility: Perform the one model call each agent role makes.
-# Owns: the per-role entry points, message assembly, streaming consumption and telemetry recording.
-# Boundaries: it executes a call the routing layer chose.
-# Collaborates with: adapters/model_inference/routing.py and the tracing and pricing modules.
+# Owns: the per-role entry points, the tracing and pricing they carry, and the conversion of an
+# exhausted route into a failure marker.
+# Boundaries: it executes a call the routing layer chose; HOW that call is put on the wire
+# belongs to the protocol the attempt's target speaks.
+# Collaborates with: routing.py, protocols/ (resolved per attempt target), tracing and pricing.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import meshpipeline.agents.builder.settings as bcfg
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.agents.reviewer.settings as rcfg
+from meshpipeline.adapters.model_inference.call_kwargs import spec_for
 from meshpipeline.adapters.model_inference.failure_markers import marker_for
-from meshpipeline.adapters.model_inference.messages import to_provider_messages
-from meshpipeline.adapters.model_inference.providers import classify, client_for
+from meshpipeline.adapters.model_inference.protocols import protocol_for
+from meshpipeline.adapters.model_inference.protocols.chat_completions import _EmptyResponse
+from meshpipeline.adapters.model_inference.providers import classify
 from meshpipeline.adapters.model_inference.routing import RouteExhausted, Usage, execute
 from meshpipeline.contracts.model_inference import (
     Conversation,
@@ -20,17 +23,12 @@ from meshpipeline.contracts.model_inference import (
     ParallelToolCalls,
     ProviderAttemptInfo,
     ReasoningSink,
-    ToolCallRequest,
     ToolChoice,
     ToolDefinition,
 )
 from meshpipeline.contracts.model_routing import FailureCategory, ModelRoute, RouteTarget
 
 logger = logging.getLogger(__name__)
-
-
-class _EmptyResponse(Exception):
-    pass
 
 
 def _classify(exc: BaseException) -> FailureCategory:
@@ -47,81 +45,6 @@ def _cost_of(target: RouteTarget, usage: Usage) -> float:
                          cached_input_tokens=usage.cached_input_tokens)
 
 
-def _usage_from(response) -> Usage:
-    u = getattr(response, "usage", None)
-    if u is None:
-        return Usage()
-    cached = 0
-    details = getattr(u, "prompt_tokens_details", None)
-    if details is not None:
-        cached = int(getattr(details, "cached_tokens", 0) or 0)
-    if not cached:
-        cached = int(getattr(u, "prompt_cache_hit_tokens", 0) or 0)   # direct DeepSeek's name
-    return Usage(
-        input_tokens=int(getattr(u, "prompt_tokens", 0) or 0),
-        cached_input_tokens=cached,
-        output_tokens=int(getattr(u, "completion_tokens", 0) or 0),
-    )
-
-
-def _for_target(role: str, target: RouteTarget) -> dict:
-    # The sampling parameters a call may carry depend on WHO IS SERVING IT, not only on the
-    # role. Built per attempt, because a retry may land on a different target than the first try.
-    from meshpipeline.adapters.model_inference.call_kwargs import kwargs_for, spec_for
-    return kwargs_for(target, spec_for(role))
-
-
-async def _streamed(target: RouteTarget, messages: list, call_kw: dict, label: str, lf: dict,
-                    on_reasoning: ReasoningSink = None):
-    from meshpipeline.adapters.model_inference.streaming import consume_chat_stream
-    stream = await client_for(target).chat.completions.create(
-        messages=to_provider_messages(messages), **call_kw, **lf)
-    return await consume_chat_stream(stream, label=label, on_reasoning=on_reasoning)
-
-
-async def _chat(target: RouteTarget, messages: list, call_kw: dict, lf: dict):
-    return await client_for(target).chat.completions.create(
-        messages=to_provider_messages(messages), **call_kw, **lf)
-
-
-def _normalize(response: Any, target: RouteTarget, attempts: int) -> ModelRoundResult:
-    choice = response.choices[0]
-    msg = choice.message
-    calls = tuple(
-        ToolCallRequest(id=str(tc.id or ""), name=str(tc.function.name or ""),
-                        arguments=str(tc.function.arguments or ""))
-        for tc in (msg.tool_calls or []))
-    reasoning = getattr(msg, "reasoning_content", None)
-    if reasoning is None:
-        reasoning = (getattr(msg, "model_extra", None) or {}).get("reasoning_content")
-    usage = _usage_from(response)
-    # Reasoning tokens, ONLY when the provider reports them (OpenAI-style
-    # completion_tokens_details.reasoning_tokens). Absent stays 0 = not reported;
-    # nothing here substitutes output_tokens for a count nobody gave us.
-    _rt = 0
-    try:
-        _details = getattr(getattr(response, "usage", None),
-                           "completion_tokens_details", None)
-        _raw = getattr(_details, "reasoning_tokens", None)
-        if _raw is None and isinstance(_details, dict):
-            _raw = _details.get("reasoning_tokens")
-        if _raw is not None:
-            _rt = max(0, int(_raw))
-    except (TypeError, ValueError, AttributeError):
-        _rt = 0
-    return ModelRoundResult(
-        tool_calls=calls,
-        assistant_text=str(msg.content or ""),
-        reasoning_text=str(reasoning or ""),
-        reasoning_tokens=_rt,
-        finish_reason=str(getattr(choice, "finish_reason", "") or ""),
-        input_tokens=usage.input_tokens,
-        cached_input_tokens=usage.cached_input_tokens,
-        output_tokens=usage.output_tokens,
-        provider=ProviderAttemptInfo(attempts=attempts, provider=target.provider,
-                                     model=target.model))
-
-
 async def _run(route: ModelRoute, invoke, *, job_id: str) -> ModelRoundResult:
     try:
         response, target, attempts = await execute(route, invoke, _classify, job_id=job_id,
@@ -134,16 +57,9 @@ async def _run(route: ModelRoute, invoke, *, job_id: str) -> ModelRoundResult:
             failure_marker=marker_for(route.role, exc.category),
             provider=ProviderAttemptInfo(attempts=exc.attempts, provider=exc.provider,
                                          model=exc.model))
-    return _normalize(response, target, attempts)
-
-
-def _with_tool_kwargs(call_kw: dict, tools, tool_choice, parallel_tool_calls) -> dict:
-    if tools:
-        call_kw["tools"] = tools
-        call_kw["tool_choice"] = tool_choice
-        if parallel_tool_calls is not None:
-            call_kw["parallel_tool_calls"] = parallel_tool_calls
-    return call_kw
+    # Read back through the protocol of the target that ACTUALLY answered, which failover may
+    # have made a different one from the target the first attempt was built for.
+    return protocol_for(target.provider).normalize(response, target, attempts)
 
 
 # builder + planner (streaming, tools)
@@ -155,15 +71,14 @@ async def _run_glm_stream(route, label, messages: Conversation,
     from meshpipeline.adapters.model_inference.tracing import langfuse_kwargs
 
     async def _invoke(target: RouteTarget):
-        call_kw = _with_tool_kwargs(_for_target(route.role, target), tools, tool_choice,
-                                    parallel_tool_calls)
-        response = await _streamed(
-            target, messages, call_kw, f"{label}:{job_id[:8]}",
-            langfuse_kwargs(session_id=job_id, user_id=user_id, name=label),
-            on_reasoning=on_reasoning)
-        if not (response and response.choices):
-            raise _EmptyResponse(f"{label}: no choices")
-        return response, _usage_from(response)
+        # Per ATTEMPT TARGET, not per route: failover can land the next attempt on a provider
+        # that speaks a different wire format, and a choice made once for the route would send
+        # the primary's request shape to a standby that cannot read it.
+        return await protocol_for(target.provider).invoke(
+            target, messages, tools=tools, tool_choice=tool_choice,
+            spec=spec_for(route.role), parallel_tool_calls=parallel_tool_calls,
+            on_reasoning=on_reasoning, label=f"{label}:{job_id[:8]}",
+            trace=langfuse_kwargs(session_id=job_id, user_id=user_id, name=label))
 
     return await _run(route, _invoke, job_id=job_id)
 
@@ -199,15 +114,11 @@ async def _run_reviewer(route, label, messages: Conversation, tools: list[ToolDe
     async def _invoke(target: RouteTarget):
         # tool_choice stays "auto" for the reviewer: whether this model honours a FORCED
         # function choice is unverified, so nothing depends on it yet.
-        call_kw = _with_tool_kwargs(_for_target(route.role, target), tools, "auto",
-                                    parallel_tool_calls)
-        response = await _streamed(
-            target, messages, call_kw, f"{label}:{job_id[:8]}",
-            langfuse_kwargs(session_id=job_id, user_id=user_id, name=label),
-            on_reasoning=on_reasoning)
-        if not (response and response.choices):
-            raise _EmptyResponse(f"{label}: no choices")
-        return response, _usage_from(response)
+        return await protocol_for(target.provider).invoke(
+            target, messages, tools=tools, tool_choice="auto",
+            spec=spec_for(route.role), parallel_tool_calls=parallel_tool_calls,
+            on_reasoning=on_reasoning, label=f"{label}:{job_id[:8]}",
+            trace=langfuse_kwargs(session_id=job_id, user_id=user_id, name=label))
 
     # BOTH reviewer roles emit `reviewer_*`: the user-facing meaning is "the review could not
     # run", not which reviewer variant ran.
@@ -229,14 +140,11 @@ async def _run_chat(route, label, messages: Conversation, job_id: str,
     from meshpipeline.adapters.model_inference.tracing import langfuse_kwargs
 
     async def _invoke(target: RouteTarget):
-        call_kw = _with_tool_kwargs(_for_target(route.role, target), tools, "auto",
-                                    parallel_tool_calls)
-        response = await _chat(
-            target, messages, call_kw,
-            langfuse_kwargs(session_id=job_id, user_id=user_id, name=label))
-        if not (response and response.choices):
-            raise _EmptyResponse(f"{label}: no choices")
-        return response, _usage_from(response)
+        return await protocol_for(target.provider).invoke(
+            target, messages, tools=tools, tool_choice="auto",
+            spec=spec_for(route.role), parallel_tool_calls=parallel_tool_calls,
+            on_reasoning=None, label=label,
+            trace=langfuse_kwargs(session_id=job_id, user_id=user_id, name=label))
 
     return await _run(route, _invoke, job_id=job_id)
 
@@ -252,14 +160,13 @@ async def call_summarizer_model(messages: Conversation, job_id: str = "") -> Mod
     import meshpipeline.agent_tools.shared.settings as scfg
 
     async def _invoke(target: RouteTarget):
-        call_kw = _for_target(scfg.SUMMARIZER_ROUTE.role, target)
-        response = await _chat(target, messages, call_kw, {})
-        if not (response and response.choices):
-            raise _EmptyResponse("summarizer: no choices")
-        return response, _usage_from(response)
+        return await protocol_for(target.provider).invoke(
+            target, messages, tools=None, tool_choice="auto",
+            spec=spec_for(scfg.SUMMARIZER_ROUTE.role), parallel_tool_calls=None,
+            on_reasoning=None, label="summarizer", trace={})
 
     # Respond-or-RAISE: a route failure propagates as RouteExhausted for the caller's own
     # best-effort handling, unlike the agent routes which convert it to a failure marker.
     response, target, attempts = await execute(scfg.SUMMARIZER_ROUTE, _invoke, _classify,
                                                job_id=job_id, cost_of=_cost_of)
-    return _normalize(response, target, attempts)
+    return protocol_for(target.provider).normalize(response, target, attempts)
