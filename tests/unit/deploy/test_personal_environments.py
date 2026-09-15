@@ -423,3 +423,30 @@ def test_the_generated_env_heredoc_does_not_execute_its_own_prose():
                  if "`" in ln.replace("\\`", "")]
     assert not unescaped, (
         f"unescaped backticks inside emit_env's heredoc execute as commands: {unescaped[:3]}")
+
+
+def test_a_personal_run_states_every_target_an_unattended_deploy_requires(tmp_path):
+    """deploy.sh under DEPLOY_NONINTERACTIVE=1 refuses to mutate a project on any target it was
+    not explicitly told - "discovery will work it out" is ambient configuration wearing a
+    different hat. Leaving one empty is not caught by the workflow, by validate-config.sh, or by
+    any other test here: the first real deploy into a personal environment died at stage 1 with
+    `requires every deployment target to be explicit - set: GCP_MESH_BUCKET`.
+
+    The list is READ FROM deploy.sh rather than restated, so a fifth required target added there
+    fails this test instead of the next person's deploy.
+    """
+    driver = (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+    line = next(ln for ln in driver.splitlines()
+                if ln.strip().startswith("for _v in") and "GCP_PROJECT_ID" in ln)
+    required = line.split("for _v in", 1)[1].split(";")[0].split()
+    assert len(required) >= 4, f"could not read the required-target list from deploy.sh: {line!r}"
+
+    # deploy.yml maps each picker output into the provision job's environment under these names.
+    env_to_output = {"GCP_PROJECT_ID": "project", "GCP_REGION": "region",
+                     "CLOUDRUN_MESH_JOB": "mesh_job", "GCP_MESH_BUCKET": "mesh_bucket"}
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    for var in required:
+        key = env_to_output.get(var)
+        assert key, f"deploy.sh now requires {var}, which this test does not know how to map"
+        assert out.get(key), (
+            f"a personal run states no {key}, so deploy.sh refuses to start: it requires {var}")

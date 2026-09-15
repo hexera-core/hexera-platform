@@ -389,11 +389,19 @@ jobs:
               echo "project=${_project}"
               echo "region=us-central1"
               echo "mesh_job=dev-mesh"
-              # DERIVED BY DISCOVERY, not pinned. bootstrap-env.sh defaults the exchange bucket to
-              # <deployment-id>-exchange-<project number>, which is globally unique per project and
-              # is exactly the name create-mesh-tier.sh would create. Pinning it here would restate
-              # a value the deploy computes correctly on its own.
-              echo "mesh_bucket="
+              # PINNED, not left to discovery - and leaving it to discovery is exactly what broke
+              # the first real deploy into a personal environment:
+              #
+              #   ERROR: DEPLOY_NONINTERACTIVE=1 requires every deployment target to be explicit
+              #          - set: GCP_MESH_BUCKET.
+              #
+              # deploy.sh refuses to run unattended against a target it was not told, and it is
+              # right to: "discovery will work it out" is ambient configuration wearing a different
+              # hat, which is the whole reason every other target on this workflow is stated. The
+              # value is the same one bootstrap-env.sh would derive - <deployment-id>-exchange-
+              # <project number> - so stating it changes nothing except that the deploy is now
+              # allowed to proceed.
+              echo "mesh_bucket=dev-exchange-${_num}"
               echo "ar_repository=mesh"
               echo "registry=us-central1-docker.pkg.dev/${_project}/mesh"
               echo "wif_provider=projects/${_num}/locations/global/workloadIdentityPools/github-actions/providers/github"
