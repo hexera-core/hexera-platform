@@ -43,6 +43,27 @@ def test_an_assistant_tool_call_becomes_a_function_call_item():
                          "name": "get_x", "arguments": '{"a":"1"}'}
 
 
+def test_an_assistant_turn_with_both_text_and_tool_calls_orders_text_then_calls():
+    # Pins the shape agents/loop/provider_round.py:120-125's assistant_turn() actually emits -
+    # every tool-calling round for builder, planner and reviewer builds EXACTLY this dict
+    # unconditionally: {"role": "assistant", "content": <text>, "tool_calls": [...]}, never
+    # content=None. Probed 2026-09-15 against /v1/responses: a bare {"role":"assistant",
+    # "content":...} item followed by sibling function_call / function_call_output items in one
+    # `input` array was ACCEPTED (status: completed) and the model read the tool output through
+    # it correctly ("The result is **42**."). So the text item must come first and must survive.
+    _instr, items = rr.to_input_items([
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "Let me check that.",
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "get_x", "arguments": '{"a":"1"}'}}]},
+    ])
+    assert items[-2:] == [
+        {"role": "assistant", "content": "Let me check that."},
+        {"type": "function_call", "call_id": "call_1", "name": "get_x",
+         "arguments": '{"a":"1"}'},
+    ]
+
+
 def test_a_tool_result_becomes_a_function_call_output_item():
     _instr, items = rr.to_input_items([
         {"role": "tool", "tool_call_id": "call_1", "name": "get_x", "content": "42"},

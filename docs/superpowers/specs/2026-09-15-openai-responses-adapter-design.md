@@ -89,6 +89,22 @@ The chat shape `{"type":"image_url","image_url":{"url":…}}` is refused: *"Inva
 Supported values are: 'input_text', 'input_image', …"*. So `ContentPart` needs translating in both
 name and nesting, not just nesting.
 
+**A mixed assistant turn (text alongside a tool call) round-trips in one `input` array.**
+`agents/loop/provider_round.py:120-125`'s `assistant_turn()` builds `{"role": "assistant",
+"content": result.assistant_text, "tool_calls": [...]}` unconditionally, never `content=None` -
+so every tool-calling round for builder, planner and reviewer produces exactly that shape.
+Probed 2026-09-15: a bare `{"role":"assistant","content":"…"}` item followed by sibling
+`function_call` / `function_call_output` items in one `input` array was sent to `/v1/responses`:
+
+```
+ACCEPTED - status: completed
+output types: ['message']
+text: The result is **42**.
+```
+
+Accepted, and the model read the tool output through it correctly. No separate "assistant text
+must stand alone" turn is required.
+
 **Streaming events** observed:
 
 | Group | Events |
