@@ -771,3 +771,18 @@ def test_the_first_deploy_is_documented_as_two_runs():
     assert "-f workers=true" in first_cmd, (
         "the first run must create the fleet, or the second run's queue signal has nothing to "
         "attach to either")
+
+
+def test_the_celery_prefix_reaches_the_running_containers():
+    """Wiring the prefix into the deploy does nothing on its own - the API and the workers read it
+    at runtime. An API rolled WITHOUT the prefix while the workers carry one enqueues to keys no
+    worker reads, so jobs sit in a queue nobody is watching rather than failing."""
+    api = (SCRIPTS / "create-api-service.sh").read_text(encoding="utf-8")
+    assert "CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}" in api, (
+        "the API container never receives the prefix, so it would use the shared keyspace")
+    fleet = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
+    assert "celery-key-prefix=" in fleet, "the fleet's metadata never carries the prefix"
+    startup = (REPO / "deploy" / "gcp" / "worker" / "startup.sh").read_text(encoding="utf-8")
+    assert "celery-key-prefix" in startup and "CELERY_KEY_PREFIX=" in startup, (
+        "startup.sh does not turn the metadata key into the worker's environment, so the fleet "
+        "boots with an empty prefix however the template was written")

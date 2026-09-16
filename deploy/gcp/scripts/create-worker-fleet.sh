@@ -302,6 +302,9 @@ done
 WORKER_METADATA=(
   "worker-image=${APP_IMAGE}"
   "redis-url=${REDIS_URL}"
+  # The same keyspace the API is given - see create-api-service.sh. A fleet reading unprefixed keys
+  # while the API writes prefixed ones is a queue nobody drains.
+  "celery-key-prefix=${CELERY_KEY_PREFIX:-}"
   "database-url=${WORKER_DATABASE_URL}"
   "env-uri=${WORKER_ENV_URI}"
 )

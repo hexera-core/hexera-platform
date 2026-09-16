@@ -212,6 +212,12 @@ if [ -n "${REDIS_URL:-}" ]; then
     "REDIS_URL=${REDIS_URL}"
     "CELERY_BROKER_URL=${REDIS_URL}"
     "CELERY_RESULT_BACKEND=${REDIS_URL}"
+    # THE KEYSPACE THIS DEPLOYMENT OWNS. Empty for shared dev and production, which have their
+    # Redis instance to themselves; `dev-<slug>:` for a personal environment, which does not.
+    # Set unconditionally rather than only when non-empty: an API rolled with this UNSET while the
+    # workers carry a prefix would enqueue to keys no worker reads, and the jobs would sit in a
+    # queue nobody is watching rather than fail.
+    "CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}"
   )
 fi
 # THE OBJECT STORE'S NON-SECRET HALF. The secret is mounted as a reference below, but a credential
