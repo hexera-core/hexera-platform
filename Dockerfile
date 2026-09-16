@@ -615,7 +615,9 @@ COPY packages/ ./packages/
 COPY apps/admin-console/package.json ./apps/admin-console/
 RUN pnpm install --frozen-lockfile --filter @hexera/admin-console...
 COPY apps/admin-console/ ./apps/admin-console/
-RUN pnpm --filter @hexera/admin-console build
+# 4 GB of V8 heap for `next build`: its TypeScript pass exceeded the ~2 GB default on a 16 GB
+# laptop (Gate C, 2026-09-12) and V8 sizes that default from the memory free at start-up.
+RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm --filter @hexera/admin-console build
 # The outreach sender, bundled as one file. It is a Cloud Run JOB rather than a route, so Next does
 # not build it; esbuild resolves its imports into the same tree the console uses, so the job and the
 # pages cannot drift apart on the engine they run.

@@ -2,6 +2,7 @@
 # Boundaries: every command is time-bounded, and parse-time code directives are refused before any mesher starts.
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -49,6 +50,19 @@ _FATAL = (("negative volume", "negative-volume cells"),
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:
     ws = Path(workspace)
+    # A measurement taken WHERE THE MESH WAS BUILT wins, because here it may be impossible:
+    # on the Cloud Run path the mesh is built in a container that has checkMesh and read back
+    # by a worker that does not. native._run_cartesian_mesh_local writes this file next to the
+    # polyMesh it measured; it arrives with it (same contract as engines/snappy/foam_exec).
+    if not region:
+        cached = ws / "mesh_quality.json"
+        if cached.is_file():
+            try:
+                measured = json.loads(cached.read_text())
+                if isinstance(measured, dict) and measured:
+                    return measured
+            except (OSError, ValueError):
+                logger.warning("mesh_quality.json unreadable; measuring locally instead")
     reason = scan_case_dicts(ws)
     if reason:
         return {"mesh_ok": False, "fatal": [f"case dicts rejected: {reason}"],

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.engines.gates import GateCtx, GateSpec
+from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,26 @@ def _gate_boundary_types(ctx: GateCtx) -> tuple[bool, str]:
     return (False, reason) if reason else (True, "")
 
 
+def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
+    """The fill must span the passage where it matters: cells across the local passage at the
+    narrowest wall (5th percentile of the boundary points, measured beside the mesh for
+    internal flow). A mesh without the measure (external flow, an older image) is not judged."""
+    q = (ctx.manifest_or_load().get("quality") or {})
+    local = q.get("passage_cells_across_local") or {}
+    p05 = local.get("p05")
+    if p05 is None:
+        return True, ""
+    if float(p05) < PASSAGE_FLOOR_CELLS:
+        return False, (
+            f"[RESOLUTION] undermeshed: {float(p05):g} cells across the passage at the narrowest "
+            f"wall (5th percentile; median {local.get('median')}) - a CFD mesh needs at least "
+            f"{PASSAGE_FLOOR_CELLS} everywhere (industry practice is 20-40). Refine the wall "
+            "surface level (and the background if the passage is narrow everywhere) so at least "
+            "13 cells span the narrowest passage, then run_mesh again."
+        )
+    return True, ""
+
+
 def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
     # This engine's OWN declared gating criteria, enforced before the reviewer can see the mesh.
     # The bars and thresholds are the engine's (engines/snappy/criteria.py); this gate adds none.
@@ -144,6 +165,8 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
              proves="The mesh clears every quality bar snappyHexMesh requires - skewness is localized and the body is captured on the wall"),
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor, section="MESH",
+             proves="Every passage is spanned by enough cells to carry the flow (12 at the narrowest wall)"),
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
              proves="Every boundary you named exists in the mesh, and carries real faces"),
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",

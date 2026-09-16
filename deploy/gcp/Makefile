@@ -14,7 +14,8 @@ SHELL := /usr/bin/env bash
 S     := ./scripts
 
 .PHONY: help mesh-deploy doctor bootstrap validate preflight enable-apis artifact-registry \
-        service-account mesh-tier iam state provision publication-target smoke check
+        service-account mesh-tier iam state provision publication-target smoke check \
+        new-env destroy-env seed-secrets
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | sort | \
@@ -56,6 +57,22 @@ state: ## Write deploy/output/deployment.json (mesh resources + digests)
 publication-target: enable-apis bootstrap validate artifact-registry ## Environment + registry that release-publish pushes to
 
 provision: enable-apis artifact-registry service-account mesh-tier iam ## All mesh provisioning
+
+# PERSONAL ENVIRONMENTS. Each one is its own Google Cloud project, so these three are the whole
+# lifecycle: create it, keep its credentials filled, delete it. Deploying INTO one is not here -
+# that is the deploy workflow, run against any branch with `-f slug=<slug>`.
+#
+# All three are OWNER's acts, performed by a person under their own credentials. None of them is
+# reachable from CI, and that is deliberate: creating projects, minting identities and seeding
+# secret VALUES are precisely the authorities the federated deploy identity is built without.
+new-env: ## Create a personal dev environment as its own project: make new-env SLUG=pranav
+	@bash $(S)/new-env.sh
+
+destroy-env: ## Delete a personal dev environment and everything in it: make destroy-env SLUG=pranav
+	@bash $(S)/destroy-env.sh
+
+seed-secrets: ## Fill any EMPTY secret container in an environment: make seed-secrets SLUG=pranav
+	@bash $(S)/seed-secrets.sh
 
 smoke: ## Real mesh smoke - requires explicit GCP authority: make smoke JOB_ID=<uuid>
 	@bash $(S)/mesh-smoke.sh $(JOB_ID)

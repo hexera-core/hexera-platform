@@ -51,9 +51,11 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
+        gcloud-flags \
         test-fast-shard test-container-integration-shard \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
+        new-env destroy-env seed-secrets \
         clean-workspaces
 
 # Primary developer commands (shown by `make help`)
@@ -213,6 +215,25 @@ logs: ## Tail all service logs
 clean: ## Remove this Compose project's containers, volumes, and locally built images
 	docker compose down -v --rmi local
 	@echo "This Compose project's containers, volumes and locally built images removed."
+
+# PERSONAL DEVELOPMENT ENVIRONMENTS - one Google Cloud project per developer.
+#
+# Delegated to deploy/gcp, which owns every script that talks to Google. They are surfaced here
+# because this is the Makefile people actually type into, and an environment nobody can find the
+# command for is an environment nobody creates.
+#
+# THE LIFECYCLE IS THREE COMMANDS AND ONE CHECKBOX:
+#   make new-env SLUG=pranav        once, ~3 minutes, creates hexera-dev-pranav
+#   gh workflow run deploy.yml ... -f slug=pranav      as often as you like, from any branch
+#   make destroy-env SLUG=pranav    when you are done; deletes the project and everything in it
+new-env: ## Create your own dev environment as its own GCP project: make new-env SLUG=pranav
+	@$(MAKE) -C deploy/gcp new-env SLUG=$(SLUG)
+
+destroy-env: ## Delete your dev environment and everything in it: make destroy-env SLUG=pranav
+	@$(MAKE) -C deploy/gcp destroy-env SLUG=$(SLUG)
+
+seed-secrets: ## Fill any EMPTY secret container in an environment: make seed-secrets SLUG=pranav
+	@$(MAKE) -C deploy/gcp seed-secrets SLUG=$(SLUG)
 
 mesh-setup: ## FIRST developer in a blank GCP project: build, validate, publish and provision the mesh job
 	@# Each step below is an existing authority invoked unchanged. Every one is idempotent, so an
@@ -484,6 +505,16 @@ typecheck: ##! mypy ratchet - 0 exit while the baseline holds, fail on any NEW e
 dependencies: ##! Validate the one dependency source of truth (requirements/runtime.txt + dev.txt)
 	$(PY) devtools/quality/check_dependency_drift.py
 deps: dependencies ##! Alias for `make dependencies`
+# Exit 77 means gcloud is not installed, which is NOT a pass - it is reported as unchecked rather
+# than swallowed, because a green "flags OK" on a machine with no gcloud is the kind of clean
+# result that gets trusted.
+gcloud-flags: ##! Prove every gcloud flag the deploy passes is one the INSTALLED gcloud still accepts
+	@$(PY) devtools/quality/check_gcloud_flags.py; rc=$$?; \
+	 if [ $$rc -eq 77 ]; then \
+	   echo "UNCHECKED: gcloud is not installed here - the deploy's flags were not verified"; \
+	   exit 0; \
+	 fi; \
+	 exit $$rc
 # Maintainer check, not a release step: prove the distribution still builds and still contains
 # exactly ONE top-level package, then delete every artifact. Nothing is uploaded, and nothing is
 # left behind - a stale dist/ shadows the source tree (see test_no_stale_build_artifacts_shadow_

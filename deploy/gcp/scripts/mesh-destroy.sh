@@ -119,7 +119,13 @@ if [ -n "${BUCKET}" ]; then
   if bucket_exists "${BUCKET}"; then
     # A non-empty exchange bucket may hold a mesh somebody is still waiting on, so emptying it is
     # a separate decision from removing the deployment.
-    if [ -n "$(gcloud storage ls "gs://${BUCKET}/**" --limit 1 2>/dev/null || true)" ]; then
+    #
+    # `head -n 1` RATHER THAN `--limit`: `gcloud storage ls` has no such flag, so the call aborted
+    # with `unrecognized arguments` into the `2>/dev/null` and produced no output - which reads here
+    # as an EMPTY bucket. The prompt below was therefore never shown, and a bucket full of meshes
+    # was deleted without the question this block exists to ask. head closes the pipe after the
+    # first object, so nothing enumerates a large bucket to answer "is there anything in it".
+    if [ -n "$(gcloud storage ls "gs://${BUCKET}/**" 2>/dev/null | head -n 1)" ]; then
       if [ "${ASSUME_YES:-0}" != "1" ]; then
         printf '  gs://%s is NOT empty. Delete it and every object in it? [y/N] ' "${BUCKET}"
         read -r reply

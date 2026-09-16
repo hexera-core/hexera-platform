@@ -35,6 +35,11 @@
     "MESH"
    ],
    [
+    "resolution_floor",
+    true,
+    "MESH"
+   ],
+   [
     "patch_contract",
     true,
     "GROUPS"
@@ -170,6 +175,11 @@
    ],
    [
     "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "resolution_floor",
     true,
     "MESH"
    ],
