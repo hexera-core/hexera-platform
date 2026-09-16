@@ -598,3 +598,22 @@ def test_the_data_tier_exchanges_custom_routes_so_memorystore_is_reachable():
     # update is idempotent.
     peering_block = text[text.index("PEERING_DISPOSITION=created"):text.index("# 2) the Cloud SQL")]
     assert "peerings update" in peering_block
+
+
+def test_the_queue_depth_publisher_tolerates_a_cold_vpc_attach():
+    """Measured, not guessed. A probe job with this publisher's own image, service account and
+    egress settings took 11.2 seconds to complete the TCP handshake to Memorystore over private
+    service access, then got an immediate +PONG. The publisher allowed 5 seconds, so it failed
+    roughly four runs in five and succeeded only when the interface happened to attach quickly.
+
+    Invisible in the environment it has always run in: shared dev's Memorystore predates the
+    provisioning script, was built in DIRECT_PEERING mode, and its publisher runs every two
+    minutes and is never cold.
+    """
+    src = (REPO / "deploy" / "gcp" / "worker" / "queue_depth_publisher.py").read_text("utf-8")
+    assert "REDIS_CONNECT_TIMEOUT_SECONDS = 30" in src, (
+        "the connect timeout must exceed the measured 11.2s cold VPC attach")
+    assert "REDIS_CONNECT_ATTEMPTS" in src, (
+        "one attempt leaves the run dependent on a single variable-cost attach")
+    # The READ timeout stays low on purpose: once connected, a slow LLEN means something is wrong.
+    assert "REDIS_READ_TIMEOUT_SECONDS = 5" in src
