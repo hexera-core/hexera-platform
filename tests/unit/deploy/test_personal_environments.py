@@ -670,3 +670,50 @@ def test_domain_restricted_sharing_is_relaxed_for_the_project_and_said_out_loud(
         "the override must be scoped to the project, never the organisation")
     assert "WHAT IT COSTS, PLAINLY" in text, (
         "a security-relevant relaxation has to state its cost where it is applied")
+
+
+# ---------------------------------------------------------------------------------------------
+# 9. one Redis, many environments
+
+
+def test_the_celery_key_prefix_defaults_to_empty():
+    """An empty prefix is exactly today's behaviour, which is what lets shared dev, prod and the
+    local compose stack take this change with no migration of any kind."""
+    import meshpipeline.settings.providers as provcfg
+    assert provcfg.CELERY_KEY_PREFIX == "", (
+        "a non-empty default would move every existing deployment's queues to new Redis keys on "
+        "the next roll, stranding whatever was already enqueued under the old ones")
+
+
+def test_the_celery_app_isolates_broker_and_results_by_prefix():
+    """Personal environments share one Memorystore instance and Celery's queue names are
+    hardcoded literals (task_routes below), so without a prefix two of them consume each other's
+    tasks - a developer's job running against somebody else's worker fleet."""
+    from meshpipeline.adapters.pipeline_execution.celery_app import celery_app
+    for which, opts in (("broker", celery_app.conf.broker_transport_options),
+                        ("result backend", celery_app.conf.result_backend_transport_options)):
+        assert "global_keyprefix" in (opts or {}), (
+            f"the {which} carries no global_keyprefix; prefixing only one of the two leaves the "
+            f"other colliding in the shared keyspace")
+
+
+def test_an_unrecorded_object_store_key_is_adopted_rather_than_reminted():
+    """A personal environment pins no access id - the value does not exist until its first deploy
+    - so every later run arrives with nothing recorded. Without adoption that reads as "no usable
+    key exists" and mints another, every run, until Google's five-key ceiling stops the deploy
+    dead. Carrying the id in a repository variable is what used to prevent this."""
+    body = (SCRIPTS / "create-object-storage.sh").read_text(encoding="utf-8")
+    assert "ADOPTED" in body, "nothing adopts an existing key, so a personal run re-mints forever"
+    assert re.search(r'\$\{ACTIVE_COUNT\}"?\s*\]?\s*-eq\s+1|-eq\s+1\s*\]', body), (
+        "adoption must require EXACTLY ONE active key: GCS will not say which key a stored secret "
+        "belongs to, so adopting one of several is a coin flip whose losing side is a store that "
+        "authenticates as nobody")
+
+
+def test_adoption_cannot_follow_a_listing_that_could_not_be_read():
+    """An unreadable key listing is INCONCLUSIVE, not proof of absence - the script says so at
+    length. Adoption must sit after that refusal, or a missing storage.hmacKeys.list permission
+    would present as a key that does not exist."""
+    body = (SCRIPTS / "create-object-storage.sh").read_text(encoding="utf-8")
+    assert body.index('HMAC_LIST_READ_OK}" = "0"') < body.index("ADOPTED"), (
+        "the adopt branch precedes the unreadable-listing refusal")

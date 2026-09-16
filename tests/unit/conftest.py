@@ -168,7 +168,13 @@ RENDER_STUBS_INSTALLED = {
 
 class _FakeCelery:
     def __init__(self, *a, **k):
-        self.conf = types.SimpleNamespace(update=lambda **_: None)
+        # RECORDED, not discarded. `update` used to swallow its keywords, which made every
+        # setting in celery_app.py unassertable - a test could only check that configuration had
+        # been attempted, never what it said. Keeping the keywords on `conf` is what lets a test
+        # ask whether the broker actually carries the key prefix that isolates one deployment's
+        # queues from another's.
+        self.conf = types.SimpleNamespace()
+        self.conf.update = lambda **kw: self.conf.__dict__.update(kw)
     def task(self, *a, **k):
         def _decorator(fn):
             return fn

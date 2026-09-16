@@ -316,6 +316,7 @@ INVENTORY: list[Group] = [
     Group("Redis (broker + pub/sub)", vars=[
         EnvVar("REDIS_PASSWORD", "", secret=True, consumer="compose", help="set in production and use a credentialed REDIS_URL"),
         EnvVar("REDIS_URL", "redis://localhost:6379/0"),
+        EnvVar("CELERY_KEY_PREFIX", "", help="prefix for every Celery broker and result key. EMPTY is this deployment owns the keyspace, which is what shared dev, production and the compose stack all are. A personal environment sets it to `dev-<slug>:` because it shares one Memorystore instance with every other one, and the queue names are literals"),
     ]),
     Group("MinIO / S3", vars=[
         EnvVar("MINIO_ENDPOINT", "localhost:9000"),
