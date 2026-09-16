@@ -128,6 +128,25 @@ changes that.
 
 **A custom hostname.** See §2.
 
+### One thing it *does* get, which is worth knowing
+
+`new-env.sh` disables **domain restricted sharing** on your project
+(`constraints/iam.allowedPolicyMemberDomains`, scoped to that project only). The organisation
+otherwise permits IAM bindings only for principals inside the hexera.ai customer, and `allUsers` is
+not one — so the deploy would create the API service and then fail binding its public invoker:
+
+> `FAILED_PRECONDITION: One or more users named in the policy do not belong to a permitted customer`
+
+The deploy wants that binding because the browser talks to the API **directly** for client-config on
+page load and for the realtime WebSocket, neither of which passes through the console's proxy. A
+browser cannot present a Google identity token, so the service cannot be invoker-private while the
+console works. `hexera-dev` carries the same override, which is why its API has always had an
+`allUsers` binding and why nothing noticed the constraint until a project was created fresh.
+
+It is not the whole gate: `MESH_API_KEY` and `USER_TOKEN_SECRET` are both set on the service, so a
+caller past Cloud Run still needs the key and an HMAC-signed `X-User-Sig`. The relaxation is scoped
+to your project and disappears when you destroy it.
+
 **An initialised Identity Platform.** `new-env.sh` enables `identitytoolkit.googleapis.com`, which
 is *not* the same as Identity Platform being initialised — and there is no working `gcloud
 identity-platform` command to do it. Until you do it once, by hand, the console renders its sign-up

@@ -644,3 +644,26 @@ def test_the_autoscaler_attachment_is_deferred_when_there_is_no_fleet():
     assert guard < apply_at, (
         "create-queue-depth-publisher.sh attaches the autoscaling policy without first checking "
         "that the group exists, so a first deploy fails at stage 13")
+
+
+def test_domain_restricted_sharing_is_relaxed_for_the_project_and_said_out_loud():
+    """The organisation permits IAM bindings only for principals inside its customer, so binding
+    `allUsers` is refused and the deploy creates the API service then fails on its invoker policy.
+
+    deploy.yml sets API_ALLOW_UNAUTHENTICATED=1 for development because the browser talks to the
+    API directly - client-config on page load and the realtime WebSocket, neither through the
+    console's proxy - so the service cannot be invoker-private while the console works. hexera-dev
+    carries exactly this project-scoped override already, which is why nothing noticed until a
+    project was created fresh.
+
+    This is the one genuinely security-relevant thing new-env.sh does, so it must be explained
+    where it happens rather than applied quietly.
+    """
+    text = NEW_ENV.read_text(encoding="utf-8")
+    assert "iam.allowedPolicyMemberDomains" in text, (
+        "new-env.sh does not relax domain restricted sharing, so the first deploy fails at stage "
+        "14 after the API service is already serving")
+    assert "--project" in text and "org-policies set-policy" in text, (
+        "the override must be scoped to the project, never the organisation")
+    assert "WHAT IT COSTS, PLAINLY" in text, (
+        "a security-relevant relaxation has to state its cost where it is applied")

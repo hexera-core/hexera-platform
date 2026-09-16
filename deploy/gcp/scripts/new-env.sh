@@ -410,6 +410,46 @@ for _sa_spec in \
   fi
 done
 
+# DOMAIN RESTRICTED SHARING, TURNED OFF FOR THIS PROJECT - the one genuinely security-relevant
+# thing this script does, so it is stated rather than slipped in.
+#
+# The organisation enforces constraints/iam.allowedPolicyMemberDomains, which permits IAM bindings
+# only for principals inside the hexera.ai customer. `allUsers` is not one, so binding it is
+# refused:
+#
+#   FAILED_PRECONDITION: One or more users named in the policy do not belong to a permitted
+#   customer, perhaps due to an organization policy
+#
+# WHY THE DEPLOY WANTS THAT BINDING. deploy.yml sets API_ALLOW_UNAUTHENTICATED=1 for development
+# and explains itself where it does: the browser talks to the API DIRECTLY for client-config on
+# page load and for the realtime WebSocket, neither of which passes through the console's proxy, so
+# a browser can never present a Google identity token and the service cannot be invoker-private
+# while the console works. It is also not the whole gate - MESH_API_KEY and USER_TOKEN_SECRET are
+# both set on the service, so a caller past Cloud Run still needs the key and an HMAC-signed
+# X-User-Sig.
+#
+# hexera-dev carries exactly this override already; that is why its API has had an `allUsers`
+# binding all along and why nothing noticed the constraint. A project created today inherits the
+# organisation default instead, so the same deploy that works in shared dev stops at stage 14.
+#
+# WHAT IT COSTS, PLAINLY: inside this one project, an IAM binding may name a principal outside the
+# organisation. It is scoped to the project, it is removed with the project, and it matches the
+# environment this one exists to imitate. If that is not acceptable for your organisation, the
+# alternative is to leave it set and accept that the console cannot reach the API.
+info "Domain restricted sharing for ${PROJECT_ID} (needed for a reachable API - see the note in this script)"
+_drs_policy="$(mktemp)"
+printf 'constraint: constraints/iam.allowedPolicyMemberDomains\nlistPolicy:\n  allValues: ALLOW\n' > "${_drs_policy}"
+if gcloud resource-manager org-policies set-policy "${_drs_policy}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+  log "org policy      iam.allowedPolicyMemberDomains = ALLOW  (project-scoped, as hexera-dev has)"
+else
+  warn "could not relax constraints/iam.allowedPolicyMemberDomains on ${PROJECT_ID}. The deploy
+       will reach stage 14, deploy the API, and then fail binding allUsers:
+         FAILED_PRECONDITION: ... do not belong to a permitted customer
+       This needs roles/orgpolicy.policyAdmin on the organisation. Either grant it and rerun, or
+       accept a private API - in which case the console cannot reach it."
+fi
+rm -f "${_drs_policy}"
+
 # THE ONE PROJECT-LEVEL GRANT A RUNTIME IDENTITY NEEDS, made here for the same reason the
 # identities themselves are: the deploy cannot make it.
 #
