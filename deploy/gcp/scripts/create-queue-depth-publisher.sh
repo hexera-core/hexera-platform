@@ -38,7 +38,17 @@ QD_JOB="${CLOUDRUN_QUEUE_DEPTH_JOB:-${DEPLOYMENT_ID}-queue-depth}"
 QD_SA="${QUEUE_DEPTH_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-queue-depth}"
 QD_SA_EMAIL="${QD_SA}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 QD_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOYMENT_ID}-queue-depth}"
-QUEUE_NAME="${QUEUE_NAME:-simulation_jobs}"
+# THE QUEUE, UNDER THE KEY THE WORKERS ACTUALLY WRITE.
+#
+# Celery on a Redis broker stores a queue as a Redis LIST named after the queue - but under
+# `global_keyprefix` when one is set, the real key is <prefix><queue name>. queue_depth_publisher.py
+# does a bare LLEN of whatever it is handed, so handing it the unprefixed name in an environment
+# that uses a prefix reads a key nobody writes: the depth publishes as 0 forever and the autoscaler
+# never adds an instance, however long the real queue gets. Nothing errors, which is what makes it
+# worth stating here.
+#
+# Empty prefix - shared dev, production, a local stack - leaves this exactly `simulation_jobs`.
+QUEUE_NAME="${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}"
 METRIC="custom.googleapis.com/hexera/queue_depth"
 PROGRAM="${DEPLOY_DIR}/worker/queue_depth_publisher.py"
 

@@ -805,3 +805,27 @@ def test_the_worker_settings_object_is_published_when_nothing_has():
     assert "buckets create" in body, (
         "a first deploy has no transfer bucket either - publishing into one that does not exist "
         "fails exactly where creating the fleet would have")
+
+
+def test_the_depth_publisher_reads_the_key_the_workers_write():
+    """Celery stores a queue as a Redis list under <global_keyprefix><queue name>, and
+    queue_depth_publisher.py does a bare LLEN of whatever it is handed. Handed the unprefixed name
+    in a prefixed environment it reads a key nobody writes: depth publishes as 0 forever and the
+    autoscaler never adds an instance, however long the real queue gets. Nothing errors."""
+    body = (SCRIPTS / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
+    assert "CELERY_KEY_PREFIX" in body, "the publisher is pointed at an unprefixed key"
+    assert "simulation_jobs" in body
+
+
+def test_an_unprefixed_environment_still_names_the_bare_queue():
+    """Shared dev and production set no prefix, and their queues are the ones that already exist -
+    so the default has to collapse to exactly `simulation_jobs`."""
+    body = (SCRIPTS / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
+    line = next(ln for ln in body.splitlines() if ln.startswith("QUEUE_NAME="))
+    out = subprocess.run(["bash", "-c", f"{line}\nprintf '%s' \"$QUEUE_NAME\""],
+                         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+    assert out.stdout == "simulation_jobs", out.stdout
+    out2 = subprocess.run(["bash", "-c", f"{line}\nprintf '%s' \"$QUEUE_NAME\""],
+                          capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin", "CELERY_KEY_PREFIX": "dev-pranav:"})
+    assert out2.stdout == "dev-pranav:simulation_jobs", out2.stdout
