@@ -55,6 +55,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         test-fast-shard test-container-integration-shard \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
+        new-env destroy-env seed-secrets \
         clean-workspaces
 
 # Primary developer commands (shown by `make help`)
@@ -214,6 +215,25 @@ logs: ## Tail all service logs
 clean: ## Remove this Compose project's containers, volumes, and locally built images
 	docker compose down -v --rmi local
 	@echo "This Compose project's containers, volumes and locally built images removed."
+
+# PERSONAL DEVELOPMENT ENVIRONMENTS - one Google Cloud project per developer.
+#
+# Delegated to deploy/gcp, which owns every script that talks to Google. They are surfaced here
+# because this is the Makefile people actually type into, and an environment nobody can find the
+# command for is an environment nobody creates.
+#
+# THE LIFECYCLE IS THREE COMMANDS AND ONE CHECKBOX:
+#   make new-env SLUG=pranav        once, ~3 minutes, creates hexera-dev-pranav
+#   gh workflow run deploy.yml ... -f slug=pranav      as often as you like, from any branch
+#   make destroy-env SLUG=pranav    when you are done; deletes the project and everything in it
+new-env: ## Create your own dev environment as its own GCP project: make new-env SLUG=pranav
+	@$(MAKE) -C deploy/gcp new-env SLUG=$(SLUG)
+
+destroy-env: ## Delete your dev environment and everything in it: make destroy-env SLUG=pranav
+	@$(MAKE) -C deploy/gcp destroy-env SLUG=$(SLUG)
+
+seed-secrets: ## Fill any EMPTY secret container in an environment: make seed-secrets SLUG=pranav
+	@$(MAKE) -C deploy/gcp seed-secrets SLUG=$(SLUG)
 
 mesh-setup: ## FIRST developer in a blank GCP project: build, validate, publish and provision the mesh job
 	@# Each step below is an existing authority invoked unchanged. Every one is idempotent, so an
