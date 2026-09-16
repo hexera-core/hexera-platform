@@ -302,18 +302,53 @@ def test_a_tag_cannot_be_redirected_by_a_slug(tmp_path):
 # 5. the lifecycle scripts
 
 
-def test_destroy_refuses_the_shared_projects():
-    text = DESTROY_ENV.read_text(encoding="utf-8")
-    assert "hexera-dev|hexera-prod|hexera)" in text, (
-        "destroy-env.sh must refuse the shared projects by NAME, before any check that depends on "
-        "an API call - a check that can fail open is not a check")
 
 
-def test_destroy_requires_positive_evidence_that_the_project_is_personal():
+def test_destroy_refuses_a_reserved_slug():
+    """`dev` typed by somebody who believes they are naming shared dev is the mistake worth
+    refusing outright - it would otherwise build the prefix dev-dev, which is not shared dev but
+    is one keystroke away from somebody thinking it is."""
     text = DESTROY_ENV.read_text(encoding="utf-8")
-    assert "labels.personal" in text, (
-        "destroy-env.sh must require the personal=true label new-env.sh stamps; a name prefix "
-        "alone only establishes that a project is not obviously something else")
+    assert "dev|prod|production|shared|main|staging" in text, (
+        "the reserved slugs are not refused by name, before any check that depends on an API call "
+        "- a check that can fail open is not a check")
+
+
+def test_destroy_never_deletes_the_shared_data_tier():
+    """The Cloud SQL and Memorystore instances are shared with shared dev and with every other
+    personal environment. Deleting one to tear down a sandbox takes everybody with it. Only the
+    slug's own DATABASE goes."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert "sql instances delete" not in text, "destroy deletes the shared Cloud SQL INSTANCE"
+    assert "redis instances delete" not in text, "destroy deletes the shared Memorystore instance"
+    assert "sql databases delete" in text, "the slug's own database is never removed"
+
+
+def test_destroy_never_deletes_a_project():
+    """It runs inside a project it shares with shared dev. Deleting that project is the one
+    mutation this script must never make, however it is invoked."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert "projects delete" not in text
+
+
+def test_destroy_reports_what_it_could_not_reach():
+    """Deleting by label cannot cover a resource somebody created by hand that carries no label.
+    The honest answer is to print the gap at the moment somebody is about to stop paying attention
+    to the environment, not to claim completeness the script does not have."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert "NOT DELETED" in text, "a failed or skipped deletion is never reported"
+    assert "deployment-id" in text, "teardown does not select on the label the deploy stamps"
+    assert "WITHOUT a deployment-id label" in text, (
+        "the run never admits that an unlabelled resource survives it")
+
+
+def test_destroy_deactivates_a_key_before_deleting_its_account():
+    """An HMAC key must be deactivated before it can be deleted, and a service account cannot be
+    deleted while it still owns one - so deleting the identity first strands a key nothing can
+    name, and it keeps billing."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert text.index("hmac update") < text.index("service-accounts delete")
+    assert "--deactivate" in text
 
 
 def test_the_two_reserved_slug_lists_agree():
