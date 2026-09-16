@@ -2,6 +2,8 @@
 # Boundaries: counting; the limit and the response to exceeding it belong to the API.
 from __future__ import annotations
 
+from meshpipeline.redis_keys import k
+
 from meshpipeline.adapters._shared.redis_client import async_client
 
 
@@ -16,7 +18,7 @@ class RedisRateLimitStore:
 
     async def incr_window(self, identity: str, window: int, ttl_seconds: int) -> int:
         r = self._client()
-        key = f"rl:{identity}:{window}"
+        key = k(f"rl:{identity}:{window}")
         n = await r.incr(key)
         if n == 1:
             await r.expire(key, ttl_seconds)

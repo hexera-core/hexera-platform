@@ -321,9 +321,11 @@ fi
 #    resourcemanager.projectIamAdmin - so a compromised run still cannot grant itself anything
 #    further or widen the provider that admitted it. Those two absences are the containment.
 #
-#    iam.serviceAccountAdmin USED TO BE ON THAT LIST and no longer is, on one kind of project.
-#    A PERSONAL-ENVIRONMENT HOST adds it and storage.hmacKeyAdmin - see PERSONAL_ENV_HOST below
-#    for why, and for what it costs. hexera-prod is not one and its roster is unchanged.
+#    iam.serviceAccountAdmin IS STILL ABSENT EVERYWHERE, including on a personal-environment
+#    host: it carries serviceAccounts.setIamPolicy, which would let a compromised run grant itself
+#    token creation on a runtime identity and impersonate it. A host instead gets a CUSTOM role
+#    that creates identities and cannot touch their policies, plus storage.hmacKeyAdmin - see
+#    PERSONAL_ENV_HOST below. hexera-prod is not a host and its roster is unchanged.
 DEPLOYER_ROLES=(
   roles/run.admin                        # the mesh, migrate and queue-depth jobs, and the API service
   roles/artifactregistry.writer          # release-publish pushes the images validation proved
@@ -378,9 +380,44 @@ DEPLOYER_ROLES=(
 # provider that admitted it - roles/owner and resourcemanager.projectIamAdmin are absent here
 # exactly as they are everywhere else, and that is what still contains it.
 if [ "${PERSONAL_ENV_HOST:-0}" = "1" ]; then
+  # NOT roles/iam.serviceAccountAdmin, and the difference is the whole point.
+  #
+  # That role carries iam.serviceAccounts.setIamPolicy, which is an ESCALATION rather than a
+  # convenience: a compromised run could grant itself roles/iam.serviceAccountTokenCreator on any
+  # runtime identity in the project and then mint tokens AS that identity - including the API's,
+  # which reads secrets. The deployer would have gained authority it was never given, which is the
+  # exact thing the absence of roles/owner and projectIamAdmin is supposed to prevent. Granting it
+  # would have made the sentence above false.
+  #
+  # So this is a custom role that can CREATE an identity and READ one, and cannot touch any
+  # identity's policy - the same shape, and the same reason, as SECRET_ROLE_ID above omitting
+  # versions.access. actAs still comes from roles/iam.serviceAccountUser, which the base roster
+  # already grants and which does not confer token creation.
+  IDENTITY_ROLE_ID="${IDENTITY_ROLE_ID:-hexeraDeployIdentities}"
+  IDENTITY_ROLE_PERMISSIONS="iam.serviceAccounts.create,iam.serviceAccounts.get,iam.serviceAccounts.list"
+  if _id_role_state="$(gcloud iam roles describe "${IDENTITY_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+                        --format='value(deleted)' 2>/dev/null)"; then
+    if [ "${_id_role_state}" = "True" ]; then
+      info "Undeleting the custom role ${IDENTITY_ROLE_ID}"
+      gcloud iam roles undelete "${IDENTITY_ROLE_ID}" --project "${GCP_PROJECT_ID}" >/dev/null \
+        || die "could not undelete ${IDENTITY_ROLE_ID} - this needs iam.roles.undelete (an owner's act)"
+    fi
+    gcloud iam roles update "${IDENTITY_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+      --permissions "${IDENTITY_ROLE_PERMISSIONS}" --stage GA >/dev/null \
+      || die "could not reconcile the custom role ${IDENTITY_ROLE_ID} - this needs iam.roles.update (an owner's act)"
+    log "identity role   ${IDENTITY_ROLE_ID}  (reconciled)"
+  else
+    info "Creating the custom role ${IDENTITY_ROLE_ID} (create runtime identities, never their IAM policy)"
+    gcloud iam roles create "${IDENTITY_ROLE_ID}" --project "${GCP_PROJECT_ID}" \
+      --title "Hexera deploy - runtime identities" \
+      --description "Create and read service accounts. Deliberately excludes setIamPolicy, so the deployer cannot grant itself token creation on an identity and impersonate it." \
+      --permissions "${IDENTITY_ROLE_PERMISSIONS}" --stage GA >/dev/null \
+      || die "could not create the custom role ${IDENTITY_ROLE_ID} - this needs iam.roles.create (an owner's act)"
+    log "identity role   ${IDENTITY_ROLE_ID}  (created)"
+  fi
   DEPLOYER_ROLES+=(
-    roles/iam.serviceAccountAdmin        # the runtime identities each stage creates for its slug
-    roles/storage.hmacKeyAdmin           # that slug's object-store key, minted once and adopted after
+    "projects/${GCP_PROJECT_ID}/roles/${IDENTITY_ROLE_ID}"   # create the slug's runtime identities, nothing more
+    roles/storage.hmacKeyAdmin                               # that slug's object-store key, minted once and adopted after
   )
 fi
 
@@ -389,7 +426,7 @@ info "Project roles for ${DEPLOYER_SA_EMAIL} (${#DEPLOYER_ROLES[@]}, and nothing
 # FALSE makes the whole list non-zero and ends the run. On every project that is not a host - which
 # is all of them but one - that one-liner would have been fatal.
 if [ "${PERSONAL_ENV_HOST:-0}" = "1" ]; then
-  log "personal-environment host - the roster carries iam.serviceAccountAdmin and storage.hmacKeyAdmin"
+  log "personal-environment host - the roster carries ${IDENTITY_ROLE_ID:-hexeraDeployIdentities} and storage.hmacKeyAdmin"
 fi
 for role in "${DEPLOYER_ROLES[@]}"; do
   # --condition=None is explicit rather than implied: on a project that already carries a

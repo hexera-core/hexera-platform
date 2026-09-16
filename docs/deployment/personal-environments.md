@@ -38,7 +38,7 @@ named from it:
 | Workers | `dev-pranav-workers` (managed instance group, autoscaled) |
 | Buckets | `dev-pranav-exchange-…`, `dev-pranav-artifacts-…`, `dev-pranav-transfer-…` |
 | Database | `meshpipeline_pranav` |
-| Identities | `dev-pranav-api`, `-console`, `-mesh`, `-migrate`, `-workers` |
+| Identities | `dev-pranav-api`, `-console`, `-mesh`, `-migrate` (the fleet runs as the project's default compute account) |
 | Celery keys | prefixed `dev-pranav:` |
 
 **Your slug must be at most 14 characters**, lowercase, starting with a letter. That is not
@@ -130,13 +130,21 @@ The trade is the shared data tier (§3) and a teardown that is no longer complet
 Every provisioning stage already creates the identity it needs — the API service, the console, the
 migration job, the queue-depth publisher, the worker fleet and the object store all call
 `iam service-accounts create`. They could never succeed, which is precisely why creation used to
-be an owner's act. `hexera-dev`'s deploy identity now holds `roles/iam.serviceAccountAdmin` and
-`roles/storage.hmacKeyAdmin`, gated behind `PERSONAL_ENV_HOST=1` so that running the same script
-against `hexera-prod` does not widen production.
+be an owner's act. `hexera-dev`'s deploy identity now holds a custom role, `hexeraDeployIdentities`,
+and `roles/storage.hmacKeyAdmin`, both gated behind `PERSONAL_ENV_HOST=1` so that running the same
+script against `hexera-prod` does not widen production.
 
-**What that costs:** a compromised workflow run against `hexera-dev` can mint service accounts and
-object-store keys there. It still cannot grant itself any further role or widen the provider that
-admitted it — `roles/owner` and `resourcemanager.projectIamAdmin` are absent here as everywhere.
+**It is deliberately not `roles/iam.serviceAccountAdmin`.** That role carries
+`iam.serviceAccounts.setIamPolicy`, which would let a compromised run grant itself
+`roles/iam.serviceAccountTokenCreator` on a runtime identity and then act as it — including the
+API's identity, which reads secrets. The custom role can create and read service accounts and
+cannot touch any account's policy, the same shape as `hexeraDeploySecrets` omitting
+`versions.access`.
+
+**What it costs:** a compromised workflow run against `hexera-dev` can create service accounts and
+mint object-store keys there. It cannot grant itself any further role, impersonate an existing
+identity, or widen the provider that admitted it — `roles/owner`, `resourcemanager.projectIamAdmin`
+and `iam.serviceAccountAdmin` are absent here as everywhere.
 
 ### The one identity you do not get your own of
 

@@ -28,8 +28,8 @@ celery_app.conf.update(
     #
     # BOTH options, not one. The broker carries the queues; the result backend carries the task
     # results. Prefixing only the broker isolates the work and leaves the answers colliding.
-    broker_transport_options={"global_keyprefix": provcfg.CELERY_KEY_PREFIX},
-    result_backend_transport_options={"global_keyprefix": provcfg.CELERY_KEY_PREFIX},
+    broker_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
+    result_backend_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],

@@ -176,8 +176,8 @@ def test_the_celery_prefix_isolates_a_personal_run_and_only_that(tmp_path):
     tasks. Shared dev must keep an EMPTY prefix: its queues are the ones that already exist."""
     _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
-    assert personal["celery_key_prefix"] == "dev-pranav:"
-    assert shared.get("celery_key_prefix", "") == "", (
+    assert personal["redis_key_prefix"] == "dev-pranav:"
+    assert shared.get("redis_key_prefix", "") == "", (
         "a non-empty prefix on shared dev would move its queues to new Redis keys on the next "
         "roll and strand whatever was already enqueued under the old ones")
 
@@ -619,11 +619,11 @@ def test_the_autoscaler_attachment_is_deferred_when_there_is_no_fleet():
 # 9. one Redis, many environments
 
 
-def test_the_celery_key_prefix_defaults_to_empty():
+def test_the_redis_key_prefix_defaults_to_empty():
     """An empty prefix is exactly today's behaviour, which is what lets shared dev, prod and the
     local compose stack take this change with no migration of any kind."""
     import meshpipeline.settings.providers as provcfg
-    assert provcfg.CELERY_KEY_PREFIX == "", (
+    assert provcfg.REDIS_KEY_PREFIX == "", (
         "a non-empty default would move every existing deployment's queues to new Redis keys on "
         "the next roll, stranding whatever was already enqueued under the old ones")
 
@@ -681,7 +681,7 @@ def test_the_depth_publisher_reads_the_key_the_workers_write():
     in a prefixed environment it reads a key nobody writes: depth publishes as 0 forever and the
     autoscaler never adds an instance, however long the real queue gets. Nothing errors."""
     body = (SCRIPTS / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
-    assert "CELERY_KEY_PREFIX" in body, "the publisher is pointed at an unprefixed key"
+    assert "REDIS_KEY_PREFIX" in body, "the publisher is pointed at an unprefixed key"
     assert "simulation_jobs" in body
 
 
@@ -695,7 +695,7 @@ def test_an_unprefixed_environment_still_names_the_bare_queue():
     assert out.stdout == "simulation_jobs", out.stdout
     out2 = subprocess.run(["bash", "-c", f"{line}\nprintf '%s' \"$QUEUE_NAME\""],
                           capture_output=True, text=True,
-                          env={"PATH": "/usr/bin:/bin", "CELERY_KEY_PREFIX": "dev-pranav:"})
+                          env={"PATH": "/usr/bin:/bin", "REDIS_KEY_PREFIX": "dev-pranav:"})
     assert out2.stdout == "dev-pranav:simulation_jobs", out2.stdout
 
 
@@ -743,7 +743,7 @@ def test_the_celery_prefix_reaches_the_scripts_that_need_it():
     consumers matter: the API and workers read the prefix to find their queues, and the depth
     publisher reads it to measure the same key."""
     wf = WF.read_text(encoding="utf-8")
-    assert "CELERY_KEY_PREFIX: ${{ needs.target.outputs.celery_key_prefix }}" in wf, (
+    assert "REDIS_KEY_PREFIX: ${{ needs.target.outputs.redis_key_prefix }}" in wf, (
         "the prefix is emitted and never consumed, so every environment would share one keyspace "
         "while the workflow looks as though it had separated them")
 
@@ -777,12 +777,12 @@ def test_the_celery_prefix_reaches_the_running_containers():
     at runtime. An API rolled WITHOUT the prefix while the workers carry one enqueues to keys no
     worker reads, so jobs sit in a queue nobody is watching rather than failing."""
     api = (SCRIPTS / "create-api-service.sh").read_text(encoding="utf-8")
-    assert "CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}" in api, (
+    assert "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}" in api, (
         "the API container never receives the prefix, so it would use the shared keyspace")
     fleet = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
-    assert "celery-key-prefix=" in fleet, "the fleet's metadata never carries the prefix"
+    assert "redis-key-prefix=" in fleet, "the fleet's metadata never carries the prefix"
     startup = (REPO / "deploy" / "gcp" / "worker" / "startup.sh").read_text(encoding="utf-8")
-    assert "celery-key-prefix" in startup and "CELERY_KEY_PREFIX=" in startup, (
+    assert "redis-key-prefix" in startup and "REDIS_KEY_PREFIX=" in startup, (
         "startup.sh does not turn the metadata key into the worker's environment, so the fleet "
         "boots with an empty prefix however the template was written")
 
@@ -794,22 +794,22 @@ def test_the_prefixed_queue_name_is_composed_where_the_file_cannot_overwrite_it(
     the publisher would go on reading the unprefixed key, publish 0 forever, and the autoscaler
     would never add an instance. So the prefix has to be applied where the file is WRITTEN."""
     boot = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
-    assert "QUEUE_NAME=${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}" in boot, (
+    assert "QUEUE_NAME=${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}" in boot, (
         "the generated env writes an unprefixed QUEUE_NAME, which load_env then makes win over "
         "anything the publisher computes")
-    assert "CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}" in boot, (
+    assert "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}" in boot, (
         "the prefix itself is not carried in the generated env, so scripts that load_env lose it")
 
 
 def test_the_generated_queue_name_collapses_to_the_bare_queue_without_a_prefix():
     """Shared dev and production set no prefix and their queues are the ones that already exist,
     so the composed value has to be exactly `simulation_jobs` for them."""
-    expr = 'echo "${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}"'
+    expr = 'echo "${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}"'
     bare = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
                           env={"PATH": "/usr/bin:/bin"})
     assert bare.stdout.strip() == "simulation_jobs", bare.stdout
     pref = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
-                          env={"PATH": "/usr/bin:/bin", "CELERY_KEY_PREFIX": "dev-pranav:"})
+                          env={"PATH": "/usr/bin:/bin", "REDIS_KEY_PREFIX": "dev-pranav:"})
     assert pref.stdout.strip() == "dev-pranav:simulation_jobs", pref.stdout
 
 
@@ -962,3 +962,57 @@ def test_creating_an_identity_early_cannot_fail_the_whole_deploy():
     roster = body[body.index("Runtime identities the later stages"):]
     assert "warn " in roster, "a failure to pre-create is fatal"
     assert "die " not in roster, "a failure to pre-create kills the deploy"
+
+
+# ---------------------------------------------------------------------------------------------
+# 12. the keyspace, not just the Celery queues
+
+
+def test_every_redis_key_goes_through_the_keyspace_prefix():
+    """Celery's global_keyprefix isolates the broker and the result backend and NOTHING ELSE. The
+    dead letter queue, the inference feed, job event logs, websocket tickets, rate limits, delivery
+    guards and capacity leases are addressed by adapters that talk to Redis directly, and their key
+    names are literals - `simulation:dlq` is the same string in every deployment.
+
+    Personal environments share one Memorystore instance whose URL carries no authentication, so
+    without this every environment reads, writes and trims those keys out from under every other.
+    """
+    import meshpipeline.settings.providers as provcfg
+    from meshpipeline.events import channels
+    from meshpipeline.redis_keys import k
+
+    before = provcfg.REDIS_KEY_PREFIX
+    try:
+        provcfg.REDIS_KEY_PREFIX = ""
+        assert channels.channel_for("J") == "jobs:J:events", (
+            "an empty prefix must be byte-for-byte today's behaviour, or every existing deployment "
+            "moves to new keys on the next roll and strands what is already enqueued")
+        assert k("simulation:dlq") == "simulation:dlq"
+
+        provcfg.REDIS_KEY_PREFIX = "dev-slug:"
+        for name, value in (("channel", channels.channel_for("J")),
+                            ("event log", channels.log_key_for("J")),
+                            ("sequence", channels.seq_key_for("J")),
+                            ("op set", channels.opkey_set_for("J")),
+                            ("fence", channels.fence_key_for("J")),
+                            ("dead letter", k("simulation:dlq")),
+                            ("inference feed", k("inference:calls"))):
+            assert value.startswith("dev-slug:"), f"the {name} key is not in this deployment's keyspace: {value}"
+    finally:
+        provcfg.REDIS_KEY_PREFIX = before
+
+
+def test_no_adapter_addresses_a_literal_redis_key_directly():
+    """The guarantee above is only worth as much as its coverage: one adapter still building a key
+    by hand is one class of state still shared across every environment."""
+    import re
+    adapters = (REPO / "src" / "meshpipeline" / "adapters")
+    offenders = []
+    for path in list(adapters.rglob("*.py")) + [REPO / "src" / "meshpipeline" / "events" / "channels.py"]:
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "redis.call" in line or line.strip().startswith("#"):
+                continue
+            # a Redis command handed a literal or f-string key that was not wrapped in k(...)
+            if re.search(r'\.(lpush|ltrim|lrange|rpush|getdel|incr|sadd|zadd|expire|publish)\(\s*f?"', line):
+                offenders.append(f"{path.relative_to(REPO)}:{i}: {line.strip()}")
+    assert not offenders, "these address Redis keys without the keyspace prefix:\n  " + "\n  ".join(offenders)

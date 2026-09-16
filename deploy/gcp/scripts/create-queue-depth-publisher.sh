@@ -48,7 +48,7 @@ QD_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOYMENT_ID}-queue-depth}"
 # worth stating here.
 #
 # Empty prefix - shared dev, production, a local stack - leaves this exactly `simulation_jobs`.
-QUEUE_NAME="${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}"
+QUEUE_NAME="${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}"
 METRIC="custom.googleapis.com/hexera/queue_depth"
 PROGRAM="${DEPLOY_DIR}/worker/queue_depth_publisher.py"
 

@@ -31,7 +31,8 @@
 # no 30-day window and no undelete. The database goes, and with it whatever was in it. That is why
 # this confirms before the first mutation.
 #
-# INPUTS   SLUG (required). GCP_PROJECT_ID / PERSONAL_ENV_PROJECT to name the host project.
+# INPUTS   SLUG (required). PERSONAL_ENV_PROJECT to name a host other than hexera-dev; the
+#          ambient GCP_PROJECT_ID is deliberately NOT read - see the pin below.
 # MUTATES  the Cloud Run services and jobs, scheduler job, MIG, instance template, buckets,
 #          database, HMAC key, secret and service accounts belonging to ONE deployment id.
 set -euo pipefail
@@ -67,7 +68,20 @@ case "${SLUG}" in
 esac
 
 DEPLOYMENT_ID="dev-${SLUG}"
-PROJECT_ID="${GCP_PROJECT_ID:-${PERSONAL_ENV_PROJECT:-hexera-dev}}"
+
+# THE HOST PROJECT IS PINNED, NOT INHERITED - and this is a safety property, not a preference.
+#
+# This script deletes by NAME. `dev-<slug>-api` is a perfectly plausible name in more than one
+# project, so reading the target from the ambient environment means an exported GCP_PROJECT_ID left
+# over from some earlier command decides where the deletions land - while the confirmation prompt
+# below shows the operator the `dev-<slug>` teardown they asked for. They would be answering a
+# question about one project and authorising it against another.
+#
+# An override is still possible, because destroying a personal environment in a different host is
+# a real thing to want one day; it just has to be TYPED at this script rather than inherited, and
+# it is echoed in the plan so the confirmation is about the project that will actually be touched.
+PERSONAL_ENV_PROJECT="${PERSONAL_ENV_PROJECT:-hexera-dev}"
+PROJECT_ID="${PERSONAL_ENV_PROJECT}"
 GCP_REGION="${GCP_REGION:-us-central1}"
 WORKER_ZONE="${WORKER_MIG_ZONE:-us-central1-a}"
 export GCP_PROJECT_ID="${PROJECT_ID}" GCP_REGION
@@ -79,6 +93,15 @@ case "${DEPLOYMENT_ID}" in
   dev-?*) ;;
   *) die "refusing to act on deployment id '${DEPLOYMENT_ID}' - it is not a personal environment" ;;
 esac
+
+# THE NAME THE DEPLOY ACTUALLY CREATED. The picker emits migrate_db_name=meshpipeline_<slug>, so
+# deriving it from DEPLOYMENT_ID instead produced `dev_<slug>` - a database that has never existed.
+# Every teardown then reported it absent and left the real one, with its data, in place: the one
+# failure mode of this script that loses nothing visibly and keeps a developer's data forever.
+DB_NAME="${MIGRATE_DB_NAME:-meshpipeline_${SLUG}}"
+# Pinned for the same reason the project is: this names the target of an IRREVERSIBLE delete, and
+# an inherited value would point it at another instance holding a database of the same name.
+CLOUDSQL_INSTANCE="hexera-dev-pg"
 
 ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -1)"
 [ -n "${ACCOUNT}" ] || die "no active gcloud account - run: gcloud auth login"
@@ -96,7 +119,8 @@ cat <<PLAN
   DELETED: every resource labelled deployment-id=${DEPLOYMENT_ID} - the API and console services,
   the mesh, migrate and queue-depth jobs, the scheduler, the worker group and its template, the
   exchange, artifacts and transfer buckets, the object-store key and its secret, and the six
-  runtime service accounts. Plus the database ${DEPLOYMENT_ID//-/_} and everything in it.
+  runtime service accounts. Plus the database ${DB_NAME} on ${CLOUDSQL_INSTANCE}, and
+  everything in it.
 
   NEVER TOUCHED: the Cloud SQL instance and the Memorystore instance. They are shared with shared
   dev and with every other personal environment.
@@ -163,11 +187,13 @@ else
   _absent "instance group ${DEPLOYMENT_ID}-workers"
 fi
 
-# The templates are versioned (`-tpl-<digest>-<suffix>`), so there is no single name to delete -
+# The templates are versioned (`<mig>-tpl-<digest>-<suffix>` - named after the GROUP, not the
+# deployment id, which an earlier filter here got wrong and so matched nothing), so there is no
+# single name to delete -
 # they are selected by prefix, which is the one place this script does match on a name rather than
 # a label. A template still referenced by a group refuses deletion, which is why the group went first.
 for _tpl in $(gcloud compute instance-templates list --project "${PROJECT_ID}" \
-                --filter="name~^${DEPLOYMENT_ID}-tpl-" --format='value(name)' 2>/dev/null); do
+                --filter="name~^${DEPLOYMENT_ID}-workers-tpl-" --format='value(name)' 2>/dev/null); do
   _delete "instance template ${_tpl}" \
     gcloud compute instance-templates delete "${_tpl}" --project "${PROJECT_ID}" --quiet
 done
@@ -196,8 +222,6 @@ done
 
 # THE DATABASE, and ONLY the database. The INSTANCE is shared - see the header.
 info "Database (the instance it lives on is shared and is left alone)"
-DB_NAME="${DEPLOYMENT_ID//-/_}"
-CLOUDSQL_INSTANCE="${CLOUDSQL_INSTANCE:-hexera-dev-pg}"
 if gcloud sql databases describe "${DB_NAME}" --instance "${CLOUDSQL_INSTANCE}" \
      --project "${PROJECT_ID}" >/dev/null 2>&1; then
   _delete "database ${DB_NAME} on ${CLOUDSQL_INSTANCE}" \

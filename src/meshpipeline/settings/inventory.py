@@ -316,7 +316,7 @@ INVENTORY: list[Group] = [
     Group("Redis (broker + pub/sub)", vars=[
         EnvVar("REDIS_PASSWORD", "", secret=True, consumer="compose", help="set in production and use a credentialed REDIS_URL"),
         EnvVar("REDIS_URL", "redis://localhost:6379/0"),
-        EnvVar("CELERY_KEY_PREFIX", "", help="prefix for every Celery broker and result key. EMPTY is this deployment owns the keyspace, which is what shared dev, production and the compose stack all are. A personal environment sets it to `dev-<slug>:` because it shares one Memorystore instance with every other one, and the queue names are literals"),
+        EnvVar("REDIS_KEY_PREFIX", "", help="prefix for EVERY Redis key this deployment writes - the Celery broker and results, and also the dead letter queue, inference feed, job event logs, websocket tickets, rate limits, delivery guards and capacity leases, all of which are literal key names shared across deployments otherwise. EMPTY means this deployment owns the instance, which is what shared dev, production and the compose stack are. A personal environment sets it to `dev-<slug>:` because it shares one Memorystore instance with every other one"),
     ]),
     Group("MinIO / S3", vars=[
         EnvVar("MINIO_ENDPOINT", "localhost:9000"),

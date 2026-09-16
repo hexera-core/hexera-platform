@@ -2,6 +2,8 @@
 # Boundaries: counting only; the redelivery limit and what to do at it belong to the caller.
 from __future__ import annotations
 
+from meshpipeline.redis_keys import k
+
 from typing import cast
 
 from meshpipeline.adapters._shared.redis_client import sync_client
@@ -20,7 +22,7 @@ class RedisDeliveryGuard:
 
     def record_attempt(self, job_id: str) -> int:
         r = self._client()
-        key = f"job:{job_id}:deliveries"
+        key = k(f"job:{job_id}:deliveries")
         n = int(cast(int, r.incr(key)))   # sync redis returns the new int value
         if n == 1:
             r.expire(key, _TTL_SECONDS)

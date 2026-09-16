@@ -484,7 +484,7 @@ Every supported setting (216 entries). `template` settings are the ones `.env.ex
 | `POSTGRES_PASSWORD` | template | app | yes |
 | `POSTGRES_PORT` | template | app |  |
 | `POSTGRES_USER` | template | app |  |
-| `CELERY_KEY_PREFIX` | template | app |  |
+| `REDIS_KEY_PREFIX` | template | app |  |
 | `REDIS_PASSWORD` | template | compose | yes |
 | `REDIS_URL` | template | app |  |
 | `MINIO_ACCESS_KEY` | template | app |  |

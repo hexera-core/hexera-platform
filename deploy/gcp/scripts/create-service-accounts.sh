@@ -64,13 +64,19 @@ fi
 # stages use, so this cannot create an account under a name nothing will look for. The admin
 # console is deliberately absent - it is not deployed in every environment, and create-admin-
 # service.sh makes its identity when it is.
+#
+# THE WORKER ENTRY HAS NO DEFAULT, and that is deliberate rather than an omission.
+# create-worker-fleet.sh runs the fleet as the project's DEFAULT COMPUTE account when
+# WORKER_SERVICE_ACCOUNT is unset - it says so in a warning - so defaulting to
+# <deployment-id>-workers here would create an account nothing runs as, once per deployment,
+# while doing nothing for the identity the fleet actually uses. An empty entry is skipped below.
 info "Runtime identities the later stages will run workloads as"
 for _spec in \
   "${API_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-api}|runs the API service" \
   "${CONSOLE_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-console}|runs the console" \
   "${MIGRATE_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-migrate}|runs the schema migration job" \
   "${QUEUE_DEPTH_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-queue-depth}|publishes queue depth for the autoscaler" \
-  "${WORKER_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-workers}|runs the celery worker fleet"; do
+  "${WORKER_SERVICE_ACCOUNT:-}|runs the celery worker fleet"; do
   _sa="${_spec%%|*}"
   _purpose="${_spec##*|}"
   [ -n "${_sa}" ] || continue

@@ -119,8 +119,21 @@ on:
 # not resumable from an arbitrary point - so runs QUEUE behind each other instead of replacing
 # each other. This is deliberately the opposite of ci.yml, where cancelling a superseded run of
 # a read-only gate costs nothing.
+# SERIALISED BY WHAT IS BEING DEPLOYED, not by what it is being deployed FROM.
+#
+# Grouping on the ref alone let two branches deploy the SAME personal environment at once, and the
+# object store is where that shows up: both runs find no ACTIVE HMAC key, both mint one, and from
+# then on neither can be adopted - the "exactly one ACTIVE key" rule that replaced the register
+# sees two and falls through to minting, every run, until the account hits Google's five-key limit.
+# A slug names one set of resources, so a slug is the thing that has to queue.
+#
+# An empty slug falls back to the ref, which is exactly today's behaviour for shared dev, for a
+# merge and for a tag.
+#
+# NOT cancel-in-progress: a superseded deploy is a half-reconciled environment, and the second run
+# adopting what the first one minted is the whole point - it has to WAIT for it, not replace it.
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-${{ github.event.inputs.slug != '' && format('env-{0}', github.event.inputs.slug) || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -200,7 +213,7 @@ jobs:
       postgres_password_secret: ${{ steps.pick.outputs.postgres_password_secret }}
       worker_mig: ${{ steps.pick.outputs.worker_mig }}
       worker_mig_zone: ${{ steps.pick.outputs.worker_mig_zone }}
-      celery_key_prefix: ${{ steps.pick.outputs.celery_key_prefix }}
+      redis_key_prefix: ${{ steps.pick.outputs.redis_key_prefix }}
       queue_depth_service_account: ${{ steps.pick.outputs.queue_depth_service_account }}
       # THE OBJECT STORE. BOTH branches emit these now. They used to be prod-only, and that is
       # exactly what broke dev: the `storage` stage is the only other thing that writes MINIO_*
@@ -478,7 +491,7 @@ jobs:
               # else's worker fleet, with neither party any reason to suspect it. Shared dev and
               # production emit no prefix at all: they own their keyspaces, and an empty value is
               # exactly the behaviour they already have.
-              echo "celery_key_prefix=${_did}:"
+              echo "redis_key_prefix=${_did}:"
               # THE QUEUE-DEPTH PUBLISHER RUNS AS SHARED DEV'S IDENTITY, and this is the one
               # place a personal environment deliberately does NOT get its own.
               #
@@ -1286,7 +1299,7 @@ jobs:
       # keyspaces - and `dev-<slug>:` for a personal environment, which shares a Memorystore
       # instance with every other one. create-queue-depth-publisher.sh reads this too, because the
       # depth it publishes has to be measured on the key the workers actually write.
-      CELERY_KEY_PREFIX: ${{ needs.target.outputs.celery_key_prefix }}
+      REDIS_KEY_PREFIX: ${{ needs.target.outputs.redis_key_prefix }}
       # THE QUEUE-DEPTH PUBLISHER'S IDENTITY, pinned for a personal environment and derived
       # everywhere else. See the picker's comment where this is emitted: writing the metric needs a
       # PROJECT-level role that the deploy identity cannot grant to an account it just created,

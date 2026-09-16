@@ -215,7 +215,7 @@ if [ -n "${REDIS_URL:-}" ]; then
     # Set unconditionally rather than only when non-empty: an API rolled with this UNSET while the
     # workers carry a prefix would enqueue to keys no worker reads, and the jobs would sit in a
     # queue nobody is watching rather than fail.
-    "CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}"
+    "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}"
   )
 fi
 # THE OBJECT STORE'S NON-SECRET HALF. The secret is mounted as a reference below, but a credential

@@ -139,7 +139,7 @@ DB_POOL_RECYCLE: int  = int(optional_env("DB_POOL_RECYCLE", "1800"))   # recycle
 REDIS_URL: str = optional_env("REDIS_URL", "redis://localhost:6379/0")
 # Empty means this deployment has the keyspace to itself. See celery_app.py for what a non-empty
 # value is for and why the default has to be this one.
-CELERY_KEY_PREFIX: str = optional_env("CELERY_KEY_PREFIX", "")
+REDIS_KEY_PREFIX: str = optional_env("REDIS_KEY_PREFIX", "")
 
 # Google Cloud + pipeline-execution selection
 GCP_PROJECT_ID: str        = optional_env("GCP_PROJECT_ID", "")

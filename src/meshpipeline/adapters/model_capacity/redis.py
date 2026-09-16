@@ -2,6 +2,8 @@
 # Boundaries: admission and lease expiry; it selects no model and performs no call.
 from __future__ import annotations
 
+from meshpipeline.redis_keys import k
+
 import asyncio
 import logging
 import threading
@@ -37,7 +39,7 @@ return redis.call('ZCARD', KEYS[1])
 
 
 def _key(domain_key: str) -> str:
-    return f"{_KEY_PREFIX}:{domain_key}"
+    return k(f"{_KEY_PREFIX}:{domain_key}")
 
 
 class RedisCapacityController:
