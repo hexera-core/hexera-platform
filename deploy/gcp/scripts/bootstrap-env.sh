@@ -310,7 +310,17 @@ CLOUDRUN_QUEUE_DEPTH_JOB=${QUEUE_DEPTH_JOB}
 QUEUE_DEPTH_SERVICE_ACCOUNT=${QUEUE_DEPTH_SA}
 QUEUE_DEPTH_SCHEDULER_JOB=${QUEUE_DEPTH_SCHEDULER}
 QUEUE_DEPTH_SCHEDULE="${QUEUE_DEPTH_SCHEDULE:-*/2 * * * *}"
-QUEUE_NAME=${QUEUE_NAME:-simulation_jobs}
+# THE KEYSPACE THIS DEPLOYMENT OWNS. Empty means it has its Redis instance to itself, which is
+# shared dev, production and the compose stack. A personal environment shares one Memorystore
+# instance with every other one and sets dev-<slug>: so that Celery's queue names - which are
+# literals in celery_app.py - cannot collide between environments.
+CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}
+# THE QUEUE, UNDER THE KEY THE WORKERS ACTUALLY WRITE. Celery stores a queue as a Redis list named
+# <global_keyprefix><queue name>, and queue_depth_publisher.py does a bare LLEN of whatever it is
+# handed. Composed HERE rather than defaulted in create-queue-depth-publisher.sh, because load_env
+# sources this file with set -a - the file wins over the environment, so a default computed in
+# the consumer would be overwritten by the value written here and never take effect.
+QUEUE_NAME=${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}
 REDIS_URL=${REDIS_URL:-}
 WORKER_MIG=${WORKER_MIG:-}
 WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}

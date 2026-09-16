@@ -786,3 +786,29 @@ def test_the_celery_prefix_reaches_the_running_containers():
     assert "celery-key-prefix" in startup and "CELERY_KEY_PREFIX=" in startup, (
         "startup.sh does not turn the metadata key into the worker's environment, so the fleet "
         "boots with an empty prefix however the template was written")
+
+
+def test_the_prefixed_queue_name_is_composed_where_the_file_cannot_overwrite_it():
+    """lib.sh's load_env sources the generated env with `set -a`, so the FILE wins over the
+    environment. bootstrap-env.sh writes QUEUE_NAME, which means a default computed in
+    create-queue-depth-publisher.sh is overwritten by the file's value and never takes effect -
+    the publisher would go on reading the unprefixed key, publish 0 forever, and the autoscaler
+    would never add an instance. So the prefix has to be applied where the file is WRITTEN."""
+    boot = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
+    assert "QUEUE_NAME=${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}" in boot, (
+        "the generated env writes an unprefixed QUEUE_NAME, which load_env then makes win over "
+        "anything the publisher computes")
+    assert "CELERY_KEY_PREFIX=${CELERY_KEY_PREFIX:-}" in boot, (
+        "the prefix itself is not carried in the generated env, so scripts that load_env lose it")
+
+
+def test_the_generated_queue_name_collapses_to_the_bare_queue_without_a_prefix():
+    """Shared dev and production set no prefix and their queues are the ones that already exist,
+    so the composed value has to be exactly `simulation_jobs` for them."""
+    expr = 'echo "${QUEUE_NAME:-${CELERY_KEY_PREFIX:-}simulation_jobs}"'
+    bare = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin"})
+    assert bare.stdout.strip() == "simulation_jobs", bare.stdout
+    pref = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin", "CELERY_KEY_PREFIX": "dev-pranav:"})
+    assert pref.stdout.strip() == "dev-pranav:simulation_jobs", pref.stdout
