@@ -35,6 +35,20 @@ class _EmptyResponse(Exception):
     """
 
 
+class _ProviderFailure(Exception):
+    """A target reported that the generation ITSELF failed, server-side, and said why.
+
+    A sibling of _EmptyResponse rather than a subclass, because the two must classify
+    DIFFERENTLY: router._classify turns this into FailureCategory.SERVICE_UNAVAILABLE, which is
+    in FAILOVER_ELIGIBLE, so a configured standby is dialled; EMPTY_RESPONSE is not, so a
+    provider that is genuinely unwell would be retried against itself until the route ran out.
+    Raise this only when the provider stated the failure - an absent, short or unreadable answer
+    is _EmptyResponse. It lives on the seam for the same reason _EmptyResponse does: any protocol
+    can be told its generation failed, and router.py must reach the exception without importing
+    an implementation module.
+    """
+
+
 @runtime_checkable
 class WireProtocol(Protocol):
 

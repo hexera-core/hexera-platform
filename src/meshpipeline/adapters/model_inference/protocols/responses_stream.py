@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any
 
-from meshpipeline.adapters.model_inference.protocols import _EmptyResponse
+from meshpipeline.adapters.model_inference.protocols import _EmptyResponse, _ProviderFailure
 from meshpipeline.contracts.model_inference import ReasoningSink
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,8 @@ _HEARTBEAT_SECONDS = 15.0
 # builder's truncation recovery runs.
 # `response.failed` is DELIBERATELY absent: it reports a server-side error, not a short answer,
 # and returning it would normalise to ok=True carrying whatever fragment preceded the failure.
-# It is raised below instead, so the same target is retried.
+# It raises _ProviderFailure below instead, which classifies as SERVICE_UNAVAILABLE - retried
+# against this target and then, unlike an empty answer, allowed to fail over to a standby.
 _TERMINAL_EVENTS = ("response.completed", "response.incomplete")
 
 
@@ -102,12 +103,9 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
     _ttfe = (_t_first_event - _t_start) if _t_first_event is not None else -1.0
 
     if terminal_response is None:
-        # A stream that ends with no answer attached - either no terminal event at all (a dead
-        # stream: no output, no usage, nothing to bill against) or response.failed. Raising
-        # _EmptyResponse - rather than returning something normalize() would happily read as a
-        # successful but empty answer - lets router._classify route this to
-        # FailureCategory.EMPTY_RESPONSE, retryable against the same target, the same outcome an
-        # empty chat-completions body gets.
+        # Two ways to end with no answer attached, and they raise DIFFERENT exceptions because
+        # they must classify differently - the reason the `saw_failed` flag is carried at all.
+        # Neither may return: normalize() would read either as a successful but empty answer.
         logger.info(
             "consume_responses_stream[%s]: no answer - failed=%s events=%d elapsed=%.1fs "
             "ttfe=%.1fs reasoning=%dch",
@@ -115,9 +113,19 @@ async def consume_responses_stream(stream: Any, *, label: str = "stream",
             sum(len(p) for p in _reasoning_parts),
         )
         if saw_failed:
-            raise _EmptyResponse(
+            # The PROVIDER said the generation failed, and `failure_detail` is its own account of
+            # why. router._classify makes this SERVICE_UNAVAILABLE - failover-eligible - so a
+            # configured standby is dialled after retries here are spent. Raising _EmptyResponse
+            # here instead (as this did) reported a provider outage as an empty completion:
+            # EMPTY_RESPONSE is not in FAILOVER_ELIGIBLE, so a healthy standby was never tried
+            # and telemetry recorded `empty_response` rather than the provider's own failure.
+            raise _ProviderFailure(
                 f"responses stream [{label}] ended in response.failed after {_n_events} "
                 f"events: {failure_detail if failure_detail is not None else 'no error detail'}")
+        # A DEAD stream: no terminal event at all, no output, no usage, nothing to bill against,
+        # and no statement from the provider about why. EMPTY_RESPONSE is the right answer for
+        # that - retryable against the same target, exactly as an empty chat-completions body is,
+        # and not evidence of an unwell provider worth routing around.
         raise _EmptyResponse(
             f"responses stream [{label}] ended without a terminal response event "
             f"after {_n_events} events")

@@ -13,7 +13,11 @@ import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.agents.reviewer.settings as rcfg
 from meshpipeline.adapters.model_inference.call_kwargs import spec_for
 from meshpipeline.adapters.model_inference.failure_markers import marker_for
-from meshpipeline.adapters.model_inference.protocols import _EmptyResponse, protocol_for
+from meshpipeline.adapters.model_inference.protocols import (
+    _EmptyResponse,
+    _ProviderFailure,
+    protocol_for,
+)
 from meshpipeline.adapters.model_inference.providers import classify
 from meshpipeline.adapters.model_inference.routing import RouteExhausted, Usage, execute
 from meshpipeline.contracts.model_inference import (
@@ -31,6 +35,16 @@ logger = logging.getLogger(__name__)
 
 
 def _classify(exc: BaseException) -> FailureCategory:
+    # The two seam exceptions classify DIFFERENTLY ON PURPOSE, and the difference is failover.
+    # A provider that reports its own generation failed gets the category an
+    # openai.InternalServerError gets from providers.classify - SERVICE_UNAVAILABLE, which is in
+    # FAILOVER_ELIGIBLE, so the standby is dialled once retries against the sick target are spent.
+    # EMPTY_RESPONSE is deliberately NOT failover-eligible (routing._RETRYABLE explains why: an
+    # empty answer is worth asking the same model again and is no evidence the provider is
+    # unwell). Collapsing these two back into one exception would silently strip failover from
+    # every real provider failure and report it in telemetry as an empty completion.
+    if isinstance(exc, _ProviderFailure):
+        return FailureCategory.SERVICE_UNAVAILABLE
     if isinstance(exc, _EmptyResponse):
         return FailureCategory.EMPTY_RESPONSE
     return classify(exc)

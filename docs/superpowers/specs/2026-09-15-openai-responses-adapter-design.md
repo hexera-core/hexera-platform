@@ -354,7 +354,10 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
   `finish_reason="length"`, so a truncated round reaches the builder's truncation recovery
   instead of burning two retries. `response.failed` still raises: it reports a server-side
   error rather than a short answer, and returning it would normalise to `ok=True` carrying
-  whatever fragment preceded the failure.
+  whatever fragment preceded the failure. It raises `_ProviderFailure`, not `_EmptyResponse`:
+  `router._classify` gives it `SERVICE_UNAVAILABLE`, which is failover-eligible, so a stated
+  provider failure can reach a standby. A dead stream keeps `_EmptyResponse`/`EMPTY_RESPONSE`,
+  which is not.
 
 - **`DEEPSEEK_MODEL` is now a misleading name for intake's model, and wants retiring.** It
   defaults to `gpt-5.6-luna` and is read by `application/pipeline_run.py` as intake's capture
@@ -365,13 +368,15 @@ Stages 2 and 3 are independently useful: 2 removes a latent duplication whatever
   commit changes where calls go and nothing else. The replacement is `INTAKE_MODEL`, which is
   already declared, already in the template, and already the authority the route reads.
 
-- **The two quota domains collapsed, and no budget was retuned to match.** intake and summarizer
-  now share `openai:default:gpt-5.6-luna`; builder, planner and visual_reviewer share
-  `openai:default:gpt-5.6-terra`. `routes.domain_budget` takes the MAX of the roles in a domain,
-  so the shared ceilings are 16 and 8 — where the reviewer previously held 8 in-flight calls of
-  its own, it now competes for the builder's. That is arguably the honest reading (they really do
-  spend one vendor quota), and the per-role `*_ACCOUNT` column is the lever that separates them
-  again, but it is a throughput change nobody chose and it should be measured before load.
+- ~~**The two quota domains collapsed, and no budget was retuned to match.**~~ — **CLOSED.**
+  intake and summarizer share `openai:default:gpt-5.6-luna`; builder, planner and visual_reviewer
+  share `openai:default:gpt-5.6-terra`. `routes.domain_budget` takes the MAX of the roles in a
+  domain, so the untouched per-role numbers left the shared ceilings at 16 and 8 — the reviewer,
+  which had held 8 in-flight calls of its own, was competing for the builder's. Every role in a
+  shared domain now declares that domain's ceiling: terra is **16** (builder+planner's 8 plus the
+  reviewer's 8) and luna is **24** (intake's 16 plus the summarizer's 8), restoring the capacity
+  the four pre-cutover domains summed to rather than inventing a new number. The per-role
+  `*_ACCOUNT` column remains the lever that splits a domain in two again.
 
 - **`reasoning.effort` is not sent, and will not be until a role can express one.** §5 listed it
   as something this adapter owns, but `SamplingSpec` carries no effort field: any value here

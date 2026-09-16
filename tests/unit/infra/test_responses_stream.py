@@ -8,12 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from meshpipeline.adapters.model_inference.protocols import _EmptyResponse
+from meshpipeline.adapters.model_inference.protocols import _EmptyResponse, _ProviderFailure
 from meshpipeline.adapters.model_inference.protocols import responses_normalize as rn
 from meshpipeline.adapters.model_inference.protocols.responses_stream import (
     consume_responses_stream,
 )
-from meshpipeline.contracts.model_routing import RouteTarget
+from meshpipeline.adapters.model_inference.router import _classify
+from meshpipeline.contracts.model_routing import FAILOVER_ELIGIBLE, FailureCategory, RouteTarget
 
 TARGET = RouteTarget(provider="openai", model="gpt-5.6-luna", account="default",
                      circuit_group="openai")
@@ -92,9 +93,14 @@ def test_a_stream_with_no_terminal_event_at_all_does_not_invent_a_result():
     # A DEAD stream - no terminal event of any kind, so no output and no usage - must not look
     # like a successful empty answer. The caller's _EmptyResponse path exists for exactly this
     # and classifies to EMPTY_RESPONSE, retryable against the same target.
-    with pytest.raises(_EmptyResponse):
+    with pytest.raises(_EmptyResponse) as exc:
         asyncio.run(consume_responses_stream(_iter([_ev("response.created")]),
                                              label="t", on_reasoning=None))
+    # Asserted through the classifier, not just on the exception type: the CATEGORY is the
+    # behaviour. A dead stream says nothing about the provider's health, so it stays outside
+    # FAILOVER_ELIGIBLE - the deliberate other half of the failed-stream pin below.
+    assert _classify(exc.value) is FailureCategory.EMPTY_RESPONSE
+    assert _classify(exc.value) not in FAILOVER_ELIGIBLE
 
 
 def test_a_truncated_stream_returns_its_partial_answer_instead_of_being_thrown_away():
@@ -134,8 +140,34 @@ def test_a_failed_stream_is_raised_rather_than_normalised_as_a_successful_answer
             usage=None, status="failed",
             error={"code": "server_error", "message": "boom"})),
     ]
-    with pytest.raises(_EmptyResponse, match="response.failed"):
+    with pytest.raises(_ProviderFailure, match="response.failed") as exc:
         asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
+    # The provider's own account of the failure travels with the exception; it is what an
+    # operator reads and the only thing distinguishing this from a stream that simply stopped.
+    assert "boom" in str(exc.value)
+
+
+def test_a_failed_stream_can_fail_over_where_a_dead_one_cannot():
+    # THE distinction, asserted where it actually bites: router._classify. Raising _EmptyResponse
+    # for response.failed - which this once did - classified a provider outage as EMPTY_RESPONSE,
+    # which is NOT in FAILOVER_ELIGIBLE: the sick target was retried, a configured healthy standby
+    # was never dialled, and telemetry recorded `empty_response` instead of the provider's
+    # failure. SERVICE_UNAVAILABLE is the category providers.classify gives an
+    # openai.InternalServerError, so the two routes of a server-side failure agree.
+    events = [_ev("response.created"),
+              _ev("response.failed", response=SimpleNamespace(
+                  output=[], usage=None, status="failed",
+                  error={"code": "server_error", "message": "boom"}))]
+    with pytest.raises(_ProviderFailure) as failed:
+        asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
+    with pytest.raises(_EmptyResponse) as dead:
+        asyncio.run(consume_responses_stream(_iter([_ev("response.created")]),
+                                             label="t", on_reasoning=None))
+    assert _classify(failed.value) is FailureCategory.SERVICE_UNAVAILABLE
+    assert _classify(failed.value) in FAILOVER_ELIGIBLE
+    assert _classify(dead.value) not in FAILOVER_ELIGIBLE, (
+        "a dead stream is not evidence the provider is unwell; collapsing the two categories "
+        "back together is the regression this pins")
 
 
 def test_a_failed_stream_with_no_error_detail_still_names_the_failure():
@@ -144,5 +176,8 @@ def test_a_failed_stream_with_no_error_detail_still_names_the_failure():
     # or `.error` was absent fell through to "ended without a terminal response event" - the same
     # outcome under the wrong name, which is what an operator reads first.
     events = [_ev("response.created"), _ev("response.failed", response=None)]
-    with pytest.raises(_EmptyResponse, match="response.failed"):
+    with pytest.raises(_ProviderFailure, match="response.failed") as exc:
         asyncio.run(consume_responses_stream(_iter(events), label="t", on_reasoning=None))
+    # Still failover-eligible: the provider stated the failure even though it said nothing about
+    # why, and an unreadable `.error` is no reason to treat an outage as an empty answer.
+    assert _classify(exc.value) in FAILOVER_ELIGIBLE

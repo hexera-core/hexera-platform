@@ -125,17 +125,33 @@ REMOVED: dict[str, str] = {
 #: setting the product does not have. The repetition below is the point.
 #:
 #: (role, prefix, provider, model, timeout, attempts, backoff_base, backoff_max, budget, queue)
+#:
+#: BUDGET IS A PROPERTY OF THE QUOTA DOMAIN (provider:account:model), not of the role - see the
+#: CONCURRENCY_BUDGET help below. routes.domain_budget() takes the max() across the roles sharing
+#: a domain, so roles that share one carry the SAME number here; a disagreement within a domain
+#: does not buy the smaller role a smaller share, it just means nobody chose the ceiling. Moving
+#: a role to another provider or model therefore moves it between pools: these numbers travel
+#: with the provider/model columns and must be re-decided alongside them.
+#:
+#: The two shipped domains, and what their ceilings restore. Before every role was consolidated
+#: onto openai, builder+planner had 8 on GLM-5.2 and visual_reviewer had 8 to itself on
+#: Qwen-Thinking; intake had 16 on v4-pro and summarizer 8 on v4-flash. All three terra roles run
+#: inside every mesh job, the ceiling is fleet-wide (Redis-backed, shared by API and workers),
+#: and a queue deadline exceeded FAILS the job as OVERLOAD - no route has a standby - so a
+#: collapsed pool costs jobs rather than slowing them.
+#:   gpt-5.6-terra  16 = builder+planner's 8 + visual_reviewer's 8
+#:   gpt-5.6-luna   24 = intake's 16 + summarizer's 8
 ROUTE_MATRIX: list[tuple[str, str, str, str, str, str, str, str, str, str]] = [
     ("intake",     "INTAKE",            "openai",    "gpt-5.6-luna",
-     "120.0",  "5", "5.0",  "60.0",  "16", "15.0"),
+     "120.0",  "5", "5.0",  "60.0",  "24", "15.0"),
     ("builder",    "BUILDER",           "openai",    "gpt-5.6-terra",
-     "1800.0", "3", "15.0", "120.0", "8",  "30.0"),
+     "1800.0", "3", "15.0", "120.0", "16", "30.0"),
     ("visual_reviewer", "VISUAL_REVIEWER", "openai",  "gpt-5.6-terra",
-     "1800.0", "3", "5.0",  "60.0",  "8",  "30.0"),
+     "1800.0", "3", "5.0",  "60.0",  "16", "30.0"),
     ("summarizer", "SEARCH_SUMMARIZER", "openai",    "gpt-5.6-luna",
-     "60.0",   "2", "2.0",  "15.0",  "8",  "10.0"),
+     "60.0",   "2", "2.0",  "15.0",  "24", "10.0"),
     ("planner",    "PLANNER",           "openai",    "gpt-5.6-terra",
-     "1800.0", "3", "15.0", "120.0", "4",  "30.0"),
+     "1800.0", "3", "15.0", "120.0", "16", "30.0"),
 ]
 
 #: suffix -> (kind, help). The per-route default comes from ROUTE_MATRIX; everything else about
