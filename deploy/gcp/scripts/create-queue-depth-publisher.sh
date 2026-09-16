@@ -204,6 +204,30 @@ AS_MAX="${LIVE_MAX:-${WORKER_MIG_MAX_REPLICAS:-5}}"
 AS_COOLDOWN="${LIVE_COOLDOWN:-${WORKER_MIG_COOLDOWN_SECONDS:-180}}"
 AS_ASSIGNMENT="${LIVE_ASSIGNMENT:-${WORKER_JOBS_PER_INSTANCE:-1}}"
 
+# THE GROUP HAS TO EXIST BEFORE A POLICY CAN BE ATTACHED TO IT, and on a first deploy it does not.
+#
+# This stage owns the autoscaler's METRIC WIRING and runs at stage 13; create-worker-fleet.sh
+# creates the managed instance group at stage 17 and deliberately never reconciles the policy - "an
+# existing autoscaler's policy belongs to the admin console and is not reconciled here". That split
+# is right, and it quietly assumes the group already exists, which is true of every environment
+# whose fleet predates this tooling and false of every environment built from nothing:
+#
+#   ERROR: The resource '.../instanceGroupManagers/dev-workers' was not found
+#
+# The publisher, its schedule and its identity are all established above and are the valuable half
+# of this stage - they are what proves the metric path. Only the attachment is deferred, with the
+# one command that completes it, rather than failing a deploy that has done everything it could.
+if ! gc compute instance-groups managed describe "${WORKER_MIG}" \
+       --zone "${WORKER_MIG_ZONE}" >/dev/null 2>&1; then
+  warn "managed instance group ${WORKER_MIG} does not exist yet, so there is nothing to attach the
+       autoscaling policy to. The publisher and its schedule ARE in place and the metric is being
+       written. Create the fleet, then reconcile this stage again to attach the policy:
+         DEPLOY_COMPONENTS=workers  (this deploy, stage 17 - or tick `workers`)
+         DEPLOY_COMPONENTS=queue    (a later run, once the group exists)"
+  log "autoscaler      deferred - ${WORKER_MIG} not created yet"
+  exit 0
+fi
+
 if [ -n "${LIVE_MIN}" ]; then
   info "Repointing the autoscaler for ${WORKER_MIG} at the metric, preserving its sizing"
   log "the floor, ceiling, cooldown and jobs-per-instance below were READ FROM THE LIVE"

@@ -12,10 +12,11 @@ and without breaking it for everybody else."
 ```bash
 make new-env SLUG=pranav                  # once, ~5 minutes
 
-# the first deploy is TWO runs - the console needs an API that exists. See section 4.
+# the first deploy is TWO runs - two things need something the run before them creates. See section 4.
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f images=true -f data=true -f migrate=true -f queue=true -f workers=true
-gh workflow run deploy.yml --ref "$(git branch --show-current)" -f slug=pranav -f console=true
+  -f slug=pranav -f images=true -f data=true -f migrate=true -f workers=true
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=pranav -f console=true -f queue=true
 
 # every deploy after that: one run, and a fast one
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
@@ -86,9 +87,16 @@ pointing at nothing:
 
 > `CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not`
 
-Run one creates the API; run two deploys the console, by which time discovery can find its URL.
-This is not specific to personal environments — it is what any environment's *first* console deploy
-has to do. Shared dev simply passed that point long ago.
+**The queue signal is the second thing in run two, for the same shape of reason.** Its autoscaling
+policy attaches to the worker fleet's managed instance group, and stage 13 runs *before* stage 17
+creates that group — the split is deliberate (the policy's sizing belongs to the admin console, so
+the fleet stage never reconciles it) and it quietly assumes the group already exists. The publisher
+and its schedule are still established in run one; only the attachment waits.
+
+Run one creates the API and the fleet; run two deploys the console, by which time discovery can
+find the API's URL, and attaches the autoscaling policy, by which time there is a group to attach
+it to. Neither is specific to personal environments — both are what any environment's *first*
+deploy has to do. Shared dev simply passed that point long ago.
 
 Run one also creates Cloud SQL and Memorystore and takes roughly half an hour, most of it Google
 creating the database instance. Tick `data` for it.
@@ -252,6 +260,7 @@ until the window closes.
 | `slug '<x>' is reserved` | You typed a shared environment's name. Leave the slug **empty** for shared dev; prod is reached only by a `v*` tag. |
 | A provider key is reported EMPTY | `seed-secrets.sh` could not read it from `hexera-dev`. Supply it: `DEEPINFRA_API_KEY=... make seed-secrets SLUG=<slug>`. |
 | `CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not` | The API has never been deployed here, so it has no URL for the console to proxy to. Deploy without `console` first — see section 4. |
+| `instanceGroupManagers/dev-workers was not found` | The queue signal ran before the fleet existed. Harmless — the publisher is in place; re-run with `queue` once `workers` has completed. See section 4. |
 | `could not list the HMAC keys` | You ticked `storage` on a later run. Don't — the object store is established once, at creation (§6). |
 | The console renders sign-up but submitting fails | Identity Platform is enabled but not **initialised** in your project. One-time console action — see §5. |
 | The deploy authenticates as the wrong project | The register's project number is wrong. Check it against `gcloud projects describe hexera-dev-<slug>`. |

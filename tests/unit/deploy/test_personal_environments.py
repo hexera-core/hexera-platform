@@ -470,8 +470,16 @@ def test_the_documented_first_deploy_does_not_select_the_console():
     assert "-f console=true" not in first_cmd, (
         "new-env.sh tells the operator to deploy the console on the first run, which stage 2 "
         "refuses - the API has no URL yet")
-    assert "# 2." in first and "console=true" in first, (
-        "new-env.sh must still show the second run that deploys the console")
+    # Same shape of problem: stage 13 attaches the autoscaling policy to the worker fleet's
+    # managed instance group, and stage 17 is what creates that group.
+    assert "-f queue=true" not in first_cmd, (
+        "new-env.sh selects the queue signal on the first run, but its autoscaling policy has no "
+        "managed instance group to attach to until the workers stage has created one")
+    assert "-f workers=true" in first_cmd, (
+        "the first run must create the fleet, or the second run's queue signal has nothing to "
+        "attach to either")
+    assert "# 2." in first and "console=true" in first and "queue=true" in first, (
+        "new-env.sh must still show the second run that deploys the console and the queue signal")
 
 
 def test_the_runtime_identities_are_created_by_an_owner_not_by_the_deploy():
@@ -617,3 +625,22 @@ def test_the_queue_depth_publisher_tolerates_a_cold_vpc_attach():
         "one attempt leaves the run dependent on a single variable-cost attach")
     # The READ timeout stays low on purpose: once connected, a slow LLEN means something is wrong.
     assert "REDIS_READ_TIMEOUT_SECONDS = 5" in src
+
+
+def test_the_autoscaler_attachment_is_deferred_when_there_is_no_fleet():
+    """Stage 13 owns the autoscaler's metric wiring; stage 17 creates the managed instance group
+    and deliberately never reconciles the policy, because its sizing belongs to the admin console.
+    That split is right and it assumes the group already exists - true of every environment whose
+    fleet predates this tooling, false of every environment built from nothing:
+
+        ERROR: The resource '.../instanceGroupManagers/dev-workers' was not found
+
+    The publisher, its schedule and its identity are the valuable half of the stage and are all
+    established before this point. Only the attachment defers.
+    """
+    text = (SCRIPTS / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
+    guard = text.index("instance-groups managed describe")
+    apply_at = text.index("instance-groups managed set-autoscaling")
+    assert guard < apply_at, (
+        "create-queue-depth-publisher.sh attaches the autoscaling policy without first checking "
+        "that the group exists, so a first deploy fails at stage 13")

@@ -540,13 +540,15 @@ cat <<NEXT
   deployed there is nothing to tell it. Stage 2 refuses the run rather than letting the console
   roll out pointing at nothing.
 
-    # 1. the API and the schema. Creates Cloud SQL and Memorystore: roughly half an hour.
+    # 1. the API, the schema and the worker fleet. Creates Cloud SQL and Memorystore:
+    #    roughly half an hour.
     gh workflow run deploy.yml --ref "\$(git branch --show-current)" \\
-      -f slug=${SLUG} -f images=true -f data=true -f migrate=true -f queue=true -f workers=true
+      -f slug=${SLUG} -f images=true -f data=true -f migrate=true -f workers=true
 
-    # 2. the console, now that discovery can find the API's URL
+    # 2. the console, now that the API has a URL for it to proxy to - and the queue signal,
+    #    now that there is a fleet for its autoscaling policy to attach to.
     gh workflow run deploy.yml --ref "\$(git branch --show-current)" \\
-      -f slug=${SLUG} -f console=true
+      -f slug=${SLUG} -f console=true -f queue=true
 
   After that it is one run for everything, and a fast one: leave \`data\` unticked and it is
   images, schema and a rollout.
