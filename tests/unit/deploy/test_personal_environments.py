@@ -48,7 +48,6 @@ def _run_picker(tmp_path: Path, **env: str) -> tuple[int, dict[str, str], str]:
         "GITHUB_OUTPUT": str(out),
         "GITHUB_REF": "refs/heads/some-branch",
         "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "PERSONAL_ENVS": "pranav=123456789012:GOOG1EPRANAV,areen=999888777666:GOOG1EAREEN",
         **_TICKED,
         **env,
     }
@@ -91,18 +90,98 @@ def test_the_dispatch_input_budget_is_not_exceeded():
 
 
 def test_a_personal_run_derives_every_target_from_the_slug(tmp_path):
+    """The slug names an environment INSIDE hexera-dev. It decides the deployment id, and the
+    deployment id decides every resource name - but it cannot decide the PROJECT, which is pinned,
+    so a free-text box can never point a deploy at a project a slug does not already name."""
     rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
     assert rc == 0, log
-    assert out["project"] == "hexera-dev-pranav"
-    assert out["deployer_sa"] == "github-deployer@hexera-dev-pranav.iam.gserviceaccount.com"
-    assert out["registry"] == "us-central1-docker.pkg.dev/hexera-dev-pranav/mesh"
-    assert out["wif_provider"].startswith("projects/123456789012/"), (
-        "the workload identity provider must be addressed by the project NUMBER registered for "
-        "this slug; anything else authenticates against the wrong project")
-    # The project is the isolation boundary, so the id inside it is the same `dev` shared dev uses.
-    assert out["deployment_id"] == "dev"
-    assert out["cloudsql_instance"] == "dev-pg"
-    assert out["redis_instance"] == "dev-redis"
+    assert out["project"] == "hexera-dev"
+    assert out["deployment_id"] == "dev-pranav"
+    assert out["deployer_sa"] == "github-deployer@hexera-dev.iam.gserviceaccount.com"
+    assert out["registry"] == "us-central1-docker.pkg.dev/hexera-dev/mesh"
+    assert out["wif_provider"].startswith("projects/224734058693/"), (
+        "the identity pool is shared dev's - it already exists, which is what lets a deploy into "
+        "an environment nobody has created resolve at all")
+    assert out["mesh_job"] == "dev-pranav-mesh"
+    assert out["api_service"] == "dev-pranav-api"
+    assert out["console_service"] == "dev-pranav-console"
+    assert out["worker_mig"] == "dev-pranav-workers"
+
+
+def test_a_personal_run_shares_the_instances_but_not_the_database(tmp_path):
+    """The expensive, slow tier is shared deliberately - it buys a first deploy in minutes rather
+    than half an hour. The database is not, because the isolation that matters is that one
+    developer's migration cannot move another's schema."""
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_DATA="true")
+    assert rc == 0, log
+    assert out["cloudsql_instance"] == "hexera-dev-pg"
+    assert out["redis_instance"] == "hexera-dev-redis"
+    assert out["migrate_db_name"] == "meshpipeline_pranav"
+    assert out["migrate_db_user"] == "meshpipeline"
+
+
+def test_no_personal_name_can_collide_with_a_shared_one(tmp_path):
+    """Asserted against shared dev's OWN output rather than a hand-written list, so a target added
+    to one branch and not the other is caught here rather than by two deployments discovering they
+    share a Cloud Run service."""
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+    for key in ("deployment_id", "mesh_job", "mesh_bucket", "api_service", "console_service",
+                "worker_mig", "worker_env_uri", "minio_bucket", "minio_secret_key_secret",
+                "migrate_db_name"):
+        assert personal[key] != shared[key], (
+            f"{key} is the SAME value in a personal environment and in shared dev "
+            f"({personal[key]!r}) - deploying to a slug would reconcile shared dev's resource")
+        assert "pranav" in personal[key], f"{key}={personal[key]!r} carries no slug"
+
+
+def test_a_personal_run_always_reconciles_its_object_store(tmp_path):
+    """The access id is no longer pinned, so the storage stage is what supplies it in-run. An
+    images-only run without it deploys an API whose adapter dials localhost:9000 and returns 503
+    on every upload - which is what shipped on shared dev before its values were pinned."""
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    assert rc == 0, log
+    assert "storage" in out["components"].split(","), (
+        f"components={out['components']!r} omits storage, so MINIO_ACCESS_KEY reaches the API "
+        f"stage unset")
+    assert "minio_access_key" not in out, (
+        "a personal run must pin no access id - the key is minted by the first deploy and adopted "
+        "by every one after, so a pinned value here could only be a stale one")
+    assert out["minio_secret_key_secret"] == "minio-secret-key-pranav", (
+        "one secret container per slug; sharing it would have each environment overwrite the "
+        "previous one's HMAC secret")
+
+
+def test_ticking_storage_does_not_duplicate_it(tmp_path):
+    """deploy.sh validates every name in DEPLOY_COMPONENTS, and a doubled entry is a wasted stage
+    at best. The forced selection has to be idempotent against the checkbox."""
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
+                            DISPATCH_IMAGES="true", DISPATCH_STORAGE="true")
+    assert out["components"].split(",").count("storage") == 1, out["components"]
+
+
+def test_a_slug_that_cannot_name_a_service_account_is_refused(tmp_path):
+    """`dev-` + slug + `-queue-depth` must fit Google's 30-character service account id. Caught
+    here rather than eleven stages into a deploy, where it arrives as a Google error naming the
+    field and not the cause - after Cloud SQL and the object store are already reconciled."""
+    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="a" * 15, DISPATCH_IMAGES="true")
+    assert rc != 0, "a 15-character slug was accepted"
+    assert "14" in log and "30" in log, log
+    rc_ok, _, log_ok = _run_picker(tmp_path, DISPATCH_SLUG="a" * 14, DISPATCH_IMAGES="true")
+    assert rc_ok == 0, f"14 characters is the documented maximum and was refused: {log_ok}"
+
+
+def test_the_celery_prefix_isolates_a_personal_run_and_only_that(tmp_path):
+    """One Memorystore instance serves shared dev and every personal environment, and Celery's
+    queue names are literals - so the prefix is what stops two environments consuming each other's
+    tasks. Shared dev must keep an EMPTY prefix: its queues are the ones that already exist."""
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+    assert personal["celery_key_prefix"] == "dev-pranav:"
+    assert shared.get("celery_key_prefix", "") == "", (
+        "a non-empty prefix on shared dev would move its queues to new Redis keys on the next "
+        "roll and strand whatever was already enqueued under the old ones")
+
 
 
 def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
@@ -112,7 +191,11 @@ def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
     it several stages in, or does not discover it at all."""
     _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
     _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
-    missing = set(shared) - set(personal)
+    # minio_access_key is the ONE deliberate omission, and it is deliberate in one direction only:
+    # shared dev's key was minted by an owner years ago and is pinned, while a personal
+    # environment's is minted by its own first deploy and adopted thereafter, so there is nothing
+    # to state here. Every OTHER shared-dev target must have a personal counterpart.
+    missing = set(shared) - set(personal) - {"minio_access_key"}
     assert not missing, (
         f"the personal branch emits no value for {sorted(missing)}, which the shared-dev branch "
         f"does. Each one reaches deploy.sh as an empty variable rather than as a failure.")
@@ -143,20 +226,6 @@ def test_a_personal_run_refuses_a_malformed_slug(tmp_path, slug):
     assert rc != 0, f"slug {slug!r} was accepted and resolved to {out.get('project')!r}"
 
 
-def test_an_unregistered_slug_cannot_deploy(tmp_path):
-    """A slug resolves only if a project number was registered for it, so a typo names nothing
-    rather than naming a project that happens to exist."""
-    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="nobody", DISPATCH_IMAGES="true")
-    assert rc != 0
-    assert "HEXERA_PERSONAL_ENVS" in log
-
-
-def test_a_non_numeric_project_number_is_refused(tmp_path):
-    """The register is the one repository variable this workflow trusts, and it is trusted for
-    NUMBERS only - so a project id smuggled into it does not become a deploy target."""
-    rc, _, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true",
-                           PERSONAL_ENVS="pranav=hexera-prod")
-    assert rc != 0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -192,23 +261,15 @@ def test_a_personal_run_states_a_complete_object_store(tmp_path):
     back to localhost:9000, and every upload returns 503 "Storage is unavailable"."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
     for key in ("minio_endpoint", "minio_region", "minio_secure",
-                "minio_bucket", "minio_access_key", "minio_secret_key_secret"):
+                "minio_bucket", "minio_secret_key_secret"):
         assert out.get(key), f"a personal environment states no {key}"
     assert out["minio_secure"] == "true", (
         "Google's S3-interoperability endpoint refuses plain HTTP")
-    assert out["minio_access_key"] == "GOOG1EPRANAV", (
-        "the access id must come from the register - an empty one makes every deploy mint a NEW "
-        "HMAC key until the account hits Google's five-key limit")
+    # THE ACCESS ID IS THE ONE FIELD NOT PINNED, and its absence is covered by
+    # test_a_personal_run_always_reconciles_its_object_store rather than left implicit: the key is
+    # minted by the first deploy and adopted by every one after, so it does not exist at the
+    # moment this picker runs and a value here could only ever be a stale one.
 
-
-def test_an_environment_registered_without_an_access_id_is_refused(tmp_path):
-    """An empty access id passes validate-config.sh (the store is not half-stated - the bucket is
-    set), so nothing downstream would catch it. It would instead re-mint an HMAC key on every run
-    and break on the fifth, for reasons nothing connects back to the register."""
-    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true",
-                             PERSONAL_ENVS="pranav=123456789012")
-    assert rc != 0, "a register entry with no access id was accepted"
-    assert "access id" in log
 
 
 # ---------------------------------------------------------------------------------------------
