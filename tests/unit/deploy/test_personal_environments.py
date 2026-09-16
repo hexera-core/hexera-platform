@@ -25,10 +25,10 @@ def _picker_script() -> str:
     return _doc()["jobs"]["target"]["steps"][0]["run"]
 
 
-# The checkbox roster, so a run can be composed without restating it in every test.
+# The checkbox roster, so a run can be composed without restating it in every test. These are
+# TIERS, not stages - the picker translates them into deploy.sh's component names.
 _TICKED = {f"DISPATCH_{c.upper()}": "false" for c in
-           ("images", "data", "storage", "migrate", "queue",
-            "workers", "console", "admin", "outreach", "edge")}
+           ("app", "data", "fleet", "console", "admin", "outreach", "edge")}
 
 
 def _run_picker(tmp_path: Path, **env: str) -> tuple[int, dict[str, str], str]:
@@ -92,7 +92,7 @@ def test_a_personal_run_derives_every_target_from_the_slug(tmp_path):
     """The slug names an environment INSIDE hexera-dev. It decides the deployment id, and the
     deployment id decides every resource name - but it cannot decide the PROJECT, which is pinned,
     so a free-text box can never point a deploy at a project a slug does not already name."""
-    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     assert rc == 0, log
     assert out["project"] == "hexera-dev"
     assert out["deployment_id"] == "dev-pranav"
@@ -123,8 +123,8 @@ def test_no_personal_name_can_collide_with_a_shared_one(tmp_path):
     """Asserted against shared dev's OWN output rather than a hand-written list, so a target added
     to one branch and not the other is caught here rather than by two deployments discovering they
     share a Cloud Run service."""
-    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
-    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
     for key in ("deployment_id", "mesh_job", "mesh_bucket", "api_service", "console_service",
                 "worker_mig", "worker_env_uri", "minio_bucket", "minio_secret_key_secret",
                 "migrate_db_name"):
@@ -138,7 +138,7 @@ def test_a_personal_run_always_reconciles_its_object_store(tmp_path):
     """The access id is no longer pinned, so the storage stage is what supplies it in-run. An
     images-only run without it deploys an API whose adapter dials localhost:9000 and returns 503
     on every upload - which is what shipped on shared dev before its values were pinned."""
-    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     assert rc == 0, log
     assert "storage" in out["components"].split(","), (
         f"components={out['components']!r} omits storage, so MINIO_ACCESS_KEY reaches the API "
@@ -155,7 +155,7 @@ def test_ticking_storage_does_not_duplicate_it(tmp_path):
     """deploy.sh validates every name in DEPLOY_COMPONENTS, and a doubled entry is a wasted stage
     at best. The forced selection has to be idempotent against the checkbox."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
-                            DISPATCH_IMAGES="true", DISPATCH_STORAGE="true")
+                            DISPATCH_APP="true")
     assert out["components"].split(",").count("storage") == 1, out["components"]
 
 
@@ -163,10 +163,10 @@ def test_a_slug_that_cannot_name_a_service_account_is_refused(tmp_path):
     """`dev-` + slug + `-queue-depth` must fit Google's 30-character service account id. Caught
     here rather than eleven stages into a deploy, where it arrives as a Google error naming the
     field and not the cause - after Cloud SQL and the object store are already reconciled."""
-    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="a" * 15, DISPATCH_IMAGES="true")
+    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="a" * 15, DISPATCH_APP="true")
     assert rc != 0, "a 15-character slug was accepted"
     assert "14" in log and "30" in log, log
-    rc_ok, _, log_ok = _run_picker(tmp_path, DISPATCH_SLUG="a" * 14, DISPATCH_IMAGES="true")
+    rc_ok, _, log_ok = _run_picker(tmp_path, DISPATCH_SLUG="a" * 14, DISPATCH_APP="true")
     assert rc_ok == 0, f"14 characters is the documented maximum and was refused: {log_ok}"
 
 
@@ -174,8 +174,8 @@ def test_the_celery_prefix_isolates_a_personal_run_and_only_that(tmp_path):
     """One Memorystore instance serves shared dev and every personal environment, and Celery's
     queue names are literals - so the prefix is what stops two environments consuming each other's
     tasks. Shared dev must keep an EMPTY prefix: its queues are the ones that already exist."""
-    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
-    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
     assert personal["celery_key_prefix"] == "dev-pranav:"
     assert shared.get("celery_key_prefix", "") == "", (
         "a non-empty prefix on shared dev would move its queues to new Redis keys on the next "
@@ -188,8 +188,8 @@ def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
     the provision job, and an output the picker never emitted arrives as the EMPTY STRING rather
     than as an error - so a forgotten key is a deploy that runs with a target unset and discovers
     it several stages in, or does not discover it at all."""
-    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
-    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
     # minio_access_key is the ONE deliberate omission, and it is deliberate in one direction only:
     # shared dev's key was minted by an owner years ago and is pinned, while a personal
     # environment's is minted by its own first deploy and adopted thereafter, so there is nothing
@@ -204,7 +204,7 @@ def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
 def test_a_personal_run_refuses_to_name_a_shared_environment(tmp_path, slug):
     """hexera-dev-prod is not hexera-prod, and that is exactly the danger: it provisions cleanly
     under a name that reads like production."""
-    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_IMAGES="true")
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_APP="true")
     assert rc != 0, f"slug '{slug}' was accepted and resolved to {out.get('project')!r}"
     assert "reserved" in log
 
@@ -221,7 +221,7 @@ def test_a_personal_run_refuses_to_name_a_shared_environment(tmp_path, slug):
 def test_a_personal_run_refuses_a_malformed_slug(tmp_path, slug):
     """The slug is the only free-text deploy target on this workflow. It is validated before it is
     interpolated into a project id, a registry path or a service-account email."""
-    rc, out, _ = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_IMAGES="true")
+    rc, out, _ = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_APP="true")
     assert rc != 0, f"slug {slug!r} was accepted and resolved to {out.get('project')!r}"
 
 
@@ -239,7 +239,7 @@ def test_a_personal_run_never_provisions_the_admin_console(tmp_path):
     IAP-gated front end onto the same controls is machinery to keep working for no gain, so the
     name is empty and the stage skips itself even when the box is ticked."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
-                            DISPATCH_IMAGES="true", DISPATCH_ADMIN="true")
+                            DISPATCH_APP="true", DISPATCH_ADMIN="true")
     assert out["admin_service"] == ""
     assert out["admin_domain"] == ""
 
@@ -248,7 +248,7 @@ def test_a_personal_run_never_enables_outreach(tmp_path):
     """Outreach can email real people. A sandbox created in thirty seconds is the last place it
     should be reachable, and no checkbox may change that."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
-                            DISPATCH_IMAGES="true", DISPATCH_OUTREACH="true")
+                            DISPATCH_APP="true", DISPATCH_OUTREACH="true")
     assert out["outreach_enabled"] == ""
     assert out["outreach_worker_job"] == ""
 
@@ -258,7 +258,7 @@ def test_a_personal_run_states_a_complete_object_store(tmp_path):
     object-store block only when MINIO_ENDPOINT is set, and a selection that reconciles `images`
     without `storage` supplies none of these - so the API rolls with no store, the adapter falls
     back to localhost:9000, and every upload returns 503 "Storage is unavailable"."""
-    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     for key in ("minio_endpoint", "minio_region", "minio_secure",
                 "minio_bucket", "minio_secret_key_secret"):
         assert out.get(key), f"a personal environment states no {key}"
@@ -282,7 +282,7 @@ def test_a_personal_run_states_a_complete_object_store(tmp_path):
 ])
 def test_the_existing_targets_are_untouched(tmp_path, ref, event, expected_project):
     rc, out, log = _run_picker(tmp_path, GITHUB_REF=ref, GITHUB_EVENT_NAME=event,
-                               DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+                               DISPATCH_SLUG="", DISPATCH_APP="true")
     assert rc == 0, log
     assert out["project"] == expected_project
 
@@ -480,7 +480,7 @@ def test_a_personal_run_states_every_target_an_unattended_deploy_requires(tmp_pa
     # deploy.yml maps each picker output into the provision job's environment under these names.
     env_to_output = {"GCP_PROJECT_ID": "project", "GCP_REGION": "region",
                      "CLOUDRUN_MESH_JOB": "mesh_job", "GCP_MESH_BUCKET": "mesh_bucket"}
-    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     for var in required:
         key = env_to_output.get(var)
         assert key, f"deploy.sh now requires {var}, which this test does not know how to map"
@@ -728,7 +728,7 @@ def test_the_queue_depth_publisher_can_write_its_metric(tmp_path):
     and stage 13 would fail its smoke run with HTTP 403 on every personal deploy. It reuses the
     account that already holds the grant. The metric's series is labelled with the deployment's
     own namespace, so two environments publishing through one account stay two series."""
-    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_QUEUE="true")
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_FLEET="true")
     assert personal["queue_depth_service_account"] == "dev-queue-depth", (
         "a personal environment must reuse the identity that already holds metricWriter; its own "
         "would be created without the role and nothing in the deploy could grant it")
@@ -765,12 +765,11 @@ def test_the_first_deploy_is_documented_as_two_runs():
     assert "-f console=true" not in first_cmd, (
         "the guide tells the operator to deploy the console on the first run, which stage 2 "
         "refuses - the API has no URL yet")
-    assert "-f queue=true" not in first_cmd, (
-        "the guide selects the queue signal on the first run, but its autoscaling policy has no "
-        "managed instance group to attach to until the workers stage has created one")
-    assert "-f workers=true" in first_cmd, (
-        "the first run must create the fleet, or the second run's queue signal has nothing to "
-        "attach to either")
+    assert "-f fleet=true" in first_cmd, (
+        "the first run must create the fleet, or the second run has no instance group for the "
+        "autoscaler to attach to")
+    assert "-f app=true" in first_cmd and "-f data=true" in first_cmd, (
+        "the first run must ship the code and build the data tier it runs against")
 
 
 def test_the_celery_prefix_reaches_the_running_containers():
@@ -812,3 +811,116 @@ def test_the_generated_queue_name_collapses_to_the_bare_queue_without_a_prefix()
     pref = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
                           env={"PATH": "/usr/bin:/bin", "CELERY_KEY_PREFIX": "dev-pranav:"})
     assert pref.stdout.strip() == "dev-pranav:simulation_jobs", pref.stdout
+
+
+# ---------------------------------------------------------------------------------------------
+# 10. the checkboxes are tiers; DEPLOY_COMPONENTS is stages
+
+_KNOWN = "images data storage migrate queue workers console admin outreach edge".split()
+
+
+def _components(tmp_path, **boxes) -> list[str]:
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="", **{
+        f"DISPATCH_{b.upper()}": "true" for b in boxes})
+    assert rc == 0, log
+    return out["components"].split(",") if out["components"] else []
+
+
+def test_the_app_tier_ships_the_code_and_the_schema_it_expects(tmp_path):
+    """One box for the things that move together when you ship. Shipping a new image against last
+    week's schema was previously two boxes and a piece of knowledge about which."""
+    assert _components(tmp_path, app=True) == ["images", "storage", "migrate"]
+
+
+def test_the_data_tier_carries_the_schema_onto_the_database_it_creates(tmp_path):
+    """A database created without its schema is an empty one, and nothing says so until something
+    queries it."""
+    assert _components(tmp_path, data=True) == ["data", "migrate"]
+
+
+def test_the_fleet_tier_carries_the_signal_that_sizes_it(tmp_path):
+    """A worker group without the queue-depth publisher never scales - it sits at its floor
+    forever, which on a dev environment's floor of zero means nothing runs at all.
+
+    The order matters and is stage order, not preference: stage 13 establishes the publisher and
+    stage 18 creates the group."""
+    assert _components(tmp_path, fleet=True) == ["queue", "workers"]
+
+
+def test_the_schema_is_requested_once_when_both_tiers_want_it(tmp_path):
+    """migrate belongs to `app` and to `data`. deploy.sh matches component NAMES so a repeat would
+    not break it, but a log reading `migrate,migrate` invites the reader to ask whether the schema
+    moved twice - and the schema is the one stage where that question matters."""
+    parts = _components(tmp_path, app=True, data=True)
+    assert parts.count("migrate") == 1, parts
+    assert parts == ["images", "data", "storage", "migrate"]
+
+
+def test_every_tier_expands_only_to_stages_deploy_sh_knows(tmp_path):
+    """DEPLOY_COMPONENTS is validated by deploy.sh against its `_known` list, and a name that is
+    not on it stops the run. This is the test that catches a tier renamed on one side only."""
+    known = set(_KNOWN)
+    for box in ("app", "data", "fleet", "console", "admin", "outreach", "edge"):
+        parts = _components(tmp_path, **{box: True})
+        assert parts, f"the `{box}` box selected no stage at all"
+        unknown = [c for c in parts if c not in known]
+        assert not unknown, f"`{box}` expands to {unknown}, which deploy.sh has no stage for"
+
+
+def test_the_component_list_is_emitted_in_stage_order(tmp_path):
+    """Composed in the order deploy.sh's own `_known` line lists them, so the deploy log reads the
+    same way however the boxes were ticked."""
+    parts = _components(tmp_path, app=True, data=True, fleet=True, console=True,
+                        admin=True, outreach=True, edge=True)
+    assert parts == _KNOWN, parts
+
+
+def test_ticking_every_box_deploys_every_stage(tmp_path):
+    """The roster has no 'all' shortcut on purpose, so ticking everything must be the way to get
+    everything - if a stage existed that no box reached, it could only ever run on a release tag."""
+    assert set(_components(tmp_path, app=True, data=True, fleet=True, console=True,
+                           admin=True, outreach=True, edge=True)) == set(_KNOWN)
+
+
+# ---------------------------------------------------------------------------------------------
+# 11. binding a secret to an identity that was created seconds ago
+
+
+def test_secret_bindings_ride_out_the_identity_propagation_window():
+    """A service account is not visible to IAM for a few seconds after it is created, so the first
+    binding attempted against it fails with "Service account ... does not exist" - a propagation
+    delay reported as a missing resource.
+
+    This is not hypothetical and it is not cosmetic. On the first personal deploy that reached the
+    console stage, the identity was created at :56, the binding for console-auth-secret failed at
+    :58, and the two bindings that followed at :59 and :01 both succeeded. The failure was a
+    warning, so the rollout proceeded and then died several minutes later on a Cloud Run IAM check
+    naming the secret rather than the race.
+
+    It stopped being rare when environments began being created BY the deploy: every runtime
+    identity is now seconds old on a first deploy, where before an owner had made them in advance.
+    """
+    lib = (SCRIPTS / "lib.sh").read_text(encoding="utf-8")
+    assert "grant_secret_accessor()" in lib, "there is no retrying helper for this binding"
+
+    # Every stage that creates a runtime identity and then binds a secret to it must use it - a
+    # single raw binding left behind is a single stage that still loses the race.
+    for script in ("create-console-service.sh", "create-api-service.sh", "create-admin-service.sh",
+                   "create-worker-fleet.sh", "run-migrations.sh", "create-object-storage.sh"):
+        body = (SCRIPTS / script).read_text(encoding="utf-8")
+        assert "grant_secret_accessor" in body, f"{script} binds secrets without the retry"
+        raw = [ln for ln in body.splitlines()
+               if "secrets add-iam-policy-binding" in ln and not ln.strip().startswith("#")
+               and "gcloud secrets add-iam-policy-binding" not in ln]
+        assert not raw, f"{script} still has an unretried binding: {raw}"
+
+
+def test_the_retry_actually_retries_and_eventually_gives_up():
+    """A helper that returns success on the first failure would be worse than none: the caller's
+    warning would still fire and the rollout would still die, but the log would claim a retry."""
+    lib = (SCRIPTS / "lib.sh").read_text(encoding="utf-8")
+    body = lib[lib.index("grant_secret_accessor()"):]
+    body = body[:body.index("\n}")]
+    assert "for attempt in" in body, "the helper makes a single attempt"
+    assert "sleep" in body, "the helper retries without waiting, so it retries inside the window"
+    assert "return 1" in body, "the helper never reports failure, so callers cannot warn"

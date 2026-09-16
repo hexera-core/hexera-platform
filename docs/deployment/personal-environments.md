@@ -9,14 +9,14 @@ creates it.
 ```bash
 # THE FIRST DEPLOY IS TWO RUNS - two things need something the run before them creates. See §4.
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f images=true -f data=true -f migrate=true -f workers=true
+  -f slug=pranav -f app=true -f data=true -f fleet=true
 
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f console=true -f queue=true
+  -f slug=pranav -f console=true -f fleet=true
 
 # every deploy after that: one run, and a fast one
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f images=true -f migrate=true -f console=true
+  -f slug=pranav -f app=true -f console=true
 
 # when you are done with it
 make destroy-env SLUG=pranav
@@ -82,9 +82,13 @@ CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
 **The queue signal needs a fleet.** Stage 13 attaches an autoscaling policy to the worker fleet's
 managed instance group, and stage 17 is what creates that group.
 
-So: `images,data,migrate,workers` first — this is the slow one, roughly half an hour, because it
-builds nothing but does reconcile the schema and the fleet. Then `console,queue`. After that
-every run is one command.
+So: `app,data,fleet` first — this is the slow one, roughly half an hour, because it reconciles
+the data tier and builds the fleet. Then `console,fleet`. After that every run is one command.
+
+`fleet` appears on both runs on purpose. Stage 13 establishes the queue-depth publisher and stage
+18 creates the instance group, so on the first run there is no group for the autoscaler to attach
+to yet and only that attachment defers — the publisher, its schedule and its identity are all in
+place. The second run finds the group and attaches it.
 
 `storage` is selected for you on every personal run whether or not you tick it. It is what mints
 your object-store key on the first deploy and hands the access id to the API stage on every one

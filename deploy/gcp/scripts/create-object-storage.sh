@@ -314,9 +314,7 @@ log "hmac secret     ${HMAC_SECRET_NAME}  (${SECRET_DISPOSITION} - name only; th
 # A DEPLOY IDENTITY MAY NOT BE ABLE TO GRANT IT: setting IAM on a secret is an owner's act. The
 # grant is attempted and a failure is reported with the command that fixes it, because the verdict
 # comes later - a runtime that cannot read this secret fails on its first upload.
-if gc secrets add-iam-policy-binding "${HMAC_SECRET_NAME}" \
-     --member "serviceAccount:${OBJECT_STORE_SA_EMAIL}" \
-     --role roles/secretmanager.secretAccessor >/dev/null 2>&1; then
+if grant_secret_accessor "${HMAC_SECRET_NAME}" "${OBJECT_STORE_SA_EMAIL}"; then
   log "secret/${HMAC_SECRET_NAME} += roles/secretmanager.secretAccessor -> ${OBJECT_STORE_SA_EMAIL}"
 else
   warn "could not set IAM on secret ${HMAC_SECRET_NAME} (this identity may not hold

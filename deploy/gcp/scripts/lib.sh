@@ -101,6 +101,35 @@ sa_exists()      { gc iam service-accounts describe "$1" >/dev/null 2>&1; }
 bucket_exists()  { gcloud storage buckets describe "gs://$1" >/dev/null 2>&1; }
 secret_exists()  { gc secrets describe "$1" >/dev/null 2>&1; }
 
+# grant_secret_accessor SECRET SA_EMAIL - bind secretAccessor, riding out the propagation window.
+#
+# A SERVICE ACCOUNT IS NOT IMMEDIATELY VISIBLE TO IAM after it is created. A binding attempted
+# seconds later fails with "Service account ... does not exist" - a propagation delay reported as a
+# missing resource, which reads like a bug in the caller and is not.
+#
+# create-workload-identity.sh has retried its own roster for this reason since hexera-prod was
+# stood up. Every stage that CREATES a runtime identity and then binds a secret to it has the same
+# race, and it stopped being rare when environments began being created BY the deploy rather than
+# by an owner beforehand: the account is now always seconds old.
+#
+# Measured, on the first personal deploy that hit it: the console identity was created at :56, its
+# first binding failed at :58, and the two that followed at :59 and :01 both succeeded. Only the
+# first binding after creation is really at risk, so a short ramp is enough - but the cost of being
+# wrong is a rollout that fails IAM checks several minutes later, naming the secret and not the
+# race, so this retries rather than hopes.
+grant_secret_accessor() {
+  local secret="$1" sa="$2" attempt
+  for attempt in 1 2 3 4 5 6; do
+    if gc secrets add-iam-policy-binding "${secret}" \
+         --member "serviceAccount:${sa}" \
+         --role roles/secretmanager.secretAccessor --condition=None >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep $(( attempt * 3 ))
+  done
+  return 1
+}
+
 # secret_confirmed_absent NAME - true only when Secret Manager AFFIRMATIVELY says the container
 # does not exist (its error names NOT_FOUND). `secret_exists` failing is not proof of absence: the
 # same non-zero exit also covers this identity lacking secretmanager.viewer, a transient API

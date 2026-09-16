@@ -137,9 +137,7 @@ for secret_name in ${SECRET_NAMES[@]+"${SECRET_NAMES[@]}"}; do
     || warn "cannot confirm secret '${secret_name}' exists in ${GCP_PROJECT_ID} - it may be absent,
        or this identity may not be allowed to read Secret Manager. If it is absent:
          gcloud secrets create ${secret_name} --project ${GCP_PROJECT_ID} --replication-policy=automatic"
-  if gc secrets add-iam-policy-binding "${secret_name}" \
-       --member "serviceAccount:${CONSOLE_SA_EMAIL}" \
-       --role roles/secretmanager.secretAccessor >/dev/null 2>&1; then
+  if grant_secret_accessor "${secret_name}" "${CONSOLE_SA_EMAIL}"; then
     log "secret/${secret_name} += roles/secretmanager.secretAccessor -> ${CONSOLE_SA_EMAIL}"
   else
     warn "could not set IAM on secret ${secret_name}. If the binding is already in place the

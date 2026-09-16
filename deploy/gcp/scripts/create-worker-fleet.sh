@@ -285,9 +285,7 @@ done
 # command that fixes it, and the instance itself is the verdict - startup.sh refuses to start a
 # worker whose credential it cannot read, so a missing binding cannot pass as a healthy fleet.
 for secret_name in ${WORKER_SECRET_NAMES[@]+"${WORKER_SECRET_NAMES[@]}"}; do
-  if gc secrets add-iam-policy-binding "${secret_name}" \
-       --member "serviceAccount:${WORKER_SA_EMAIL}" \
-       --role roles/secretmanager.secretAccessor >/dev/null 2>&1; then
+  if grant_secret_accessor "${secret_name}" "${WORKER_SA_EMAIL}"; then
     log "secret/${secret_name} += roles/secretmanager.secretAccessor -> ${WORKER_SA_EMAIL}"
   else
     warn "could not set IAM on secret ${secret_name}. If the binding is already in place the fleet

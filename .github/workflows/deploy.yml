@@ -67,33 +67,24 @@ on:
         required: false
         default: ""
         type: string
-      images:
-        description: "images - the mesh job and the API service (the two workloads that carry an application digest)"
+      # THE BOXES ARE TIERS, NOT STAGES. Each one is a thing you can want deployed; the picker
+      # below translates it into the stages deploy.sh actually runs. The previous roster had one
+      # box per stage, which meant ticking the right set required knowing that `images` does not
+      # carry the schema and that a fleet without its queue signal never scales - stage knowledge,
+      # asked for at the wrong moment, whose failure mode is a half-deployed environment rather
+      # than an error.
+      app:
+        description: "app - the API, the mesh job, the object store and the schema (everything that ships the code)"
         required: false
         default: false
         type: boolean
       data:
-        description: "data - Cloud SQL and Memorystore"
+        description: "data - Cloud SQL and Memorystore, and the schema on them"
         required: false
         default: false
         type: boolean
-      storage:
-        description: "storage - the artifacts bucket and its S3-interoperability credential"
-        required: false
-        default: false
-        type: boolean
-      migrate:
-        description: "migrate - the schema, applied once before anything serves the new image"
-        required: false
-        default: false
-        type: boolean
-      queue:
-        description: "queue - the queue-depth publisher and the autoscaling policy that reads it"
-        required: false
-        default: false
-        type: boolean
-      workers:
-        description: "workers - the managed instance group, rolled onto the new template"
+      fleet:
+        description: "fleet - the worker instance group and the queue-depth signal that sizes it"
         required: false
         default: false
         type: boolean
@@ -242,12 +233,9 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           # Boolean workflow_dispatch inputs arrive as the strings 'true' / 'false' (unset, on any
           # other trigger, where github.event.inputs is empty).
-          DISPATCH_IMAGES: ${{ github.event.inputs.images }}
+          DISPATCH_APP: ${{ github.event.inputs.app }}
           DISPATCH_DATA: ${{ github.event.inputs.data }}
-          DISPATCH_STORAGE: ${{ github.event.inputs.storage }}
-          DISPATCH_MIGRATE: ${{ github.event.inputs.migrate }}
-          DISPATCH_QUEUE: ${{ github.event.inputs.queue }}
-          DISPATCH_WORKERS: ${{ github.event.inputs.workers }}
+          DISPATCH_FLEET: ${{ github.event.inputs.fleet }}
           DISPATCH_CONSOLE: ${{ github.event.inputs.console }}
           DISPATCH_ADMIN: ${{ github.event.inputs.admin }}
           DISPATCH_OUTREACH: ${{ github.event.inputs.outreach }}
@@ -269,12 +257,42 @@ jobs:
           # false, so nothing is selected implicitly - there is deliberately no 'all' shortcut.
           _selected=""
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            [ "${DISPATCH_IMAGES:-false}" = "true" ] && _selected="${_selected}images,"
-            [ "${DISPATCH_DATA:-false}" = "true" ] && _selected="${_selected}data,"
-            [ "${DISPATCH_STORAGE:-false}" = "true" ] && _selected="${_selected}storage,"
-            [ "${DISPATCH_MIGRATE:-false}" = "true" ] && _selected="${_selected}migrate,"
-            [ "${DISPATCH_QUEUE:-false}" = "true" ] && _selected="${_selected}queue,"
-            [ "${DISPATCH_WORKERS:-false}" = "true" ] && _selected="${_selected}workers,"
+            # THE CHECKBOXES ARE TIERS; DEPLOY_COMPONENTS IS STAGES. This block is the translation
+            # between the two, and it is the only place that knows the mapping.
+            #
+            # WHY TIERS. There were ten boxes, one per stage, and deploying an application meant
+            # knowing that `images` does not carry the schema, that a database without `migrate` is
+            # an empty one, and that a fleet without `queue` never scales. That is knowledge about
+            # deploy.sh's stage list, and asking for it at a checkbox is asking the wrong person at
+            # the wrong moment - a half-ticked deploy is not an error, it is a half-deployed
+            # environment discovered later.
+            #
+            # Composed in the order deploy.sh's `_known` line lists them, so the deploy log reads
+            # predictably however the boxes were ticked. Every box defaults to false: nothing is
+            # selected implicitly and there is deliberately no 'all' shortcut.
+            _app="${DISPATCH_APP:-false}"
+            _data="${DISPATCH_DATA:-false}"
+            _fleet="${DISPATCH_FLEET:-false}"
+            # `app` is the CODE: the two workloads that carry an application digest, the object
+            # store the API reads, and the schema that image expects. Shipping a new image against
+            # last week's schema is the failure this bundling removes.
+            if [ "${_app}" = "true" ]; then _selected="${_selected}images,"; fi
+            # `data` is the STATEFUL tier - Cloud SQL and Memorystore.
+            if [ "${_data}" = "true" ]; then _selected="${_selected}data,"; fi
+            if [ "${_app}" = "true" ]; then _selected="${_selected}storage,"; fi
+            # MIGRATE BELONGS TO BOTH, AND IS EMITTED ONCE. A new image expects its schema; a newly
+            # created database has none at all. Listing it twice would not break deploy.sh - it
+            # matches component names, not positions - but a log line reading `migrate,migrate`
+            # invites the reader to wonder whether it ran twice, and the schema is the one stage
+            # where that question matters.
+            if [ "${_app}" = "true" ] || [ "${_data}" = "true" ]; then _selected="${_selected}migrate,"; fi
+            # `fleet` is the workers AND the signal that sizes them. The two are listed in stage
+            # order, which is why `queue` precedes `workers` here: stage 13 establishes the
+            # publisher and stage 18 creates the group. On a FIRST deploy the group does not exist
+            # when the publisher runs, so only the autoscaler ATTACHMENT defers - the publisher,
+            # its schedule and its identity are all established - and the next run carrying `fleet`
+            # attaches it. That is why the documented first deploy ticks `fleet` on both runs.
+            if [ "${_fleet}" = "true" ]; then _selected="${_selected}queue,workers,"; fi
             [ "${DISPATCH_CONSOLE:-false}" = "true" ] && _selected="${_selected}console,"
             [ "${DISPATCH_ADMIN:-false}" = "true" ] && _selected="${_selected}admin,"
             [ "${DISPATCH_OUTREACH:-false}" = "true" ] && _selected="${_selected}outreach,"
@@ -288,7 +306,7 @@ jobs:
             # the exact opposite of "nothing ticked", and a run that mutates nothing was never the
             # risk here; a run that mutates everything by accident was.
             if [ -z "${_selected}" ]; then
-              echo "::error::no component checkbox was ticked - deploying nothing is not a valid request. Available checkboxes: images, data, storage, migrate, queue, workers, console, admin, outreach, edge. Tick every one of them to deploy everything."
+              echo "::error::no component checkbox was ticked - deploying nothing is not a valid request. Available checkboxes: app, data, fleet, console, admin, outreach, edge. Tick every one of them to deploy everything."
               exit 1
             fi
           fi
