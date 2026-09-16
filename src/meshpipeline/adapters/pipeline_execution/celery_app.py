@@ -14,6 +14,22 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    # ONE REDIS, MANY DEPLOYMENTS. The queue names in task_routes below are literals, so two
+    # deployments pointed at the same Memorystore instance consume each other's tasks - a
+    # developer's simulation picked up by somebody else's worker fleet, and neither party with a
+    # reason to suspect it. Personal environments share one instance deliberately (it is what
+    # makes a first deploy minutes rather than half an hour), so the keyspace is what separates
+    # them.
+    #
+    # EMPTY BY DEFAULT, and that matters more than the feature: an empty prefix is byte-for-byte
+    # the behaviour every existing deployment already has, so shared dev, production and the
+    # compose stack need no migration. A non-empty default would move their queues to new keys on
+    # the next roll and strand whatever was already enqueued under the old ones.
+    #
+    # BOTH options, not one. The broker carries the queues; the result backend carries the task
+    # results. Prefixing only the broker isolates the work and leaves the answers colliding.
+    broker_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
+    result_backend_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],

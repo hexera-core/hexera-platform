@@ -20,6 +20,7 @@ md_project() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.int
 
 WORKER_IMAGE="$(md worker-image)"
 REDIS_URL="$(md redis-url)"
+REDIS_KEY_PREFIX="$(md redis-key-prefix)"
 DATABASE_URL="$(md database-url)"
 ENV_URI="$(md env-uri)"
 
@@ -56,6 +57,7 @@ chmod 600 /etc/hexera/worker.env
   echo "REDIS_URL=${REDIS_URL}"
   echo "CELERY_BROKER_URL=${REDIS_URL}"
   echo "CELERY_RESULT_BACKEND=${REDIS_URL}"
+  echo "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX}"
 } >> /etc/hexera/worker.env
 
 # CREDENTIALS are fetched by NAME, under this instance's own identity, and only ever exist in a

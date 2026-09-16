@@ -106,9 +106,7 @@ secret_exists "${POSTGRES_PASSWORD_SECRET}" \
 #    grant is attempted, a failure is reported with the command that fixes it, and the EXECUTION
 #    below is the verdict - a migration that cannot read the password fails there, loudly, so a
 #    missing binding can never pass as a successful deploy.
-if gc secrets add-iam-policy-binding "${POSTGRES_PASSWORD_SECRET}" \
-     --member "serviceAccount:${MIGRATE_SA_EMAIL}" \
-     --role roles/secretmanager.secretAccessor >/dev/null 2>&1; then
+if grant_secret_accessor "${POSTGRES_PASSWORD_SECRET}" "${MIGRATE_SA_EMAIL}"; then
   log "secret/${POSTGRES_PASSWORD_SECRET} += roles/secretmanager.secretAccessor -> ${MIGRATE_SA_EMAIL}"
 else
   warn "could not set IAM on secret ${POSTGRES_PASSWORD_SECRET} (this identity may not hold

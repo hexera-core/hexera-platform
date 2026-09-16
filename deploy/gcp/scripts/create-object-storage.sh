@@ -223,6 +223,32 @@ if [ -n "${RECORDED_ACCESS_ID}" ] && printf '%s\n' "${ACTIVE_IDS}" | grep -Fqx "
   RECORDED_IS_ACTIVE=1
 fi
 
+# ADOPT AN UNRECORDED KEY rather than mint a second one beside it.
+#
+# THE CASE THIS EXISTS FOR. A personal environment pins no MINIO_ACCESS_KEY, because the value
+# does not exist until its first deploy has run - so every run after the first arrives here with
+# nothing recorded. Without this branch that reads as "no usable key exists", and the deploy mints
+# another, every run, until the five-key ceiling below stops it dead and an owner has to retire
+# keys by hand. Carrying the id in a repository variable is what used to avoid that, and this is
+# what replaces it.
+#
+# EXACTLY ONE IS THE ENTIRE SAFETY ARGUMENT, and it is a property of the account rather than a
+# hopeful guess: this service account is created by this tooling, is the runtime identity of one
+# deployment's API, and is used by nothing else - so a single ACTIVE key is necessarily the one
+# whose secret sits in this deployment's own secret. TWO would not be. There is no way to ask GCS
+# which key a stored secret belongs to, so adopting one of several would be a coin flip whose
+# losing side is a store that authenticates as nobody - and that case deliberately falls through
+# to the guards below instead.
+#
+# The secret is required to hold a version for the same reason the reuse branch requires it: an
+# access id without its secret half is not a credential, and adopting one would produce a
+# deployment that believes it is configured and cannot sign a request.
+if [ -z "${RECORDED_ACCESS_ID}" ] && [ "${ACTIVE_COUNT}" -eq 1 ] && [ "${SECRET_HAS_VERSION}" = "1" ]; then
+  RECORDED_ACCESS_ID="$(printf '%s\n' "${ACTIVE_IDS}" | grep . | head -1)"
+  RECORDED_IS_ACTIVE=1
+  log "hmac key        ${RECORDED_ACCESS_ID}  (ADOPTED - the one ACTIVE key of ${OBJECT_STORE_SA_EMAIL})"
+fi
+
 # TRACING OFF for the block that handles the value, and it must stay off: under `bash -x` every
 # expansion is echoed, which would republish into a deploy log exactly what Secret Manager exists to
 # keep out of one. deploy/gcp/worker/startup.sh guards the same way for the same reason.
@@ -288,9 +314,7 @@ log "hmac secret     ${HMAC_SECRET_NAME}  (${SECRET_DISPOSITION} - name only; th
 # A DEPLOY IDENTITY MAY NOT BE ABLE TO GRANT IT: setting IAM on a secret is an owner's act. The
 # grant is attempted and a failure is reported with the command that fixes it, because the verdict
 # comes later - a runtime that cannot read this secret fails on its first upload.
-if gc secrets add-iam-policy-binding "${HMAC_SECRET_NAME}" \
-     --member "serviceAccount:${OBJECT_STORE_SA_EMAIL}" \
-     --role roles/secretmanager.secretAccessor >/dev/null 2>&1; then
+if grant_secret_accessor "${HMAC_SECRET_NAME}" "${OBJECT_STORE_SA_EMAIL}"; then
   log "secret/${HMAC_SECRET_NAME} += roles/secretmanager.secretAccessor -> ${OBJECT_STORE_SA_EMAIL}"
 else
   warn "could not set IAM on secret ${HMAC_SECRET_NAME} (this identity may not hold

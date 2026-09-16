@@ -6,8 +6,11 @@ import json
 from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import sync_client
+from meshpipeline.redis_keys import k
 
-_DLQ_KEY = "simulation:dlq"
+
+def _dlq_key() -> str:
+    return k("simulation:dlq")
 _KEEP = 1000
 
 
@@ -20,15 +23,15 @@ class RedisDeadLetterSink:
     def append(self, record: dict[str, Any]) -> None:
         r = self._client()
         try:
-            r.lpush(_DLQ_KEY, json.dumps(record, default=str))
-            r.ltrim(_DLQ_KEY, 0, _KEEP - 1)
+            r.lpush(_dlq_key(), json.dumps(record, default=str))
+            r.ltrim(_dlq_key(), 0, _KEEP - 1)
         finally:
             r.close()
 
     def recent(self, limit: int = 100) -> list[dict[str, Any]]:
         r = self._client()
         try:
-            raw = r.lrange(_DLQ_KEY, 0, max(0, limit - 1))
+            raw = r.lrange(_dlq_key(), 0, max(0, limit - 1))
         finally:
             r.close()
         out: list[dict[str, Any]] = []

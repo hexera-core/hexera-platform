@@ -15,7 +15,7 @@ S     := ./scripts
 
 .PHONY: help mesh-deploy doctor bootstrap validate preflight enable-apis artifact-registry \
         service-account mesh-tier iam state provision publication-target smoke check \
-        new-env destroy-env seed-secrets
+        destroy-env seed-secrets
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | sort | \
@@ -65,10 +65,7 @@ provision: enable-apis artifact-registry service-account mesh-tier iam ## All me
 # All three are OWNER's acts, performed by a person under their own credentials. None of them is
 # reachable from CI, and that is deliberate: creating projects, minting identities and seeding
 # secret VALUES are precisely the authorities the federated deploy identity is built without.
-new-env: ## Create a personal dev environment as its own project: make new-env SLUG=pranav
-	@bash $(S)/new-env.sh
-
-destroy-env: ## Delete a personal dev environment and everything in it: make destroy-env SLUG=pranav
+destroy-env: ## Delete a personal dev environment's resources from hexera-dev: make destroy-env SLUG=pranav
 	@bash $(S)/destroy-env.sh
 
 seed-secrets: ## Fill any EMPTY secret container in an environment: make seed-secrets SLUG=pranav

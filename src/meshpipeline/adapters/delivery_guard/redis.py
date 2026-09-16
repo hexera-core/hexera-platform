@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from meshpipeline.adapters._shared.redis_client import sync_client
+from meshpipeline.redis_keys import k
 
 _TTL_SECONDS = 86400  # 24h - long enough to outlive any redelivery storm, short enough to self-clean
 
@@ -20,7 +21,7 @@ class RedisDeliveryGuard:
 
     def record_attempt(self, job_id: str) -> int:
         r = self._client()
-        key = f"job:{job_id}:deliveries"
+        key = k(f"job:{job_id}:deliveries")
         n = int(cast(int, r.incr(key)))   # sync redis returns the new int value
         if n == 1:
             r.expire(key, _TTL_SECONDS)

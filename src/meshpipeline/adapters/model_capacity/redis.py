@@ -12,6 +12,7 @@ from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import async_client
 from meshpipeline.contracts.model_capacity import Lease
+from meshpipeline.redis_keys import k
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ return redis.call('ZCARD', KEYS[1])
 
 
 def _key(domain_key: str) -> str:
-    return f"{_KEY_PREFIX}:{domain_key}"
+    return k(f"{_KEY_PREFIX}:{domain_key}")
 
 
 class RedisCapacityController:

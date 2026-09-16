@@ -7,10 +7,13 @@ from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import sync_client
 from meshpipeline.contracts.inference_telemetry import InferenceCall
+from meshpipeline.redis_keys import k
+
 
 #: The whole-deployment feed, newest first: what ran, on which model, at what cost. Capped, like
 #: the dead-letter queue, because this is an inspection surface and not the ledger.
-_FEED_KEY = "inference:calls"
+def _feed_key() -> str:
+    return k("inference:calls")
 _FEED_KEEP = 5000
 
 #: The per-job slice. Cost is billed per job, so a job's calls have to be readable without
@@ -41,8 +44,8 @@ class RedisInferenceTelemetrySink:
         job = _job_key(call.job_id)
         try:
             p = self._client().pipeline()
-            p.lpush(_FEED_KEY, payload)
-            p.ltrim(_FEED_KEY, 0, _FEED_KEEP - 1)
+            p.lpush(_feed_key(), payload)
+            p.ltrim(_feed_key(), 0, _FEED_KEEP - 1)
             p.lpush(job, payload)
             p.ltrim(job, 0, _JOB_KEEP - 1)
             p.expire(job, _JOB_TTL_S)
@@ -54,7 +57,7 @@ class RedisInferenceTelemetrySink:
             raise
 
     def recent(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self._read(_FEED_KEY, limit)
+        return self._read(_feed_key(), limit)
 
     def for_job(self, job_id: str, limit: int = _JOB_KEEP) -> list[dict[str, Any]]:
         return self._read(_job_key(job_id), limit)

@@ -1,292 +1,203 @@
 # Personal development environments
 
-One Google Cloud project per developer, created in one command and deleted in one command.
+Your own API, console, mesh job and worker fleet, inside `hexera-dev`, deployable from any branch
+as often as you like. Nothing to create first: the deploy that names your environment is what
+creates it.
 
-This is the answer to "I want to try this on real infrastructure without waiting for shared dev,
-and without breaking it for everybody else."
-
----
-
-## 1. The three commands
+## 1. The two commands
 
 ```bash
-make new-env SLUG=pranav                  # once, ~5 minutes
+# THE FIRST DEPLOY IS TWO RUNS - two things need something the run before them creates. See §4.
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=pranav -f app=true -f data=true -f fleet=true
 
-# the first deploy is TWO runs - two things need something the run before them creates. See section 4.
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f images=true -f data=true -f migrate=true -f workers=true
-gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f console=true -f queue=true
+  -f slug=pranav -f console=true -f fleet=true
 
 # every deploy after that: one run, and a fast one
 gh workflow run deploy.yml --ref "$(git branch --show-current)" \
-  -f slug=pranav -f images=true -f migrate=true -f console=true
+  -f slug=pranav -f app=true -f console=true
 
-make destroy-env SLUG=pranav              # when you are done
+# when you are done with it
+make destroy-env SLUG=pranav
 ```
 
-The slug is your name. It becomes the project id, `hexera-dev-pranav`, and it is permanent — a
-project id cannot be renamed, and cannot be reused for 30 days after deletion.
-
-**Deploying is the ordinary deploy workflow.** There is no separate pipeline: the same Gate C
-builds the same four images from your branch, the same `deploy.sh` runs the same eighteen stages.
-The only thing the slug changes is which project they run against. That is the point — a personal
-environment is a rehearsal of a real deploy, not a simplified one.
-
-Leave `slug` empty and you get shared dev, exactly as before. Nothing about the existing habit
-changed.
-
----
+There is no `make new-env`. There used to be, and removing it is the point of the current design:
+your environment is created by the first deploy that names it.
 
 ## 2. What you get
 
-Every resource has the same name it has in shared dev, because the project is already named after
-you — `dev-api`, `dev-mesh`, `dev-pg`, `dev-redis`, `dev-workers`. There is one naming convention
-to learn, not one per developer.
+Your slug becomes a **deployment id** — `dev-pranav` — and every resource the deploy creates is
+named from it:
 
-| | Shared dev | Your environment |
-| --- | --- | --- |
-| Project | `hexera-dev` | `hexera-dev-<slug>` |
-| Deployment id | `dev` | `dev` |
-| Reached by | merge to `main`, or a manual run with no slug | a manual run naming your slug |
-| Console | `dev.console.hexera.ai` | the generated `run.app` URL |
-| Admin console | `dev-admin`, behind IAP | **not provisioned** — see §5 |
-| Outreach | off | **off, and not selectable** — see §5 |
-| Blast radius | everyone | you |
+| | |
+| --- | --- |
+| API | `dev-pranav-api` (Cloud Run, its own `run.app` URL) |
+| Console | `dev-pranav-console` |
+| Jobs | `dev-pranav-mesh`, `dev-pranav-migrate`, `dev-pranav-queue-depth` |
+| Workers | `dev-pranav-workers` (managed instance group, autoscaled) |
+| Buckets | `dev-pranav-exchange-…`, `dev-pranav-artifacts-…`, `dev-pranav-transfer-…` |
+| Database | `meshpipeline_pranav` |
+| Identities | `dev-pranav-api`, `-console`, `-mesh`, `-migrate` (the fleet runs as the project's default compute account) |
+| Celery keys | prefixed `dev-pranav:` |
 
-**No DNS, no certificate, no wait.** The console runs on its generated `run.app` URL. That works
-unmodified because `apps/console/src/auth.ts` sets `trustHost: true`, so Auth.js derives its
-callback URL from the request host rather than from a per-environment setting. A per-developer
-managed certificate would otherwise mean a DNS record and a 15–60 minute wait before the
-environment could be used at all.
+**Your slug must be at most 14 characters**, lowercase, starting with a letter. That is not
+style: a service account id may be 30 characters, `dev-` takes 4 and `-queue-depth` takes 12. The
+picker refuses a longer slug immediately rather than letting you find out eleven stages into a
+deploy.
 
----
+`dev`, `prod`, `production`, `shared`, `main` and `staging` are refused. Shared dev is reached by
+leaving the slug **empty**; production only by a `v*` tag.
 
-## 3. What it costs
+## 3. What you share, and what that costs
 
-About **$88/month** while it exists, from `docs/deployment/cost-estimate.md`'s dev profile:
-Cloud SQL `db-g1-small` (~$27), Memorystore 1 GB BASIC (~$26), Cloud NAT (~$32), and a few dollars
-of registry and storage. The Cloud Run services scale to zero and the worker fleet has a floor of
-zero, so an idle environment is close to that floor and nothing else.
+**Shared with shared dev and with every other personal environment:**
 
-**Cloud NAT is the one line that is worse than sharing** — it is per-project, so each environment
-pays its own $32. If your work does not need the worker fleet, skip `workers` and `queue` and the
-NAT gateway is the thing to delete.
+- the `hexera-dev` project, its VPC and its deploy identity
+- the Cloud SQL instance `hexera-dev-pg` — you get your own *database* on it, not your own instance
+- the Memorystore instance `hexera-dev-redis` — you get your own Celery *key prefix* on it
+- the Artifact Registry, so your first build starts from a warm cache instead of re-downloading
+  the whole native floor
+- the provider API keys in Secret Manager
 
-The real cost control is `make destroy-env`. An environment nobody is using should not exist.
+**Stated plainly:** one Cloud SQL instance and one Memorystore instance are a shared failure
+domain. Exhausting connections, filling the disk or restarting an instance affects everybody. That
+was accepted in exchange for a first deploy measured in minutes rather than half an hour, and no
+per-developer instance bill.
 
----
+What it does **not** mean is shared state. Your migrations move your schema only, and your Celery
+queues are keyed under `dev-pranav:` so your jobs cannot be picked up by somebody else's workers.
 
-## 4. The first run, and every run after
+## 4. Why the first deploy is two runs
 
-**The first deploy is two runs, and the second one is the console.** A console has to be told the
-origin of the API it proxies to; that origin is the API service's Cloud Run URL; and Google does not
-assign one until the service exists. On an environment where the API has never been deployed there
-is nothing to tell it, so `validate-config.sh` refuses at stage 2 rather than let a console roll out
-pointing at nothing:
+**The console needs the API's URL.** A console is given the origin of the API it proxies to, that
+origin is the API service's Cloud Run URL, and Google does not assign one until the service
+exists. On an environment where the API has never been deployed there is nothing to tell it, so
+stage 2 refuses the run rather than rolling out a console pointing at nothing:
 
-> `CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not`
+```
+CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
+```
 
-**The queue signal is the second thing in run two, for the same shape of reason.** Its autoscaling
-policy attaches to the worker fleet's managed instance group, and stage 13 runs *before* stage 17
-creates that group — the split is deliberate (the policy's sizing belongs to the admin console, so
-the fleet stage never reconciles it) and it quietly assumes the group already exists. The publisher
-and its schedule are still established in run one; only the attachment waits.
+**The queue signal needs a fleet.** Stage 13 attaches an autoscaling policy to the worker fleet's
+managed instance group, and stage 17 is what creates that group.
 
-Run one creates the API and the fleet; run two deploys the console, by which time discovery can
-find the API's URL, and attaches the autoscaling policy, by which time there is a group to attach
-it to. Neither is specific to personal environments — both are what any environment's *first*
-deploy has to do. Shared dev simply passed that point long ago.
+So: `app,data,fleet` first — this is the slow one, roughly half an hour, because it reconciles
+the data tier and builds the fleet. Then `console,fleet`. After that every run is one command.
 
-Run one also creates Cloud SQL and Memorystore and takes roughly half an hour, most of it Google
-creating the database instance. Tick `data` for it.
+`fleet` appears on both runs on purpose. Stage 13 establishes the queue-depth publisher and stage
+18 creates the instance group, so on the first run there is no group for the autoscaler to attach
+to yet and only that attachment defers — the publisher, its schedule and its identity are all in
+place. The second run finds the group and attaches it.
 
-**Every run after that should leave `data` unticked**, and can do everything in one go. A typical
-iteration is `images,migrate,console` — build, move the schema if it moved, roll the services.
-Cloud SQL and Memorystore are reused untouched.
-
-Image builds are cached in Artifact Registry, and a brand-new environment reads shared dev's cache
-on its first build (`RELEASE_BUILD_CACHE_FROM` in `deploy.yml`), so it starts warm rather than
-re-downloading the OpenFOAM toolchain from scratch.
-
-> **Do not tick `storage` after the first creation.** The object store is established once, by
-> `new-env.sh`, running as you. See §6.
-
----
+`storage` is selected for you on every personal run whether or not you tick it. It is what mints
+your object-store key on the first deploy and hands the access id to the API stage on every one
+after; without it the API would roll with no store and return 503 on every upload.
 
 ## 5. What a personal environment deliberately does not get
 
-**The admin console.** Not because it cannot be built — it can — but because nothing needs it here.
-What it offers is reading the worker fleet's metrics and changing its scaling, and in a project with
-a single owner who already has full Cloud Console access, that is the Cloud Console's job. A second,
-IAP-gated web front end onto the same controls is machinery to provision, gate and keep working for
-no gain. `admin_service` is empty and the stage skips itself **even if you tick the box**.
-
-If you ever do want it, it is a handful of owner's acts in `new-env.sh`: an IAP OAuth brand, the
-`dev-admin` identity, the custom role and its project grants, and `roles/iap.httpsResourceAccessor`
-for yourself. Change the fleet's size in the Cloud Console instead — it is the same MIG.
-
-**Outreach.** It can email real people. A sandbox created in thirty seconds by one developer is the
-last place a cold-email sender should be reachable, so it is empty unconditionally and no checkbox
-changes that.
-
-**A custom hostname.** See §2.
-
-### One thing it *does* get, which is worth knowing
-
-`new-env.sh` disables **domain restricted sharing** on your project
-(`constraints/iam.allowedPolicyMemberDomains`, scoped to that project only). The organisation
-otherwise permits IAM bindings only for principals inside the hexera.ai customer, and `allUsers` is
-not one — so the deploy would create the API service and then fail binding its public invoker:
-
-> `FAILED_PRECONDITION: One or more users named in the policy do not belong to a permitted customer`
-
-The deploy wants that binding because the browser talks to the API **directly** for client-config on
-page load and for the realtime WebSocket, neither of which passes through the console's proxy. A
-browser cannot present a Google identity token, so the service cannot be invoker-private while the
-console works. `hexera-dev` carries the same override, which is why its API has always had an
-`allUsers` binding and why nothing noticed the constraint until a project was created fresh.
-
-It is not the whole gate: `MESH_API_KEY` and `USER_TOKEN_SECRET` are both set on the service, so a
-caller past Cloud Run still needs the key and an HMAC-signed `X-User-Sig`. The relaxation is scoped
-to your project and disappears when you destroy it.
-
-**An initialised Identity Platform.** `new-env.sh` enables `identitytoolkit.googleapis.com`, which
-is *not* the same as Identity Platform being initialised — and there is no working `gcloud
-identity-platform` command to do it. Until you do it once, by hand, the console renders its sign-up
-page and **fails on submit**. It is a one-time console action per project:
-
-> https://console.cloud.google.com/customer-identity/providers?project=hexera-dev-&lt;slug&gt;
-
-Enable the Email/Password provider there. `new-env.sh` prints this reminder as it runs. You only
-need it if you intend to sign in to the console; the API and the mesh job do not care.
-
----
+- **No admin console.** What it offers — reading fleet metrics, changing scaling — is the Cloud
+  Console's job for a developer who can already see their own resources. Ticking `admin` on a
+  personal run reconciles nothing and says so.
+- **No custom hostname or certificate.** The console and API serve on their generated `run.app`
+  URLs, which work unmodified. A per-developer certificate would mean a DNS record and a 15–60
+  minute wait before the environment could be used at all.
+- **No outreach sender**, unconditionally and with no checkbox that can change it. It can email
+  real people, and a sandbox created by typing a name into a text box is the last place it should
+  be reachable.
+- **No billing export.** It accumulates in one table `hexera-prod` owns.
 
 ## 6. How it is put together, and why
 
-### The project is the isolation boundary
+### Isolation is by name, not by project
 
-The cheaper-looking design is to put `pranav-api` and `pranav-mesh` beside `dev-api` inside
-`hexera-dev`. It was rejected for three reasons:
+A personal environment used to be its own Google Cloud project, `hexera-dev-<slug>`. That gave
+real blast-radius isolation and a teardown that was one complete call — but it also meant you
+could not deploy until somebody had run a creation script on a laptop, under owner credentials,
+with a billing account, and recorded the resulting project number in a repository variable. A
+workload identity pool is addressed by project *number*, Google assigns that at creation, and the
+job that picks a deploy target holds no credential with which to look one up. So deploying to a
+slug nobody had created produced an error telling you to go and run a command somewhere else.
 
-- **Teardown.** Deleting a project is one call that removes *everything*, including the resource
-  somebody created by hand last week that no label names and no script knows about. Deleting a name
-  prefix means enumerating resource types and hoping the list is complete — and an incomplete list
-  means a bill that keeps arriving for an environment its owner believes they destroyed.
-  `destroy-env.sh` is short because of this decision.
-- **Blast radius.** Shared dev's Cloud SQL, Memorystore, private-services range and quota would be
-  shared with every personal environment.
-- **The tooling already assumes it.** `bootstrap-env.sh` defaults `DEPLOYMENT_ID` to the project
-  id, `lib.sh` refuses to mix one project's identity with another's resource names, and
-  `create-workload-identity.sh` was written to bring a blank project up to deployable — because
-  `hexera-prod` once was one.
+Inside `hexera-dev` that problem does not exist. The project, its number, its identity pool and
+its deploy identity are shared dev's; they are literals in `deploy.yml` and they already exist. An
+unknown slug is therefore not an error — it is an environment the deploy is about to create.
 
-### What is an owner's act and what is not
+The trade is the shared data tier (§3) and a teardown that is no longer complete (§8).
 
-`new-env.sh`, `seed-secrets.sh` and `destroy-env.sh` run **as you**, never as CI. They refuse to run
-as a service account rather than failing obscurely partway through. Creating a project, minting an
-identity, minting the object-store key and writing secret *values* are precisely the authorities the
-federated deploy identity is built without — and a personal environment does not relax that. Its
-deploy identity holds exactly the roster `hexera-dev` and `hexera-prod` reconcile against, which is
-what makes testing a deploy here worth anything.
+### The two extra roles the host holds
 
-### Credentials
+Every provisioning stage already creates the identity it needs — the API service, the console, the
+migration job, the queue-depth publisher, the worker fleet and the object store all call
+`iam service-accounts create`. They could never succeed, which is precisely why creation used to
+be an owner's act. `hexera-dev`'s deploy identity now holds a custom role, `hexeraDeployIdentities`,
+and `roles/storage.hmacKeyAdmin`, both gated behind `PERSONAL_ENV_HOST=1` so that running the same
+script against `hexera-prod` does not widen production.
 
-`seed-secrets.sh` fills each container once and **never overwrites an enabled version**, so
-rerunning it is always safe: `make seed-secrets SLUG=<slug>`.
+**It is deliberately not `roles/iam.serviceAccountAdmin`.** That role carries
+`iam.serviceAccounts.setIamPolicy`, which would let a compromised run grant itself
+`roles/iam.serviceAccountTokenCreator` on a runtime identity and then act as it — including the
+API's identity, which reads secrets. The custom role can create and read service accounts and
+cannot touch any account's policy, the same shape as `hexeraDeploySecrets` omitting
+`versions.access`.
 
-- **Generated** — `POSTGRES_PASSWORD`, `MESH_API_KEY`, `USER_TOKEN_SECRET`, `AUTH_SECRET`. These are
-  randomness, minted per environment, so a personal environment cannot sign a token another one
-  accepts.
-- **Copied** — `DEEPINFRA_API_KEY`, `DEEPSEEK_API_KEY`. A provider key is issued by a third party
-  and cannot be generated. They are read from `hexera-dev` under your own credentials. If they
-  cannot be read, the container is left **empty and reported** — never faked, because a faked key
-  produces an environment that provisions cleanly and fails hours later inside an agent run.
+**What it costs:** a compromised workflow run against `hexera-dev` can create service accounts and
+mint object-store keys there. It cannot grant itself any further role, impersonate an existing
+identity, or widen the provider that admitted it — `roles/owner`, `resourcemanager.projectIamAdmin`
+and `iam.serviceAccountAdmin` are absent here as everywhere.
 
-### The object store, and the one thing you must not do
+### The one identity you do not get your own of
 
-Minting the HMAC key the API and workers authenticate to Cloud Storage with needs
-`storage.hmacKeyAdmin`, which the deploy identity is deliberately not given. So in every
-environment the key is minted **once, by an owner**, and its access id — the public half — is then
-pinned as a deploy target. Shared dev and prod pin theirs as literals in `deploy.yml`.
+The queue-depth publisher runs as shared dev's `dev-queue-depth`. Writing a custom metric needs
+`roles/monitoring.metricWriter` bound at the *project* level, granting a project-level role means
+`setIamPolicy` on the project, and that is the authority the deploy identity is deliberately built
+without. A freshly created `dev-pranav-queue-depth` could never be given the one role it needs, so
+stage 13 would fail its smoke run with HTTP 403 on every personal deploy. The metric's series is
+labelled with your deployment id, so sharing the account still produces separate series.
 
-A personal environment cannot be pinned in a commit: the value does not exist until the environment
-does, and requiring a code review before anybody could create one is the whole friction this
-removes. So `new-env.sh` mints it at creation and records it in the register (§7).
+### The object store
 
-This is also why **the picker refuses to deploy an environment registered without an access id**.
-An empty one passes `validate-config.sh` — the store is not half-stated, the bucket beside it is
-set — and would then reach `create-object-storage.sh`, which reads an empty recorded id as "no
-usable key exists" and mints another. Silently, every run, until the account hits Google's five-key
-limit and the deploy stops dead.
+Your `dev-pranav-api` account gets its own HMAC key, minted by your first deploy. Nothing pins the
+access id, because it does not exist until that deploy has run. Every later deploy *adopts* it:
+the account is created by this tooling and used by nothing else, so its single ACTIVE key is
+necessarily the one whose secret sits in your `minio-secret-key-pranav` secret. That is what stops
+each run minting another key and walking the account to Google's five-key ceiling.
 
----
-
-## 7. The register
-
-One repository variable, `HEXERA_PERSONAL_ENVS`, carries one entry per environment:
-
-```
-areen=999888777666:GOOG1EAREEN...
-pranav=224734058693:GOOG1EPRANAV...
-```
-
-`new-env.sh` writes the entry, `destroy-env.sh` removes it, and the deploy workflow's target picker
-reads it.
-
-**Why a repository variable at all**, when `deploy.yml` argues at length that every deploy target
-should be a reviewed literal. A workload identity pool is addressed by project *number*, which
-Google assigns at creation and which cannot be derived from the project id — so the value does not
-exist until the environment does. The alternatives were a commit per environment created, or giving
-the target-selection job a credential so it could look up a project it has not yet been told to
-trust.
-
-**What it is not trusted for.** It carries a project number and an object-store access id, and
-neither is a credential. The project id, the registry, the service account and the component list
-are all *derived* from the validated slug. Editing this variable cannot point a deploy at a project
-some slug does not already name, and it cannot reach prod, which is tag-only.
-
-If `gh` is missing or unauthenticated when you create an environment, registration is skipped with
-a warning and the exact line to paste — everything else is already provisioned.
-
----
-
-## 8. Destroying one
+## 7. Destroying one
 
 ```bash
 make destroy-env SLUG=pranav
 ```
 
-Three refusals stand in front of the deletion, in this order:
+It deletes the Cloud Run services and jobs, the scheduler job, the instance group and its
+templates, your three buckets, your database, your HMAC key and secret, and your service accounts.
 
-1. **A literal name list** — `hexera-dev`, `hexera-prod` and `hexera` are never deletable by this
-   script. First, because every check after it reads the live project, and a check that depends on
-   an API call can be defeated by that call failing. A name match cannot.
-2. **The prefix rule** — the project must be named `hexera-dev-*`.
-3. **The label** — the project must carry `personal=true`, which `new-env.sh` stamps on every
-   project it creates. The first two only establish that a project is *not obviously something
-   else*; this is the positive evidence that it is what the script is for.
+**It never touches `hexera-dev-pg` or `hexera-dev-redis`** — they are shared, and deleting one to
+tear down a sandbox would take everybody with it. Only your database goes.
 
-Deletion is **recoverable for about 30 days** (`gcloud projects undelete`), during which the project
-serves nothing and bills nothing. After that it is permanent, and the project id cannot be reused
-until the window closes.
+**It does not claim to be complete.** When a personal environment was a project, destroying it was
+one call that removed everything including whatever somebody had made by hand. Inside a shared
+project the script can only delete what it can find, and what it can find is what carries the
+`deployment-id` label the deploy stamps. It sweeps for anything else carrying your label and
+**reports** it rather than deleting resources it cannot name, and it ends by saying that an
+unlabelled resource survives. Read that list before assuming the environment is gone.
 
----
+Unlike deleting a project, none of this has a 30-day undelete window. Your database and its
+contents go for good.
 
-## 9. When something goes wrong
+## 8. When something goes wrong
 
-| Symptom | What it means |
-| --- | --- |
-| `no personal environment named '<slug>'` | The register has no entry. The environment was never created, or was destroyed. Run `make new-env SLUG=<slug>`. |
-| `registered without an object-store access id` | The entry is `slug=number` with no `:accessId`. Re-record it by rerunning `make new-env SLUG=<slug>` — it is resumable and will not re-create what exists. |
-| `slug '<x>' is reserved` | You typed a shared environment's name. Leave the slug **empty** for shared dev; prod is reached only by a `v*` tag. |
-| A provider key is reported EMPTY | `seed-secrets.sh` could not read it from `hexera-dev`. Supply it: `DEEPINFRA_API_KEY=... make seed-secrets SLUG=<slug>`. |
-| `CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not` | The API has never been deployed here, so it has no URL for the console to proxy to. Deploy without `console` first — see section 4. |
-| `instanceGroupManagers/dev-workers was not found` | The queue signal ran before the fleet existed. Harmless — the publisher is in place; re-run with `queue` once `workers` has completed. See section 4. |
-| `could not list the HMAC keys` | You ticked `storage` on a later run. Don't — the object store is established once, at creation (§6). |
-| The console renders sign-up but submitting fails | Identity Platform is enabled but not **initialised** in your project. One-time console action — see §5. |
-| The deploy authenticates as the wrong project | The register's project number is wrong. Check it against `gcloud projects describe hexera-dev-<slug>`. |
+**`slug 'x' is not a valid environment name`** — lowercase letters, digits and hyphens; start with
+a letter; do not end with one.
 
-`new-env.sh` is **resumable**: every step tests for what it is about to create and skips it if
-present, so rerunning after any failure continues from where it stopped.
+**`slug '...' is ... characters; the most that fits is 14`** — see §2.
+
+**`slug 'dev' is reserved`** — leave the slug empty to deploy shared dev.
+
+**The console run fails at stage 2 with `HEXERA_API_BASE_URL is not`** — you ticked `console` on a
+first deploy. Run the API first; see §4.
+
+**The queue run fails with no managed instance group** — same shape: `workers` has to have run.
+
+**A deploy fails partway.** Every stage is idempotent and safe to rerun; the run continues from
+the state it finds rather than starting over.

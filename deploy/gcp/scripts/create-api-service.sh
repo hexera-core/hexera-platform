@@ -152,9 +152,7 @@ for secret_name in ${SECRET_NAMES[@]+"${SECRET_NAMES[@]}"}; do
     || warn "cannot confirm secret '${secret_name}' exists in ${GCP_PROJECT_ID} - it may be absent,
        or this identity may not be allowed to read Secret Manager. If it is absent:
          gcloud secrets create ${secret_name} --project ${GCP_PROJECT_ID} --replication-policy=automatic"
-  if gc secrets add-iam-policy-binding "${secret_name}" \
-       --member "serviceAccount:${API_SA_EMAIL}" \
-       --role roles/secretmanager.secretAccessor >/dev/null 2>&1; then
+  if grant_secret_accessor "${secret_name}" "${API_SA_EMAIL}"; then
     log "secret/${secret_name} += roles/secretmanager.secretAccessor -> ${API_SA_EMAIL}"
   else
     warn "could not set IAM on secret ${secret_name}. If the binding is already in place the
@@ -212,6 +210,12 @@ if [ -n "${REDIS_URL:-}" ]; then
     "REDIS_URL=${REDIS_URL}"
     "CELERY_BROKER_URL=${REDIS_URL}"
     "CELERY_RESULT_BACKEND=${REDIS_URL}"
+    # THE KEYSPACE THIS DEPLOYMENT OWNS. Empty for shared dev and production, which have their
+    # Redis instance to themselves; `dev-<slug>:` for a personal environment, which does not.
+    # Set unconditionally rather than only when non-empty: an API rolled with this UNSET while the
+    # workers carry a prefix would enqueue to keys no worker reads, and the jobs would sit in a
+    # queue nobody is watching rather than fail.
+    "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}"
   )
 fi
 # THE OBJECT STORE'S NON-SECRET HALF. The secret is mounted as a reference below, but a credential

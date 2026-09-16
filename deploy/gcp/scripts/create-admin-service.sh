@@ -288,9 +288,7 @@ fi
 # resource" - so including it here could only ever produce a warning that never becomes a grant.
 # Both Costs reads need it, and both are covered by the one manual command printed below.
 for secret_name in ${ADMIN_SECRET_NAMES[@]+"${ADMIN_SECRET_NAMES[@]}"}; do
-  gc secrets add-iam-policy-binding "${secret_name}" \
-    --member "serviceAccount:${ADMIN_SA_EMAIL}" \
-    --role roles/secretmanager.secretAccessor >/dev/null 2>&1 \
+  grant_secret_accessor "${secret_name}" "${ADMIN_SA_EMAIL}" \
     && log "secret/${secret_name} += secretAccessor -> ${ADMIN_SA_EMAIL}" \
     || warn "could not grant secretAccessor on ${secret_name}. If the binding exists the service
        still starts; if it does not, Cloud Run refuses the revision:

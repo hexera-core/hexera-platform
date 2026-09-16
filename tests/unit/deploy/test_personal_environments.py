@@ -12,7 +12,6 @@ import yaml
 REPO = Path(__file__).parents[3]
 WF = REPO / ".github" / "workflows" / "deploy.yml"
 SCRIPTS = REPO / "deploy" / "gcp" / "scripts"
-NEW_ENV = SCRIPTS / "new-env.sh"
 DESTROY_ENV = SCRIPTS / "destroy-env.sh"
 VALIDATE = REPO / "devtools" / "release" / "validate.sh"
 
@@ -26,10 +25,10 @@ def _picker_script() -> str:
     return _doc()["jobs"]["target"]["steps"][0]["run"]
 
 
-# The checkbox roster, so a run can be composed without restating it in every test.
+# The checkbox roster, so a run can be composed without restating it in every test. These are
+# TIERS, not stages - the picker translates them into deploy.sh's component names.
 _TICKED = {f"DISPATCH_{c.upper()}": "false" for c in
-           ("images", "data", "storage", "migrate", "queue",
-            "workers", "console", "admin", "outreach", "edge")}
+           ("app", "data", "fleet", "console", "admin", "outreach", "edge")}
 
 
 def _run_picker(tmp_path: Path, **env: str) -> tuple[int, dict[str, str], str]:
@@ -48,7 +47,6 @@ def _run_picker(tmp_path: Path, **env: str) -> tuple[int, dict[str, str], str]:
         "GITHUB_OUTPUT": str(out),
         "GITHUB_REF": "refs/heads/some-branch",
         "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "PERSONAL_ENVS": "pranav=123456789012:GOOG1EPRANAV,areen=999888777666:GOOG1EAREEN",
         **_TICKED,
         **env,
     }
@@ -91,18 +89,98 @@ def test_the_dispatch_input_budget_is_not_exceeded():
 
 
 def test_a_personal_run_derives_every_target_from_the_slug(tmp_path):
-    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    """The slug names an environment INSIDE hexera-dev. It decides the deployment id, and the
+    deployment id decides every resource name - but it cannot decide the PROJECT, which is pinned,
+    so a free-text box can never point a deploy at a project a slug does not already name."""
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     assert rc == 0, log
-    assert out["project"] == "hexera-dev-pranav"
-    assert out["deployer_sa"] == "github-deployer@hexera-dev-pranav.iam.gserviceaccount.com"
-    assert out["registry"] == "us-central1-docker.pkg.dev/hexera-dev-pranav/mesh"
-    assert out["wif_provider"].startswith("projects/123456789012/"), (
-        "the workload identity provider must be addressed by the project NUMBER registered for "
-        "this slug; anything else authenticates against the wrong project")
-    # The project is the isolation boundary, so the id inside it is the same `dev` shared dev uses.
-    assert out["deployment_id"] == "dev"
-    assert out["cloudsql_instance"] == "dev-pg"
-    assert out["redis_instance"] == "dev-redis"
+    assert out["project"] == "hexera-dev"
+    assert out["deployment_id"] == "dev-pranav"
+    assert out["deployer_sa"] == "github-deployer@hexera-dev.iam.gserviceaccount.com"
+    assert out["registry"] == "us-central1-docker.pkg.dev/hexera-dev/mesh"
+    assert out["wif_provider"].startswith("projects/224734058693/"), (
+        "the identity pool is shared dev's - it already exists, which is what lets a deploy into "
+        "an environment nobody has created resolve at all")
+    assert out["mesh_job"] == "dev-pranav-mesh"
+    assert out["api_service"] == "dev-pranav-api"
+    assert out["console_service"] == "dev-pranav-console"
+    assert out["worker_mig"] == "dev-pranav-workers"
+
+
+def test_a_personal_run_shares_the_instances_but_not_the_database(tmp_path):
+    """The expensive, slow tier is shared deliberately - it buys a first deploy in minutes rather
+    than half an hour. The database is not, because the isolation that matters is that one
+    developer's migration cannot move another's schema."""
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_DATA="true")
+    assert rc == 0, log
+    assert out["cloudsql_instance"] == "hexera-dev-pg"
+    assert out["redis_instance"] == "hexera-dev-redis"
+    assert out["migrate_db_name"] == "meshpipeline_pranav"
+    assert out["migrate_db_user"] == "meshpipeline"
+
+
+def test_no_personal_name_can_collide_with_a_shared_one(tmp_path):
+    """Asserted against shared dev's OWN output rather than a hand-written list, so a target added
+    to one branch and not the other is caught here rather than by two deployments discovering they
+    share a Cloud Run service."""
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
+    for key in ("deployment_id", "mesh_job", "mesh_bucket", "api_service", "console_service",
+                "worker_mig", "worker_env_uri", "minio_bucket", "minio_secret_key_secret",
+                "migrate_db_name"):
+        assert personal[key] != shared[key], (
+            f"{key} is the SAME value in a personal environment and in shared dev "
+            f"({personal[key]!r}) - deploying to a slug would reconcile shared dev's resource")
+        assert "pranav" in personal[key], f"{key}={personal[key]!r} carries no slug"
+
+
+def test_a_personal_run_always_reconciles_its_object_store(tmp_path):
+    """The access id is no longer pinned, so the storage stage is what supplies it in-run. An
+    images-only run without it deploys an API whose adapter dials localhost:9000 and returns 503
+    on every upload - which is what shipped on shared dev before its values were pinned."""
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    assert rc == 0, log
+    assert "storage" in out["components"].split(","), (
+        f"components={out['components']!r} omits storage, so MINIO_ACCESS_KEY reaches the API "
+        f"stage unset")
+    assert "minio_access_key" not in out, (
+        "a personal run must pin no access id - the key is minted by the first deploy and adopted "
+        "by every one after, so a pinned value here could only be a stale one")
+    assert out["minio_secret_key_secret"] == "minio-secret-key-pranav", (
+        "one secret container per slug; sharing it would have each environment overwrite the "
+        "previous one's HMAC secret")
+
+
+def test_ticking_storage_does_not_duplicate_it(tmp_path):
+    """deploy.sh validates every name in DEPLOY_COMPONENTS, and a doubled entry is a wasted stage
+    at best. The forced selection has to be idempotent against the checkbox."""
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
+                            DISPATCH_APP="true")
+    assert out["components"].split(",").count("storage") == 1, out["components"]
+
+
+def test_a_slug_that_cannot_name_a_service_account_is_refused(tmp_path):
+    """`dev-` + slug + `-queue-depth` must fit Google's 30-character service account id. Caught
+    here rather than eleven stages into a deploy, where it arrives as a Google error naming the
+    field and not the cause - after Cloud SQL and the object store are already reconciled."""
+    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="a" * 15, DISPATCH_APP="true")
+    assert rc != 0, "a 15-character slug was accepted"
+    assert "14" in log and "30" in log, log
+    rc_ok, _, log_ok = _run_picker(tmp_path, DISPATCH_SLUG="a" * 14, DISPATCH_APP="true")
+    assert rc_ok == 0, f"14 characters is the documented maximum and was refused: {log_ok}"
+
+
+def test_the_celery_prefix_isolates_a_personal_run_and_only_that(tmp_path):
+    """One Memorystore instance serves shared dev and every personal environment, and Celery's
+    queue names are literals - so the prefix is what stops two environments consuming each other's
+    tasks. Shared dev must keep an EMPTY prefix: its queues are the ones that already exist."""
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
+    assert personal["redis_key_prefix"] == "dev-pranav:"
+    assert shared.get("redis_key_prefix", "") == "", (
+        "a non-empty prefix on shared dev would move its queues to new Redis keys on the next "
+        "roll and strand whatever was already enqueued under the old ones")
+
 
 
 def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
@@ -110,9 +188,13 @@ def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
     the provision job, and an output the picker never emitted arrives as the EMPTY STRING rather
     than as an error - so a forgotten key is a deploy that runs with a target unset and discovers
     it several stages in, or does not discover it at all."""
-    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
-    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_IMAGES="true")
-    missing = set(shared) - set(personal)
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
+    _, shared, _ = _run_picker(tmp_path, DISPATCH_SLUG="", DISPATCH_APP="true")
+    # minio_access_key is the ONE deliberate omission, and it is deliberate in one direction only:
+    # shared dev's key was minted by an owner years ago and is pinned, while a personal
+    # environment's is minted by its own first deploy and adopted thereafter, so there is nothing
+    # to state here. Every OTHER shared-dev target must have a personal counterpart.
+    missing = set(shared) - set(personal) - {"minio_access_key"}
     assert not missing, (
         f"the personal branch emits no value for {sorted(missing)}, which the shared-dev branch "
         f"does. Each one reaches deploy.sh as an empty variable rather than as a failure.")
@@ -122,7 +204,7 @@ def test_a_personal_run_emits_every_target_the_shared_one_does(tmp_path):
 def test_a_personal_run_refuses_to_name_a_shared_environment(tmp_path, slug):
     """hexera-dev-prod is not hexera-prod, and that is exactly the danger: it provisions cleanly
     under a name that reads like production."""
-    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_IMAGES="true")
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_APP="true")
     assert rc != 0, f"slug '{slug}' was accepted and resolved to {out.get('project')!r}"
     assert "reserved" in log
 
@@ -139,24 +221,10 @@ def test_a_personal_run_refuses_to_name_a_shared_environment(tmp_path, slug):
 def test_a_personal_run_refuses_a_malformed_slug(tmp_path, slug):
     """The slug is the only free-text deploy target on this workflow. It is validated before it is
     interpolated into a project id, a registry path or a service-account email."""
-    rc, out, _ = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_IMAGES="true")
+    rc, out, _ = _run_picker(tmp_path, DISPATCH_SLUG=slug, DISPATCH_APP="true")
     assert rc != 0, f"slug {slug!r} was accepted and resolved to {out.get('project')!r}"
 
 
-def test_an_unregistered_slug_cannot_deploy(tmp_path):
-    """A slug resolves only if a project number was registered for it, so a typo names nothing
-    rather than naming a project that happens to exist."""
-    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="nobody", DISPATCH_IMAGES="true")
-    assert rc != 0
-    assert "HEXERA_PERSONAL_ENVS" in log
-
-
-def test_a_non_numeric_project_number_is_refused(tmp_path):
-    """The register is the one repository variable this workflow trusts, and it is trusted for
-    NUMBERS only - so a project id smuggled into it does not become a deploy target."""
-    rc, _, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true",
-                           PERSONAL_ENVS="pranav=hexera-prod")
-    assert rc != 0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -171,7 +239,7 @@ def test_a_personal_run_never_provisions_the_admin_console(tmp_path):
     IAP-gated front end onto the same controls is machinery to keep working for no gain, so the
     name is empty and the stage skips itself even when the box is ticked."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
-                            DISPATCH_IMAGES="true", DISPATCH_ADMIN="true")
+                            DISPATCH_APP="true", DISPATCH_ADMIN="true")
     assert out["admin_service"] == ""
     assert out["admin_domain"] == ""
 
@@ -180,7 +248,7 @@ def test_a_personal_run_never_enables_outreach(tmp_path):
     """Outreach can email real people. A sandbox created in thirty seconds is the last place it
     should be reachable, and no checkbox may change that."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
-                            DISPATCH_IMAGES="true", DISPATCH_OUTREACH="true")
+                            DISPATCH_APP="true", DISPATCH_OUTREACH="true")
     assert out["outreach_enabled"] == ""
     assert out["outreach_worker_job"] == ""
 
@@ -190,25 +258,17 @@ def test_a_personal_run_states_a_complete_object_store(tmp_path):
     object-store block only when MINIO_ENDPOINT is set, and a selection that reconciles `images`
     without `storage` supplies none of these - so the API rolls with no store, the adapter falls
     back to localhost:9000, and every upload returns 503 "Storage is unavailable"."""
-    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     for key in ("minio_endpoint", "minio_region", "minio_secure",
-                "minio_bucket", "minio_access_key", "minio_secret_key_secret"):
+                "minio_bucket", "minio_secret_key_secret"):
         assert out.get(key), f"a personal environment states no {key}"
     assert out["minio_secure"] == "true", (
         "Google's S3-interoperability endpoint refuses plain HTTP")
-    assert out["minio_access_key"] == "GOOG1EPRANAV", (
-        "the access id must come from the register - an empty one makes every deploy mint a NEW "
-        "HMAC key until the account hits Google's five-key limit")
+    # THE ACCESS ID IS THE ONE FIELD NOT PINNED, and its absence is covered by
+    # test_a_personal_run_always_reconciles_its_object_store rather than left implicit: the key is
+    # minted by the first deploy and adopted by every one after, so it does not exist at the
+    # moment this picker runs and a value here could only ever be a stale one.
 
-
-def test_an_environment_registered_without_an_access_id_is_refused(tmp_path):
-    """An empty access id passes validate-config.sh (the store is not half-stated - the bucket is
-    set), so nothing downstream would catch it. It would instead re-mint an HMAC key on every run
-    and break on the fifth, for reasons nothing connects back to the register."""
-    rc, _, log = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true",
-                             PERSONAL_ENVS="pranav=123456789012")
-    assert rc != 0, "a register entry with no access id was accepted"
-    assert "access id" in log
 
 
 # ---------------------------------------------------------------------------------------------
@@ -222,7 +282,7 @@ def test_an_environment_registered_without_an_access_id_is_refused(tmp_path):
 ])
 def test_the_existing_targets_are_untouched(tmp_path, ref, event, expected_project):
     rc, out, log = _run_picker(tmp_path, GITHUB_REF=ref, GITHUB_EVENT_NAME=event,
-                               DISPATCH_SLUG="", DISPATCH_IMAGES="true")
+                               DISPATCH_SLUG="", DISPATCH_APP="true")
     assert rc == 0, log
     assert out["project"] == expected_project
 
@@ -241,91 +301,94 @@ def test_a_tag_cannot_be_redirected_by_a_slug(tmp_path):
 # 5. the lifecycle scripts
 
 
-def test_destroy_refuses_the_shared_projects():
-    text = DESTROY_ENV.read_text(encoding="utf-8")
-    assert "hexera-dev|hexera-prod|hexera)" in text, (
-        "destroy-env.sh must refuse the shared projects by NAME, before any check that depends on "
-        "an API call - a check that can fail open is not a check")
 
 
-def test_destroy_requires_positive_evidence_that_the_project_is_personal():
+def test_destroy_refuses_a_reserved_slug():
+    """`dev` typed by somebody who believes they are naming shared dev is the mistake worth
+    refusing outright - it would otherwise build the prefix dev-dev, which is not shared dev but
+    is one keystroke away from somebody thinking it is."""
     text = DESTROY_ENV.read_text(encoding="utf-8")
-    assert "labels.personal" in text, (
-        "destroy-env.sh must require the personal=true label new-env.sh stamps; a name prefix "
-        "alone only establishes that a project is not obviously something else")
+    assert "dev|prod|production|shared|main|staging" in text, (
+        "the reserved slugs are not refused by name, before any check that depends on an API call "
+        "- a check that can fail open is not a check")
+
+
+def test_destroy_never_deletes_the_shared_data_tier():
+    """The Cloud SQL and Memorystore instances are shared with shared dev and with every other
+    personal environment. Deleting one to tear down a sandbox takes everybody with it. Only the
+    slug's own DATABASE goes."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert "sql instances delete" not in text, "destroy deletes the shared Cloud SQL INSTANCE"
+    assert "redis instances delete" not in text, "destroy deletes the shared Memorystore instance"
+    assert "sql databases delete" in text, "the slug's own database is never removed"
+
+
+def test_destroy_never_deletes_a_project():
+    """It runs inside a project it shares with shared dev. Deleting that project is the one
+    mutation this script must never make, however it is invoked."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert "projects delete" not in text
+
+
+def test_destroy_reports_what_it_could_not_reach():
+    """Deleting by label cannot cover a resource somebody created by hand that carries no label.
+    The honest answer is to print the gap at the moment somebody is about to stop paying attention
+    to the environment, not to claim completeness the script does not have."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert "NOT DELETED" in text, "a failed or skipped deletion is never reported"
+    assert "deployment-id" in text, "teardown does not select on the label the deploy stamps"
+    assert "WITHOUT a deployment-id label" in text, (
+        "the run never admits that an unlabelled resource survives it")
+
+
+def test_destroy_deactivates_a_key_before_deleting_its_account():
+    """An HMAC key must be deactivated before it can be deleted, and a service account cannot be
+    deleted while it still owns one - so deleting the identity first strands a key nothing can
+    name, and it keeps billing."""
+    text = DESTROY_ENV.read_text(encoding="utf-8")
+    assert text.index("hmac update") < text.index("service-accounts delete")
+    assert "--deactivate" in text
 
 
 def test_the_two_reserved_slug_lists_agree():
-    """new-env.sh refuses reserved slugs at creation and the workflow refuses them at deploy. Two
-    lists that drift mean a name that can be created but not deployed, or worse."""
+    """The workflow refuses reserved slugs at deploy and destroy-env.sh refuses them at teardown.
+    Two lists that drift mean a name that can be created but not destroyed, or worse - a teardown
+    that accepts a name the deploy treats as shared."""
     reserved = "dev|prod|production|shared|main|staging"
-    assert reserved in NEW_ENV.read_text(encoding="utf-8")
     assert reserved in WF.read_text(encoding="utf-8")
+    assert reserved in DESTROY_ENV.read_text(encoding="utf-8")
 
 
-def test_creating_an_environment_is_not_something_ci_can_do():
-    """Creating a project, minting an identity and seeding secret VALUES are owner's acts. The
-    federated deploy identity is deliberately built without any of them, and new-env.sh refuses
-    to run as a service account rather than failing obscurely partway through."""
-    text = NEW_ENV.read_text(encoding="utf-8")
-    # Asserted on the REFUSAL, not on the service-account domain that appears in it. Testing for
-    # the domain read as a URL-sanitisation check to CodeQL (py/incomplete-url-substring-
-    # sanitization, high) - and it was the weaker assertion anyway: the domain is an incidental
-    # token that appears elsewhere in this script, whereas this message only exists on the path
-    # that turns a service-account caller away.
-    assert "this is running as the service account" in text, (
-        "new-env.sh must refuse to run as a service account - creating a project, minting an "
-        "identity and seeding secret values are authorities the deploy identity is built without")
-    assert "owner's acts" in text
 
 
-def test_the_project_display_name_uses_only_characters_google_accepts():
-    """A project's DISPLAY NAME has different rules from its id: letters, digits, single quotes,
-    hyphens, spaces and exclamation points, 4-30 characters, and nothing else. Parentheses are
-    rejected - which cost the first real run of this script, failing with `INVALID_ARGUMENT: field
-    [display_name] has issue`, an error that names the field but never the character.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    name = re.search(r'--name "([^"]*)"', text)
-    assert name, "new-env.sh passes no --name to `gcloud projects create`"
-    literal = name.group(1).replace("${SLUG}", "")
-    assert not set(literal) & set("()[]{}<>/\\:;,.?*&%$#@+=|~`\"_"), (
-        f"the project display name {name.group(1)!r} carries punctuation Google rejects")
-    # 11 for "Hexera dev " plus a slug of at most 19 is exactly the 30 the field allows.
-    assert len(literal) + 19 <= 30, (
-        f"display name prefix {literal!r} plus a maximum-length slug exceeds the 30-character limit")
 
+def test_the_deployer_is_widened_only_on_a_personal_environment_host():
+    """The host project's deploy identity creates the environment it deploys to, which is the
+    whole point - so it holds two roles no other project's deployer does. Everywhere else,
+    including hexera-prod, the roster must be exactly what it was.
 
-def test_creation_establishes_what_the_first_deploy_cannot():
-    """Two things must exist BEFORE the first deploy, and neither is created early enough by
-    deploy.sh to help it.
-
-    The Artifact Registry repository is created at stage 6, inside the `provision` job - a whole
-    job AFTER `release` has already tried to `docker push` into it. And the object-store HMAC key
-    needs an authority the deploy identity is deliberately not given. Both are harmless in an
-    environment that has deployed before, which is why neither shows up until the first personal
-    environment is created.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "create-artifact-registry.sh" in text, (
-        "new-env.sh does not create the image repository, so the FIRST deploy of every personal "
-        "environment fails when release-publish pushes into a repository nothing created")
-    assert "create-object-storage.sh" in text
-
-
-def test_a_personal_environment_widens_no_deploy_identity():
-    """A personal environment is a REHEARSAL of a real deploy, not a more permissive one. Its
-    deploy identity holds exactly the roster hexera-dev and hexera-prod reconcile against, so
-    anything a deploy cannot do here it could not do in prod either - which is what makes testing
-    one here worth anything. The owner-only acts (minting the object-store key, seeding secret
-    values) stay owner-only and happen at creation."""
+    This is the test that changed when personal environments stopped being projects. It used to
+    assert that no deploy identity was ever widened; now it asserts that the widening is gated,
+    because an ungated one would reach hexera-prod as a side effect of a development change."""
     wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
-    assert "roles/storage.hmacKeyAdmin" not in wif, (
-        "the deploy identity must not be granted HMAC-key authority; the key is minted once by an "
-        "owner in new-env.sh and its access id is pinned thereafter")
-    assert "create-object-storage.sh" in NEW_ENV.read_text(encoding="utf-8"), (
-        "new-env.sh must establish the object store as the owner, or the first deploy has no "
-        "access id to pin and mints a new key on every run")
+    assert "PERSONAL_ENV_HOST" in wif, (
+        "the two extra roles are granted unconditionally, so running this script against "
+        "hexera-prod would widen production's deploy identity")
+    for role in ("roles/iam.serviceAccountAdmin", "roles/storage.hmacKeyAdmin"):
+        assert role in wif, (
+            f"{role} is absent, so no stage can create the identity or the object-store key its "
+            f"slug needs and a first deploy cannot build an environment")
+    # The gate must come BEFORE the roles, or they are in the base roster and the flag is decoration.
+    assert wif.index("PERSONAL_ENV_HOST") < wif.index("roles/iam.serviceAccountAdmin")
+
+
+def test_the_base_roster_still_withholds_the_roles_that_would_end_containment():
+    """Whatever a host may do, no deployer anywhere may grant itself more or widen the provider
+    that admitted it. These two absences are what keep a compromised run contained."""
+    wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
+    roster = wif.split("DEPLOYER_ROLES=(", 1)[1].split("\n)", 1)[0]
+    for forbidden in ("roles/owner", "roles/resourcemanager.projectIamAdmin"):
+        assert forbidden not in roster, f"{forbidden} is in the roster"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -382,36 +445,6 @@ def test_bootstrap_lets_an_explicit_project_outrank_the_ambient_one():
         "lib.sh's load_env applies")
 
 
-def test_new_env_hands_bootstrap_a_path_not_an_empty_file():
-    """bootstrap-env.sh branches on whether its target EXISTS. `mktemp` creates the file, so an
-    empty-but-present one sends it down the "reuse what is already configured" path, where it
-    sources nothing and discovers nothing."""
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "mktemp -d" in text, (
-        "new-env.sh must use a temporary DIRECTORY; `mktemp` creates a file, and a present-but-"
-        "empty env file makes bootstrap-env.sh reuse a configuration that describes no project")
-    assert 'OBJECT_STORE_ENV="${OBJECT_STORE_DIR}/generated.env"' in text
-
-
-def test_rerunning_creation_reuses_the_object_store_key():
-    """The first rerun of `make new-env` minted a SECOND HMAC key, walking the account toward
-    Google's limit of five - past which the storage stage stops dead and an owner has to retire
-    keys by hand.
-
-    create-object-storage.sh decides "reuse or mint" from the MINIO_ACCESS_KEY recorded in the
-    deployment env, and new-env.sh deliberately hands it a FRESH temporary env each run (so it
-    never touches the developer's own generated.env). A fresh env records nothing, so every rerun
-    looked like a first run. The register is the only memory this script has of a key it already
-    minted, so it seeds the recorded id from there before the stage runs.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "register_entry" in text and "MINIO_ACCESS_KEY=%s" in text, (
-        "new-env.sh must seed the recorded access id from the register before running the object-"
-        "store stage, or every rerun mints another HMAC key")
-    # A shell function must be DEFINED before the line that calls it runs, not merely somewhere in
-    # the file - getting this wrong failed with `register_entry: command not found` mid-run.
-    assert text.index("register_entry()") < text.index("$(register_entry)"), (
-        "register_entry is defined after the line that calls it")
 
 
 def test_the_generated_env_heredoc_does_not_execute_its_own_prose():
@@ -447,65 +480,13 @@ def test_a_personal_run_states_every_target_an_unattended_deploy_requires(tmp_pa
     # deploy.yml maps each picker output into the provision job's environment under these names.
     env_to_output = {"GCP_PROJECT_ID": "project", "GCP_REGION": "region",
                      "CLOUDRUN_MESH_JOB": "mesh_job", "GCP_MESH_BUCKET": "mesh_bucket"}
-    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_IMAGES="true")
+    _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_APP="true")
     for var in required:
         key = env_to_output.get(var)
         assert key, f"deploy.sh now requires {var}, which this test does not know how to map"
         assert out.get(key), (
             f"a personal run states no {key}, so deploy.sh refuses to start: it requires {var}")
 
-
-def test_the_documented_first_deploy_does_not_select_the_console():
-    """A console is given the origin of the API it proxies to, that origin is the API service's
-    Cloud Run URL, and Google assigns one only once the service exists - so on an environment
-    where the API has never been deployed, validate-config.sh refuses at stage 2:
-
-        CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
-
-    That gate is correct and deliberate (see its own comment about stage 14 being twelve stages
-    away). What was wrong was the instructions: both this script's closing message and the guide
-    told people to tick `console` on the very first run, which cannot work. The first deploy is
-    two runs.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    first = text[text.index("DEPLOY INTO IT"):]
-    first_cmd = first[:first.index("# 2.")]
-    assert "-f console=true" not in first_cmd, (
-        "new-env.sh tells the operator to deploy the console on the first run, which stage 2 "
-        "refuses - the API has no URL yet")
-    # Same shape of problem: stage 13 attaches the autoscaling policy to the worker fleet's
-    # managed instance group, and stage 17 is what creates that group.
-    assert "-f queue=true" not in first_cmd, (
-        "new-env.sh selects the queue signal on the first run, but its autoscaling policy has no "
-        "managed instance group to attach to until the workers stage has created one")
-    assert "-f workers=true" in first_cmd, (
-        "the first run must create the fleet, or the second run's queue signal has nothing to "
-        "attach to either")
-    assert "# 2." in first and "console=true" in first and "queue=true" in first, (
-        "new-env.sh must still show the second run that deploys the console and the queue signal")
-
-
-def test_the_runtime_identities_are_created_by_an_owner_not_by_the_deploy():
-    """create-workload-identity.sh withholds iam.serviceAccountAdmin so a compromised workflow run
-    cannot mint an identity. Every stage that needs a runtime identity therefore expects to FIND
-    one - in the shared environments they were created by hand long before this was scripted,
-    which is why nothing noticed until a genuinely empty project ran preflight:
-
-        FAIL permission MISSING: iam.serviceAccounts.create
-
-    preflight.sh requires that permission only when the mesh identity's disposition is `created`,
-    so creating the identities up front is what makes a personal environment pass under the SAME
-    roster prod deploys with - as opposed to widening the deploy identity to match.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "iam service-accounts create" in text, (
-        "new-env.sh creates no runtime identities, so the first deploy fails preflight on "
-        "iam.serviceAccounts.create - a permission the deploy identity must not be given")
-    for role in ("-mesh", "-api", "-console", "-migrate", "-queue-depth", "-workers"):
-        assert f'"${{DEPLOYMENT_ID}}{role}' in text, f"no runtime identity created for {role}"
-    wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
-    assert "iam.serviceAccountAdmin" not in wif.split("DEPLOYER_ROLES=(")[1].split(")")[0], (
-        "the deploy identity must not be granted authority to mint identities")
 
 
 def test_the_deployer_can_schedule_the_queue_depth_publisher():
@@ -571,22 +552,6 @@ def test_the_database_password_is_left_to_the_data_tier():
         "the container must still exist so the data tier can add a version to it")
 
 
-def test_the_queue_depth_publisher_can_write_its_metric():
-    """create-queue-depth-publisher.sh attempts this grant and says plainly what happens when it
-    cannot: "project-level IAM is exactly what the deployer was deliberately not given ... the
-    SMOKE RUN below is the verdict."
-
-    That verdict arrived as a Cloud Run job failing with HTTP 403 from the Monitoring API,
-    thirteen stages into a deploy, after Cloud SQL and Memorystore had been built. In the shared
-    environments an owner granted it by hand years before any of this was scripted; a new project
-    has nobody to have done that.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "roles/monitoring.metricWriter" in text, (
-        "new-env.sh does not grant the queue-depth publisher permission to write its metric, so "
-        "the first deploy selecting `queue` dies at stage 13 with HTTP 403")
-    assert "-queue-depth@" in text
-
 
 def test_the_data_tier_exchanges_custom_routes_so_memorystore_is_reachable():
     """Without this, Memorystore is unreachable from Cloud Run and the symptom is misleading:
@@ -649,24 +614,405 @@ def test_the_autoscaler_attachment_is_deferred_when_there_is_no_fleet():
         "that the group exists, so a first deploy fails at stage 13")
 
 
-def test_domain_restricted_sharing_is_relaxed_for_the_project_and_said_out_loud():
-    """The organisation permits IAM bindings only for principals inside its customer, so binding
-    `allUsers` is refused and the deploy creates the API service then fails on its invoker policy.
 
-    deploy.yml sets API_ALLOW_UNAUTHENTICATED=1 for development because the browser talks to the
-    API directly - client-config on page load and the realtime WebSocket, neither through the
-    console's proxy - so the service cannot be invoker-private while the console works. hexera-dev
-    carries exactly this project-scoped override already, which is why nothing noticed until a
-    project was created fresh.
+# ---------------------------------------------------------------------------------------------
+# 9. one Redis, many environments
 
-    This is the one genuinely security-relevant thing new-env.sh does, so it must be explained
-    where it happens rather than applied quietly.
+
+def test_the_redis_key_prefix_defaults_to_empty():
+    """An empty prefix is exactly today's behaviour, which is what lets shared dev, prod and the
+    local compose stack take this change with no migration of any kind."""
+    import meshpipeline.settings.providers as provcfg
+    assert provcfg.REDIS_KEY_PREFIX == "", (
+        "a non-empty default would move every existing deployment's queues to new Redis keys on "
+        "the next roll, stranding whatever was already enqueued under the old ones")
+
+
+def test_the_celery_app_isolates_broker_and_results_by_prefix():
+    """Personal environments share one Memorystore instance and Celery's queue names are
+    hardcoded literals (task_routes below), so without a prefix two of them consume each other's
+    tasks - a developer's job running against somebody else's worker fleet."""
+    from meshpipeline.adapters.pipeline_execution.celery_app import celery_app
+    for which, opts in (("broker", celery_app.conf.broker_transport_options),
+                        ("result backend", celery_app.conf.result_backend_transport_options)):
+        assert "global_keyprefix" in (opts or {}), (
+            f"the {which} carries no global_keyprefix; prefixing only one of the two leaves the "
+            f"other colliding in the shared keyspace")
+
+
+def test_an_unrecorded_object_store_key_is_adopted_rather_than_reminted():
+    """A personal environment pins no access id - the value does not exist until its first deploy
+    - so every later run arrives with nothing recorded. Without adoption that reads as "no usable
+    key exists" and mints another, every run, until Google's five-key ceiling stops the deploy
+    dead. Carrying the id in a repository variable is what used to prevent this."""
+    body = (SCRIPTS / "create-object-storage.sh").read_text(encoding="utf-8")
+    assert "ADOPTED" in body, "nothing adopts an existing key, so a personal run re-mints forever"
+    assert re.search(r'\$\{ACTIVE_COUNT\}"?\s*\]?\s*-eq\s+1|-eq\s+1\s*\]', body), (
+        "adoption must require EXACTLY ONE active key: GCS will not say which key a stored secret "
+        "belongs to, so adopting one of several is a coin flip whose losing side is a store that "
+        "authenticates as nobody")
+
+
+def test_adoption_cannot_follow_a_listing_that_could_not_be_read():
+    """An unreadable key listing is INCONCLUSIVE, not proof of absence - the script says so at
+    length. Adoption must sit after that refusal, or a missing storage.hmacKeys.list permission
+    would present as a key that does not exist."""
+    body = (SCRIPTS / "create-object-storage.sh").read_text(encoding="utf-8")
+    assert body.index('HMAC_LIST_READ_OK}" = "0"') < body.index("ADOPTED"), (
+        "the adopt branch precedes the unreadable-listing refusal")
+
+
+def test_the_worker_settings_object_is_published_when_nothing_has():
+    """new-env.sh used to publish .env.example into the transfer bucket at creation time. With
+    creation gone, a first personal deploy would hand create-worker-fleet.sh a WORKER_ENV_URI
+    naming an object nobody had written, and the `workers` component would fail on an environment
+    that otherwise looks finished. The fleet publishes it if it is missing."""
+    body = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
+    assert ".env.example" in body, "nothing publishes the worker settings object any more"
+    assert "storage cp" in body, "the object is never written"
+    assert "buckets create" in body, (
+        "a first deploy has no transfer bucket either - publishing into one that does not exist "
+        "fails exactly where creating the fleet would have")
+
+
+def test_the_depth_publisher_reads_the_key_the_workers_write():
+    """Celery stores a queue as a Redis list under <global_keyprefix><queue name>, and
+    queue_depth_publisher.py does a bare LLEN of whatever it is handed. Handed the unprefixed name
+    in a prefixed environment it reads a key nobody writes: depth publishes as 0 forever and the
+    autoscaler never adds an instance, however long the real queue gets. Nothing errors."""
+    body = (SCRIPTS / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
+    assert "REDIS_KEY_PREFIX" in body, "the publisher is pointed at an unprefixed key"
+    assert "simulation_jobs" in body
+
+
+def test_an_unprefixed_environment_still_names_the_bare_queue():
+    """Shared dev and production set no prefix, and their queues are the ones that already exist -
+    so the default has to collapse to exactly `simulation_jobs`."""
+    body = (SCRIPTS / "create-queue-depth-publisher.sh").read_text(encoding="utf-8")
+    line = next(ln for ln in body.splitlines() if ln.startswith("QUEUE_NAME="))
+    out = subprocess.run(["bash", "-c", f"{line}\nprintf '%s' \"$QUEUE_NAME\""],
+                         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+    assert out.stdout == "simulation_jobs", out.stdout
+    out2 = subprocess.run(["bash", "-c", f"{line}\nprintf '%s' \"$QUEUE_NAME\""],
+                          capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin", "REDIS_KEY_PREFIX": "dev-pranav:"})
+    assert out2.stdout == "dev-pranav:simulation_jobs", out2.stdout
+
+
+def test_creating_an_environment_needs_no_second_command():
+    """The whole point of the change: a deploy into an environment that does not exist creates it.
+    There is no script to run first, no owner credential to hold, and nothing to register - so
+    there must be no `new-env` left advertising otherwise."""
+    assert not (SCRIPTS / "new-env.sh").exists(), (
+        "new-env.sh is back; an environment created out-of-band would now be created in the wrong "
+        "shape - a project rather than a prefix")
+    root = (REPO / "Makefile").read_text(encoding="utf-8")
+    assert "new-env" not in root, "the retired target is still advertised in the Makefile"
+    assert "destroy-env" in root, "teardown is still a command and must stay reachable"
+
+
+def test_nothing_reads_the_retired_register():
+    """HEXERA_PERSONAL_ENVS resolved a slug to a project number. Nothing resolves a slug that way
+    any more, and a leftover read would be a deploy target nobody reviews."""
+    assert "HEXERA_PERSONAL_ENVS" not in WF.read_text(encoding="utf-8")
+    assert "HEXERA_PERSONAL_ENVS" not in DESTROY_ENV.read_text(encoding="utf-8")
+
+
+def test_the_queue_depth_publisher_can_write_its_metric(tmp_path):
+    """Writing a custom metric needs roles/monitoring.metricWriter bound at the PROJECT level, and
+    granting a project-level role means setIamPolicy on the project - the one authority the deploy
+    identity is deliberately built without, because a run that can grant is a run that can grant
+    itself anything.
+
+    So a freshly created dev-<slug>-queue-depth account could never be given the role it needs,
+    and stage 13 would fail its smoke run with HTTP 403 on every personal deploy. It reuses the
+    account that already holds the grant. The metric's series is labelled with the deployment's
+    own namespace, so two environments publishing through one account stay two series."""
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_FLEET="true")
+    assert personal["queue_depth_service_account"] == "dev-queue-depth", (
+        "a personal environment must reuse the identity that already holds metricWriter; its own "
+        "would be created without the role and nothing in the deploy could grant it")
+    wf = WF.read_text(encoding="utf-8")
+    assert "QUEUE_DEPTH_SERVICE_ACCOUNT: ${{ needs.target.outputs.queue_depth_service_account }}" in wf, (
+        "the picker emits the identity but the provision job never passes it, so the script falls "
+        "back to <deployment-id>-queue-depth and the 403 returns")
+
+
+def test_the_celery_prefix_reaches_the_scripts_that_need_it():
+    """A picker output that no job maps to an environment variable does nothing at all. Both
+    consumers matter: the API and workers read the prefix to find their queues, and the depth
+    publisher reads it to measure the same key."""
+    wf = WF.read_text(encoding="utf-8")
+    assert "REDIS_KEY_PREFIX: ${{ needs.target.outputs.redis_key_prefix }}" in wf, (
+        "the prefix is emitted and never consumed, so every environment would share one keyspace "
+        "while the workflow looks as though it had separated them")
+
+
+def test_the_first_deploy_is_documented_as_two_runs():
+    """A console is given the origin of the API it proxies to, that origin is the API service's
+    Cloud Run URL, and Google assigns one only once the service exists - so on an environment
+    where the API has never been deployed, validate-config.sh refuses at stage 2:
+
+        CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
+
+    The gate is correct. What was wrong, and stayed wrong long enough to be worth a test, was the
+    instructions telling people to tick `console` on the very first run."""
+    doc = (REPO / "docs" / "deployment" / "personal-environments.md").read_text(encoding="utf-8")
+    # The FIRST of the two documented runs: from the first `gh workflow run` to the second.
+    runs = doc.split("gh workflow run")
+    assert len(runs) >= 3, "the guide no longer shows two runs for a first deploy"
+    first_cmd = runs[1]
+    assert "-f console=true" not in first_cmd, (
+        "the guide tells the operator to deploy the console on the first run, which stage 2 "
+        "refuses - the API has no URL yet")
+    assert "-f fleet=true" in first_cmd, (
+        "the first run must create the fleet, or the second run has no instance group for the "
+        "autoscaler to attach to")
+    assert "-f app=true" in first_cmd and "-f data=true" in first_cmd, (
+        "the first run must ship the code and build the data tier it runs against")
+
+
+def test_the_celery_prefix_reaches_the_running_containers():
+    """Wiring the prefix into the deploy does nothing on its own - the API and the workers read it
+    at runtime. An API rolled WITHOUT the prefix while the workers carry one enqueues to keys no
+    worker reads, so jobs sit in a queue nobody is watching rather than failing."""
+    api = (SCRIPTS / "create-api-service.sh").read_text(encoding="utf-8")
+    assert "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}" in api, (
+        "the API container never receives the prefix, so it would use the shared keyspace")
+    fleet = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
+    assert "redis-key-prefix=" in fleet, "the fleet's metadata never carries the prefix"
+    startup = (REPO / "deploy" / "gcp" / "worker" / "startup.sh").read_text(encoding="utf-8")
+    assert "redis-key-prefix" in startup and "REDIS_KEY_PREFIX=" in startup, (
+        "startup.sh does not turn the metadata key into the worker's environment, so the fleet "
+        "boots with an empty prefix however the template was written")
+
+
+def test_the_prefixed_queue_name_is_composed_where_the_file_cannot_overwrite_it():
+    """lib.sh's load_env sources the generated env with `set -a`, so the FILE wins over the
+    environment. bootstrap-env.sh writes QUEUE_NAME, which means a default computed in
+    create-queue-depth-publisher.sh is overwritten by the file's value and never takes effect -
+    the publisher would go on reading the unprefixed key, publish 0 forever, and the autoscaler
+    would never add an instance. So the prefix has to be applied where the file is WRITTEN."""
+    boot = (SCRIPTS / "bootstrap-env.sh").read_text(encoding="utf-8")
+    assert "QUEUE_NAME=${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}" in boot, (
+        "the generated env writes an unprefixed QUEUE_NAME, which load_env then makes win over "
+        "anything the publisher computes")
+    assert "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}" in boot, (
+        "the prefix itself is not carried in the generated env, so scripts that load_env lose it")
+
+
+def test_the_generated_queue_name_collapses_to_the_bare_queue_without_a_prefix():
+    """Shared dev and production set no prefix and their queues are the ones that already exist,
+    so the composed value has to be exactly `simulation_jobs` for them."""
+    expr = 'echo "${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}"'
+    bare = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin"})
+    assert bare.stdout.strip() == "simulation_jobs", bare.stdout
+    pref = subprocess.run(["bash", "-c", expr], capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin", "REDIS_KEY_PREFIX": "dev-pranav:"})
+    assert pref.stdout.strip() == "dev-pranav:simulation_jobs", pref.stdout
+
+
+# ---------------------------------------------------------------------------------------------
+# 10. the checkboxes are tiers; DEPLOY_COMPONENTS is stages
+
+_KNOWN = "images data storage migrate queue workers console admin outreach edge".split()
+
+
+def _components(tmp_path, **boxes) -> list[str]:
+    rc, out, log = _run_picker(tmp_path, DISPATCH_SLUG="", **{
+        f"DISPATCH_{b.upper()}": "true" for b in boxes})
+    assert rc == 0, log
+    return out["components"].split(",") if out["components"] else []
+
+
+def test_the_app_tier_ships_the_code_and_the_schema_it_expects(tmp_path):
+    """One box for the things that move together when you ship. Shipping a new image against last
+    week's schema was previously two boxes and a piece of knowledge about which."""
+    assert _components(tmp_path, app=True) == ["images", "storage", "migrate"]
+
+
+def test_the_data_tier_carries_the_schema_onto_the_database_it_creates(tmp_path):
+    """A database created without its schema is an empty one, and nothing says so until something
+    queries it."""
+    assert _components(tmp_path, data=True) == ["data", "migrate"]
+
+
+def test_the_fleet_tier_carries_the_signal_that_sizes_it(tmp_path):
+    """A worker group without the queue-depth publisher never scales - it sits at its floor
+    forever, which on a dev environment's floor of zero means nothing runs at all.
+
+    The order matters and is stage order, not preference: stage 13 establishes the publisher and
+    stage 18 creates the group."""
+    assert _components(tmp_path, fleet=True) == ["queue", "workers"]
+
+
+def test_the_schema_is_requested_once_when_both_tiers_want_it(tmp_path):
+    """migrate belongs to `app` and to `data`. deploy.sh matches component NAMES so a repeat would
+    not break it, but a log reading `migrate,migrate` invites the reader to ask whether the schema
+    moved twice - and the schema is the one stage where that question matters."""
+    parts = _components(tmp_path, app=True, data=True)
+    assert parts.count("migrate") == 1, parts
+    assert parts == ["images", "data", "storage", "migrate"]
+
+
+def test_every_tier_expands_only_to_stages_deploy_sh_knows(tmp_path):
+    """DEPLOY_COMPONENTS is validated by deploy.sh against its `_known` list, and a name that is
+    not on it stops the run. This is the test that catches a tier renamed on one side only."""
+    known = set(_KNOWN)
+    for box in ("app", "data", "fleet", "console", "admin", "outreach", "edge"):
+        parts = _components(tmp_path, **{box: True})
+        assert parts, f"the `{box}` box selected no stage at all"
+        unknown = [c for c in parts if c not in known]
+        assert not unknown, f"`{box}` expands to {unknown}, which deploy.sh has no stage for"
+
+
+def test_the_component_list_is_emitted_in_stage_order(tmp_path):
+    """Composed in the order deploy.sh's own `_known` line lists them, so the deploy log reads the
+    same way however the boxes were ticked."""
+    parts = _components(tmp_path, app=True, data=True, fleet=True, console=True,
+                        admin=True, outreach=True, edge=True)
+    assert parts == _KNOWN, parts
+
+
+def test_ticking_every_box_deploys_every_stage(tmp_path):
+    """The roster has no 'all' shortcut on purpose, so ticking everything must be the way to get
+    everything - if a stage existed that no box reached, it could only ever run on a release tag."""
+    assert set(_components(tmp_path, app=True, data=True, fleet=True, console=True,
+                           admin=True, outreach=True, edge=True)) == set(_KNOWN)
+
+
+# ---------------------------------------------------------------------------------------------
+# 11. binding a secret to an identity that was created seconds ago
+
+
+def test_secret_bindings_ride_out_the_identity_propagation_window():
+    """A service account is not visible to IAM for a few seconds after it is created, so the first
+    binding attempted against it fails with "Service account ... does not exist" - a propagation
+    delay reported as a missing resource.
+
+    This is not hypothetical and it is not cosmetic. On the first personal deploy that reached the
+    console stage, the identity was created at :56, the binding for console-auth-secret failed at
+    :58, and the two bindings that followed at :59 and :01 both succeeded. The failure was a
+    warning, so the rollout proceeded and then died several minutes later on a Cloud Run IAM check
+    naming the secret rather than the race.
+
+    It stopped being rare when environments began being created BY the deploy: every runtime
+    identity is now seconds old on a first deploy, where before an owner had made them in advance.
     """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "iam.allowedPolicyMemberDomains" in text, (
-        "new-env.sh does not relax domain restricted sharing, so the first deploy fails at stage "
-        "14 after the API service is already serving")
-    assert "--project" in text and "org-policies set-policy" in text, (
-        "the override must be scoped to the project, never the organisation")
-    assert "WHAT IT COSTS, PLAINLY" in text, (
-        "a security-relevant relaxation has to state its cost where it is applied")
+    lib = (SCRIPTS / "lib.sh").read_text(encoding="utf-8")
+    assert "grant_secret_accessor()" in lib, "there is no retrying helper for this binding"
+
+    # Every stage that creates a runtime identity and then binds a secret to it must use it - a
+    # single raw binding left behind is a single stage that still loses the race.
+    for script in ("create-console-service.sh", "create-api-service.sh", "create-admin-service.sh",
+                   "create-worker-fleet.sh", "run-migrations.sh", "create-object-storage.sh"):
+        body = (SCRIPTS / script).read_text(encoding="utf-8")
+        assert "grant_secret_accessor" in body, f"{script} binds secrets without the retry"
+        raw = [ln for ln in body.splitlines()
+               if "secrets add-iam-policy-binding" in ln and not ln.strip().startswith("#")
+               and "gcloud secrets add-iam-policy-binding" not in ln]
+        assert not raw, f"{script} still has an unretried binding: {raw}"
+
+
+def test_the_retry_actually_retries_and_eventually_gives_up():
+    """A helper that returns success on the first failure would be worse than none: the caller's
+    warning would still fire and the rollout would still die, but the log would claim a retry."""
+    lib = (SCRIPTS / "lib.sh").read_text(encoding="utf-8")
+    body = lib[lib.index("grant_secret_accessor()"):]
+    body = body[:body.index("\n}")]
+    assert "for attempt in" in body, "the helper makes a single attempt"
+    assert "sleep" in body, "the helper retries without waiting, so it retries inside the window"
+    assert "return 1" in body, "the helper never reports failure, so callers cannot warn"
+
+
+def test_the_runtime_identities_are_created_early_not_moments_before_use():
+    """IAM does not make a new service account usable the instant it is created. A stage that
+    creates its identity and then deploys a workload running AS it, seconds later, fails:
+
+        Permission 'iam.serviceaccounts.actAs' denied on service account
+        dev-pranav-migrate@hexera-dev.iam.gserviceaccount.com (or it may not exist)
+
+    The deployer holds iam.serviceAccountUser project-wide, so the permission IS granted - the
+    account is simply not visible to the actAs check yet, which Google's own message hints at with
+    "or it may not exist".
+
+    Creating the whole roster at stage 6 puts minutes between creation and first use rather than
+    seconds. new-env.sh used to do this as an owner's act; what made it work was never that an
+    owner did it, it was that it happened early.
+    """
+    body = (SCRIPTS / "create-service-accounts.sh").read_text(encoding="utf-8")
+    for purpose in ("-api", "-console", "-migrate", "-queue-depth", "-workers"):
+        assert purpose in body, f"the roster does not establish the {purpose} identity"
+    # It must run unconditionally - a roster gated on a component would leave exactly the tiers a
+    # partial first deploy selects without their identities.
+    deploy = (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+    i = deploy.index("create-service-accounts.sh")
+    preceding = deploy[:i].rsplit("stage ", 1)[1]
+    assert "_selected" not in preceding and "want " not in preceding, (
+        "create-service-accounts.sh sits behind a component gate, so a deploy that does not select "
+        "that component creates no identities early and races again")
+
+
+def test_creating_an_identity_early_cannot_fail_the_whole_deploy():
+    """This stage is an optimisation of TIMING, not the authority on these accounts - every stage
+    still creates the identity it needs. Dying here would turn 'could not create an identity
+    early' into 'could not deploy at all', which is the worse trade."""
+    body = (SCRIPTS / "create-service-accounts.sh").read_text(encoding="utf-8")
+    roster = body[body.index("Runtime identities the later stages"):]
+    assert "warn " in roster, "a failure to pre-create is fatal"
+    assert "die " not in roster, "a failure to pre-create kills the deploy"
+
+
+# ---------------------------------------------------------------------------------------------
+# 12. the keyspace, not just the Celery queues
+
+
+def test_every_redis_key_goes_through_the_keyspace_prefix():
+    """Celery's global_keyprefix isolates the broker and the result backend and NOTHING ELSE. The
+    dead letter queue, the inference feed, job event logs, websocket tickets, rate limits, delivery
+    guards and capacity leases are addressed by adapters that talk to Redis directly, and their key
+    names are literals - `simulation:dlq` is the same string in every deployment.
+
+    Personal environments share one Memorystore instance whose URL carries no authentication, so
+    without this every environment reads, writes and trims those keys out from under every other.
+    """
+    import meshpipeline.settings.providers as provcfg
+    from meshpipeline.events import channels
+    from meshpipeline.redis_keys import k
+
+    before = provcfg.REDIS_KEY_PREFIX
+    try:
+        provcfg.REDIS_KEY_PREFIX = ""
+        assert channels.channel_for("J") == "jobs:J:events", (
+            "an empty prefix must be byte-for-byte today's behaviour, or every existing deployment "
+            "moves to new keys on the next roll and strands what is already enqueued")
+        assert k("simulation:dlq") == "simulation:dlq"
+
+        provcfg.REDIS_KEY_PREFIX = "dev-slug:"
+        for name, value in (("channel", channels.channel_for("J")),
+                            ("event log", channels.log_key_for("J")),
+                            ("sequence", channels.seq_key_for("J")),
+                            ("op set", channels.opkey_set_for("J")),
+                            ("fence", channels.fence_key_for("J")),
+                            ("dead letter", k("simulation:dlq")),
+                            ("inference feed", k("inference:calls"))):
+            assert value.startswith("dev-slug:"), f"the {name} key is not in this deployment's keyspace: {value}"
+    finally:
+        provcfg.REDIS_KEY_PREFIX = before
+
+
+def test_no_adapter_addresses_a_literal_redis_key_directly():
+    """The guarantee above is only worth as much as its coverage: one adapter still building a key
+    by hand is one class of state still shared across every environment."""
+    import re
+    adapters = (REPO / "src" / "meshpipeline" / "adapters")
+    offenders = []
+    for path in list(adapters.rglob("*.py")) + [REPO / "src" / "meshpipeline" / "events" / "channels.py"]:
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "redis.call" in line or line.strip().startswith("#"):
+                continue
+            # a Redis command handed a literal or f-string key that was not wrapped in k(...)
+            if re.search(r'\.(lpush|ltrim|lrange|rpush|getdel|incr|sadd|zadd|expire|publish)\(\s*f?"', line):
+                offenders.append(f"{path.relative_to(REPO)}:{i}: {line.strip()}")
+    assert not offenders, "these address Redis keys without the keyspace prefix:\n  " + "\n  ".join(offenders)
