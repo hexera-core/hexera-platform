@@ -313,19 +313,33 @@ def test_creation_establishes_what_the_first_deploy_cannot():
     assert "create-object-storage.sh" in text
 
 
-def test_a_personal_environment_widens_no_deploy_identity():
-    """A personal environment is a REHEARSAL of a real deploy, not a more permissive one. Its
-    deploy identity holds exactly the roster hexera-dev and hexera-prod reconcile against, so
-    anything a deploy cannot do here it could not do in prod either - which is what makes testing
-    one here worth anything. The owner-only acts (minting the object-store key, seeding secret
-    values) stay owner-only and happen at creation."""
+def test_the_deployer_is_widened_only_on_a_personal_environment_host():
+    """The host project's deploy identity creates the environment it deploys to, which is the
+    whole point - so it holds two roles no other project's deployer does. Everywhere else,
+    including hexera-prod, the roster must be exactly what it was.
+
+    This is the test that changed when personal environments stopped being projects. It used to
+    assert that no deploy identity was ever widened; now it asserts that the widening is gated,
+    because an ungated one would reach hexera-prod as a side effect of a development change."""
     wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
-    assert "roles/storage.hmacKeyAdmin" not in wif, (
-        "the deploy identity must not be granted HMAC-key authority; the key is minted once by an "
-        "owner in new-env.sh and its access id is pinned thereafter")
-    assert "create-object-storage.sh" in NEW_ENV.read_text(encoding="utf-8"), (
-        "new-env.sh must establish the object store as the owner, or the first deploy has no "
-        "access id to pin and mints a new key on every run")
+    assert "PERSONAL_ENV_HOST" in wif, (
+        "the two extra roles are granted unconditionally, so running this script against "
+        "hexera-prod would widen production's deploy identity")
+    for role in ("roles/iam.serviceAccountAdmin", "roles/storage.hmacKeyAdmin"):
+        assert role in wif, (
+            f"{role} is absent, so no stage can create the identity or the object-store key its "
+            f"slug needs and a first deploy cannot build an environment")
+    # The gate must come BEFORE the roles, or they are in the base roster and the flag is decoration.
+    assert wif.index("PERSONAL_ENV_HOST") < wif.index("roles/iam.serviceAccountAdmin")
+
+
+def test_the_base_roster_still_withholds_the_roles_that_would_end_containment():
+    """Whatever a host may do, no deployer anywhere may grant itself more or widen the provider
+    that admitted it. These two absences are what keep a compromised run contained."""
+    wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
+    roster = wif.split("DEPLOYER_ROLES=(", 1)[1].split("\n)", 1)[0]
+    for forbidden in ("roles/owner", "roles/resourcemanager.projectIamAdmin"):
+        assert forbidden not in roster, f"{forbidden} is in the roster"
 
 
 # ---------------------------------------------------------------------------------------------

@@ -317,9 +317,13 @@ fi
 #    required reviewers, the provider's repository attribute condition, and Cloud SQL deletion
 #    protection (set by create-data-tier.sh on every instance it creates).
 #
-#    WHAT IS STILL DELIBERATELY ABSENT: no roles/owner, no resourcemanager.projectIamAdmin and no
-#    iam.serviceAccountAdmin - so a compromised run still cannot grant itself anything further,
-#    mint a new identity, or widen the provider that admitted it.
+#    WHAT IS STILL DELIBERATELY ABSENT, EVERYWHERE: no roles/owner and no
+#    resourcemanager.projectIamAdmin - so a compromised run still cannot grant itself anything
+#    further or widen the provider that admitted it. Those two absences are the containment.
+#
+#    iam.serviceAccountAdmin USED TO BE ON THAT LIST and no longer is, on one kind of project.
+#    A PERSONAL-ENVIRONMENT HOST adds it and storage.hmacKeyAdmin - see PERSONAL_ENV_HOST below
+#    for why, and for what it costs. hexera-prod is not one and its roster is unchanged.
 DEPLOYER_ROLES=(
   roles/run.admin                        # the mesh, migrate and queue-depth jobs, and the API service
   roles/artifactregistry.writer          # release-publish pushes the images validation proved
@@ -350,7 +354,43 @@ DEPLOYER_ROLES=(
   # Secret Manager is NOT roles/secretmanager.admin - see SECRET_ROLE_ID below.
   "projects/${GCP_PROJECT_ID}/roles/${SECRET_ROLE_ID}"
 )
+
+# A PERSONAL-ENVIRONMENT HOST: the one project whose deploy identity CREATES the environment it
+# deploys to, rather than finding one an owner built for it beforehand.
+#
+# WHY THESE TWO ROLES. Every stage already creates the identity it needs and already prints the
+# remediation when it cannot - create-object-storage.sh, create-api-service.sh,
+# create-console-service.sh, run-migrations.sh, create-queue-depth-publisher.sh and
+# create-worker-fleet.sh all call `iam service-accounts create`. They have never been able to,
+# which is precisely why creating an environment used to be an owner's act on a laptop: somebody
+# had to go and make the six accounts by hand first. storage.hmacKeyAdmin is the same story for
+# the object-store key, and create-object-storage.sh has been naming the grant in its own error
+# text all along. Granting them here is what turns "deploy to a slug that does not exist" from an
+# error into an environment.
+#
+# WHY IT IS OPT-IN RATHER THAN A ROSTER LINE. This script reconciles whatever project it is
+# pointed at, so an unconditional addition would widen hexera-prod's deploy identity as a side
+# effect of a change aimed at development. Off by default means production's roster is what it
+# was, and turning it on is a visible line in a diff rather than a consequence nobody reviewed.
+#
+# WHAT IT COSTS, PLAINLY: on THIS project, a compromised workflow run can mint service accounts
+# and object-store HMAC keys. It cannot grant itself any further role and cannot widen the
+# provider that admitted it - roles/owner and resourcemanager.projectIamAdmin are absent here
+# exactly as they are everywhere else, and that is what still contains it.
+if [ "${PERSONAL_ENV_HOST:-0}" = "1" ]; then
+  DEPLOYER_ROLES+=(
+    roles/iam.serviceAccountAdmin        # the runtime identities each stage creates for its slug
+    roles/storage.hmacKeyAdmin           # that slug's object-store key, minted once and adopted after
+  )
+fi
+
 info "Project roles for ${DEPLOYER_SA_EMAIL} (${#DEPLOYER_ROLES[@]}, and nothing else)"
+# An `if` rather than `[ ... ] && log ...`: this script runs under `set -e`, where a test that is
+# FALSE makes the whole list non-zero and ends the run. On every project that is not a host - which
+# is all of them but one - that one-liner would have been fatal.
+if [ "${PERSONAL_ENV_HOST:-0}" = "1" ]; then
+  log "personal-environment host - the roster carries iam.serviceAccountAdmin and storage.hmacKeyAdmin"
+fi
 for role in "${DEPLOYER_ROLES[@]}"; do
   # --condition=None is explicit rather than implied: on a project that already carries a
   # conditional binding for this member, gcloud otherwise has to ask which one is meant, and
