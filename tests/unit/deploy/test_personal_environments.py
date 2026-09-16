@@ -731,3 +731,16 @@ def test_adoption_cannot_follow_a_listing_that_could_not_be_read():
     body = (SCRIPTS / "create-object-storage.sh").read_text(encoding="utf-8")
     assert body.index('HMAC_LIST_READ_OK}" = "0"') < body.index("ADOPTED"), (
         "the adopt branch precedes the unreadable-listing refusal")
+
+
+def test_the_worker_settings_object_is_published_when_nothing_has():
+    """new-env.sh used to publish .env.example into the transfer bucket at creation time. With
+    creation gone, a first personal deploy would hand create-worker-fleet.sh a WORKER_ENV_URI
+    naming an object nobody had written, and the `workers` component would fail on an environment
+    that otherwise looks finished. The fleet publishes it if it is missing."""
+    body = (SCRIPTS / "create-worker-fleet.sh").read_text(encoding="utf-8")
+    assert ".env.example" in body, "nothing publishes the worker settings object any more"
+    assert "storage cp" in body, "the object is never written"
+    assert "buckets create" in body, (
+        "a first deploy has no transfer bucket either - publishing into one that does not exist "
+        "fails exactly where creating the fleet would have")

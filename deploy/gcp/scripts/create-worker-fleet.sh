@@ -141,6 +141,48 @@ case "${WORKER_ENV_URI}" in
    everyone who can read the bucket." ;;
 esac
 
+# THE SETTINGS OBJECT ITSELF, PUBLISHED HERE WHEN NOTHING ELSE HAS.
+#
+# This used to be done once, at creation, by a script an owner ran on a laptop before the first
+# deploy. There is no such step any more: an environment is created BY the deploy that asks for
+# it, so the first run to reach this line may be looking at a bucket that does not exist and a
+# path nothing has ever written. startup.sh fetches this object on every instance boot, so the
+# fleet would come up and fail to configure itself - on an environment that otherwise looks
+# finished, which is the worst version of this failure.
+#
+# WHAT THE CONTENT IS. .env.example, which is not a stand-in for real settings: it is GENERATED
+# from src/meshpipeline/settings/inventory.py, the one authority on what a setting is and what it
+# defaults to, and it is what shared dev's own worker.env was made from. It carries policy, model
+# routing and limits and NO credential - which is required rather than incidental, because both a
+# bucket object and instance metadata are readable by anyone who can describe the instance.
+# Endpoints and credentials are injected at boot from metadata and Secret Manager respectively.
+#
+# AN EXISTING OBJECT IS LEFT ALONE. It may carry settings an operator changed deliberately, and
+# overwriting those from a checked-in template on every deploy would silently revert them.
+_worker_env_path="${WORKER_ENV_URI#gs://}"
+_worker_env_bucket="${_worker_env_path%%/*}"
+if ! bucket_exists "${_worker_env_bucket}"; then
+  info "Creating the transfer bucket gs://${_worker_env_bucket}"
+  # Uniform access and public access prevention: this object is readable by the fleet's identity,
+  # not by the internet. Private by construction rather than by a later correction.
+  gcloud storage buckets create "gs://${_worker_env_bucket}" \
+    --project "${GCP_PROJECT_ID}" --location "${GCP_REGION}" \
+    --uniform-bucket-level-access --public-access-prevention >/dev/null \
+    || die "could not create gs://${_worker_env_bucket}, which is where the fleet reads its
+   settings from. Without it every instance boots and fails to configure itself."
+  log "transfer bucket ${_worker_env_bucket}  (created)"
+fi
+if gcloud storage objects describe "${WORKER_ENV_URI}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+  log "worker settings ${WORKER_ENV_URI}  (present - left untouched)"
+else
+  info "Publishing the worker settings object to ${WORKER_ENV_URI}"
+  gcloud storage cp "${REPO_ROOT}/.env.example" "${WORKER_ENV_URI}" \
+    --project "${GCP_PROJECT_ID}" --quiet \
+    || die "could not write ${WORKER_ENV_URI}. startup.sh fetches this object on every boot, so
+   the fleet would roll onto instances that cannot configure themselves."
+  log "worker settings ${WORKER_ENV_URI}  (published from .env.example)"
+fi
+
 # `database-url` IS DELIBERATELY EMPTY unless a deployment states one, and that is a trade-off worth
 # naming. startup.sh treats metadata as authoritative for the database endpoint, but a DSN that
 # authenticates carries the password - in metadata, in the clear, which is exactly what moving the
