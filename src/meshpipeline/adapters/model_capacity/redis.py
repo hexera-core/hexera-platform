@@ -2,8 +2,6 @@
 # Boundaries: admission and lease expiry; it selects no model and performs no call.
 from __future__ import annotations
 
-from meshpipeline.redis_keys import k
-
 import asyncio
 import logging
 import threading
@@ -14,6 +12,7 @@ from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import async_client
 from meshpipeline.contracts.model_capacity import Lease
+from meshpipeline.redis_keys import k
 
 logger = logging.getLogger(__name__)
 

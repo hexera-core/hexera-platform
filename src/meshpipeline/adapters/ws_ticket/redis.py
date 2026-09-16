@@ -2,11 +2,10 @@
 # Boundaries: a ticket is single-use and expires; consumption is atomic so two sockets cannot share one.
 from __future__ import annotations
 
-from meshpipeline.redis_keys import k
-
 import secrets
 
 from meshpipeline.adapters._shared.redis_client import async_client
+from meshpipeline.redis_keys import k
 
 _PREFIX = "wsticket:"
 _SEP = "\x00"          # owner ids / job ids never contain a NUL, so this splits unambiguously

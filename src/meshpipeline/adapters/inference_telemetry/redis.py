@@ -2,13 +2,13 @@
 # Boundaries: the Redis implementation of the inference-telemetry contract; it prices nothing and bills nothing.
 from __future__ import annotations
 
-from meshpipeline.redis_keys import k
-
 import json
 from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import sync_client
 from meshpipeline.contracts.inference_telemetry import InferenceCall
+from meshpipeline.redis_keys import k
+
 
 #: The whole-deployment feed, newest first: what ran, on which model, at what cost. Capped, like
 #: the dead-letter queue, because this is an inspection surface and not the ledger.

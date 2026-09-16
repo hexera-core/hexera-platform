@@ -2,12 +2,12 @@
 # Boundaries: the Redis implementation of the dead-letter contract; it decides nothing about when work is dead.
 from __future__ import annotations
 
-from meshpipeline.redis_keys import k
-
 import json
 from typing import Any
 
 from meshpipeline.adapters._shared.redis_client import sync_client
+from meshpipeline.redis_keys import k
+
 
 def _dlq_key() -> str:
     return k("simulation:dlq")

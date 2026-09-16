@@ -2,9 +2,8 @@
 # Boundaries: counting; the limit and the response to exceeding it belong to the API.
 from __future__ import annotations
 
-from meshpipeline.redis_keys import k
-
 from meshpipeline.adapters._shared.redis_client import async_client
+from meshpipeline.redis_keys import k
 
 
 class RedisRateLimitStore:

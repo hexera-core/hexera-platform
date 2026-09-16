@@ -2,11 +2,10 @@
 # Boundaries: counting only; the redelivery limit and what to do at it belong to the caller.
 from __future__ import annotations
 
-from meshpipeline.redis_keys import k
-
 from typing import cast
 
 from meshpipeline.adapters._shared.redis_client import sync_client
+from meshpipeline.redis_keys import k
 
 _TTL_SECONDS = 86400  # 24h - long enough to outlive any redelivery storm, short enough to self-clean
 
