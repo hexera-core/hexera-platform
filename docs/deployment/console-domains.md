@@ -216,13 +216,20 @@ with it once it arrives, and IAP already authenticates every path in — the aut
 by, by the same one binding, and this document adds no second gate for it to drift out of sync
 with.
 
-**Prod's binding is not live yet.** IAP on Cloud Run is gated on an OAuth consent screen — the
-"brand" — existing for the project, and `hexera-prod` does not have one. Creating it used to be
-scriptable through the IAP OAuth Admin APIs; Google shut those down in March 2026, so the brand now
-has to be created by hand, once, in the Cloud Console, before `--iap` against `prod-admin` will
-succeed. Nothing in `deploy.yml` or `create-admin-service.sh` can substitute for this — it is a
-one-time manual prerequisite, the same class of gap the service accounts and secret containers
-were before this document's §1 was updated, not a bug to fix in either script.
+**Prod has a brand.** IAP on Cloud Run is gated on an OAuth consent screen — the "brand" —
+existing for the project. Read on 2026-09-16: `hexera-prod` has one (`applicationTitle:
+hexera-prod`), as does `hexera-dev` (`Hexera Dev`). An earlier version of this paragraph said prod
+had none and that creating one was no longer possible; both halves were wrong by the time anyone
+read them, and this is the observation replacing the claim.
+
+`gcloud iap oauth-brands create` still works, deprecation warning and all — verified on
+2026-09-16 by creating a brand in a project created the same day, which the warning's own text says
+should not be possible ("New projects will not be able to use these APIs", "permanently shut down"
+in March 2026). Google's notice and Google's API disagree; the API is what `--iap` depends on.
+
+Treat this as observed rather than guaranteed: it is a deprecated surface that may stop working
+without further notice, and the fallback if it does is the Cloud Console, by hand, once per
+project. Do not build anything that assumes it will keep answering.
 
 ## 8. What the first prod release still leaves outstanding
 

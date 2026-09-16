@@ -164,9 +164,12 @@ def test_a_non_numeric_project_number_is_refused(tmp_path):
 
 
 def test_a_personal_run_never_provisions_the_admin_console(tmp_path):
-    """The admin console's only gate is IAP, and IAP on Cloud Run needs an OAuth brand created by
-    hand per project. Deploying the service without one publishes an unauthenticated admin
-    console, so the name is empty and the stage skips itself even when the box is ticked."""
+    """Not because it cannot be built - an IAP OAuth brand creates fine, verified against a project
+    made the same day - but because nothing needs it in a project with one owner. What the admin
+    console offers is reading the worker fleet's metrics and changing its scaling, which is the
+    Cloud Console's own job for someone who already has full access to the project. A second
+    IAP-gated front end onto the same controls is machinery to keep working for no gain, so the
+    name is empty and the stage skips itself even when the box is ticked."""
     _, out, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav",
                             DISPATCH_IMAGES="true", DISPATCH_ADMIN="true")
     assert out["admin_service"] == ""

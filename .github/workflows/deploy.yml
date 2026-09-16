@@ -408,13 +408,16 @@ jobs:
               echo "deployer_sa=github-deployer@${_project}.iam.gserviceaccount.com"
               echo "api_service=dev-api"
               echo "console_service=dev-console"
-              # THE ADMIN CONSOLE IS DELIBERATELY UNAVAILABLE in a personal environment. Its only
-              # gate is IAP, and IAP on Cloud Run needs an OAuth brand that - since Google shut down
-              # the IAP OAuth Admin APIs in March 2026 - has to be created by hand in the Cloud
-              # Console per project. Deploying the service without that gate would put an
-              # unauthenticated admin console on the internet, so the name is left empty and the
-              # stage states its own skip. Ticking the `admin` checkbox on a personal run therefore
-              # reconciles nothing rather than reconciling something dangerous.
+              # THE ADMIN CONSOLE IS DELIBERATELY UNAVAILABLE in a personal environment, because
+              # nothing needs it there. What it exists to offer - reading the fleet's metrics and
+              # changing its scaling - is the Cloud Console's own job in a project with one owner
+              # who already has full access to it. A second, IAP-gated web front end onto the same
+              # controls is machinery to provision, gate and keep working for no gain.
+              #
+              # So the name is empty and the stage states its own skip; ticking `admin` on a
+              # personal run reconciles nothing. Standing it up is not blocked - it needs an IAP
+              # OAuth brand, an admin identity, a custom role and its grants, all of which are
+              # owner's acts new-env.sh could perform - it is simply not worth doing.
               echo "admin_service="
               # Billing export is configured per BILLING ACCOUNT and accumulates in one table that
               # hexera-prod owns. A personal environment reads nothing from it: pointing a sandbox

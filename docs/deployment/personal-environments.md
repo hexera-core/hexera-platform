@@ -116,11 +116,15 @@ re-downloading the OpenFOAM toolchain from scratch.
 
 ## 5. What a personal environment deliberately does not get
 
-**The admin console.** Its only gate is IAP, and IAP on Cloud Run needs an OAuth brand that — since
-Google shut down the IAP OAuth Admin APIs in March 2026 — has to be created by hand, per project,
-in the Cloud Console. Deploying the service without that gate would put an unauthenticated admin
-console on the internet. So `admin_service` is empty and the stage skips itself **even if you tick
-the box**. `hexera-prod` is blocked on the same thing; see `docs/deployment/console-domains.md` §7.
+**The admin console.** Not because it cannot be built — it can — but because nothing needs it here.
+What it offers is reading the worker fleet's metrics and changing its scaling, and in a project with
+a single owner who already has full Cloud Console access, that is the Cloud Console's job. A second,
+IAP-gated web front end onto the same controls is machinery to provision, gate and keep working for
+no gain. `admin_service` is empty and the stage skips itself **even if you tick the box**.
+
+If you ever do want it, it is a handful of owner's acts in `new-env.sh`: an IAP OAuth brand, the
+`dev-admin` identity, the custom role and its project grants, and `roles/iap.httpsResourceAccessor`
+for yourself. Change the fleet's size in the Cloud Console instead — it is the same MIG.
 
 **Outreach.** It can email real people. A sandbox created in thirty seconds by one developer is the
 last place a cold-email sender should be reachable, so it is empty unconditionally and no checkbox

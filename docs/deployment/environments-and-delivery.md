@@ -183,10 +183,12 @@ console.
 **Pinned in both environments now**, the same reasoning and the same mechanism as
 `console_service` above: `prod-admin` is now a real service account in `hexera-prod` with the same
 secret access, so naming it in `deploy.yml` reconciles a real admin console rather than one with
-nothing behind it. What pinning the name does *not* do is finish IAP: the OAuth brand `hexera-prod`
-needs for IAP on Cloud Run does not exist yet and, since Google shut down the IAP OAuth Admin APIs
-in March 2026, has to be created by hand in the Cloud Console before `--iap` against `prod-admin`
-will succeed — see `docs/deployment/console-domains.md` §7.
+nothing behind it. The OAuth brand that IAP on Cloud Run is gated on **exists in `hexera-prod`**,
+read on 2026-09-16 — this paragraph previously said it did not, and that it could no longer be
+created because Google shut the IAP OAuth Admin APIs down in March 2026. Neither held:
+`gcloud iap oauth-brands create` still answers, verified the same day against a project created
+that day. See `docs/deployment/console-domains.md` §7, which now records what was observed rather
+than what was announced.
 
 ---
 
