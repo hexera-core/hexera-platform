@@ -173,7 +173,7 @@ confirm_plan
 stage "Enable required Google Cloud APIs"
 bash "${S}/enable-apis.sh"
 
-stage "Artifact Registry + the mesh runtime identity"
+stage "Artifact Registry + the runtime identities every later stage runs workloads as"
 bash "${S}/create-artifact-registry.sh"
 bash "${S}/create-service-accounts.sh"
 

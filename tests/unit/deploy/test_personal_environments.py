@@ -924,3 +924,41 @@ def test_the_retry_actually_retries_and_eventually_gives_up():
     assert "for attempt in" in body, "the helper makes a single attempt"
     assert "sleep" in body, "the helper retries without waiting, so it retries inside the window"
     assert "return 1" in body, "the helper never reports failure, so callers cannot warn"
+
+
+def test_the_runtime_identities_are_created_early_not_moments_before_use():
+    """IAM does not make a new service account usable the instant it is created. A stage that
+    creates its identity and then deploys a workload running AS it, seconds later, fails:
+
+        Permission 'iam.serviceaccounts.actAs' denied on service account
+        dev-pranav-migrate@hexera-dev.iam.gserviceaccount.com (or it may not exist)
+
+    The deployer holds iam.serviceAccountUser project-wide, so the permission IS granted - the
+    account is simply not visible to the actAs check yet, which Google's own message hints at with
+    "or it may not exist".
+
+    Creating the whole roster at stage 6 puts minutes between creation and first use rather than
+    seconds. new-env.sh used to do this as an owner's act; what made it work was never that an
+    owner did it, it was that it happened early.
+    """
+    body = (SCRIPTS / "create-service-accounts.sh").read_text(encoding="utf-8")
+    for purpose in ("-api", "-console", "-migrate", "-queue-depth", "-workers"):
+        assert purpose in body, f"the roster does not establish the {purpose} identity"
+    # It must run unconditionally - a roster gated on a component would leave exactly the tiers a
+    # partial first deploy selects without their identities.
+    deploy = (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+    i = deploy.index("create-service-accounts.sh")
+    preceding = deploy[:i].rsplit("stage ", 1)[1]
+    assert "_selected" not in preceding and "want " not in preceding, (
+        "create-service-accounts.sh sits behind a component gate, so a deploy that does not select "
+        "that component creates no identities early and races again")
+
+
+def test_creating_an_identity_early_cannot_fail_the_whole_deploy():
+    """This stage is an optimisation of TIMING, not the authority on these accounts - every stage
+    still creates the identity it needs. Dying here would turn 'could not create an identity
+    early' into 'could not deploy at all', which is the worse trade."""
+    body = (SCRIPTS / "create-service-accounts.sh").read_text(encoding="utf-8")
+    roster = body[body.index("Runtime identities the later stages"):]
+    assert "warn " in roster, "a failure to pre-create is fatal"
+    assert "die " not in roster, "a failure to pre-create kills the deploy"
