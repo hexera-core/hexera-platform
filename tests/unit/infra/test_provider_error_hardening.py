@@ -1,7 +1,15 @@
 # Responsibility: Verify each provider exception normalises to its category, and an unknown one is our defect.
+# Boundaries: ROUTING policy - classification, retry, circuit, marker, telemetry - none of which
+# is a property of a wire format. The doubles below are chat-completions-shaped, so every role is
+# pinned to a chat provider for the duration of a test (see pin_chat_routes): otherwise the live
+# `openai` routes would hand a Responses adapter a client that has no `.responses`, and every
+# case here would pass or fail on an AttributeError instead of on the policy it is about. The
+# Responses adapter's own reading of a response is pinned by tests/unit/infra/test_responses_*.py.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +17,37 @@ import pytest
 from meshpipeline.adapters._shared.resilience import get_breaker, reset_breakers
 from meshpipeline.adapters.model_capacity.local import LocalCapacityController
 from meshpipeline.adapters.model_inference import providers, router
+from meshpipeline.adapters.model_inference import routes as routecfg
 from meshpipeline.contracts import inference_telemetry, model_capacity
 from meshpipeline.contracts.model_routing import FailureCategory as FC
+
+#: Where each role's route LIVES. The router reads these module attributes per call, so rebinding
+#: one redirects the real entry point without touching the catalogue.
+_ROUTE_HOMES = (
+    ("meshpipeline.agents.builder.settings", "BUILDER_ROUTE"),
+    ("meshpipeline.engines.snappy.settings", "PLANNER_ROUTE"),
+    ("meshpipeline.agents.reviewer.settings", "VISUAL_REVIEWER_ROUTE"),
+    ("meshpipeline.agents.intake.settings", "INTAKE_ROUTE"),
+    ("meshpipeline.agent_tools.shared.settings", "SUMMARIZER_ROUTE"),
+)
+
+
+def pin_chat_routes(monkeypatch):
+    """Point every role's route at a chat-completions provider, changing nothing else.
+
+    Only the PROVIDER moves: the role's model, account, circuit group, timeout, retry policy and
+    budget are all still the ones it really declares, so what is exercised is the product's own
+    route. Which chat provider is immaterial here - `deepinfra` and `deepseek` share one adapter,
+    and nothing in these files asserts a vendor-specific parameter.
+    """
+    for mod_name, attr in _ROUTE_HOMES:
+        module = importlib.import_module(mod_name)
+        route = getattr(module, attr)
+        monkeypatch.setattr(module, attr, dataclasses.replace(
+            route, primary=dataclasses.replace(route.primary, provider="deepinfra")))
+    # routes.all_routes() memoises what it reads from those same modules, so a cache filled while
+    # the pin is in place would outlive it and hand the next test a route no deployment declares.
+    monkeypatch.setattr(routecfg, "_ROUTES", None)
 
 
 def _openai():
@@ -40,6 +77,7 @@ def _exc(kind: str):
 @pytest.fixture(autouse=True)
 def _wired(monkeypatch):
     reset_breakers()
+    pin_chat_routes(monkeypatch)
     model_capacity.set_capacity_controller(LocalCapacityController(poll_interval_s=0.001))
     records: list = []
 
@@ -56,6 +94,7 @@ def _wired(monkeypatch):
     inference_telemetry.set_inference_telemetry(None)
     model_capacity.set_capacity_controller(None)
     reset_breakers()
+    routecfg._ROUTES = None
 
 
 def _raising_client(exc):
@@ -109,6 +148,19 @@ def test_a_balance_error_is_not_a_transient_provider_fault():
     assert providers.classify(exc) is FC.INSUFFICIENT_BALANCE
 
 
+def test_a_402_is_an_exhausted_account_not_an_application_defect():
+    """DeepSeek answers an empty account with 402 Payment Required, for which the OpenAI SDK
+    has no dedicated subclass - it raises a bare APIStatusError. Falling through to
+    APPLICATION_DEFECT logged 'unclassified APIStatusError' and made an out-of-credit account
+    read as a bug in this product, which is what sent an operator digging through Cloud Run
+    logs instead of the billing page."""
+    o = _openai()
+    resp = SimpleNamespace(status_code=402, headers={},
+                           request=SimpleNamespace(method="POST", url="/chat/completions"))
+    exc = o.APIStatusError("402 Payment Required", response=resp, body=None)
+    assert providers.classify(exc) is FC.INSUFFICIENT_BALANCE
+
+
 # end-to-end: exception -> the EXACT established marker (was TestCall*FailureReason)
 BUILDER_CASES = [
     ("rate_limit",  "<<API_FAILURE:builder_rate_limit>>"),
@@ -124,7 +176,7 @@ BUILDER_CASES = [
 async def test_the_builder_returns_its_established_marker_for_each_provider_failure(
         kind, marker, monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(_exc(kind)))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(_exc(kind)))
     round_result = await router.call_builder_model([{"role": "user", "content": "x"}],
                                                         job_id="j")
     assert not round_result.ok
@@ -138,7 +190,7 @@ async def test_the_builder_returns_its_established_marker_for_each_provider_fail
 ], ids=["rate_limit", "timeout", "server"])
 async def test_the_visual_reviewer_returns_its_established_marker(kind, marker, monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(_exc(kind)))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(_exc(kind)))
     round_result = await router.call_reviewer_with_tools([{"role": "user", "content": "x"}], [],
                                                         job_id="j")
     assert round_result.failure_marker == marker
@@ -146,14 +198,14 @@ async def test_the_visual_reviewer_returns_its_established_marker(kind, marker, 
 
 async def test_the_planner_emits_builder_markers_as_it_always_has(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(_exc("server")))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(_exc("server")))
     round_result = await router.call_planner_model([{"role": "user", "content": "x"}], job_id="j")
     assert round_result.failure_marker == "<<API_FAILURE:builder_server_error>>"
 
 
 @pytest.mark.parametrize("kind", ["rate_limit", "timeout", "connection", "server", "auth"])
 async def test_intake_collapses_every_reason_to_unavailable_as_it_always_has(kind, monkeypatch):
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(_exc(kind)))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(_exc(kind)))
     round_result = await router.call_intake_model([{"role": "user", "content": "x"}], job_id="j")
     assert round_result.failure_marker == "<<API_FAILURE:intake_unavailable>>"
 
@@ -171,7 +223,7 @@ async def test_an_empty_response_is_retried_then_reported_as_empty_response(monk
             return empty
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
 
-    monkeypatch.setattr(router, "client_for", _client)
+    monkeypatch.setattr(providers, "client_for", _client)
     round_result = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert round_result.failure_marker == "<<API_FAILURE:builder_empty_response>>"
     assert calls == 3, "an empty response must be retried against the same model"
@@ -185,8 +237,12 @@ async def test_an_open_circuit_fails_fast_without_dialling_the_provider(monkeypa
         dialled += 1
         return _ok_client(_response())
 
-    monkeypatch.setattr(router, "client_for", _client)
-    b = get_breaker("deepinfra_builder")
+    import meshpipeline.agents.builder.settings as bcfg
+
+    monkeypatch.setattr(providers, "client_for", _client)
+    # The builder's OWN declared circuit. A restated literal stops testing anything the day the
+    # operator-facing name changes, which is exactly what `deepinfra_builder` -> `builder` did.
+    b = get_breaker(bcfg.BUILDER_ROUTE.primary.circuit_group)
     for _ in range(b.failure_threshold):
         b.record_failure()
 
@@ -206,7 +262,7 @@ async def test_a_terminal_failure_is_never_retried(monkeypatch):
             raise _exc("auth")
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
 
-    monkeypatch.setattr(router, "client_for", _client)
+    monkeypatch.setattr(providers, "client_for", _client)
     round_result = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert round_result.failure_marker == "<<API_FAILURE:builder_non_transient>>"
     assert calls == 1, f"a terminal auth failure was retried {calls} times"
@@ -225,7 +281,7 @@ async def test_a_retryable_failure_then_success_returns_the_response(monkeypatch
             return _response()
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
 
-    monkeypatch.setattr(router, "client_for", _client)
+    monkeypatch.setattr(providers, "client_for", _client)
     round_result = await router.call_builder_model([{"role": "user", "content": "x"}],
                                                         job_id="j")
     # the router RETRIED once and reports it - the accounting a loop consumes without retrying
@@ -244,26 +300,29 @@ async def test_a_successful_call_is_never_executed_twice(monkeypatch):
             return _response()
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
 
-    monkeypatch.setattr(router, "client_for", _client)
+    monkeypatch.setattr(providers, "client_for", _client)
     await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert calls == 1
 
 
 # telemetry reports what actually happened
 async def test_telemetry_reports_the_actual_provider_and_model_used(_wired, monkeypatch):
+    import meshpipeline.agents.builder.settings as bcfg
+
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok_client(_response()))
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok_client(_response()))
     await router.call_builder_model([{"role": "user", "content": "x"}], job_id="job-9")
     rec = _wired[-1]
+    target = bcfg.BUILDER_ROUTE.primary      # the target that was really dialled
     assert rec.role == "builder"
-    assert rec.provider == "deepinfra" and rec.model == "zai-org/GLM-5.2"
+    assert rec.provider == target.provider and rec.model == target.model
     assert rec.target == "primary" and rec.failure_category == ""
     assert rec.job_id == "job-9"
 
 
 async def test_telemetry_records_the_failure_category_for_a_failed_call(_wired, monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(_exc("rate_limit")))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(_exc("rate_limit")))
     await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert _wired[-1].failure_category == FC.RATE_LIMIT.value
 
@@ -274,7 +333,7 @@ async def test_a_telemetry_failure_never_changes_the_call_result(monkeypatch):
             raise RuntimeError("sink down")
     inference_telemetry.set_inference_telemetry(_Broken())
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok_client(_response()))
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok_client(_response()))
     round_result = await router.call_builder_model([{"role": "user", "content": "x"}],
                                                         job_id="j")
     assert round_result.ok and round_result.assistant_text == "ok"
@@ -285,7 +344,7 @@ async def test_a_telemetry_failure_never_changes_the_call_result(monkeypatch):
 async def test_the_lease_is_released_after_a_failed_role_call(kind, monkeypatch):
     from meshpipeline.adapters.model_inference.routes import all_routes
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(_exc(kind)))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(_exc(kind)))
     await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     domain = all_routes()["builder"].primary.domain.key
     assert await model_capacity.depth(domain) == 0
@@ -299,19 +358,24 @@ async def test_builder_and_planner_contend_for_one_quota_domain(monkeypatch):
 
 # summarizer: respond or raise
 async def test_the_summarizer_raises_and_never_returns_none(monkeypatch):
+    import meshpipeline.agent_tools.shared.settings as scfg
     from meshpipeline.adapters.model_inference.routing import RouteExhausted
 
     original = _exc("connection")
-    monkeypatch.setattr(router, "client_for", lambda t: _raising_client(original))
+    monkeypatch.setattr(providers, "client_for", lambda t: _raising_client(original))
     with pytest.raises(RouteExhausted) as ei:
         await router.call_summarizer_model([{"role": "user", "content": "x"}], job_id="j")
     assert ei.value.category is FC.CONNECTION
-    assert ei.value.provider == "deepseek" and ei.value.model == "deepseek-v4-flash"
+    # The target that was really dialled, read off the route rather than restated: this case is
+    # about the summarizer RAISING a structured exception instead of returning None, and it must
+    # not also become a second opinion on which vendor serves the role.
+    target = scfg.SUMMARIZER_ROUTE.primary
+    assert ei.value.provider == target.provider and ei.value.model == target.model
     assert isinstance(ei.value.__cause__, type(original))
 
 
 async def test_the_summarizer_returns_the_response_on_success(monkeypatch):
-    monkeypatch.setattr(router, "client_for", lambda t: _ok_client(_response()))
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok_client(_response()))
     round_result = await router.call_summarizer_model([{"role": "user", "content": "x"}],
                                                      job_id="j")
     assert round_result.ok and round_result.assistant_text == "ok"

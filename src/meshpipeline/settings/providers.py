@@ -8,7 +8,7 @@ from meshpipeline.settings.env import (
     optional_env,
 )
 
-# LLM inference (DeepSeek / DeepInfra, OpenAI wire protocol)
+# LLM inference (OpenAI serves every shipped route; DeepSeek and DeepInfra stay supported)
 # The API keys are OPTIONAL at import - like every other provider credential in this module
 # (Tavily, MinIO, GCP). A provider's key is REQUIRED only when that provider is part of the
 # ENABLED profile - i.e. a configured route actually references it. That derivation lives in the
@@ -17,9 +17,16 @@ from meshpipeline.settings.env import (
 # is what lets a single-provider profile skip the other provider's key, and local/test import none.
 DEEPSEEK_API_KEY: str  = optional_env("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL: str = optional_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-DEEPSEEK_MODEL: str    = optional_env("DEEPSEEK_MODEL",    "deepseek-v4-pro")
+# INTAKE's model, under a name from when intake could only be DeepSeek. It is read for capture
+# provenance (application/pipeline_run.py) and must therefore agree with INTAKE_MODEL, which is
+# why an OpenAI identifier sits behind a DeepSeek name. Renaming it is a breaking config change
+# with a retirement path (inventory.REMOVED), not a line in a routing cutover; see the routing
+# design's open questions.
+DEEPSEEK_MODEL: str    = optional_env("DEEPSEEK_MODEL",    "gpt-5.6-luna")
 DEEPINFRA_API_KEY: str  = optional_env("DEEPINFRA_API_KEY", "")
 DEEPINFRA_BASE_URL: str = optional_env("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
+OPENAI_API_KEY: str  = optional_env("OPENAI_API_KEY", "")
+OPENAI_BASE_URL: str = optional_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 DEEPINFRA_CALL_TIMEOUT: int      = int(optional_env("DEEPINFRA_CALL_TIMEOUT",      "1800"))
 DEEPINFRA_CONNECT_TIMEOUT: float = float(optional_env("DEEPINFRA_CONNECT_TIMEOUT", "15"))
@@ -27,7 +34,7 @@ DEEPINFRA_READ_TIMEOUT: float    = float(optional_env("DEEPINFRA_READ_TIMEOUT", 
 DEEPINFRA_WRITE_TIMEOUT: float   = float(optional_env("DEEPINFRA_WRITE_TIMEOUT",   "30"))
 
 # search-result summarizer (a cheap model)
-SEARCH_SUMMARIZER_MODEL: str         = optional_env("SEARCH_SUMMARIZER_MODEL", "deepseek-v4-flash")
+SEARCH_SUMMARIZER_MODEL: str         = optional_env("SEARCH_SUMMARIZER_MODEL", "gpt-5.6-luna")
 SEARCH_SUMMARIZER_MAX_TOKENS: int    = int(optional_env("SEARCH_SUMMARIZER_MAX_TOKENS", "700"))
 SEARCH_SUMMARIZER_TEMPERATURE: float = float(optional_env("SEARCH_SUMMARIZER_TEMPERATURE", "0.2"))
 
@@ -168,4 +175,5 @@ LANGFUSE_HOST: str       = optional_env("LANGFUSE_HOST", "")
 LLM_PROVIDER_KEY_ENV: dict[str, str] = {
     "deepinfra": "DEEPINFRA_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "openai": "OPENAI_API_KEY",
 }

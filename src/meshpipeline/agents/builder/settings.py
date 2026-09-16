@@ -6,7 +6,7 @@ from meshpipeline.contracts.model_routing import Capability
 from meshpipeline.settings.env import ConfigurationError, optional_env
 from meshpipeline.settings.routes import route_from_catalogue
 
-BUILDER_MODEL: str = optional_env("BUILDER_MODEL", "zai-org/GLM-5.2")
+BUILDER_MODEL: str = optional_env("BUILDER_MODEL", "gpt-5.6-terra")
 
 # SAMPLING POLICY: a CONSERVATIVE default for a structured tool-use agent. The Builder drives a
 # deterministic tool workflow (configure → run_mesh → submit) against typed engine palettes and
@@ -71,9 +71,11 @@ BUILDER_MAX_TOTAL_ATTEMPTS: int = MAX_BUILDER_RETRIES + 2
 # explicit, separately-validated decision (Gate 2B/2C), never a default.
 BUILDER_ROUTE = route_from_catalogue(
     "builder",
-    # The established operator-facing circuit name. It has meant "the builder's model is sick"
-    # across model changes and must keep meaning that; it is NOT derived from GLM-5.2.
-    circuit_group="deepinfra_builder",
+    # The operator-facing circuit name, deliberately naming the ROLE and not its vendor. It was
+    # `deepinfra_builder` until the builder left DeepInfra, at which point the name would have
+    # pointed an incident at the wrong vendor - the one failure an operator-facing identifier
+    # must not cause. It means "the builder's model is sick" and survives the next move too.
+    circuit_group="builder",
     capabilities={Capability.TOOLS, Capability.STREAMING},
     rate_limit_backoff_base_s=60.0,
     rate_limit_backoff_max_s=300.0,

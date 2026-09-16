@@ -194,30 +194,35 @@ def test_a_composed_process_actually_writes_the_record_it_builds(monkeypatch, fa
 
 def test_the_unpriced_detector_answers_from_the_configured_routes(monkeypatch):
     from meshpipeline.adapters.inference_telemetry import pricing
+    from meshpipeline.settings.routes import configured_route_targets
 
     monkeypatch.delenv("MODEL_PRICE_OVERRIDES", raising=False)
-    unpriced = pricing.unpriced_route_models()
-    assert "deepinfra:Qwen/Qwen3-VL-235B-A22B-Thinking" in unpriced, (
-        "the detector does not see the reviewer's unpriced model")
 
-    # An operator who supplies the missing price makes it priced - the detector reports the
-    # configuration, not a hardcoded list of known gaps.
-    monkeypatch.setenv("MODEL_PRICE_OVERRIDES",
-                       "deepinfra:Qwen/Qwen3-VL-235B-A22B-Thinking=0.20,0.88,0.11")
+    # The healthy steady state the release gate depends on: every configured route model now
+    # carries a confirmed price, so nothing meters at $0.00. This is the invariant worth pinning,
+    # not any one model's gap - gaps get fixed, this answer is what has to stay true.
+    assert pricing.unpriced_route_models() == []
+
+    # Prove the detector is derived from live configuration, not vacuous, by taking a confirmed
+    # price away and watching it reappear - the same code path the historical gap exercised, run
+    # in the direction that does not fight a price the provider has since confirmed.
+    _, _, provider, model = configured_route_targets()[0]
+    key = f"{provider}:{model}"
+    monkeypatch.delitem(pricing._PRICES, key)
+    assert pricing.unpriced_route_models() == [key]
+
+    # An operator who supplies the missing price makes it priced again - the detector reports
+    # the configuration, not a hardcoded list of known gaps.
+    monkeypatch.setenv("MODEL_PRICE_OVERRIDES", f"{key}=0.20,0.88,0.11")
     assert pricing.unpriced_route_models() == []
 
 
-@pytest.mark.xfail(
-    reason="a configured route model has no confirmed price; the release gate blocks on this, "
-           "so the suite reports it without failing every unrelated commit",
-    strict=False,
-)
 def test_every_configured_route_model_has_a_verified_price():
-    # KNOWN GAP, deliberately red. The reviewer's model is absent from the price table because
-    # its price could not be confirmed, so it meters at $0.00 - and the reviewer is the
-    # image-heavy role, so every cost figure understates the most expensive agent. Guessing the
-    # number here would fabricate cost evidence, which is worse than the gap; a human confirms
-    # the provider's price and adds ONE entry. Do not delete this test to make the suite green.
+    # The reviewer's model (the image-heavy role, so the most expensive one to under-bill) used
+    # to be absent from the price table and meter at $0.00; that gap is now closed with a
+    # confirmed price. This test is the release gate itself, kept green: if a future route ever
+    # adds a model with no confirmed price, this is what turns red instead of the bill silently
+    # understating cost. Do not delete this test to make the suite green.
     from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models
 
     unpriced = unpriced_route_models()

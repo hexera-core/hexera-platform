@@ -34,7 +34,7 @@ if SNAPPY_THIN_STACK_FACTOR <= 0.0:
         f"SNAPPY_THIN_STACK_FACTOR must be positive, got {SNAPPY_THIN_STACK_FACTOR}")
 
 # the planner's model identity (its OWN, not the builder's)
-PLANNER_MODEL: str = optional_env("PLANNER_MODEL", "zai-org/GLM-5.2")
+PLANNER_MODEL: str = optional_env("PLANNER_MODEL", "gpt-5.6-terra")
 
 # the planner's sampling (independent env vars; literal defaults, NOT bcfg.BUILDER_*)
 # Defaults equal the builder's conservative structured-tool-use values today, but changing a
@@ -68,7 +68,10 @@ if PLANNER_TOTAL_TIMEOUT_SECONDS <= 0:
 # budgeting or a standby is now a planner-only decision.
 PLANNER_ROUTE = route_from_catalogue(
     "planner",
-    circuit_group="deepinfra_planner",
+    # Role-named, not vendor-named: it was `deepinfra_planner` until the planner left
+    # DeepInfra. An operator-facing identifier that names the wrong vendor misdirects the
+    # incident it exists to announce.
+    circuit_group="planner",
     capabilities={Capability.TOOLS, Capability.STREAMING},
     rate_limit_backoff_base_s=60.0,
     rate_limit_backoff_max_s=300.0,

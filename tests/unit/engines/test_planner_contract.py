@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import meshpipeline.engines.snappy.planner as planner
+from meshpipeline.contracts.model_routing import RouteTarget
 from meshpipeline.engines.snappy.planner import clamp_cell_budget, make_mesh_plan
 
 
@@ -101,27 +102,44 @@ def test_planner_never_raises_it_returns_none_on_internal_error(monkeypatch, tmp
 
 
 # Config independence from the Builder
+#: A chat target, named here rather than read from PLANNER_ROUTE. What these two cases prove is
+#: that the planner's sampling comes from PLANNER_* and not from BUILDER_* - a statement about
+#: two settings modules, true on every wire format. Reading the live route would make it a
+#: statement about whichever provider the planner is pointed at today, and since the OpenAI
+#: cutover that provider speaks Responses, for which kwargs_for has no builder at all. Which
+#: model serves the planner is asserted in tests/unit/infra/test_invocation_equivalence.py.
+_CHAT_TARGET = RouteTarget(provider="deepinfra", model="zai-org/GLM-5.2",
+                           account="default", circuit_group="planner")
+
+
 def test_planner_call_kwargs_read_planner_settings_not_builder():
     import meshpipeline.engines.snappy.settings as pcfg
-    from meshpipeline.adapters.model_inference.deepinfra import BUILDER_CALL_KWARGS, _planner_call_kwargs
-    pk = _planner_call_kwargs()
-    assert pk is not BUILDER_CALL_KWARGS
+    from meshpipeline.adapters.model_inference.call_kwargs import kwargs_for, spec_for
+    target = _CHAT_TARGET
+    pk = kwargs_for(target, spec_for("planner"))
+    # Nothing is shared with the builder any more - each role's kwargs are built fresh, so the
+    # builder's call can neither alias nor mutate the planner's, even on the same target.
+    bk = kwargs_for(target, spec_for("builder"))
+    assert pk is not bk and pk["extra_body"] is not bk["extra_body"]
     assert set(pk) >= {"model", "temperature", "max_tokens", "top_p", "extra_body"}
     # the VALUES are the planner's own, sourced from PLANNER_* (a builder-temp mutation would break this)
     assert pk["temperature"] == pcfg.PLANNER_TEMPERATURE
     assert pk["max_tokens"] == pcfg.PLANNER_MAX_TOKENS
     assert pk["top_p"] == pcfg.PLANNER_TOP_P
     assert pk["extra_body"]["min_p"] == pcfg.PLANNER_MIN_P
-    assert pk["model"] == pcfg.PLANNER_MODEL
+    # `model` comes from the RESOLVED TARGET now, not from PLANNER_MODEL: the route says which
+    # model serves the planner, and PLANNER_MODEL only seeds that route's primary.
+    assert pk["model"] == target.model
 
 
 def test_planner_kwargs_follow_a_distinct_planner_temperature(monkeypatch):
     import meshpipeline.engines.snappy.settings as pcfg
-    from meshpipeline.adapters.model_inference.deepinfra import _planner_call_kwargs
+    from meshpipeline.adapters.model_inference.call_kwargs import kwargs_for, spec_for
     monkeypatch.setenv("PLANNER_TEMPERATURE", "0.71")
     importlib.reload(pcfg)
     try:
-        assert _planner_call_kwargs()["temperature"] == pytest.approx(0.71)
+        kw = kwargs_for(_CHAT_TARGET, spec_for("planner"))
+        assert kw["temperature"] == pytest.approx(0.71)
     finally:
         monkeypatch.delenv("PLANNER_TEMPERATURE", raising=False)
         importlib.reload(pcfg)

@@ -22,7 +22,7 @@ A month is 730 hours throughout.
 |---|---|---|---|
 | **`hexera-prod`** | **~$205/mo** | **~$260/mo** | warm pool, HA broker, always-on API |
 | **One shared dev** (`hexera-dev`) | **~$95/mo** | **~$120/mo** | scale-to-zero worker fleet |
-| **A personal dev** | **~$0/mo** | **~$5/mo** | local control plane; cloud mesh job only |
+| **A personal dev** | **~$0/mo** | **~$10/mo** | local control plane; cloud mesh job only |
 
 ~~The two builder VMs currently running in `hexera-dev` add ~$430/mo on top.~~ **Deleted
 2026-09-03** — heavy CI moved to GitHub-hosted larger runners, so that line is gone. The dev
@@ -52,16 +52,16 @@ That floor is higher than the summary because it assumes every optional piece at
 realistic prod steady state, with the API scaling to its minimum and the fleet at one instance,
 lands around **$205–260/mo**; the spread is mesh execution, which is per-job.
 
-**Mesh execution is the variable.** Each mesh is a Cloud Run Job at 4 vCPU / 8 GiB, billed only
+**Mesh execution is the variable.** Each mesh is a Cloud Run Job at 8 vCPU / 16 GiB, billed only
 while running:
 
 | Mesh runs/month | Avg 10 min each | Cost |
 |---|---|---|
-| 100 | ~17 h | ~$4 |
-| 1,000 | ~167 h | ~$40 |
-| 10,000 | ~1,667 h | ~$400 |
+| 100 | ~17 h | ~$8 |
+| 1,000 | ~167 h | ~$80 |
+| 10,000 | ~1,667 h | ~$800 |
 
-At 10,000 runs/month mesh compute overtakes the entire fixed floor, which is the point at which
+At ~5,000 runs/month mesh compute overtakes the entire fixed floor, which is the point at which
 committed-use discounts and the Cloud Run vs. VM question (design doc §9) stop being theoretical.
 
 ---
@@ -99,11 +99,11 @@ shared dev project under a `dev-<name>` prefix.
 | Component | Monthly |
 |---|---|
 | Everything local | $0 |
-| Mesh job (per-run only) | ~$0.02 per 10-minute mesh |
+| Mesh job (per-run only) | ~$0.04 per 10-minute mesh |
 | Exchange bucket | ~$0, 2-day lifecycle |
 | **Idle** | **~$0** |
 
-A developer meshing 100 times a month costs roughly **$2–5**. This is why the model exists: a
+A developer meshing 100 times a month costs roughly **$4–10**. This is why the model exists: a
 personal environment that idles at zero can be created per developer without a budget conversation.
 
 ---

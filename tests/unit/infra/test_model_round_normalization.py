@@ -1,4 +1,9 @@
 # Responsibility: Verify every provider round normalises to the agreed surface, exposing no provider object.
+# Boundaries: the CHAT-COMPLETIONS reading of a round. The doubles below are chat-shaped, so every
+# role is pinned to a chat provider (pin_chat_routes) rather than left on its live `openai` route,
+# which speaks Responses and would be handed a client with no `.responses` at all. The Responses
+# adapter's own normalisation is pinned by tests/unit/infra/test_responses_normalize.py; what this
+# file owns is that a chat round becomes a ModelRoundResult and no SDK object escapes with it.
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +12,12 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from test_provider_error_hardening import _exc
+from test_provider_error_hardening import _exc, pin_chat_routes
 
 import meshpipeline.adapters.model_inference.router as router
 from meshpipeline.adapters._shared.resilience import reset_breakers
 from meshpipeline.adapters.model_capacity.local import LocalCapacityController
+from meshpipeline.adapters.model_inference import providers
 from meshpipeline.adapters.model_inference.routing import RouteExhausted
 from meshpipeline.contracts import model_capacity
 from meshpipeline.contracts.model_inference import (
@@ -27,6 +33,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture(autouse=True)
 def _wired(monkeypatch):
     reset_breakers()
+    pin_chat_routes(monkeypatch)
     model_capacity.set_capacity_controller(LocalCapacityController(poll_interval_s=0.001))
 
     async def _no_sleep(_s, *a, **k):
@@ -37,6 +44,8 @@ def _wired(monkeypatch):
     yield
     model_capacity.set_capacity_controller(None)
     reset_breakers()
+    from meshpipeline.adapters.model_inference import routes as routecfg
+    routecfg._ROUTES = None
 
 
 def _client(create):
@@ -75,7 +84,7 @@ def _no_stream(monkeypatch):
 
 # non-streaming (Intake) route
 async def test_the_non_streaming_intake_route_normalizes(monkeypatch):
-    monkeypatch.setattr(router, "client_for",
+    monkeypatch.setattr(providers, "client_for",
                         lambda t: _ok(_provider_response(content="What simulation type?")))
     r = await router.call_intake_model([{"role": "user", "content": "hi"}], job_id="j")
     assert isinstance(r, ModelRoundResult)
@@ -87,7 +96,7 @@ async def test_the_non_streaming_intake_route_normalizes(monkeypatch):
 # streaming (Builder) route
 async def test_the_streaming_builder_route_normalizes(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok(_provider_response(
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok(_provider_response(
         content="", finish_reason="tool_calls",
         tool_calls=[_tc("c1", "run_mesh", '{"engine": "snappy"}')])))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], tools=[{"a": 1}],
@@ -108,7 +117,7 @@ async def test_the_streaming_multimodal_reviewer_route_normalizes(monkeypatch):
         return _provider_response(finish_reason="tool_calls",
                                   tool_calls=[_tc("c9", "inspect_region",
                                                   '{"region_name": "wing"}')])
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
 
     multimodal = [{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
@@ -124,7 +133,7 @@ async def test_the_streaming_multimodal_reviewer_route_normalizes(monkeypatch):
 # several calls per round
 async def test_multiple_tool_calls_in_one_round_are_all_normalized(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok(_provider_response(
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok(_provider_response(
         finish_reason="tool_calls",
         tool_calls=[_tc("a", "zoom", "{}"), _tc("b", "reset_view", "{}"),
                     _tc("c", "submit_findings", '{"verdict": "PASS"}')])))
@@ -135,7 +144,7 @@ async def test_multiple_tool_calls_in_one_round_are_all_normalized(monkeypatch):
 
 async def test_malformed_arguments_survive_verbatim_for_the_caller_to_judge(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok(_provider_response(
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok(_provider_response(
         finish_reason="tool_calls", tool_calls=[_tc("x", "zoom", "{not json")])))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], tools=[{"a": 1}],
                                         job_id="j")
@@ -145,7 +154,7 @@ async def test_malformed_arguments_survive_verbatim_for_the_caller_to_judge(monk
 # plain text and usage
 async def test_a_plain_text_turn_reports_no_tool_calls(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for",
+    monkeypatch.setattr(providers, "client_for",
                         lambda t: _ok(_provider_response(content="just talking")))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert r.tool_calls == () and r.assistant_text == "just talking" and r.finish_reason == "stop"
@@ -153,7 +162,7 @@ async def test_a_plain_text_turn_reports_no_tool_calls(monkeypatch):
 
 async def test_truncation_is_reported_through_finish_reason(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for",
+    monkeypatch.setattr(providers, "client_for",
                         lambda t: _ok(_provider_response(finish_reason="length")))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert r.finish_reason == "length"
@@ -161,7 +170,7 @@ async def test_truncation_is_reported_through_finish_reason(monkeypatch):
 
 async def test_cached_input_tokens_are_reported_when_the_provider_supplies_them(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok(
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok(
         _provider_response(prompt=100, completion=7, cached=64)))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert (r.input_tokens, r.cached_input_tokens, r.output_tokens) == (100, 64, 7)
@@ -170,7 +179,7 @@ async def test_cached_input_tokens_are_reported_when_the_provider_supplies_them(
 # provider attempts: reported, not run
 async def test_a_successful_call_reports_one_attempt(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok(_provider_response()))
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok(_provider_response()))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert r.provider.attempts == 1
     assert r.provider.provider and r.provider.model
@@ -185,7 +194,7 @@ async def test_a_success_after_a_retry_reports_the_real_attempt_count(monkeypatc
         if calls["n"] == 1:
             raise _exc("connection")
         return _provider_response()
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert r.ok and calls["n"] == 2 and r.provider.attempts == 2
 
@@ -195,7 +204,7 @@ async def test_terminal_route_exhaustion_becomes_a_marker_not_an_exception(monke
 
     async def _create(**kw):
         raise _exc("rate_limit")
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
     r = await router.call_reviewer_with_tools([{"role": "user", "content": "x"}], [], job_id="j")
     assert not r.ok
     assert r.failure_marker == "<<API_FAILURE:reviewer_rate_limit>>"
@@ -211,7 +220,7 @@ async def test_tool_choice_is_forwarded_verbatim_including_a_forced_function(mon
     async def _create(**kw):
         seen.update(kw)
         return _provider_response()
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
 
     forced = {"type": "function", "function": {"name": "submit_mesh"}}
     await router.call_builder_model([{"role": "user", "content": "x"}], tools=[{"a": 1}],
@@ -226,7 +235,7 @@ async def test_parallel_tool_calls_is_omitted_unless_explicitly_set(monkeypatch)
     async def _create(**kw):
         seen.clear(); seen.update(kw)
         return _provider_response()
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
 
     await router.call_builder_model([{"role": "user", "content": "x"}], tools=[{"a": 1}],
                                     job_id="j")
@@ -244,7 +253,7 @@ async def test_a_toolless_call_sends_neither_tools_nor_tool_choice(monkeypatch):
     async def _create(**kw):
         seen.update(kw)
         return _provider_response()
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
     await router.call_builder_model([{"role": "user", "content": "x"}], job_id="j")
     assert "tools" not in seen and "tool_choice" not in seen
 
@@ -265,7 +274,7 @@ def test_the_round_result_surface_is_exactly_the_agreed_fields(field):
 
 async def test_no_provider_object_is_reachable_from_the_result(monkeypatch):
     _no_stream(monkeypatch)
-    monkeypatch.setattr(router, "client_for", lambda t: _ok(_provider_response(
+    monkeypatch.setattr(providers, "client_for", lambda t: _ok(_provider_response(
         finish_reason="tool_calls", tool_calls=[_tc("c1", "zoom", "{}")])))
     r = await router.call_builder_model([{"role": "user", "content": "x"}], tools=[{"a": 1}],
                                         job_id="j")
@@ -275,7 +284,7 @@ async def test_no_provider_object_is_reachable_from_the_result(monkeypatch):
 
 
 async def test_the_summarizer_route_is_normalized_too(monkeypatch):
-    monkeypatch.setattr(router, "client_for",
+    monkeypatch.setattr(providers, "client_for",
                         lambda t: _ok(_provider_response(content="distilled")))
     r = await router.call_summarizer_model([{"role": "user", "content": "x"}], job_id="j")
     assert isinstance(r, ModelRoundResult) and r.assistant_text == "distilled"
@@ -284,7 +293,7 @@ async def test_the_summarizer_route_is_normalized_too(monkeypatch):
 async def test_the_summarizer_stays_respond_or_raise(monkeypatch):
     async def _create(**kw):
         raise _exc("rate_limit")
-    monkeypatch.setattr(router, "client_for", lambda t: _client(_create))
+    monkeypatch.setattr(providers, "client_for", lambda t: _client(_create))
     with pytest.raises(RouteExhausted):
         await router.call_summarizer_model([{"role": "user", "content": "x"}], job_id="j")
 

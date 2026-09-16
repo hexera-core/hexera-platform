@@ -24,8 +24,11 @@ langgraph==1.0.10
 langchain-core==1.3.3
 langgraph-checkpoint-postgres==3.1.1
 
-# LLM clients (all three providers use OpenAI wire protocol)
-openai==1.59.3
+# LLM clients. The SDK is shared, the WIRE PROTOCOL is not: deepinfra and deepseek speak
+# chat-completions, openai speaks the Responses API (adapters/model_inference/protocols/).
+# >=1.66.0 IS A FLOOR, NOT A PREFERENCE - `client.responses` does not exist before it, and
+# protocols/responses.py calls it, so an older pin is an AttributeError on every openai call.
+openai==1.109.1
 tiktoken==0.13.0
 
 # Database

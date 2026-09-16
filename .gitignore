@@ -51,3 +51,7 @@ node_modules/
 # the source it was built from.
 /apps/admin-console/outreach-worker.js
 /apps/admin-console/import-outreach.js
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages.
+# Per-plan workspaces under .superpowers/sdd/<plan>/; the git history is the durable record.
+.superpowers/

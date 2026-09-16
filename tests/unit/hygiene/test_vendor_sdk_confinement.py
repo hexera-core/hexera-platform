@@ -39,15 +39,17 @@ VENDOR_ALLOWLIST: dict[str, set[str]] = {
     # Redis: client construction is centralised in ONE module; the capability adapters build
     # their clients through it.
     "redis": {"adapters/_shared/redis_client.py"},
-    # The OpenAI-compatible model adapters (DeepSeek + DeepInfra-hosted models).
+    # The model-inference adapter's SDK-facing edge. router.py is deliberately NOT here: since
+    # the protocol seam landed it resolves a WireProtocol and never names a wire format, so the
+    # SDK stopped reaching it. The guard records that the seam got tighter.
     "openai": {
-        "adapters/model_inference/router.py",
         "adapters/model_inference/tracing.py",
         "adapters/model_inference/streaming.py",
         # providers.py is where a provider label becomes a client and an SDK exception becomes
         # a NEUTRAL FailureCategory. That translation is the reason nothing above the adapter
         # needs the SDK's exception types to decide whether a failure may fail over.
         "adapters/model_inference/providers.py",
+        "adapters/model_inference/openai_api.py",
     },
     # Google Cloud: the object store + the Cloud Run mesh/pipeline adapters, and the one
     # adapter that verifies a Google Identity Platform ID token.

@@ -125,17 +125,33 @@ REMOVED: dict[str, str] = {
 #: setting the product does not have. The repetition below is the point.
 #:
 #: (role, prefix, provider, model, timeout, attempts, backoff_base, backoff_max, budget, queue)
+#:
+#: BUDGET IS A PROPERTY OF THE QUOTA DOMAIN (provider:account:model), not of the role - see the
+#: CONCURRENCY_BUDGET help below. routes.domain_budget() takes the max() across the roles sharing
+#: a domain, so roles that share one carry the SAME number here; a disagreement within a domain
+#: does not buy the smaller role a smaller share, it just means nobody chose the ceiling. Moving
+#: a role to another provider or model therefore moves it between pools: these numbers travel
+#: with the provider/model columns and must be re-decided alongside them.
+#:
+#: The two shipped domains, and what their ceilings restore. Before every role was consolidated
+#: onto openai, builder+planner had 8 on GLM-5.2 and visual_reviewer had 8 to itself on
+#: Qwen-Thinking; intake had 16 on v4-pro and summarizer 8 on v4-flash. All three terra roles run
+#: inside every mesh job, the ceiling is fleet-wide (Redis-backed, shared by API and workers),
+#: and a queue deadline exceeded FAILS the job as OVERLOAD - no route has a standby - so a
+#: collapsed pool costs jobs rather than slowing them.
+#:   gpt-5.6-terra  16 = builder+planner's 8 + visual_reviewer's 8
+#:   gpt-5.6-luna   24 = intake's 16 + summarizer's 8
 ROUTE_MATRIX: list[tuple[str, str, str, str, str, str, str, str, str, str]] = [
-    ("intake",     "INTAKE",            "deepseek",  "deepseek-v4-pro",
-     "120.0",  "5", "5.0",  "60.0",  "16", "15.0"),
-    ("builder",    "BUILDER",           "deepinfra", "zai-org/GLM-5.2",
-     "1800.0", "3", "15.0", "120.0", "8",  "30.0"),
-    ("visual_reviewer", "VISUAL_REVIEWER", "deepinfra", "Qwen/Qwen3-VL-235B-A22B-Thinking",
-     "1800.0", "3", "5.0",  "60.0",  "8",  "30.0"),
-    ("summarizer", "SEARCH_SUMMARIZER", "deepseek",  "deepseek-v4-flash",
-     "60.0",   "2", "2.0",  "15.0",  "8",  "10.0"),
-    ("planner",    "PLANNER",           "deepinfra", "zai-org/GLM-5.2",
-     "1800.0", "3", "15.0", "120.0", "4",  "30.0"),
+    ("intake",     "INTAKE",            "openai",    "gpt-5.6-luna",
+     "120.0",  "5", "5.0",  "60.0",  "24", "15.0"),
+    ("builder",    "BUILDER",           "openai",    "gpt-5.6-terra",
+     "1800.0", "3", "15.0", "120.0", "16", "30.0"),
+    ("visual_reviewer", "VISUAL_REVIEWER", "openai",  "gpt-5.6-terra",
+     "1800.0", "3", "5.0",  "60.0",  "16", "30.0"),
+    ("summarizer", "SEARCH_SUMMARIZER", "openai",    "gpt-5.6-luna",
+     "60.0",   "2", "2.0",  "15.0",  "24", "10.0"),
+    ("planner",    "PLANNER",           "openai",    "gpt-5.6-terra",
+     "1800.0", "3", "15.0", "120.0", "16", "30.0"),
 ]
 
 #: suffix -> (kind, help). The per-route default comes from ROUTE_MATRIX; everything else about
@@ -240,17 +256,29 @@ def retired_present(environ) -> list[tuple[str, str]]:
 
 
 INVENTORY: list[Group] = [
-    Group("LLM: DeepSeek (intake / search summarizer)", note="A real key is the one thing you must set for a live job.", vars=[
-        EnvVar("DEEPSEEK_API_KEY", "", required=True, secret=True, help="real key from platform.deepseek.com"),
-        EnvVar("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-        EnvVar("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+    Group("LLM: OpenAI (every role)", note="A real key is the one thing you must set for a live job: all five shipped routes resolve to the openai provider.", vars=[
+        EnvVar("OPENAI_API_KEY", "", required=True, secret=True, help="real key from platform.openai.com"),
+        EnvVar("OPENAI_BASE_URL", "https://api.openai.com/v1", help="override only to reach an OpenAI-compatible gateway"),
     ]),
-    Group("LLM: DeepInfra (builder + reviewer, OpenAI-compatible)", vars=[
-        EnvVar("DEEPINFRA_API_KEY", "", required=True, secret=True, help="real key from deepinfra.com"),
+    Group("LLM: DeepSeek (supported, unused by the shipped routes)", note="Selectable, not selected: point a role's *_PROVIDER at deepseek and this key becomes required. Leave it blank if none is.", vars=[
+        EnvVar("DEEPSEEK_API_KEY", "", secret=True, help="required only when a route resolves to the deepseek provider"),
+        EnvVar("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+    ]),
+    Group("LLM: DeepInfra (supported, unused by the shipped routes)", note="Selectable, not selected: point a role's *_PROVIDER at deepinfra and this key becomes required. Leave it blank if none is.", vars=[
+        EnvVar("DEEPINFRA_API_KEY", "", secret=True, help="required only when a route resolves to the deepinfra provider"),
         EnvVar("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai"),
-        EnvVar("REVIEWER_MODEL", "Qwen/Qwen3-VL-235B-A22B-Thinking"),
-        EnvVar("BUILDER_MAX_TOKENS", "16384", help="DeepInfra caps output at 16384 tokens per response for these models"),
-        EnvVar("REVIEWER_MAX_TOKENS", "16384"),
+    ]),
+    # NOT under a provider heading, though two of these carry a provider's name. Every one is read
+    # whichever provider serves the role, so filing them under the vendor they were introduced
+    # with would tell an operator that a LIVE setting belongs to a group the shipped routes do not
+    # use - and that reading ends with a blanked value and a silently wrong record.
+    Group("Agent models and sampling", note="Read whatever provider serves the role. OpenAI's Responses API rejects temperature, top_p and presence_penalty and drops them with a warning; they are still honoured by a route pointed at deepseek or deepinfra, which is why they are not deleted.", vars=[
+        EnvVar("DEEPSEEK_MODEL", "gpt-5.6-luna", help="LIVE, and not a DeepSeek setting: it is INTAKE's model, under a name from when intake could only be DeepSeek. It is recorded as intake's capture provenance, so blanking it does not disable anything - it writes an empty model into every job's record. Keep it equal to INTAKE_MODEL, which is what the route actually reads"),
+        EnvVar("REVIEWER_MODEL", "gpt-5.6-terra", help="the visual reviewer's model for capture provenance; the route itself reads VISUAL_REVIEWER_MODEL, so keep the two equal"),
+        EnvVar("BUILDER_MAX_TOKENS", "16384", help="the builder's output ceiling; sent as max_output_tokens on every Responses call, max_tokens on a chat one. It began as DeepInfra's own per-response cap and is kept as the budget"),
+        EnvVar("REVIEWER_MAX_TOKENS", "16384", help="the same ceiling for one review round"),
+        # Qwen's recommended Thinking-variant sampling, kept so a route pointed back at DeepInfra
+        # still gets it.
         EnvVar("REVIEWER_TEMPERATURE", "0.7", help="reviewer sampling; the value the shipped stack has always run with"),
         EnvVar("REVIEWER_TOP_P", "0.8"),
         EnvVar("REVIEWER_PRESENCE_PENALTY", "1.5"),
@@ -510,7 +538,7 @@ _HEADER = """\
 # THIS FILE IS THE TEMPLATE, NOT YOUR CONFIGURATION. `make setup` copies it to .env when you have
 # no .env yet, and leaves an existing one untouched. Edit .env; never edit this file by hand.
 #
-# Then set the two keys marked REQUIRED. .env is gitignored and is the only file the application
+# Then set the keys marked REQUIRED. .env is gitignored and is the only file the application
 # reads.
 #
 # A shell variable beats .env, and .env beats the default shown here.
