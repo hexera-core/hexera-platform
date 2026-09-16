@@ -143,7 +143,7 @@ def source_row(ref: GeometrySourceRef):
 def source_lookup(ref: GeometrySourceRef | None):
     from unittest.mock import AsyncMock, patch
 
-    async def _get_for_owner(_db, source_id, owner_id):
+    async def _get_for_owner(_db, source_id, owner_id, *, organization_id=""):
         if ref is None or str(source_id) != ref.source_id or str(owner_id) != ref.owner_id:
             return None
         return source_row(ref)
@@ -161,7 +161,7 @@ def interpretation_lookup(ref, owner_id: str = "owner-1"):
         ResolutionBasis,
     )
 
-    async def _get_for_owner(_db, interpretation_id, asked_owner):
+    async def _get_for_owner(_db, interpretation_id, asked_owner, *, organization_id=""):
         if ref is None or str(interpretation_id) != ref.interpretation_id \
                 or str(asked_owner) != owner_id:
             return None

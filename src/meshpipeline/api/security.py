@@ -11,6 +11,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.application import account_service
 from meshpipeline.contracts import api_key
 from meshpipeline.contracts.identity import Credential, Principal
 from meshpipeline.contracts.rate_limit import incr_window
@@ -67,8 +68,54 @@ async def resolve_principal(authorization: str | None, x_api_key: str | None,
 
     owner_id = verify_identity(x_api_key, x_user_id, x_user_sig)
     return Principal(owner_id=owner_id,
+                     organization_id=await _organization_for(owner_id),
                      credential=Credential.signed_header if polcfg.USER_TOKEN_SECRET
                      else Credential.self_asserted)
+
+
+async def _organization_for(owner_id: str) -> str:
+    # THE ONE PLACE a header credential's tenant is resolved. One indexed read per request; a
+    # cache belongs here and nowhere else, which is why the journey is a single call rather than
+    # a join written at each call site.
+    #
+    # A key credential does NOT come through here: its row already names an organisation, and a
+    # key may be scoped to one while its owner belongs to several.
+    if not owner_id:
+        return ""
+    try:
+        async with get_db() as db:
+            return await account_service.organization_id_for_owner(db, owner_id)
+    except Exception as exc:
+        # FAIL OPEN TO OWNER SCOPE, never to a refusal. The organisation is a scope, not a
+        # credential: the caller has already proven who they are, and a lookup that cannot run
+        # must degrade to today's owner-only behaviour rather than 500 a proven request. Reads
+        # fall back to owner_id when the principal names no organisation (see the repositories).
+        #
+        # LOGGED AT `error`, NOT `warning`, because failing open here is not symmetric. On a READ
+        # it costs nothing durable - the request is answered owner-scoped and the next one is
+        # answered correctly. On a WRITE the same empty string reaches `tenant_scope.stamp`,
+        # which writes owner_id alone, and that row is then invisible to every later org-scoped
+        # read, forever: 0004's backfill is a one-shot that has already run, so nothing
+        # re-stamps it. A transient database blip therefore leaves permanent damage behind, and
+        # rows like these would also block 0005's NOT NULL. This must page somebody, not sit in
+        # a warning stream. Repairing them means re-running 0004's stamping UPDATEs; see
+        # docs/deployment/identity-platform.md section 7a.
+        # NEITHER THE OWNER NOR THE EXCEPTION TEXT IS LOGGED, and the owner is not hashed
+        # either. `verify_identity` returns `user_id or (x_api_key or "dev-user")`, so on the
+        # self-asserted path - USER_TOKEN_SECRET unset, the documented dev posture - owner_id IS
+        # the presented API key, and logging it writes MESH_API_KEY out in clear text. A sha256
+        # of it is no better: it is fast by construction, so a digest of an email is recovered
+        # from a wordlist, which is why CodeQL rejects a plain digest of sensitive data too.
+        #
+        # The line does not need an owner. What it must do is page somebody, because the repair -
+        # re-running 0004's stamping UPDATEs, which are `WHERE organization_id IS NULL` - is
+        # GLOBAL, not per-owner (docs/deployment/identity-platform.md section 7a). The exception's
+        # type is kept and its message dropped for the same reason api/auth.py refuses the
+        # decoder's text: it can carry a DSN.
+        logger.error("could not resolve an organisation - scoping on owner alone, and any write "
+                     "in this request will be stamped with the owner only (%s)",
+                     type(exc).__name__)
+        return ""
 
 
 async def _principal_from_key(presented: str) -> Principal:
@@ -137,3 +184,9 @@ async def owner_dep(
 
 async def plan_dep(principal: Annotated[Principal, Depends(principal_dep)]) -> str:
     return principal.plan
+
+
+async def org_dep(principal: Annotated[Principal, Depends(principal_dep)]) -> str:
+    # Beside owner_dep, resolved from the SAME cached principal - so a route taking both gets one
+    # credential check and one organisation lookup, not two.
+    return principal.organization_id

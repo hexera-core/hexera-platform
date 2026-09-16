@@ -13,7 +13,6 @@ from meshpipeline.agents.builder.settings import (
     BUILDER_LOOP_TIMEOUT,
     BUILDER_MAX_ROUNDS,
     BUILDER_MAX_TOTAL_ATTEMPTS,
-    BUILDER_MODEL,
     BUILDER_RETRY_MAX_ROUNDS,
     MAX_BUILDER_RETRIES,
 )
@@ -33,7 +32,6 @@ from meshpipeline.settings.providers import (
     DEEPSEEK_MODEL,
     POSTGRES_PASSWORD,
     REDIS_URL,
-    SEARCH_SUMMARIZER_MODEL,
     WEB_SEARCH_BASE_URL,
     WEB_SEARCH_ENABLED,
     WEB_SEARCH_PROVIDER,
@@ -195,12 +193,23 @@ def validate_and_summarize() -> str:
 
 
 def summary() -> str:
+    # WHICH MODEL SERVES WHICH ROLE, asked of the routes themselves. This block used to be four
+    # hand-written lines naming four settings, and two of those settings were not the answer: the
+    # route reads VISUAL_REVIEWER_MODEL, not REVIEWER_MODEL, and INTAKE_MODEL, not DEEPSEEK_MODEL.
+    # So the banner could name a model no call would ever be sent to - and after the OpenAI
+    # cutover it printed "DeepSeek model: gpt-5.6-luna", announcing a vendor this deployment does
+    # not call on the most operator-facing surface there is. routes.summary() reads the live
+    # routes and adds the quota domains; it existed for exactly this and had no caller.
+    from meshpipeline.adapters.model_inference.routes import summary as route_summary
+
     return "\n".join([
         "=== Mesh application configuration ===",
-        f"  DeepSeek model    : {DEEPSEEK_MODEL}",
-        f"  Builder model     : {BUILDER_MODEL}",
-        f"  Reviewer model    : {REVIEWER_MODEL}",
-        f"  Search summarizer : {SEARCH_SUMMARIZER_MODEL}",
+        route_summary(),
+        # The two names that are NOT route settings. They are read for capture provenance
+        # (application/pipeline_run.py) and can silently disagree with the routes above, which is
+        # the only reason they are still worth a line.
+        f"  Capture provenance: intake={DEEPSEEK_MODEL} (DEEPSEEK_MODEL) "
+        f"reviewer={REVIEWER_MODEL} (REVIEWER_MODEL)",
         f"  Web search        : {WEB_SEARCH_PROVIDER} @ {WEB_SEARCH_BASE_URL} (enabled={WEB_SEARCH_ENABLED})",
         "  Checkpointer      : postgres (auto-fallback: memory)",
         f"  Workspace base    : {WORKSPACE_BASE}",

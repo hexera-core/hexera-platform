@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
@@ -24,14 +25,34 @@ _LUMEN = "lumen.vtp"
 _CENTERLINES = "centerlines.vtp"
 _DIST = "lumen_dist.vtp"
 _MESH = "mesh.vtu"
+_LUMEN_OPEN = "lumen_open.vtp"     # the staged open wall (engines/vmtk/lumen_staging.py)
+#: A boundary layer whose tets sum to more than this above the enclosed volume has folded;
+#: tets summing to less than the enclosed volume by more than this never filled it.
+OVERLAP_TOLERANCE = 0.02
 
+#: INDUSTRY DENSITY BY DEFAULT (2026-09-11). The first sweep shipped 0.3 / 3 layers / 0.2: about
+#: seven cells across every passage and a layer stack six percent of the radius deep - a preview
+#: mesh, not one a CFD run can use (industry RANS practice is 20-40 cells across, 5-10 layers
+#: over 10-20% of the radius). 0.15 puts ~13 cells across (2 / edge_length_factor) and stays
+#: inside the run budget on the sweep's largest cases; the floor below is 12 (criteria.py).
 _DEFAULTS: dict = {
-    "edge_length_factor": 0.3,
-    "boundary_layers": 3,
-    "boundary_layer_thickness_factor": 0.2,
+    "edge_length_factor": 0.15,
+    "boundary_layers": 5,
+    # 10% of the radius: vmtk's layer generator has no collision handling, and a thicker stack
+    # from both walls of a wye crotch folds into itself (tee_wye_003: 15% overlapped 10.5% of
+    # the volume in the lab). With 1.25x growth the first cell is ~1.2% of the radius.
+    "boundary_layer_thickness_factor": 0.10,
     "cap_openings": True,
     "remesh_surface": True,
-    "max_cells": 4_000_000,
+    "max_cells": 8_000_000,
+    # ENGINE-STAGED sizing. lumen_staging fills these from the declared ports of a CAD body
+    # (configure_mesh merges them); empty = nothing staged, the pype runs on the lumen as given.
+    "sizing_array": "",
+    "min_edge_length": None,
+    "max_edge_length": None,
+    # staged route only: whether vmtkmeshgenerator remeshes the (already remeshed) surface
+    # again before capping and filling; the repair ladder toggles it
+    "generator_remesh": True,
     # CENTERLINE SEEDING - must be NON-INTERACTIVE. vmtk's 'openprofiles'/'pickpoint'
     # selectors open an X render window and abort in a headless worker (verified: SIGABRT,
     # "bad X server connection"). The non-interactive selectors are:
@@ -74,10 +95,86 @@ def _seed_args(s: dict) -> list[str]:
         "(geometry_report lists them). Interactive seeding is impossible in a headless worker.")
 
 
+def build_staged_stages(strategy: dict) -> tuple[list[str], list[str]]:
+    """The STAGED CAD LUMEN route as two argv lists: the surface stage, run once, and the
+    generator stage, run per repair-ladder step. The open wall arrives with its local radius
+    at every point (engines/vmtk/lumen_staging.py).
+    Surface: 1. remesh it radius-adaptively (the staged triangles are edge-bounded CAD
+    slivers; handing those straight to the generator left TetGen an inner surface it refused -
+    "Unable to find an edge in subface" on tee_wye_003 and straight_reducer_004); 2. keep the
+    one lumen and drop the orphan points the remesher leaves; 3. project the radius array back
+    from the staged wall (the remesher drops point data).
+    Generate: vmtkmeshgenerator caps the declared openings (one CellEntityId each, from 2),
+    optionally remeshes with the array again, grows the layers and fills the volume. Capping is
+    not optional here - the surface is open by construction - so cap_openings does not apply;
+    generator_remesh stands in for remesh_surface. No centerline stage: vmtkcenterlines was the
+    part that failed (see local_radius)."""
+    s = resolve_strategy(strategy)
+    elf = float(s["edge_length_factor"])
+    array = str(s["sizing_array"])
+    surface = [
+        rtcfg.VMTK_BIN,
+        "vmtksurfaceremeshing", "-ifile", _LUMEN_OPEN,
+        "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
+        "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
+        "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
+        "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
+    ]
+    generate = [
+        rtcfg.VMTK_BIN, "vmtkmeshgenerator", "-ifile", _LUMEN,
+        "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
+        "-edgelengthfactor", f"{elf:g}", *_clamp_args(s),
+        "-skipcapping", "0", "-skipremeshing", "0" if s.get("generator_remesh", True) else "1",
+        *_layer_args(s), "-tetrahedralize", "1", "-ofile", _MESH,
+    ]
+    return surface, generate
+
+
+def _clamp_args(s: dict) -> list[str]:
+    # clamps on the radius-adaptive size: where the sizing field touches zero (a ray that
+    # grazes a corner, centerlines merging) a zero-size target kills the generator
+    return [
+        *(["-minedgelength", f"{float(s['min_edge_length']):g}"]
+          if s.get("min_edge_length") else []),
+        *(["-maxedgelength", f"{float(s['max_edge_length']):g}"]
+          if s.get("max_edge_length") else []),
+    ]
+
+
+#: growth of successive wall layers away from the wall (vmtk takes its inverse as -sublayerratio;
+#: its own default 0.5 doubles each layer - far steeper than the 1.2-1.3 CFD practice wants)
+LAYER_GROWTH_RATIO = 1.25
+
+
+def _layer_args(s: dict) -> list[str]:
+    layers = int(s["boundary_layers"])
+    out = ["-boundarylayer", "1" if layers > 0 else "0"]
+    if layers > 0:
+        # vmtk's -thicknessfactor multiplies the LOCAL EDGE LENGTH (edge_length_factor x radius),
+        # while the strategy field is documented, validated and reasoned about as a fraction of
+        # the local RADIUS. Dividing by the edge factor makes the field mean what it says: 0.15
+        # is a stack fifteen percent of the radius deep whatever the cell size. Passed straight
+        # through, the first sweep's 0.2 came out six percent deep.
+        vs_edge = float(s["boundary_layer_thickness_factor"]) / float(s["edge_length_factor"])
+        out += [
+            # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
+            "-sublayers", str(layers),
+            "-thicknessfactor", f"{vs_edge:g}",
+            "-sublayerratio", f"{1.0 / LAYER_GROWTH_RATIO:g}",
+            # layers belong on the lumen WALL, not across the inlet/outlet caps
+            "-boundarylayeroncaps", "0",
+        ]
+    return out
+
+
 def build_pype(strategy: dict) -> list[str]:
     s = resolve_strategy(strategy)
     elf = float(s["edge_length_factor"])
-    layers = int(s["boundary_layers"])
+    clamps = _clamp_args(s)
+    layer_args = _layer_args(s)
+    if s.get("sizing_array"):
+        surface, generate = build_staged_stages(s)
+        return surface + ["--pipe"] + generate[1:]
     argv: list[str] = [
         rtcfg.VMTK_BIN,
         # 1. centerlines of the lumen, seeded NON-INTERACTIVELY
@@ -90,20 +187,12 @@ def build_pype(strategy: dict) -> list[str]:
         "--pipe", "vmtkmeshgenerator", "-ifile", _DIST,
         "-elementsizemode", "edgelengtharray",
         "-edgelengtharray", "DistanceToCenterlines",
-        "-edgelengthfactor", f"{elf:g}",
+        "-edgelengthfactor", f"{elf:g}", *clamps,
         # vmtkmeshgenerator expresses these as the INVERSE (skip-*) booleans
         "-skipcapping", "0" if s["cap_openings"] else "1",
         "-skipremeshing", "0" if s["remesh_surface"] else "1",
-        "-boundarylayer", "1" if layers > 0 else "0",
+        *layer_args,
     ]
-    if layers > 0:
-        argv += [
-            # vmtk's layer COUNT flag is -sublayers (there is no -numberoflayers)
-            "-sublayers", str(layers),
-            "-thicknessfactor", f"{float(s['boundary_layer_thickness_factor']):g}",
-            # layers belong on the lumen WALL, not across the inlet/outlet caps
-            "-boundarylayeroncaps", "0",
-        ]
     argv += ["-tetrahedralize", "1", "-ofile", _MESH]
     return argv
 
@@ -170,6 +259,33 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
                              "n_edge_cells": int(b.n_cells)})
     b = surf.bounds
     diag = ((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2) ** 0.5
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    staged = read_staging(ws)
+    if staged and staged.get("ports"):
+        return {
+            "closed": len(profiles) == 0,
+            "open_profiles": profiles,
+            "n_open_profiles": len(profiles),
+            "bbox": [b[0], b[2], b[4], b[1], b[3], b[5]],
+            "diag": diag,
+            "n_surface_cells": int(surf.n_cells),
+            # the engine opened the declared ports itself: name, role, where, how big
+            "staged_ports": [{"name": p["name"], "role": p["role"],
+                              "centroid": [round(float(v), 6) for v in p["centroid"]],
+                              "equivalent_diameter_m": round(float(p["size_m"]), 6)}
+                             for p in staged["ports"]],
+            "seeds_staged": bool(staged.get("source_points") and staged.get("target_points")),
+            "sizing_staged": bool(staged.get("sizing_array")),
+            "local_radius_m": staged.get("radius_m"),
+            "note": ("The engine has ALREADY opened this CAD body at the declared inlet/outlet "
+                     "faces (lumen.vtp is the fluid wall with real holes) and measured the "
+                     "lumen's local radius at every wall point, which is what the cells are "
+                     "sized from (edge_length_factor x local radius, clamped by "
+                     "min_edge_length / max_edge_length). No centerline seeds are needed: "
+                     "configure_mesh takes the staged sizing - leave seeds and the clamps out "
+                     "unless a run_mesh failure names one to change. Each staged port becomes "
+                     "one capped patch under its declared name."),
+        }
     return {
         "closed": len(profiles) == 0,
         "open_profiles": profiles,
@@ -209,16 +325,152 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "lumen with its terminal openings present (the inlet and outlet cut "
                           "open, not sealed), or mesh the sealed solid with a volume engine "
                           "instead.")}
-    s = resolve_strategy(strategy)
+    from meshpipeline.engines.vmtk.lumen_staging import merge_staged, read_staging
+    s = resolve_strategy(merge_staged(strategy, read_staging(ws)))
+    if not s.get("sizing_array") and not ((s["source_points"] and s["target_points"])
+                                          or (s["source_ids"] and s["target_ids"])):
+        return {"code": "vmtk_seeds_required",
+                "error": ("centerline seeding is required and nothing was staged for this "
+                          "geometry: give source_points+target_points (coordinates on the "
+                          "inlet and outlet ends) or source_ids+target_ids (open-profile ids "
+                          "from geometry_report). Interactive seeding cannot run headless.")}
     (ws / "vmtk_spec.json").write_text(json.dumps(s, indent=2))
     return {"spec": s, "pype": " ".join(build_pype(s))}
 
 
+# staging (builder attempt seam): open the declared ports of a CAD body before anything runs
+
+def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
+                   input_kind: str = "") -> dict | None:
+    """Deterministic lumen preparation - see engines/vmtk/lumen_staging.py. Returns the
+    staging record, or None when it does not apply (a surface input, nothing declared)."""
+    from meshpipeline.engines.vmtk.lumen_staging import stage_lumen
+    return stage_lumen(workspace, geometry_path, prepared=prepared,
+                       intake_patches=intake_patches, input_kind=input_kind)
+
+
 # run (isolated subprocess)
 
+def _native_payload_members(workspace) -> list[str]:
+    """What the remote vmtk pype consumes: the spec (argv is built from it there) and the staged
+    lumen. Everything else in the attempt's workspace is local-only or a PRIOR pass's output
+    (mesh.vtu, centerlines.vtp, the distance surface, log.vmtk) that must not ride along."""
+    ws = Path(workspace)
+    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp") if (ws / n).exists()]
+
+
 def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
-    from meshpipeline.contracts.mesh_execution import run_mesh
-    return run_mesh(workspace, engine="vmtk", timeout=timeout)
+    from meshpipeline.contracts.mesh_execution import (
+        note_native_pass,
+        note_native_payload,
+        read_native_pass,
+        run_mesh,
+    )
+    # THE PASS IS PART OF THE SUBMISSION IDENTITY (job + generation + attempt + pass). The
+    # builder may run the mesher several times in one attempt with a revised spec - remesh on,
+    # coarser edge length, layers off - and without a recorded pass every run after the first
+    # was refused as a conflicting replay of the first one's claim ("claimed for engine 'vmtk'
+    # with a different payload"; jobs 73cce02e and 65081ced, 8 Sep). Numbered from the workspace
+    # so the count survives the tool being called from a fresh loop - and numbered BY PAYLOAD,
+    # not by call: an unchanged retry keeps its identity (see _pass_for_payload).
+    ws = Path(workspace)
+    # Facts are workspace files: recorded when there is a workspace to record them in. A run
+    # tool handed a path that does not exist (the dispatch-contract test does) still dispatches
+    # through the contract, which then reports the missing case itself.
+    if ws.is_dir():
+        members = _native_payload_members(ws)
+        note_native_pass(ws, _pass_for_payload(ws, members, read_native_pass))
+        note_native_payload(ws, members)
+    return run_mesh(ws, engine="vmtk", timeout=timeout)
+
+
+_RUN_IDENTITY_LEDGER = "vmtk_run_identity.json"   # {digest of the payload, its pass number}
+
+
+def _pass_for_payload(ws: Path, members: list[str], read_native_pass) -> int:
+    """The pass number for THIS payload. The same number as last time when the payload - the
+    spec and the staged lumen - is byte-for-byte what it was, so an unchanged retry after an
+    infrastructure or indeterminate failure replays under its own identity and the submission
+    contract deduplicates it; one more when anything in it changed, so a revised pass claims a
+    run of its own. A bare read-and-increment gave every call a new identity and let an
+    unchanged retry launch the same native workload twice."""
+    import hashlib
+    h = hashlib.sha256()
+    for m in members:
+        h.update(m.encode("utf-8"))
+        h.update((ws / m).read_bytes())
+    digest = h.hexdigest()
+    ledger = ws / _RUN_IDENTITY_LEDGER
+    try:
+        prev = json.loads(ledger.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        prev = {}
+    if prev.get("digest") == digest and isinstance(prev.get("pass"), int):
+        return int(prev["pass"])
+    n = max(int(prev.get("pass") or 0), int(read_native_pass(ws) or 0)) + 1
+    ledger.write_text(json.dumps({"digest": digest, "pass": n}), encoding="utf-8")
+    return n
+
+
+def repair_ladder(strategy: dict) -> list[dict]:
+    """The generator strategies a staged run tries in order when TetGen does not complete:
+    as given; without the generator's second remesh; that with half the layer thickness; no
+    layers; no layers and no second remesh. TetGen's verdict on this class of surface flips on
+    near-identical input - manifold_002 filled in the lab, refused the same wall (exception,
+    then a segfault without layers) in the image, and filled again in 8 s once the generator
+    skipped its own remesh - so the ladder varies the surface it sees, not just the layers.
+    The staged wall is clean; the engine walks the ladder itself instead of spending builder
+    turns, and a layer-free radius-adaptive fill is a valid deliverable. Unstaged runs (a
+    user's own .vtp) keep the single attempt."""
+    s = resolve_strategy(strategy)
+    if not s.get("sizing_array"):
+        return [s]
+    steps = [s]
+    if s.get("generator_remesh", True):
+        steps.append({**s, "generator_remesh": False})
+    if int(s.get("boundary_layers") or 0) > 0:
+        steps.append({**s, "generator_remesh": False,
+                      "boundary_layer_thickness_factor":
+                          float(s["boundary_layer_thickness_factor"]) / 2.0})
+        steps.append({**s, "boundary_layers": 0})
+        steps.append({**s, "boundary_layers": 0, "generator_remesh": False})
+    return steps
+
+
+def _step_label(strat: dict) -> str:
+    return (f"layers={strat['boundary_layers']}, thickness factor "
+            f"{float(strat['boundary_layer_thickness_factor']):g}, generator remesh "
+            f"{'on' if strat.get('generator_remesh', True) else 'off'}")
+
+
+def _fill_completed(ws: Path, result: dict) -> bool:
+    if result.get("rc") not in (0, None) or result.get("timed_out"):
+        return False
+    if not (ws / _MESH).exists():
+        return False
+    low = (result.get("log_tail") or "").lower()
+    return not any(f in low for f in _TETGEN_FAILURES)
+
+
+_LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
+_LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
+_now = time.monotonic       # the run clock; tests substitute it
+
+#: vmtkmeshgenerator announces each stage on its own line; the last one seen says where a run
+#: that did not fill actually died. transition_013 died in "Remeshing surface" - the generator's
+#: own remesh segfaulting on a pinched rim - while the note blamed TetGen (2026-09-11).
+_GENERATOR_STAGES = ("Not capping surface", "Capping surface", "Remeshing surface",
+                     "Generating boundary layer", "Capping inner surface", "Remeshing endcaps",
+                     "Computing sizing function", "Converting surface to mesh",
+                     "Generating volume mesh")
+
+
+def _last_stage(result: dict) -> str:
+    last = ""
+    for line in (result.get("log_tail") or "").splitlines():
+        if line.strip() in _GENERATOR_STAGES:
+            last = line.strip()
+    return last
 
 
 def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
@@ -228,17 +480,182 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         return {"rc": 1, "timed_out": False,
                 "log_tail": "vmtk_spec.json missing - call configure_mesh before run_mesh"}
     strategy = json.loads(spec_path.read_text())
-    argv = build_pype(strategy)
+    ladder = repair_ladder(strategy)
+    notes: list[str] = []
+    result: dict = {}
+    staged = bool(resolve_strategy(strategy).get("sizing_array"))
+    # ONE BUDGET for the whole run: the surface stage and every ladder step share `timeout`, so
+    # a staged run cannot outlive the deadline the caller sized it by. Each stage used to get
+    # the full timeout again - up to six times over - and could run past the builder's own
+    # deadline, which then killed the attempt before the builder saw any feedback.
+    deadline = _now() + float(timeout)
+
+    def left() -> int:
+        return max(1, int(deadline - _now()))
+
+    if staged:
+        # the surface stage once; the generator per ladder step
+        surface, _ = build_staged_stages(ladder[0])
+        result = _run_pype(ws, surface, timeout=left())
+        if result.get("rc") not in (0, None) or result.get("timed_out") \
+                or not (ws / _LUMEN).exists():
+            (ws / "log.vmtk").write_text(result.get("log_tail") or "")
+            return result
+    floor = min(_LADDER_MIN_SECONDS, _LADDER_MIN_FRACTION * float(timeout))
+    last = 0
+    for i, strat in enumerate(ladder):
+        if i and deadline - _now() < floor:
+            notes.append(f"[vmtk] {len(ladder) - i} ladder step(s) not started: under "
+                         f"{floor:g} s of the {int(timeout)} s budget left")
+            break
+        last = i
+        argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
+        if i:
+            (ws / _MESH).unlink(missing_ok=True)
+        result = _run_pype(ws, argv, timeout=left())
+        if _fill_completed(ws, result) or i == len(ladder) - 1:
+            break
+        notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill did not complete "
+                     f"(last generator stage: {_last_stage(result) or 'unknown'}) - next: "
+                     f"{_step_label(ladder[i + 1])}")
+    if notes:
+        effective = dict(ladder[last])
+        effective["repair_note"] = "; ".join(notes)
+        # the shipped spec says what was actually run (the deliverable re-runs from it)
+        spec_path.write_text(json.dumps(effective, indent=2))
+        result["log_tail"] = "\n".join(notes) + "\n" + (result.get("log_tail") or "")
+        result["repair_note"] = effective["repair_note"]
+    (ws / "log.vmtk").write_text(result.get("log_tail") or "")
+    if _fill_completed(ws, result):
+        # THE OPENFOAM CASE ships with the mesh. vmtk writes VTK only; the customer of an
+        # "OpenFOAM case" bundle (the deliverable's label) got a .vtu and a conversion to do.
+        # The mesh image has OpenFOAM, the worker (where finalize runs) does not, so it is
+        # written here, with whatever budget the fill left. A miss is a note, never a failure:
+        # the volume mesh stands on its own.
+        result["openfoam_case"] = export_openfoam_case(ws, timeout=left())
+    return result
+
+
+_OPENFOAM_CASE = "openfoam_case"
+_VOLUME_MSH = "mesh_volume.msh"
+#: what a polyMesh a solver can open consists of; a partial one is removed, never shipped
+_POLYMESH_FILES = ("points", "faces", "owner", "neighbour", "boundary")
+_FLUID_PHYSICAL = 100          # the volume's physical tag in mesh_volume.msh (caps count from 2)
+
+
+def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
+                         timeout: int = 600) -> str | None:
+    """Write the delivered volume as an OpenFOAM case: openfoam_case/constant/polyMesh next to
+    mesh.vtu, one patch per delivered boundary (wall, then each cap under its declared port
+    name), converted by gmshToFoam from a gmsh 2.2 volume file (mesh_volume.msh) of the same
+    tets and triangles. The node order is normalised first (vmtk's layer tets come out
+    negatively ordered - check_mesh does the same, idempotently). Returns the case directory
+    relative to the workspace, or None when it could not be written (logged, non-fatal)."""
+    ws = Path(workspace)
+    mp = ws / _MESH
+    if not mp.exists() or timeout < _LADDER_MIN_SECONDS:
+        return None
+    try:
+        from meshpipeline.engines.vmtk.viewer_surface import _staged_cap_names
+        from meshpipeline.sandbox.safe_exec import scrubbed_subprocess_env
+        grid, n_flipped, _mask = _normalise_orientation(_read_surface(mp))
+        if n_flipped:
+            grid.save(str(mp))
+        surf = grid.extract_surface().triangulate()
+        ids = surf.cell_data.get("CellEntityIds")
+        names: dict[int, str] = {_WALL_ENTITY: "wall"}
+        if ids is not None:
+            cap_names = _staged_cap_names(ws, surf, ids)
+            for eid in sorted({int(v) for v in ids}):
+                if eid != _WALL_ENTITY:
+                    names[eid] = cap_names.get(eid, f"cap_{eid}")
+        _write_gmsh_volume(grid, names, ws / _VOLUME_MSH)
+        case = ws / _OPENFOAM_CASE
+        (case / "system").mkdir(parents=True, exist_ok=True)
+        (case / "constant").mkdir(parents=True, exist_ok=True)
+        # a prior pass's polyMesh must never stand in for this run's
+        shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
+        (case / "system" / "controlDict").write_text(_CONTROL_DICT)
+        cmd = f"source {bashrc} >/dev/null 2>&1 && gmshToFoam ../{_VOLUME_MSH}"
+        proc = run_guarded(["bash", "-lc", cmd], cwd=str(case), env=scrubbed_subprocess_env(),
+                           capture_output=True, text=True, timeout=timeout)
+        missing = [n for n in _POLYMESH_FILES
+                   if not (case / "constant" / "polyMesh" / n).exists()
+                   or (case / "constant" / "polyMesh" / n).stat().st_size == 0]
+        if proc.returncode != 0 or missing:
+            logger.warning("vmtk: gmshToFoam did not write a complete polyMesh (rc %s, missing "
+                           "%s): %s", proc.returncode, missing, (proc.stdout or "")[-600:])
+            shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
+            return None
+        return _OPENFOAM_CASE
+    except Exception:  # noqa: BLE001 - the .vtu is the mesh; the case is a convenience
+        logger.exception("vmtk: OpenFOAM case export failed")
+        return None
+
+
+_CONTROL_DICT = """FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+application     none;
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         0;
+deltaT          1;
+writeControl    timeStep;
+writeInterval   1;
+"""
+
+
+def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
+    """mesh.vtu as a gmsh 2.2 ASCII volume mesh: the tets (physical FLUID) and the boundary
+    triangles, each triangle under the physical tag of its CellEntityId (1 = wall, caps from 2)
+    and each tag named in $PhysicalNames, which is what gmshToFoam turns into patch names."""
+    import numpy as np
+    ct = np.asarray(grid.celltypes)
+    cd = grid.cells_dict
+    tets = np.asarray(cd.get(_VTK_TETRA, np.zeros((0, 4), np.int64)), dtype=np.int64)
+    tris = np.asarray(cd.get(5, np.zeros((0, 3), np.int64)), dtype=np.int64)
+    ids = grid.cell_data.get("CellEntityIds")
+    tri_tag = (np.asarray(ids)[ct == 5].astype(np.int64) if ids is not None
+               else np.full(len(tris), _WALL_ENTITY, dtype=np.int64))
+    pts = np.asarray(grid.points, dtype=float)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$PhysicalNames\n{len(names) + 1}\n")
+        for tag in sorted(names):
+            f.write(f'2 {tag} "{names[tag]}"\n')
+        f.write(f'3 {_FLUID_PHYSICAL} "fluid"\n$EndPhysicalNames\n$Nodes\n{len(pts)}\n')
+        np.savetxt(f, np.column_stack([np.arange(1, len(pts) + 1), pts]), fmt="%d %.10g %.10g %.10g")
+        f.write(f"$EndNodes\n$Elements\n{len(tets) + len(tris)}\n")
+        n = 0
+        if len(tris):
+            rows = np.column_stack([np.arange(1, len(tris) + 1), np.full(len(tris), 2),
+                                    np.full(len(tris), 2), tri_tag, tri_tag, tris + 1])
+            np.savetxt(f, rows, fmt="%d")
+            n = len(tris)
+        if len(tets):
+            rows = np.column_stack([np.arange(n + 1, n + len(tets) + 1), np.full(len(tets), 4),
+                                    np.full(len(tets), 2), np.full(len(tets), _FLUID_PHYSICAL),
+                                    np.full(len(tets), _FLUID_PHYSICAL), tets + 1])
+            np.savetxt(f, rows, fmt="%d")
+        f.write("$EndElements\n")
+    return {"nodes": int(len(pts)), "tets": int(len(tets)), "triangles": int(len(tris)),
+            "patches": {int(k): v for k, v in names.items()}}
+
+
+def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
     try:
         proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout)
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         # Signal interpretation is the SHARED seam's, not this bundle's. It lived here first,
         # which meant vmtk explained a SIGSEGV while the other four engines returned a bare
         # negative rc for the same event.
-        result = describe_native_result(returncode=proc.returncode, args=argv,
-                                        stage="vmtk pype", output=tail)
-        (ws / "log.vmtk").write_text(result["log_tail"])
-        return result
+        return describe_native_result(returncode=proc.returncode, args=argv,
+                                      stage="vmtk pype", output=tail)
     except FileNotFoundError:
         return {"rc": 127, "timed_out": False,
                 "log_tail": (f"vmtk binary {rtcfg.VMTK_BIN!r} not found - the container's vmtk "
@@ -254,14 +671,65 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
 # quality read-back
 
 _VTK_TETRA = 10   # cell type; mesh.vtu also carries the boundary TRIANGLES (type 5)
+_WALL_ENTITY = 1  # vmtk's CellEntityId for the lumen wall; caps are numbered from 2
 
 # TetGen reports a self-intersecting boundary like this and vmtk STILL exits 0, leaving a
 # mesh whose tets are mostly inverted. The exit code alone can never be trusted.
-_TETGEN_FAILURES = ("invalid plc", "subfaces intersect", "self-intersect")
+_TETGEN_FAILURES = ("invalid plc", "subfaces intersect", "self-intersect",
+                    # vmtkmeshgenerator catches the exception, exits 0 and writes the boundary
+                    # layer alone ("Will only output surface mesh and boundary layer")
+                    "tetgen quit with an exception", "error occurred during tetrahedralization")
+
+
+def _staged_radius_median(ws: Path) -> float | None:
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    st = read_staging(ws) or {}
+    value = (st.get("radius_m") or {}).get("median")
+    if value is None:
+        return None
+    try:
+        return float(value) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _local_cells_across(ws: Path) -> dict | None:
+    """Cells across the passage AT EVERY WALL POINT of the remeshed wall (lumen.vtp): twice the
+    point's staged local radius over the mean length of the edges that meet it - the surface
+    edge is what vmtk sizes the tets beside it from. Returns the median and the 5th percentile
+    (the narrowest branch, less a few outliers), or None without a staged radius field. One
+    mesh-wide median hid an under-resolved branch behind a well-resolved main run."""
+    import numpy as np
+    lumen = ws / _LUMEN
+    if not lumen.exists():
+        return None
+    try:
+        surf = _read_surface(lumen).extract_surface().triangulate()
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        return None
+    from meshpipeline.engines.vmtk.lumen_staging import SIZING_ARRAY
+    r = surf.point_data.get(SIZING_ARRAY)
+    if r is None or surf.n_cells == 0:
+        return None
+    r = np.asarray(r, dtype=float)
+    f = np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    pts = np.asarray(surf.points, dtype=float)
+    length = np.linalg.norm(pts[e[:, 1]] - pts[e[:, 0]], axis=1)
+    acc = (np.bincount(e[:, 0], weights=length, minlength=len(pts))
+           + np.bincount(e[:, 1], weights=length, minlength=len(pts)))
+    cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
+    ok = (cnt > 0) & (r > 0.0)
+    if not ok.any():
+        return None
+    across = 2.0 * r[ok] / (acc[ok] / cnt[ok])
+    return {"median": round(float(np.median(across)), 1),
+            "p05": round(float(np.percentile(across, 5)), 1),
+            "min": round(float(across.min()), 1), "points": int(ok.sum())}
 
 
 def check_mesh(workspace) -> dict:
-    from meshpipeline.engines.vmtk.criteria import QUALITY_FLOOR
+    from meshpipeline.engines.vmtk.criteria import PASSAGE_MIN_CELLS_ACROSS, QUALITY_FLOOR
     ws = Path(workspace)
     mp = ws / _MESH
     if not mp.exists():
@@ -291,6 +759,29 @@ def check_mesh(workspace) -> dict:
             fatal.append("TetGen rejected the boundary as self-intersecting (Invalid PLC) - "
                          "the volume fill did not complete even though vmtk exited 0")
     mesh = _read_surface(mp)
+    # NODE ORDER. vmtk writes its boundary-layer tets with the opposite node order from
+    # TetGen's interior tets: every layer tet has a NEGATIVE signed volume while the layer
+    # block itself is sound (the |volumes| sum to what the boundary encloses within 1%,
+    # straight_reducer_004 and s_duct_001, 2026-09-11). Read as "inverted" that made every
+    # layered mesh a fatal defect and taught the builder to drop layers. Normalise the order
+    # once (idempotent) so the deliverable and the numbers below are right; a layer that
+    # really folded is caught by the overlap test, which the sign cannot tell.
+    mesh, n_reoriented, layer_mask = _normalise_orientation(mesh)
+    if n_reoriented:
+        mesh.save(str(mp))
+        # A NEGATIVE ORDER IS ONLY A LAYER TET WHEN A LAYER EXPLAINS IT. vmtk's layer block
+        # sits on the wall, so every negatively ordered tet must join the wall through other
+        # such tets; one that does not is a genuinely inverted interior tet the flip would
+        # otherwise hide behind the 2% volume tolerance - and when the run grew no layer at
+        # all, every one of them is.
+        if _layers_in_spec(ws) == 0:
+            fatal.append(f"{n_reoriented} inverted tetrahedra (negative node order, and the "
+                         "run grew no boundary layer that could explain it)")
+        else:
+            stray = _stray_inversions(mesh, layer_mask)
+            if stray:
+                fatal.append(f"{stray} inverted interior tetrahedra (negatively ordered, but "
+                             "no chain of layer tets joins them to the wall)")
     tets = mesh.extract_cells_by_type(_VTK_TETRA)
     cells = int(tets.n_cells)
     if cells == 0:
@@ -305,6 +796,8 @@ def check_mesh(workspace) -> dict:
         return {"cells": 0, "fatal": fatal, "min_quality": None,
                 "layer_coverage": None, "mesh_ok": False}
     min_quality = None
+    layer_min_quality = None
+    passage_cells_across = None
     try:
         import numpy as np
         vol = np.asarray(tets.compute_cell_sizes(length=False, area=False,
@@ -312,21 +805,222 @@ def check_mesh(workspace) -> dict:
         n_inverted = int((vol <= 0.0).sum())
         if n_inverted:
             fatal.append(f"{n_inverted} inverted/degenerate tetrahedra (non-positive volume)")
+        overlap = _overlap_fraction(mesh, float(np.abs(vol).sum()))
+        if overlap is not None and overlap > OVERLAP_TOLERANCE:
+            fatal.append(f"tetrahedra overlap: their volumes sum to {overlap * 100:.1f}% more "
+                         "than the boundary encloses - the boundary layer folded into itself")
+        elif overlap is not None and overlap < -OVERLAP_TOLERANCE:
+            fatal.append(f"the volume fill is incomplete: the tetrahedra fill only "
+                         f"{(1.0 + overlap) * 100:.0f}% of what the boundary encloses - TetGen "
+                         "did not complete (a boundary layer alone is not a mesh)")
         # pyvista >=0.45: DataSet.cell_quality(measure) -> array named after the measure
         sj = np.asarray(tets.cell_quality("scaled_jacobian").cell_data["scaled_jacobian"])
-        min_quality = float(sj.min()) if sj.size else None
+        # THE FLOOR JUDGES THE ISOTROPIC FILL. A boundary-layer tet is a thin slab split three
+        # ways - its scaled Jacobian is about thickness over edge length (median 0.08, a few
+        # below 0.01 on manifold_002) BY DESIGN, not by defect; judged with the interior it
+        # failed every layered mesh and taught the builder to drop layers. The layer block is
+        # the block vmtk wrote negatively ordered (identified above); its own worst value is
+        # reported alongside, and a collapsed layer still fails on volume or overlap.
+        interior = sj[~layer_mask] if layer_mask is not None and layer_mask.size == sj.size else sj
+        layer = sj[layer_mask] if layer_mask is not None and layer_mask.size == sj.size else sj[:0]
+        min_quality = float(interior.min()) if interior.size else (
+            float(layer.min()) if layer.size else None)
+        layer_min_quality = float(layer.min()) if layer.size else None
+        # PASSAGE RESOLUTION, measured: cells across the local passage diameter = twice the
+        # staged median radius over the median interior cell size (the edge of a regular tet
+        # of the median interior volume). The builder's edge factor puts about 2/factor here;
+        # this reads what the fill actually delivered. Staged (CAD) runs only.
+        r_med = _staged_radius_median(ws)
+        interior_vol = (np.abs(vol[~layer_mask]) if layer_mask is not None
+                        and layer_mask.size == vol.size else np.abs(vol))
+        if r_med and interior_vol.size:
+            a = float((6.0 * np.sqrt(2.0) * np.median(interior_vol)) ** (1.0 / 3.0))
+            if a > 0.0:
+                passage_cells_across = round(2.0 * r_med / a, 1)
     except Exception as exc:  # noqa: BLE001 - quality is best-effort evidence, not a crash
         logger.warning("vmtk check_mesh: quality computation failed: %s", exc)
-    layer_coverage = None
-    lr = ws / "layer_report.json"
-    if lr.exists():
-        try:
-            layer_coverage = json.loads(lr.read_text()).get("coverage")
-        except Exception:  # noqa: BLE001
-            layer_coverage = None
+    # THE NARROWEST PASSAGE GATES, not the mesh-wide figure: per wall point (5th percentile) so
+    # an under-resolved branch cannot hide behind a well-resolved main run.
+    local = _local_cells_across(ws)
+    gate = local["p05"] if local else passage_cells_across
+    if gate is not None and gate < PASSAGE_MIN_CELLS_ACROSS:
+        where = (f"{local['p05']:g} cells across at the narrowest wall (5th percentile; "
+                 f"median {local['median']:g})" if local
+                 else f"{passage_cells_across:g} cells across the passage")
+        fatal.append(f"undermeshed: {where} - a CFD mesh needs at least "
+                     f"{PASSAGE_MIN_CELLS_ACROSS} everywhere (industry practice is 20-40); "
+                     "lower edge_length_factor")
+    # LAYER COVERAGE is measured here, from the mesh: the share of wall triangles whose three
+    # vertices belong to boundary-layer tets. The reviewer REQUIRES this metric for its
+    # local_anatomical_fidelity axis (MetricRequirement("layer_coverage")) and nothing had
+    # ever written layer_report.json, so the first delivery through the product
+    # (straight_reducer_006, job 1d414282, 2026-09-11: 150,915 cells, every gate green) died
+    # at the reviewer with "required deterministic evidence missing ('metric:layer_coverage',)".
+    # A layer-free mesh reads 0 % - a number the reviewer can weigh, not a missing fact.
+    layer_coverage, layer_facts = _layer_coverage(mesh, layer_mask)
+    try:
+        (ws / "layer_report.json").write_text(json.dumps(
+            {"coverage": layer_coverage, **layer_facts,
+             "method": "wall triangles that are a face of a boundary-layer tet"},
+            indent=2))
+    except OSError as exc:
+        logger.warning("vmtk check_mesh: could not write layer_report.json: %s", exc)
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
-            "layer_coverage": layer_coverage, "mesh_ok": ok}
+            "layer_coverage": layer_coverage, "mesh_ok": ok,
+            # the reviewer's context reads the OpenFOAM engines' key for the same fact
+            "layer_coverage_pct": layer_coverage,
+            "passage_cells_across": passage_cells_across,
+            "passage_cells_across_local": local,
+            "reoriented_tets": n_reoriented,
+            "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
+            "layer_min_quality": layer_min_quality}
+
+
+_LAYER_ARRAY = "BoundaryLayer"   # cell data on mesh.vtu: 1 = a boundary-layer tet, 0 = anything else
+
+
+def _normalise_orientation(grid):
+    """(grid, n, mask) with every negative-volume tetrahedron's node order flipped (nodes 1 and
+    2 swapped); `mask` marks the boundary-layer tets in tet order, or is None when the mesh
+    carries no layer. The flipped block is remembered in the BoundaryLayer cell array, so a
+    later check (finalize runs one after the run tool's) judges the same tets the same way;
+    with the sign gone, the second check used to fold the layer into the isotropic floor
+    (bend_elbow_003: 0.0707 on the first check, 0.0064 on the second). Other cell types, cell
+    data and point data ride along."""
+    import numpy as np
+    import pyvista as pv
+    ct = np.asarray(grid.celltypes)
+    tet_rows = ct == _VTK_TETRA
+    if not tet_rows.any():
+        return grid, 0, None
+    cd = grid.cells_dict
+    tets = np.asarray(cd[_VTK_TETRA], dtype=np.int64)
+    p = np.asarray(grid.points, dtype=float)
+    a, b, c, d = (p[tets[:, k]] for k in range(4))
+    vol = np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)
+    neg = vol < 0.0
+    n = int(neg.sum())
+    if n == 0:
+        flag = grid.cell_data.get(_LAYER_ARRAY)
+        if flag is None:
+            return grid, 0, None
+        mask = np.asarray(flag)[tet_rows] > 0
+        return grid, 0, (mask if mask.any() else None)
+    tets = tets.copy()
+    tets[neg, 1], tets[neg, 2] = tets[neg, 2].copy(), tets[neg, 1].copy()
+    types = [int(t) for t in np.unique(ct)]
+    cells = {t: (tets if t == _VTK_TETRA else np.asarray(cd[t])) for t in types}
+    out = pv.UnstructuredGrid(cells, p)
+    # the dict constructor lays cells out type by type; regroup the arrays the same way
+    order = np.concatenate([np.flatnonzero(ct == t) for t in types])
+    for name in list(grid.cell_data.keys()):
+        out.cell_data[name] = np.asarray(grid.cell_data[name])[order]
+    for name in list(grid.point_data.keys()):
+        out.point_data[name] = np.asarray(grid.point_data[name])
+    flag = np.zeros(len(ct), dtype=np.int8)
+    flag[np.flatnonzero(tet_rows)[neg]] = 1
+    out.cell_data[_LAYER_ARRAY] = flag[order]
+    return out, n, neg
+
+
+def _layers_in_spec(ws: Path) -> int | None:
+    """boundary_layers from the shipped spec, or None when there is no spec to read."""
+    try:
+        return int(json.loads((ws / "vmtk_spec.json").read_text()).get("boundary_layers", 0))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _wall_triangles(grid):
+    """The wall triangles of mesh.vtu (CellEntityIds == 1, or every boundary triangle when the
+    mesh carries no ids), or None when it carries no triangles at all."""
+    import numpy as np
+    ct = np.asarray(grid.celltypes)
+    tri_rows = ct == 5
+    if not tri_rows.any():
+        return None
+    tris = np.asarray(grid.cells_dict[5], dtype=np.int64)
+    ids = grid.cell_data.get("CellEntityIds")
+    if ids is not None:
+        wall = np.asarray(ids)[tri_rows] == _WALL_ENTITY
+        tris = tris[wall] if wall.any() else tris
+    return tris
+
+
+def _stray_inversions(grid, layer_mask) -> int:
+    """How many negatively ordered tets no chain of negatively ordered tets joins to the wall.
+    vmtk grows its layer block on the wall, sublayer on sublayer, so a real layer tet always
+    reaches the wall through the block; one that cannot is an inverted interior tet."""
+    import numpy as np
+    if layer_mask is None or not np.asarray(layer_mask).any():
+        return 0
+    flipped = np.asarray(grid.cells_dict[_VTK_TETRA], dtype=np.int64)[np.asarray(layer_mask)]
+    rooted = np.zeros(grid.n_points, dtype=bool)
+    tris = _wall_triangles(grid)
+    if tris is not None:
+        rooted[np.unique(tris)] = True
+    else:
+        rooted[np.asarray(grid.extract_surface().point_data["vtkOriginalPointIds"])] = True
+    reached = np.zeros(len(flipped), dtype=bool)
+    for _ in range(256):          # one sublayer per round; vmtk grows a handful
+        touch = rooted[flipped].any(axis=1) & ~reached
+        if not touch.any():
+            break
+        reached |= touch
+        rooted[np.unique(flipped[touch])] = True
+    return int((~reached).sum())
+
+
+def _layer_coverage(grid, layer_mask) -> tuple[float, dict]:
+    """(coverage %, facts): the share of wall triangles (CellEntityIds == 1, or every boundary
+    triangle when the mesh carries no ids) that are a FACE of a boundary-layer tet. Vertex
+    membership alone overstated it: at a bifurcation, or where the layer collapses locally, a
+    wall triangle's three vertices can each sit in some nearby layer tet while no layer tet
+    stands on that triangle. 0.0 when the mesh has no layer block."""
+    import numpy as np
+    tris = _wall_triangles(grid)
+    if tris is None:
+        return 0.0, {"wall_triangles": 0, "covered_wall_triangles": 0, "layer_tets": 0}
+    n_wall = int(len(tris))
+    ct = np.asarray(grid.celltypes)
+    if layer_mask is None or not np.asarray(layer_mask).any() or not (ct == _VTK_TETRA).any():
+        return 0.0, {"wall_triangles": n_wall, "covered_wall_triangles": 0, "layer_tets": 0}
+    tets = np.asarray(grid.cells_dict[_VTK_TETRA], dtype=np.int64)[np.asarray(layer_mask)]
+    faces = np.sort(np.concatenate([tets[:, [0, 1, 2]], tets[:, [0, 1, 3]],
+                                    tets[:, [0, 2, 3]], tets[:, [1, 2, 3]]]), axis=1)
+    wall = np.sort(tris, axis=1)
+    n = int(grid.n_points)
+    if n < 2_000_000:             # three ids pack into one int64 below this
+        def key(f):
+            return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
+        covered = int(np.isin(key(wall), key(faces)).sum())
+    else:
+        have = {tuple(f) for f in faces.tolist()}
+        covered = sum(tuple(t) in have for t in wall.tolist())
+    pct = 100.0 * covered / n_wall if n_wall else 0.0
+    return round(pct, 2), {"wall_triangles": n_wall, "covered_wall_triangles": covered,
+                          "layer_tets": int(len(tets))}
+
+
+def _overlap_fraction(grid, tet_volume: float) -> float | None:
+    """How much the tetrahedra's summed volume exceeds what the mesh's own boundary triangles
+    enclose (0 = they tile it exactly); None when there is no closed boundary to measure."""
+    try:
+        tris = grid.extract_cells_by_type(5).extract_surface().triangulate()
+        if tris.n_cells == 0:
+            return None
+        # vmtk winds its caps the opposite way from the wall: measured as written, the caps
+        # cancel part of the wall in the divergence sum and a sound mesh reads as 4-5% over
+        # (bend_elbow_003, tee_wye_003, s_duct_001 - all exactly 0.0% once oriented)
+        tris = tris.compute_normals(auto_orient_normals=True, consistent_normals=True,
+                                    cell_normals=True, point_normals=False)
+        enclosed = abs(float(tris.volume))
+    except Exception:  # noqa: BLE001 - evidence, never a crash
+        return None
+    if enclosed <= 0.0:
+        return None
+    return tet_volume / enclosed - 1.0
 
 
 
@@ -348,6 +1042,16 @@ def run_enricher(R, workspace, res: dict, q: dict, out: dict) -> None:
     fatal = out.get("fatal_defects") or []
     if out.get("success"):
         out["guidance"] = pol.ok_guidance
+        return
+    staged = (Path(workspace) / "vmtk_staging.json").exists() if workspace else False
+    if staged and any(("self-intersect" in f.lower()) or ("invalid plc" in f.lower())
+                      or ("incomplete" in f.lower()) for f in fatal):
+        out["guidance"] = (
+            "TetGen did not complete the fill even after the engine's own repair ladder (thinner "
+            "layers, then no layers) - the staged wall itself is clean. ONE move per attempt: "
+            "nudge edge_length_factor (0.3 -> 0.35, then 0.25) so the surface remesh lands "
+            "differently at the junctions; keep everything else as staged. If that fails twice, "
+            "report the failure - do not permute other fields.")
         return
     if any(("self-intersect" in f.lower()) or ("invalid plc" in f.lower()) for f in fatal):
         out["guidance"] = (
@@ -409,11 +1113,39 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             _n_tgt = len(_spec.get("target_ids") or []) or len(_spec.get("target_points") or []) // 3
             if _n_src + _n_tgt:
                 q["expected_caps"] = _n_src + _n_tgt
+        from meshpipeline.engines.vmtk.lumen_staging import read_staging as _read_staging
+        _staged = _read_staging(ws)
+        if _staged and _staged.get("ports"):
+            # the engine opened exactly these ports; each must come back as one cap
+            q["expected_caps"] = len(_staged["ports"])
     except Exception:
         logger.warning("vmtk finalize: actual-boundary extraction failed (non-fatal)")
     # the contracted patches: the lumen wall + each capped opening (roles come from intake)
     patch_types = {str(p.get("name")): str(p.get("type"))
                    for p in (intake_patches or []) if p.get("name")}
+    # THE REVIEW SURFACE. The reviewer requires mesh_paths.surface (a gmsh .msh, one physical
+    # group per patch - engines/vmtk/_shared.py) and refused every vmtk delivery without it
+    # ("required artifact 'mesh_paths.surface' does not exist", straight_reducer_014, job
+    # 98ec197e, 2026-09-11). Written with the writer the OpenFOAM engines use, from the
+    # delivered boundary under the DECLARED names (caps bound to their ports); cap_0 is the
+    # tets' own outer faces, the same surface again, and is left out.
+    patch_entities: dict = {n: [] for n in patch_types}
+    try:
+        from meshpipeline.engines.vmtk.viewer_surface import surface_patches as _named_patches
+        from meshpipeline.render.review_artifacts import build_review_msh
+        _review = {n: t for n, t in _named_patches(ws, named=True).items() if n != "cap_0"}
+        if _review:
+            _ents, _ = build_review_msh(ws, _review)
+            patch_entities.update(_ents)
+    except Exception:  # noqa: BLE001 - the mesh stands; the review surface is evidence
+        logger.exception("vmtk finalize: review surface (mesh.msh) not written")
+    if not (ws / "mesh.msh").exists():
+        # the reviewer REQUIRES mesh_paths.surface: without it the delivery is a review failure
+        # later, not a success now - say so here, where the builder can still act on it
+        q["fatal"] = [*q.get("fatal", []),
+                      "review surface mesh.msh not written - the reviewer requires "
+                      "mesh_paths.surface, so this delivery cannot be reviewed"]
+        q["mesh_ok"] = False
     # PREPARED geometry - the staged lumen surface - kept as preparation evidence (body_bbox).
     surf = _read_surface(ws / _LUMEN).extract_surface() if (ws / _LUMEN).exists() else None
     b = surf.bounds if surf is not None else (0, 1, 0, 1, 0, 1)
@@ -430,7 +1162,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     write_manifest(
         ws,
         patch_types=patch_types,
-        patch_entities={n: [] for n in patch_types},
+        patch_entities=patch_entities,
         bbox=bbox,
         quality=q,
         domain=domain or "internal flow through a lumen",

@@ -1,0 +1,602 @@
+[
+ {
+  "segment": "aero-startups",
+  "company": "Atmos Space Cargo",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Gibson Technology",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "biomedical",
+  "company": "Adsilico",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Navier Flow Consultants",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "AtmosZero",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "marine",
+  "company": "BAR Technologies",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "semiconductors",
+  "company": "d-Matrix",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Proxima Fusion",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Hypersonix Launch Systems",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "McMurtry Automotive",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "biomedical",
+  "company": "BiVACOR",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Desanco",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Calyos",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "marine",
+  "company": "Blue Water Autonomy",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Syenta",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Tokamak Energy",
+  "reason": "wave2",
+  "people": 4
+ },
+ {
+  "segment": "aero-startups",
+  "company": "HyPrSpace",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Sabe Fluid Dynamics",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "biomedical",
+  "company": "CorWave",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Megagenix",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Submer",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "marine",
+  "company": "C-Job Naval Architects",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Tenstorrent",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Radiant (Radiant Industries)",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Jump Aero",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Xtrac",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "biomedical",
+  "company": "PrediSurge",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Upstream CFD",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "TEMISTh",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "marine",
+  "company": "HavocAI",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Paragraf",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Thea Energy",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Pale Blue",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "VFluid Advanced Tech",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "biomedical",
+  "company": "Oxford Heartbeat",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Merkle CAE Solutions",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Accelsius",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "Vatn Systems",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Phononic Devices",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Aalo Atomics",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "aero-startups",
+  "company": "T-Minus Engineering",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Aerotak",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "Foldax",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Synthetik Applied Technologies",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Asperitas",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "Arc",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Cambridge GaN Devices",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "PCA Engineers",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Bellatrix Aerospace",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Airflow Sciences Corporation",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "inHEART",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "ATA Engineering",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Blue Frontier",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "Chartwell Marine",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Eridan Communications",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Quaise Energy",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Agile Space Industries",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Monumo",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "Sim&Cure",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Gradient Wind Engineering",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "CPP Wind Engineering Consultants",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "Glosten",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Blaize",
+  "reason": "wave2",
+  "people": 4
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Celeroton",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Agnikul Cosmos",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Oreca",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "Supira Medical",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Tridiagonal Solutions",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Ionetic",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "KNUD E. HANSEN",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Cerebras Systems",
+  "reason": "wave2",
+  "people": 4
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "CorPower Ocean",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Cranfield Aerospace Solutions",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "White Motorcycle Concepts",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "Team Consulting",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "DOCAN",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Ventiva",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "GSea Design",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "semiconductors",
+  "company": "CoolIT Systems",
+  "reason": "wave2",
+  "people": 4
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Kitepower",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Elysian Aircraft",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Catesby Projects",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "4RealSim",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Femto Engineering",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "Wacker Ingenieure",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "Cape Horn Engineering",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Frore Systems",
+  "reason": "wave2",
+  "people": 4
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Peregrine Turbine Technologies",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Gravitics",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "JAS Motorsport",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "biomedical",
+  "company": "4WEB Medical",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "LEAP Australia",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "hvac-thermal",
+  "company": "ZutaCore",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "marine",
+  "company": "CJR Propulsion",
+  "reason": "wave2",
+  "people": 1
+ },
+ {
+  "segment": "semiconductors",
+  "company": "Axelera AI",
+  "reason": "wave2",
+  "people": 3
+ },
+ {
+  "segment": "turbomachinery-energy",
+  "company": "Svante Technologies",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Piasecki Aircraft",
+  "reason": "wave2",
+  "people": 2
+ },
+ {
+  "segment": "auto-motorsport",
+  "company": "Alcon Components",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "biomedical",
+  "company": "Cardiawave",
+  "reason": "wave2",
+  "people": 5
+ },
+ {
+  "segment": "cfd-consultancies",
+  "company": "Resolved Analytics",
+  "reason": "wave2",
+  "people": 3
+ }
+]

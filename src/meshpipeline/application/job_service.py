@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -90,20 +90,53 @@ class JobService:
                 f"Please try again in a few minutes."
             )
 
-    async def create_session(self, db: AsyncSession, owner_id: str) -> uuid.UUID:
+    async def create_session(self, db: AsyncSession, owner_id: str, *,
+                             organization_id: str = "") -> uuid.UUID:
         from meshpipeline.persistence.repositories.session_repository import SessionRepository
         session_repo = SessionRepository()
-        session = await session_repo.create(db, owner_id)
+        session = await session_repo.create(db, owner_id, organization_id=organization_id)
         await db.flush()
         return session.id
 
-    async def get_job(self, db: AsyncSession, job_id: uuid.UUID, owner_id: str):
+    async def get_job(self, db: AsyncSession, job_id: uuid.UUID, owner_id: str, *,
+                      organization_id: str = ""):
         # Scoped in SQL: a foreign job id and a missing one are indistinguishable here, and no
         # other tenant's row is ever materialised inside this service.
-        job = await job_repo.get_for_owner(db, job_id, owner_id)
+        job = await job_repo.get_for_owner(db, job_id, owner_id, organization_id=organization_id)
         if not job:
             return None
         return job
+
+    async def list_runs(self, db: AsyncSession, owner_id: str, *,
+                        organization_id: str = "", limit: int = 25,
+                        before: tuple[datetime, uuid.UUID] | None = None
+                        ) -> list[tuple]:
+        """One page of this tenant's runs, newest first, each with its session's task label.
+
+        A pass-through by design. The query - the tenant predicate, the (created_at, id) sort and
+        its matching keyset predicate, and the OUTER join that carries the label - belongs to
+        `JobRepository.list_for_owner` and is written out there. What this method adds is the
+        SEAM: `GET /api/v1/simulation` is transport over this service, exactly as
+        `GET /api/v1/simulation/{job_id}` is transport over `get_job`, so no route has to reach
+        for a repository to render a list.
+        """
+        return await job_repo.list_for_owner(db, owner_id, organization_id=organization_id,
+                                             limit=limit, before=before)
+
+    async def list_conversations(self, db: AsyncSession, owner_id: str, *,
+                                 organization_id: str = "", limit: int = 25,
+                                 before: tuple[datetime, uuid.UUID] | None = None
+                                 ) -> list:
+        """One page of this tenant's conversations, newest first.
+
+        The session repository is constructed here rather than held at module scope, the same way
+        `create_session` above does it: this service's durable collaborator is the JOB repository,
+        and a conversation is something it reads on the API's behalf, not something it owns.
+        """
+        from meshpipeline.persistence.repositories.session_repository import SessionRepository
+        session_repo = SessionRepository()
+        return await session_repo.list_for_owner(db, owner_id, organization_id=organization_id,
+                                                 limit=limit, before=before)
 
 
     async def signed_url(self, storage_key: str) -> str:

@@ -337,6 +337,15 @@ DEPLOYER_ROLES=(
   roles/serviceusage.serviceUsageAdmin   # stage 5 and stage 7 turn on the APIs they then call
   roles/cloudsql.admin                   # the Postgres instance, its database and its user
   roles/redis.admin                      # the Memorystore broker
+  # THE QUEUE-DEPTH SCHEDULE (stage 13). create-queue-depth-publisher.sh creates a Cloud Scheduler
+  # job, and no role above carries cloudscheduler.jobs.create - so the `queue` component, which a
+  # release tag selects through `all`, could not complete under this roster. Nothing noticed
+  # because hexera-dev's deployer was made by hand and prod has not yet run a tag that reached the
+  # stage; a genuinely empty project running preflight is what surfaced it:
+  #   FAIL permission MISSING: cloudscheduler.jobs.create
+  # preflight.sh has been naming this role in its remediation text all along, which is the clearest
+  # evidence it belongs here rather than being an over-grant.
+  roles/cloudscheduler.admin             # the schedule that publishes queue depth to the autoscaler
   roles/storage.admin                    # the exchange and artifact buckets, and their lifecycle
   # Secret Manager is NOT roles/secretmanager.admin - see SECRET_ROLE_ID below.
   "projects/${GCP_PROJECT_ID}/roles/${SECRET_ROLE_ID}"

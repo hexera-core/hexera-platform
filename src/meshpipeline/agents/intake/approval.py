@@ -247,7 +247,8 @@ def _already_running(job_id) -> ConfirmOutcome:
 
 async def _open_transaction(db, *, session, session_repo, owner_id: str, session_id,
                             source_ref_for_session, interpretation_ref_for_session,
-                            source_repo, job_service, job_repo, logger):
+                            source_repo, job_service, job_repo, logger,
+                            organization_id: str = ""):
     # Lock the session row for the whole create+link transaction. A concurrent consent
     # blocks here until we commit (with job_id set), then sees the link and returns the
     # no-re-dispatch outcome - so two rapid "yes" messages cannot both create a paid job.
@@ -290,7 +291,11 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
         raise ApprovalTransactionError(ConfirmOutcome(
             ConfirmStatus.quota_exceeded, str(exc))) from exc
 
-    job = await job_repo.create(db, owner_id=owner_id)
+    # STAMPED WITH BOTH. The organisation is not optional decoration here: every later read of
+    # this job - status polling, the WS ticket, dispute, /surface - scopes on organization_id for
+    # any principal that has one, and `NULL = <uuid>` is NULL. A job created without it is
+    # invisible to the very person who just approved it, forever.
+    job = await job_repo.create(db, owner_id=owner_id, organization_id=organization_id)
 
     # The job inherits the SESSION's source, resolved inside this transaction and scoped to the
     # owner, so a session naming another tenant's upload never links. No directory is renamed: the
@@ -431,7 +436,8 @@ def assert_payload_matches_approval(payload: dict, snapshot: dict, source_ref, *
 
 
 async def confirm_pending_approval(session, session_repo, owner_id: str, session_id, *,
-                                   logger, sessions=None, job_service=None, job_repo=None,
+                                   logger, organization_id: str = "", sessions=None,
+                                   job_service=None, job_repo=None,
                                    source_repo=None, dispatch=None) -> ConfirmOutcome:
     from meshpipeline.application.geometry_materializer import (
         interpretation_ref_for_session,
@@ -467,7 +473,8 @@ async def confirm_pending_approval(session, session_repo, owner_id: str, session
                 session_id=session_id,
                 source_ref_for_session=source_ref_for_session,
                 interpretation_ref_for_session=interpretation_ref_for_session,
-                source_repo=source_repo, job_service=job_service, job_repo=job_repo, logger=logger)
+                source_repo=source_repo, job_service=job_service, job_repo=job_repo, logger=logger,
+                organization_id=organization_id)
     except ApprovalTransactionError:
         raise
     except Exception as exc:

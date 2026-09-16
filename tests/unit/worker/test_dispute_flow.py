@@ -325,7 +325,7 @@ def _client(monkeypatch, parent_job, quota_error: str = ""):
     monkeypatch.setattr(dbs, "get_db", fake_db)
     monkeypatch.setattr(sim, "get_db", fake_db)
 
-    async def fake_get_job(db, job_id, owner_id):
+    async def fake_get_job(db, job_id, owner_id, *, organization_id=""):
         return parent_job
     monkeypatch.setattr(sim.svc, "get_job", fake_get_job)
 
@@ -338,7 +338,7 @@ def _client(monkeypatch, parent_job, quota_error: str = ""):
     new_job = SimpleNamespace(id=_uuid.uuid4(), geometry_source_id=None,
                               geometry_interpretation_id=None)
     class FakeJobRepo:
-        async def create(self, db, owner_id):
+        async def create(self, db, owner_id, *, organization_id=""):
             return new_job
     monkeypatch.setattr(jr, "JobRepository", FakeJobRepo)
 

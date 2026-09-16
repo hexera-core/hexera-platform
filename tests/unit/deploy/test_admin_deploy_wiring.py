@@ -28,8 +28,10 @@ def test_dev_and_prod_each_pin_their_own_admin_service():
         "secret access exist in hexera-prod")
 
 
-def test_the_deploy_job_maps_the_admin_service():
-    body = yaml.dump(_doc()["jobs"]["deploy"])
+def test_the_provision_job_maps_the_admin_service():
+    # provision is the job that runs deploy.sh, so its environment is what create-admin-service.sh
+    # reads. (It was called `deploy` until the workflow was split into release/provision.)
+    body = yaml.dump(_doc()["jobs"]["provision"])
     assert "CLOUDRUN_ADMIN_SERVICE" in body
 
 
@@ -42,18 +44,43 @@ def test_a_manual_run_can_select_the_admin_console():
         "the admin checkbox must default to false - nothing may be selected implicitly")
 
 
+def _verify_admin_job() -> dict:
+    """The job that proves the deployed admin console is not publicly reachable.
+
+    Found by what it DOES - it reads the invoker policy - rather than by its name or by slicing
+    3000 characters out of the file from a step title. The check used to be a step inside the
+    deploy job and is now its own job running beside verify-console; locating it by behaviour is
+    what stops this test from breaking again the next time it moves, while still failing loudly
+    if it stops existing.
+    """
+    jobs = _doc()["jobs"]
+    matches = {name: job for name, job in jobs.items()
+               if "get-iam-policy" in yaml.dump(job)}
+    assert len(matches) == 1, (
+        f"expected exactly one job reading the invoker policy, found {sorted(matches)} - if the "
+        f"admin check has been removed, the one failure that makes IAP pointless is unguarded")
+    return next(iter(matches.values()))
+
+
 def test_the_deployed_admin_is_proved_not_public():
-    body = yaml.dump(_doc()["jobs"]["deploy"])
+    job = _verify_admin_job()
+    body = yaml.dump(job)
+    assert "admin_url" in yaml.dump(_doc()["jobs"]["provision"].get("outputs", {})), (
+        "provision does not publish admin_url, so nothing downstream can verify the deployed "
+        "admin console")
+    assert "provision" in job["needs"], (
+        "the admin check does not wait for the deploy it is checking")
     assert "admin_url" in body, "nothing verifies the deployed admin console"
     assert "allUsers" in body, (
         "the post-deploy check does not assert the absence of a public invoker binding - the one "
         "failure that makes IAP pointless")
+    assert job.get("if"), (
+        "the admin check runs unconditionally - a deploy that never reconciled the admin console "
+        "would report a failure about a service it did not touch")
 
 
 def _admin_check_step_text() -> str:
-    text = WF.read_text(encoding="utf-8")
-    start = text.index("Verify the admin console is not publicly reachable")
-    return text[start:start + 3000]
+    return yaml.dump(_verify_admin_job())
 
 
 def test_a_failed_invoker_policy_read_is_not_swallowed():

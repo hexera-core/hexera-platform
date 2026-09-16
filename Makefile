@@ -51,8 +51,11 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
+        gcloud-flags \
+        test-fast-shard test-container-integration-shard \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
+        new-env destroy-env seed-secrets \
         clean-workspaces
 
 # Primary developer commands (shown by `make help`)
@@ -213,6 +216,25 @@ clean: ## Remove this Compose project's containers, volumes, and locally built i
 	docker compose down -v --rmi local
 	@echo "This Compose project's containers, volumes and locally built images removed."
 
+# PERSONAL DEVELOPMENT ENVIRONMENTS - one Google Cloud project per developer.
+#
+# Delegated to deploy/gcp, which owns every script that talks to Google. They are surfaced here
+# because this is the Makefile people actually type into, and an environment nobody can find the
+# command for is an environment nobody creates.
+#
+# THE LIFECYCLE IS THREE COMMANDS AND ONE CHECKBOX:
+#   make new-env SLUG=pranav        once, ~3 minutes, creates hexera-dev-pranav
+#   gh workflow run deploy.yml ... -f slug=pranav      as often as you like, from any branch
+#   make destroy-env SLUG=pranav    when you are done; deletes the project and everything in it
+new-env: ## Create your own dev environment as its own GCP project: make new-env SLUG=pranav
+	@$(MAKE) -C deploy/gcp new-env SLUG=$(SLUG)
+
+destroy-env: ## Delete your dev environment and everything in it: make destroy-env SLUG=pranav
+	@$(MAKE) -C deploy/gcp destroy-env SLUG=$(SLUG)
+
+seed-secrets: ## Fill any EMPTY secret container in an environment: make seed-secrets SLUG=pranav
+	@$(MAKE) -C deploy/gcp seed-secrets SLUG=$(SLUG)
+
 mesh-setup: ## FIRST developer in a blank GCP project: build, validate, publish and provision the mesh job
 	@# Each step below is an existing authority invoked unchanged. Every one is idempotent, so an
 	@# interrupted run resumes by re-running this target.
@@ -369,6 +391,12 @@ shell-worker: ##! Shell into the worker container
 # test tiers (each its own pytest session; see docs/development/overview.md)
 test-fast: ##! Hermetic unit tier (framework deps stubbed; no services/containers/licensed data)
 	$(PY) -m pytest tests/unit -m "not external_fixture"
+test-fast-shard: ##! One SHARD of SHARDS of the hermetic unit tier, as CI runs it (make test-fast-shard SHARD=1 SHARDS=4)
+	@# The file list comes from `git ls-files`, so a shard cannot be handed a stale inventory, and
+	@# an empty one is refused rather than exiting 0 having run nothing. --null/-0 because a path
+	@# with a space would otherwise become two arguments and pytest would collect neither.
+	$(PY) devtools/quality/shard_tests.py tests/unit --shard $(SHARD) --of $(SHARDS) --null \
+	  | xargs -0 $(PY) -m pytest -m "not external_fixture"
 test-random: ##! Unit tier under a fixed matrix of random ORDER seeds (surfaces inter-test leakage)
 	@for seed in 1 42 8675309; do \
 	  echo "── randomly-seed=$$seed ──"; \
@@ -420,6 +448,15 @@ test-container-integration: ##! DEPENDENCY-BACKED: provision Postgres+Redis+MinI
 	docker build --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
 	@bash tests/integration/run_in_container.sh
 
+test-container-integration-shard: ##! One SHARD of SHARDS of the dependency-backed tier, as CI runs it (make test-container-integration-shard SHARD=1 SHARDS=4)
+	@# Its own provisioned Postgres+Redis+MinIO and its own disposable database, like every other
+	@# invocation of the runner - shards share nothing, so they cannot interfere. What a shard may
+	@# NOT conclude is that the TIER is non-vacuous: the floor and the three named real-PostgreSQL
+	@# guarantees are asserted once, over the union of every shard's JUnit report, by the lane the
+	@# gate waits on. See INTEGRATION_SHARD in tests/integration/run_in_container.sh.
+	docker build --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
+	@INTEGRATION_SHARD=$(SHARD) INTEGRATION_SHARDS=$(SHARDS) bash tests/integration/run_in_container.sh
+
 test-container: test-container-integration ##! Alias of test-container-integration (the full dependency-backed tier). For the hermetic image check use `make test-container-smoke`.
 
 # native mesh-toolchain tiers (run INSIDE the `mesh` image; see docs/development/overview.md)
@@ -468,6 +505,16 @@ typecheck: ##! mypy ratchet - 0 exit while the baseline holds, fail on any NEW e
 dependencies: ##! Validate the one dependency source of truth (requirements/runtime.txt + dev.txt)
 	$(PY) devtools/quality/check_dependency_drift.py
 deps: dependencies ##! Alias for `make dependencies`
+# Exit 77 means gcloud is not installed, which is NOT a pass - it is reported as unchecked rather
+# than swallowed, because a green "flags OK" on a machine with no gcloud is the kind of clean
+# result that gets trusted.
+gcloud-flags: ##! Prove every gcloud flag the deploy passes is one the INSTALLED gcloud still accepts
+	@$(PY) devtools/quality/check_gcloud_flags.py; rc=$$?; \
+	 if [ $$rc -eq 77 ]; then \
+	   echo "UNCHECKED: gcloud is not installed here - the deploy's flags were not verified"; \
+	   exit 0; \
+	 fi; \
+	 exit $$rc
 # Maintainer check, not a release step: prove the distribution still builds and still contains
 # exactly ONE top-level package, then delete every artifact. Nothing is uploaded, and nothing is
 # left behind - a stale dist/ shadows the source tree (see test_no_stale_build_artifacts_shadow_
@@ -486,6 +533,10 @@ wheel: ##! Build + validate the distribution wheel, then remove all local build 
 
 clean-workspaces: ##! Remove all job workspaces (failed jobs) from the worker
 	docker compose exec worker find /srv/workspaces -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+
+gcloud-auth:
+	gcloud auth login
+	gcloud auth application-default login
 
 # Help
 

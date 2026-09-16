@@ -76,7 +76,7 @@ def _repo_returning(job):
     repo = MagicMock()
     repo.get_internal = AsyncMock(return_value=job)
     # scoped like the real query: a caller who does not own the job finds nothing
-    async def _scoped(_db, _jid, owner_id):
+    async def _scoped(_db, _jid, owner_id, *, organization_id=""):
         return job if job is not None and job.owner_id == owner_id else None
     repo.get_for_owner = _scoped
     return repo

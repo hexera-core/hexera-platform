@@ -36,8 +36,9 @@ def test_every_jobrequest_slot_is_registered():
 def test_every_session_column_is_registered():
     import meshpipeline.persistence.models as m
     cols = {c.name for c in m.ChatSession.__table__.columns}
-    # infra columns are not inter-agent data
-    infra = {"id", "owner_id", "messages", "created_at", "updated_at",
+    # infra columns are not inter-agent data. organization_id (0004) is the tenant, not a datum
+    # any agent produces or reads.
+    infra = {"id", "owner_id", "organization_id", "messages", "created_at", "updated_at",
              "intake_submitted", "job_id"}
     unregistered = cols - infra - dc.session_columns()
     assert not unregistered, f"unregistered session columns: {unregistered}"

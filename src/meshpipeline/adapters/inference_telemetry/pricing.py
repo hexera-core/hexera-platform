@@ -6,11 +6,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# (input, output, cached_input) USD per 1M tokens. Verified 2026-07-16 against each provider's
-# own model page - see the Gate-1 provider audit for the retrieval record.
+# (input, output, cached_input) USD per 1M tokens. DeepInfra and DeepSeek verified 2026-07-16
+# against each provider's own model page - see the Gate-1 provider audit for the retrieval
+# record. OpenAI fetched 2026-09-14 from developers.openai.com/api/docs/pricing. DeepInfra's
+# Qwen3-VL-235B-A22B-Thinking row confirmed 2026-09-15 against api.deepinfra.com/models/list.
 _PRICES: dict[str, tuple[float, float, float]] = {
     "deepinfra:zai-org/GLM-5.2":                       (0.93, 3.00, 0.18),
     "deepinfra:Qwen/Qwen3-VL-235B-A22B-Instruct":      (0.20, 0.88, 0.11),
+    # DeepInfra publishes no cached-input discount for this model, so cached is billed at the
+    # full input rate - the choice that cannot under-bill.
+    "deepinfra:Qwen/Qwen3-VL-235B-A22B-Thinking":      (0.45, 3.49, 0.45),
     "deepinfra:deepseek-ai/DeepSeek-V4-Pro":           (1.30, 2.60, 0.10),
     "deepinfra:deepseek-ai/DeepSeek-V4-Flash":         (0.09, 0.18, 0.018),
     "deepinfra:deepseek-ai/DeepSeek-V3.2":             (0.26, 0.38, 0.13),
@@ -19,14 +24,12 @@ _PRICES: dict[str, tuple[float, float, float]] = {
     # materially cheaper here than the same family via a reseller.
     "deepseek:deepseek-v4-pro":                        (0.435, 0.87, 0.003625),
     "deepseek:deepseek-v4-flash":                      (0.14, 0.28, 0.0028),
+    # Fetched from developers.openai.com/api/docs/pricing on 2026-09-14.
+    "openai:gpt-6-astra":                              (10.00, 50.00, 1.00),
+    "openai:gpt-5.6-sol":                              (4.00,  20.00, 0.40),
+    "openai:gpt-5.6-terra":                            (2.00,  12.00, 0.20),
+    "openai:gpt-5.6-luna":                             (0.20,   1.20, 0.02),
 }
-
-# The reviewer's configured model (Qwen3-VL-235B-A22B-Thinking) is deliberately ABSENT: its
-# price could not be confirmed on DeepInfra's catalogue during the Gate-1 audit (only the
-# -Instruct variant was listed). Guessing it would fabricate cost evidence. It prices at 0.0 and
-# logs a warning until the id and price are confirmed - see the Gate-1 open item.
-# unpriced_route_models() below answers which configured models this affects, so the omission is
-# a listable fact rather than a log line somebody has to be watching for.
 
 _warned: set[str] = set()
 

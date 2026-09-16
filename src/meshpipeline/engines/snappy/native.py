@@ -197,6 +197,15 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                 from meshpipeline.engines.snappy.foam_exec import check_mesh
                 q = check_mesh(ws, bashrc=bashrc)
                 if q:
+                    # cells across the local passage at every wall point (internal flow):
+                    # flow_gates.resolution_floor holds 12 at the narrowest wall
+                    try:
+                        from meshpipeline.engines.passage import passage_of_polymesh
+                        if (ws / "flow_topology").read_text().strip().lower() == "internal":
+                            q.update(passage_of_polymesh(ws))
+                    except Exception:  # noqa: BLE001 - evidence, not a verdict
+                        logger.warning("passage measure after meshing failed; omitted",
+                                       exc_info=True)
                     out["quality"] = q
                     # Beside the mesh, not just in the return value. The measurement has three
                     # more readers on the far side - finalize (which writes it into the manifest

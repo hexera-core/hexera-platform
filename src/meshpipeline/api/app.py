@@ -17,6 +17,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 import meshpipeline.settings.policy as polcfg
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.api.auth import router as auth_router
 from meshpipeline.api.v1.router import router as v1_router
 from meshpipeline.persistence.session import dispose_engine
 
@@ -161,6 +162,11 @@ async def _unhandled_exception_handler(request, exc):
 
 
 app.include_router(v1_router)
+
+# Mounted OUTSIDE /api/v1 deliberately. It is not part of the versioned product surface a caller
+# with an API key uses; it is the console's own sign-in seam, gated on MESH_API_KEY, and keeping
+# it off /api/v1 means an edge rule can exclude it by path without carving a hole in the version.
+app.include_router(auth_router, tags=["auth"])
 
 # Instrumentation ALWAYS runs - request metrics keep being recorded in-process either way. What a
 # hardened deployment does not get is the public scrape endpoint: /metrics enumerates route

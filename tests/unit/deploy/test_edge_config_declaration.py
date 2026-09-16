@@ -55,7 +55,9 @@ def test_a_domain_with_its_service_passes(tmp_path):
                       "CLOUDRUN_CONSOLE_SERVICE": "dev-console",
                       "HEXERA_API_BASE_URL": "https://api.example",
                       "AUTH_SECRET_SECRET": "console-auth-secret",
-                      "CONSOLE_AUTH_USERS_SECRET": "console-auth-users"}, tmp_path)
+                      "NEXT_PUBLIC_FIREBASE_API_KEY": "AIzaFake",
+                      "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN": "fake-proj.firebaseapp.com",
+                      "NEXT_PUBLIC_FIREBASE_PROJECT_ID": "fake-proj"}, tmp_path)
     assert done.returncode == 0, done.stdout + done.stderr
 
 

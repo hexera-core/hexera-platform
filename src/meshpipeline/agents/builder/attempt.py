@@ -26,6 +26,8 @@ CARRY_FILES = (
     "attempt_log.txt", "input.stl", "geom.stl", "geom.fms",
     "geom_box.json",
     "geometry.step",      # the staged CAD solid (engines that mesh the BRep directly)
+    # vmtk: the engine-opened lumen and its staging facts (engines/vmtk/lumen_staging.py)
+    "lumen_open.vtp", "lumen.vtp", "vmtk_staging.json",
     ".last_plan.json",    # planner memory across an across-node retry
 )
 
@@ -203,6 +205,36 @@ def _stage_surface(geometry, workspace: Path, engine: str) -> None:
                 prepared.consumed.current_unit.value, prepared.origin.value)
 
 
+def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
+    """Engine-owned preparation that needs the INTAKE, not just the file: an engine exposing
+    `stage_declared` (vmtk opens a CAD body at the declared inlet/outlet faces) gets the
+    declared ports and the input kind here, once the shared surface is staged. Nothing to
+    stage, or an engine without the hook, is a no-op; a staging failure is logged and the
+    attempt proceeds on the shared surface, where the engine's own inspection says why."""
+    from meshpipeline.engines.runtime import get_engine
+    try:
+        fn = getattr(get_engine(engine), "stage_declared", None)
+    except Exception:  # noqa: BLE001 - an adapter without the hook is the common case
+        fn = None
+    if fn is None or geometry is None:
+        return
+    if (workspace / "vmtk_staging.json").exists():
+        return                                  # carried forward from the previous attempt
+    try:
+        from meshpipeline.cad.staging import staged_surface
+        consumed = staged_surface(geometry, workspace / "input.stl").consumed
+        rec = fn(workspace, geometry_path=geometry.path, prepared=consumed,
+                 intake_patches=state.get("intake_patches") or [],
+                 input_kind=str(state.get("input_kind") or ""))
+    except Exception:  # noqa: BLE001 - reported by the engine's inspection, never fatal here
+        logger.exception("Builder: engine staging failed (engine=%s) - continuing on the "
+                         "shared surface", engine)
+        return
+    if rec:
+        logger.info("Builder: engine staged the declared geometry (engine=%s, ports=%d)",
+                    engine, len(rec.get("ports") or []))
+
+
 def _carry_forward(prev: Path, workspace: Path, engine: str, job_id: str) -> None:
     from meshpipeline.agents.builder.tools import get_spec_run_files
 
@@ -256,6 +288,7 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
     if mode in ("initial", "rebuild"):
         if source_path and Path(source_path).exists():
             _stage_surface(geometry, workspace, engine)
+            _stage_declared(workspace, geometry, state, engine)
         messages = _opening(workspace, state, engine=engine, source_path=source_path)
         if mode == "rebuild":
             _append_to_opening(messages, _rebuild_note(state))
@@ -273,6 +306,8 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
         if prev.is_dir():
             _carry_forward(prev, workspace, engine, job_id)
         _ensure_surface(workspace, geometry, source_path, engine, job_id)
+        if source_path and Path(source_path).exists():
+            _stage_declared(workspace, geometry, state, engine)
         messages = _opening(workspace, state, engine=engine, source_path=source_path)
         _append_to_opening(messages, _retry_note(state, retry_count))
         max_rounds = bcfg.BUILDER_RETRY_MAX_ROUNDS

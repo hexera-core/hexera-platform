@@ -352,9 +352,9 @@ def _dispatch_once(session_gate, session_overrides=None, msgs=None):
     made = []
 
     class _JobRepo:
-        async def create(self, _db, owner_id):
+        async def create(self, _db, owner_id, *, organization_id=""):
             j = SimpleNamespace(id=uuid.uuid4(), geometry_source_id=None,
-                                owner_id=owner_id)
+                                owner_id=owner_id, organization_id=organization_id)
             made.append(j)
             return j
 

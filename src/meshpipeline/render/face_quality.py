@@ -13,17 +13,15 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: A mesh above this many faces is not measured for the viewer. The arrays below are a few hundred
-#: bytes per thousand faces, but the edge-expanded temporaries of the geometry pass are not, and the
-#: worker computes this while it still owns a workspace it must also upload. Past the cap the user
-#: keeps the mesh and the summary figures; only the per-face colouring is absent, and the log says so.
-#: Measured on a delivered 3.9M-cell orifice mesh (12,237,824 faces): 31 s and a 3.96 GB peak -
-#: about 330 bytes per face, dominated by the full-length per-face vectors of the skewness pass
-#: (the geometry pass is already chunked). That mesh was the first live payload to ship without a
-#: heatmap, under the 12M guess this replaces. 20M faces is ~6.4M hex-dominant cells and ~6.5 GB
-#: peak: every ordinary delivery, short of the 8M-cell hard limit. To raise it, chunk the
-#: skewness pass the way the geometry pass is chunked.
-MAX_FACES_FOR_FIELDS = 20_000_000
+#: A mesh above this many faces is not measured for the viewer. Every pass over the mesh runs a
+#: block of faces at a time (_CHUNK_FACES) and the labels are 32-bit, so what remains resident is
+#: the mesh itself plus one block: measured on a delivered 7.4M-cell bundle (22,967,336 faces,
+#: HEX-14) at 107 s and a 3.77 GB peak - about 165 bytes per face - against 565 s and 7.42 GB
+#: before the passes were blocked. The cap is where that rate meets the worker's 8 GiB with room
+#: for the worker itself: 40M faces is ~6.6 GB, about 13M hex-dominant cells. Past the cap the
+#: user keeps the mesh and the summary figures; only the per-face colouring is absent, and the log
+#: says so. Raising the worker's memory raises the cap in proportion.
+MAX_FACES_FOR_FIELDS = 40_000_000
 
 #: How many worst spots ship per metric. Bad faces are rare on a mesh worth delivering (single
 #: digits to a few hundred), so the list is small by nature; the cap only bounds a bad mesh.
@@ -134,6 +132,13 @@ def _tokens(buf: bytes, dtype) -> np.ndarray:
         return np.fromstring(buf, dtype=dtype, sep=" ")  # noqa: NPY201 - fastest stdlib-free path
 
 
+def _translated_body(path: Path) -> bytes:
+    """The list body with the parentheses blanked - parsed once, so the raw body is not kept
+    beside its translated copy (each is the size of the file: ~0.7 GB for 23 M faces)."""
+    _, body = _body(path)
+    return body.translate(_PAREN_TABLE)
+
+
 def _read_points(path: Path) -> np.ndarray:
     count, body = _body(path)
     arr = _tokens(body.translate(_PAREN_TABLE), np.float64)
@@ -144,7 +149,7 @@ def _read_points(path: Path) -> np.ndarray:
 
 def _read_labels(path: Path) -> np.ndarray:
     count, body = _body(path)
-    arr = _tokens(body, np.int64)
+    arr = _tokens(body, np.int32)          # cell ids fit 32 bits; half the bytes of int64
     if arr.size != count:
         raise UnreadableMesh(f"{path.name}: expected {count} labels, parsed {arr.size}")
     return arr
@@ -152,7 +157,9 @@ def _read_labels(path: Path) -> np.ndarray:
 
 def _read_faces(path: Path) -> tuple[np.ndarray, np.ndarray]:
     count, body = _body(path)
-    arr = _tokens(body.translate(_PAREN_TABLE), np.int64)
+    del body                                # the translated copy is the one that lives on
+    # point ids fit 32 bits: the token array is half the size the int64 parse made
+    arr = _tokens(_translated_body(path), np.int32)
     sizes = np.empty(count, dtype=np.int64)
     idx = 0
     for i in range(count):
@@ -261,19 +268,31 @@ def _cell_geometry(fCtrs, fAreas, owner, neighbour, n_cells):
         cEst[:, k] = (np.bincount(owner, weights=fCtrs[:, k], minlength=n_cells)
                       + np.bincount(neighbour, weights=fCtrs[:ni, k], minlength=n_cells))
     cEst /= np.maximum(nfc, 1)[:, None]
-    d_own = fCtrs - cEst[owner]
-    pyr3_own = np.einsum("ij,ij->i", fAreas, d_own)
-    pc_own = 0.75 * fCtrs + 0.25 * cEst[owner]
-    d_nei = fCtrs[:ni] - cEst[neighbour]
-    pyr3_nei = -np.einsum("ij,ij->i", fAreas[:ni], d_nei)
-    pc_nei = 0.75 * fCtrs[:ni] + 0.25 * cEst[neighbour]
-    cVols3 = (np.bincount(owner, weights=pyr3_own, minlength=n_cells)
-              + np.bincount(neighbour, weights=pyr3_nei, minlength=n_cells))
+    # The pyramid sums, a block of faces at a time: the per-face vectors (centre offsets, pyramid
+    # volumes, pyramid centroids) exist only for the block, and the accumulators are per cell.
+    nf = len(owner)
+    cVols3 = np.zeros(n_cells)
     cCtrs = np.zeros((n_cells, 3))
-    for k in range(3):
-        cCtrs[:, k] = (np.bincount(owner, weights=pyr3_own * pc_own[:, k], minlength=n_cells)
-                       + np.bincount(neighbour, weights=pyr3_nei * pc_nei[:, k],
-                                     minlength=n_cells))
+    for f0 in range(0, nf, _CHUNK_FACES):
+        f1 = min(f0 + _CHUNK_FACES, nf)
+        own = owner[f0:f1]
+        fc = fCtrs[f0:f1]
+        fa = fAreas[f0:f1]
+        ce = cEst[own]
+        pyr3 = np.einsum("ij,ij->i", fa, fc - ce)
+        pc = 0.75 * fc + 0.25 * ce
+        cVols3 += np.bincount(own, weights=pyr3, minlength=n_cells)
+        for k in range(3):
+            cCtrs[:, k] += np.bincount(own, weights=pyr3 * pc[:, k], minlength=n_cells)
+        m = min(f1, ni) - f0                       # the block's internal faces, if any
+        if m > 0:
+            nei = neighbour[f0:f0 + m]
+            ce = cEst[nei]
+            pyr3 = -np.einsum("ij,ij->i", fa[:m], fc[:m] - ce)
+            pc = 0.75 * fc[:m] + 0.25 * ce
+            cVols3 += np.bincount(nei, weights=pyr3, minlength=n_cells)
+            for k in range(3):
+                cCtrs[:, k] += np.bincount(nei, weights=pyr3 * pc[:, k], minlength=n_cells)
     with np.errstate(invalid="ignore", divide="ignore"):
         cCtrs /= cVols3[:, None]
     tiny = np.abs(cVols3) <= _ROOTVSMALL
@@ -288,11 +307,17 @@ def _aspect_ratio(fAreas, owner, neighbour, cVols, n_cells):
     and (1/6) * the sum of those components / V^(2/3). A unit cube reads 1; a 10:1:1 brick reads
     10. A cell metric, so the boundary face carries its owner cell's value as it is."""
     ni = len(neighbour)
-    mag = np.abs(fAreas)
-    sumMag = np.empty((n_cells, 3))
-    for k in range(3):
-        sumMag[:, k] = (np.bincount(owner, weights=mag[:, k], minlength=n_cells)
-                        + np.bincount(neighbour, weights=mag[:ni, k], minlength=n_cells))
+    nf = len(owner)
+    sumMag = np.zeros((n_cells, 3))
+    for f0 in range(0, nf, _CHUNK_FACES):
+        f1 = min(f0 + _CHUNK_FACES, nf)
+        mag = np.abs(fAreas[f0:f1])
+        m = min(f1, ni) - f0
+        for k in range(3):
+            sumMag[:, k] += np.bincount(owner[f0:f1], weights=mag[:, k], minlength=n_cells)
+            if m > 0:
+                sumMag[:, k] += np.bincount(neighbour[f0:f0 + m], weights=mag[:m, k],
+                                            minlength=n_cells)
     ratio = sumMag.max(axis=1) / (sumMag.min(axis=1) + _ROOTVSMALL)
     v = np.maximum(np.abs(cVols), _ROOTVSMALL)
     return np.maximum(ratio, sumMag.sum(axis=1) / (6.0 * np.power(v, 2.0 / 3.0)))
@@ -300,42 +325,54 @@ def _aspect_ratio(fAreas, owner, neighbour, cVols, n_cells):
 
 def _non_orthogonality(cCtrs, fAreas, owner, neighbour):
     ni = len(neighbour)
-    d = cCtrs[neighbour] - cCtrs[owner[:ni]]
-    s = fAreas[:ni]
-    den = np.linalg.norm(d, axis=1) * np.linalg.norm(s, axis=1) + _ROOTVSMALL
-    return np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", d, s) / den, -1.0, 1.0)))
+    out = np.empty(ni)
+    for f0 in range(0, ni, _CHUNK_FACES):
+        f1 = min(f0 + _CHUNK_FACES, ni)
+        d = cCtrs[neighbour[f0:f1]] - cCtrs[owner[f0:f1]]
+        s = fAreas[f0:f1]
+        den = np.linalg.norm(d, axis=1) * np.linalg.norm(s, axis=1) + _ROOTVSMALL
+        out[f0:f1] = np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", d, s) / den, -1.0, 1.0)))
+    return out
 
 
 def _skewness(points, face_flat, face_off, fCtrs, fAreas, cCtrs, owner, neighbour):
     nf = len(face_off) - 1
     ni = len(neighbour)
-    own_c = cCtrs[owner]
-    Cpf = fCtrs - own_c
-    d = np.empty((nf, 3))
-    d[:ni] = cCtrs[neighbour] - own_c[:ni]
-    nrm = fAreas[ni:]
-    nhat = nrm / (np.linalg.norm(nrm, axis=1)[:, None] + _ROOTVSMALL)
-    d[ni:] = nhat * np.einsum("ij,ij->i", nhat, Cpf[ni:])[:, None]
-    sf_cpf = np.einsum("ij,ij->i", fAreas, Cpf)
-    sf_d = np.einsum("ij,ij->i", fAreas, d)
-    sv = Cpf - (sf_cpf / (sf_d + _ROOTVSMALL))[:, None] * d
-    svmag = np.linalg.norm(sv, axis=1)
-    svHat = sv / (svmag[:, None] + _ROOTVSMALL)
-    fd = np.empty(nf)
+    out = np.empty(nf)
+    # One block of faces at a time, the internal/boundary split handled inside the block: the
+    # full-length temporaries of the old pass (five face-vectors and six face-scalars, ~170 bytes
+    # per face) were what set the 20 M-face cap.
     for f0 in range(0, nf, _CHUNK_FACES):
         f1 = min(f0 + _CHUNK_FACES, nf)
+        fc = fCtrs[f0:f1]
+        fa = fAreas[f0:f1]
+        Cpf = fc - cCtrs[owner[f0:f1]]
+        d = np.empty((f1 - f0, 3))
+        m = max(0, min(f1, ni) - f0)                  # internal faces in this block
+        if m > 0:
+            d[:m] = cCtrs[neighbour[f0:f0 + m]] - cCtrs[owner[f0:f0 + m]]
+        if m < f1 - f0:                               # boundary faces: project onto the normal
+            nrm = fa[m:]
+            nhat = nrm / (np.linalg.norm(nrm, axis=1)[:, None] + _ROOTVSMALL)
+            d[m:] = nhat * np.einsum("ij,ij->i", nhat, Cpf[m:])[:, None]
+        sf_cpf = np.einsum("ij,ij->i", fa, Cpf)
+        sf_d = np.einsum("ij,ij->i", fa, d)
+        sv = Cpf - (sf_cpf / (sf_d + _ROOTVSMALL))[:, None] * d
+        svmag = np.linalg.norm(sv, axis=1)
+        svHat = sv / (svmag[:, None] + _ROOTVSMALL)
         e0, e1 = face_off[f0], face_off[f1]
         off = face_off[f0:f1 + 1] - e0
         sizes = np.diff(off)
         pv = points[face_flat[e0:e1]]
-        proj = np.abs(np.einsum("ij,ij->i", np.repeat(svHat[f0:f1], sizes, axis=0),
-                                pv - np.repeat(fCtrs[f0:f1], sizes, axis=0)))
-        fd[f0:f1] = np.maximum.reduceat(proj, off[:-1])
-    dmag = np.linalg.norm(d, axis=1)
-    floor = np.empty(nf)
-    floor[:ni] = 0.2 * dmag[:ni]
-    floor[ni:] = 0.4 * dmag[ni:]
-    return svmag / np.maximum(fd, floor + _ROOTVSMALL)
+        proj = np.abs(np.einsum("ij,ij->i", np.repeat(svHat, sizes, axis=0),
+                                pv - np.repeat(fc, sizes, axis=0)))
+        fd = np.maximum.reduceat(proj, off[:-1])
+        dmag = np.linalg.norm(d, axis=1)
+        floor = np.empty(f1 - f0)
+        floor[:m] = 0.2 * dmag[:m]
+        floor[m:] = 0.4 * dmag[m:]
+        out[f0:f1] = svmag / np.maximum(fd, floor + _ROOTVSMALL)
+    return out
 
 
 # ------------------------------------------------------------------- the payload ----

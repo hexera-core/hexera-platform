@@ -174,8 +174,12 @@ async def test_a_summarizer_provider_failure_raises_a_structured_neutral_excepti
     exc = ei.value
     assert exc.role == "summarizer"
     assert exc.category is FC.CONNECTION            # normalized category retained
-    assert exc.provider == "deepseek"               # the ACTUAL provider attempted
-    assert exc.model == "deepseek-v4-flash"         # the ACTUAL model attempted
+    # The ACTUAL target attempted, read off the route rather than restated as a literal: what
+    # this pins is that the neutral exception carries the target that was really dialled, not
+    # which vendor the summarizer is pointed at this quarter (that is
+    # tests/unit/infra/test_invocation_equivalence.py's question).
+    assert exc.provider == route.primary.provider
+    assert exc.model == route.primary.model
     assert exc.attempts == 2
     assert exc.phase is Phase.PROVIDER
     assert exc.__cause__ is original, "the original provider exception must remain the cause"

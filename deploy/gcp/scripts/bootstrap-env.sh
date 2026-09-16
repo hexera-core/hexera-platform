@@ -44,6 +44,17 @@ $(printf '%s\n' "${cands}" | sed 's/^/    /')"
 # the discovered facts
 discover() {
   PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
+  # EVERY PROBE BELOW IS PINNED TO THAT PROJECT, and this one line is what pins them. Discovery
+  # asks gcloud a dozen questions - does this job exist, does this bucket, has this instance an
+  # address - and a bare `gcloud` answers them about whichever project the MACHINE last selected,
+  # not the one being discovered. In CI the two always agree, because the auth action sets
+  # CLOUDSDK_CORE_PROJECT from the deploy target; on a developer's laptop they routinely do not.
+  #
+  # The failure is silent and it lies in the convincing direction: discovering hexera-dev-pranav
+  # from a shell pointed at hexera-dev reported "mesh job dev-mesh exists - reusing it", because
+  # dev-mesh exists in hexera-dev. A generated.env built from another project's answers is bound
+  # to the right project and describes the wrong one.
+  export CLOUDSDK_CORE_PROJECT="${PROJECT_ID}"
   [ -n "${PROJECT_ID}" ] && [ "${PROJECT_ID}" != "(unset)" ] \
     || die "no GCP project set - run: gcloud config set project <PROJECT_ID>"
 
@@ -111,8 +122,24 @@ discover() {
     info "mesh job ${MESH_JOB} exists in ${REGION} - reusing it (identity ${MESH_SA})"
   else
     MESH_JOB_DISPOSITION=created
-    MESH_SA_DISPOSITION=created
-    info "mesh job ${MESH_JOB} not found in ${REGION} - it will be created"
+    # THE ACCOUNT IS NOT THE JOB, and inferring one disposition from the other was wrong. The mesh
+    # job is created at stage 10; its runtime identity may already exist long before that - and in
+    # a project stood up by new-env.sh it always does, because creating identities needs
+    # iam.serviceAccountAdmin, which the deploy identity is deliberately never given and an owner
+    # therefore does up front.
+    #
+    # Declaring the account `created` here made preflight demand iam.serviceAccounts.create on
+    # every run that had not yet made the job, and refuse the deploy for a permission it would
+    # never have exercised - the account it was going to create was already sitting there. Probed
+    # rather than assumed.
+    if gcloud iam service-accounts describe \
+         "${MESH_SA}@${PROJECT_ID}.iam.gserviceaccount.com" --project "${PROJECT_ID}" \
+         >/dev/null 2>&1; then
+      MESH_SA_DISPOSITION=reused
+    else
+      MESH_SA_DISPOSITION=created
+    fi
+    info "mesh job ${MESH_JOB} not found in ${REGION} - it will be created (identity ${MESH_SA}: ${MESH_SA_DISPOSITION})"
   fi
 
   if gcloud storage buckets describe "gs://${MESH_BUCKET}" >/dev/null 2>&1; then
@@ -233,10 +260,12 @@ GCP_MESH_BUCKET=${MESH_BUCKET}
 # the mesh runtime identity (ID; email derived <id>@<project>.iam.gserviceaccount.com)
 MESH_SERVICE_ACCOUNT=${MESH_SA}
 
-# mesh job sizing
-MESH_CPU=4
-MESH_MEMORY=8Gi
-MESH_TIMEOUT_SECONDS=14400
+# mesh job sizing. 8 vCPU / 16 GiB is what the engine assessments ran on (a 5 to 7 M-hex cfMesh
+# fill or a 4 M-tet VMTK fill needs more than 8 GiB); a deploy may override any of the three
+# from its environment. generated.prod.env pins prod's own values and is not affected.
+MESH_CPU=${MESH_CPU:-8}
+MESH_MEMORY=${MESH_MEMORY:-16Gi}
+MESH_TIMEOUT_SECONDS=${MESH_TIMEOUT_SECONDS:-14400}
 
 # The APPLICATION image, written by scripts/promote-release.sh as the validated digest. The API
 # runs it; the migration job and the queue-depth publisher run application code from the same bytes.
@@ -343,6 +372,50 @@ API_ALLOW_UNAUTHENTICATED=${API_ALLOW_UNAUTHENTICATED:-0}
 WORKER_SERVICE_ACCOUNT=${WORKER_SERVICE_ACCOUNT:-}
 WORKER_ENV_URI=${WORKER_ENV_URI:-}
 
+# THE OUTREACH TIER. Every one of these uses the VAR-or-empty form deliberately: load_env does
+# 'set -a' and sources this file, which
+# makes it win over the environment, so a bare assignment here would CLOBBER the value the
+# workflow exported. Declared rather than omitted so the contract is visible - an undeclared
+# variable that happens to survive is indistinguishable from one nobody meant to pass.
+#
+# Empty OUTREACH_ENABLED means this deployment does not run outreach, and both the section link
+# and the sender stage state their own skip. Outreach is prod-only: one partner list, one mailbox.
+OUTREACH_ENABLED=${OUTREACH_ENABLED:-}
+OUTREACH_WORKER_JOB=${OUTREACH_WORKER_JOB:-}
+# The database. OUTREACH_DB_HOST doubles as the Cloud SQL socket path - /cloudsql/CONNECTION_NAME -
+# which is how the Cloud Run integration exposes it, and create-admin-service.sh adds the instance
+# to the service when it sees that form.
+OUTREACH_DB_HOST=${OUTREACH_DB_HOST:-}
+OUTREACH_DB_NAME=${OUTREACH_DB_NAME:-}
+OUTREACH_DB_USER=${OUTREACH_DB_USER:-}
+OUTREACH_CLOUDSQL_INSTANCE=${OUTREACH_CLOUDSQL_INSTANCE:-}
+# The KMS key the mailbox refresh token is sealed with. Absent, the console REFUSES to store a
+# token rather than writing a usable credential in the clear - see lib/outreach/crypto.ts.
+OUTREACH_KMS_KEY=${OUTREACH_KMS_KEY:-}
+# The OAuth client. GOOGLE_CLIENT_ID is public and travels as a plain value; the secret half is a
+# Secret Manager container name (GOOGLE_CLIENT_SECRET_SECRET), never a value.
+GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
+# \`${VAR-default}\`, NOT \`${VAR:-default}\`, and the colon is the whole point. These two name secret
+# containers that exist only where the feature does: dev runs no outreach and has no OAuth client,
+# so its picker states every value in this block as the EMPTY STRING - "this deployment does not
+# have one" - which is a decision, not an omission. \`:-\` substitutes on unset OR empty, so it
+# overwrote that decision with prod's container names, the admin stage bound them as secret
+# references, and Cloud Run refused the revision:
+#
+#   Permission denied on secret: projects/224734058693/secrets/google-client-secret/versions/latest
+#
+# which reads as a missing IAM grant and is not one - hexera-dev has no such container at all (GCS
+# and Secret Manager both report an absent resource as a permission error rather than confirm it
+# does not exist). Dropping the colon honours a stated empty and still defaults when the variable is
+# genuinely unset, which is the local \`make bootstrap\` case this default was written for.
+#
+# Every other default in this file is safe under \`:-\`: they are sizes, or names derived from
+# DEPLOY_ID, or containers that exist in every project. These two are the only ones that name an
+# OPTIONAL feature's secret.
+GOOGLE_CLIENT_SECRET_SECRET=${GOOGLE_CLIENT_SECRET_SECRET-google-client-secret}
+OUTREACH_DB_PASSWORD_SECRET=${OUTREACH_DB_PASSWORD_SECRET-outreach-db-password}
+
 # THE CONSOLE TIER. Empty CLOUDRUN_CONSOLE_SERVICE means this deployment serves no browser console
 # and that stage is skipped - the same arrangement an API-less deployment uses above.
 CLOUDRUN_CONSOLE_SERVICE=${CONSOLE_SERVICE}
@@ -360,9 +433,14 @@ CONSOLE_TIMEOUT_SECONDS=${CONSOLE_TIMEOUT_SECONDS:-300}
 CONSOLE_INGRESS=${CONSOLE_INGRESS:-all}
 CONSOLE_ALLOW_UNAUTHENTICATED=${CONSOLE_ALLOW_UNAUTHENTICATED:-1}
 # NO SECRET VALUES: container names only, in the same <SETTING>_SECRET spelling every other
-# credential here uses. CONSOLE_AUTH_USERS holds scrypt password hashes, which is a credential.
+# credential here uses.
 AUTH_SECRET_SECRET=${AUTH_SECRET_SECRET:-console-auth-secret}
-CONSOLE_AUTH_USERS_SECRET=${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}
+# The Identity Platform web config the console signs in against. PUBLIC by design - it identifies
+# the project and authorises nothing on its own - so these are plain settings, never a
+# <SETTING>_SECRET container name.
+NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY:-}
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN:-}
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID:-}
 # Where the console reaches the product API. The server-side value is used by the authenticated
 # /api/v1 proxy; the NEXT_PUBLIC_ one is compiled into the browser bundle and is what the
 # WebSocket dials, because the stream goes browser->API directly and not through the proxy.
@@ -405,6 +483,7 @@ EDGE_CERT=${EDGE_CERT:-${DEPLOY_ID}-edge-cert}
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.
 DEEPINFRA_API_KEY_SECRET=${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}
 DEEPSEEK_API_KEY_SECRET=${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}
+OPENAI_API_KEY_SECRET=${OPENAI_API_KEY_SECRET:-openai-api-key}
 MESH_API_KEY_SECRET=${MESH_API_KEY_SECRET:-mesh-api-key}
 USER_TOKEN_SECRET_SECRET=${USER_TOKEN_SECRET_SECRET:-user-token-secret}
 
@@ -425,6 +504,7 @@ if [ -f "${ENV_FILE}" ] && [ "${FORCE}" -eq 0 ]; then
   info "Reusing existing ${ENV_FILE} (pass --force to regenerate)"
   # Capture what the OPERATOR explicitly requested BEFORE sourcing the file overwrites it.
   _REQ_REGION="${GCP_REGION:-}"
+  _REQ_PROJECT="${GCP_PROJECT_ID:-}"
   set -a
   # shellcheck disable=SC1090  # path is chosen at runtime (DEPLOY_ENV_FILE)
   . "${ENV_FILE}"
@@ -434,14 +514,26 @@ if [ -f "${ENV_FILE}" ] && [ "${FORCE}" -eq 0 ]; then
   # generated.env is BOUND to the project (and region) that produced it. If the active gcloud
   # project - or an explicitly requested region - has since changed, reusing this file would
   # silently deploy to the OLD target. Reject it and make the operator rediscover ON PURPOSE,
-  # rather than deploy somewhere they did not intend. `gcloud config get-value` is read from the
-  # live session, INDEPENDENT of the sourced file, so it is a true "what is active now" signal.
-  _ambient_project="$(gcloud config get-value project 2>/dev/null || true)"
+  # rather than deploy somewhere they did not intend.
+  #
+  # AN EXPLICIT REQUEST OUTRANKS THE AMBIENT CONFIG, and reading only the ambient one was a bug.
+  # `gcloud config get-value project` answers "which project did this machine last `gcloud config
+  # set`" - a fact about the developer's shell, not about what this run was asked to do. A caller
+  # that exports GCP_PROJECT_ID has SAID which project it means. That is how CI runs (no ambient
+  # config exists there at all) and how new-env.sh provisions a project which is deliberately NOT
+  # the one the operator's gcloud happens to point at - and reading the ambient value there refused
+  # a run whose target was never in doubt, in a message naming a project the caller never mentioned.
+  #
+  # This is the precedence lib.sh's load_env already applies, and the same treatment the region
+  # check below has always had through _REQ_REGION; the project simply never got it. The protection
+  # is unchanged when nothing was requested: with no GCP_PROJECT_ID the ambient project is still
+  # the signal, so a developer who switched projects and forgot is still caught.
+  _ambient_project="${_REQ_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}"
   if [ -n "${_ambient_project}" ] && [ "${_ambient_project}" != "(unset)" ] \
      && [ -n "${GCP_PROJECT_ID:-}" ] && [ "${_ambient_project}" != "${GCP_PROJECT_ID}" ]; then
-    die "${ENV_FILE} is bound to project '${GCP_PROJECT_ID}', but gcloud is now on '${_ambient_project}'.
+    die "${ENV_FILE} is bound to project '${GCP_PROJECT_ID}', but '${_ambient_project}' was requested.
    Refusing to deploy to a different project than the generated state was built for. Either:
-     - switch back:      gcloud config set project ${GCP_PROJECT_ID}
+     - point at the file's project:  GCP_PROJECT_ID=${GCP_PROJECT_ID}
      - or regenerate:    bash $(basename "${BASH_SOURCE[0]}") --force   (rediscovers for ${_ambient_project})"
   fi
   # Region: only an EXPLICIT request - the operator's own GCP_REGION (captured above) or a set

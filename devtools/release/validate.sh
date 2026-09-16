@@ -257,20 +257,83 @@ else record "import provenance (site-packages, not the checkout)" failed 1 "${PR
 stage "images: build each DEPLOYABLE component exactly once"
 declare -A TARGET=( [app]=pipeline [mesh]=mesh [console]=console [admin]=admin )
 declare -A IMAGE_ID=() IMAGE_TAG=()
-for comp in app mesh console admin; do
-  tag="meshpipeline-${comp}:${SHORT}"
-  IMAGE_TAG["${comp}"]="${tag}"
-  # Built unconditionally, from this repository alone - the mesh target builds its own pinned
-  # native floor. A tag that already exists locally may name an unrelated image, so "the tag is
-  # there" is never accepted as evidence - the recorded ID must belong to THIS build.
-  #: THE product version, read textually from its one authority so the build needs no interpreter
+
+#: THE product version, read textually from its one authority so the build needs no interpreter
 #: and no installed package. The Dockerfile refuses any image whose label disagrees with what the
 #: wheel actually installs, so this is a transported assertion rather than a second source.
+#: Loop-invariant, so it is resolved once rather than per component.
 PRODUCT_VERSION="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' \
   "${REPO_ROOT}/src/meshpipeline/__init__.py" | head -1)"
 
-if docker build --target "${TARGET[$comp]}" --build-arg APP_VERSION="${PRODUCT_VERSION}" -t "${tag}" . \
-       >"${WORK}/build-${comp}.log" 2>&1; then
+# THE LAYER CACHE. Opt-in, and never load-bearing: RELEASE_BUILD_CACHE names a registry PREFIX
+# (a cache ref per component is derived from it), and everything below degrades to the plain
+# `docker build` this gate has always run if it is unset, if buildx is unavailable, or if no
+# builder can be created. That matters because this script is ALSO the fresh-install path -
+# `make mesh-setup` runs it on a developer's laptop against a blank project, where there is no
+# registry to cache into and no credential to reach one.
+#
+# WHY IT IS WORTH THE COMPLEXITY: the Dockerfile deliberately isolates the native floor in its
+# own `mesh-toolchain` stage so that a change to the wheel or to ui/ does not re-download ~67 MB
+# of OpenFOAM from a SourceForge mirror. Without an exported cache that isolation buys nothing on
+# CI, where every run starts on a fresh runner with an empty local cache - the stage is rebuilt
+# from scratch every time precisely because nothing carried it between runs. `mode=max` exports
+# the INTERMEDIATE stages too, which is the whole point: the final images do not contain the
+# toolchain layers, so an inline cache (which records only what shipped) would not restore it.
+#
+# `ignore-error=true` on the export: a run that cannot WRITE the cache (a deploy identity without
+# registry write, a transient registry fault) must still produce the artifact. Losing the cache
+# costs minutes; failing the release costs the deploy.
+#
+# THE ARTIFACT IS UNCHANGED BY ANY OF THIS. `--load` puts the built image into the local daemon
+# under the same tag the legacy path produced, so `docker image inspect` below records a real
+# local image ID and publish.sh still pushes THOSE bytes without rebuilding. The cache changes
+# how the layers were obtained, never which layers are in the image.
+BUILDER=""
+if [ -n "${RELEASE_BUILD_CACHE:-}" ]; then
+  if ! docker buildx version >/dev/null 2>&1; then
+    note "RELEASE_BUILD_CACHE is set but docker buildx is unavailable - building without a cache"
+  elif docker buildx inspect meshpipeline-release >/dev/null 2>&1 \
+       || docker buildx create --name meshpipeline-release --driver docker-container >/dev/null 2>&1; then
+    BUILDER="meshpipeline-release"
+    note "layer cache: ${RELEASE_BUILD_CACHE}-<component> (buildx builder ${BUILDER}, mode=max)"
+  else
+    note "RELEASE_BUILD_CACHE is set but no buildx builder could be created - building without a cache"
+  fi
+fi
+
+# Built unconditionally, from this repository alone - the mesh target builds its own pinned
+# native floor. A tag that already exists locally may name an unrelated image, so "the tag is
+# there" is never accepted as evidence - the recorded ID must belong to THIS build.
+_build_image() {  # _build_image <component> <tag>
+  local comp="$1" tag="$2" cache
+  if [ -z "${BUILDER}" ]; then
+    docker build --target "${TARGET[$comp]}" --build-arg APP_VERSION="${PRODUCT_VERSION}" \
+      -t "${tag}" . >"${WORK}/build-${comp}.log" 2>&1
+    return $?
+  fi
+  cache="${RELEASE_BUILD_CACHE}-${comp}"
+  # EXTRA READ-ONLY SOURCES, and the reason a second variable exists at all. A personal environment
+  # is its own project with its own registry, so its cache starts EMPTY - the first build in a
+  # brand new environment would pay the full OpenFOAM download, which is exactly the wait that
+  # makes people not create one. RELEASE_BUILD_CACHE_FROM names a cache in an environment that is
+  # already warm (shared dev), read but never written, so a new environment inherits the layers on
+  # its first build and fills its own cache as it goes.
+  local -a from_args=(--cache-from "type=registry,ref=${cache}")
+  local extra
+  for extra in ${RELEASE_BUILD_CACHE_FROM:-}; do
+    from_args+=(--cache-from "type=registry,ref=${extra}-${comp}")
+  done
+  docker buildx build --builder "${BUILDER}" \
+    --target "${TARGET[$comp]}" --build-arg APP_VERSION="${PRODUCT_VERSION}" \
+    "${from_args[@]}" \
+    --cache-to "type=registry,ref=${cache},mode=max,ignore-error=true" \
+    --load -t "${tag}" . >"${WORK}/build-${comp}.log" 2>&1
+}
+
+for comp in app mesh console admin; do
+  tag="meshpipeline-${comp}:${SHORT}"
+  IMAGE_TAG["${comp}"]="${tag}"
+  if _build_image "${comp}" "${tag}"; then
     IMAGE_ID["${comp}"]="$(docker image inspect "${tag}" --format '{{.Id}}')"
     record "image build (${comp}: Dockerfile target ${TARGET[$comp]})" passed 1 \
       "${tag}  ${IMAGE_ID[$comp]:0:19}"
@@ -325,7 +388,7 @@ if [ -n "${IMAGE_ID[console]}" ]; then
   # started on a published port with the two settings Auth.js requires at boot; the values are
   # deliberately not credentials - nothing here authenticates anyone.
   _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
-            -e AUTH_SECRET=gate-c-not-a-real-secret -e CONSOLE_AUTH_USERS='[]' \
+            -e AUTH_SECRET=gate-c-not-a-real-secret \
             "${IMAGE_TAG[console]}" 2>/dev/null || true)"
   if [ -n "${_cid}" ]; then
     _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
@@ -654,7 +717,7 @@ else
   # else owns.
   TERMINAL_RUN_ID="$(printf '%s' "${STAMP}" | tr -cd 'a-z0-9')"
   TERMINAL_DB="meshtest_${TERMINAL_RUN_ID}"
-  MINIO_IMAGE=minio/minio:RELEASE.2025-04-22T22-12-26Z
+  MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
   docker network create --label "amp-release=${STAMP}" "${NET}" >/dev/null 2>&1
   docker run -d --name "${RD}" --label "amp-release=${STAMP}" --network "${NET}" \
     redis:7-alpine >/dev/null 2>&1

@@ -3,7 +3,7 @@
 # Boundaries: it reads the structured JUnit result, not console text.
 from __future__ import annotations
 
-import sys
+import argparse
 import xml.etree.ElementTree as ET
 
 #: The named guarantees that exist ONLY against real PostgreSQL. If the harness stops provisioning
@@ -41,16 +41,37 @@ def _classname_module(case: ET.Element) -> str:
     return (case.get("classname") or "").split(".")[-1]
 
 
-def main(path: str) -> int:
-    try:
-        root = ET.parse(path).getroot()
-    except (OSError, ET.ParseError) as exc:
-        print(f"::error:: no readable JUnit report at {path}: {exc}")
-        print("         pytest produced no structured result - the run cannot be called green.")
-        return 1
+def main(paths: list[str], partial: bool = False) -> int:
+    """Judge one report, or the UNION of a sharded run's reports.
 
-    cases = list(root.iter("testcase"))
+    THE UNION IS THE SUBJECT, not each report in turn, and that is the whole reason this takes a
+    list. Split four ways, no single shard executes MIN_EXECUTED tests and no single shard holds
+    all three named guarantees - so judging shard-by-shard would report the tier as vacuous on
+    every run. Judged together, the assertions mean exactly what they meant when the tier was one
+    session: this many tests really executed against a real database, and these three guarantees
+    really passed.
+
+    `partial` is the other half of that. A shard asserts what is true OF A SHARD - the report
+    parses, it is not empty, nothing failed, nothing skipped for a reason that is not one of the
+    two optional fixtures - and defers the two whole-suite claims to the union pass. It is not a
+    way to turn the guard off: the union pass is a job the gate waits on, so a run where it did
+    not happen is not green.
+    """
+    cases: list[ET.Element] = []
     problems: list[str] = []
+
+    for path in paths:
+        try:
+            root = ET.parse(path).getroot()
+        except (OSError, ET.ParseError) as exc:
+            print(f"::error:: no readable JUnit report at {path}: {exc}")
+            print("         pytest produced no structured result - the run cannot be called green.")
+            return 1
+        found = list(root.iter("testcase"))
+        if not found:
+            problems.append(f"{path} contains ZERO test cases - a collection-only, empty or fully "
+                            "deselected run is not a pass")
+        cases.extend(found)
 
     if not cases:
         problems.append("the report contains ZERO test cases - a collection-only, empty or fully "
@@ -65,7 +86,7 @@ def main(path: str) -> int:
             if c.find("failure") is not None or c.find("error") is not None:
                 failed.append(c)
 
-    if len(executed) < MIN_EXECUTED:
+    if not partial and len(executed) < MIN_EXECUTED:
         problems.append(
             f"only {len(executed)} tests actually executed (floor {MIN_EXECUTED}). The "
             "database-backed tier is missing - this is the silent-skip failure itself")
@@ -84,8 +105,9 @@ def main(path: str) -> int:
                 f"-- {reason.strip()[:160]}")
 
     # The named guarantees must be present AND passing - not merely 'not failed', which a skipped
-    # or absent test also satisfies.
-    for label, (module, name) in REQUIRED.items():
+    # or absent test also satisfies. Asserted over the UNION only: the three live in three
+    # different modules, so at four shards no single report can hold them all.
+    for label, (module, name) in ({} if partial else REQUIRED).items():
         matches = [c for c in cases
                    if _classname_module(c) == module and (c.get("name") or "").startswith(name)]
         if not matches:
@@ -105,13 +127,21 @@ def main(path: str) -> int:
             print(f"    - {p}")
         return 1
 
-    print(f"coverage guard OK: {len(executed)} executed, {len(skipped)} optional skips, "
-          f"{len(REQUIRED)} named real-PostgreSQL guarantees proven")
+    if partial:
+        print(f"shard guard OK: {len(executed)} executed, {len(skipped)} optional skips, "
+              f"0 failures. The floor and the named guarantees are the union pass's to prove.")
+    else:
+        print(f"coverage guard OK: {len(executed)} executed across {len(paths)} report(s), "
+              f"{len(skipped)} optional skips, {len(REQUIRED)} named real-PostgreSQL "
+              f"guarantees proven")
     return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: assert_integration_coverage.py <junit-report.xml>")
-        raise SystemExit(2)
-    raise SystemExit(main(sys.argv[1]))
+    ap = argparse.ArgumentParser(description="Judge a JUnit report, or the union of a sharded run's.")
+    ap.add_argument("reports", nargs="+", help="one or more junit-report.xml")
+    ap.add_argument("--partial", action="store_true",
+                    help="this is ONE SHARD: assert what is true of a shard and leave the "
+                         "whole-suite floor and named guarantees to the union pass")
+    _args = ap.parse_args()
+    raise SystemExit(main(_args.reports, partial=_args.partial))

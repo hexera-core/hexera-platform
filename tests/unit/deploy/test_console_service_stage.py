@@ -53,9 +53,12 @@ exit 0
 
 _CONSOLE_DIGEST = "us-central1-docker.pkg.dev/fake-proj/hexera/console@sha256:c0ffee"
 
-# The five names create-console-service.sh's own CONSOLE_ENV_PAIRS declares (step 3). Read from
+# The eight names create-console-service.sh's own CONSOLE_ENV_PAIRS declares (step 3). Read from
 # the script rather than hard-coded to avoid re-guessing them here.
-_DECLARED_ENV_NAMES = "ENV;DEPLOYMENT_ID;NODE_ENV;HEXERA_API_BASE_URL;NEXT_PUBLIC_HEXERA_API_BASE_URL"
+_DECLARED_ENV_NAMES = (
+    "ENV;DEPLOYMENT_ID;NODE_ENV;HEXERA_API_BASE_URL;NEXT_PUBLIC_HEXERA_API_BASE_URL;"
+    "NEXT_PUBLIC_FIREBASE_API_KEY;NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;NEXT_PUBLIC_FIREBASE_PROJECT_ID"
+)
 
 _ENV = {
     "DEPLOYMENT_ID": "t",
@@ -71,8 +74,13 @@ _ENV = {
     "CONSOLE_IMAGE": _CONSOLE_DIGEST,
     "HEXERA_API_BASE_URL": "https://api.example",
     "NEXT_PUBLIC_HEXERA_API_BASE_URL": "https://api.example",
+    # PUBLIC by design - the Identity Platform web config identifies the project and authorises
+    # nothing on its own - so these are plain settings alongside NEXT_PUBLIC_HEXERA_API_BASE_URL,
+    # never a <SETTING>_SECRET container name.
+    "NEXT_PUBLIC_FIREBASE_API_KEY": "fake-firebase-key",
+    "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN": "fake-proj.firebaseapp.com",
+    "NEXT_PUBLIC_FIREBASE_PROJECT_ID": "fake-proj",
     "AUTH_SECRET_SECRET": "console-auth-secret",
-    "CONSOLE_AUTH_USERS_SECRET": "console-auth-users",
     "MESH_API_KEY_SECRET": "mesh-api-key",
     "USER_TOKEN_SECRET_SECRET": "user-token-secret",
 }
@@ -129,9 +137,8 @@ def test_credentials_reach_the_spec_only_as_references(run):
     assert done.returncode == 0, done.stderr
     assert "--set-secrets" in calls
     assert "AUTH_SECRET=console-auth-secret:latest" in calls
-    assert "CONSOLE_AUTH_USERS=console-auth-users:latest" in calls
     # The env list is declarative and must never carry the values themselves.
-    for forbidden in ("AUTH_SECRET=", "CONSOLE_AUTH_USERS="):
+    for forbidden in ("AUTH_SECRET=",):
         for chunk in calls.split("--set-env-vars")[1:]:
             assert forbidden not in chunk.split("--set-secrets")[0], (
                 f"{forbidden!r} appears in the declarative environment, not as a reference")
@@ -142,6 +149,24 @@ def test_the_api_origins_reach_the_container(run):
     assert done.returncode == 0, done.stderr
     assert "HEXERA_API_BASE_URL=https://api.example" in calls
     assert "NEXT_PUBLIC_HEXERA_API_BASE_URL=https://api.example" in calls
+
+
+def test_the_firebase_config_reaches_the_spec_as_plain_environment(run):
+    # The Identity Platform web config is PUBLIC by design - it identifies the project and
+    # authorises nothing on its own - so, unlike AUTH_SECRET above, it must reach Cloud Run as
+    # plain --set-env-vars entries, never a --set-secrets reference.
+    done, calls = run()
+    assert done.returncode == 0, done.stderr
+    assert "--set-secrets" in calls
+    secrets_chunk = calls.split("--set-secrets")[1]
+    for pair in (
+        "NEXT_PUBLIC_FIREBASE_API_KEY=fake-firebase-key",
+        "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=fake-proj.firebaseapp.com",
+        "NEXT_PUBLIC_FIREBASE_PROJECT_ID=fake-proj",
+    ):
+        assert pair in calls, f"{pair!r} did not reach the deploy call as plain environment"
+        assert pair not in secrets_chunk, (
+            f"{pair!r} appears after --set-secrets; it must never be a Secret Manager reference")
 
 
 def test_the_console_is_publicly_invokable_when_stated(run):

@@ -1,0 +1,32 @@
+[
+ {
+  "segment": "aero-startups",
+  "company": "Magdrive",
+  "reason": "wave4",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Pangea Propulsion",
+  "reason": "wave4",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Portal Space Systems",
+  "reason": "wave4",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Reliable Robotics",
+  "reason": "wave4",
+  "people": 5
+ },
+ {
+  "segment": "aero-startups",
+  "company": "Pulsar Fusion",
+  "reason": "wave4",
+  "people": 5
+ }
+]

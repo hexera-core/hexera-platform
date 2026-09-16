@@ -44,10 +44,10 @@ PG_SECRET="${POSTGRES_PASSWORD_SECRET:-postgres-password}"
 MINIO_SECRET="${MINIO_SECRET_KEY_SECRET:-minio-secret-key}"
 DEEPINFRA_SECRET="${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}"
 DEEPSEEK_SECRET="${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}"
+OPENAI_SECRET="${OPENAI_API_KEY_SECRET:-openai-api-key}"
 MESH_API_KEY_SECRET_NAME="${MESH_API_KEY_SECRET:-mesh-api-key}"
 USER_TOKEN_SECRET_NAME="${USER_TOKEN_SECRET_SECRET:-user-token-secret}"
 AUTH_SECRET_NAME="${AUTH_SECRET_SECRET:-console-auth-secret}"
-CONSOLE_AUTH_USERS_NAME="${CONSOLE_AUTH_USERS_SECRET:-console-auth-users}"
 
 # THE READERS: MIGRATE_SERVICE_ACCOUNT (written by bootstrap-env.sh), API_SERVICE_ACCOUNT,
 # WORKER_SERVICE_ACCOUNT and CONSOLE_SERVICE_ACCOUNT. Each is a service-account ID; the email is
@@ -90,10 +90,10 @@ SECRETS=(
   "MINIO_SECRET_KEY|${MINIO_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|object storage for workspaces and results"
   "DEEPINFRA_API_KEY|${DEEPINFRA_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|the model provider the agents call"
   "DEEPSEEK_API_KEY|${DEEPSEEK_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|the model provider the agents call"
+  "OPENAI_API_KEY|${OPENAI_SECRET}|optional|API_SERVICE_ACCOUNT WORKER_SERVICE_ACCOUNT|the model provider the agents call"
   "MESH_API_KEY|${MESH_API_KEY_SECRET_NAME}|optional|API_SERVICE_ACCOUNT CONSOLE_SERVICE_ACCOUNT|the key the API presents when it submits a mesh job"
   "USER_TOKEN_SECRET|${USER_TOKEN_SECRET_NAME}|optional|API_SERVICE_ACCOUNT CONSOLE_SERVICE_ACCOUNT|the HMAC key user tokens are signed with - generated elsewhere, never here"
   "AUTH_SECRET|${AUTH_SECRET_NAME}|optional|CONSOLE_SERVICE_ACCOUNT|the key Auth.js signs console session cookies with - generated elsewhere, never here"
-  "CONSOLE_AUTH_USERS|${CONSOLE_AUTH_USERS_NAME}|optional|CONSOLE_SERVICE_ACCOUNT|the console's email/password users and their scrypt hashes - replaced by database accounts in sub-project B"
 )
 
 info "Secret containers for ${DEPLOYMENT_ID} in ${GCP_PROJECT_ID} (${#SECRETS[@]} secrets, no values)"

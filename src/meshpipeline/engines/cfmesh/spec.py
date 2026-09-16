@@ -209,10 +209,16 @@ SPEC = EngineSpec(
         ),
         run_policy=RunPolicy(
             required_files=("system/meshDict",),
-            # cfMesh draft meshes finish in minutes - a too-fine dict should
-            # fail FAST so the Builder coarsens.
-            run_timeout=lambda: min(420, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
-            timeout_hint="Lower max_cells (and/or the surface level), then run_mesh again.",
+            # 20 MINUTES: at industry density (the passage caps put ~13 cells across every
+            # passage and the resolution_floor gate refuses less) a production fill can reach
+            # a few million hexes and 8-15 minutes of cartesianMesh; the old 420 s budget was
+            # for draft meshes, where a too-fine dict was meant to fail fast so the builder
+            # coarsens - coarsening is now bounded by the floor. Snappy's budget is 2400 s.
+            run_timeout=lambda: min(1200, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
+            timeout_hint=("The wall band and background are held at ~13 cells across the passage "
+                          "by the passage caps, so a fill that does not finish in 20 min is a domain "
+                          "too large for that density or an objectRefinement that is far too fine: "
+                          "drop or widen the objectRefinements first, then run_mesh again."),
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="cartesianMesh failed",
             fail_hint=("Adjust the meshDict (fewer/thinner boundaryLayers, or "

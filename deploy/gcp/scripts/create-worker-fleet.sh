@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that sizes it.
-# Owns: template naming, the rolling update that moves an existing group onto a new digest, and the warm-pool floor.
-# Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted.
+# Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that FIRST sizes it.
+# Owns: template naming, the rolling update that moves an existing group onto a new digest, and the fleet's SHAPE.
+# Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted;
+#             an existing autoscaler's policy belongs to the admin console and is not reconciled here.
 
 # Provision the WORKER FLEET: a digest-pinned instance template, the managed instance group that
 # runs it, and the autoscaler that sizes the group from the queue-depth metric.
@@ -15,10 +16,24 @@
 #
 # WHY METADATA CARRIES NAMES AND NOT VALUES. `gcloud compute instances describe` is readable by
 # anyone holding compute.instances.get, and so is the template. deploy/gcp/worker/startup.sh
-# already reads its four credentials BY NAME - metadata says `postgres-password-secret`, the
+# already reads its five credentials BY NAME - metadata says `postgres-password-secret`, the
 # instance fetches the value under its own identity, and the value only ever exists in a root-owned
 # file. This script writes the names that contract expects and nothing else; rotating a credential
 # is then a new secret version plus an instance roll, with no template to edit.
+#
+# WHO OWNS THE SCALING KNOBS. The floor, the ceiling, the cooldown and the jobs-per-instance
+# assignment belong to the ADMIN CONSOLE once the autoscaler exists. This script sets them when it
+# CREATES the autoscaler and never touches them again - see step 6.
+#
+# The reason is that two writers of one policy is a race whose loser is silent. Before this split,
+# every run of this script re-applied whatever `generated.<env>.env` said, so a warm floor raised
+# in the console to absorb a demo would be reset by the next unrelated deploy of an unrelated tier,
+# and the symptom would arrive weeks later as a cold start under load. Nothing errored, and nothing
+# said what had happened.
+#
+# The WORKER_MIG_* variables below therefore survive as CREATION DEFAULTS. They are what a fresh
+# environment comes up with, and they stop describing the running fleet the moment anyone changes
+# it from the console. The Fleet page is the authority after that.
 #
 # WHY THE FLOOR DIFFERS BY ENVIRONMENT. Build-out plan, Decision 4: scale-to-zero in dev, a warm
 # pool in prod. Dev is a shared sandbox that is idle most of the day, and the queue-depth metric now
@@ -79,6 +94,35 @@ WORKER_ROLLING_TYPE="${WORKER_ROLLING_TYPE:-proactive}"
 WORKER_ROLLING_MAX_SURGE="${WORKER_ROLLING_MAX_SURGE:-1}"
 WORKER_ROLLING_MAX_UNAVAILABLE="${WORKER_ROLLING_MAX_UNAVAILABLE:-0}"
 WORKER_ROLLING_MIN_READY_SECONDS="${WORKER_ROLLING_MIN_READY_SECONDS:-180}"
+
+# Set updatePolicy.minReadySec on a managed instance group. gcloud exposes no flag for it on any
+# track (see the roll below), so this goes through the Compute API.
+#
+# THE EXISTING POLICY IS READ AND MERGED, never assumed. A PATCH on instanceGroupManagers replaces
+# a nested object wholesale rather than merging into it, so sending `{"updatePolicy":{"minReadySec":
+# N}}` on its own would silently discard maxSurge, maxUnavailable, replacementMethod and type - the
+# very settings set immediately above - and leave the fleet rolling under defaults nobody chose.
+# Reading first and writing the union keeps this additive.
+_mig_patch_min_ready() {  # <mig> <zone> <seconds>
+  local mig="$1" zone="$2" secs="$3" token url policy
+  token="$(gcloud auth print-access-token 2>/dev/null)" || return 1
+  [ -n "${token}" ] || return 1
+  url="https://compute.googleapis.com/compute/v1/projects/${GCP_PROJECT_ID}/zones/${zone}/instanceGroupManagers/${mig}"
+  policy="$(curl -sS -f -H "Authorization: Bearer ${token}" "${url}" 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    current = json.load(sys.stdin).get("updatePolicy", {})
+except Exception:
+    sys.exit(1)
+current["minReadySec"] = int(sys.argv[1])
+json.dump({"updatePolicy": current}, sys.stdout)
+' "${secs}")" || return 1
+  [ -n "${policy}" ] || return 1
+  curl -sS -f -X PATCH "${url}" \
+    -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
+    -d "${policy}" >/dev/null 2>&1
+}
 
 # THE ENDPOINTS THE INSTANCE WILL READ FROM METADATA, checked before anything is created.
 #
@@ -176,7 +220,7 @@ fi
 WORKER_SCOPES="${WORKER_SCOPES:-https://www.googleapis.com/auth/cloud-platform}"
 
 # 2) the credentials the instance will fetch, BY NAME. Each entry is
-#    `METADATA_KEY:ENV_VAR_HOLDING_THE_SECRET_NAME`, and the metadata keys are exactly the four
+#    `METADATA_KEY:ENV_VAR_HOLDING_THE_SECRET_NAME`, and the metadata keys are exactly the five
 #    deploy/gcp/worker/startup.sh already reads. A credential this deployment does not use has no
 #    key at all - startup.sh treats an absent key as "not used here" and carries on.
 WORKER_SECRET_METADATA=()
@@ -184,7 +228,8 @@ WORKER_SECRET_NAMES=()
 for pair in "postgres-password-secret:POSTGRES_PASSWORD_SECRET" \
             "minio-secret-key-secret:MINIO_SECRET_KEY_SECRET" \
             "deepinfra-api-key-secret:DEEPINFRA_API_KEY_SECRET" \
-            "deepseek-api-key-secret:DEEPSEEK_API_KEY_SECRET"; do
+            "deepseek-api-key-secret:DEEPSEEK_API_KEY_SECRET" \
+            "openai-api-key-secret:OPENAI_API_KEY_SECRET"; do
   meta_key="${pair%%:*}"
   holder="${pair##*:}"
   secret_name="${!holder:-}"
@@ -316,14 +361,37 @@ if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_
   else
     MIG_DISPOSITION=rolled
     info "Rolling ${WORKER_MIG} from ${CURRENT_TEMPLATE:-<unknown>} onto ${TEMPLATE}"
+    # MIN-READY IS SET THROUGH THE API, NOT THE CLI. `--min-ready` was a flag on
+    # `rolling-action start-update` and gcloud has removed it - it is absent from the GA track, from
+    # beta, and from `instance-groups managed update`'s `--update-policy-*` family, which exposes
+    # surge, unavailable, minimal-action and replacement-method and nothing for this. Passing it now
+    # aborts the command with `unrecognized arguments: --min-ready`, exit 2, which is what stopped
+    # the v0.1.5 release at stage 18/19. Only a RELEASE reaches this stage - a merge to main deploys
+    # `images,migrate,console,admin` and never rolls the fleet - so the flag went stale unnoticed.
+    #
+    # updatePolicy.minReadySec is still a Compute API field, so the guard is kept rather than
+    # dropped: it is PATCHed onto the group first, then the roll reads it. Without it the next
+    # instance can be replaced the moment its successor reports RUNNING, which for a worker is
+    # before it has pulled a single job - the roll would march through the fleet at boot speed and
+    # leave nothing draining the queue.
+    gc compute instance-groups managed update "${WORKER_MIG}" \
+      --zone "${WORKER_MIG_ZONE}" \
+      --update-policy-max-surge "${WORKER_ROLLING_MAX_SURGE}" \
+      --update-policy-max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}" \
+      --update-policy-replacement-method "${REPLACEMENT_METHOD}" \
+      --update-policy-type "${WORKER_ROLLING_TYPE}" >/dev/null \
+      || die "could not set the fleet's update policy on ${WORKER_MIG}"
+    _mig_patch_min_ready "${WORKER_MIG}" "${WORKER_MIG_ZONE}" "${WORKER_ROLLING_MIN_READY_SECONDS}" \
+      || die "could not set updatePolicy.minReadySec=${WORKER_ROLLING_MIN_READY_SECONDS} on ${WORKER_MIG}.
+   The roll was NOT started: without it an instance is considered available the moment it reports
+   RUNNING, which for a worker is before it has pulled a job."
     gc compute instance-groups managed rolling-action start-update "${WORKER_MIG}" \
       --zone "${WORKER_MIG_ZONE}" \
       --version "template=${TEMPLATE}" \
       --type "${WORKER_ROLLING_TYPE}" \
       --replacement-method "${REPLACEMENT_METHOD}" \
       --max-surge "${WORKER_ROLLING_MAX_SURGE}" \
-      --max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}" \
-      --min-ready "${WORKER_ROLLING_MIN_READY_SECONDS}s"
+      --max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}"
     log "fleet           ${WORKER_MIG}  (rolled - surge ${WORKER_ROLLING_MAX_SURGE}, unavailable ${WORKER_ROLLING_MAX_UNAVAILABLE},"
     log "                min-ready ${WORKER_ROLLING_MIN_READY_SECONDS}s, ${WORKER_ROLLING_TYPE}/${REPLACEMENT_METHOD})"
     log "                the roll runs asynchronously; watch it with:"
@@ -360,15 +428,35 @@ FILTER="${FILTER} AND resource.labels.location = \"${WORKER_MIG_ZONE}\""
 FILTER="${FILTER} AND resource.labels.namespace = \"${DEPLOYMENT_ID}\""
 FILTER="${FILTER} AND resource.labels.job = \"queue-depth\""
 FILTER="${FILTER} AND resource.labels.task_id = \"${QUEUE_NAME}\""
-info "Reconciling the autoscaling policy for ${WORKER_MIG}"
-gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
-  --zone "${WORKER_MIG_ZONE}" \
-  --min-num-replicas "${WORKER_MIG_MIN_REPLICAS}" \
-  --max-num-replicas "${WORKER_MIG_MAX_REPLICAS}" \
-  --cool-down-period "${WORKER_MIG_COOLDOWN_SECONDS}" \
-  --update-stackdriver-metric "${METRIC}" \
-  --stackdriver-metric-filter "${FILTER}" \
-  --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}"
+
+# DOES THE GROUP ALREADY HAVE AN AUTOSCALER? Read from the group's own `status.autoscaler`, which
+# is the authoritative link, rather than by guessing the autoscaler's name: `set-autoscaling` names
+# it after the group today, but nothing in the API promises that, and a wrong guess here would read
+# as "no autoscaler" and re-apply the policy - the exact failure this check exists to prevent.
+AUTOSCALER_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
+  --zone "${WORKER_MIG_ZONE}" --format='value(status.autoscaler)' 2>/dev/null || true)"
+
+if [ -n "${AUTOSCALER_URL}" ]; then
+  AUTOSCALING_DISPOSITION="left to the console"
+  info "Leaving the autoscaling policy for ${WORKER_MIG} alone"
+  log "autoscaler ${AUTOSCALER_URL##*/} exists - the floor, ceiling, cooldown and jobs-per-instance"
+  log "belong to the ADMIN CONSOLE and are not reconciled here. Two writers of one policy is a race"
+  log "whose loser is silent: a floor raised in the console and reset by this deploy would surface"
+  log "weeks later as a cold start under load."
+  log "The WORKER_MIG_* values in this deployment's env are creation defaults and no longer"
+  log "describe the running fleet - read it on the console's Fleet page."
+else
+  AUTOSCALING_DISPOSITION="created"
+  info "Creating the autoscaling policy for ${WORKER_MIG}"
+  gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
+    --zone "${WORKER_MIG_ZONE}" \
+    --min-num-replicas "${WORKER_MIG_MIN_REPLICAS}" \
+    --max-num-replicas "${WORKER_MIG_MAX_REPLICAS}" \
+    --cool-down-period "${WORKER_MIG_COOLDOWN_SECONDS}" \
+    --update-stackdriver-metric "${METRIC}" \
+    --stackdriver-metric-filter "${FILTER}" \
+    --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}"
+fi
 
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
   FLOOR_STATE="0 - scales to zero (Decision 4: dev pays for nothing while idle)"
@@ -382,5 +470,7 @@ log "  identity      ${WORKER_SA_EMAIL}"
 log "  image         ${APP_IMAGE}"
 log "  floor         ${FLOOR_STATE}"
 log "  ceiling       ${WORKER_MIG_MAX_REPLICAS} instances, one per ${WORKER_JOBS_PER_INSTANCE} queued job(s), cooldown ${WORKER_MIG_COOLDOWN_SECONDS}s"
+log "  scaling       ${AUTOSCALING_DISPOSITION} - the floor/ceiling above are CREATION DEFAULTS; the"
+log "                live policy is the admin console's once the autoscaler exists"
 log "  credentials   ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata - the values are fetched per instance"
 log "done"

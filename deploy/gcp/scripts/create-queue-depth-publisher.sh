@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Responsibility: Provision the one writer of the queue-depth metric, and point the fleet's autoscaler at it.
-# Owns: the publisher job, its schedule, its two narrow grants, and the autoscaling policy that reads its series.
+# Owns: the publisher job, its schedule, its two narrow grants, and the autoscaler's METRIC WIRING.
+# Boundaries: the autoscaler's sizing - floor, ceiling, cooldown, jobs-per-instance - belongs to the
+#             admin console and is read back from the live policy rather than re-applied from env.
 # Boundaries: it publishes a signal and states a policy; it never resizes the group itself and never touches a job in flight.
 
 # Provision the SCHEDULED QUEUE-DEPTH PUBLISHER and reconcile the worker fleet's autoscaler.
@@ -158,6 +160,17 @@ log "schedule ${QD_SCHEDULER}  ${SCHEDULE}  -> ${QD_JOB}"
 #    item 6). The filter must select exactly ONE time series - that is the contract
 #    single-instance-assignment is defined against - so it names every label that identifies it.
 #
+#    THIS STEP OWNS THE METRIC WIRING, NOT THE SIZING. `set-autoscaling` replaces the whole policy,
+#    so repointing the filter necessarily rewrites the numbers alongside it. The numbers belong to
+#    the ADMIN CONSOLE once an autoscaler exists (see create-worker-fleet.sh), so they are READ BACK
+#    from the live autoscaler and passed through unchanged. The deployment's WORKER_MIG_* values are
+#    used only when there is no autoscaler yet to read.
+#
+#    Skipping this step outright when an autoscaler exists was the simpler option and is wrong: the
+#    filter is derived from the publisher's own resource labels, so a publisher that moved zone or
+#    queue would leave the autoscaler pointed at a series nobody writes - which presents as
+#    CUSTOM_METRIC_INVALID and a fleet pinned silently at its floor.
+#
 #    THE MINIMUM IS NOT LOWERED HERE. Scale-to-zero is now possible: the depth is published whether
 #    or not an instance exists. It is not yet SAFE, because this metric counts queued work and not
 #    work in flight, so a fleet allowed to reach zero can delete an instance that is mid-job. The
@@ -168,15 +181,75 @@ FILTER="${FILTER} AND resource.labels.location = \"${WORKER_MIG_ZONE}\""
 FILTER="${FILTER} AND resource.labels.namespace = \"${DEPLOYMENT_ID}\""
 FILTER="${FILTER} AND resource.labels.job = \"queue-depth\""
 FILTER="${FILTER} AND resource.labels.task_id = \"${QUEUE_NAME}\""
-info "Reconciling autoscaler for ${WORKER_MIG}"
+# The live numbers, if there are any. Read OFF THE GROUP, not from `compute autoscalers describe`.
+#
+# THAT COMMAND NO LONGER EXISTS. `gcloud compute autoscalers` is absent from GA, beta and alpha
+# (582.0.0 answers `Invalid choice: 'autoscalers'`), so every read of it failed into the `|| true`
+# below and returned an empty string. LIVE_MIN..LIVE_ASSIGNMENT were therefore ALWAYS empty, the
+# fallbacks on the next lines handed this deployment's env values to `set-autoscaling`, and because
+# set-autoscaling replaces the whole policy the floor, ceiling, cooldown and jobs-per-instance the
+# admin console owns were silently overwritten on every run - the precise outcome the paragraph
+# above says must not happen. It was invisible because the fallbacks make a total failure to read
+# look exactly like "there is no autoscaler yet".
+#
+# `instance-groups managed describe` annotates the group with the autoscaler that TARGETS it (the
+# same link `status.autoscaler` names), so this still assumes nothing about the autoscaler's name.
+as_field() {
+  gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" \
+    --format="value($1)" 2>/dev/null || true
+}
+LIVE_MIN=""; LIVE_MAX=""; LIVE_COOLDOWN=""; LIVE_ASSIGNMENT=""
+if [ -n "$(as_field autoscaler.name)" ]; then
+  LIVE_MIN="$(as_field autoscaler.autoscalingPolicy.minNumReplicas)"
+  LIVE_MAX="$(as_field autoscaler.autoscalingPolicy.maxNumReplicas)"
+  LIVE_COOLDOWN="$(as_field autoscaler.autoscalingPolicy.coolDownPeriodSec)"
+  LIVE_ASSIGNMENT="$(as_field 'autoscaler.autoscalingPolicy.customMetricUtilizations[0].singleInstanceAssignment')"
+fi
+
+AS_MIN="${LIVE_MIN:-${WORKER_MIG_MIN_REPLICAS:-1}}"
+AS_MAX="${LIVE_MAX:-${WORKER_MIG_MAX_REPLICAS:-5}}"
+AS_COOLDOWN="${LIVE_COOLDOWN:-${WORKER_MIG_COOLDOWN_SECONDS:-180}}"
+AS_ASSIGNMENT="${LIVE_ASSIGNMENT:-${WORKER_JOBS_PER_INSTANCE:-1}}"
+
+# THE GROUP HAS TO EXIST BEFORE A POLICY CAN BE ATTACHED TO IT, and on a first deploy it does not.
+#
+# This stage owns the autoscaler's METRIC WIRING and runs at stage 13; create-worker-fleet.sh
+# creates the managed instance group at stage 17 and deliberately never reconciles the policy - "an
+# existing autoscaler's policy belongs to the admin console and is not reconciled here". That split
+# is right, and it quietly assumes the group already exists, which is true of every environment
+# whose fleet predates this tooling and false of every environment built from nothing:
+#
+#   ERROR: The resource '.../instanceGroupManagers/dev-workers' was not found
+#
+# The publisher, its schedule and its identity are all established above and are the valuable half
+# of this stage - they are what proves the metric path. Only the attachment is deferred, with the
+# one command that completes it, rather than failing a deploy that has done everything it could.
+if ! gc compute instance-groups managed describe "${WORKER_MIG}" \
+       --zone "${WORKER_MIG_ZONE}" >/dev/null 2>&1; then
+  warn "managed instance group ${WORKER_MIG} does not exist yet, so there is nothing to attach the
+       autoscaling policy to. The publisher and its schedule ARE in place and the metric is being
+       written. Create the fleet, then reconcile this stage again to attach the policy:
+         DEPLOY_COMPONENTS=workers  (this deploy, stage 17 - or tick `workers`)
+         DEPLOY_COMPONENTS=queue    (a later run, once the group exists)"
+  log "autoscaler      deferred - ${WORKER_MIG} not created yet"
+  exit 0
+fi
+
+if [ -n "${LIVE_MIN}" ]; then
+  info "Repointing the autoscaler for ${WORKER_MIG} at the metric, preserving its sizing"
+  log "the floor, ceiling, cooldown and jobs-per-instance below were READ FROM THE LIVE"
+  log "AUTOSCALER, not from this deployment's env - they belong to the admin console"
+else
+  info "Reconciling autoscaler for ${WORKER_MIG}"
+fi
 gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
   --zone "${WORKER_MIG_ZONE}" \
-  --min-num-replicas "${WORKER_MIG_MIN_REPLICAS:-1}" \
-  --max-num-replicas "${WORKER_MIG_MAX_REPLICAS:-5}" \
-  --cool-down-period "${WORKER_MIG_COOLDOWN_SECONDS:-180}" \
+  --min-num-replicas "${AS_MIN}" \
+  --max-num-replicas "${AS_MAX}" \
+  --cool-down-period "${AS_COOLDOWN}" \
   --update-stackdriver-metric "${METRIC}" \
   --stackdriver-metric-filter "${FILTER}" \
-  --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE:-1}"
-log "autoscaler: ${WORKER_MIG_MIN_REPLICAS:-1}..${WORKER_MIG_MAX_REPLICAS:-5} instances,"
-log "  one instance per ${WORKER_JOBS_PER_INSTANCE:-1} queued job, cooldown ${WORKER_MIG_COOLDOWN_SECONDS:-180}s"
+  --stackdriver-metric-single-instance-assignment "${AS_ASSIGNMENT}"
+log "autoscaler: ${AS_MIN}..${AS_MAX} instances,"
+log "  one instance per ${AS_ASSIGNMENT} queued job, cooldown ${AS_COOLDOWN}s"
 log "done"

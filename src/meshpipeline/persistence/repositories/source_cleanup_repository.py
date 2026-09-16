@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import ReconciliationState, SourceObjectCleanup
+from meshpipeline.persistence.repositories import tenant_scope
 
 #: How many times the sweep may fail to delete one object before it stops retrying and leaves the
 #: record for a person. Bounded so retry metadata cannot grow without end.
@@ -19,14 +20,15 @@ MAX_CLEANUP_RETRIES = 5
 class SourceCleanupRepository:
 
     async def record_intent(self, db: AsyncSession, *, owner_id: str, source_id: uuid.UUID,
-                            object_key: str) -> None:
+                            object_key: str, organization_id: str = "") -> None:
         # Written and COMMITTED BEFORE the object is uploaded, so the object can never exist without
         # something durable naming it. Idempotent on the object key: re-recording the same intent
         # (a retry, a redelivery) is a no-op rather than a second row.
         await db.execute(
             pg_insert(SourceObjectCleanup)
-            .values(id=uuid.uuid4(), owner_id=owner_id, source_id=source_id,
-                    object_key=object_key, state=ReconciliationState.pending)
+            .values(id=uuid.uuid4(), source_id=source_id, object_key=object_key,
+                    state=ReconciliationState.pending,
+                    **tenant_scope.stamp(owner_id=owner_id, organization_id=organization_id))
             .on_conflict_do_nothing(index_elements=["object_key"]))
 
     async def resolve(self, db: AsyncSession, *, object_key: str, state: ReconciliationState,

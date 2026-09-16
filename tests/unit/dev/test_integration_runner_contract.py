@@ -161,7 +161,7 @@ def _full_pass(extra: str = "") -> str:
 
 
 def test_a_correctly_provisioned_report_passes(guard, tmp_path):
-    assert guard.main(_report(tmp_path, _full_pass())) == 0
+    assert guard.main([_report(tmp_path, _full_pass())]) == 0
 
 
 def test_the_optional_skips_are_still_allowed(guard, tmp_path):
@@ -169,26 +169,26 @@ def test_the_optional_skips_are_still_allowed(guard, tmp_path):
                       '<skipped message="real STEP not staged (make test-integration stages it)"/>')
                 + _case("test_upload_compensation_http", "test_y",
                         '<skipped message="restricted MinIO identity not provisioned (MINIO_READONLY_KEY)"/>'))
-    assert guard.main(_report(tmp_path, _full_pass(optional))) == 0
+    assert guard.main([_report(tmp_path, _full_pass(optional))]) == 0
 
 
 def test_an_empty_run_is_not_a_pass(guard, tmp_path):
-    assert guard.main(_report(tmp_path, "")) == 1
+    assert guard.main([_report(tmp_path, "")]) == 1
 
 
 def test_a_missing_report_is_not_a_pass(guard, tmp_path):
-    assert guard.main(str(tmp_path / "nope.xml")) == 1
+    assert guard.main([str(tmp_path / "nope.xml")]) == 1
 
 
 def test_a_run_below_the_execution_floor_is_not_a_pass(guard, tmp_path):
     few = "".join(_case("test_misc", f"test_f{i}") for i in range(10))
-    assert guard.main(_report(tmp_path, few)) == 1
+    assert guard.main([_report(tmp_path, few)]) == 1
 
 
 def test_a_database_backed_module_skipping_for_a_missing_service_is_rejected(guard, tmp_path):
     bad = _case("test_capture_authority_postgres", "test_z",
                 '<skipped message="a real PostgreSQL endpoint is required"/>')
-    assert guard.main(_report(tmp_path, _full_pass(bad))) == 1
+    assert guard.main([_report(tmp_path, _full_pass(bad))]) == 1
 
 
 @pytest.mark.parametrize("module,name", [
@@ -207,7 +207,7 @@ def test_a_named_guarantee_that_never_ran_is_rejected(guard, tmp_path, module, n
         _case("test_checkpoint_restart_postgres",
               "test_the_abandoned_worker_is_fenced_at_each_point[after_admission]"),
     ) if not (module in c and name in c)]
-    assert guard.main(_report(tmp_path, filler + "".join(keep))) == 1
+    assert guard.main([_report(tmp_path, filler + "".join(keep))]) == 1
 
 
 def test_a_named_guarantee_that_was_skipped_is_rejected(guard, tmp_path):
@@ -220,7 +220,7 @@ def test_a_named_guarantee_that_was_skipped_is_rejected(guard, tmp_path):
                     "test_a_snapshot_naming_another_tenant_is_not_authorized")
             + _case("test_checkpoint_restart_postgres",
                     "test_the_abandoned_worker_is_fenced_at_each_point[after_admission]"))
-    assert guard.main(_report(tmp_path, body)) == 1
+    assert guard.main([_report(tmp_path, body)]) == 1
 
 
 def test_a_named_guarantee_that_failed_is_rejected(guard, tmp_path):
@@ -230,7 +230,7 @@ def test_a_named_guarantee_that_failed_is_rejected(guard, tmp_path):
         _case("test_checkpoint_restart_postgres",
               "test_the_abandoned_worker_is_fenced_at_each_point[after_admission]",
               '<failure message="fence bypassed"/>'))
-    assert guard.main(_report(tmp_path, body)) == 1
+    assert guard.main([_report(tmp_path, body)]) == 1
 
 
 #: The canonical disposable runner must hand the tier every coordinate it needs. `run_in_container.sh`
@@ -352,3 +352,80 @@ def test_the_container_runner_leaves_retention_on_the_shipped_default():
     assert "-e DATA_COLLECTION_ENABLED" not in _pytest_invocation(), (
         "the tier process must run on the shipped retention default; each capture worker sets its "
         "own before it starts")
+
+
+# the guard under sharding
+#
+# Splitting the tier four ways moved two of the guard's assertions - the execution floor and the
+# three named real-PostgreSQL guarantees - off the individual shard and onto the union of every
+# shard's report. That is only safe if the union really is judged as one run and if --partial
+# really does keep everything a shard CAN prove. Both directions are asserted below, because
+# --partial is the shape of an escape hatch and the way it would go wrong is by becoming one.
+
+def _shard_of(tmp_path: Path, n: int, cases: str) -> str:
+    return _report(tmp_path, cases, name=f"shard{n}.xml")
+
+
+def _quartered(tmp_path: Path) -> list[str]:
+    """The full passing tier, cut into four reports the way four shards would produce it."""
+    filler = [_case("test_misc", f"test_q{i}") for i in range(320)]
+    named = [
+        _case("test_geometry_source_providers", "test_another_tenant_cannot_resolve_the_source"),
+        _case("test_geometry_source_providers",
+              "test_a_snapshot_naming_another_tenant_is_not_authorized"),
+        _case("test_checkpoint_restart_postgres",
+              "test_the_abandoned_worker_is_fenced_at_each_point[after_admission]"),
+    ]
+    per = len(filler) // 4
+    shards = [filler[i * per:(i + 1) * per] for i in range(4)]
+    # One named guarantee each into three different shards - which is the real arrangement: the
+    # three live in different modules, so no shard can hold them all.
+    for i, c in enumerate(named):
+        shards[i].append(c)
+    return [_shard_of(tmp_path, i + 1, "".join(s)) for i, s in enumerate(shards)]
+
+
+def test_the_union_of_four_shards_is_a_pass(guard, tmp_path):
+    assert guard.main(_quartered(tmp_path)) == 0
+
+
+def test_no_single_shard_could_have_passed_the_whole_suite_assertions(guard, tmp_path):
+    # The premise of the whole arrangement. If one shard DID satisfy the floor and the named
+    # guarantees on its own, --partial would be unnecessary and this design would be pointless.
+    for report in _quartered(tmp_path):
+        assert guard.main([report]) == 1
+
+
+def test_a_shard_passes_under_partial(guard, tmp_path):
+    for report in _quartered(tmp_path):
+        assert guard.main([report], partial=True) == 0
+
+
+def test_partial_still_refuses_an_empty_report(guard, tmp_path):
+    assert guard.main([_report(tmp_path, "")], partial=True) == 1
+
+
+def test_partial_still_refuses_a_missing_report(guard, tmp_path):
+    assert guard.main([str(tmp_path / "gone.xml")], partial=True) == 1
+
+
+def test_partial_still_refuses_a_failure(guard, tmp_path):
+    body = ("".join(_case("test_misc", f"test_p{i}") for i in range(10))
+            + _case("test_worker_lease_postgres", "test_boom", "<failure>nope</failure>"))
+    assert guard.main([_report(tmp_path, body)], partial=True) == 1
+
+
+def test_partial_still_refuses_a_skip_for_a_missing_service(guard, tmp_path):
+    # The regression the guard was written for. A shard that skipped its database-backed tests
+    # because no database was provisioned must be red on the shard, not deferred to the union.
+    body = ("".join(_case("test_misc", f"test_s{i}") for i in range(10))
+            + _case("test_capture_authority_postgres", "test_z",
+                    '<skipped message="a real PostgreSQL endpoint is required"/>'))
+    assert guard.main([_report(tmp_path, body)], partial=True) == 1
+
+
+def test_a_shard_missing_from_the_union_is_caught_by_the_union(guard, tmp_path):
+    # Three quarters of the tier can still clear the 300-test floor, which is exactly why ci.yml
+    # counts the reports before calling the guard. The guard's own backstop is the named
+    # guarantees: drop the shard carrying one and the union says so.
+    assert guard.main(_quartered(tmp_path)[:3]) == 1

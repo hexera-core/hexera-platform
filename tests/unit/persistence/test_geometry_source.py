@@ -38,7 +38,11 @@ def test_a_source_carries_content_identity_not_a_path():
     # lineage and is never deleted to satisfy a retention window, so this is state about the
     # object, not a second identity for it.
     retention = {"purged_at", "purge_claim_id", "purge_claimed_at"}
-    assert lineage | retention == declared
+    # THE TENANT, alongside owner_id rather than lineage or retention: it names who the row
+    # belongs to, not what it is or whether its bytes still exist. Nullable until the backfill
+    # (0004) and every writer names one (0005) - see models.py's organization_id comment.
+    tenant = {"organization_id"}
+    assert lineage | retention | tenant == declared
     # the point of the entity: no path column may reappear as a second source of truth
     assert not [c for c in declared if "path" in c]
 

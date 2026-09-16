@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import GeometrySource
+from meshpipeline.persistence.repositories import tenant_scope
 
 # Lowercase hex, 64 chars. Enforced here rather than trusted from the caller: this value is the
 # only thing that later proves a downloaded object is the geometry the user approved, so a
@@ -19,7 +20,7 @@ class GeometrySourceRepository:
 
     async def create(self, db: AsyncSession, *, owner_id: str, original_filename: str,
                      suffix_hint: str, object_key: str, sha256: str,
-                     size_bytes: int) -> GeometrySource:
+                     size_bytes: int, organization_id: str = "") -> GeometrySource:
         digest = (sha256 or "").strip().lower()
         if len(digest) != _SHA256_LEN or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError("sha256 must be 64 lowercase hex characters")
@@ -30,7 +31,7 @@ class GeometrySourceRepository:
         if not str(object_key or "").strip():
             raise ValueError("object_key is required")
         row = GeometrySource(
-            owner_id=owner_id,
+            **tenant_scope.stamp(owner_id=owner_id, organization_id=organization_id),
             original_filename=str(original_filename or "")[:512],
             suffix_hint=str(suffix_hint or "").lower()[:16],
             object_key=object_key,
@@ -47,8 +48,10 @@ class GeometrySourceRepository:
         return result.scalar_one_or_none()
 
     async def get_for_owner(self, db: AsyncSession, source_id: uuid.UUID,
-                            owner_id: str) -> GeometrySource | None:
+                            owner_id: str, *, organization_id: str = "") -> GeometrySource | None:
         result = await db.execute(
-            select(GeometrySource).where(GeometrySource.id == source_id,
-                                         GeometrySource.owner_id == owner_id))
+            select(GeometrySource).where(
+                GeometrySource.id == source_id,
+                tenant_scope.scope(GeometrySource, owner_id=owner_id,
+                                   organization_id=organization_id)))
         return result.scalar_one_or_none()

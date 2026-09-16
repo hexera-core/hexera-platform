@@ -164,3 +164,28 @@ def test_a_cell_past_the_aspect_bar_is_a_hotspot_on_every_face_it_owns(tmp_path)
     assert md["n_over"] == 5
     hot = [h for h in q["hotspots"] if h["metric"] == "aspect_ratio"]
     assert hot and all(h["x"] >= 2.0 for h in hot)
+
+
+# ------------------------------------------------------------ the blocked passes ----
+def test_the_blocked_passes_give_the_same_numbers_as_one_block(tmp_path, monkeypatch):
+    # HEX-13: every pass now runs a block of faces at a time so the peak memory per face is a
+    # fraction of what set the 20 M-face cap. A block smaller than the mesh (4 of 16 faces, so
+    # blocks straddle the internal/boundary split) must give the very same fields.
+    write_row_of_hexes(tmp_path / "polyMesh", shear_last_y=SHEAR, last_cell_length=3.0)
+    whole = FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0)
+    monkeypatch.setattr(FQ, "_CHUNK_FACES", 4)
+    blocked = FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0)
+    for name in ("inlet", "outlet", "wall"):
+        for key in ("non_ortho_b64", "skewness_b64", "aspect_ratio_b64"):
+            np.testing.assert_allclose(_f32(blocked["patches"][name][key]),
+                                       _f32(whole["patches"][name][key]), rtol=1e-6, atol=1e-6)
+    assert blocked["metrics"] == whole["metrics"]
+    assert blocked["hotspots"] == whole["hotspots"]
+
+
+def test_labels_and_faces_are_read_as_32_bit(tmp_path):
+    write_row_of_hexes(tmp_path / "polyMesh")
+    mesh = FQ.read_polymesh(tmp_path / "polyMesh")
+    assert mesh.owner.dtype == np.int32 and mesh.neighbour.dtype == np.int32
+    assert mesh.face_flat.dtype == np.int32
+    assert mesh.n_cells == 3 and mesh.n_faces == 16

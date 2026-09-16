@@ -147,8 +147,9 @@ async def test_an_approval_is_handed_to_the_approval_authority_with_zero_model_c
 
     called: dict = {}
 
-    async def _confirm(session, repo, owner_id, session_id):
+    async def _confirm(session, repo, owner_id, session_id, organization_id=""):
         called["session"] = session
+        called["organization_id"] = organization_id
         return ChatResponse(session_id=session_id, reply="Starting mesh generation.",
                             done=True, job_id=uuid.uuid4())
 

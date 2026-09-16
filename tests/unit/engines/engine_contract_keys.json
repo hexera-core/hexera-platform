@@ -35,6 +35,11 @@
     "MESH"
    ],
    [
+    "resolution_floor",
+    true,
+    "MESH"
+   ],
+   [
     "patch_contract",
     true,
     "GROUPS"
@@ -174,6 +179,11 @@
     "MESH"
    ],
    [
+    "resolution_floor",
+    true,
+    "MESH"
+   ],
+   [
     "patch_contract",
     true,
     "GROUPS"
@@ -298,6 +308,7 @@
    "fatal",
    "layer_coverage",
    "min_quality",
+   "passage_cells_across",
    "rc",
    "timed_out"
   ],
@@ -306,6 +317,9 @@
    "lumen.vtp",
    "mesh.msh",
    "mesh.vtu",
+   "mesh_volume.msh",
+   "openfoam_case/constant/polyMesh",
+   "openfoam_case/system/controlDict",
    "surface_remeshed.vtp",
    "vmtk_spec.json"
   ],

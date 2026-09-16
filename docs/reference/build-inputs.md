@@ -27,8 +27,8 @@ implied away.
 | Base OS image | `ubuntu:22.04@sha256:0e0a0fc6…` | OCI digest | `Dockerfile` |
 | PostgreSQL | `postgres:16-alpine@sha256:57c72fd2…` | OCI digest | `docker-compose.yml` |
 | Redis | `redis:7-alpine@sha256:6ab0b6e7…` | OCI digest | `docker-compose.yml`, `.github/workflows/ci.yml` |
-| MinIO | `minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa…` | OCI digest | `docker-compose.yml` |
-| MinIO client | `minio/mc@sha256:a7fe349e…` | OCI digest | `docker-compose.yml` |
+| MinIO | `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa…` | OCI digest | `docker-compose.yml` |
+| MinIO client | `quay.io/minio/mc@sha256:a7fe349e…` | OCI digest | `docker-compose.yml` |
 | SearXNG | `searxng/searxng@sha256:3bc6ae0e…` | OCI digest | `docker-compose.yml` |
 | curl (CI) | `curlimages/curl:8.11.1@sha256:c1fe1679…` | OCI digest | `.github/workflows/ci.yml` |
 | CI actions | full 40-character commit SHAs | Git object identity | `.github/workflows/ci.yml` |
@@ -106,3 +106,20 @@ different mirror, then installed with `dpkg -i`. Handing the local paths to `apt
 instead is not equivalent: apt re-downloads the same packages from the repository and installs
 those copies, which would put the mirror back in the path behind a checksum that no longer
 described what was installed.
+
+The Ubuntu archive has the same weakness one layer down, and the `base` stage now pins the host for
+it. `archive.ubuntu.com` is a DNS round-robin over six addresses; apt resolves the host once and
+retries the address it already picked, so a single unreachable address takes down every `apt-get`
+in the build. On 2026-09-11 the hosted runners resolved to `91.189.91.82`, which was refusing
+connections: apt retried that one address three times and every Ubuntu stage ended at exit 100,
+stopping both CI and the release build. `Acquire::Retries` cannot recover from this for the same
+reason it cannot recover a dead SourceForge mirror - the address is chosen before the first retry.
+
+`UBUNTU_MIRROR` and `UBUNTU_SECURITY_MIRROR` therefore make the archive host a declared build
+input, defaulting to Canonical's Azure archive, which is network-local to the GitHub-hosted runners
+this project builds on and which serves the security suite as well. `base` rewrites
+`/etc/apt/sources.list` in its own layer before the first `apt-get` and asserts the rewrite landed,
+and every other Ubuntu stage derives `FROM base`, so one rewrite covers all seven `apt-get` sites.
+This selects which host may **answer**, never what it may serve: apt verifies every index and
+package against the Ubuntu signing keys already in the image, so a mirror cannot alter content
+undetected, and overriding these ARGs changes availability and speed alone.

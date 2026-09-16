@@ -87,13 +87,53 @@ def _access_token() -> str:
     return str(token)
 
 
+# HOW LONG A COLD CONNECTION IS ALLOWED TO TAKE, and why it is not 5 seconds.
+#
+# This job runs on Cloud Run with Direct VPC egress, and the network interface is attached when the
+# task starts - the first connection out of a cold task pays for that. Measured against Memorystore
+# over private service access, from this job's own image, service account and egress settings: 11.2
+# seconds to complete the TCP handshake, then an immediate +PONG. The 5 seconds this used to allow
+# was less than half of it, so the publisher failed roughly four runs in five and succeeded only
+# when the interface happened to attach quickly.
+#
+# It went unnoticed because the environment it has always run in does not have this cost: shared
+# dev's Memorystore predates the provisioning script, was built in DIRECT_PEERING mode, and its
+# publisher runs every two minutes and is never cold.
+#
+# 30s is measured headroom over 11.2s, not a guess, and it is bounded by the job's own task
+# timeout. READ timeout stays low: once connected, an LLEN that takes seconds means something is
+# wrong and waiting longer will not fix it. The two are separated for that reason.
+REDIS_CONNECT_TIMEOUT_SECONDS = 30
+REDIS_READ_TIMEOUT_SECONDS = 5
+REDIS_CONNECT_ATTEMPTS = 3
+
+
 def queue_depth(redis_url: str, queue: str = QUEUE_NAME) -> int:
     import redis
-    client = redis.from_url(redis_url, socket_connect_timeout=5, socket_timeout=5)
-    try:
-        return int(client.llen(queue))
-    finally:
-        client.close()
+
+    # RETRIED, because the cost above is paid once per cold task and is variable rather than fixed.
+    # A generous timeout alone leaves the run dependent on a single attempt; three attempts make an
+    # unusually slow attach a slow success instead of a failed deploy. The last failure is re-raised
+    # so a genuinely unreachable broker still fails loudly, with the real exception.
+    last: Exception | None = None
+    for attempt in range(1, REDIS_CONNECT_ATTEMPTS + 1):
+        client = redis.from_url(
+            redis_url,
+            socket_connect_timeout=REDIS_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=REDIS_READ_TIMEOUT_SECONDS,
+        )
+        try:
+            return int(client.llen(queue))
+        except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as exc:
+            last = exc
+            logger.warning(
+                "redis connect attempt %d/%d failed: %s: %s",
+                attempt, REDIS_CONNECT_ATTEMPTS, type(exc).__name__, exc,
+            )
+        finally:
+            client.close()
+    assert last is not None
+    raise last
 
 
 def publish(depth: int, *, project_id: str, namespace: str, location: str, queue: str) -> None:

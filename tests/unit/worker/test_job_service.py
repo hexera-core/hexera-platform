@@ -85,7 +85,7 @@ async def test_get_job_passes_the_callers_owner_into_the_query():
     db  = _mock_db()
     seen = {}
 
-    async def _scoped(_db, job_id, owner_id):
+    async def _scoped(_db, job_id, owner_id, *, organization_id=""):
         seen["owner"] = owner_id
         return None                       # a foreign job is simply absent
 

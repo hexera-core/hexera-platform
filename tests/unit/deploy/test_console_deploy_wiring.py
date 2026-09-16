@@ -53,11 +53,14 @@ def test_target_job_declares_a_console_service_output():
     assert outputs["console_service"] == "${{ steps.pick.outputs.console_service }}"
 
 
-def test_deploy_job_maps_cloudrun_console_service_from_the_target_output():
+def test_provision_job_maps_cloudrun_console_service_from_the_target_output():
+    # `provision` is the job that runs deploy.sh, and therefore the job whose environment
+    # bootstrap-env.sh reads. (It was called `deploy` until the workflow was split into
+    # release/provision; the assertion is unchanged, only the job that has to satisfy it.)
     doc = yaml.safe_load(DEPLOY_WF.read_text(encoding="utf-8"))
-    env = doc["jobs"]["deploy"]["env"]
+    env = doc["jobs"]["provision"]["env"]
     assert env.get("CLOUDRUN_CONSOLE_SERVICE") == "${{ needs.target.outputs.console_service }}", (
-        "the deploy job's env block does not map CLOUDRUN_CONSOLE_SERVICE from "
+        "the provision job's env block does not map CLOUDRUN_CONSOLE_SERVICE from "
         "needs.target.outputs.console_service - bootstrap-env.sh's CLOUDRUN_CONSOLE_SERVICE "
         "would stay empty regardless of what pick resolved")
 

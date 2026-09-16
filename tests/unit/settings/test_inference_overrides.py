@@ -78,9 +78,9 @@ def test_an_empty_setting_is_no_overrides(price):
 # the schema refuses everything it does not support
 
 def test_an_unsupported_provider_is_refused(price):
-    assert "openai" not in LLM_PROVIDER_KEY_ENV
+    assert "cohere" not in LLM_PROVIDER_KEY_ENV
     with pytest.raises(ConfigurationError, match="not a provider this product supports"):
-        price("openai:gpt-4=1,2,3")
+        price("cohere:gpt-4=1,2,3")
 
 
 @pytest.mark.parametrize("bad,match", [
@@ -102,7 +102,7 @@ def test_malformed_prices_are_refused(price, bad, match):
 def test_a_refusal_never_echoes_a_credential(price, monkeypatch):
     monkeypatch.setenv("DEEPINFRA_API_KEY", "sk-super-secret-value")
     with pytest.raises(ConfigurationError) as exc:
-        price("openai:gpt-4=1,2,3")
+        price("cohere:gpt-4=1,2,3")
     assert "sk-super-secret" not in str(exc.value)
 
 
@@ -112,6 +112,40 @@ def test_budget_defaults_come_from_the_routes():
     from meshpipeline.adapters.model_inference.routes import all_routes, domain_budget
     for route in all_routes().values():
         assert domain_budget(route.primary.domain.key) >= route.concurrency_budget
+
+
+# The ceiling each SHIPPED domain resolves to, and the roles that contend for it. Pinned as exact
+# numbers because domain_budget() is a max() over the roles sharing the domain: moving a role to
+# another model, or editing one role's CONCURRENCY_BUDGET without the others in its domain, can
+# halve a fleet-wide ceiling with nothing else failing. The ceiling is shared across API and
+# workers, and a call that misses its queue deadline fails its job as OVERLOAD (no route has a
+# standby), so lost capacity is lost jobs.
+SHIPPED_DOMAINS: list[tuple[str, int, list[str], str]] = [
+    ("openai:default:gpt-5.6-terra", 16, ["builder", "planner", "visual_reviewer"],
+     "builder+planner's 8 on GLM-5.2 plus visual_reviewer's own 8 on Qwen-Thinking"),
+    ("openai:default:gpt-5.6-luna", 24, ["intake", "summarizer"],
+     "intake's 16 on v4-pro plus the summarizer's 8 on v4-flash"),
+]
+
+
+@pytest.mark.parametrize("key,ceiling,roles,restores", SHIPPED_DOMAINS,
+                         ids=[k for k, _c, _r, _x in SHIPPED_DOMAINS])
+def test_each_shipped_quota_domain_keeps_its_declared_ceiling(key, ceiling, roles, restores,
+                                                              monkeypatch):
+    from meshpipeline.adapters.model_inference.routes import (
+        all_routes,
+        domain_budget,
+        domain_map,
+    )
+    monkeypatch.delenv("MODEL_DOMAIN_BUDGETS", raising=False)
+    assert domain_map().get(key) == roles, "the roles sharing this pool changed"
+    assert domain_budget(key) == ceiling, f"the ceiling restoring {restores} changed"
+    # Every role in the domain declares the SAME number: budget is a property of the pool, so a
+    # role carrying a smaller one is not given a smaller share - it just hides the real ceiling
+    # behind a max() nobody chose.
+    declared = {r: all_routes()[r].concurrency_budget for r in roles}
+    assert set(declared.values()) == {ceiling}, (
+        f"roles in one quota domain disagree about its ceiling: {declared}")
 
 
 def test_a_budget_override_applies_to_exactly_its_domain(monkeypatch):
@@ -135,7 +169,7 @@ def test_an_unknown_domain_falls_back_without_reading_the_environment(monkeypatc
 
 @pytest.mark.parametrize("bad,match", [
     ("deepinfra:default=4", "not 'provider:account:model'"),
-    ("openai:default:m=4", "not a provider this product supports"),
+    ("cohere:default:m=4", "not a provider this product supports"),
     ("deepinfra:default:m=zero", "not a whole number"),
     ("deepinfra:default:m=0", "must be positive"),
     ("deepinfra:default:m=-3", "must be positive"),

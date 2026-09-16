@@ -194,6 +194,15 @@ def build_review_prompt(
             f"p95 ~0.3-1 = noticeable faceting; p95 >1 or a large beyond-one-cell fraction = "
             f"staircasing / lost features. Judge surface_capture from THIS, and use the render "
             f"only to corroborate the SHAPE (right geometry, no gross holes).")
+    _pca = _q.get("passage_cells_across")
+    if _pca is not None:
+        _meta.append(
+            f"Passage resolution: {_pca} cells across the local passage diameter - MEASURED from "
+            f"the mesh (twice the median lumen radius over the median interior cell size). This is "
+            f"the AUTHORITATIVE figure for whether the core flow is resolved: industry RANS "
+            f"practice on internal flow is 20-40 across; 12-20 is coarse but usable for a first "
+            f"pass; below 12 is undermeshed for any CFD use and fails passage resolution whatever "
+            f"the render looks like.")
     _lcov = _q.get("layer_coverage_pct")
     if _lcov is not None:
         _per = _q.get("per_patch_layers", {}) or {}

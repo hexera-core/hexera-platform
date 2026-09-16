@@ -78,7 +78,14 @@ function attachJob(id, { replayHistory = false, message = "" } = {}) {
   if (message) Stage.chat("assistant", message);
   Stage.mount();
   beginRun(id);
-  try { history.replaceState(null, "", location.pathname + "?job=" + id); } catch { /* ignore */ }
+  // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no
+  // routes and keeps the query string it has always used. Neither global set means the second
+  // branch, which is today's behaviour byte for byte.
+  try {
+    const routed = globalThis.__HEXERA_ROUTED__;
+    history.replaceState(null, "",
+      routed ? "/runs/" + id : location.pathname + "?job=" + id);
+  } catch { /* ignore */ }
   Stage.ensureProc();
   startStream(replayHistory ? 0 : undefined);
 }
@@ -131,7 +138,10 @@ function bootLive() {
    * The optional `user` parameter sets the identity for this page load; jobs are
    * owner-scoped. */
   const params = new URLSearchParams(location.search);
-  const deepLinkJob = params.get("job");
+  // TWO WAYS TO NAME THE RUN, one meaning. The query string is the original contract and still
+  // the only one ui/index.html uses; the global is how the console's /runs/<id> route hands the
+  // id over without a redirect through a query string it would then have to clean up.
+  const deepLinkJob = params.get("job") || globalThis.__HEXERA_BOOT_JOB__ || null;
   if (params.get("user")) useIdentity(params.get("user"));
   if (!deepLinkJob) return;
 

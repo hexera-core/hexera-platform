@@ -48,8 +48,12 @@ def test_no_handwritten_removed_list_survives_outside_the_generated_block():
     i, j = text.index(cat.REMOVED_BEGIN), text.index(cat.REMOVED_END)
     outside = text[:i] + text[j:]
     # the prose may point AT the authority; it may not restate its contents or its size
+    # Word-boundary matched, not substring: "213 entries" in the settings roster CONTAINS
+    # "13 entries", and this check is about the removed inventory's size, not the roster's.
+    # A bare `in` made an unrelated settings addition fail this test.
     for stale in ("Currently one entry", "eight entries", "13 entries"):
-        assert stale not in outside, f"the prose restates the removed inventory: {stale!r}"
+        assert not re.search(rf"\b{re.escape(stale)}", outside), \
+            f"the prose restates the removed inventory: {stale!r}"
     named = [n for n in cat.REMOVED if f"`{n}`" in outside]
     assert named == [], f"retired names are hand-listed outside the generated block: {named}"
 
@@ -173,7 +177,7 @@ def test_the_documented_examples_parse(setting, monkeypatch):
 
 @pytest.mark.parametrize("setting,bad", [
     ("MODEL_PRICE_OVERRIDES", "deepinfra:m=1,2"),
-    ("MODEL_PRICE_OVERRIDES", "openai:gpt-4=1,2,3"),
+    ("MODEL_PRICE_OVERRIDES", "cohere:gpt-4=1,2,3"),
     ("MODEL_DOMAIN_BUDGETS", "deepinfra:default:m=0"),
     ("MODEL_DOMAIN_BUDGETS", "deepinfra:default=4"),
 ])

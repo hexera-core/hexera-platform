@@ -133,6 +133,21 @@ def test_no_engine_name_conditional_outside_engines():
 
 # 4. job-mutating API routes require auth
 
+# Mutating routes allowed to carry no `owner_dep`, each keyed as `<path>:<function>` with its
+# reason. This list stays at one entry: `owner_dep` proves an ALREADY-established identity, so the
+# only route that can legitimately lack it is the one whose job is to establish identity in the
+# first place. Every other POST/PATCH/PUT/DELETE acts for a caller who is already known.
+_UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
+    "api/auth.py:create_session": (
+        "POST /auth/session IS the identity-establishing endpoint: it exchanges an Identity "
+        "Platform ID token for this API's identity, so there is no established owner for it to "
+        "depend on - requiring one would make signing in require being signed in. It is not "
+        "ungated: it checks MESH_API_KEY before anything else and then refuses any token that "
+        "does not verify. test_the_identity_establishing_route_is_still_gated below keeps that "
+        "true, so this exception cannot quietly become an open door."),
+}
+
+
 def test_job_mutating_routes_require_authentication():
     mutating = {"post", "patch", "put", "delete"}
     offenders = []
@@ -153,9 +168,23 @@ def test_job_mutating_routes_require_authentication():
                 isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id == "Depends"
                 and d.args and isinstance(d.args[0], ast.Name) and d.args[0].id == "owner_dep"
                 for d in node.args.defaults + node.args.kw_defaults if d is not None)
-            if not has_owner_dep:
+            if not has_owner_dep and f"{_rel(p)}:{node.name}" not in _UNAUTHENTICATED_ROUTE_ALLOWED:
                 offenders.append(f"{_rel(p)}:{node.lineno} {node.name}")
-    assert not offenders, f"mutating route(s) without owner_dep authentication: {offenders}"
+    assert not offenders, (
+        "mutating route(s) without owner_dep authentication - if one of these ESTABLISHES "
+        "identity rather than assuming it, declare it in _UNAUTHENTICATED_ROUTE_ALLOWED with "
+        f"the reason: {offenders}")
+
+
+def test_the_identity_establishing_route_is_still_gated():
+    # The one route excused from owner_dep is excused because it has no owner yet, NOT because
+    # it is open. Its gate is the internal API key, checked before the token is even looked at.
+    src = (SRC / "api" / "auth.py").read_text()
+    assert "api/auth.py:create_session" in _UNAUTHENTICATED_ROUTE_ALLOWED
+    assert "polcfg.MESH_API_KEY" in src and "compare_digest" in src, (
+        "POST /auth/session no longer gates on MESH_API_KEY. It is exempt from owner_dep because "
+        "it establishes identity; without this gate that exemption is simply an unauthenticated "
+        "mutating endpoint.")
 
 
 # 5. deploy manifests: bounded retries + immutable image refs

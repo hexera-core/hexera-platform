@@ -41,18 +41,23 @@ def test_a_gate_crash_is_a_system_failure_while_a_rejection_stays_a_rejection():
 
 
 async def test_router_fails_fast_when_the_breaker_is_open_and_never_falls_back(monkeypatch):
+    import meshpipeline.agents.builder.settings as bcfg
     from meshpipeline.adapters._shared.resilience import get_breaker, reset_breakers
-    from meshpipeline.adapters.model_inference import router
+    from meshpipeline.adapters.model_inference import providers, router
 
     reset_breakers()
-    breaker = get_breaker("deepinfra_builder")
+    # The builder's OWN declared circuit, asked for rather than restated. This test is about
+    # failing fast on an open circuit; with the name spelled out here it would quietly stop
+    # opening the circuit the router consults the day that name changes - as it just did, when
+    # `deepinfra_builder` became `builder`.
+    breaker = get_breaker(bcfg.BUILDER_ROUTE.primary.circuit_group)
     for _ in range(breaker.failure_threshold):
         breaker.record_failure()
     assert not breaker.allow(), "precondition: the circuit must be OPEN"
 
     def _must_not_resolve(_target):
         raise AssertionError("the router reached for a provider while the circuit was open")
-    monkeypatch.setattr(router, "client_for", _must_not_resolve)
+    monkeypatch.setattr(providers, "client_for", _must_not_resolve)
 
     try:
         round_result = await router.call_builder_model([{"role": "user", "content": "x"}])

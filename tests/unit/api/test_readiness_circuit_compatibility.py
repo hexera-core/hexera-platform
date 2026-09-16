@@ -7,17 +7,20 @@ from meshpipeline.adapters._shared.resilience import get_breaker, reset_breakers
 from meshpipeline.adapters.model_inference.routes import all_routes
 
 # The stable, operator-facing circuit names. Changing one of these strings is an operator-facing
-# break, not a refactor. The planner has its OWN circuit, `deepinfra_planner`.
-STABLE_GROUPS = {"deepinfra_builder", "deepinfra_planner", "deepinfra_reviewer",
-                 "deepseek", "summarizer"}
+# break, not a refactor - which is why they are named for the ROLE whose health they announce and
+# not for whoever serves it. Four of them were vendor-named (`deepinfra_builder`,
+# `deepinfra_planner`, `deepinfra_reviewer`, `deepseek`) until the OpenAI cutover, at which point
+# they would have pointed an incident at a vendor this deployment no longer calls; `summarizer`
+# was role-named from the start and is the precedent the other four were brought onto.
+STABLE_GROUPS = {"builder", "planner", "reviewer", "intake", "summarizer"}
 
 # The declared circuit each role owns. the planner is INDEPENDENT of the builder - a builder
 # outage must not open the planner's circuit, and its failures are attributed to the planner.
 EXPECTED_GROUPS = {
-    "builder": "deepinfra_builder",
-    "planner": "deepinfra_planner",
-    "visual_reviewer": "deepinfra_reviewer",
-    "intake": "deepseek",
+    "builder": "builder",
+    "planner": "planner",
+    "visual_reviewer": "reviewer",
+    "intake": "intake",
     "summarizer": "summarizer",
 }
 
@@ -41,39 +44,46 @@ def test_the_circuit_name_contains_no_provider_endpoint_account_or_model_identif
             g = target.circuit_group
             assert ":" not in g and "/" not in g, f"{g!r} looks like a quota-domain key"
             assert target.model not in g, f"{g!r} embeds the model identifier"
+            # The check the header always promised and this file never made: a vendor name in an
+            # operator-facing circuit survives exactly until that vendor is replaced, and then
+            # misdirects the incident it exists to announce.
+            assert target.provider not in g, f"{g!r} embeds the provider name"
             assert target.account not in g or g == "default", f"{g!r} embeds the account scope"
             assert g in STABLE_GROUPS, f"{g!r} is not an established circuit name"
 
 
 def test_the_circuit_group_is_not_derived_from_the_quota_domain():
+    # Sharper since the cutover, not weaker: intake and the summarizer are now served the SAME
+    # model by the same account, so they share one quota domain outright. Their circuits are
+    # still separate, which is the whole claim - a circuit answers "is this ROLE's model sick",
+    # a domain answers "whose in-flight ceiling does this call spend".
     routes = all_routes()
     intake, summarizer = routes["intake"].primary, routes["summarizer"].primary
-    assert intake.provider == summarizer.provider          # same provider…
-    assert intake.domain.key != summarizer.domain.key      # …different quota domain…
-    assert intake.circuit_group != summarizer.circuit_group  # …and different circuit.
+    assert intake.domain.key == summarizer.domain.key        # one quota domain…
+    assert intake.circuit_group != summarizer.circuit_group  # …and still two circuits.
 
 
 def test_builder_and_planner_circuits_are_independent():
     b, p = all_routes()["builder"].primary, all_routes()["planner"].primary
-    assert b.circuit_group == "deepinfra_builder"
-    assert p.circuit_group == "deepinfra_planner"
+    assert b.circuit_group == "builder"
+    assert p.circuit_group == "planner"
     assert b.circuit_group != p.circuit_group
 
 
 def test_a_builder_circuit_outage_does_not_open_the_planner_circuit():
-    b = get_breaker("deepinfra_builder")
+    b = get_breaker("builder")
     for _ in range(b.failure_threshold):
         b.record_failure()
     assert not b.allow()
-    assert get_breaker("deepinfra_planner").allow(), "builder failures opened the planner circuit"
+    assert get_breaker("planner").allow(), "builder failures opened the planner circuit"
 
 
 def test_a_planner_circuit_outage_does_not_open_the_builder_circuit():
-    p = get_breaker("deepinfra_planner")
+    p = get_breaker("planner")
     for _ in range(p.failure_threshold):
         p.record_failure()
     assert not p.allow()
-    assert get_breaker("deepinfra_builder").allow(), "planner failures opened the builder circuit"
+    assert get_breaker("builder").allow(), "planner failures opened the builder circuit"
 
 
 def test_a_model_change_does_not_rename_the_readiness_key():
@@ -83,7 +93,7 @@ def test_a_model_change_does_not_rename_the_readiness_key():
     after = RouteTarget(provider=before.provider, model="some-org/Another-Model-9",
                         account=before.account, circuit_group=before.circuit_group)
     assert after.domain.key != before.domain.key, "a model change must move the quota domain"
-    assert after.circuit_group == before.circuit_group == "deepinfra_builder"
+    assert after.circuit_group == before.circuit_group == "builder"
 
 
 # circuit independence
@@ -92,11 +102,11 @@ def test_the_summarizer_circuit_is_independent_of_intake():
     for _ in range(s.failure_threshold):
         s.record_failure()
     assert not s.allow()
-    assert get_breaker("deepseek").allow(), "summarizer failures opened the intake circuit"
+    assert get_breaker("intake").allow(), "summarizer failures opened the intake circuit"
 
 
 def test_intake_failures_do_not_open_the_summarizer_circuit():
-    d = get_breaker("deepseek")
+    d = get_breaker("intake")
     for _ in range(d.failure_threshold):
         d.record_failure()
     assert not d.allow()
@@ -104,11 +114,11 @@ def test_intake_failures_do_not_open_the_summarizer_circuit():
 
 
 def test_the_builder_and_reviewer_circuits_are_independent():
-    b = get_breaker("deepinfra_builder")
+    b = get_breaker("builder")
     for _ in range(b.failure_threshold):
         b.record_failure()
     assert not b.allow()
-    assert get_breaker("deepinfra_reviewer").allow()
+    assert get_breaker("reviewer").allow()
 
 
 def test_circuit_transitions_stay_bounded_and_recover():
@@ -132,12 +142,12 @@ _HEALTHY = {"postgres": "ok", "redis": "ok", "object_store": "ok"}
 
 @pytest.mark.parametrize("circuits,expect_ready", [
     ({}, True),                                                        # 1. all closed
-    ({"deepinfra_builder": "open"}, True),                             # 2. builder open
-    ({"deepinfra_reviewer": "open"}, True),                            # 3. reviewer open
-    ({"deepseek": "open"}, True),                                      # 4. deepseek open
+    ({"builder": "open"}, True),                                       # 2. builder open
+    ({"reviewer": "open"}, True),                                      # 3. reviewer open
+    ({"intake": "open"}, True),                                        # 4. intake open
     ({"summarizer": "open"}, True),                                    # 5. summarizer open
-    ({"deepinfra_builder": "open", "deepinfra_reviewer": "open",
-      "deepseek": "open", "summarizer": "open"}, True),                # 6. every circuit open
+    ({"builder": "open", "reviewer": "open",
+      "intake": "open", "summarizer": "open"}, True),                  # 6. every circuit open
 ])
 def test_no_open_circuit_ever_makes_the_service_unready(circuits, expect_ready):
     hard_ok, body = _probe_body(circuits, dict(_HEALTHY))
@@ -147,7 +157,7 @@ def test_no_open_circuit_ever_makes_the_service_unready(circuits, expect_ready):
 
 
 def test_a_hard_dependency_down_is_the_only_thing_that_makes_the_service_unready():
-    hard_ok, body = _probe_body({"deepinfra_builder": "open"},
+    hard_ok, body = _probe_body({"builder": "open"},
                                 {**_HEALTHY, "redis": "down: ConnectionError"})
     assert hard_ok is False and body["status"] == "not_ready"
 

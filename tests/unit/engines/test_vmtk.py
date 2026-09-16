@@ -21,7 +21,9 @@ def test_vmtk_is_an_implemented_engine():
     assert "vmtk" in ec.engine_names()
     sp = ec.get_spec("vmtk")
     assert sp.implemented
-    assert [(c.input_kind, c.output_kind) for c in sp.capabilities] == [("body-surface", "fluid-volume")]
+    # a surface, or a declared fluid solid whose boundary IS that surface (HEX-11)
+    assert [(c.input_kind, c.output_kind) for c in sp.capabilities] == [
+        ("body-surface", "fluid-volume"), ("fluid-domain", "fluid-volume")]
 
 
 def test_engine_is_the_tool_the_domain_is_the_purpose():
@@ -48,7 +50,7 @@ def test_configure_mesh_palette_keys_are_taught_in_the_prompt():
 def test_resolve_strategy_fills_defaults_and_drops_unknowns():
     s = vmtk_runner.resolve_strategy({"edge_length_factor": 0.15, "bogus": 1})
     assert s["edge_length_factor"] == 0.15
-    assert s["boundary_layers"] == 3 and s["cap_openings"] is True
+    assert s["boundary_layers"] == 5 and s["cap_openings"] is True
     assert "bogus" not in s
 
 
@@ -105,7 +107,10 @@ def test_pype_adds_boundary_layers_only_when_requested():
     with_layers = " ".join(vmtk_runner.build_pype({"boundary_layers": 4, **_SEED,
                                                    "boundary_layer_thickness_factor": 0.15}))
     assert "-boundarylayer 1" in with_layers
-    assert "-sublayers 4" in with_layers and "-thicknessfactor 0.15" in with_layers
+    # the thickness factor is a fraction of the RADIUS; vmtk wants it against the edge length
+    # (0.15 asked / the default edge factor 0.15 = 1), and layers grow 1.25x (sublayer ratio 0.8)
+    assert "-sublayers 4" in with_layers and "-thicknessfactor 1 " in with_layers
+    assert "-sublayerratio 0.8" in with_layers
     assert "-boundarylayeroncaps 0" in with_layers   # layers on the wall, not the caps
     assert "-numberoflayers" not in with_layers      # not a real vmtk option
 
@@ -151,8 +156,11 @@ def test_authoring_redirects_openfoam_knobs():
 
 
 def test_authoring_requires_non_interactive_centerline_seeding():
+    # no seeds at all is a WARNING (the engine stages seeds for a CAD body with declared
+    # ports; configure_mesh refuses when nothing was staged) - never an interactive picker
     d = authoring.validate({"edge_length_factor": 0.3})
-    assert any("seeding is required" in x.message for x in d)
+    assert any("seeds" in x.message and x.severity == "warning" for x in d)
+    assert not [x for x in d if x.severity == "error"]
     half = authoring.validate({"source_ids": [0]})
     assert any("BOTH source_ids and target_ids" in x.message for x in half)
     bad = authoring.validate({"source_points": [1.0, 2.0], "target_points": [3.0, 4.0]})
@@ -174,7 +182,7 @@ def test_recommend_never_branches_on_a_key_its_input_does_not_carry():
     scales = {"diag": 1.0, "min_feature": 0.01, "thin_gap": 0.02, "extent": [1, 1, 1],
               "n_triangles": 100, "surface_area": 3.0}
     r = authoring.recommend(scales)
-    assert r["boundary_layers"] == 3 and r["cap_openings"] is True   # open-lumen defaults
+    assert r["boundary_layers"] == 5 and r["cap_openings"] is True   # open-lumen defaults
     # …and it delegates the closed-lumen call to the builder, naming where the flag comes from
     assert "geometry_report" in r["note"] and "closed" in r["note"]
 

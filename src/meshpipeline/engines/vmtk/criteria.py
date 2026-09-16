@@ -22,6 +22,12 @@ _VMTK_GUIDE = "https://www.vmtk.org/tutorials/MeshGeneration.html"
 # and re-derive it if real runs show clean meshes sitting lower.
 QUALITY_FLOOR = 0.01
 
+#: Fewest cells across the local passage diameter a delivered CFD mesh may have. Industry RANS
+#: practice on internal flow is 20-40; the engine's default edge factor (0.15) puts about 13;
+#: below 12 the core flow is not resolved and the mesh is a preview, not a deliverable. Measured
+#: by check_mesh from the fill itself (passage_cells_across) on engine-staged CAD runs.
+PASSAGE_MIN_CELLS_ACROSS = 12
+
 CRITERIA_ROWS: tuple[Criterion, ...] = (
     Criterion(
         key="timed_out", label="Build completes within compute budget",
@@ -55,6 +61,14 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         key="cells", label="Mesh is non-empty", op=">", threshold=0, gating=True,
         rationale=("Zero cells means the volume fill produced nothing - usually an unclosed lumen "
                    "surface (open profiles were not capped), so there was no interior to fill."),
+        evidence_url=_VMTK_GUIDE,
+    ),
+    Criterion(
+        key="passage_cells_across", label="Core flow resolved across the passage", op=">",
+        threshold=PASSAGE_MIN_CELLS_ACROSS - 1, gating=True,
+        rationale=("Cells across the local passage diameter, measured from the delivered fill. "
+                   "Under twelve the velocity profile and pressure drop are not resolved for any "
+                   "CFD use; industry RANS practice on internal flow is twenty to forty."),
         evidence_url=_VMTK_GUIDE,
     ),
     Criterion(
