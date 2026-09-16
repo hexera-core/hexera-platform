@@ -55,7 +55,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         test-fast-shard test-container-integration-shard \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
-        new-env destroy-env seed-secrets \
+        destroy-env seed-secrets \
         clean-workspaces
 
 # Primary developer commands (shown by `make help`)
@@ -222,13 +222,13 @@ clean: ## Remove this Compose project's containers, volumes, and locally built i
 # because this is the Makefile people actually type into, and an environment nobody can find the
 # command for is an environment nobody creates.
 #
-# THE LIFECYCLE IS THREE COMMANDS AND ONE CHECKBOX:
-#   make new-env SLUG=pranav        once, ~3 minutes, creates hexera-dev-pranav
-#   gh workflow run deploy.yml ... -f slug=pranav      as often as you like, from any branch
-#   make destroy-env SLUG=pranav    when you are done; deletes the project and everything in it
-new-env: ## Create your own dev environment as its own GCP project: make new-env SLUG=pranav
-	@$(MAKE) -C deploy/gcp new-env SLUG=$(SLUG)
-
+# THE LIFECYCLE IS TWO COMMANDS, AND THE FIRST ONE IS JUST A DEPLOY:
+#   gh workflow run deploy.yml ... -f slug=pranav      creates dev-pranav-* the first time it runs,
+#                                                      then updates it, from any branch
+#   make destroy-env SLUG=pranav    when you are done; deletes what that deploy created
+#
+# There is no create step. A personal environment is a set of resources inside hexera-dev named
+# dev-<slug>-*, and the deploy that names them is what creates them.
 destroy-env: ## Delete your dev environment and everything in it: make destroy-env SLUG=pranav
 	@$(MAKE) -C deploy/gcp destroy-env SLUG=$(SLUG)
 

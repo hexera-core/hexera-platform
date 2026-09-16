@@ -12,7 +12,6 @@ import yaml
 REPO = Path(__file__).parents[3]
 WF = REPO / ".github" / "workflows" / "deploy.yml"
 SCRIPTS = REPO / "deploy" / "gcp" / "scripts"
-NEW_ENV = SCRIPTS / "new-env.sh"
 DESTROY_ENV = SCRIPTS / "destroy-env.sh"
 VALIDATE = REPO / "devtools" / "release" / "validate.sh"
 
@@ -352,61 +351,15 @@ def test_destroy_deactivates_a_key_before_deleting_its_account():
 
 
 def test_the_two_reserved_slug_lists_agree():
-    """new-env.sh refuses reserved slugs at creation and the workflow refuses them at deploy. Two
-    lists that drift mean a name that can be created but not deployed, or worse."""
+    """The workflow refuses reserved slugs at deploy and destroy-env.sh refuses them at teardown.
+    Two lists that drift mean a name that can be created but not destroyed, or worse - a teardown
+    that accepts a name the deploy treats as shared."""
     reserved = "dev|prod|production|shared|main|staging"
-    assert reserved in NEW_ENV.read_text(encoding="utf-8")
     assert reserved in WF.read_text(encoding="utf-8")
+    assert reserved in DESTROY_ENV.read_text(encoding="utf-8")
 
 
-def test_creating_an_environment_is_not_something_ci_can_do():
-    """Creating a project, minting an identity and seeding secret VALUES are owner's acts. The
-    federated deploy identity is deliberately built without any of them, and new-env.sh refuses
-    to run as a service account rather than failing obscurely partway through."""
-    text = NEW_ENV.read_text(encoding="utf-8")
-    # Asserted on the REFUSAL, not on the service-account domain that appears in it. Testing for
-    # the domain read as a URL-sanitisation check to CodeQL (py/incomplete-url-substring-
-    # sanitization, high) - and it was the weaker assertion anyway: the domain is an incidental
-    # token that appears elsewhere in this script, whereas this message only exists on the path
-    # that turns a service-account caller away.
-    assert "this is running as the service account" in text, (
-        "new-env.sh must refuse to run as a service account - creating a project, minting an "
-        "identity and seeding secret values are authorities the deploy identity is built without")
-    assert "owner's acts" in text
 
-
-def test_the_project_display_name_uses_only_characters_google_accepts():
-    """A project's DISPLAY NAME has different rules from its id: letters, digits, single quotes,
-    hyphens, spaces and exclamation points, 4-30 characters, and nothing else. Parentheses are
-    rejected - which cost the first real run of this script, failing with `INVALID_ARGUMENT: field
-    [display_name] has issue`, an error that names the field but never the character.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    name = re.search(r'--name "([^"]*)"', text)
-    assert name, "new-env.sh passes no --name to `gcloud projects create`"
-    literal = name.group(1).replace("${SLUG}", "")
-    assert not set(literal) & set("()[]{}<>/\\:;,.?*&%$#@+=|~`\"_"), (
-        f"the project display name {name.group(1)!r} carries punctuation Google rejects")
-    # 11 for "Hexera dev " plus a slug of at most 19 is exactly the 30 the field allows.
-    assert len(literal) + 19 <= 30, (
-        f"display name prefix {literal!r} plus a maximum-length slug exceeds the 30-character limit")
-
-
-def test_creation_establishes_what_the_first_deploy_cannot():
-    """Two things must exist BEFORE the first deploy, and neither is created early enough by
-    deploy.sh to help it.
-
-    The Artifact Registry repository is created at stage 6, inside the `provision` job - a whole
-    job AFTER `release` has already tried to `docker push` into it. And the object-store HMAC key
-    needs an authority the deploy identity is deliberately not given. Both are harmless in an
-    environment that has deployed before, which is why neither shows up until the first personal
-    environment is created.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "create-artifact-registry.sh" in text, (
-        "new-env.sh does not create the image repository, so the FIRST deploy of every personal "
-        "environment fails when release-publish pushes into a repository nothing created")
-    assert "create-object-storage.sh" in text
 
 
 def test_the_deployer_is_widened_only_on_a_personal_environment_host():
@@ -492,36 +445,6 @@ def test_bootstrap_lets_an_explicit_project_outrank_the_ambient_one():
         "lib.sh's load_env applies")
 
 
-def test_new_env_hands_bootstrap_a_path_not_an_empty_file():
-    """bootstrap-env.sh branches on whether its target EXISTS. `mktemp` creates the file, so an
-    empty-but-present one sends it down the "reuse what is already configured" path, where it
-    sources nothing and discovers nothing."""
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "mktemp -d" in text, (
-        "new-env.sh must use a temporary DIRECTORY; `mktemp` creates a file, and a present-but-"
-        "empty env file makes bootstrap-env.sh reuse a configuration that describes no project")
-    assert 'OBJECT_STORE_ENV="${OBJECT_STORE_DIR}/generated.env"' in text
-
-
-def test_rerunning_creation_reuses_the_object_store_key():
-    """The first rerun of `make new-env` minted a SECOND HMAC key, walking the account toward
-    Google's limit of five - past which the storage stage stops dead and an owner has to retire
-    keys by hand.
-
-    create-object-storage.sh decides "reuse or mint" from the MINIO_ACCESS_KEY recorded in the
-    deployment env, and new-env.sh deliberately hands it a FRESH temporary env each run (so it
-    never touches the developer's own generated.env). A fresh env records nothing, so every rerun
-    looked like a first run. The register is the only memory this script has of a key it already
-    minted, so it seeds the recorded id from there before the stage runs.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "register_entry" in text and "MINIO_ACCESS_KEY=%s" in text, (
-        "new-env.sh must seed the recorded access id from the register before running the object-"
-        "store stage, or every rerun mints another HMAC key")
-    # A shell function must be DEFINED before the line that calls it runs, not merely somewhere in
-    # the file - getting this wrong failed with `register_entry: command not found` mid-run.
-    assert text.index("register_entry()") < text.index("$(register_entry)"), (
-        "register_entry is defined after the line that calls it")
 
 
 def test_the_generated_env_heredoc_does_not_execute_its_own_prose():
@@ -564,58 +487,6 @@ def test_a_personal_run_states_every_target_an_unattended_deploy_requires(tmp_pa
         assert out.get(key), (
             f"a personal run states no {key}, so deploy.sh refuses to start: it requires {var}")
 
-
-def test_the_documented_first_deploy_does_not_select_the_console():
-    """A console is given the origin of the API it proxies to, that origin is the API service's
-    Cloud Run URL, and Google assigns one only once the service exists - so on an environment
-    where the API has never been deployed, validate-config.sh refuses at stage 2:
-
-        CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
-
-    That gate is correct and deliberate (see its own comment about stage 14 being twelve stages
-    away). What was wrong was the instructions: both this script's closing message and the guide
-    told people to tick `console` on the very first run, which cannot work. The first deploy is
-    two runs.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    first = text[text.index("DEPLOY INTO IT"):]
-    first_cmd = first[:first.index("# 2.")]
-    assert "-f console=true" not in first_cmd, (
-        "new-env.sh tells the operator to deploy the console on the first run, which stage 2 "
-        "refuses - the API has no URL yet")
-    # Same shape of problem: stage 13 attaches the autoscaling policy to the worker fleet's
-    # managed instance group, and stage 17 is what creates that group.
-    assert "-f queue=true" not in first_cmd, (
-        "new-env.sh selects the queue signal on the first run, but its autoscaling policy has no "
-        "managed instance group to attach to until the workers stage has created one")
-    assert "-f workers=true" in first_cmd, (
-        "the first run must create the fleet, or the second run's queue signal has nothing to "
-        "attach to either")
-    assert "# 2." in first and "console=true" in first and "queue=true" in first, (
-        "new-env.sh must still show the second run that deploys the console and the queue signal")
-
-
-def test_the_runtime_identities_are_created_by_an_owner_not_by_the_deploy():
-    """create-workload-identity.sh withholds iam.serviceAccountAdmin so a compromised workflow run
-    cannot mint an identity. Every stage that needs a runtime identity therefore expects to FIND
-    one - in the shared environments they were created by hand long before this was scripted,
-    which is why nothing noticed until a genuinely empty project ran preflight:
-
-        FAIL permission MISSING: iam.serviceAccounts.create
-
-    preflight.sh requires that permission only when the mesh identity's disposition is `created`,
-    so creating the identities up front is what makes a personal environment pass under the SAME
-    roster prod deploys with - as opposed to widening the deploy identity to match.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "iam service-accounts create" in text, (
-        "new-env.sh creates no runtime identities, so the first deploy fails preflight on "
-        "iam.serviceAccounts.create - a permission the deploy identity must not be given")
-    for role in ("-mesh", "-api", "-console", "-migrate", "-queue-depth", "-workers"):
-        assert f'"${{DEPLOYMENT_ID}}{role}' in text, f"no runtime identity created for {role}"
-    wif = (SCRIPTS / "create-workload-identity.sh").read_text(encoding="utf-8")
-    assert "iam.serviceAccountAdmin" not in wif.split("DEPLOYER_ROLES=(")[1].split(")")[0], (
-        "the deploy identity must not be granted authority to mint identities")
 
 
 def test_the_deployer_can_schedule_the_queue_depth_publisher():
@@ -681,22 +552,6 @@ def test_the_database_password_is_left_to_the_data_tier():
         "the container must still exist so the data tier can add a version to it")
 
 
-def test_the_queue_depth_publisher_can_write_its_metric():
-    """create-queue-depth-publisher.sh attempts this grant and says plainly what happens when it
-    cannot: "project-level IAM is exactly what the deployer was deliberately not given ... the
-    SMOKE RUN below is the verdict."
-
-    That verdict arrived as a Cloud Run job failing with HTTP 403 from the Monitoring API,
-    thirteen stages into a deploy, after Cloud SQL and Memorystore had been built. In the shared
-    environments an owner granted it by hand years before any of this was scripted; a new project
-    has nobody to have done that.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "roles/monitoring.metricWriter" in text, (
-        "new-env.sh does not grant the queue-depth publisher permission to write its metric, so "
-        "the first deploy selecting `queue` dies at stage 13 with HTTP 403")
-    assert "-queue-depth@" in text
-
 
 def test_the_data_tier_exchanges_custom_routes_so_memorystore_is_reachable():
     """Without this, Memorystore is unreachable from Cloud Run and the symptom is misleading:
@@ -758,28 +613,6 @@ def test_the_autoscaler_attachment_is_deferred_when_there_is_no_fleet():
         "create-queue-depth-publisher.sh attaches the autoscaling policy without first checking "
         "that the group exists, so a first deploy fails at stage 13")
 
-
-def test_domain_restricted_sharing_is_relaxed_for_the_project_and_said_out_loud():
-    """The organisation permits IAM bindings only for principals inside its customer, so binding
-    `allUsers` is refused and the deploy creates the API service then fails on its invoker policy.
-
-    deploy.yml sets API_ALLOW_UNAUTHENTICATED=1 for development because the browser talks to the
-    API directly - client-config on page load and the realtime WebSocket, neither through the
-    console's proxy - so the service cannot be invoker-private while the console works. hexera-dev
-    carries exactly this project-scoped override already, which is why nothing noticed until a
-    project was created fresh.
-
-    This is the one genuinely security-relevant thing new-env.sh does, so it must be explained
-    where it happens rather than applied quietly.
-    """
-    text = NEW_ENV.read_text(encoding="utf-8")
-    assert "iam.allowedPolicyMemberDomains" in text, (
-        "new-env.sh does not relax domain restricted sharing, so the first deploy fails at stage "
-        "14 after the API service is already serving")
-    assert "--project" in text and "org-policies set-policy" in text, (
-        "the override must be scoped to the project, never the organisation")
-    assert "WHAT IT COSTS, PLAINLY" in text, (
-        "a security-relevant relaxation has to state its cost where it is applied")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -864,3 +697,77 @@ def test_an_unprefixed_environment_still_names_the_bare_queue():
                           capture_output=True, text=True,
                           env={"PATH": "/usr/bin:/bin", "CELERY_KEY_PREFIX": "dev-pranav:"})
     assert out2.stdout == "dev-pranav:simulation_jobs", out2.stdout
+
+
+def test_creating_an_environment_needs_no_second_command():
+    """The whole point of the change: a deploy into an environment that does not exist creates it.
+    There is no script to run first, no owner credential to hold, and nothing to register - so
+    there must be no `new-env` left advertising otherwise."""
+    assert not (SCRIPTS / "new-env.sh").exists(), (
+        "new-env.sh is back; an environment created out-of-band would now be created in the wrong "
+        "shape - a project rather than a prefix")
+    root = (REPO / "Makefile").read_text(encoding="utf-8")
+    assert "new-env" not in root, "the retired target is still advertised in the Makefile"
+    assert "destroy-env" in root, "teardown is still a command and must stay reachable"
+
+
+def test_nothing_reads_the_retired_register():
+    """HEXERA_PERSONAL_ENVS resolved a slug to a project number. Nothing resolves a slug that way
+    any more, and a leftover read would be a deploy target nobody reviews."""
+    assert "HEXERA_PERSONAL_ENVS" not in WF.read_text(encoding="utf-8")
+    assert "HEXERA_PERSONAL_ENVS" not in DESTROY_ENV.read_text(encoding="utf-8")
+
+
+def test_the_queue_depth_publisher_can_write_its_metric(tmp_path):
+    """Writing a custom metric needs roles/monitoring.metricWriter bound at the PROJECT level, and
+    granting a project-level role means setIamPolicy on the project - the one authority the deploy
+    identity is deliberately built without, because a run that can grant is a run that can grant
+    itself anything.
+
+    So a freshly created dev-<slug>-queue-depth account could never be given the role it needs,
+    and stage 13 would fail its smoke run with HTTP 403 on every personal deploy. It reuses the
+    account that already holds the grant. The metric's series is labelled with the deployment's
+    own namespace, so two environments publishing through one account stay two series."""
+    _, personal, _ = _run_picker(tmp_path, DISPATCH_SLUG="pranav", DISPATCH_QUEUE="true")
+    assert personal["queue_depth_service_account"] == "dev-queue-depth", (
+        "a personal environment must reuse the identity that already holds metricWriter; its own "
+        "would be created without the role and nothing in the deploy could grant it")
+    wf = WF.read_text(encoding="utf-8")
+    assert "QUEUE_DEPTH_SERVICE_ACCOUNT: ${{ needs.target.outputs.queue_depth_service_account }}" in wf, (
+        "the picker emits the identity but the provision job never passes it, so the script falls "
+        "back to <deployment-id>-queue-depth and the 403 returns")
+
+
+def test_the_celery_prefix_reaches_the_scripts_that_need_it():
+    """A picker output that no job maps to an environment variable does nothing at all. Both
+    consumers matter: the API and workers read the prefix to find their queues, and the depth
+    publisher reads it to measure the same key."""
+    wf = WF.read_text(encoding="utf-8")
+    assert "CELERY_KEY_PREFIX: ${{ needs.target.outputs.celery_key_prefix }}" in wf, (
+        "the prefix is emitted and never consumed, so every environment would share one keyspace "
+        "while the workflow looks as though it had separated them")
+
+
+def test_the_first_deploy_is_documented_as_two_runs():
+    """A console is given the origin of the API it proxies to, that origin is the API service's
+    Cloud Run URL, and Google assigns one only once the service exists - so on an environment
+    where the API has never been deployed, validate-config.sh refuses at stage 2:
+
+        CLOUDRUN_CONSOLE_SERVICE is set but HEXERA_API_BASE_URL is not
+
+    The gate is correct. What was wrong, and stayed wrong long enough to be worth a test, was the
+    instructions telling people to tick `console` on the very first run."""
+    doc = (REPO / "docs" / "deployment" / "personal-environments.md").read_text(encoding="utf-8")
+    # The FIRST of the two documented runs: from the first `gh workflow run` to the second.
+    runs = doc.split("gh workflow run")
+    assert len(runs) >= 3, "the guide no longer shows two runs for a first deploy"
+    first_cmd = runs[1]
+    assert "-f console=true" not in first_cmd, (
+        "the guide tells the operator to deploy the console on the first run, which stage 2 "
+        "refuses - the API has no URL yet")
+    assert "-f queue=true" not in first_cmd, (
+        "the guide selects the queue signal on the first run, but its autoscaling policy has no "
+        "managed instance group to attach to until the workers stage has created one")
+    assert "-f workers=true" in first_cmd, (
+        "the first run must create the fleet, or the second run's queue signal has nothing to "
+        "attach to either")

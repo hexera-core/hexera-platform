@@ -2,7 +2,7 @@
 # Responsibility: Put the first VALUE in each secret container a personal environment needs, once.
 # Owns: which credentials are generated here and which are copied from an environment that has them.
 # Boundaries: it never overwrites an enabled version, and it never prints a payload.
-# Collaborates with: new-env.sh, its only caller; create-secrets.sh, which owns containers and IAM in the shared environments.
+# Collaborates with: create-secrets.sh, which owns containers and IAM in the shared environments.
 
 # Seed the credential VALUES for one deployment.
 #
@@ -14,8 +14,8 @@
 # because "by hand, once" happens EVERY TIME somebody creates one, and a step a person performs by
 # hand on every new environment is a step that will be performed wrongly or skipped.
 #
-# So this script is the hand, automated - and it is still an OWNER's act, never CI's. It is invoked
-# by new-env.sh, which runs on a developer's machine under a developer's own credentials. The
+# So this script is the hand, automated - and it is still an OWNER's act, never CI's. It is run on
+# a developer's machine under a developer's own credentials. The
 # federated deploy identity holds no role that lets it read a payload (create-workload-identity.sh
 # builds a custom Secret Manager role precisely to omit versions.access), so nothing here is
 # reachable from a workflow run.
@@ -45,9 +45,9 @@ set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
-# WHICH ENVIRONMENT. new-env.sh calls this with both already exported, which is the common path.
-# A person rerunning it by hand to fill a key that could not be copied has only the slug - the same
-# word they typed to create the environment - so accept that and derive the rest, rather than
+# WHICH ENVIRONMENT. A caller may export both, which is the common path. A person running it by
+# hand to fill a key that could not be copied has only the slug - the same word they deploy with -
+# so accept that and derive the rest, rather than
 # making them recall a project id and a deployment id to repair one secret.
 if [ -z "${GCP_PROJECT_ID:-}" ] && [ -n "${SLUG:-${1:-}}" ]; then
   GCP_PROJECT_ID="${PROJECT_PREFIX:-hexera-dev-}${SLUG:-$1}"

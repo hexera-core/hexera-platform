@@ -124,9 +124,9 @@ discover() {
     MESH_JOB_DISPOSITION=created
     # THE ACCOUNT IS NOT THE JOB, and inferring one disposition from the other was wrong. The mesh
     # job is created at stage 10; its runtime identity may already exist long before that - and in
-    # a project stood up by new-env.sh it always does, because creating identities needs
-    # iam.serviceAccountAdmin, which the deploy identity is deliberately never given and an owner
-    # therefore does up front.
+    # an environment whose earlier stages have already run it always does. Probing rather than
+    # inferring is what makes a partial deploy - one that created the identity and then failed
+    # before the job - resumable rather than confusing.
     #
     # Declaring the account `created` here made preflight demand iam.serviceAccounts.create on
     # every run that had not yet made the job, and refuse the deploy for a permission it would
@@ -520,9 +520,9 @@ if [ -f "${ENV_FILE}" ] && [ "${FORCE}" -eq 0 ]; then
   # `gcloud config get-value project` answers "which project did this machine last `gcloud config
   # set`" - a fact about the developer's shell, not about what this run was asked to do. A caller
   # that exports GCP_PROJECT_ID has SAID which project it means. That is how CI runs (no ambient
-  # config exists there at all) and how new-env.sh provisions a project which is deliberately NOT
-  # the one the operator's gcloud happens to point at - and reading the ambient value there refused
-  # a run whose target was never in doubt, in a message naming a project the caller never mentioned.
+  # config exists there at all) and how any caller targeting a project which is deliberately NOT
+  # the one the operator's gcloud happens to point at says so - and reading the ambient value there
+  # refused a run whose target was never in doubt, in a message naming a project nobody mentioned.
   #
   # This is the precedence lib.sh's load_env already applies, and the same treatment the region
   # check below has always had through _REQ_REGION; the project simply never got it. The protection
