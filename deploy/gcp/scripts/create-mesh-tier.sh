@@ -7,7 +7,10 @@
 #
 #   EACH RESOURCE IS DECIDED ON ITS OWN, the way discovery decided it: a project that already owns
 #   a mesh job may still need its exchange bucket created, so neither disposition speaks for the
-#   other. `reused` means validated and left untouched - never replaced, never reconfigured.
+#   other. `reused` has two meanings, decided by WHOSE resource it is: one this tooling created
+#   (labelled managed-by=deploy) is kept and kept CURRENT - the mesh job is re-applied from each
+#   release the way the API service is; one somebody supplied is validated and left untouched,
+#   never replaced, never reconfigured.
 #
 # Idempotent: an existing exchange bucket / mesh image / mesh job is reconciled, not duplicated.
 # The mesh job holds NO database/Redis/model secrets (compute-only).
@@ -60,14 +63,35 @@ fi
 # the mesh image that ran off-box was built from source at deploy time and had never been through
 # the native tiers. scripts/promote-release.sh writes MESH_IMAGE into the deployment env as the
 # digest of the exact image Gate C validated; this step only checks that it did.
-# Only a job this run applies consumes the image, so a deployment reusing a supplied job is not
-# asked to have one.
+# Only a job this run applies - one it creates, or one it created earlier and now refreshes -
+# consumes the image, so a deployment reusing a SUPPLIED job is not asked to have one.
 
 # 3) mesh job - create/replace from the manifest, pinned to the digest, compute-only.
+MESH_IMAGE_APPLIED=0
 if [ "${MESH_JOB_DISPOSITION}" = "reused" ]; then
   run_job_exists "${CLOUDRUN_MESH_JOB}" \
     || die "supplied mesh job ${CLOUDRUN_MESH_JOB} not found in ${GCP_REGION}. Set CLOUDRUN_MESH_JOB"
-  log "mesh job        ${CLOUDRUN_MESH_JOB}      (reused - untouched)"
+  # WHOSE JOB IT IS decides what "reused" means. A job this tooling created carries the
+  # managed-by=deploy label its manifest stamps, and for that job reused means kept - and kept
+  # CURRENT: the image and the resources are re-applied from this release, exactly as the API
+  # service is on every deploy. Leaving it untouched left dev-mesh on the image of the deploy that
+  # created it, two weeks and a dozen merges after every service around it had moved on, with the
+  # size it was born with while the release said otherwise. A job somebody supplied by hand carries
+  # no such label; that one is validated and left exactly as it is, because reconfiguring somebody
+  # else's job is not ours to do.
+  owner="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+    --format='value(metadata.labels.managed-by)' 2>/dev/null || true)"
+  if [ "${owner}" = "deploy" ]; then
+    require_digest_reference MESH_IMAGE "${MESH_IMAGE:-}"
+    export MESH_SA_EMAIL MESH_IMAGE
+    rendered="$(render_manifest "${DEPLOY_DIR}/cloud-run/mesh-job.yaml")"
+    info "Refreshing mesh job ${CLOUDRUN_MESH_JOB} to this release (gcloud run jobs replace, digest-pinned)"
+    gc run jobs replace "${rendered}" --region "${GCP_REGION}"
+    MESH_IMAGE_APPLIED=1
+    log "mesh job        ${CLOUDRUN_MESH_JOB}  (reused - refreshed to this release's image and size)"
+  else
+    log "mesh job        ${CLOUDRUN_MESH_JOB}      (reused - supplied, untouched)"
+  fi
 else
   require_digest_reference MESH_IMAGE "${MESH_IMAGE:-}"
   log "mesh image (validated digest): ${MESH_IMAGE}"
@@ -75,8 +99,9 @@ else
   rendered="$(render_manifest "${DEPLOY_DIR}/cloud-run/mesh-job.yaml")"
   info "Applying mesh job ${CLOUDRUN_MESH_JOB} (gcloud run jobs replace, digest-pinned)"
   gc run jobs replace "${rendered}" --region "${GCP_REGION}"
+  MESH_IMAGE_APPLIED=1
   log "mesh job        ${CLOUDRUN_MESH_JOB}  (created - SA ${MESH_SA_EMAIL}, maxRetries=0, task=1)"
 fi
 
-[ "${MESH_JOB_DISPOSITION}" = "reused" ] || log "mesh image      ${MESH_IMAGE}"
+[ "${MESH_IMAGE_APPLIED}" = 1 ] && log "mesh image      ${MESH_IMAGE}"
 log "done"

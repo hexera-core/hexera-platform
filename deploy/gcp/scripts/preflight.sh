@@ -73,7 +73,13 @@ esac
 # fleet - mid-deploy, which is the exact failure this preflight exists to prevent. The lists below
 # are derived from the gcloud calls each stage makes, one entry per distinct resource type it
 # creates or updates.
-PERM_LIST='"run.services.create","run.services.update","run.services.setIamPolicy","run.jobs.create","run.jobs.run","artifactregistry.repositories.create","secretmanager.secrets.create","secretmanager.versions.add","iam.serviceAccounts.create","iam.serviceAccounts.actAs","resourcemanager.projects.setIamPolicy","storage.buckets.create","serviceusage.services.enable","storage.buckets.update","storage.buckets.setIamPolicy","storage.hmacKeys.list","storage.hmacKeys.create","cloudsql.instances.create","cloudsql.databases.create","cloudsql.users.create","cloudsql.users.update","redis.instances.create","compute.addresses.create","servicenetworking.services.addPeering","cloudscheduler.jobs.create","cloudscheduler.jobs.update","compute.instanceGroupManagers.update","compute.autoscalers.update","compute.instanceTemplates.create","compute.urlMaps.create","compute.urlMaps.update","compute.backendServices.create","compute.sslCertificates.create","compute.targetHttpsProxies.create","compute.globalForwardingRules.create","compute.regionNetworkEndpointGroups.create"'
+# WHOSE mesh job it is, read once. A job this tooling created carries the managed-by=deploy label
+# its manifest stamps, and the deploy refreshes that job to each release - which is run.jobs.update.
+# A job somebody supplied is validated and never reconfigured, so that permission is not asked of
+# a caller who only reuses one.
+_MESH_JOB_OWNER="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+  --format='value(metadata.labels.managed-by)' 2>/dev/null || true)"
+PERM_LIST='"run.services.create","run.services.update","run.services.setIamPolicy","run.jobs.create","run.jobs.update","run.jobs.run","artifactregistry.repositories.create","secretmanager.secrets.create","secretmanager.versions.add","iam.serviceAccounts.create","iam.serviceAccounts.actAs","resourcemanager.projects.setIamPolicy","storage.buckets.create","serviceusage.services.enable","storage.buckets.update","storage.buckets.setIamPolicy","storage.hmacKeys.list","storage.hmacKeys.create","cloudsql.instances.create","cloudsql.databases.create","cloudsql.users.create","cloudsql.users.update","redis.instances.create","compute.addresses.create","servicenetworking.services.addPeering","cloudscheduler.jobs.create","cloudscheduler.jobs.update","compute.instanceGroupManagers.update","compute.autoscalers.update","compute.instanceTemplates.create","compute.urlMaps.create","compute.urlMaps.update","compute.backendServices.create","compute.sslCertificates.create","compute.targetHttpsProxies.create","compute.globalForwardingRules.create","compute.regionNetworkEndpointGroups.create"'
 if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/dev/null 2>&1; then
   GRANTED="$(curl -sS -X POST \
     "https://cloudresourcemanager.googleapis.com/v1/projects/${GCP_PROJECT_ID}:testIamPermissions" \
@@ -125,6 +131,7 @@ if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/de
       # enable-apis.sh runs every time and is idempotent, but only mutates when one is off.
       serviceusage.services.enable) [ -n "${_APIS_MISSING:-}" ] && return 0 || return 1 ;;
       run.jobs.create)                       [ "${MESH_JOB_DISPOSITION:-created}"    = created ] ;;
+      run.jobs.update)                       [ "${_MESH_JOB_OWNER:-}" = deploy ] ;;
       storage.buckets.create)                [ "${MESH_BUCKET_DISPOSITION:-created}" = created ] ;;
       iam.serviceAccounts.create)            [ "${MESH_SA_DISPOSITION:-created}"     = created ] ;;
       artifactregistry.repositories.create)  [ -z "${_AR_EXISTS:-}" ] ;;
@@ -149,7 +156,7 @@ if TOKEN="$(gcloud auth print-access-token 2>/dev/null)" && command -v curl >/de
   # A permission that is asked about but never reported is indistinguishable from one that was never
   # asked about, which is the same failure as an incomplete list.
   for perm in run.services.setIamPolicy run.services.create run.services.update \
-              run.jobs.create run.jobs.run \
+              run.jobs.create run.jobs.update run.jobs.run \
               artifactregistry.repositories.create \
               secretmanager.secrets.create secretmanager.versions.add \
               iam.serviceAccounts.actAs \
@@ -228,7 +235,11 @@ done
 # is only a fault for a resource being REUSED: for one this run creates, absence is the premise,
 # and the steps after this one exist to make it so.
 if run_job_exists "${CLOUDRUN_MESH_JOB}"; then
-  ok "existing mesh job ${CLOUDRUN_MESH_JOB} found in ${GCP_REGION} (reused, never recreated)"
+  if [ "${_MESH_JOB_OWNER:-}" = deploy ]; then
+    ok "existing mesh job ${CLOUDRUN_MESH_JOB} found in ${GCP_REGION} (deploy-managed: refreshed to this release's image and size)"
+  else
+    ok "existing mesh job ${CLOUDRUN_MESH_JOB} found in ${GCP_REGION} (supplied: reused, never reconfigured)"
+  fi
 elif [ "${MESH_JOB_DISPOSITION:-reused}" = "created" ]; then
   pend "mesh job ${CLOUDRUN_MESH_JOB} will be created in ${GCP_REGION}"
 else
