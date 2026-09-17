@@ -13,8 +13,9 @@ from meshpipeline.contracts.mesh_execution import set_mesh_executor  # noqa: E40
 #: claim authority's job, and asserting that derivation belongs to its own suite.
 KEY = "b" * 64
 
-_FULL = {"GCP_PROJECT_ID": "proj", "GCP_MESH_BUCKET": "bkt", "CLOUDRUN_JOB": "job",
-         "GOOGLE_APPLICATION_CREDENTIALS": "/secrets/sa.json"}
+#: The three facts a dispatch needs. A credential is not among them: google.auth.default()
+#: supplies it, from a mounted key file or from the instance's own identity on a GCE worker.
+_FULL = {"GCP_PROJECT_ID": "proj", "GCP_MESH_BUCKET": "bkt", "CLOUDRUN_JOB": "job"}
 
 
 def _set(monkeypatch, **overrides):
@@ -46,6 +47,8 @@ def test_require_config_raises_loudly_when_unconfigured(monkeypatch):
             require_cloudrun_config()
     _set(monkeypatch)
     require_cloudrun_config()   # fully configured → no raise
+    monkeypatch.setattr(provcfg, "GOOGLE_APPLICATION_CREDENTIALS", "")
+    require_cloudrun_config()   # no key file is not "unconfigured": GCE workers never have one
 
 
 def test_no_executor_configured_raises(monkeypatch):

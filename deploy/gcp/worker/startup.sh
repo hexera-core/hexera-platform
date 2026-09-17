@@ -89,6 +89,16 @@ done
 unset value
 set -x
 
+# THE WORKER'S DIRECTORIES, owned by the user the image runs as. A bind mount keeps the host's
+# ownership, and docker creates a missing mount point as root - while the worker runs as the
+# image's non-root user. So the container could not create a single job workspace: every job on
+# the fleet died on its first mkdir with "Permission denied", before the pipeline had done
+# anything. The uid is read off the image rather than restated here, so a Dockerfile that changes
+# it does not strand the fleet the same way again.
+WORKER_UID="$(docker run --rm --entrypoint id "${WORKER_IMAGE}" -u 2>/dev/null || echo 1000)"
+mkdir -p /var/lib/hexera/workspaces /var/lib/hexera/data
+chown "${WORKER_UID}:${WORKER_UID}" /var/lib/hexera/workspaces /var/lib/hexera/data
+
 docker rm -f hexera-worker >/dev/null 2>&1 || true
 docker run -d --name hexera-worker --restart always \
   --env-file /etc/hexera/worker.env \

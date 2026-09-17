@@ -99,3 +99,15 @@ def test_the_cloud_run_executor_requires_its_config_before_it_meshes(monkeypatch
     with pytest.raises(ConfigurationError) as ei:
         require_cloudrun_config()
     assert "GCP_PROJECT_ID" in str(ei.value)
+
+
+def test_the_cloud_run_executor_takes_the_instance_identity_as_its_credential(monkeypatch):
+    # A GCE worker has no key file by design: its own service account is the credential, and
+    # google.auth.default() finds it. The pre-check must not refuse what the token path accepts.
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import require_cloudrun_config
+
+    monkeypatch.setattr(provcfg, "GCP_PROJECT_ID", "proj")
+    monkeypatch.setattr(provcfg, "GCP_MESH_BUCKET", "bkt")
+    monkeypatch.setattr(provcfg, "CLOUDRUN_JOB", "job")
+    monkeypatch.setattr(provcfg, "GOOGLE_APPLICATION_CREDENTIALS", "")
+    require_cloudrun_config()   # no key file -> still configured

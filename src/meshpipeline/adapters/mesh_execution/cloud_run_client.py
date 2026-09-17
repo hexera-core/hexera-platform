@@ -42,11 +42,16 @@ class CloudRunMeshExecutor:
 
 
 def require_cloudrun_config() -> None:
+    # WHERE the job runs, WHERE the exchange lives, and WHICH job - the three facts a dispatch
+    # cannot proceed without. The credential is deliberately not one of them: _access_token()
+    # resolves it through google.auth.default(), which reads a mounted key file under compose and
+    # the instance's own identity on a GCE worker, where no key file exists by design. Demanding
+    # GOOGLE_APPLICATION_CREDENTIALS here refused every dispatch from the worker fleet - the check
+    # failed a configuration the token path would have accepted.
     missing = [name for name, val in (
         ("GCP_PROJECT_ID", provcfg.GCP_PROJECT_ID),
         ("GCP_MESH_BUCKET", provcfg.GCP_MESH_BUCKET),
         ("CLOUDRUN_JOB", provcfg.CLOUDRUN_JOB),
-        ("GOOGLE_APPLICATION_CREDENTIALS", provcfg.GOOGLE_APPLICATION_CREDENTIALS),
     ) if not val]
     if missing:
         raise ConfigurationError(
