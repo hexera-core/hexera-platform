@@ -88,7 +88,7 @@ if [ "${MESH_JOB_DISPOSITION}" = "reused" ]; then
     info "Refreshing mesh job ${CLOUDRUN_MESH_JOB} to this release (gcloud run jobs replace, digest-pinned)"
     gc run jobs replace "${rendered}" --region "${GCP_REGION}"
     MESH_IMAGE_APPLIED=1
-    log "mesh job        ${CLOUDRUN_MESH_JOB}  (reused - refreshed: ${MESH_CPU} vCPU, ${MESH_MEMORY}, ${MESH_TIMEOUT_SECONDS}s)"
+    log "mesh job        ${CLOUDRUN_MESH_JOB}  (reused - refreshed to this release's image and size)"
   else
     log "mesh job        ${CLOUDRUN_MESH_JOB}      (reused - supplied, untouched)"
   fi
