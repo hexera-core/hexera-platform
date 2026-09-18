@@ -318,7 +318,11 @@ right; the other three the measurement already has exactly.
 
 What it said AT a measured place (a letter the renderer drew, the end of a passage the stop detector
 found) reaches both the planner, as `at_places`, and the intake conversation, where the place is
-given in millimetres and the words are marked as the model's.
+given in millimetres and the words are marked as the model's. Counted over the four cached corpus
+draws of the shipped prompt, attached to this platform's own measurement of each of the 322 parts:
+2,084 placed findings a draw in the planner's block, and 0 in the intake prompt before this branch
+against 2,074, 2,075, 2,077 and 2,076 after it, the rest being places the look declined to read,
+which are named once rather than shown as findings.
 
 ### What it costs
 
@@ -384,7 +388,23 @@ request.
 
 Why intake comes first, measured rather than argued: `ahmed_variant_001` is a bluff body with four
 measured openings. Composed for the purpose the upload assumes it is asked which opening is the
-inlet, twice; composed for what the customer said it is asked nothing.
+inlet, twice; composed for what the customer said it is asked nothing. Over all 322 corpus export
+parts, each measured through this platform's own upload call on 2026-09-18 and composed with its
+brief's purpose, words and ports (no model involved, so every figure is deterministic):
+
+| | composed at upload, for the assumed purpose | composed after intake |
+|---|---:|---:|
+| geometry questions put at step 4 | 622, on 311 parts | 151, on 151 parts |
+| external parts asked which opening is the inlet | 50 of 61 | 0 of 61 |
+| parts whose representation the customer's words change | | 86 |
+| `customer_cell_cap` set | 0 | 322 |
+| budget trades put at step 6 | | 39 |
+| survey reaching the planner, passing the package's validator | 0 | 322, at most 1,620 characters |
+
+Every one of the 151 remaining questions is the one where the brief names fewer ports than the file
+has mouths. On most of those parts the extra mouths are flange shoulders the package's own catalog
+already calls wall, so the count is an upper bound on what a better question list would ask. The
+322 of 322 on `customer_cell_cap` rests on one budget sentence repeated across the corpus briefs.
 
 A default is not an answer. A customer who lets a default stand is stored as `default_taken`, the
 question stays open, and the builder is told it is unsettled. `submit_requirements` refuses an inlet
