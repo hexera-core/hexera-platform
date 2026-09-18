@@ -43,6 +43,6 @@ def test_no_timeout_is_set_on_a_serverless_backend():
     # groups". Setting one would fail the edge stage on every deploy.
     s = _script()
     code = "
-".join(l for l in s.splitlines() if not l.lstrip().startswith("#"))
+".join(line for line in s.splitlines() if not line.lstrip().startswith("#"))
     assert "--timeout" not in code.split("compute backend-services", 1)[1], \
         "a serverless-NEG backend service cannot take --timeout; the edge stage would fail"
