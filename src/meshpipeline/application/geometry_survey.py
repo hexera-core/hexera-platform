@@ -124,23 +124,6 @@ def brief_digest(brief: str | None) -> str:
 # STEP 2: the measurement, composed for what the customer said
 # -------------------------------------------------------------------------------------------------
 
-def _for_survey(composed: dict, engine: str | None) -> dict:
-    """The composed document as `contract.build.survey_from` can take it today.
-
-    ONE SHIM, and it is written down rather than hidden. `report_measured` records an engine nobody
-    declared as `engine_source: "assumed"`, and `survey_from` turns that into an `assumed` mark on
-    `engine`, whose owners are `confirmed` and `stated` only, so the whole survey raises
-    `ContractError` on every document that did not name an engine. That is every upload. Nobody has
-    stated an engine at that point, and the honest survey carries NO engine mark rather than an
-    assumed one the contract refuses, so the two keys are left out when the customer named none. The
-    fix belongs in `contract/build.py` and is in this branch's NEEDS FROM OTHERS; when it lands this
-    leaves a document the package already accepts.
-    """
-    if engine:
-        return composed
-    return {k: v for k, v in composed.items() if k not in ("engine", "engine_source")}
-
-
 def compose(document: dict, *, purpose: str, brief: str | None = None,
             declared: list[dict] | None = None, engine: str | None = None,
             unit: str | None = None, scale_to_metres: float | None = None,
@@ -178,8 +161,9 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             scale_to_metres=scale_to_metres, unit_basis=unit_basis,
             stamp={k: v for k, v in (document.get("stamp") or {}).items()
                    if k in ("agent_git_sha", "platform_sha")})
-        survey = pkg["build"].survey_from(_for_survey(composed, engine), brief=brief_text or None,
-                                          declared=ports or None)
+        # the package admits an engine nobody named as `assumed` (work/z-chain, `contract.marks.OWNERS`), so the
+        # composed document goes to the survey as it is; the shim that stripped the engine is gone
+        survey = pkg["build"].survey_from(composed, brief=brief_text or None, declared=ports or None)
     except pkg["marks"].ContractError as exc:
         raise SurveyError(f"the survey refused its own handoff: {exc}") from exc
     except Exception as exc:                       # noqa: BLE001 - never a turn, never a mesh

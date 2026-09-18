@@ -132,6 +132,17 @@ GEOMETRY_AGENT_BLOCK_KEYS = (
     #: every value carrying its kind. Written by the measurement package's `contract.deliver`, checked
     #: by its own validator below, and absent unless GEOMETRY_SURVEY_ENABLED composed one.
     "survey",
+    #: What the measurement has and will not state as a place, with the reason: a distance on a wall
+    #: shell that could be the bore or the outside, a thin place whose side is not settled. A refusal
+    #: that travels is a planner that knows to be careful there; dropped, it was silence.
+    "places_refused",
+    #: The coverage facts beside the places: points provably outside the flow domain (a leak check),
+    #: the named wall regions, and which two facts were refused by name. Measured, in metres.
+    "coverage",
+    #: From the wired chain (`geometry_agent.chain.job`): intake's write-up with confirmed and assumed
+    #: kept apart, the flow patches with who each role came from, and the envelope the PLAN costs on
+    #: the builder emulator. Absent on a job the chain did not run.
+    "intake", "flow_patches", "plan_envelope",
 )
 
 #: What the planner is never handed, whatever the block says, with the reason it is refused.
@@ -150,7 +161,8 @@ ABOUT "geometry_agent" IN THE DICT ABOVE: it is a separate measurement of the cu
 - agent_forecast_cells is an ENVELOPE, not an estimate of your plan. forecast_calibration carries its MEASURED error against 263 real jobs: before a plan exists it has come in at about 0.52x the cells actually delivered. So treat it as a FLOOR - the real mesh has usually been about twice it - and do NOT shave max_cells towards it.
 - inlet_bore_m is the bore the builder will size from. cells_across_diameter is defined relative to exactly this number.
 - smallest_port_min_dim_m is the smallest port the mesh has to resolve; your wall cell has to fit several cells across it.
-- places are MEASURED locations that cost cells, not suggestions. A port mouth tilted off the background grid is cut by stair-stepped cells (this is the mechanism behind most poor carves); a thin region is where prism layers collapse. Name them in "focus" and size for them.
+- places are MEASURED locations where this part needs more attention than normal, in the order the part needs it: the flow path first (a throat, a plate or baffle in the passage, a junction, a change of section, a bend, a passage end), then what limits the cell size (a narrow gap, a thin separation, a narrow passage, a small or tilted port mouth, a thin wall). Each has "where_m" (null with "where_missing" when it has no position) and "measurement". They describe the geometry, not the mesh: name them in "focus" and decide the settings yourself.
+- places_refused lists what the measurement has but will not state as a place, with the reason. Treat those spots as unknown, not as ordinary.
 - status "degraded" means the listed fields in "missing" could not be measured. Fields that are absent were not measured; do not infer a value for them.
 - If this block and the customer's own text disagree, the CUSTOMER is right: they can see the part and this is a measurement of a file."""
 
@@ -173,6 +185,19 @@ ABOUT "look" INSIDE "geometry_agent": a vision model was shown rendered views of
 
 #: How to read `survey`, sent ONLY when a survey is present, for the same reason the look's note rides
 #: with the look.
+_AGENT_CHAIN_NOTE = """
+
+ABOUT "intake", "flow_patches" AND "plan_envelope" INSIDE "geometry_agent": the job ran through the geometry chain.
+- intake: "confirmed" is what the customer answered; "assumed" is a default nobody confirmed (report back on those); "from_the_brief" is what their own text said.
+- flow_patches: each opening's role and who it came from (customer, brief or the geometry agent's own decision). A role the customer confirmed is theirs; do not change it.
+- plan_envelope: the cells the geometry agent's plan costs on the builder's own sizing, with its source. It is an envelope, not a target."""
+
+
+_AGENT_COVERAGE_NOTE = """
+
+ABOUT "coverage" INSIDE "geometry_agent": "outside" holds points provably outside the flow domain (outside every closed surface of the part), usable as a leak check; "wall" names the part's surface regions by shape; "refused" names facts that were decided not to be given because the number would describe the tessellation rather than the part."""
+
+
 _AGENT_SURVEY_NOTE = """
 
 ABOUT "survey" INSIDE "geometry_agent": the customer was shown what the measurement could not settle about THIS file and asked. Every value says what kind of claim it is ("kinds" is the legend).
@@ -346,6 +371,13 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         # was switched on and composed, so every message without one is the message it was before.
         if _agent_block is not None and _agent_block.get("survey"):
             _agent_note += _AGENT_SURVEY_NOTE
+        # the chain's and the coverage's notes ride with their keys, one gate further in again, so a block
+        # without them is the message it was before they existed
+        if _agent_block is not None and (_agent_block.get("intake") or _agent_block.get("plan_envelope")
+                                         or _agent_block.get("flow_patches")):
+            _agent_note += _AGENT_CHAIN_NOTE
+        if _agent_block is not None and _agent_block.get("coverage"):
+            _agent_note += _AGENT_COVERAGE_NOTE
         user = ("REQUEST:\n" + (request_txt or "").strip()[:2000]
                 + "\n\nMEASURED GEOMETRY (metres):\n" + json.dumps(metrics, indent=1)
                 + _agent_note + _fid_note)

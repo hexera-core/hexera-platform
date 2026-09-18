@@ -30,6 +30,14 @@
 #      list and the intake prompt: it is the check that the harness can see the survey at all. A ruler
 #      that reports "identical" for a change it cannot see is how this project has been misled before
 #
+# ONE DELIBERATE CHANGE IS HELD APART, and it is the only one. work/complete rewrote the planner's note on
+# the measured block (`planner._AGENT_BLOCK_NOTE`): the places are now described as geometry in the order
+# the part needs them, and the two sentences that predicted the mesh ("stair-stepped cells", "where prism
+# layers collapse") are gone, because the Surveyor names places and never predicts a mesh. B and C read that
+# note, so for them the working copy is run with the REFERENCE commit's note put back (`GATE_NOTE_FROM`):
+# every other byte of the planner's message must still be what the reference produced. A still runs with
+# nothing put back, and every gate off still reaches the note not at all.
+#
 # The document is a REAL stored measurement rather than a shape somebody typed out:
 # `vision_off_gate_measurement.json` beside this file is what the measurement package wrote for
 # `annular_001.step` of the corpus export, stamped the way `application/geometry_measurement.py` stamps a
@@ -93,6 +101,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 _DOC = os.environ.get("GATE_DOC") or ""
+_NOTE_FROM = os.environ.get("GATE_NOTE_FROM") or ""
 DOC = json.loads(Path(_DOC).read_text(encoding="utf-8")) if _DOC else None
 FLAGS = [f for f in (os.environ.get("GATE_FLAGS") or "").split(",") if f]
 WS = Path(os.environ["GATE_WS"])
@@ -186,6 +195,13 @@ def _planner(monkeypatch):
         return ModelRoundResult(assistant_text=json.dumps({"approach": "x", "max_cells": 1000}))
 
     monkeypatch.setattr(planner.llm_router, "call_planner_model", call)
+    if _NOTE_FROM:
+        # the reference commit's note, read out of its source, so the one deliberate change is held apart
+        import ast
+        tree = ast.parse(Path(_NOTE_FROM).read_text(encoding="utf-8"))
+        note = next(n.value.value for n in tree.body if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", "") == "_AGENT_BLOCK_NOTE" for t in n.targets))
+        monkeypatch.setattr(planner, "_AGENT_BLOCK_NOTE", note)
     from tests._geometry_support import prepared_surface
 
     kwargs = {"workspace": WS, "job_id": "gate-job", "request_txt": "mesh it",
@@ -228,12 +244,13 @@ def _working_copy(into: Path) -> Path:
     return into
 
 
-def _digests(tree: Path, label: str, document: Path | None, flags: str, python: str) -> dict[str, str]:
+def _digests(tree: Path, label: str, document: Path | None, flags: str, python: str,
+             note_from: Path | None = None) -> dict[str, str]:
     harness = tree / "tests" / "unit" / "gate_vision_off.py"
     harness.write_text(HARNESS, encoding="utf-8")
     workspace = tree / ".gate-workspace"
     env = {"GATE_WS": str(workspace), "GATE_DOC": str(document) if document else "",
-           "GATE_FLAGS": flags, "PYTHONPATH": "src"}
+           "GATE_FLAGS": flags, "PYTHONPATH": "src", "GATE_NOTE_FROM": str(note_from) if note_from else ""}
     try:
         run = subprocess.run([python, "-m", "pytest", str(harness.relative_to(tree)), "-s", "-q",
                               "-p", "no:randomly", "-p", "no:cacheprovider"],
@@ -280,7 +297,9 @@ def main() -> int:
                   _MEASURED + ",GEOMETRY_VISION_ENABLED,GEOMETRY_SURVEY_ENABLED", False)]
         for label, rev, doc, flags, must_match in cases:
             old = _extract(rev, tmp_path / rev.replace("/", "_"), supplied)
-            mine = _digests(here, f"{label} (working copy)", doc, flags, args.python)
+            # B and C read the rewritten note; the reference's is put back so nothing else can hide behind it
+            note = (old / "src" / "meshpipeline" / "engines" / "snappy" / "planner.py") if must_match and doc else None
+            mine = _digests(here, f"{label} (working copy)", doc, flags, args.python, note)
             theirs = _digests(old, f"{label} ({rev})", doc, flags, args.python)
             for prompt in PROMPTS:
                 same = mine[prompt] == theirs[prompt]

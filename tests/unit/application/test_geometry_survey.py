@@ -79,23 +79,23 @@ def test_a_measurement_that_did_not_succeed_is_never_composed():
         gs.compose(doc, purpose="internal_cfd")
 
 
-def test_the_package_refuses_every_upload_that_names_no_engine_and_the_shim_is_what_passes_it():
-    """PINNED UPSTREAM FAULT. `contract.build.survey_from` marks an engine nobody named as `assumed`,
-    and OWNERS["engine"] admits no assumed kind, so the package's own survey raises on a document
-    `report_measured` wrote with no engine: every upload. When the chain fixer lands the fix this test
-    fails, and the shim in `_for_survey` can go."""
+def test_the_package_surveys_an_upload_that_names_no_engine_and_marks_the_engine_assumed():
+    """THE UPSTREAM FAULT THIS PINNED IS FIXED (work/z-chain, `contract.marks.OWNERS["engine"]` admits
+    `assumed`), so the shim `_for_survey` is gone and the composed document goes to the survey whole.
+    The engine rides as what it is: nobody named one, so it is assumed, never stated."""
     from geometry_agent.agent import hexera
+    from geometry_agent.contract import marks
     from geometry_agent.contract.build import survey_from
-    from geometry_agent.contract.marks import ContractError
     from geometry_agent.facts.schema import GeometryFacts
 
     doc = _doc("venturi_orifice_001")
     composed = hexera.report_measured(GeometryFacts.model_validate(doc["facts"]), None, None,
                                       purpose="internal_cfd")
     assert composed["engine_source"] == "assumed"
-    with pytest.raises(ContractError, match="engine"):
-        survey_from(composed)
-    assert survey_from(gs._for_survey(composed, None)).source_sha256 == doc["source_sha256"]
+    survey = survey_from(composed)
+    assert survey.source_sha256 == doc["source_sha256"]
+    assert survey.mark("engine").kind == marks.ASSUMED
+    assert not hasattr(gs, "_for_survey")
 
 
 # THE QUESTIONS ARE THE SURVEY'S UNCERTAINTIES, ONE FOR ONE
@@ -270,9 +270,10 @@ def test_the_builder_gets_the_survey_and_it_passes_the_packages_own_validator():
     check_survey_block(block["survey"])
     assert len(json.dumps(block["survey"])) <= SURVEY_BLOCK_MAX
     confirmed = block["survey"]["confirmed"]
-    assert confirmed["opening.role:o2"]["value"] == "inlet"
-    assert confirmed["opening.role:o1"]["value"] == "outlet"
-    assert "answered by customer" in confirmed["opening.role:o2"]["source"]
+    # one entry per answer, the mouths it placed beside it (work/z-chain grouped them to hold the ceiling)
+    assert confirmed["opening.role=inlet"]["value"] == "inlet" and confirmed["opening.role=inlet"]["applies_to"] == ["o2"]
+    assert confirmed["opening.role=outlet"]["applies_to"] == ["o1"]
+    assert "answered by customer" in confirmed["opening.role=inlet"]["source"]
     assert block["survey"]["unsettled"] == []
 
 

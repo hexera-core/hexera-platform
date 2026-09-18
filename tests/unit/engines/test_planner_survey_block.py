@@ -50,7 +50,7 @@ def test_the_survey_rides_after_the_cut_and_carries_the_customers_answers(monkey
     long_brief = "x" * 5000
     seen = _captured(monkeypatch, tmp_path, geometry_agent=surveyed_block, request_txt=long_brief)
     agent = _metrics(seen["user"])["geometry_agent"]
-    assert agent["survey"]["confirmed"]["opening.role:o2"]["value"] == "inlet"
+    assert agent["survey"]["confirmed"]["opening.role=inlet"]["applies_to"] == ["o2"]
     assert agent["customer_cell_cap"] == 2_000_000
     assert seen["user"].count("x" * 2000) == 1 and "x" * 2001 not in seen["user"]
     assert 'ABOUT "survey" INSIDE "geometry_agent"' in seen["user"]

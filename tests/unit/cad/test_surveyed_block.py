@@ -69,7 +69,7 @@ def test_with_the_survey_on_the_planner_gets_the_block_composed_for_the_customer
     for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_SURVEY_ENABLED"):
         monkeypatch.setattr(polcfg, gate, True)
     block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
-    assert block["survey"]["confirmed"]["opening.role:o2"]["value"] == "inlet"
+    assert block["survey"]["confirmed"]["opening.role=inlet"]["applies_to"] == ["o2"]
     assert block["customer_cell_cap"] == 2_000_000
     assert doc["planner_block"]["customer_cell_cap"] is None
 
@@ -93,4 +93,4 @@ def test_a_look_that_landed_after_the_last_composition_is_composed_in_before_the
     block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
     assert block["survey"]["looked"] is True
     assert block["survey"]["seen"]["attachments"]["value"] == ["a flange at each end"]
-    assert block["survey"]["confirmed"]["opening.role:o1"]["value"] == "outlet"
+    assert block["survey"]["confirmed"]["opening.role=outlet"]["applies_to"] == ["o1"]
