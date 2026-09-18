@@ -167,6 +167,7 @@ ABOUT "look" INSIDE "geometry_agent": a vision model was shown rendered views of
 - "relied_on" was measured against 322 parts and earned its place. Attachments and flanges in particular are found at full recall and no measurement reports them at all, so if one is named, it is there. An "inside_is_plain" of true means nothing was seen across the passage, and nothing has been.
 - "candidates" are places to look at, not facts. The identity is right about two times in three and is not reproducible; an internal feature repeats as a finding but not as a wording. Size for them if it is cheap to; do not justify a level by one of them alone.
 - "withheld" lists what the look said that you are NOT being shown, with the reason. Do not ask for it and do not infer it. The measured dict above already has the orientation, the symmetry and the opening classes exactly.
+- "at_places", when present, is one finding per place the MEASUREMENT chose and drew before the model saw the picture: "where_m" is a measured coordinate and "the_look_says" is the model's words about that spot. A null "where_m" is never a guess, and "declined" is the look saying it could not read that place.
 - The look never overrides a measured number, a port, a bore or a count. Where the two disagree, the measurement is right."""
 
 

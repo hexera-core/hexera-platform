@@ -297,10 +297,17 @@ its readers.
 
 ### What the look is
 
-With `GEOMETRY_VISION_ENABLED` on, a background task renders nine views of the measured file, asks a
-vision model what it is looking at, and stores the answer in the same `geometry_measurements` row.
-It needs `GEOMETRY_MEASUREMENT_ENABLED` as well: there is no row for a look to attach to without a
+With `GEOMETRY_VISION_ENABLED` on, a background task renders seventeen views of the measured file (the
+merged `geometry_agent.vision.look` builds them the same way the agent's own `look_at_views` does),
+asks a vision model what it is looking at, and stores the answer in the same `geometry_measurements`
+row. It needs `GEOMETRY_MEASUREMENT_ENABLED` as well: there is no row for a look to attach to without a
 measurement, and the views are labelled with the openings the measurement found.
+
+The reader is named, never discovered: `GEOMETRY_VISION_PROVIDER` at `GEOMETRY_VISION_MODEL`,
+`openai` and `gpt-5.6-luna` by default. The package's own `auto` provider takes Anthropic, then OpenAI,
+then DeepInfra, and this template carries only a DeepInfra key, so left to itself it would read every
+part with a model the look was never measured with. With no key for the named provider the row
+records a look that was not attempted and says why; it never falls through to another provider.
 
 It produces no number. Every digit is removed from the description before it is stored, so nothing
 in it can be mistaken for a measurement, and the measurement package's own trust tiers decide which
@@ -309,33 +316,33 @@ inlet, about the orientation and about the symmetry is kept in the row for a per
 not put in front of the mesh planner or the intake conversation. The first has never once been
 right; the other three the measurement already has exactly.
 
+What it said AT a measured place (a letter the renderer drew, the end of a passage the stop detector
+found) reaches both the planner, as `at_places`, and the intake conversation, where the place is
+given in millimetres and the words are marked as the model's.
+
 ### What it costs
 
-One provider call per uploaded file. Measured on seven corpus export parts, at least one of each
-representation, with `gpt-5.6-luna` on OpenAI on 2026-09-15: 18.2 to 29.1 seconds of wall clock
-including the render, 7,306 to 7,350 prompt tokens and 1,301 to 2,565 completion tokens, of which
-1,024 to 2,049 were reasoning tokens. Seven looks, seven succeeded.
+The figures below were measured on 2026-09-15 on the nine-view look this branch was first written
+against, with `gpt-5.6-luna` on OpenAI, on seven corpus export parts. **The shipped look renders
+seventeen views, and these have not been measured again for it**: read them as the nine-view look's.
+18.2 to 29.1 seconds of wall clock including the render, 7,306 to 7,350 prompt tokens and 1,301 to
+2,565 completion tokens, of which 1,024 to 2,049 were reasoning tokens. Seven looks, seven succeeded.
 
 **The dollar figure is not stated here because it has not been confirmed.** `openai:gpt-5.6-luna` is
 not in `adapters/inference_telemetry/pricing.py`, and that module's own rule is that an unconfirmed
 price is left out rather than guessed. The token counts above are what a rate multiplies: at a rate
 of *(in, out)* dollars per million tokens the cost of one look is `7.317 * in / 1000 + 1.894 * out /
-1000` dollars at the measured medians (7,317 prompt tokens and 1,894 completion tokens). Add the id
-and its rate to the price table to have the look costed automatically like every other model call.
+1000` dollars at the nine-view medians (7,317 prompt tokens and 1,894 completion tokens).
 
 A second job against the same upload costs nothing at all: the look is stored with the measurement
 and keyed the same way, so the task reads one row and stops, having fetched no bytes, rendered
 nothing and called no provider.
 
-It adds 2,591 to 3,083 characters to the mesh planner's user message and 1,232 to 1,584 characters to
-the intake system prompt, and only on a file where the look succeeded. Both figures were measured by
-rendering the real prompt on each of the seven parts with the look and again with it stripped out.
-
-In the database it adds 8.2 to 9.4 KB of JSON to the `geometry_measurements.document` of a file that
-was looked at, of which 5.1 to 5.6 KB is the measurement package's trust table, repeated in each row
-so a reader of one row never has to fetch anything else to know which fields it may act on. No new
-column and no migration: `document` is already JSONB and already has a `look` key, written as
-"nothing looked" since the measurement path shipped.
+The stored look no longer carries the measurement package's trust table. The tiers reach every model
+through `vision.trust.for_model` at the point of use, off the live ledger, so a stored copy would
+outlive the next demotion. The 5.1 to 5.6 KB the nine-view figures included for it is not in a row
+written now. No new column and no migration for the look: `document` is already JSONB and already has
+a `look` key.
 
 ### When the provider is down
 
@@ -346,6 +353,33 @@ carries no look key, intake renders no look lines, and the conversation and the 
 they are with `GEOMETRY_VISION_ENABLED` off. A queue with no worker draining it is the same answer.
 The upload is never affected in any case: the look is always a queued task and never runs in a
 request.
+
+### The survey, and the order of the chain
+
+`GEOMETRY_SURVEY_ENABLED` turns on the chain in this order, and the order is the design:
+
+| step | who | on this platform |
+|---|---|---|
+| 1 | intake | the customer says what the part is for; intake calls `survey_the_part` with the purpose and their words quoted |
+| 2 | measure | the bytes were read once at upload; the stored reading is now composed FOR that purpose, those words and any ports they named, by the package's own `report_measured`, in milliseconds |
+| 3 | look | queued now, with the purpose and representation step 2 decided, and no longer at upload |
+| 4 | intake | the package's own questions (`contract.asking.questions_from`) are put, and intake asks nothing of its own about which opening is which; `answer_survey_question` stores each answer with who gave it |
+| 5 | geometry | the builder's own planner decides what to do; it is handed the survey as facts it may not re-decide |
+| 6 | intake | the budget trade, and only it, once every step-4 question is settled |
+| 7 | builder | the survey rides in `metrics["geometry_agent"]["survey"]`, after the request cut, checked by the package's own validator |
+
+Why intake comes first, measured rather than argued: `ahmed_variant_001` is a bluff body with four
+measured openings. Composed for the purpose the upload assumes it is asked which opening is the
+inlet, twice; composed for what the customer said it is asked nothing.
+
+A default is not an answer. A customer who lets a default stand is stored as `default_taken`, the
+question stays open, and the builder is told it is unsettled. `submit_requirements` refuses an inlet
+or outlet on a mouth the customer did not name, so no guessed role reaches `port_declaration`. A cell
+budget the customer confirmed in the trade holds `max_cells` to it; one they only wrote is shown to
+the planner as `customer_cell_cap` and holds nothing.
+
+The survey is stored in `geometry_surveys` (migration 0004), one row per upload, keyed by the file's
+sha256, so an answer can be bound to the part it was given about long after the conversation.
 
 ## Observability
 
