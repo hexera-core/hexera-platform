@@ -46,11 +46,11 @@
 #   python devtools/quality/check_vision_off_is_byte_identical.py \
 #       --tree main=/tmp/main --tree 91bb74b=/tmp/base --tree bae0fb2=/tmp/look
 #
-# Run on 2026-09-18 on feat/complete-surveyor: A, B and C byte for byte, D different as it must be.
+# Run on 2026-09-18 on feat/complete-surveyor at a0aab26: A, B and C byte for byte, D different as it must be.
 #   A  intake_system 0dccfc492c1bf82f   intake_tools 557b7c1b95c6d46e   planner_user 16e44b932da08e8b
 #   B  intake_system 858a67570d6f0895   intake_tools 557b7c1b95c6d46e   planner_user 855866e292055abb
 #   C  intake_system 858a67570d6f0895   intake_tools 557b7c1b95c6d46e   planner_user 855866e292055abb
-#   D  intake_system a6493c2a2c77c153   intake_tools 9cb0145c2b4c5e72   planner_user 855866e292055abb
+#   D  intake_system 0c2a15887e7e7a3f   intake_tools 9cb0145c2b4c5e72   planner_user 855866e292055abb
 # The A and B digests are the ones the first version of this gate recorded on 2026-09-15, so the node
 # path produces the same bytes the direct render did.
 from __future__ import annotations
