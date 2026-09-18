@@ -53,7 +53,8 @@
 #
 # INPUTS   the deployment env (CONSOLE_DOMAIN, ADMIN_DOMAIN, EDGE_IP_NAME, EDGE_URL_MAP, EDGE_CERT,
 #          CLOUDRUN_CONSOLE_SERVICE, CLOUDRUN_ADMIN_SERVICE, GCP_REGION).
-# MUTATES  a global static IP, a serverless NEG and backend service per declared console, two URL
+# MUTATES  a global static IP, a serverless NEG and backend service per declared console (its
+#          request timeout and logging reconciled every run), two URL
 #          maps (serving and redirect), a managed certificate per declared hostname, two target
 #          proxies, and two forwarding rules. It deletes nothing.
 set -euo pipefail
@@ -176,6 +177,21 @@ for triple in "${TRIPLES[@]}"; do
       gc compute backend-services add-backend "${backend}" --global \
         --network-endpoint-group="${neg}" --network-endpoint-group-region="${GCP_REGION}" ;;
   esac
+
+  # THE BACKEND'S TIMEOUT IS RECONCILED EVERY RUN, never left at what it was born with. A backend
+  # service is created with Google's 30-second default, and `_ensure` reuses an existing one as it
+  # is - so dev's console backend answered 504 to every chat turn the intake spent more than 30
+  # seconds thinking about, the browser reported each as "Failed to fetch", and neither Cloud Run
+  # (which allows the console CONSOLE_TIMEOUT_SECONDS) nor the balancer (logging off) recorded a
+  # thing. The balancer must allow at least what the service behind it allows, and it must log
+  # what it refuses, or the next such failure is invisible again.
+  case "${label}" in
+    admin) be_timeout="${ADMIN_TIMEOUT_SECONDS:-${CONSOLE_TIMEOUT_SECONDS:-300}}" ;;
+    *)     be_timeout="${CONSOLE_TIMEOUT_SECONDS:-300}" ;;
+  esac
+  gc compute backend-services update "${backend}" --global \
+    --timeout="${be_timeout}" --enable-logging --logging-sample-rate=1 >/dev/null
+  log "  ${backend} allows ${be_timeout}s per request (the ${label} service's own limit), logging on"
 
   BACKENDS+=("${host}|${backend}")
   log "  ${label} routed to ${backend} <- ${neg} <- ${service}"
