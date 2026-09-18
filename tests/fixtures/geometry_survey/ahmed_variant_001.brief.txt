@@ -1,0 +1,13 @@
+External aerodynamics over the Ahmed reference body at exact official dimensions (1044 x 389 x 288 mm, front fillets R100 mm) with a 25 degree, 222 mm rear slant. I want the flow field around it.
+
+Geometry is in millimetres. The overall bounding box is 1044.0 x 389.0 x 288.0 mm (X x Y x Z). Flow is along +X.
+
+Body surface - a solid body to mesh AROUND, not a fluid domain. Full 3D, no symmetry planes.
+Engine: snappyHexMesh.
+Far-field: rectangular box. ALL margins are multiples of ONE reference length - the body's streamwise extent, 1044 mm = 1.044 m - in every direction: 5 of it upstream, 5 above, 5 below, 5 lateral, 8 downstream.
+Patches: body (the solid, a no-slip wall) and farfield (one combined outer box). No separate inlet or outlet.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Air at sea level, 20 m/s. 5 prism layers, expansion ratio 1.2.
+Feature-edge refinement: finer than the surrounding surface, on the sharp edges.
+Mesh budget: keep the total cell count under 2 million cells.
+Wake: refined 5 body lengths downstream, one level finer than the far-field.
+Steady state, incompressible, no thermal effects.

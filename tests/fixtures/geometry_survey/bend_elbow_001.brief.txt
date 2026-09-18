@@ -1,0 +1,11 @@
+Internal flow through a circular elbow duct turning 80.15 degrees (bore 297.94 mm), centreline bend radius 446.01 mm; the wall carries an integral flange at each end. I want the flow and pressure drop.
+
+Geometry is in millimetres. The overall bounding box is 1031.64 x 1073.74 x 489.22 mm (X x Y x Z).
+
+Body surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. Put the seed point inside the bore just downstream of the inlet, at (139.35, 0, 0) mm. There is no far-field box.
+Engine: snappyHexMesh.
+Patches: inlet is the circular opening at (0, 0, 0) mm on the X=0 plane, bore diameter 297.94 mm (flow enters along +X); outlet is the circular opening at (790.64, 787.28, 0) mm on the inclined plane with normal (0.171, 0.985, 0.000), bore diameter 297.94 mm (flow exits along the direction (0.171, 0.985, 0.000)). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.
+Refinement: finer at junctions, bends and area changes than on straight runs.
+Mesh budget: keep the total cell count under 2 million cells.
+The flanges are part of the wall. Steady state, incompressible, isothermal.

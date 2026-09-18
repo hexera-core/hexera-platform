@@ -1,0 +1,11 @@
+Internal flow through a Venturi flow-meter body - 470.05 mm bore contracting to a 260.34 mm throat (area ratio 3.26) and diffusing back at 10.45 degrees included angle. I want the flow and pressure drop.
+
+Geometry is in millimetres. The overall bounding box is 3287.63 x 507.25 x 507.25 mm (X x Y x Z).
+
+Body surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. Put the seed point inside the bore just downstream of the inlet, at (369.96, 0, 0) mm. There is no far-field box.
+Engine: snappyHexMesh.
+Patches: inlet is the circular opening at (0, 0, 0) mm on the X=0 plane, bore diameter 470.05 mm (flow enters along +X); outlet is the circular opening at (3287.63, 0, 0) mm on the X=3287.63 plane, bore diameter 470.05 mm (flow exits along +X). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.
+Refinement: finer at junctions, bends and area changes than on straight runs.
+Mesh budget: keep the total cell count under 2 million cells.
+Steady state, incompressible, isothermal.
