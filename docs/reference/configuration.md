@@ -280,7 +280,8 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 
 ## Measuring and looking at an uploaded geometry
 
-Three gates, each off by default, and each one only does anything when the one before it is on.
+Four gates, each off by default. The look needs the measurement; the survey needs the measurement and
+its readers.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -290,6 +291,9 @@ Three gates, each off by default, and each one only does anything when the one b
 | `GEOMETRY_REPORT_READERS_ENABLED` | `false` | whether intake, the mesh planner and the admission slot ACT on a stored measurement |
 | `GEOMETRY_VISION_ENABLED` | `false` | after the measurement, describe the part from rendered views and store the words in the same row |
 | `GEOMETRY_VISION_TIMEOUT_SECONDS` | `180` | one look's deadline, render included |
+| `GEOMETRY_VISION_PROVIDER` | `openai` | the provider the look reads with; no key for it means no look, never another provider |
+| `GEOMETRY_VISION_MODEL` | `gpt-5.6-luna` | the reader model on that provider |
+| `GEOMETRY_SURVEY_ENABLED` | `false` | intake asks the measurement's own questions, stores the answers with who gave them, and the builder gets the survey |
 
 ### What the look is
 
@@ -465,7 +469,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (210 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (213 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -555,7 +559,10 @@ Every supported setting (210 entries). `template` settings are the ones `.env.ex
 | `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | template | app |  |
 | `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | template | app |  |
 | `GEOMETRY_REPORT_READERS_ENABLED` | template | app |  |
+| `GEOMETRY_SURVEY_ENABLED` | template | app |  |
 | `GEOMETRY_VISION_ENABLED` | template | app |  |
+| `GEOMETRY_VISION_MODEL` | template | app |  |
+| `GEOMETRY_VISION_PROVIDER` | template | app |  |
 | `GEOMETRY_VISION_TIMEOUT_SECONDS` | template | app |  |
 | `PIPELINE_BACKEND` | template | app |  |
 | `REQUIRE_DURABLE_CHECKPOINTER` | template | app |  |

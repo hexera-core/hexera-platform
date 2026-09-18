@@ -123,6 +123,28 @@ GEOMETRY_VISION_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_VISION_TIMEOUT
 GEOMETRY_REPORT_READERS_ENABLED: bool = (
     optional_env("GEOMETRY_REPORT_READERS_ENABLED", "false").lower() == "true")
 
+# WHICH READER LOOKS. The measurement package's `auto` provider takes ANTHROPIC_API_KEY first, then
+# OPENAI_API_KEY, then DEEPINFRA_API_KEY, and this platform's own template carries only the last. So
+# an image with the look switched on and nothing else said would read every part with DeepInfra's
+# Qwen, which is none of the readers the look was measured with. The reader is named here instead.
+# gpt-5.6-luna because the cheap reader was measured to be as good as the dear one once the ruler was
+# fixed (13, 13, 12, 13 of 13 against gpt-6-astra's 13 on four draws) at about a twenty-fifth of the
+# price. A provider with no key for it is a look that does not happen, never a fall-through to
+# another provider.
+GEOMETRY_VISION_PROVIDER: str = optional_env("GEOMETRY_VISION_PROVIDER", "openai").strip().lower()
+GEOMETRY_VISION_MODEL: str = optional_env("GEOMETRY_VISION_MODEL", "gpt-5.6-luna").strip()
+
+# THE SURVEY, and it is a FOURTH gate, off by default on its own and dead unless both the
+# measurement and its readers are on. What it turns on is the chain Rehaan settled, in his order:
+# the customer says what the part is for (intake), the stored measurement is composed against what
+# they said (measure), the look is taken with that purpose (look), intake puts the Surveyor's own
+# questions to them and posts the answers back with who gave them (intake), and the builder receives
+# the survey inside the typed block after the request cut. With this off, intake, the planner and
+# the look behave exactly as they do with only the measurement and its readers on.
+GEOMETRY_SURVEY_ENABLED: bool = (
+    optional_env("GEOMETRY_SURVEY_ENABLED", "false").lower() == "true"
+    and GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED)
+
 # durable graph checkpointing is MANDATORY outside genuinely-local dev/test. A silent
 # fallback from AsyncPostgresSaver to MemorySaver would make a mid-run restart re-run from scratch
 # (duplicate native/model work), lose in-flight state, or drop durable worker fencing - with NO

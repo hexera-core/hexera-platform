@@ -376,6 +376,9 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_REPORT_READERS_ENABLED", "false", kind="bool", help="whether intake, the mesh planner and the admission slot ACT on a stored measurement; separate from writing one, and off on its own"),
         EnvVar("GEOMETRY_VISION_ENABLED", "false", kind="bool", help="after the measurement, describe the part from rendered views with a vision model and store the words in the same row; does nothing unless GEOMETRY_MEASUREMENT_ENABLED is also true"),
         EnvVar("GEOMETRY_VISION_TIMEOUT_SECONDS", "180", kind="int", help="one look's deadline, render included; past it the row keeps the measurement and the look is abandoned"),
+        EnvVar("GEOMETRY_VISION_PROVIDER", "openai", help="which provider the look reads with; a provider with no key in this environment is a look that does not happen, never a fall-through to another provider"),
+        EnvVar("GEOMETRY_VISION_MODEL", "gpt-5.6-luna", help="the reader model the look uses on that provider"),
+        EnvVar("GEOMETRY_SURVEY_ENABLED", "false", kind="bool", help="intake puts the measurement's own questions to the customer and stores their answers with who gave them, and the builder receives the survey in its typed block; does nothing unless GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED are also true"),
     ]),
 
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[
