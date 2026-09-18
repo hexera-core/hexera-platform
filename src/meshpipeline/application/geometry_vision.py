@@ -89,18 +89,56 @@ def _facts_from_document(document: dict, GeometryFacts):
         return None
 
 
-def look_at_local_file(path: Path, document: dict, *, timeout_s: float | None = None) -> dict | None:
+#: What is stored when the configured reader has no key in this environment. Said, not swallowed, so an
+#: operator who switched the look on learns why nothing looked.
+NO_READER = ("the configured reader ({provider}, {model}) has no key in this environment, so nothing looked; "
+             "the look never falls through to another provider")
+
+
+def reader():
+    """The vision client the look uses: GEOMETRY_VISION_PROVIDER at GEOMETRY_VISION_MODEL, or None.
+
+    NAMED, NEVER DISCOVERED. The package's `auto` provider takes Anthropic, then OpenAI, then
+    DeepInfra, and this platform's own template carries only DeepInfra, so leaving it to `auto` reads
+    every part with a model the look was never measured with. `with_model` is the package's own way to
+    point one provider's client at a named model without reading the environment a second time.
+    """
+    from geometry_agent.vision import client as vision_client
+
+    chosen = vision_client.vision_client_from_env(polcfg.GEOMETRY_VISION_PROVIDER or "off")
+    if chosen is None:
+        return None
+    model = str(polcfg.GEOMETRY_VISION_MODEL or "").strip()
+    return vision_client.with_model(chosen, model) if model else chosen
+
+
+def look_at_local_file(path: Path, document: dict, *, timeout_s: float | None = None,
+                       purpose: str | None = None, representation: str | None = None) -> dict | None:
     """Look at one local file and return the block to store, or None when nothing looked. Never raises.
 
     None means the caller writes nothing and the row keeps the measurement's own `look`. A block means
     the caller stores it, whatever its status: a failed look recorded as failed is worth more than a
     row that cannot tell a look that broke from a look that never ran.
+
+    `purpose` and `representation` are what the customer's words decided, from the survey, when the
+    survey is on. Without them the look is taken for the purpose the measurement assumed at upload,
+    which is what it always was. The package's own note is why they matter: without the
+    representation every part reads as internal flow and an external body comes back with invented
+    ports.
     """
     try:
-        look_at_geometry, GeometryFacts, _hexera = _package()
+        look_at_geometry, GeometryFacts, hexera = _package()
     except Exception as exc:                       # noqa: BLE001 - absence is an outcome, not a crash
         logger.warning("geometry look: %s: %s", PACKAGE_ABSENT, exc)
         return None
+    try:
+        client = reader()
+    except Exception as exc:                       # noqa: BLE001 - a reader that cannot be built did not look
+        client = None
+        logger.warning("geometry look: the reader could not be built (%s)", exc)
+    if client is None:
+        return hexera.look_block(None, status="not_attempted", reason=NO_READER.format(
+            provider=polcfg.GEOMETRY_VISION_PROVIDER, model=polcfg.GEOMETRY_VISION_MODEL))
 
     deadline = float(timeout_s if timeout_s is not None else polcfg.GEOMETRY_VISION_TIMEOUT_SECONDS)
     facts = _facts_from_document(document, GeometryFacts)
@@ -111,9 +149,11 @@ def look_at_local_file(path: Path, document: dict, *, timeout_s: float | None = 
     # second job on the same bytes reads is the stored look, not a cached picture.
     with tempfile.TemporaryDirectory(prefix="geometry-look-cache-") as cache_dir:
         try:
-            return look_at_geometry(path, facts, deadline_s=deadline, cache_root_dir=cache_dir,
-                                    purpose=str(document.get("measured_purpose")
-                                                or document.get("purpose") or "internal_cfd"))
+            return look_at_geometry(path, facts, client=client, deadline_s=deadline,
+                                    cache_root_dir=cache_dir,
+                                    purpose=str(purpose or document.get("measured_purpose")
+                                                or document.get("purpose") or "internal_cfd"),
+                                    representation=representation or None)
         except Exception as exc:                   # noqa: BLE001 - the entry point promises not to, belt and braces
             logger.warning("geometry look: the look raised, which it is not supposed to: %s", exc)
             return None
@@ -206,6 +246,7 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
         logger.warning("geometry look: could not read the source row: %s", exc)
         return {"status": "skipped", "reason": "the source row could not be read"}
 
+    purpose, representation = await _composed_for(owner_id, source_id, sha256)
     with tempfile.TemporaryDirectory(prefix="geometry-look-bytes-") as workspace:
         try:
             from meshpipeline.application.geometry_materializer import fetch_verified_bytes
@@ -216,7 +257,8 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
         except Exception as exc:                   # noqa: BLE001
             logger.warning("geometry look: the bytes could not be retrieved: %s", exc)
             return {"status": "skipped", "reason": "the uploaded geometry could not be retrieved"}
-        look = look_at_local_file(Path(local), document, timeout_s=timeout_s)
+        look = look_at_local_file(Path(local), document, timeout_s=timeout_s, purpose=purpose,
+                                  representation=representation)
 
     if look is None:
         return {"status": "skipped", "reason": PACKAGE_ABSENT}
@@ -238,9 +280,31 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
     seconds = round(time.perf_counter() - started, 3)
     logger.info("geometry look: %s - source_id=%s sha=%s model=%s seconds=%s",
                 look.get("status"), source_id, sha256[:12], look.get("model"), seconds)
+    if look.get("status") == "ok":
+        # Step 4 has to see what step 3 saw: the questions only the look can raise (a mouth the
+        # measurement did not find) are composed in now, with every answer already given kept.
+        from meshpipeline.application import geometry_survey
+        await geometry_survey.recompose_after_look(str(source_id), owner_id, updated)
     return {"status": str(look.get("status") or "failed"), "source_id": str(source_id),
             "model": str(look.get("model") or ""), "seconds": seconds,
             "look_seconds": look.get("seconds")}
+
+
+async def _composed_for(owner_id: str, source_id: str, sha256: str) -> tuple[str | None, str | None]:
+    """The purpose and representation the customer's words decided, when the survey composed them.
+
+    (None, None) with the survey off or before it has been composed, which is the look as it was.
+    """
+    if not polcfg.GEOMETRY_SURVEY_ENABLED:
+        return None, None
+    try:
+        from meshpipeline.application import geometry_survey
+        state = await geometry_survey.load(owner_id, str(source_id), sha256=sha256)
+    except Exception:                              # noqa: BLE001 - a look is taken either way
+        return None, None
+    composed = (state or {}).get("composed_for") or {}
+    return (str(composed.get("purpose") or "") or None,
+            str(composed.get("representation") or "") or None)
 
 
 def look_and_store_blocking(source_id: str, owner_id: str) -> dict:
@@ -248,5 +312,5 @@ def look_and_store_blocking(source_id: str, owner_id: str) -> dict:
     return asyncio.run(look_and_store(source_id, owner_id))
 
 
-__all__ = ["PACKAGE_ABSENT", "attach_look", "look_and_store", "look_and_store_blocking",
-           "look_at_local_file", "look_enabled"]
+__all__ = ["NO_READER", "PACKAGE_ABSENT", "attach_look", "look_and_store", "look_and_store_blocking",
+           "look_at_local_file", "look_enabled", "reader"]

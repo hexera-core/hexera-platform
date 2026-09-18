@@ -36,8 +36,17 @@ MUTATING_TOOLS = frozenset({
 MAX_SEARCH_CALLS = 2   # web_search budget per intake turn (RAG was removed)
 
 
+#: The Surveyor's two tools, offered only when the survey is armed for an upload. Kept apart from
+#: `INTAKE_CATEGORIES` so the conversation with the survey off names exactly the tools it always has,
+#: down to the list an unknown tool is answered with.
+SURVEY_CATEGORIES = {
+    "survey_the_part": "survey",
+    "answer_survey_question": "survey",
+}
+
+
 def category_of(tool: str) -> str:
-    return INTAKE_CATEGORIES.get(tool, "unknown")
+    return INTAKE_CATEGORIES.get(tool) or SURVEY_CATEGORIES.get(tool, "unknown")
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,18 @@ class IntakeExecutionState:
     geometry_reading: dict | None = None
     #: The whole stored measurement, for what the conversation says. None when there is none.
     geometry_document: dict | None = None
+
+    # THE SURVEYOR, for this upload. `survey_armed` is false unless the survey gate is on and there is
+    # a successful measurement; everything below is then unused and every tool behaves as before.
+    survey_armed: bool = False
+    #: The stored survey state, updated in place by the two survey tools so a later call in the same
+    #: turn, and the submission gate, read what was just recorded.
+    geometry_survey: dict | None = None
+    #: The upload the survey belongs to.
+    survey_source_ref: object | None = None
+    #: The customer's own messages this session, oldest first. The survey is composed from their words
+    #: and never from intake's write-up of them.
+    customer_messages: tuple[str, ...] = ()
 
     # TURN-SCOPED, never round-scoped. Once a recommendation happens in this invocation, nothing
     # may escalate to selection or submission for the REST of the invocation - not merely for the
@@ -376,6 +397,102 @@ class IntakeToolExecutor:
                                     "safe_user_message") if k in prev},
                                 "authorizes_submission": False}))
 
+    # the Surveyor's two tools
+    def _survey_refusal(self, tool: str) -> IntakeToolResult | None:
+        st = self.state
+        if st.survey_armed and st.survey_source_ref is not None and isinstance(st.geometry_document, dict):
+            return None
+        return IntakeToolResult(tool=tool, accepted=False, content=(
+            "The Surveyor is not available for this upload. Nothing was recorded; carry on as usual."))
+
+    def _survey_text(self) -> str:
+        from meshpipeline.agents.intake.geometry_brief import survey_lines
+        return "\n".join(survey_lines(self.state.geometry_survey)).strip()
+
+    async def _do_survey_the_part(self, args: dict) -> IntakeToolResult:
+        """Step 1 to step 4: the customer has said what the part is for; compose and return the questions."""
+        refused = self._survey_refusal("survey_the_part")
+        if refused is not None:
+            return refused
+        from meshpipeline.application import geometry_survey as gs
+
+        st = self.state
+        quote = str(args.get("customer_words_verbatim") or "")
+        if not any(gs.said_by_customer(quote, said) for said in st.customer_messages):
+            return IntakeToolResult(tool="survey_the_part", accepted=False, content=(
+                "Not surveyed: that quote is not in anything the customer wrote. Quote their own words "
+                "exactly. Nothing was recorded."))
+        ports = [p for p in (args.get("ports") or []) if isinstance(p, dict)]
+        try:
+            st.geometry_survey = await gs.survey_the_part(
+                owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
+                document=st.geometry_document, purpose=str(args.get("purpose") or ""),
+                messages=[{"role": "user", "content": said} for said in st.customer_messages],
+                declared=ports or None, engine=self._confirmed_engine() or None)
+        except gs.SurveyError as exc:
+            logger.info("Intake: survey_the_part declined (%s) - job_id=%s", exc, self._job_id)
+            return IntakeToolResult(tool="survey_the_part", accepted=True, content=(
+                f"No survey for this upload: {exc}. Carry on as usual."))
+        logger.info("Intake: survey composed for %s, stage=%s - job_id=%s", args.get("purpose"),
+                    st.geometry_survey.get("stage"), self._job_id)
+        return IntakeToolResult(tool="survey_the_part", accepted=True, content=self._survey_text())
+
+    async def _do_answer_survey_question(self, args: dict) -> IntakeToolResult:
+        """Step 4 and step 6: one answer, the customer's, with their words."""
+        refused = self._survey_refusal("answer_survey_question")
+        if refused is not None:
+            return refused
+        from meshpipeline.application import geometry_survey as gs
+
+        st = self.state
+        try:
+            st.geometry_survey = await gs.answer(
+                owner_id=st.owner_id, source_ref=st.survey_source_ref,
+                question_id=str(args.get("question_id") or ""), choice=str(args.get("option") or ""),
+                role=str(args.get("role") or ""), words=str(args.get("customer_words_verbatim") or ""),
+                latest_user_message=st.latest_user_msg, skipped=bool(args.get("skipped")),
+                took_default=bool(args.get("took_default")), document=st.geometry_document)
+        except gs.SurveyError as exc:
+            return IntakeToolResult(tool="answer_survey_question", accepted=False,
+                                    content=f"Not recorded: {exc}.")
+        return IntakeToolResult(tool="answer_survey_question", accepted=True,
+                                content="Recorded.\n" + self._survey_text())
+
+    def _confirmed_engine(self) -> str:
+        st = self.state
+        return (str((st.selection or {}).get("engine") or "")
+                if es.state_of(st.selection) == es.CONFIRMED else "")
+
+    async def _survey_gate(self, args: dict) -> list[str]:
+        """Why a submission's port roles are not the customer's, or nothing. Fails open.
+
+        With the survey off, or for an upload it cannot compose, this is empty and the submission is
+        judged exactly as it was before the survey existed.
+        """
+        st = self.state
+        if not st.survey_armed or st.survey_source_ref is None or not isinstance(st.geometry_document, dict):
+            return []
+        from meshpipeline.application import geometry_survey as gs
+
+        try:
+            state = await gs.for_submission(
+                owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
+                document=st.geometry_document, purpose=str(args.get("purpose") or ""),
+                patches=args.get("patches"),
+                messages=[{"role": "user", "content": said} for said in st.customer_messages],
+                state=st.geometry_survey, engine=self._confirmed_engine() or None)
+        except gs.SurveyError as exc:
+            logger.info("Intake: no survey to check the submission against (%s) - job_id=%s", exc,
+                        self._job_id)
+            return []
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            logger.warning("Intake: the survey gate could not run (%s) - job_id=%s", exc, self._job_id)
+            return []
+        if state is None:
+            return []
+        st.geometry_survey = state
+        return gs.role_problems(state, st.geometry_document, args.get("patches"))
+
     async def _do_submit_requirements(self, args: dict) -> IntakeToolResult:
         st = self.state
         st.submit_attempts += 1
@@ -417,6 +534,18 @@ class IntakeToolExecutor:
                            tok_reason, self._job_id)
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 f"Submission NOT authorized: {tok_reason}. Nothing was saved."))
+
+        # A PORT ROLE THE CUSTOMER DID NOT CONFIRM STOPS HERE. `admission_token.py` copies every
+        # declared inlet and outlet into `port_declaration` and the engine binds a boundary condition
+        # from each, so this is the last place a guessed role can be refused. Empty with the survey off.
+        _unconfirmed = await self._survey_gate(args)
+        if _unconfirmed:
+            st.submit_rejections += 1
+            logger.warning("Intake: submit rejected - port roles the customer has not confirmed: %s "
+                           "- job_id=%s", _unconfirmed, self._job_id)
+            return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
+                "Submission rejected - a port role must be the customer's: " + "; ".join(_unconfirmed)
+                + ". Nothing was saved."))
 
         st.submit_args = args
         logger.info("Intake: submit_requirements AUTHORIZED - domain=%r - job_id=%s",
@@ -461,5 +590,5 @@ class IntakeToolExecutor:
             "do not paraphrase it. Await their explicit approval."))
 
 
-__all__ = ["INTAKE_CATEGORIES", "MAX_SEARCH_CALLS", "MUTATING_TOOLS", "IntakeExecutionState",
-           "IntakeToolExecutor", "IntakeToolResult", "category_of"]
+__all__ = ["INTAKE_CATEGORIES", "MAX_SEARCH_CALLS", "MUTATING_TOOLS", "SURVEY_CATEGORIES",
+           "IntakeExecutionState", "IntakeToolExecutor", "IntakeToolResult", "category_of"]

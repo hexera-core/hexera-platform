@@ -1,6 +1,6 @@
 # Responsibility: Turn a stored geometry measurement into what intake may say and what it no longer has to ask.
-# Owns: the opening table shown to the model, and the binding of a declared patch to a measured opening.
-# Boundaries: it renders and it binds; it asks nothing, blocks nothing and changes no tool schema.
+# Owns: the opening table shown to the model, the Surveyor's questions as intake reads them, and the binding of a declared patch to a measured opening.
+# Boundaries: it renders and it binds; it writes no question of its own, blocks nothing and changes no tool schema.
 # Collaborates with: cad/regions.py for the document and contracts/rationale.py for what the customer is told.
 from __future__ import annotations
 
@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 # already holding when it writes its first sentence. Nothing in `INTAKE_TOOLS` changes, no
 # validator changes, and `submit_requirements` takes exactly the fields it took before. This is
 # Rehaan's production conversation and a regression here is worse than a missed improvement.
+#
+# THE SURVEY IS THE ONE EXCEPTION, and it is behind its own gate. The chain needs two structured
+# answers back from the conversation: what the part is for, because the measurement is composed for
+# it, and what the customer said to each question, with who said it. Prose cannot carry either, so
+# `agents/intake/agent.py` offers `SURVEY_TOOLS` beside `INTAKE_TOOLS` when the survey is armed and
+# never otherwise. Everything this module renders for them is below `survey_lines`.
 
 #: How many opening rows the table carries. A 400-body part has hundreds of openings and a table
 #: that long buries the three that are ports. Ordered widest first, so the cut takes the least
@@ -159,22 +165,57 @@ def opening_rows(document: dict | None) -> list[dict]:
     return rows
 
 
-def render_block(document: dict | None) -> str:
+#: What intake still asks for itself, with the survey off. Byte for byte what shipped before it.
+_UNSURVEYED_ASKS = (
+    "  - What the file CANNOT say, and what is therefore still worth asking: what is flowing and how",
+    "    fast; what they want to learn; their cell budget; the engine, by the ENGINE FIRST policy",
+    "    above, which this block does not modify; and WHICH of two openings of the same size and",
+    "    class is the inlet. That last one is a real refusal, not a courtesy: twin feeds carrying hot",
+    "    and cold streams are identical here and no check downstream could catch a swap.",
+    "  - You may ask TWO questions in one message when one of them is the port identity above and the",
+    "    other is the fluid. Holding a measurement, a second question costs a round and risks nothing.",
+)
+
+#: With the survey on, the port question is not intake's to compose. It is the Surveyor's, and it is
+#: below, in the Surveyor's words, with the options the measurement allows.
+_SURVEYED_ASKS = (
+    "  - What the file CANNOT say, and what is therefore still worth asking: what is flowing and how",
+    "    fast; what they want to learn; their cell budget; the engine, by the ENGINE FIRST policy",
+    "    above, which this block does not modify. WHICH opening is which is NOT your question to",
+    "    compose: it is the Surveyor's, below, and you put it in the Surveyor's words.",
+    "  - You may ask TWO questions in one message when one of them is a Surveyor question below and the",
+    "    other is the fluid. Holding a measurement, a second question costs a round and risks nothing.",
+)
+
+
+def render_block(document: dict | None, *, survey: dict | None = None, armed: bool = False) -> str:
     """The measurement, as the model's own knowledge of the part. Empty string when there is none.
 
     Empty is the whole fail-open contract at this boundary: with no block the system prompt is
     character-for-character what it is today, and intake asks what it has always asked.
+
+    `armed` is the survey switched on for this conversation, and `survey` the stored survey state when
+    one has been composed. Unarmed, this is byte for byte the block it was before the survey existed.
+    Armed, three things change and nothing else: the representation line says what the measurement
+    composed FOR THE CUSTOMER'S PURPOSE, and is left out until they have said one; intake is told the
+    port question belongs to the Surveyor rather than to it; and the Surveyor's own questions follow.
     """
     if not isinstance(document, dict) or document.get("status") != "ok":
         return ""
     try:
-        return _render(document)
+        if not armed:
+            return _render(document)
+        composed = dict((survey or {}).get("composed_for") or {})
+        shown = {k: v for k, v in document.items() if k != "representation"}
+        if composed.get("representation"):
+            shown["representation"] = composed["representation"]
+        return _render(shown, surveyed=True) + "\n".join(survey_lines(survey))
     except Exception as exc:                       # noqa: BLE001 - a table is never worth a turn
         logger.warning("intake geometry brief: the table could not be rendered (%s)", exc)
         return ""
 
 
-def _render(document: dict) -> str:
+def _render(document: dict, *, surveyed: bool = False) -> str:
     rows = opening_rows(document)
     coords = document.get("coordinates") or {}
     bbox = document.get("bbox") or {}
@@ -265,13 +306,7 @@ def _render(document: dict) -> str:
             "    patch: a millimetre field filled from an unconfirmed file is wrong by a factor of 1,000",
             "    exactly as often as it is right.",
         ]),
-        "  - What the file CANNOT say, and what is therefore still worth asking: what is flowing and how",
-        "    fast; what they want to learn; their cell budget; the engine, by the ENGINE FIRST policy",
-        "    above, which this block does not modify; and WHICH of two openings of the same size and",
-        "    class is the inlet. That last one is a real refusal, not a courtesy: twin feeds carrying hot",
-        "    and cold streams are identical here and no check downstream could catch a swap.",
-        "  - You may ask TWO questions in one message when one of them is the port identity above and the",
-        "    other is the fluid. Holding a measurement, a second question costs a round and risks nothing.",
+        *(_SURVEYED_ASKS if surveyed else _UNSURVEYED_ASKS),
         "  - The table is MEASUREMENT, not identity. It says how wide an opening is and where it sits. It",
         "    does not say which is the inlet, what the part is for, or what flows through it.",
         "  - submit_requirements is UNCHANGED. Every rule about it still holds, including: never invent a",
@@ -387,6 +422,7 @@ def look_lines(document: dict | None) -> list[str]:
         lines.append("  ASK, NEVER ASSERT (right often enough to be worth raising, not to be stated):")
         lines.extend(weak)
         lines.append("")
+    lines.extend(placed_lines(seen))
     lines.extend([
         "  HOW TO USE IT: it changes what you can OFFER, never what you submit. Say what it saw and invite",
         "  a correction (\"it looks like a manifold with a flange at each end - is that right?\"). The",
@@ -395,6 +431,108 @@ def look_lines(document: dict | None) -> list[str]:
         "  the measured table above has the first three exactly, and the picture has been wrong about all",
         "  of them. Put nothing from here in a patch.",
     ])
+    return lines
+
+
+#: How many placed findings are shown. A draw places six to eight letters and up to four passage ends
+#: on a part; this carries every one of them and stops a runaway reply from burying the table.
+MAX_PLACED_LINES = 12
+
+
+def placed_lines(seen: dict | None) -> list[str]:
+    """What the look said AT a measured place: `at_places`, which the typed block has carried since
+    round seven and this conversation never showed. Empty list when there are none.
+
+    Each row joins the model's words to a place the MEASUREMENT chose and drew before the model saw
+    the picture (`geometry_agent.vision.place`): a violet letter the renderer put at a point, or the
+    end of a passage the stop detector found. So the place is a measurement and the words are not.
+    The coordinate is the renderer's or the opening's centroid, in metres, and is shown in
+    millimetres; a row with no coordinate says so rather than inventing one. A place the look declined
+    to read is an answer, and it is said once for all of them.
+    """
+    rows = [r for r in ((seen or {}).get("at_places") or []) if isinstance(r, dict)]
+    if not rows:
+        return []
+    said = [r for r in rows if not r.get("declined") and str(r.get("the_look_says") or "").strip()]
+    declined = [str(r.get("at") or "") for r in rows if r.get("declined")]
+    lines = ["  WHAT IT SAW AT MEASURED PLACES (the place was measured and drawn; the words are the model's):"]
+    for row in said[:MAX_PLACED_LINES]:
+        where = _point_mm(row.get("where_m"))
+        where = f"{where} mm" if where != "unknown" else "no coordinate for this file"
+        kind = "passage end" if row.get("kind") == "passage_end" else "marked place"
+        lines.append(_row(f"{kind} {row.get('at')}", f"{str(row['the_look_says']).strip()} [{where}]"))
+    if len(said) > MAX_PLACED_LINES:
+        lines.append(f"  and {len(said) - MAX_PLACED_LINES} more places the planner receives in full.")
+    if declined:
+        lines.append(_row("could not read", ", ".join(d for d in declined if d)))
+    lines.extend(["  Raise one of these only as a question about that place, never as a finding.", ""])
+    return lines
+
+
+# -------------------------------------------------------------------------------------------------
+# THE SURVEYOR'S QUESTIONS
+#
+# With the survey on, the port question is not intake's to compose. The measurement and the look
+# could not settle it, and their abstention IS the question, already formed by the measurement
+# package with the options the measurement allows (`geometry_agent.contract.asking`). Intake puts it
+# and posts the answer back with the customer's own words. This renders the stored survey state from
+# `application/geometry_survey.py`; it writes no question of its own.
+# -------------------------------------------------------------------------------------------------
+
+#: How many open questions are shown at once. The chain puts the step-4 questions first and the
+#: budget trade only after them, so this is never where a question is lost: an unshown one is shown
+#: on the next turn.
+MAX_SURVEY_QUESTIONS = 4
+
+
+def survey_lines(state: dict | None) -> list[str]:
+    """The Surveyor's block for the system prompt. Always a block when armed: before the survey
+    exists it says how to get one, which is step 1 of the chain."""
+    if not isinstance(state, dict) or not state.get("survey"):
+        return ["", "## BEFORE YOU ASK ABOUT THE GEOMETRY - the Surveyor",
+                "The measurement above was taken from the bytes before the customer said anything. What it",
+                "MEANS depends on what the part is for, so as soon as the customer has said what the analysis",
+                "is for, call survey_the_part with that purpose, their own words that said it, and any ports",
+                "they named. It returns the questions the measurement and the look could not settle. Until",
+                "then ask nothing about which opening is which: that is the Surveyor's question, not yours."]
+    try:
+        from meshpipeline.application import geometry_survey as gs
+
+        views = gs.question_views(state)
+        now = gs.open_now(state)
+        confirmed = gs.confirmed_roles(state)
+    except Exception as exc:                       # noqa: BLE001 - a question list is never worth a turn
+        logger.warning("intake geometry brief: the survey could not be read (%s)", exc)
+        return []
+    lines = ["", "## THE SURVEYOR'S QUESTIONS - the only questions you ask about the geometry"]
+    if confirmed:
+        lines.append("  Already settled by the customer's own answers: "
+                     + "; ".join(f"{oid} is the {role}" for oid, role in sorted(confirmed.items())) + ".")
+    unsettled = [v for v in views if v["route"] in ("intake", "trade") and v["status"] in ("skipped", "defaulted")]
+    if unsettled:
+        lines.append("  Put and NOT settled (a default that stood is not an answer): "
+                     + ", ".join(v["id"] for v in unsettled) + ".")
+    if not now:
+        lines.extend([
+            "  Nothing is left to ask about the geometry. Put exactly the confirmed roles on exactly those",
+            "  mouths when you submit: submit_requirements refuses a port whose role the customer did not",
+            "  confirm, and a port that does not bind to the mouth they named."])
+        return lines
+    trade = now[0]["route"] == "trade"
+    lines.extend([
+        "  " + ("ONE MORE, and only this one: the cost of resolving the part against the budget they stated."
+                if trade else
+                "The measurement and the look could not settle these. Put them in these words or close to them."),
+        "  When the customer answers, call answer_survey_question with the id, the option EXACTLY as listed,",
+        "  and their own words quoted exactly. If they decline, record it with skipped. If they tell you to",
+        "  take the default, record took_default: that is NOT an answer, and the question stays open.",
+        ""])
+    for v in now[:MAX_SURVEY_QUESTIONS]:
+        lines.append(f"  [{v['id']}] {v['text']}")
+        lines.append(f"      options: {', '.join(v['options'])}")
+        if v["about"] == "opening.role":
+            lines.append("      the table above has each mouth's position, size and facing; the options are its ids"
+                         + ("; give the role for each mouth they name" if v["id"] == "role_count" else ""))
     return lines
 
 
@@ -526,5 +664,6 @@ def _match(patch: dict, rows: list[dict], diagonal: Any) -> str | None:
     return None
 
 
-__all__ = ["MAX_LOOK_PHRASES", "MAX_TABLE_ROWS", "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL",
-           "SIZE_TOLERANCE", "bind_patches", "look_at_it", "look_lines", "opening_rows", "render_block"]
+__all__ = ["MAX_LOOK_PHRASES", "MAX_PLACED_LINES", "MAX_SURVEY_QUESTIONS", "MAX_TABLE_ROWS",
+           "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL", "SIZE_TOLERANCE", "bind_patches",
+           "look_at_it", "look_lines", "opening_rows", "placed_lines", "render_block", "survey_lines"]

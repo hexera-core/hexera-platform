@@ -268,6 +268,12 @@ def _queue_the_look(source_id: str, owner_id: str, status: str) -> str:
         # Nothing to describe. A failed measurement has no facts to label the views with and no
         # document for the words to sit beside.
         return "not_measured"
+    if polcfg.GEOMETRY_SURVEY_ENABLED:
+        # STEP 3 COMES AFTER STEP 1. With the survey on, the look waits for the customer to say what
+        # the part is for: a look taken for the purpose assumed at upload reads an external body as
+        # internal flow. `application/geometry_survey.py` queues it the moment the measurement has
+        # been composed for their purpose, which is the chain's order.
+        return "deferred_to_survey"
     from meshpipeline.contracts.geometry_measurement import enqueue_look
     return "queued" if enqueue_look(source_id, owner_id) else "skipped"
 

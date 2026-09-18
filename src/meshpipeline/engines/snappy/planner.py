@@ -128,6 +128,10 @@ GEOMETRY_AGENT_BLOCK_KEYS = (
     #: is composed, so what arrives under this key is already the part a planner may act on. The key is
     #: absent when nothing looked, which is what leaves the prompt where it is today.
     "look",
+    #: THE SURVEY: what the customer's own answers settled about this file and what they did not,
+    #: every value carrying its kind. Written by the measurement package's `contract.deliver`, checked
+    #: by its own validator below, and absent unless GEOMETRY_SURVEY_ENABLED composed one.
+    "survey",
 )
 
 #: What the planner is never handed, whatever the block says, with the reason it is refused.
@@ -166,6 +170,40 @@ ABOUT "look" INSIDE "geometry_agent": a vision model was shown rendered views of
 - The look never overrides a measured number, a port, a bore or a count. Where the two disagree, the measurement is right."""
 
 
+#: How to read `survey`, sent ONLY when a survey is present, for the same reason the look's note rides
+#: with the look.
+_AGENT_SURVEY_NOTE = """
+
+ABOUT "survey" INSIDE "geometry_agent": the customer was shown what the measurement could not settle about THIS file and asked. Every value says what kind of claim it is ("kinds" is the legend).
+- "confirmed" is the customer's own answer, with when they gave it. A role there says which measured mouth is which; it is the customer's decision about their part, and nothing else in this message overrides it.
+- "unsettled" is what nobody settled. A mouth listed there has no role anybody confirmed: do not reason about it as an inlet or an outlet.
+- A "cell_budget" is the customer's own number. "stated" means they wrote it; "confirmed" means they chose it when shown what resolving the part costs, and max_cells must not exceed it. customer_cell_cap above is the same number.
+- The survey describes the part. It names no mesh setting and predicts nothing about the mesh: the settings are yours."""
+
+
+def _survey_is_sound(survey: object, job_id: str) -> bool:
+    """The measurement package's own validator over the survey, or a refusal. Never raises.
+
+    `contract.deliver.check_survey_block` is the contract in executable form: every value carries a
+    known kind, no digit from the look, no field the trust ledger withholds from a model, and the
+    block small enough that nothing ever has to be cut. It is the package's function and it is run
+    here rather than trusted, because the block is authored in a separately pinned distribution. An
+    image that cannot import it cannot vouch for the block, so the key is refused rather than guessed.
+    """
+    try:
+        from geometry_agent.contract.deliver import check_survey_block
+    except Exception as exc:                       # noqa: BLE001 - no validator is no survey
+        logger.info("Planner: the survey was refused, its validator is not installed here - job_id=%s: %s",
+                    job_id, exc)
+        return False
+    try:
+        check_survey_block(survey)
+    except Exception as exc:                       # noqa: BLE001 - a broken contract is a refused key
+        logger.warning("Planner: the survey broke its contract and was refused - job_id=%s: %s", job_id, exc)
+        return False
+    return True
+
+
 def _validated_agent_block(block: object, job_id: str) -> dict | None:
     """The measurement package's block, checked before it reaches a prompt. None to add no key.
 
@@ -187,7 +225,10 @@ def _validated_agent_block(block: object, job_id: str) -> dict | None:
         logger.warning("Planner: a geometry block with no status was refused - job_id=%s", job_id)
         return None
     out = {k: block[k] for k in GEOMETRY_AGENT_BLOCK_KEYS if k in block}
-    dropped = sorted(set(block) - set(out) - {"schema", "facts_sha256", "facts_schema_version"})
+    if "survey" in out and not _survey_is_sound(out["survey"], job_id):
+        # The survey alone is refused. The measurement beside it is still a measurement.
+        out.pop("survey")
+    dropped = sorted(set(block) - set(out) - {"schema", "facts_sha256", "facts_schema_version", "survey"})
     if dropped:
         logger.info("Planner: geometry block keys with no reader here were dropped - job_id=%s: %s",
                     job_id, dropped)
@@ -300,6 +341,10 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         # empty, so the user message is byte for byte the message with only the measurement.
         if _agent_block is not None and _agent_block.get("look"):
             _agent_note += _AGENT_LOOK_NOTE
+        # And the survey's note with the survey, one gate further in again: absent unless the survey
+        # was switched on and composed, so every message without one is the message it was before.
+        if _agent_block is not None and _agent_block.get("survey"):
+            _agent_note += _AGENT_SURVEY_NOTE
         user = ("REQUEST:\n" + (request_txt or "").strip()[:2000]
                 + "\n\nMEASURED GEOMETRY (metres):\n" + json.dumps(metrics, indent=1)
                 + _agent_note + _fid_note)

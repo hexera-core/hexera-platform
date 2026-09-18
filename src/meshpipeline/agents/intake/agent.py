@@ -518,6 +518,82 @@ INTAKE_TOOLS: list[dict] = [
 ]
 
 
+# THE SURVEYOR'S TWO TOOLS. Offered ONLY when the survey is switched on and this upload has a
+# successful measurement: `INTAKE_TOOLS` above is never edited, so with the survey off the model is
+# offered exactly the list it has always been offered. They are the channel from intake to the
+# platform for the two things the chain needs a structured answer for: what the part is FOR (step 1,
+# which the composition of the measurement depends on), and what the customer said to each question
+# (step 4 and step 6), with their own words quoted so the application can check they said it.
+SURVEY_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "survey_the_part",
+            "description": (
+                "Call this ONCE, as soon as the customer has said what the analysis is for (their first "
+                "message usually does). The application composes the measurement of their file for that "
+                "purpose and their own words, and returns the questions the measurement and the look "
+                "could not settle. Those are the ONLY questions you ask about the geometry. Call it again "
+                "only if the customer changes what the part is for, or names ports they had not named."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string", "enum": _PURPOSE_CHOICES,
+                                "description": "What the customer said the analysis is for."},
+                    "customer_words_verbatim": {
+                        "type": "string",
+                        "description": ("The customer's own words that said what it is for, quoted exactly "
+                                        "from one of their messages. Never paraphrased.")},
+                    "ports": {
+                        "type": "array",
+                        "description": ("The ports the customer has ALREADY named in their own words, "
+                                        "exactly as stated, and nothing you inferred. Leave it out if they "
+                                        "named none."),
+                        "items": {"type": "object", "properties": {
+                            "name": {"type": "string"},
+                            "type": {"type": "string", "enum": _ALL_BOUNDARY_ROLES},
+                            "diameter_mm": {"type": "number"},
+                            "near_mm": {"type": "array", "items": {"type": "number"}}},
+                            "required": ["name", "type"]},
+                    },
+                },
+                "required": ["purpose", "customer_words_verbatim"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "answer_survey_question",
+            "description": (
+                "Record the customer's answer to ONE Surveyor question, in their own words. The "
+                "application checks the quote against their latest message and the option against the "
+                "question's own options, and refuses anything else. Never record an answer they did not "
+                "give. If they decline, set skipped. If they tell you to take the default, set "
+                "took_default: that is recorded as NOT an answer and the question stays open."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question_id": {"type": "string", "description": "The id in square brackets."},
+                    "option": {"type": "string",
+                               "description": "The option they chose, exactly as listed. Omit when skipped."},
+                    "role": {"type": "string",
+                             "description": ("Only for the question that asks for a role per mouth: the role "
+                                             "they gave the mouth in `option`.")},
+                    "customer_words_verbatim": {
+                        "type": "string",
+                        "description": "Their words, quoted exactly from their latest message."},
+                    "skipped": {"type": "boolean", "description": "They declined to answer."},
+                    "took_default": {"type": "boolean",
+                                     "description": "They told you to go with the default."},
+                },
+                "required": ["question_id", "customer_words_verbatim"],
+            },
+        },
+    },
+]
+
+
 def _confirmation_block(state: dict) -> str:
     _patches = ", ".join(
         f"{p.get('name')}({p.get('type')})" for p in (state.get("intake_patches") or [])
@@ -572,6 +648,13 @@ class _GeometryReading:
     reading: dict | None = None
     #: The whole stored measurement document, or None. What the conversation says comes from this.
     document: dict | None = None
+    #: The Surveyor is switched on for this upload: the survey gate is on and there is a successful
+    #: measurement to compose. False everywhere else, and then nothing below changes.
+    armed: bool = False
+    #: The stored survey state for this upload, or None when none has been composed yet.
+    survey: dict | None = None
+    #: The upload these belong to, for the two survey tools. None when not armed.
+    source_ref: object | None = None
 
 
 async def _geometry_reading(state) -> _GeometryReading:
@@ -594,7 +677,9 @@ async def _geometry_reading(state) -> _GeometryReading:
             return _GeometryReading()
         document = await stored_document_for_source(ref)
         reading = await reading_for_source(ref)
-        return _GeometryReading(reading=reading, document=document)
+        armed, survey = await _survey_for(ref, document)
+        return _GeometryReading(reading=reading, document=document, armed=armed, survey=survey,
+                                source_ref=ref if armed else None)
     except Exception as exc:                       # noqa: BLE001 - intake NEVER blocks on this
         logger.warning("Intake: the stored geometry reading was unavailable (%s) - the "
                        "conversation proceeds as it does with no measurement", exc)
@@ -610,10 +695,37 @@ def _geometry_block(geometry: _GeometryReading) -> str:
     try:
         from meshpipeline.agents.intake.geometry_brief import render_block
 
-        return render_block(geometry.document)
+        if not geometry.armed:
+            return render_block(geometry.document)
+        return render_block(geometry.document, survey=geometry.survey, armed=True)
     except Exception as exc:                       # noqa: BLE001
         logger.warning("Intake: the geometry block could not be composed (%s)", exc)
         return ""
+
+
+async def _survey_for(ref, document) -> tuple[bool, dict | None]:
+    """Whether the Surveyor is on for this upload, and its stored state. Never raises.
+
+    Armed only with the survey gate on AND a successful measurement of these bytes: there is nothing
+    to compose without one, and a conversation with nothing to compose is the conversation with the
+    survey off. The gate is read before anything is imported, so with it off no module loads.
+    """
+    import meshpipeline.settings.policy as polcfg
+
+    if not polcfg.GEOMETRY_SURVEY_ENABLED:
+        return False, None
+    if not isinstance(document, dict) or document.get("status") != "ok":
+        return False, None
+    try:
+        from meshpipeline.application import geometry_survey as gs
+
+        if not gs.survey_enabled():
+            return False, None
+        return True, await gs.load(str(ref.owner_id), str(ref.source_id), sha256=str(ref.sha256))
+    except Exception as exc:                       # noqa: BLE001 - never a turn
+        logger.warning("Intake: the survey could not be read (%s); the conversation proceeds without it",
+                       exc)
+        return False, None
 
 
 def _build_llm_messages(system: str, state_messages: list) -> list[dict]:
@@ -800,7 +912,12 @@ async def node_intake(state: PipelineState) -> dict:
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
-        geometry_reading=_geometry.reading, geometry_document=_geometry.document)
+        geometry_reading=_geometry.reading, geometry_document=_geometry.document,
+        survey_armed=_geometry.armed, geometry_survey=_geometry.survey,
+        survey_source_ref=_geometry.source_ref,
+        customer_messages=tuple(str(m.get("content") or "") for m in state_messages
+                                if isinstance(m, dict) and m.get("role") == "user")
+        if _geometry.armed else ())
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)
@@ -823,7 +940,10 @@ async def node_intake(state: PipelineState) -> dict:
     # representation, the round limit and the run record; everything about REQUIREMENTS and
     # AUTHORIZATION belongs to the Intake policy and executor.
     _loop_result = await run_agent_loop(
-        driver=_policy, provider_call=_intake_provider, messages=llm_messages, tools=INTAKE_TOOLS,
+        driver=_policy, provider_call=_intake_provider, messages=llm_messages,
+        # The Surveyor's two tools ride only when it is armed for this upload, so with the survey off
+        # the model is offered exactly `INTAKE_TOOLS`, object for object.
+        tools=(INTAKE_TOOLS + SURVEY_TOOLS) if _geometry.armed else INTAKE_TOOLS,
         job_id=str(job_id), user_id=_ctx.owner_id,
         append_tool_result=lambda m, cid, c: m.append(
             {"role": "tool", "tool_call_id": cid, "content": c}),

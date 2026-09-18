@@ -62,6 +62,26 @@ def _from_package(document: dict) -> dict | None:
         return None
 
 
+def confirmed_cell_cap(block: dict | None) -> int | None:
+    """The cell budget the CUSTOMER CONFIRMED, read off the survey the block carries. None otherwise.
+
+    Read, not computed: `contract.deliver.survey_block` puts every answer the customer gave under
+    `survey.confirmed`, each a mark carrying its own kind. Only a `confirmed` mark with a positive
+    whole number counts. A budget the customer only wrote is `stated` and is not this; a default that
+    stood never reaches `confirmed` at all, because the package refuses an assumed budget.
+    """
+    survey = (block or {}).get("survey") if isinstance(block, dict) else None
+    if not isinstance(survey, dict):
+        return None
+    mark = (survey.get("confirmed") or {}).get("cell_budget")
+    if not isinstance(mark, dict) or mark.get("kind") != "confirmed":
+        return None
+    value = mark.get("value")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 # WHERE THE STATEFUL HALF LIVES, and why it is not here.
 #
 # Reading the row for a run's geometry needs `cad/regions.py`, and `contracts/` may import nothing
@@ -70,4 +90,4 @@ def _from_package(document: dict) -> dict | None:
 # `cad.regions.agent_block_for_state`, which already owns the row read, and this module stays what
 # `contracts/` is for: a shape and a pure function over it.
 
-__all__ = ["block_for_document"]
+__all__ = ["block_for_document", "confirmed_cell_cap"]

@@ -46,6 +46,27 @@ async def _agent_block(state) -> dict | None:
     return await agent_block_for_state(state)
 
 
+async def _cell_ceiling(state) -> int:
+    """The compute ceiling, or the customer's CONFIRMED cell budget when it is lower.
+
+    The one deterministic reader `cell_cap` has in this package. The planner is shown the customer's
+    budget in the typed block as `customer_cell_cap`; this is what holds the mesh to it when they
+    confirmed it in the budget trade. A budget they only wrote in the brief is `stated`, not
+    confirmed, and is left to the planner's reading: a sentence parsed into a number that nobody
+    checked does not get to starve a mesh. With the survey off this is the compute ceiling, read the
+    way it was always read.
+    """
+    hard = int(polcfg.CELL_HARD_LIMIT)
+    if not polcfg.GEOMETRY_SURVEY_ENABLED:
+        return hard
+    try:
+        from meshpipeline.contracts.geometry_agent_block import confirmed_cell_cap
+        cap = confirmed_cell_cap(await _agent_block(state))
+    except Exception:                              # noqa: BLE001 - a ceiling is never worth a mesh
+        return hard
+    return min(hard, cap) if cap else hard
+
+
 def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     """(budget_requested, cells_produced) from the SIBLING attempt this retry follows, else None.
 
@@ -335,7 +356,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # Clamp the planner's budget to the compute ceiling (safety net - the planner is told
             # the ceiling, but this guarantees the mesh can't exceed what Cloud Run can build or what
             # the executor accepts, so an over-ambitious budget never wastes a run).
-            _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=polcfg.CELL_HARD_LIMIT)
+            _ceiling = await _cell_ceiling(state)
+            _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=_ceiling)
             # If the LAST attempt measurably overshot the ceiling, the inflation ratio is
             # known - correct by arithmetic rather than by hoping the model's next guess is
             # braver. Under a forced 2M ceiling the model's guesses decayed (43%, 7%, 7%) and
@@ -344,12 +366,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             if _prev is not None:
                 from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
                 _corr = overshoot_corrected_budget(_prev[0], _prev[1],
-                                                   ceiling=polcfg.CELL_HARD_LIMIT)
+                                                   ceiling=_ceiling)
                 if _corr is not None and _corr < _budget:
                     logger.info("budget overshoot correction: prev asked %.0f got %.0f (x%.2f) - "
                                 "requesting %d against ceiling %d",
                                 _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
-                                polcfg.CELL_HARD_LIMIT)
+                                _ceiling)
                     _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
@@ -572,7 +594,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _write_plan_memory(workspace, strategy)
 
         # strategy → concrete numbers (internal knobs; tolerant of external-style keys)
-        _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=polcfg.CELL_HARD_LIMIT)
+        _ceiling = await _cell_ceiling(state)
+        _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=_ceiling)
         # If the LAST attempt measurably overshot the ceiling, the inflation ratio is
         # known - correct by arithmetic rather than by hoping the model's next guess is
         # braver. Under a forced 2M ceiling the model's guesses decayed (43%, 7%, 7%) and
@@ -581,12 +604,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         if _prev is not None:
             from meshpipeline.engines.snappy.planner import overshoot_corrected_budget
             _corr = overshoot_corrected_budget(_prev[0], _prev[1],
-                                   ceiling=polcfg.CELL_HARD_LIMIT)
+                                   ceiling=_ceiling)
             if _corr is not None and _corr < _budget:
                 logger.info("budget overshoot correction: prev asked %.0f got %.0f (x%.2f) - "
                         "requesting %d against ceiling %d",
                         _prev[0], _prev[1], _prev[1] / _prev[0], _corr,
-                        polcfg.CELL_HARD_LIMIT)
+                        _ceiling)
                 _budget = _corr
         _sl = strategy.get("surface_level", 2)
         surface_level = int(_sl[-1] if isinstance(_sl, (list, tuple)) else _sl)

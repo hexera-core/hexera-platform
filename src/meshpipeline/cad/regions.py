@@ -297,12 +297,48 @@ async def agent_block_for_state(state) -> dict | None:
         payload = ((state or {}).get("geometry") or {}).get("ref")
         if not payload:
             return None
-        document = await stored_document_for_source(GeometrySourceRef.from_payload(payload))
-        return block_for_document(document)
+        ref = GeometrySourceRef.from_payload(payload)
+        document = await stored_document_for_source(ref)
+        block = block_for_document(document)
+        if block is None:
+            return None
+        return (await _surveyed_block(ref, document)) or block
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry agent block: unavailable for this run (%s) - the planner sees "
                        "exactly what it sees with no measurement", exc)
         return None
+
+
+async def _surveyed_block(ref, document: dict) -> dict | None:
+    """STEP 7 of the chain: the block composed for what the customer said, with the survey in it.
+
+    None with the survey off, with no survey stored for these bytes, or when the package refuses the
+    pair, and the caller then hands the planner the measurement's own block, exactly as before. The
+    gate is read first, so with it off nothing is imported and no row is read.
+
+    The survey's block is preferred because it was composed FOR the customer: their purpose decided
+    the representation and their budget is `customer_cell_cap`. If the look landed after the survey
+    was last composed and the recomposition on the look worker did not happen, it is composed again
+    here, in memory, from the same stored inputs, so the planner never gets the older of the two.
+    """
+    import meshpipeline.settings.policy as polcfg
+
+    if not polcfg.GEOMETRY_SURVEY_ENABLED:
+        return None
+    from meshpipeline.application import geometry_survey as gs
+
+    if not gs.survey_enabled():
+        return None
+    state = await gs.load(str(ref.owner_id), str(ref.source_id), sha256=str(ref.sha256))
+    if state is None:
+        return None
+    look = document.get("look") if isinstance(document.get("look"), dict) else {}
+    if look.get("status") == "ok" and (state.get("composed_for") or {}).get("look_status") != "ok":
+        try:
+            state = gs.recomposed(state, document)
+        except gs.SurveyError as exc:
+            logger.info("geometry agent block: the survey could not take the look in (%s)", exc)
+    return gs.builder_block(state)
 
 
 async def _stored_document(ref, digest: str) -> dict | None:

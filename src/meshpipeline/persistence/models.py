@@ -432,6 +432,70 @@ class GeometryMeasurement(Base):
     )
 
 
+class GeometrySurvey(Base):
+    """WHAT THE FILE IS, composed for what the customer said it is for, and what they answered.
+
+    The measurement row is a pure function of the bytes. This row is not: it is the measurement
+    package's survey handoff composed against the customer's own purpose, words and declared ports,
+    which is why it is a separate row and not a key inside `geometry_measurements.document`. A key
+    there would share its write with the look worker, which reads that document, spends thirty
+    seconds rendering and writes it back; an answer recorded in between would be lost without a
+    trace.
+
+    KEYED BY THE FILE'S SHA256 as well as by the upload, because what makes a customer's answer worth
+    keeping is that it can be bound to the part it was given about months later. `sha256` and
+    `facts_sha256` are the two digests the package's own `binds_to` compares, and a reader refuses a
+    row whose digest is not the digest of the measurement in hand.
+
+    ONE ROW PER UPLOAD, for the same reason there is one measurement per upload: `api/v1/upload.py`
+    opens a new session on every upload and nothing rebinds a session to other bytes.
+
+    `answers` is append-only in meaning. Every row carries `answered_by`, and a default that stood is
+    stored as `default_taken` and never as a person: the package turns that into an `assumed` claim,
+    and on a role it refuses it outright.
+    """
+
+    __tablename__ = "geometry_surveys"
+
+    id:                 Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                          default=uuid.uuid4)
+    geometry_source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("geometry_sources.id", ondelete="RESTRICT"),
+        nullable=False)
+    #: The conversation that composed it. Lineage, not a key: the upload is the key.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True,
+                                                         index=True)
+    owner_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    #: The digest of the bytes the survey describes, and of the measurement it was composed from.
+    sha256:       Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    facts_sha256: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    #: Where in the chain this upload is: `surveyed`, `asking`, `trade` or `settled`.
+    stage:    Mapped[str] = mapped_column(String(32), nullable=False, server_default="surveyed")
+    #: The package's `SurveyHandoff`, as it dumped it. Never edited here.
+    survey:   Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: What it was composed FOR: the purpose, the declared ports, the unit basis, whether the look
+    #: was in, and a digest of the customer's words. A composition for other inputs is another row
+    #: version, never a silent edit of this one.
+    composed_for: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: The package's own planner block, composed for the same inputs. What the builder reads.
+    planner_block: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: Question ids put to the customer, in the order they were put.
+    asked:    Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    #: One row per answer, with `answered_by`, `at`, the words it came from and the option chosen.
+    answers:  Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    agent_git_sha: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False,
+                                                 server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
+                                                 onupdate=func.now())
+
+    __table_args__: tuple = (
+        UniqueConstraint("geometry_source_id", name="uq_geometry_survey_source"),
+        CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="ck_geometry_surveys_sha256_shape"),
+        Index("ix_geometry_surveys_owner_sha", "owner_id", "sha256"),
+    )
+
+
 class CaptureOperation(Base):
 
     __tablename__ = "capture_operations"
