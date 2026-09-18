@@ -334,6 +334,20 @@ price is left out rather than guessed. The token counts above are what a rate mu
 of *(in, out)* dollars per million tokens the cost of one look is `7.317 * in / 1000 + 1.894 * out /
 1000` dollars at the nine-view medians (7,317 prompt tokens and 1,894 completion tokens).
 
+The seventeen-view look, measured once so far: on 2026-09-18, through this platform's own path
+(`look_at_local_file` with the named reader), on ONE part, `venturi_orifice_001`, four draws of
+`gpt-5.6-luna`:
+
+| draw | seconds | prompt tokens | completion tokens | of which reasoning |
+|---|---:|---:|---:|---:|
+| 1 | 25.8 | 13,377 | 1,279 | 888 |
+| 2 | 23.9 | 13,377 | 886 | 512 |
+| 3 | 20.0 | 13,377 | 809 | 461 |
+| 4 | 21.4 | 13,377 | 823 | 512 |
+
+The wall clock was taken while a test suite ran on the same machine. One part is not a range for
+the product; the prompt token count is the one number here that does not move between draws.
+
 A second job against the same upload costs nothing at all: the look is stored with the measurement
 and keyed the same way, so the task reads one row and stops, having fetched no bytes, rendered
 nothing and called no provider.
