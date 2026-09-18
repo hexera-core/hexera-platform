@@ -47,9 +47,13 @@ def test_no_handwritten_removed_list_survives_outside_the_generated_block():
     text = doc()
     i, j = text.index(cat.REMOVED_BEGIN), text.index(cat.REMOVED_END)
     outside = text[:i] + text[j:]
-    # the prose may point AT the authority; it may not restate its contents or its size
+    # the prose may point AT the authority; it may not restate its contents or its size. Matched as
+    # a phrase, not a substring: the generated roster of SUPPORTED settings reached 213 entries,
+    # which contains "13 entries" and says nothing about the removed ones.
+    import re
     for stale in ("Currently one entry", "eight entries", "13 entries"):
-        assert stale not in outside, f"the prose restates the removed inventory: {stale!r}"
+        assert not re.search(rf"(?<![\w]){re.escape(stale)}", outside), (
+            f"the prose restates the removed inventory: {stale!r}")
     named = [n for n in cat.REMOVED if f"`{n}`" in outside]
     assert named == [], f"retired names are hand-listed outside the generated block: {named}"
 
