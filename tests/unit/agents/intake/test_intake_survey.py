@@ -223,6 +223,79 @@ def test_a_submission_that_never_surveyed_is_surveyed_at_the_gate(armed):
     assert problems and all("role_count" in p for p in problems)
 
 
+# THE REAL TURN: node_intake, on the state the chat route builds
+
+
+def _turn(monkeypatch, *, survey_on: bool, stored_survey: dict | None):
+    """One intake turn through `node_intake`, with the model call captured and the rows answered from
+    the fixture. Returns what the model was handed: the system prompt and the tool names."""
+    from types import SimpleNamespace
+
+    import meshpipeline.agents.intake.agent as agent
+    import meshpipeline.cad.regions as regions
+    from meshpipeline.api.v1 import chat
+    from meshpipeline.application import geometry_survey as gs
+    from meshpipeline.contracts.model_inference import ModelRoundResult
+
+    doc = _doc()
+    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_REPORT_READERS_ENABLED"):
+        monkeypatch.setattr(polcfg, gate, True)
+    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", survey_on)
+
+    async def stored(_ref, _digest):
+        return doc
+
+    async def load(owner_id, source_id, *, sha256):
+        return stored_survey
+
+    monkeypatch.setattr(regions, "_stored_document", stored)
+    monkeypatch.setattr(gs, "load", load)
+    seen: dict = {}
+
+    async def call(**kw):
+        seen.setdefault("system", kw["messages"][0]["content"])
+        seen.setdefault("tools", [t["function"]["name"] for t in kw.get("tools") or []])
+        return ModelRoundResult(assistant_text="What fluid is it?", finish_reason="stop")
+
+    monkeypatch.setattr(agent.llm_router, "call_intake_model", call)
+    row = SimpleNamespace(id="11111111-1111-4111-8111-111111111111", owner_id="owner-7f3a",
+                          object_key="uploads/x", sha256=doc["source_sha256"], size_bytes=1,
+                          original_filename="bend_elbow_001.step", suffix_hint=".step")
+    session = SimpleNamespace(
+        id="22222222-2222-4222-8222-222222222222", geometry_source=row,
+        messages=[{"role": "assistant", "content": "Geometry received. What are you meshing this for?"},
+                  {"role": "user", "content": _brief()}],
+        request_txt="", review_brief_txt="", domain="", mesh_engine="", engine_params={}, intake_patches=[],
+        dimensionality="", purpose="", input_kind="")
+    asyncio.run(agent.node_intake(chat._build_intake_state(session, "owner-7f3a")))
+    return seen["system"], seen["tools"]
+
+
+def test_with_the_survey_off_the_turn_offers_exactly_the_tools_it_always_did(monkeypatch):
+    pytest.importorskip("geometry_agent.contract.deliver")
+    system, tools = _turn(monkeypatch, survey_on=False, stored_survey=None)
+    assert tools == [t["function"]["name"] for t in INTAKE_TOOLS]
+    assert "Surveyor" not in system
+
+
+def test_armed_before_step_one_the_turn_offers_the_survey_and_says_how_to_start_it(monkeypatch):
+    pytest.importorskip("geometry_agent.contract.deliver")
+    system, tools = _turn(monkeypatch, survey_on=True, stored_survey=None)
+    assert tools[-2:] == ["survey_the_part", "answer_survey_question"]
+    assert "call survey_the_part" in system
+    assert "the file holds:" not in system
+
+
+def test_armed_with_a_survey_the_turn_puts_the_surveyors_questions(monkeypatch):
+    pytest.importorskip("geometry_agent.contract.deliver")
+    from meshpipeline.application import geometry_survey as gs
+
+    state = gs.carry_answers(None, gs.compose(_doc(), purpose="internal_cfd", brief=_brief()))
+    system, _tools = _turn(monkeypatch, survey_on=True, stored_survey=state)
+    assert "## THE SURVEYOR'S QUESTIONS" in system and "[role_inlet]" in system
+    assert "the file holds: the solid WALL" in system
+
+
 # THE LOOK'S PLACED FINDINGS REACH THE CONVERSATION
 
 
