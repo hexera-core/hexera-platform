@@ -127,7 +127,8 @@ def brief_digest(brief: str | None) -> str:
 def compose(document: dict, *, purpose: str, brief: str | None = None,
             declared: list[dict] | None = None, engine: str | None = None,
             unit: str | None = None, scale_to_metres: float | None = None,
-            unit_basis: str | None = None, cell_cap: int | None = None) -> dict:
+            unit_basis: str | None = None, cell_cap: int | None = None,
+            inlet_ids: list[str] | None = None) -> dict:
     """Step 2: the stored measurement composed for this purpose, these words and these ports.
 
     Nothing is measured again. `document["facts"]` is the instrument's reading of the bytes, stored
@@ -139,6 +140,13 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
 
     `cell_cap` is a budget the customer CONFIRMED in the trade. Without one, the budget is the one
     they wrote, read by the package's `budget_from_brief`, and it rides as `stated`.
+
+    `inlet_ids` are the mouths the customer called the inlet. The builder sizes from the largest
+    declared inlet, so the block's `inlet_bore_m` and the forecast the budget trade is priced on are
+    read off that mouth; composed before anybody had said which mouth is which, they were read off the
+    widest one, which on the corpus cyclone is the outlet (108 mm against a 75 mm inlet, and a trade
+    priced at 2.9M cells where the customer's inlet gives 4.8M). None reads the inlets out of the
+    declared ports the customer named, bound to mouths the way the submission gate binds them.
     """
     if not isinstance(document, dict) or document.get("status") != "ok":
         raise SurveyError("there is no successful measurement to compose")
@@ -154,13 +162,16 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
     stated_cap, _line = pkg["survey"].budget_from_brief(brief_text)
     cap = cell_cap if cell_cap is not None else stated_cap
     ports = [dict(p) for p in (declared or []) if isinstance(p, dict)]
+    if inlet_ids is None:
+        inlet_ids = _declared_inlets(document, ports)
     try:
         composed = pkg["hexera"].report_measured(
             facts, unit, brief_text or None, purpose=purpose, engine=engine or None,
             declared=ports or None, cell_cap=cap, look=document.get("look"),
             scale_to_metres=scale_to_metres, unit_basis=unit_basis,
             stamp={k: v for k, v in (document.get("stamp") or {}).items()
-                   if k in ("agent_git_sha", "platform_sha")})
+                   if k in ("agent_git_sha", "platform_sha")},
+            inlet_ids=list(inlet_ids) or None)
         # the package admits an engine nobody named as `assumed` (work/z-chain, `contract.marks.OWNERS`), so the
         # composed document goes to the survey as it is; the shim that stripped the engine is gone
         survey = pkg["build"].survey_from(composed, brief=brief_text or None, declared=ports or None)
@@ -183,11 +194,27 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             "cell_cap": cap, "cell_cap_kind": "confirmed" if cell_cap is not None else (
                 "stated" if stated_cap is not None else ""),
             "representation": composed.get("representation"),
+            "inlet_ids": sorted(inlet_ids),
             "look_status": str(look.get("status") or "not_attempted"),
             "composed_at": _now(),
         },
         "agent_git_sha": str((document.get("stamp") or {}).get("agent_git_sha") or ""),
     }
+
+
+def _declared_inlets(document: dict, ports: list[dict]) -> list[str]:
+    """The mouths the customer's own declared inlets bind to, by position or bore. Empty when none binds."""
+    inlets = [p for p in ports if str(p.get("type") or p.get("role") or "").strip().lower() == "inlet"]
+    if not inlets:
+        return []
+    from meshpipeline.agents.intake.geometry_brief import bind_patches
+    bound = bind_patches(document, [{**p, "type": "inlet"} for p in inlets])
+    return sorted({str(b["opening_id"]) for b in bound.get("bound") or [] if b.get("opening_id")})
+
+
+def named_inlets(state: dict | None) -> list[str]:
+    """The mouths the CUSTOMER answered are the inlet. Defaults and skips are not in it."""
+    return sorted(o for o, role in confirmed_roles(state).items() if role == "inlet")
 
 
 def recomposed(state: dict, document: dict, **changes: Any) -> dict:
@@ -200,7 +227,9 @@ def recomposed(state: dict, document: dict, **changes: Any) -> dict:
               "declared": before.get("declared") or None, "engine": before.get("engine") or None,
               "unit": before.get("unit") or None, "scale_to_metres": before.get("scale_to_metres"),
               "unit_basis": before.get("unit_basis") or None,
-              "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None}
+              "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
+              # the inlet the customer answered wins over the one their declared ports bind to
+              "inlet_ids": named_inlets(state) or before.get("inlet_ids")}
     kwargs.update(changes)
     fresh = compose(document, **kwargs)
     return carry_answers(state, fresh)
@@ -742,6 +771,7 @@ async def for_submission(*, owner_id: str, session_id: str, source_ref, document
     unit, scale, basis = await _interpretation(owner_id, source_ref.source_id)
     fresh = compose(document, purpose=purpose, brief=_brief_of(messages),
                     declared=[dict(p) for p in _roled(before.get("declared"))] or None,
+                    inlet_ids=named_inlets(state) or None,
                     engine=engine if engine in PACKAGE_ENGINES else None, unit=unit,
                     scale_to_metres=scale, unit_basis=basis, cell_cap=confirmed_cell_cap(state))
     out = mark_asked(carry_answers(state, fresh), [])
@@ -773,7 +803,9 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
                  words: str = "", latest_user_message: str = "", skipped: bool = False,
                  took_default: bool = False, document: dict | None = None) -> dict:
     """Record one answer and store it. When it confirms a budget, the planner block is composed again
-    for that budget, so `customer_cell_cap` is the number the customer chose. Raises `SurveyError`."""
+    for that budget, so `customer_cell_cap` is the number the customer chose; when it names the inlet,
+    it is composed again from that inlet, so the block's bore and the budget trade that follows are the
+    customer's inlet's and not the widest mouth's. Raises `SurveyError`."""
     state = await load(owner_id, source_ref.source_id, sha256=source_ref.sha256)
     if state is None:
         raise SurveyError("there is no survey for this upload yet: call survey_the_part first")
@@ -781,11 +813,14 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
                           latest_user_message=latest_user_message, principal=owner_id,
                           skipped=skipped, took_default=took_default)
     cap = confirmed_cell_cap(state)
-    if cap is not None and isinstance(document, dict) and (state.get("composed_for") or {}).get("cell_cap") != cap:
+    before = state.get("composed_for") or {}
+    new_cap = cap is not None and before.get("cell_cap") != cap
+    new_inlet = bool(named_inlets(state)) and named_inlets(state) != sorted(before.get("inlet_ids") or [])
+    if (new_cap or new_inlet) and isinstance(document, dict):
         try:
-            state = recomposed(state, document, cell_cap=cap)
+            state = recomposed(state, document, **({"cell_cap": cap} if cap is not None else {}))
         except SurveyError as exc:
-            logger.warning("geometry survey: the confirmed budget could not be composed in (%s)", exc)
+            logger.warning("geometry survey: the confirmed answer could not be composed in (%s)", exc)
     state = mark_asked(state, open_now(state))
     await save(owner_id, source_ref.source_id, state)
     return state
@@ -813,6 +848,6 @@ __all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "ROUTE_ADVISORY", "ROUTE_APPLIC
            "ROUTE_TRADE", "STAGE_ASKING", "STAGE_SETTLED", "STAGE_SURVEYED", "STAGE_TRADE",
            "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "builder_block", "carry_answers", "compose",
            "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "live_answers", "load", "mark_asked",
-           "open_now",
+           "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
            "said_by_customer", "save", "stage_of", "survey_enabled", "survey_the_part"]

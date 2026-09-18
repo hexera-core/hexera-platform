@@ -181,6 +181,26 @@ def test_an_answer_is_recorded_with_who_gave_it_and_the_next_question_follows(ar
         "customer", "owner-7f3a", "o2", "inlet")
 
 
+def test_the_inlet_the_customer_names_is_the_one_the_builders_block_is_sized_from(armed):
+    """Composed before anybody said which mouth is which, the block's inlet is the builder's own fallback, the
+    widest mouth. On the corpus cyclone that is the outlet, and the budget trade was priced on it. Once the
+    customer names the inlet the survey is composed again from it, with every answer kept."""
+    st, ex, store, gs = armed
+    _run(ex, "survey_the_part", purpose="Internal CFD",
+         customer_words_verbatim="Internal flow through a circular elbow duct")
+    (saved,) = store.values()
+    assert saved["planner_block"]["inlet_opening_id"] == "o2"          # the wider bore, by a hair
+    st.latest_user_msg = "o1 is where the water comes in"
+    ok = _run(ex, "answer_survey_question", question_id="role_inlet", option="o1",
+              customer_words_verbatim="o1 is where the water comes in")
+    assert ok.accepted is True
+    (saved,) = store.values()
+    assert saved["planner_block"]["inlet_opening_id"] == "o1"
+    assert saved["composed_for"]["inlet_ids"] == ["o1"]
+    assert [(a["subject"], a["value"]) for a in gs.live_answers(saved)] == [("o1", "inlet")]
+    assert any("inlet o1" in b for b in saved["planner_block"]["agent_forecast_basis"])
+
+
 def test_submission_is_refused_until_the_customer_has_named_the_mouths(armed, monkeypatch):
     st, ex, _store, _gs = armed
     _run(ex, "survey_the_part", purpose="Internal CFD",
