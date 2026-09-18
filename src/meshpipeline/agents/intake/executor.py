@@ -417,6 +417,8 @@ class IntakeToolExecutor:
         from meshpipeline.application import geometry_survey as gs
 
         st = self.state
+        # _survey_refusal returned None, so this is the stored document; the else is for the type checker
+        document = st.geometry_document if isinstance(st.geometry_document, dict) else {}
         quote = str(args.get("customer_words_verbatim") or "")
         if not any(gs.said_by_customer(quote, said) for said in st.customer_messages):
             return IntakeToolResult(tool="survey_the_part", accepted=False, content=(
@@ -426,7 +428,7 @@ class IntakeToolExecutor:
         try:
             st.geometry_survey = await gs.survey_the_part(
                 owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
-                document=st.geometry_document, purpose=str(args.get("purpose") or ""),
+                document=document, purpose=str(args.get("purpose") or ""),
                 messages=[{"role": "user", "content": said} for said in st.customer_messages],
                 declared=ports or None, engine=self._confirmed_engine() or None)
         except gs.SurveyError as exc:
@@ -478,7 +480,6 @@ class IntakeToolExecutor:
             state = await gs.for_submission(
                 owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
                 document=st.geometry_document, purpose=str(args.get("purpose") or ""),
-                patches=args.get("patches"),
                 messages=[{"role": "user", "content": said} for said in st.customer_messages],
                 state=st.geometry_survey, engine=self._confirmed_engine() or None)
         except gs.SurveyError as exc:

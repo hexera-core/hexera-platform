@@ -168,7 +168,8 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
         raise SurveyError(f"the survey refused its own handoff: {exc}") from exc
     except Exception as exc:                       # noqa: BLE001 - never a turn, never a mesh
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
-    look = document.get("look") if isinstance(document.get("look"), dict) else {}
+    stored_look = document.get("look")
+    look = stored_look if isinstance(stored_look, dict) else {}
     return {
         "schema": SURVEY_STATE_SCHEMA,
         "sha256": str(survey.source_sha256),
@@ -195,7 +196,7 @@ def recomposed(state: dict, document: dict, **changes: Any) -> dict:
     across for every question id the new survey still raises, and dropped for the rest, because an
     answer is bound to a question and a question that no longer exists binds nothing."""
     before = dict(state.get("composed_for") or {})
-    kwargs = {"purpose": before.get("purpose") or "internal_cfd", "brief": before.get("brief") or "",
+    kwargs: dict[str, Any] = {"purpose": before.get("purpose") or "internal_cfd", "brief": before.get("brief") or "",
               "declared": before.get("declared") or None, "engine": before.get("engine") or None,
               "unit": before.get("unit") or None, "scale_to_metres": before.get("scale_to_metres"),
               "unit_basis": before.get("unit_basis") or None,
@@ -717,33 +718,30 @@ SURVEYED_PURPOSES = ("internal_cfd", "external_cfd", "conjugate_heat_transfer")
 PACKAGE_ENGINES = ("snappy", "cfmesh", "gmsh")
 
 
-def _port_signature(ports: Any) -> list[tuple[str, str]]:
-    return sorted((str(p.get("name") or ""), str(p.get("type") or p.get("role") or "").lower())
-                  for p in _roled(ports))
-
-
 async def for_submission(*, owner_id: str, session_id: str, source_ref, document: dict,
-                         purpose: str, patches: Any, messages: Any, state: dict | None,
+                         purpose: str, messages: Any, state: dict | None,
                          engine: str | None = None) -> dict | None:
     """The survey the submission is checked against. Composed here when intake never called
-    `survey_the_part`, or when the purpose or the ports it was composed for have moved.
+    `survey_the_part`, or when the purpose it was composed for has moved.
 
-    It is never recomposed merely because patches exist: where the survey raised role questions and
-    the customer answered them, those answers are what the patches are checked AGAINST, and composing
-    again with the patches as the declaration would retire the questions and drop the answers with
-    them. Raises `SurveyError`; the caller fails open.
+    THE PATCHES ARE NEVER THE DECLARATION. They are what the intake model wrote, and the package reads
+    a declared port as the customer's `stated` claim: where the declared count matches the mouths it
+    asks nothing, so composing with the patches as the declaration let a model's own inlet and outlet
+    through the gate with no question put and nothing confirmed (bend_elbow_001, once the flange
+    shoulders stopped counting as mouths). The ports declared here are only the ones `survey_the_part`
+    was given as the customer's own words; where it never ran there are none, the Surveyor raises its
+    role questions, and the patches are checked against the answers. Raises `SurveyError`; the caller
+    fails open.
     """
     if purpose not in SURVEYED_PURPOSES:
         return None
     before = dict((state or {}).get("composed_for") or {})
-    has_roles = bool(state) and any(v["about"] == "opening.role" for v in question_views(state))
-    stale = (state is None or before.get("purpose") != purpose
-             or (not has_roles and _port_signature(patches) != _port_signature(before.get("declared"))))
+    stale = state is None or before.get("purpose") != purpose
     if not stale:
         return state
     unit, scale, basis = await _interpretation(owner_id, source_ref.source_id)
     fresh = compose(document, purpose=purpose, brief=_brief_of(messages),
-                    declared=[dict(p) for p in _roled(patches)] or None,
+                    declared=[dict(p) for p in _roled(before.get("declared"))] or None,
                     engine=engine if engine in PACKAGE_ENGINES else None, unit=unit,
                     scale_to_metres=scale, unit_basis=basis, cell_cap=confirmed_cell_cap(state))
     out = mark_asked(carry_answers(state, fresh), [])
@@ -760,7 +758,8 @@ def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
         from meshpipeline.application import geometry_vision
         if not geometry_vision.look_enabled():
             return "off"
-        look = document.get("look") if isinstance(document.get("look"), dict) else {}
+        stored_look = document.get("look")
+        look = stored_look if isinstance(stored_look, dict) else {}
         if look.get("status") == "ok":
             return "cached"
         from meshpipeline.contracts.geometry_measurement import enqueue_look

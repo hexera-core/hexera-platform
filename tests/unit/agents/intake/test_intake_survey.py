@@ -152,7 +152,8 @@ def test_step_one_to_step_four_composes_stores_and_hands_intake_the_surveyors_qu
                   customer_words_verbatim="Internal flow through a circular elbow duct")
     assert result.accepted is True
     assert "[role_inlet]" in result.content and "[role_outlet]" in result.content
-    assert "options: o1, o2, o3, o4" in result.content
+    # the two bores and not the flange shoulders beside them: a shoulder is wall, not a mouth the builder cuts
+    assert "options: o1, o2\n" in result.content
     (saved,) = store.values()
     assert saved["composed_for"]["purpose"] == "internal_cfd"
     assert saved["asked"] == ["role_inlet", "role_outlet"]
@@ -210,17 +211,19 @@ def test_the_whole_submission_stops_at_an_unconfirmed_role(armed, monkeypatch):
 
 
 def test_a_submission_that_never_surveyed_is_surveyed_at_the_gate(armed):
-    """The model may skip survey_the_part. The gate composes the survey from the submission itself, with
-    the ports as the customer's declaration, so the chain cannot be skipped by forgetting a tool."""
+    """The model may skip survey_the_part. The gate composes the survey itself, so the chain cannot be
+    skipped by forgetting a tool, and it does NOT take the submission's patches as the customer's
+    declaration: they are what the model wrote, and a declaration that matches the mouths asks nothing."""
     st, ex, store, _gs = armed
     assert store == {}
     args = {"purpose": "internal_cfd", "patches": [
         {"name": "inlet", "type": "inlet", "diameter_mm": 297.94, "near_mm": [0, 0, 0]},
+        {"name": "outlet", "type": "outlet", "diameter_mm": 297.94, "near_mm": [790.64, 787.28, 0]},
         {"name": "wall", "type": "wall"}]}
     problems = asyncio.run(ex._survey_gate(args))
     (saved,) = store.values()
-    assert saved["composed_for"]["declared"][0]["name"] == "inlet"
-    assert problems and all("role_count" in p for p in problems)
+    assert saved["composed_for"]["declared"] == []
+    assert len(problems) == 2 and all("has not answered survey question role_" in p for p in problems)
 
 
 # THE REAL TURN: node_intake, on the state the chat route builds

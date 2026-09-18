@@ -300,7 +300,7 @@ async def agent_block_for_state(state) -> dict | None:
         ref = GeometrySourceRef.from_payload(payload)
         document = await stored_document_for_source(ref)
         block = block_for_document(document)
-        if block is None:
+        if block is None or document is None:
             return None
         return (await _surveyed_block(ref, document)) or block
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
@@ -332,7 +332,8 @@ async def _surveyed_block(ref, document: dict) -> dict | None:
     state = await gs.load(str(ref.owner_id), str(ref.source_id), sha256=str(ref.sha256))
     if state is None:
         return None
-    look = document.get("look") if isinstance(document.get("look"), dict) else {}
+    stored_look = document.get("look")
+    look = stored_look if isinstance(stored_look, dict) else {}
     if look.get("status") == "ok" and (state.get("composed_for") or {}).get("look_status") != "ok":
         try:
             state = gs.recomposed(state, document)

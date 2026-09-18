@@ -36,14 +36,17 @@ def _ids(views) -> list[str]:
 # THE CHAIN'S ORDER IS NOT A PREFERENCE: THE BRIEF CHANGES WHAT GETS ASKED
 
 
-def test_an_external_body_measured_for_the_assumed_purpose_is_asked_for_an_inlet_it_does_not_have():
-    """ahmed_variant_001 is a bluff body with four measured openings. Composed for the purpose the upload
-    assumed, the Surveyor asks which of them is the inlet; composed for what the customer said, it asks
-    nothing and names the representation. That difference is why intake comes first."""
+def test_an_external_body_measured_for_the_assumed_purpose_is_not_named_until_the_customer_says():
+    """ahmed_variant_001 is a bluff body with four flat faces the measurement found. Composed for the purpose
+    the upload assumed, the Surveyor cannot say what the file is and names no representation; composed for
+    what the customer said, it names it. That difference is why intake comes first. Neither composition asks
+    which face is the inlet: none of the four is a mouth the builder can cut (`catalog.port_openings`), so the
+    question an internal reading used to put about them is gone with the miscount behind it."""
     doc = _doc("ahmed_variant_001")
     assumed = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd"))
     said = _fresh("ahmed_variant_001", purpose="external_cfd")
-    assert _ids(gs.open_now(assumed)) == ["role_inlet", "role_outlet"]
+    assert assumed["composed_for"]["representation"] == "unknown"
+    assert gs.open_now(assumed) == []
     assert gs.open_now(said) == []
     assert said["composed_for"]["representation"] == "external"
     assert doc["representation"] == "unknown"
@@ -233,22 +236,24 @@ def test_a_skip_is_recorded_as_asked_and_not_answered():
 
 
 def test_the_role_count_question_takes_a_role_per_mouth_from_the_customers_vocabulary():
-    """With the brief's two ports declared, bend_elbow_001's four mouths (two bores and two flange
-    shoulders) are one question naming all four, and it is settled only when every one has a role."""
-    ports = [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"}]
-    state = _fresh("bend_elbow_001", declared=ports)
-    assert _ids(gs.open_now(state)) == ["role_count"]
-    said = "o2 in, o1 out, o3 and o4 are just the flange faces"
+    """With ONE port declared, bend_elbow_001's two bores are one question naming both, and it is settled
+    only when every one has a role. The flange shoulders beside them are wall and are not asked about:
+    two declared ports against the two bores ask nothing, which is `contract.asking`'s rule that a
+    declaration matching the mouths is the customer's own statement."""
+    assert gs.open_now(_fresh("bend_elbow_001", declared=[{"name": "inlet", "type": "inlet"},
+                                                          {"name": "outlet", "type": "outlet"}])) == []
+    state = _fresh("bend_elbow_001", declared=[{"name": "inlet", "type": "inlet"}])
+    (question,) = gs.open_now(state)
+    assert question["id"] == "role_count" and sorted(question["subjects"]) == ["o1", "o2"]
+    said = "o2 in, o1 out"
     with pytest.raises(gs.SurveyError, match="say which role"):
         gs.record_answer(state, question_id="role_count", choice="o2", words="o2 in", latest_user_message=said)
-    for oid, role, words in (("o2", "inlet", "o2 in"), ("o1", "outlet", "o1 out"),
-                             ("o3", "wall", "o3 and o4 are just the flange faces"),
-                             ("o4", "wall", "o3 and o4 are just the flange faces")):
+    for oid, role, words in (("o2", "inlet", "o2 in"), ("o1", "outlet", "o1 out")):
         assert gs.open_now(state), "settled before every mouth had a role"
         state = gs.record_answer(state, question_id="role_count", choice=oid, role=role, words=words,
                                  latest_user_message=said)
     assert gs.open_now(state) == []
-    assert gs.confirmed_roles(state) == {"o1": "outlet", "o2": "inlet", "o3": "wall", "o4": "wall"}
+    assert gs.confirmed_roles(state) == {"o1": "outlet", "o2": "inlet"}
 
 
 # HANDOFF 3: THE BUILDER'S BLOCK
