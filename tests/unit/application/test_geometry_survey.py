@@ -356,8 +356,15 @@ def test_the_look_landing_keeps_every_answer():
     assert gs.survey_of(again).looked is True
 
 
-def test_a_new_purpose_retires_the_role_questions_and_their_answers_are_kept_aside():
+def test_a_new_purpose_retires_the_role_questions_and_their_answers_stay_on_the_record():
     doc = _doc("bend_elbow_001")
-    again = gs.recomposed(_answered_elbow(), doc, purpose="external_cfd")
+    before = _answered_elbow()
+    again = gs.recomposed(before, doc, purpose="external_cfd")
     assert gs.confirmed_roles(again) == {}
-    assert {a["question_id"] for a in again["dropped_answers"]} == {"role_inlet", "role_outlet"}
+    assert gs.intake_handoff(again).answers == []
+    assert len(again["answers"]) == len(before["answers"]), "nothing the customer said is deleted"
+    assert {a["question_id"] for a in again["answers"] if a.get("retired")} == {"role_inlet", "role_outlet"}
+    # and composed back for the purpose they had, the retired answers do not come back to life
+    back = gs.recomposed(again, doc, purpose="internal_cfd")
+    assert gs.confirmed_roles(back) == {}
+    assert _ids(gs.open_now(back)) == ["role_inlet", "role_outlet"]

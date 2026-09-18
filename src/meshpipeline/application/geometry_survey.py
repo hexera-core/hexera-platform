@@ -228,13 +228,25 @@ def carry_answers(old: dict | None, fresh: dict) -> dict:
         # a survey for other bytes. Nothing it was told is about this file.
         return {**fresh, "asked": [], "answers": [], "stage": STAGE_SURVEYED}
     ids = {q["id"] for q in question_views(fresh)}
-    out = {**fresh,
-           "asked": [q for q in (old.get("asked") or []) if q in ids],
-           "answers": [a for a in (old.get("answers") or []) if a.get("question_id") in ids],
-           "dropped_answers": [a for a in (old.get("answers") or []) if a.get("question_id") not in ids]
-           + list(old.get("dropped_answers") or [])}
+    # NOTHING THE CUSTOMER SAID IS DELETED. An answer to a question the new survey no longer raises is
+    # kept in the same append-only list, marked retired, and every reader skips it: it binds nothing
+    # now, and it is still the record of what they were asked and what they said.
+    answers = []
+    for a in old.get("answers") or []:
+        if not isinstance(a, dict):
+            continue
+        if a.get("retired") or a.get("question_id") in ids:
+            answers.append(a)
+        else:
+            answers.append({**a, "retired": True, "retired_at": _now()})
+    out = {**fresh, "asked": [q for q in (old.get("asked") or []) if q in ids], "answers": answers}
     out["stage"] = stage_of(out)
     return out
+
+
+def live_answers(state: dict | None) -> list[dict]:
+    """The answers still bound to a question the survey raises. Retired ones are the record, not input."""
+    return [a for a in ((state or {}).get("answers") or []) if isinstance(a, dict) and not a.get("retired")]
 
 
 # -------------------------------------------------------------------------------------------------
@@ -266,7 +278,7 @@ def question_views(state: dict) -> list[dict]:
     except Exception as exc:                       # noqa: BLE001
         logger.warning("geometry survey: the stored survey could not be read (%s)", exc)
         return []
-    answers = [a for a in (state.get("answers") or []) if isinstance(a, dict)]
+    answers = live_answers(state)
     out = []
     for q in questions:
         mine = [a for a in answers if a.get("question_id") == q.id]
@@ -465,7 +477,7 @@ def _trade_numbers(view: dict) -> tuple[int, int] | None:
 def _refuse_conflict(state: dict, view: dict, subject: str, value: Any) -> None:
     if view["about"] != "opening.role":
         return
-    for a in state.get("answers") or []:
+    for a in live_answers(state):
         if (a.get("about") == "opening.role" and a.get("answered_by") == CUSTOMER
                 and not a.get("skipped") and a.get("subject") == subject and a.get("value") != value):
             raise SurveyError(f"the customer already said {subject} is the {a.get('value')}. Ask them "
@@ -492,7 +504,7 @@ def _append(state: dict, answer: dict) -> dict:
 def confirmed_roles(state: dict | None) -> dict[str, str]:
     """Mouth id to the role the CUSTOMER gave it. Defaults and skips are not in it."""
     out: dict[str, str] = {}
-    for a in (state or {}).get("answers") or []:
+    for a in live_answers(state):
         if (isinstance(a, dict) and a.get("about") == "opening.role" and a.get("answered_by") == CUSTOMER
                 and not a.get("skipped") and a.get("subject")):
             out[str(a["subject"])] = str(a.get("value") or "")
@@ -501,7 +513,7 @@ def confirmed_roles(state: dict | None) -> dict[str, str]:
 
 def confirmed_cell_cap(state: dict | None) -> int | None:
     """The budget the customer confirmed in the trade, or None. A stated budget is not this."""
-    for a in reversed((state or {}).get("answers") or []):
+    for a in reversed(live_answers(state)):
         if (isinstance(a, dict) and a.get("about") == "cell_budget" and a.get("answered_by") == CUSTOMER
                 and not a.get("skipped") and isinstance(a.get("value"), int)):
             return int(a["value"])
@@ -523,8 +535,8 @@ def intake_handoff(state: dict):
     asked = list(state.get("asked") or [])
     answers = []
     answered_ids: set[str] = set()
-    for a in state.get("answers") or []:
-        if not isinstance(a, dict) or a.get("answered_by") != CUSTOMER or a.get("skipped"):
+    for a in live_answers(state):
+        if a.get("answered_by") != CUSTOMER or a.get("skipped"):
             continue
         answers.append(pkg["intake"].Answer(question_id=a["question_id"], about=a["about"],
                                             subject=str(a.get("subject") or ""), value=a.get("value"),
@@ -817,6 +829,7 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
 __all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "ROUTE_ADVISORY", "ROUTE_APPLICATION", "ROUTE_INTAKE",
            "ROUTE_TRADE", "STAGE_ASKING", "STAGE_SETTLED", "STAGE_SURVEYED", "STAGE_TRADE",
            "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "builder_block", "carry_answers", "compose",
-           "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "load", "mark_asked", "open_now",
+           "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "live_answers", "load", "mark_asked",
+           "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
            "said_by_customer", "save", "stage_of", "survey_enabled", "survey_the_part"]
