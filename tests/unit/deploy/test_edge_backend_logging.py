@@ -42,5 +42,7 @@ def test_no_timeout_is_set_on_a_serverless_backend():
     # gcloud: "Timeout sec is not supported for a backend service with Serverless network endpoint
     # groups". Setting one would fail the edge stage on every deploy.
     s = _script()
-    assert "--timeout" not in s.split("compute backend-services", 1)[1], \
+    code = "
+".join(l for l in s.splitlines() if not l.lstrip().startswith("#"))
+    assert "--timeout" not in code.split("compute backend-services", 1)[1], \
         "a serverless-NEG backend service cannot take --timeout; the edge stage would fail"
