@@ -246,7 +246,11 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
         logger.warning("geometry look: could not read the source row: %s", exc)
         return {"status": "skipped", "reason": "the source row could not be read"}
 
-    purpose, representation = await _composed_for(owner_id, source_id, sha256)
+    # THE LOOK'S PURPOSE, NOT THE ROW'S. `purpose` above is what the facts in this row were measured
+    # for, and it is written back unchanged below. Reusing the name for the survey's purpose wrote
+    # `None[:32]` into the row with the survey off, so every look was paid for and then lost as
+    # `unstored`, and with the survey on it relabelled facts measured for one purpose as another.
+    look_purpose, representation = await _composed_for(owner_id, source_id, sha256)
     with tempfile.TemporaryDirectory(prefix="geometry-look-bytes-") as workspace:
         try:
             from meshpipeline.application.geometry_materializer import fetch_verified_bytes
@@ -257,7 +261,7 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
         except Exception as exc:                   # noqa: BLE001
             logger.warning("geometry look: the bytes could not be retrieved: %s", exc)
             return {"status": "skipped", "reason": "the uploaded geometry could not be retrieved"}
-        look = look_at_local_file(Path(local), document, timeout_s=timeout_s, purpose=purpose,
+        look = look_at_local_file(Path(local), document, timeout_s=timeout_s, purpose=look_purpose,
                                   representation=representation)
 
     if look is None:

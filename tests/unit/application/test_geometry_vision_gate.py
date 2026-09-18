@@ -130,6 +130,9 @@ def test_a_look_that_raises_despite_promising_not_to_still_writes_nothing(monkey
         raise RuntimeError("the entry point broke its own promise")
 
     monkeypatch.setattr(vision, "_package", lambda: (angry, MagicMock(), MagicMock()))
+    # a reader that builds, so the entry point is actually reached: without a provider key in the
+    # environment `reader()` is None and the look stops at `not_attempted` before it is ever called
+    monkeypatch.setattr(vision, "reader", lambda: object())
     assert vision.look_at_local_file(tmp_path / "part.step", DOCUMENT) is None
 
 
@@ -209,6 +212,73 @@ async def test_a_second_job_on_the_same_file_pays_nothing(monkeypatch):
                "GeometrySourceRepository", _never_read):
         out = await vision.look_and_store("12345678-1234-4234-a234-123456789abc", "owner")
     assert out["status"] == "cached"
+
+
+@pytest.mark.parametrize("survey_on", [False, True])
+async def test_a_new_look_is_stored_under_the_purpose_the_row_was_measured_for(monkeypatch, tmp_path, survey_on):
+    """The row keeps the purpose its facts were measured for, whatever the survey composed. With the survey off
+    the look used to be written with a purpose of None, which the repository cannot slice, so every look was
+    paid for and then dropped as `unstored`; with it on, the row was relabelled with the customer's purpose."""
+    monkeypatch.setattr(polcfg, "GEOMETRY_VISION_ENABLED", True)
+    monkeypatch.setattr(polcfg, "GEOMETRY_MEASUREMENT_ENABLED", True)
+    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", survey_on)
+    row = MagicMock()
+    row.document = dict(DOCUMENT)
+    row.purpose, row.status, row.reason = "internal_cfd", "ok", ""
+    row.sha256, row.facts_schema_version, row.agent_git_sha = "a" * 64, 3, "deadbeef"
+    row.measure_seconds = 1.0
+    written: list[dict] = []
+
+    class _Repo:
+        async def for_source(self, *a, **k):
+            return row
+
+        async def record(self, db, **kw):
+            assert isinstance(kw["purpose"], str)  # the real repository slices it, and None cannot be sliced
+            written.append(kw)
+
+    source = MagicMock(id="12345678-1234-4234-a234-123456789abc", owner_id="owner", object_key="k",
+                       sha256="a" * 64, size_bytes=10, original_filename="p.step", suffix_hint=".step",
+                       purged_at=None)
+
+    class _Sources:
+        async def get_for_owner(self, *a, **k):
+            return source
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _db():
+        yield AsyncMock()
+
+    async def composed(*_a, **_k):
+        return ("external_cfd", "external") if survey_on else (None, None)
+
+    seen: dict = {}
+
+    def look(path, document, **kw):
+        seen.update(kw)
+        return LOOK_OK
+
+    async def recompose(*_a, **_k):
+        return "ok"
+
+    from meshpipeline.application import geometry_survey
+    monkeypatch.setattr(vision, "_composed_for", composed)
+    monkeypatch.setattr(vision, "look_at_local_file", look)
+    monkeypatch.setattr(vision, "attach_look", lambda document, found: {**document, "look": found})
+    monkeypatch.setattr(geometry_survey, "recompose_after_look", recompose)
+    with patch("meshpipeline.persistence.session.get_db", _db), \
+         patch("meshpipeline.persistence.repositories.geometry_measurement_repository."
+               "GeometryMeasurementRepository", _Repo), \
+         patch("meshpipeline.persistence.repositories.geometry_source_repository."
+               "GeometrySourceRepository", _Sources), \
+         patch("meshpipeline.application.geometry_materializer.fetch_verified_bytes",
+               lambda ref, **k: tmp_path / "p.step"):
+        out = await vision.look_and_store("12345678-1234-4234-a234-123456789abc", "owner")
+    assert out["status"] == "ok"
+    assert [w["purpose"] for w in written] == ["internal_cfd"]
+    assert seen["purpose"] == ("external_cfd" if survey_on else None)
 
 
 async def test_no_measurement_row_is_a_skip_and_never_a_look(monkeypatch):
