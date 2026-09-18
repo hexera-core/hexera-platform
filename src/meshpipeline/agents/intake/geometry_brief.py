@@ -209,7 +209,8 @@ def render_block(document: dict | None, *, survey: dict | None = None, armed: bo
         shown = {k: v for k, v in document.items() if k != "representation"}
         if composed.get("representation"):
             shown["representation"] = composed["representation"]
-        return _render(shown, surveyed=True) + "\n".join(survey_lines(survey))
+        surveyor = survey_lines(survey)
+        return _render(shown, surveyed=True) + ("\n" + "\n".join(surveyor) if surveyor else "")
     except Exception as exc:                       # noqa: BLE001 - a table is never worth a turn
         logger.warning("intake geometry brief: the table could not be rendered (%s)", exc)
         return ""

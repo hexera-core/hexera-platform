@@ -142,6 +142,23 @@ def test_the_budget_trade_waits_for_every_step_four_question_and_is_put_once():
     assert gs.confirmed_cell_cap(state) == 100_000
 
 
+def test_a_budget_default_is_put_once_confirms_nothing_and_rides_to_the_builder_unsettled():
+    brief = _brief("bend_elbow_001").replace("under 2 million cells", "under 100,000 cells")
+    state = _fresh("bend_elbow_001", brief=brief)
+    said = "o2 in, o1 out, and use your default for the budget"
+    state = gs.record_answer(state, question_id="role_inlet", choice="o2", words="o2 in", latest_user_message=said)
+    state = gs.record_answer(state, question_id="role_outlet", choice="o1", words="o1 out", latest_user_message=said)
+    state = gs.record_answer(state, question_id="budget_trade", words="use your default for the budget",
+                             latest_user_message=said, took_default=True)
+    assert gs.open_now(state) == [], "the trade is asked once"
+    assert gs.stage_of(state) == gs.STAGE_SETTLED
+    assert gs.confirmed_cell_cap(state) is None
+    block = gs.builder_block(state)
+    assert "cell_budget" not in block["survey"]["confirmed"]
+    assert any(row["about"] == "cell_budget" for row in block["survey"]["unsettled"])
+    assert block["survey"]["measured"]["cell_budget"]["kind"] == "stated"
+
+
 def test_a_confirmed_budget_is_composed_into_the_block_the_builder_reads():
     brief = _brief("bend_elbow_001").replace("under 2 million cells", "under 100,000 cells")
     doc = _doc("bend_elbow_001")

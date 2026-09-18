@@ -319,7 +319,12 @@ def open_now(state: dict) -> list[dict]:
     step4 = [v for v in views if v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED]
     if step4:
         return step4
-    return [v for v in views if v["route"] == ROUTE_TRADE and v["status"] not in SETTLED]
+    return [v for v in views if v["route"] == ROUTE_TRADE and v["status"] not in TRADE_PUT]
+
+
+#: The budget trade is put ONCE. A customer who let its default stand has not confirmed a budget, so the
+#: question stays unsettled and rides to the builder as such, but it is not put to them a second time.
+TRADE_PUT = (*SETTLED, "defaulted")
 
 
 def stage_of(state: dict) -> str:
@@ -328,7 +333,7 @@ def stage_of(state: dict) -> str:
     trade = [v for v in views if v["route"] == ROUTE_TRADE]
     if any(v["status"] not in SETTLED for v in step4):
         return STAGE_ASKING if any(v["id"] in (state.get("asked") or []) for v in step4) else STAGE_SURVEYED
-    if any(v["status"] not in SETTLED for v in trade):
+    if any(v["status"] not in TRADE_PUT for v in trade):
         return STAGE_TRADE
     return STAGE_SETTLED
 
