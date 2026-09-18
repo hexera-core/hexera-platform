@@ -160,9 +160,7 @@ def test_step_one_to_step_four_composes_stores_and_hands_intake_the_surveyors_qu
     # the next turn's system prompt carries the same questions and the representation composed for them
     text = gb.render_block(st.geometry_document, survey=saved, armed=True)
     assert "the file holds: the solid WALL" in text and "[role_inlet]" in text
-    assert "
-
-## THE SURVEYOR'S QUESTIONS" in text
+    assert "\n\n## THE SURVEYOR'S QUESTIONS" in text
 
 
 def test_an_answer_is_recorded_with_who_gave_it_and_the_next_question_follows(armed):
