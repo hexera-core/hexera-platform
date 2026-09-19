@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildProductApiRequest, proxyProductApiRequest } from "./proxy";
+import { buildProductApiRequest, proxyProductApiRequest, relayedResponse } from "./proxy";
 
 test("rejects unauthenticated requests before reaching the product API", async () => {
   await assert.rejects(
@@ -48,4 +48,41 @@ test("refuses unauthenticated proxy calls before checking deployment config", as
   );
 
   assert.equal(response.status, 401);
+});
+
+test("relays a gzipped upstream reply as the plain body fetch decoded it to", async () => {
+  // The product API gzips every reply over 8 KB; fetch hands back the decoded body but keeps the
+  // upstream wire headers. Forwarding them told the browser a plain body was gzip.
+  const upstream = new Response(JSON.stringify({ reply: "x".repeat(9000) }), {
+    headers: {
+      "content-encoding": "gzip",
+      "content-length": "1234",
+      "content-type": "application/json",
+      "x-request-id": "abc",
+    },
+    status: 200,
+  });
+
+  const relayed = relayedResponse(upstream);
+
+  assert.equal(relayed.status, 200);
+  assert.equal(relayed.headers.get("content-encoding"), null);
+  assert.equal(relayed.headers.get("content-length"), null);
+  assert.equal(relayed.headers.get("content-type"), "application/json");
+  assert.equal(relayed.headers.get("x-request-id"), "abc");
+  assert.equal((await relayed.json()).reply.length, 9000);
+});
+
+test("relays an upstream error status and body untouched", async () => {
+  const upstream = new Response(JSON.stringify({ error: "nope" }), {
+    headers: { "content-type": "application/json" },
+    status: 422,
+    statusText: "Unprocessable",
+  });
+
+  const relayed = relayedResponse(upstream);
+
+  assert.equal(relayed.status, 422);
+  assert.equal(relayed.statusText, "Unprocessable");
+  assert.deepEqual(await relayed.json(), { error: "nope" });
 });

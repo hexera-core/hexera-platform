@@ -80,7 +80,31 @@ export async function proxyProductApiRequest(
     userTokenSecret: process.env.USER_TOKEN_SECRET,
   });
 
-  return fetch(productRequest);
+  return relayedResponse(await fetch(productRequest));
+}
+
+// HEADERS THAT DESCRIBE THE UPSTREAM WIRE, NOT THE BODY WE FORWARD. Node's fetch decompresses a
+// gzipped upstream body before handing it over, but leaves the upstream `content-encoding` and
+// the compressed `content-length` on the Response. Returned as-is, that Response tells the browser
+// "this body is gzip" about a body that is plain, and the browser refuses to read it: Firefox
+// NS_ERROR_INVALID_CONTENT_ENCODING, Chrome ERR_CONTENT_DECODING_FAILED, both surfacing in the
+// console as "Failed to fetch" / "Decoding failed". The product API gzips every reply over 8 KB, so
+// every long intake turn failed and every short one passed. The relayed Response keeps the status
+// and every other header, and lets the runtime describe the body it actually sends.
+const UPSTREAM_WIRE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding"]);
+
+export function relayedResponse(upstream: Response): Response {
+  const headers = new Headers();
+  upstream.headers.forEach((value, key) => {
+    if (!UPSTREAM_WIRE_HEADERS.has(key.toLowerCase())) {
+      headers.set(key, value);
+    }
+  });
+  return new Response(upstream.body, {
+    headers,
+    status: upstream.status,
+    statusText: upstream.statusText,
+  });
 }
 
 function forwardedHeaders(source: Headers): Headers {
