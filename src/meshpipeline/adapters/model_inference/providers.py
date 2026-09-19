@@ -73,6 +73,11 @@ def classify(exc: BaseException) -> FailureCategory:
         # nine shapes of the full cfMesh sweep and the first console run on dev, each with a
         # valid mesh already built and one model call away from delivery.
         if type(exc) is openai.APIError:
+            # Say WHAT the provider sent. Two console runs and nine sweep shapes died on this
+            # path with nothing in the log but the type name; the text is the only evidence of
+            # whether the provider is unwell or refusing something about the request.
+            logger.warning("provider broke its own stream (%s): %s", type(exc).__name__,
+                           str(exc)[:300])
             return FailureCategory.SERVICE_UNAVAILABLE
 
     if isinstance(exc, (TimeoutError,)):

@@ -153,6 +153,17 @@ def test_a_provider_that_breaks_its_own_stream_is_provider_weather_not_our_defec
     assert providers.classify(exc) is FC.SERVICE_UNAVAILABLE
 
 
+def test_a_broken_stream_is_logged_with_the_providers_own_words(caplog):
+    import httpx
+    import openai
+    exc = openai.APIError(message="upstream connect error or disconnect/reset before headers",
+                          request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
+                          body=None)
+    with caplog.at_level("WARNING", logger="meshpipeline.adapters.model_inference.providers"):
+        providers.classify(exc)
+    assert "upstream connect error" in caplog.text
+
+
 def test_a_status_error_the_sdk_does_subclass_keeps_its_own_category():
     # The bare-APIError rule is exact-type: subclasses keep their specific classification.
     assert providers.classify(_exc("bad_request")) is FC.INVALID_REQUEST
