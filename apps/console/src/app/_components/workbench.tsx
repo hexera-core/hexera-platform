@@ -1,6 +1,8 @@
 /* eslint-disable @next/next/no-img-element */
 import Script from "next/script";
 
+import { sessionScript } from "./session-script";
+
 export function Workbench({
   bootJobId,
   ownerId,
@@ -12,14 +14,22 @@ export function Workbench({
 
   return (
     <>
-      <Script id="hexera-console-session" strategy="beforeInteractive">
-        {`
-          globalThis.__HEXERA_API_WS_BASE_URL__ = ${JSON.stringify(publicApiBaseUrl)};
-          globalThis.__HEXERA_ROUTED__ = true;
-          globalThis.__HEXERA_BOOT_JOB__ = ${JSON.stringify(bootJobId)};
-          try { localStorage.setItem("mg_uid", ${JSON.stringify(ownerId)}); } catch {}
-        `}
-      </Script>
+      {/* THE SESSION FACTS main.js BOOTS FROM, as a plain inline <script> - not next/script.
+          `beforeInteractive` is honoured only from the root layout. Anywhere else Next renders it
+          as a push onto `self.__next_s`, a queue its runtime drains ONCE when its own async chunk
+          runs; from a page in the streamed body the push lands after the drain and never executes,
+          so every global here stayed undefined. Everything else fell back and kept working - the
+          run went to the URL as ?job=, the deep link read it back - except the WebSocket origin:
+          unset means "this host", the console cannot serve a socket, and the browser dialled it
+          every 30 seconds for the whole run (503 in 2 ms, each time). The timeline stayed empty,
+          live and on replay, and a failed run showed no reason. A plain script runs where it is
+          parsed, which is before main.js - loaded by Next after hydration. */}
+      <script
+        dangerouslySetInnerHTML={{
+          __html: sessionScript({ bootJobId, ownerId, publicApiBaseUrl }),
+        }}
+        id="hexera-console-session"
+      />
 
       <div id="lb">
         <img alt="" id="lb-img" />
