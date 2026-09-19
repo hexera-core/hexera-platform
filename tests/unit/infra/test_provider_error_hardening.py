@@ -140,6 +140,25 @@ def test_an_unknown_exception_is_an_application_defect_not_provider_weather():
     assert providers.classify(ValueError("something we did")) is FC.APPLICATION_DEFECT
 
 
+def test_a_provider_that_breaks_its_own_stream_is_provider_weather_not_our_defect():
+    # The SDK raises a bare APIError when a response it had begun streaming carries an error
+    # event or ends mid-way. The provider accepted the request and failed after: a 5xx in all
+    # but name, so it must retry and fail over like one. Classified as our defect, it ended nine
+    # sweep jobs and a console run with a valid mesh already built.
+    import httpx
+    import openai
+    exc = openai.APIError(message="An error occurred during streaming",
+                          request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
+                          body=None)
+    assert providers.classify(exc) is FC.SERVICE_UNAVAILABLE
+
+
+def test_a_status_error_the_sdk_does_subclass_keeps_its_own_category():
+    # The bare-APIError rule is exact-type: subclasses keep their specific classification.
+    assert providers.classify(_exc("bad_request")) is FC.INVALID_REQUEST
+    assert providers.classify(_exc("auth")) is FC.AUTH
+
+
 def test_a_balance_error_is_not_a_transient_provider_fault():
     o = _openai()
     resp = SimpleNamespace(status_code=400, headers={},
