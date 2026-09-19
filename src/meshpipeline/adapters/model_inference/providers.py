@@ -64,6 +64,16 @@ def classify(exc: BaseException) -> FailureCategory:
             return FailureCategory.CONNECTION
         if isinstance(exc, openai.InternalServerError):
             return FailureCategory.SERVICE_UNAVAILABLE
+        # THE PROVIDER BROKE ITS OWN STREAM. A bare APIError - not a status error, not a
+        # connection error - is what the SDK raises when a response it had already begun
+        # streaming carries an error event or ends mid-way ("An error occurred during
+        # streaming"). The request was accepted (HTTP 200, first chunk received) and the provider
+        # failed after that: provider weather, retryable and failover-eligible, exactly like a
+        # 5xx. Left to fall through to APPLICATION_DEFECT below it ended the job on the spot -
+        # nine shapes of the full cfMesh sweep and the first console run on dev, each with a
+        # valid mesh already built and one model call away from delivery.
+        if type(exc) is openai.APIError:
+            return FailureCategory.SERVICE_UNAVAILABLE
 
     if isinstance(exc, (TimeoutError,)):
         return FailureCategory.TIMEOUT
@@ -74,6 +84,6 @@ def classify(exc: BaseException) -> FailureCategory:
         return FailureCategory.CONNECTION
     # Unknown exceptions are APPLICATION DEFECTS, not provider weather. Defaulting the unknown
     # to a transient category would make every bug in this product failover-eligible.
-    logger.warning("model call raised an unclassified %s - treating as an application defect "
-                   "(no failover)", name)
+    logger.warning("model call raised an unclassified %s (%s) - treating as an application "
+                   "defect (no failover)", name, str(exc)[:200])
     return FailureCategory.APPLICATION_DEFECT
