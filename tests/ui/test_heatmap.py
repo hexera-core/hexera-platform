@@ -110,6 +110,27 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert marked["markers"] == 1 and marked["probeGone"]
     assert "1 mark" in marked["submit"]
 
+    # bad faces only: the inlet (cell 0, under the bar) goes flat grey, the outlet (over) keeps
+    # its colour; 'next bad spot' moves the camera onto the one hotspot and lights it
+    bad = live.evaluate(f"""(() => {{
+      const h = window._vdbg['{JOB}:heat'];
+      const before = h.colorOf('inlet', 0);
+      h.setBadOnly(true);
+      const inlet = h.colorOf('inlet', 0), outlet = h.colorOf('outlet', 0);
+      const f = h.next();
+      const fp = h.focal();
+      const dist = Math.hypot(fp[0]-f.x, fp[1]-f.y, fp[2]-f.z);
+      const lg = document.querySelector('#viewer-{JOB} .v-legend');
+      return {{on: h.badOnly(), n: h.hotN(), before, inlet, outlet, focus: f, dist,
+               text: lg.textContent, checked: lg.querySelector('.tog input').checked}};
+    }})()""")
+    assert bad["on"] is True and bad["checked"] is True and bad["n"] == 1, bad
+    assert bad["inlet"] == [46, 44, 40] and bad["before"] != [46, 44, 40], bad
+    assert bad["outlet"] != [46, 44, 40], bad
+    assert bad["focus"]["index"] == 0 and bad["dist"] < 1e-6, bad
+    assert "next bad spot 1/1" in bad["text"]
+    live.evaluate(f"window._vdbg['{JOB}:heat'].setBadOnly(false)")
+
     # aspect ratio: cell 0 is a unit cube and reads 1.00; checkMesh's bar (1000) is far above
     # the mesh's range, so the scale spans the mesh's own values and no limit tick is drawn
     ar = live.evaluate(f"""(() => {{
