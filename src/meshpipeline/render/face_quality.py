@@ -61,6 +61,10 @@ class _Patch:
     name: str
     start: int
     n: int
+    #: A patch that names its faces one by one, in the order the viewer draws them, rather than
+    #: as a run of consecutive face ids - how a volume mesh's boundary arrives (render/
+    #: volume_quality). A face may appear more than once (a quad drawn as two triangles).
+    face_ids: np.ndarray | None = None
 
 
 @dataclass
@@ -387,7 +391,10 @@ def _patch_face_ids(mesh: _Mesh, patch: _Patch) -> np.ndarray:
     The surface reader drops faces with fewer than three vertices, so the polygon index in the
     viewer is the index among the patch's faces that survive that filter. Mirror it exactly -
     an off-by-one here would colour every face with its neighbour's number."""
-    ids = np.arange(patch.start, patch.start + patch.n)
+    if patch.face_ids is not None:
+        ids = np.asarray(patch.face_ids, dtype=np.int64)
+    else:
+        ids = np.arange(patch.start, patch.start + patch.n)
     ids = ids[(ids >= 0) & (ids < mesh.n_faces)]
     return ids[np.diff(mesh.face_off)[ids] >= 3]
 
@@ -453,6 +460,16 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     except UnreadableMesh as exc:
         logger.info("viewer quality fields skipped: %s", exc)
         return None
+    return quality_fields_of(mesh, non_ortho_limit=non_ortho_limit, skew_limit=skew_limit,
+                             aspect_limit=aspect_limit, patch_names=patch_names)
+
+
+def quality_fields_of(mesh: _Mesh, *, non_ortho_limit: float,
+                      skew_limit: float = INTERNAL_SKEW_LIMIT,
+                      aspect_limit: float = ASPECT_RATIO_LIMIT, patch_names=None) -> dict | None:
+    """The per-face quality fields of a mesh already in memory - read from a polyMesh above, or
+    built from a volume mesh's cells by render/volume_quality. One measurement for every engine,
+    so a gmsh or VMTK delivery is coloured by exactly the numbers an OpenFOAM one is."""
     if mesh.n_faces == 0 or mesh.n_cells == 0:
         return None
     if mesh.n_faces > MAX_FACES_FOR_FIELDS:
@@ -491,7 +508,7 @@ def quality_fields(polymesh_dir, *, non_ortho_limit: float,
     names = [p.name for p in mesh.patches]
     patch_of_face = np.full(mesh.n_faces, -1, dtype=np.int64)
     for i, p in enumerate(mesh.patches):
-        patch_of_face[p.start:p.start + p.n] = i
+        patch_of_face[_patch_face_ids(mesh, p)] = i
 
     per_patch: dict[str, dict] = {}
     for p in patches:

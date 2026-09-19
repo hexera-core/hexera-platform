@@ -116,12 +116,18 @@ def _target_obligations(manifest, engine_params, purpose):
 
 
 def _viewer_surface():
-    from meshpipeline.engines.vmtk.viewer_surface import surface_patches
+    from meshpipeline.engines.vmtk.viewer_surface import read_vtu, surface_patches_of
     from meshpipeline.render.viewer_pack import stl_response
+    from meshpipeline.render.volume_quality import attach_volume_quality
 
     def _hook(workspace, *, roles, units, skip_names=()):
-        # the tet mesh's boundary surface (mesh.vtu) → the shared kind=stl payload
-        return stl_response(surface_patches(workspace, named=True), roles, units, skip_names)
+        # the tet mesh's boundary surface (mesh.vtu) → the shared kind=stl payload, coloured by
+        # the quality of the tets behind each face - the same measurement an OpenFOAM mesh gets
+        mesh = read_vtu(workspace, named=True)
+        resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+        if resp and mesh:
+            attach_volume_quality(resp, mesh["points"], mesh["cells"], mesh["patches"])
+        return resp
     return _hook
 
 
