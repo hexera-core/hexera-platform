@@ -183,6 +183,47 @@ def test_the_blocked_passes_give_the_same_numbers_as_one_block(tmp_path, monkeyp
     assert blocked["hotspots"] == whole["hotspots"]
 
 
+# ------------------------------------------------------- the two neighbour conventions ----
+def _rewrite_neighbour_cfmesh_style(polymesh: Path) -> None:
+    """cfMesh's form of the file: one entry per face, -1 on every boundary face."""
+    from tests.foam_fixtures import _foam
+    mesh = FQ.read_polymesh(polymesh)
+    n_faces = len(mesh.face_off) - 1
+    records = [str(n) for n in mesh.neighbour] + ["-1"] * (n_faces - len(mesh.neighbour))
+    _foam(polymesh / "neighbour", "labelList", "neighbour", n_faces, records)
+
+
+def test_a_cfmesh_neighbour_list_measures_the_same_as_the_openfoam_one(tmp_path):
+    # cfMesh writes `neighbour` for EVERY face and marks the boundary faces -1; OpenFOAM writes
+    # the internal faces only. Read as internal-only, the -1s crashed np.bincount and every
+    # cfMesh delivery shipped without a heatmap - the figures on the result page never became
+    # clickable and nobody was told why.
+    write_row_of_hexes(tmp_path / "polyMesh", shear_last_y=SHEAR)
+    reference = FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0)
+    _rewrite_neighbour_cfmesh_style(tmp_path / "polyMesh")
+    q = FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0)
+    assert q is not None
+    for name in ("inlet", "outlet", "wall"):
+        for field in ("non_ortho_b64", "skewness_b64", "aspect_ratio_b64"):
+            assert np.array_equal(_f32(q["patches"][name][field]),
+                                  _f32(reference["patches"][name][field]))
+    assert q["metrics"] == reference["metrics"]
+    assert q["hotspots"] == reference["hotspots"]
+
+
+def test_boundary_marks_off_the_tail_are_refused_not_mismeasured(tmp_path):
+    # A -1 among the internal faces, or a cell id on the boundary tail, is a file this reader
+    # does not understand; it must say so (no fields) rather than colour cells by wrong labels.
+    from tests.foam_fixtures import _foam
+    write_row_of_hexes(tmp_path / "polyMesh")
+    mesh = FQ.read_polymesh(tmp_path / "polyMesh")
+    n_faces = len(mesh.face_off) - 1
+    records = [str(n) for n in mesh.neighbour] + ["-1"] * (n_faces - len(mesh.neighbour))
+    records[0], records[-1] = records[-1], records[0]
+    _foam(tmp_path / "polyMesh" / "neighbour", "labelList", "neighbour", n_faces, records)
+    assert FQ.quality_fields(tmp_path / "polyMesh", non_ortho_limit=65.0) is None
+
+
 def test_labels_and_faces_are_read_as_32_bit(tmp_path):
     write_row_of_hexes(tmp_path / "polyMesh")
     mesh = FQ.read_polymesh(tmp_path / "polyMesh")

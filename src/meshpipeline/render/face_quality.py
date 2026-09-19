@@ -198,6 +198,24 @@ def _read_boundary(path: Path) -> list[_Patch]:
     return out
 
 
+def _internal_neighbours(neighbour: np.ndarray, n_faces: int, d: Path) -> np.ndarray:
+    """The neighbour labels of the INTERNAL faces, whichever way the mesher wrote the file.
+
+    OpenFOAM writes `neighbour` for the internal faces only. cfMesh writes one entry per face
+    and marks every boundary face with -1 - a form OpenFOAM's own reader accepts. The metrics
+    index cells by these labels, so the boundary tail is trimmed here. Read as internal-only,
+    the -1s reached np.bincount and raised; the measurement was swallowed as designed, and
+    every cfMesh delivery shipped without a heatmap (2026-09-19, dev, bend_elbow_010 twice)."""
+    if neighbour.size == 0 or int(neighbour.min()) >= 0:
+        return neighbour
+    if neighbour.size != n_faces:
+        raise UnreadableMesh(f"{d}: neighbour carries -1 entries but is not one per face")
+    n_internal = int(np.argmax(neighbour < 0))            # the first boundary face
+    if (neighbour[:n_internal] < 0).any() or (neighbour[n_internal:] >= 0).any():
+        raise UnreadableMesh(f"{d}: boundary faces are not the tail of the neighbour list")
+    return neighbour[:n_internal]
+
+
 def read_polymesh(polymesh_dir: Path) -> _Mesh:
     d = Path(polymesh_dir)
     for name in ("points", "faces", "owner", "neighbour", "boundary"):
@@ -210,6 +228,7 @@ def read_polymesh(polymesh_dir: Path) -> _Mesh:
     nf = len(face_off) - 1
     if len(owner) != nf or len(neighbour) > nf:
         raise UnreadableMesh(f"{d}: owner/neighbour do not match {nf} faces")
+    neighbour = _internal_neighbours(neighbour, nf, d)
     if face_flat.size and int(face_flat.max()) >= len(points):
         raise UnreadableMesh(f"{d}: a face names a point that does not exist")
     return _Mesh(points, face_flat, face_off, owner, neighbour, _read_boundary(d / "boundary"))
