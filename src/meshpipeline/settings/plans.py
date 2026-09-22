@@ -13,6 +13,10 @@ class PlanLimits:
     max_jobs_per_owner: int
     max_concurrent_jobs: int
     rate_limit_per_minute: int
+    #: CREDITS INCLUDED in the tier's flat fee each period. Everything above this is overage, metered
+    #: and billed in arrears. Zero means the tier includes nothing - the honest value for a caller
+    #: with no plan, who is spending a signup grant rather than an allowance.
+    included_credits: int = 0
 
 
 @dataclass(frozen=True)
@@ -22,14 +26,44 @@ class PlanOverride:
     max_jobs_per_owner: int | None = None
     max_concurrent_jobs: int | None = None
     rate_limit_per_minute: int | None = None
+    included_credits: int | None = None
 
 
-# THE PLAN CATALOGUE, deliberately empty. The mechanism ships now so a key can carry a plan and the
-# quota gate can honour it; what a paid tier is actually allowed to consume is a product decision
-# that has not been made, and inventing numbers here would make it look as though it had. An empty
-# catalogue means every caller - keyed or not - gets exactly the limits this deployment configures,
-# which is the behaviour that exists today.
-PLANS: dict[str, PlanOverride] = {}
+# THE PLAN CATALOGUE. It was deliberately empty until the charging model was decided; the shape
+# chosen is HYBRID - a flat tier carrying an allowance, with metered overage above it.
+#
+# WHAT EACH TIER DECLARES AND WHAT IT DOES NOT. A tier states only what it CHANGES. Anything left
+# out stays the deployment's configured value rather than becoming a second copy that drifts - the
+# reason PlanOverride's fields are all optional. That is why no tier restates rate_limit_per_minute
+# it does not mean to move.
+#
+# THE NUMBERS BELOW ARE PLACEHOLDERS AND ARE MEANT TO BE ARGUED WITH. They are internally
+# consistent - each tier is a strict superset of the one beneath it - but no pricing research
+# produced them, and `included_credits` in particular must be set against the measured cost of a
+# mesh job before anyone is charged. They live here, in configuration-shaped code, precisely so
+# that changing them is a one-line diff and not a migration.
+PLANS: dict[str, PlanOverride] = {
+    "starter": PlanOverride(
+        max_jobs_per_owner=50,
+        max_concurrent_jobs=3,
+        included_credits=1_000,
+    ),
+    "team": PlanOverride(
+        max_jobs_per_owner=500,
+        max_concurrent_jobs=10,
+        rate_limit_per_minute=600,
+        included_credits=10_000,
+    ),
+    # ENTERPRISE IS NOT PURCHASABLE and has no price id on purpose: it is invoiced, not checked out.
+    # settings/billing.py resolves no price for this name, so a checkout naming it is refused rather
+    # than half-completed - the plan is set by the operator who raises the invoice.
+    "enterprise": PlanOverride(
+        max_jobs_per_owner=10_000,
+        max_concurrent_jobs=50,
+        rate_limit_per_minute=3_000,
+        included_credits=100_000,
+    ),
+}
 
 
 def default_limits() -> PlanLimits:
@@ -39,6 +73,10 @@ def default_limits() -> PlanLimits:
         max_jobs_per_owner=polcfg.MAX_JOBS_PER_OWNER,
         max_concurrent_jobs=polcfg.MAX_CONCURRENT_JOBS,
         rate_limit_per_minute=rtcfg.RATE_LIMIT_PER_MINUTE,
+        # NO PLAN INCLUDES ANYTHING. A caller without a tier is spending a signup grant, not an
+        # allowance, and reporting a non-zero included figure here would make the overage reconciler
+        # forgive usage that nobody paid for.
+        included_credits=0,
     )
 
 
@@ -63,6 +101,7 @@ def limits_for(plan: str | None) -> PlanLimits:
         max_jobs_per_owner=_or(override.max_jobs_per_owner, base.max_jobs_per_owner),
         max_concurrent_jobs=_or(override.max_concurrent_jobs, base.max_concurrent_jobs),
         rate_limit_per_minute=_or(override.rate_limit_per_minute, base.rate_limit_per_minute),
+        included_credits=_or(override.included_credits, base.included_credits),
     )
 
 

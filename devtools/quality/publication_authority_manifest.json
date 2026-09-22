@@ -1123,6 +1123,19 @@
   "roots": []
  },
  {
+  "context": "api/v1/stripe_webhook.py::receive::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/stripe_webhook.py",
+  "qualname": "receive",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "api/v1/upload.py::upload_step_file::error#1|NotAPublisher|not-a-publisher|",
   "path": "api/v1/upload.py",
   "qualname": "upload_step_file",

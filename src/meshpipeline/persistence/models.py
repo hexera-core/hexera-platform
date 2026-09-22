@@ -600,6 +600,41 @@ class Organization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  server_default=func.now(), nullable=False)
 
+    # THE BILLING IDENTITY. All five columns are the organisation's relationship with Stripe, and
+    # every one of them is Stripe's answer rather than ours: this process writes them only when a
+    # webhook or a checkout says so, and reads them everywhere else. See 0006_stripe_billing.
+    stripe_customer_id:     Mapped[str | None] = mapped_column(String(255), nullable=True,
+                                                               unique=True, index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: A KEY IN settings.plans.PLANS, lowercase. Empty means no plan, which resolves to the
+    #: deployment's configured limits - deliberately the same answer an unknown plan gets.
+    plan:                   Mapped[str] = mapped_column(String(64), nullable=False,
+                                                        server_default="")
+    #: STRIPE'S OWN WORD for the subscription state, not a boolean: `past_due` still serves while
+    #: the card is retried, and `canceled` does not.
+    subscription_status:    Mapped[str] = mapped_column(String(32), nullable=False,
+                                                        server_default="")
+    current_period_end:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                                    nullable=True)
+
+
+class StripeEvent(Base):
+    # ONE HANDLED WEBHOOK. Stripe delivers at least once and retries every non-2xx, so a repeat is
+    # routine traffic rather than a fault. Every handler behind this table writes something - a
+    # credit grant, a plan move - and replaying a grant mints credits nobody bought.
+    #
+    # The event id IS the primary key: the uniqueness that matters is Stripe's, and inserting this
+    # row inside the handler's own transaction makes the duplicate collide on write. A handler
+    # cannot forget the check, and two concurrent deliveries cannot both pass it.
+
+    __tablename__ = "stripe_events"
+
+    id:         Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: For an operator reading this table during an incident. Nothing branches on it.
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    handled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 server_default=func.now(), nullable=False)
+
 
 class User(Base):
     # THE PERSON. Identity Platform holds their credential; this row holds everything about them
@@ -688,6 +723,10 @@ class CreditLedgerEntry(Base):
     reason: Mapped[str] = mapped_column(String(128), nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  server_default=func.now(), nullable=False)
+    #: WHEN THIS DEBIT WAS REPORTED to the billing provider's meter, and NULL until it was. Only a
+    #: debit is ever metered - a grant and a refund stay NULL forever. See 0007_usage_metering for
+    #: why reporting cannot happen in the transaction that writes the row.
+    metered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__: tuple = (
         # THE BALANCE QUERY, and the ledger view's ordering. Both read this index.

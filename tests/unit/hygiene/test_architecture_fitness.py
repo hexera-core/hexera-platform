@@ -145,6 +145,23 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "ungated: it checks MESH_API_KEY before anything else and then refuses any token that "
         "does not verify. test_the_identity_establishing_route_is_still_gated below keeps that "
         "true, so this exception cannot quietly become an open door."),
+    "api/v1/stripe_webhook.py:receive": (
+        "POST /api/v1/webhooks/stripe is called by the PAYMENT PROVIDER, which holds no credential "
+        "of ours and cannot present one - requiring owner_dep would require the provider to sign "
+        "in, which it has no way to do. It is not ungated: the Stripe-Signature header is an HMAC "
+        "over the raw body, verified against STRIPE_WEBHOOK_SECRET before the body is read as "
+        "anything but bytes, and a deployment with no secret configured refuses the route outright "
+        "rather than trusting what it cannot verify. "
+        "test_the_billing_webhook_refuses_an_unverified_body keeps that true."),
+    "api/v1/admin_billing.py:raise_invoice": (
+        "POST /api/v1/admin/billing/organizations/{id}/invoices is the OPERATOR's route, not a "
+        "tenant's: it raises an invoice ACROSS the tenant boundary for an account that is invoiced "
+        "rather than checked out. `owner_dep` proves which ONE tenant a caller is, which is exactly "
+        "what this route must not be scoped to - requiring it would mean an operator could only "
+        "invoice themselves. It is not ungated: every route in that module carries "
+        "Depends(admin_dep), which checks ADMIN_API_KEY - a credential deliberately separate from "
+        "MESH_API_KEY - and refuses with 404 when the deployment has not set one. "
+        "test_every_route_carries_the_guard pins that no route there can lose it."),
 }
 
 

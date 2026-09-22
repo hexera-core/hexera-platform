@@ -3,6 +3,7 @@
 from meshpipeline.adapters.pipeline_execution.celery_app import celery_app
 from meshpipeline.application.maintenance import cleanup as _cleanup
 from meshpipeline.application.maintenance import export as _export
+from meshpipeline.application.maintenance import meter as _meter
 from meshpipeline.application.maintenance import reconcile as _reconcile
 
 
@@ -19,6 +20,11 @@ def reap_stalled_jobs() -> dict:
 @celery_app.task(name="tasks.cleanup.purge_expired_geometry_sources")
 def purge_expired_geometry_sources() -> dict:
     return _cleanup.purge_expired_geometry_sources()
+
+
+@celery_app.task(name="tasks.billing.report_pending_usage")
+def report_pending_usage() -> dict:
+    return _meter.report_pending_usage()
 
 
 @celery_app.task(name="tasks.cleanup.reconcile_orphan_artifacts")

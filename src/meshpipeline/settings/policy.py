@@ -51,6 +51,19 @@ if requires_hardened_runtime(ENV):
             "The API would accept self-asserted identities. Set both secrets for a multi-tenant "
             "deployment, or use ENV=dev for genuinely local single-tenant use.")
 CORS_ORIGINS: list = optional_env("CORS_ORIGINS", "*").split(",")
+# THE CROSS-TENANT READ CREDENTIAL, and the only one in this product. Every other credential
+# resolves to ONE tenant and everything downstream scopes on it; the admin billing routes
+# deliberately do not scope, because an operator asking "which customers are past due" is asking
+# across all of them.
+#
+# IT IS ITS OWN SECRET rather than a reuse of MESH_API_KEY. MESH_API_KEY is held by the console,
+# the worker and the mesh executor - three services that have no business reading another tenant's
+# ledger - and overloading it would silently widen all three. A separate name also means rotating
+# this one does not restart the fleet.
+#
+# BLANK REFUSES THE ROUTES ENTIRELY. There is no default, and no deployment gets cross-tenant
+# access by forgetting to set something.
+ADMIN_API_KEY: str = optional_env("ADMIN_API_KEY", "")
 
 # job quotas + retention
 MAX_JOBS_PER_OWNER: int         = int(optional_env("MAX_JOBS_PER_OWNER", "5"))
@@ -59,6 +72,20 @@ MAX_CONCURRENT_JOBS: int        = int(optional_env("MAX_CONCURRENT_JOBS", "20"))
 # the grant without a code change. What a credit is WORTH is deliberately not decided here or
 # anywhere else yet - see the design's decision 8.
 SIGNUP_GRANT_CREDITS: int = int(optional_env("SIGNUP_GRANT_CREDITS", "100"))
+# WHAT ONE SUCCEEDED JOB COSTS, in whole credits: a flat admission charge plus the mesh's own
+# wall-clock minutes. Two parts because the two costs are real and different - every job pays for
+# the fixed work of intake, review and artifact handling, and a long mesh additionally pays for the
+# executor it occupied.
+#
+# WALL CLOCK, not CPU: it is what `simulation_jobs.started_at`/`ended_at` already record, and it is
+# what the Cloud Run mesh job is billed on upstream. A metric the row does not carry would have to
+# be invented, and an invented cost is the thing a customer disputes first.
+#
+# A FAILED JOB COSTS NOTHING. The pipeline has several failure paths that can burn hours, and
+# charging for them would make this product's worst days its most expensive ones for the customer.
+# See application/metering_service.py, which is the only caller.
+JOB_BASE_CREDITS: int = int(optional_env("JOB_BASE_CREDITS", "10"))
+CREDITS_PER_MESH_MINUTE: int = int(optional_env("CREDITS_PER_MESH_MINUTE", "1"))
 # WHETHER an unrecognised Identity Platform account may provision itself one. This is the REAL
 # gate and it lives on the API, not the console: anyone can create an Identity Platform account
 # directly against the project's public web API key, so a console that merely hides the sign-up

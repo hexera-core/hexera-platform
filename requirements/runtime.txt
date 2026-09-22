@@ -47,6 +47,12 @@ redis==5.2.1
 sentry-sdk==2.19.2
 kombu==5.4.2
 
+# Billing
+# The SDK's own pinned version; the API VERSION it speaks is pinned separately in
+# settings/billing.py, because an account-level default can be changed in a browser by someone
+# who never opens this repository.
+stripe==15.6.0
+
 # MinIO / S3
 minio==7.2.11
 

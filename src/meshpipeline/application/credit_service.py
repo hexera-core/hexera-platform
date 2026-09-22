@@ -1,6 +1,7 @@
 # Responsibility: Issue credits to an organisation and answer what its balance is.
 # Owns: the fact that a balance is derived from entries, never stored.
-# Boundaries: issuance and reading only - this cycle deliberately has no way to spend (design section 2).
+# Boundaries: issuance, spending and reading. Spending arrived with Stripe billing; the ledger's
+#             shape was settled for it from the start, so it was a new caller and not a migration.
 from __future__ import annotations
 
 import uuid
@@ -34,6 +35,36 @@ async def grant(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
         return
     await credit_ledger_repo.append(db, organization_id=organization_id,
                                     entry_type=CreditEntryType.grant, amount=amount,
+                                    reason=reason)
+
+
+async def debit(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
+                reason: str = "") -> None:
+    # THE SPENDING SIDE, which the identity cycle declared and deliberately did not write. It takes
+    # a POSITIVE amount and stores it NEGATED, so no caller has to remember the sign convention -
+    # a caller that got it wrong would write a debit that increases the balance, and the ledger's
+    # only CHECK is that the amount is non-zero, so nothing downstream would catch it.
+    if amount < 0:
+        raise ValueError("a debit takes a positive amount; it is stored negated")
+    if amount == 0:
+        return
+    await credit_ledger_repo.append(db, organization_id=organization_id,
+                                    entry_type=CreditEntryType.debit, amount=-amount,
+                                    reason=reason)
+
+
+async def refund(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
+                 reason: str = "") -> None:
+    # A DEBIT THAT SHOULD NOT HAVE STOOD, returned as its own entry type rather than by deleting the
+    # debit. The ledger is append-only because "why is my balance this?" must stay answerable, and a
+    # deleted row answers it with silence. This pipeline has several failure paths that can strand a
+    # charge - FailedReason, artifact_reconciliations - and each of them ends here.
+    if amount < 0:
+        raise ValueError("a refund cannot be negative")
+    if amount == 0:
+        return
+    await credit_ledger_repo.append(db, organization_id=organization_id,
+                                    entry_type=CreditEntryType.refund, amount=amount,
                                     reason=reason)
 
 
