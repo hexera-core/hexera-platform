@@ -105,7 +105,9 @@ def _ceiling(monkeypatch, block, *, on=True, hard=4_000_000):
         return block
 
     monkeypatch.setattr(drivers, "_agent_block", agent_block)
-    return asyncio.run(drivers._cell_ceiling({}))
+    # the ceiling is read off the inputs the driver already holds for this call, so it is asked of one
+    # of those rather than of a free function: `_ForThisRun` is what every call site builds
+    return asyncio.run(drivers._ForThisRun({}).ceiling())
 
 
 def test_the_ceiling_is_the_compute_limit_with_the_survey_off(monkeypatch):
@@ -135,4 +137,4 @@ def test_a_ceiling_that_cannot_be_read_is_the_compute_limit(monkeypatch):
         raise RuntimeError("the row could not be read")
 
     monkeypatch.setattr(drivers, "_agent_block", boom)
-    assert asyncio.run(drivers._cell_ceiling({})) == polcfg.CELL_HARD_LIMIT
+    assert asyncio.run(drivers._ForThisRun({}).ceiling()) == polcfg.CELL_HARD_LIMIT
