@@ -294,6 +294,10 @@ its readers.
 | `GEOMETRY_VISION_PROVIDER` | `openai` | the provider the look reads with; no key for it means no look, never another provider |
 | `GEOMETRY_VISION_MODEL` | `gpt-5.6-luna` | the reader model on that provider |
 | `GEOMETRY_SURVEY_ENABLED` | `false` | intake asks the measurement's own questions, stores the answers with who gave them, and the builder gets the survey |
+| `GEOMETRY_AGENT_STEP_ENABLED` | `false` | the geometry agent plans the part at submission from the survey and the answers, a question only the plan raises is put once, and the builder gets both write-ups; dead unless `GEOMETRY_SURVEY_ENABLED` is on too |
+| `GEOMETRY_AGENT_STEP_PROVIDER` | `deepseek` | which model plans: `deepseek`, `deepinfra`, `anthropic`, `generic`, `auto`, or `reference` for the package's deterministic stand-in. No key for it means no plan, never another provider |
+| `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | `300` | one plan's wall clock; past it the step records a failure and the job runs as it does with the step off |
+| `GEOMETRY_AGENT_LEDGER_PATH` | (empty) | a JSONL file the job ledger's rows are also appended to; the durable copy always lives on the survey row |
 
 ### What the look is
 
@@ -382,8 +386,8 @@ request.
 | 2 | measure | the bytes were read once at upload; the stored reading is now composed FOR that purpose, those words and any ports they named, by the package's own `report_measured`, in milliseconds |
 | 3 | look | queued now, with the purpose and representation step 2 decided, and no longer at upload |
 | 4 | intake | the package's own questions (`contract.asking.questions_from`) are put, and intake asks nothing of its own about which opening is which; `answer_survey_question` stores each answer with who gave it |
-| 5 | geometry | the builder's own planner decides what to do; it is handed the survey as facts it may not re-decide |
-| 6 | intake | the budget trade, and only it, once every step-4 question is settled |
+| 5 | geometry | with `GEOMETRY_AGENT_STEP_ENABLED` off, the builder's own planner decides what to do and is handed the survey as facts it may not re-decide. With it on, the geometry agent plans first (below) |
+| 6 | intake | the budget trade, and only it, once every step-4 question is settled. With the step on there is a THIRD intake after it, for the question only a plan can raise |
 | 7 | builder | the survey rides in `metrics["geometry_agent"]["survey"]`, after the request cut, checked by the package's own validator |
 
 Why intake comes first, measured rather than argued: `ahmed_variant_001` is a bluff body with four
@@ -414,6 +418,43 @@ the planner as `customer_cell_cap` and holds nothing.
 
 The survey is stored in `geometry_surveys` (migration 0004), one row per upload, keyed by the file's
 sha256, so an answer can be bound to the part it was given about long after the conversation.
+
+### The geometry agent's step
+
+`GEOMETRY_AGENT_STEP_ENABLED` puts steps 5 and 6 of the chain on this platform. It is off by default
+and dead unless the survey is on: every gate under it is read together, so setting one flag cannot arm
+a chain whose earlier steps are off. Nothing below happens until it is set, which the repository gate
+`devtools/quality/check_vision_off_is_byte_identical.py` proves by hashing what the intake model and the
+mesh planner are handed in this checkout and in `3ba42c0`, the commit before the step existed.
+
+| | with the step off | with the step on |
+|---|---|---|
+| step 5 | nothing runs | at `submit_requirements`, `geometry_step.at_submission` runs the package's own chain (`chain.job.plan`) on the stored survey and the customer's answers, once per set of answers. It decides the flow patches, where the cells go, and what that costs by the builder's own sizing (`tools.estimate_builder_cells`, never `tools.refined_cell_estimate`) |
+| step 6 | the survey's own budget trade, and nothing after it | a THIRD intake, for a question that did not exist at step 4. The canonical one is the budget trade against what THIS PLAN costs; `contract.intake.binds_late` refuses any topic the survey already had. Put ONCE, with a default, and a default that stands is not a confirmation |
+| step 7 | the builder gets the survey in the typed block | the builder gets the geometry agent's write-up in front of the request and, in the typed block after the request cut, intake's write-up, the survey, the flow patches and the plan's envelope |
+
+**It waits for the customer.** The geometry agent plans from their answers, so step 5 does not run while
+the survey still has a question to put, its own budget trade included: confirming a budget composes the
+measurement again, and a plan made before that answer describes a job that no longer exists. A question
+that was put and skipped, or left to its default, is not one that is waiting.
+
+**It fails open, and it says why.** No model configured, the loop out of time, a plan the checker sends
+back, a contract refusal, a survey the platform cannot compose again from its own stored inputs: each is
+stored on the survey row as `status: failed` with the sentence, logged, and the job then runs exactly as
+it does with the switch off. No third question, the builder's request and typed block untouched. The
+builder's own read says the same sentence again when it falls back.
+
+**Where it runs and why there.** At `submit_requirements`, not in the pipeline graph: the graph runs
+after the customer has approved and left, and no node there can put a question to anybody. The
+submission is the last moment the customer is still in the conversation and the first moment the engine
+and the fidelity are settled. The plan is made there, once, and the builder reads it off the row.
+
+**Measured** on 2026-09-22, deterministically, with `GEOMETRY_AGENT_STEP_PROVIDER=reference` (the
+package's own stand-in policy, so no model was called and every figure reproduces from the bytes):
+49 real corpus parts measured through this platform's own `measure_local_file`, surveyed, answered and
+planned, then handed to the builder through `cad.regions.planner_inputs_for_state`, the call the snappy
+driver makes. 49 of 49 planned; 49 of 49 reached the builder with the plan.
+`devtools/quality/run_geometry_step_on_corpus.py` is the harness.
 
 ## Observability
 
