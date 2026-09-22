@@ -509,7 +509,8 @@ def survey_lines(state: dict | None) -> list[str]:
     if confirmed:
         lines.append("  Already settled by the customer's own answers: "
                      + "; ".join(f"{oid} is the {role}" for oid, role in sorted(confirmed.items())) + ".")
-    unsettled = [v for v in views if v["route"] in ("intake", "trade") and v["status"] in ("skipped", "defaulted")]
+    unsettled = [v for v in views if v["route"] in ("intake", "trade", "late")
+                 and v["status"] in ("skipped", "defaulted")]
     if unsettled:
         lines.append("  Put and NOT settled (a default that stood is not an answer): "
                      + ", ".join(v["id"] for v in unsettled) + ".")
@@ -520,9 +521,13 @@ def survey_lines(state: dict | None) -> list[str]:
             "  confirm, and a port that does not bind to the mouth they named."])
         return lines
     trade = now[0]["route"] == "trade"
+    late = now[0]["route"] == "late"
     lines.extend([
         "  " + ("ONE MORE, and only this one: the cost of resolving the part against the budget they stated."
                 if trade else
+                "ONE MORE, and only this one, now that the geometry agent has planned the part: what resolving "
+                "the places its plan names costs against the budget they stated. Put it once."
+                if late else
                 "The measurement and the look could not settle these. Put them in these words or close to them."),
         "  When the customer answers, call answer_survey_question with the id, the option EXACTLY as listed,",
         "  and their own words quoted exactly. If they decline, record it with skipped. If they tell you to",

@@ -47,13 +47,18 @@ logger = logging.getLogger(__name__)
 #   The look worker recomposes the survey when the look lands, so the questions only the look can
 #   raise (a mouth the measurement did not find) arrive before the conversation ends.
 #
-#   Step 5 is not on this platform. The agent's reasoning pass is not called here; the builder's own
-#   planner decides what to do, and it is handed the survey as facts it may not re-decide.
+#   Step 5 is `application/geometry_step.py`, behind GEOMETRY_AGENT_STEP_ENABLED. With it off the
+#   agent's reasoning pass is not called here; the builder's own planner decides what to do, and it
+#   is handed the survey as facts it may not re-decide. With it on, the geometry agent plans the part
+#   at submission, from the stored survey and the customer's answers, through the package's chain.
 #
 #   Step 6 is the budget trade, released only when every step-4 question is settled, and put once.
+#   With the step on, a trade costed on the geometry agent's PLAN is the third intake (`ROUTE_LATE`),
+#   and only when the survey had no budget question of its own.
 #
 #   Step 7 is `cad.regions.agent_block_for_state`, which puts `survey` into the block the planner
-#   serialises after `request_txt[:2000]`.
+#   serialises after `request_txt[:2000]`; with the step on, `cad.regions.planner_inputs_for_state`
+#   hands the planner the geometry agent's write-up in front of the cut and its typed block after it.
 CHAIN: tuple[tuple[str, str], ...] = (
     ("intake", "the customer states purpose, budget and boundary conditions"),
     ("measure", "the stored measurement is composed for what they said"),
@@ -84,6 +89,12 @@ DEFAULT_TAKEN = "default_taken"
 #: `agents/intake/unit_clarification.py` and the interpretation it records. `advisory` is reported
 #: and never put, because its answer changes nothing.
 ROUTE_INTAKE, ROUTE_TRADE, ROUTE_APPLICATION, ROUTE_ADVISORY = "intake", "trade", "application", "advisory"
+#: The third intake: a question that did not exist until the geometry agent planned the part, raised by
+#: `application/geometry_step.py` and nowhere else. It is not one of the survey's uncertainties, which is
+#: the point: the package refuses a late question on any topic the survey already had.
+ROUTE_LATE = "late"
+#: The `stage` an answer to a late question carries, so the step-4 handoff never reads it as one of its own.
+LATE_STAGE = "third"
 
 #: The customer's own words, kept for recomposition. Bounded, because a pasted spec sheet is not a
 #: brief and the budget and the carve sentence are always near the top of one.
@@ -148,6 +159,47 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
     priced at 2.9M cells where the customer's inlet gives 4.8M). None reads the inlets out of the
     declared ports the customer named, bound to mouths the way the submission gate binds them.
     """
+    made = composition(document, purpose=purpose, brief=brief, declared=declared, engine=engine, unit=unit,
+                       scale_to_metres=scale_to_metres, unit_basis=unit_basis, cell_cap=cell_cap,
+                       inlet_ids=inlet_ids)
+    composed, survey = made["composed"], made["survey"]
+    brief_text, ports, cap, stated_cap = made["brief"], made["ports"], made["cap"], made["stated_cap"]
+    inlet_ids = made["inlet_ids"]
+    stored_look = document.get("look")
+    look = stored_look if isinstance(stored_look, dict) else {}
+    return {
+        "schema": SURVEY_STATE_SCHEMA,
+        "sha256": str(survey.source_sha256),
+        "facts_sha256": str(survey.facts_sha256),
+        "survey": survey.model_dump(mode="json"),
+        "planner_block": composed.get("planner_block"),
+        "composed_for": {
+            "purpose": purpose, "engine": engine or "", "declared": ports,
+            "unit": unit or "", "unit_basis": unit_basis or "", "scale_to_metres": scale_to_metres,
+            "brief": brief_text, "brief_sha": brief_digest(brief_text),
+            "cell_cap": cap, "cell_cap_kind": "confirmed" if cell_cap is not None else (
+                "stated" if stated_cap is not None else ""),
+            "representation": composed.get("representation"),
+            "inlet_ids": sorted(inlet_ids),
+            "look_status": str(look.get("status") or "not_attempted"),
+            "composed_at": _now(),
+        },
+        "agent_git_sha": str((document.get("stamp") or {}).get("agent_git_sha") or ""),
+    }
+
+
+def composition(document: dict, *, purpose: str, brief: str | None = None,
+                declared: list[dict] | None = None, engine: str | None = None,
+                unit: str | None = None, scale_to_metres: float | None = None,
+                unit_basis: str | None = None, cell_cap: int | None = None,
+                inlet_ids: list[str] | None = None) -> dict:
+    """The package's own composition of the stored measurement, and the survey built from it.
+
+    `compose` is this plus the row it stores. It is separate because the geometry agent's step needs
+    the composed document itself (the opening table the agent's port rows are placed on, the survey
+    record the ledger keeps), and a second spelling of the `report_measured` call would be a second
+    thing to keep in step with this one. Raises `SurveyError`.
+    """
     if not isinstance(document, dict) or document.get("status") != "ok":
         raise SurveyError("there is no successful measurement to compose")
     facts_dump = document.get("facts")
@@ -179,27 +231,23 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
         raise SurveyError(f"the survey refused its own handoff: {exc}") from exc
     except Exception as exc:                       # noqa: BLE001 - never a turn, never a mesh
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
-    stored_look = document.get("look")
-    look = stored_look if isinstance(stored_look, dict) else {}
-    return {
-        "schema": SURVEY_STATE_SCHEMA,
-        "sha256": str(survey.source_sha256),
-        "facts_sha256": str(survey.facts_sha256),
-        "survey": survey.model_dump(mode="json"),
-        "planner_block": composed.get("planner_block"),
-        "composed_for": {
-            "purpose": purpose, "engine": engine or "", "declared": ports,
-            "unit": unit or "", "unit_basis": unit_basis or "", "scale_to_metres": scale_to_metres,
-            "brief": brief_text, "brief_sha": brief_digest(brief_text),
-            "cell_cap": cap, "cell_cap_kind": "confirmed" if cell_cap is not None else (
-                "stated" if stated_cap is not None else ""),
-            "representation": composed.get("representation"),
-            "inlet_ids": sorted(inlet_ids),
-            "look_status": str(look.get("status") or "not_attempted"),
-            "composed_at": _now(),
-        },
-        "agent_git_sha": str((document.get("stamp") or {}).get("agent_git_sha") or ""),
-    }
+    return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
+            "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids)}
+
+
+def composed_inputs(state: dict) -> dict:
+    """The arguments `compose` was called with for this row, read back off `composed_for`.
+
+    `cell_cap` is the one the composition used: the customer's confirmed budget when there is one, and
+    otherwise None, so the budget is read out of their words again exactly as it was the first time.
+    """
+    before = dict(state.get("composed_for") or {})
+    return {"purpose": before.get("purpose") or "internal_cfd", "brief": before.get("brief") or "",
+            "declared": before.get("declared") or None, "engine": before.get("engine") or None,
+            "unit": before.get("unit") or None, "scale_to_metres": before.get("scale_to_metres"),
+            "unit_basis": before.get("unit_basis") or None,
+            "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
+            "inlet_ids": list(before.get("inlet_ids") or [])}
 
 
 def _declared_inlets(document: dict, ports: list[dict]) -> list[str]:
@@ -241,6 +289,10 @@ def carry_answers(old: dict | None, fresh: dict) -> dict:
     if old.get("sha256") and old.get("sha256") != fresh.get("sha256"):
         # a survey for other bytes. Nothing it was told is about this file.
         return {**fresh, "asked": [], "answers": [], "stage": STAGE_SURVEYED}
+    # THE GEOMETRY AGENT'S HALF RIDES ACROSS a recomposition of the same bytes: its plan says which answers
+    # it was made for, so a plan the new composition no longer matches is refused where it is read, and the
+    # third intake's question stays, because it is asked once and an answer to it is still an answer
+    fresh = {**fresh, **{k: old[k] for k in ("late", "geometry_step") if k in old}}
     ids = {q["id"] for q in question_views(fresh)}
     # NOTHING THE CUSTOMER SAID IS DELETED. An answer to a question the new survey no longer raises is
     # kept in the same append-only list, marked retired, and every reader skips it: it binds nothing
@@ -306,7 +358,31 @@ def question_views(state: dict) -> list[dict]:
                 "marks": [pkg["marks"].as_json(m, compact=True) for m in q.of.evidence]}
         view["status"] = _status(view, mine)
         out.append(view)
+    late = late_view(state)
+    if late is not None:
+        late["status"] = _status(late, [a for a in answers if a.get("question_id") == late["id"]])
+        out.append(late)
     return out
+
+
+def late_view(state: dict | None) -> dict | None:
+    """The third intake's question as a view, or None. Only while the geometry agent's step is on, and
+    only when its plan raised one: with the step off no row carries `late` and nothing here runs."""
+    late = (state or {}).get("late")
+    if not isinstance(late, dict) or not late.get("id") or not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
+        return None
+    env = late.get("envelope") if isinstance(late.get("envelope"), dict) else {}
+    return {"id": str(late["id"]), "about": "cell_budget", "text": str(late.get("text") or ""),
+            "options": [str(o) for o in (late.get("options") or [])], "subjects": [],
+            "effect": "changes_mesh", "default": late.get("default"),
+            "evidence": [f"the plan's envelope {env.get('cells_high')} cells ({env.get('source')})",
+                         f"your stated budget {env.get('cap')} cells"],
+            "route": ROUTE_LATE, "why": str(late.get("because") or ""),
+            "options_from": "the stated budget and the builder emulator's envelope for this plan",
+            #: the two numbers the options were written from, in the marks `_trade_numbers` reads, so an
+            #: answer is settled from them and never parsed back out of the sentence
+            "marks": [{"field": "cell_budget", "kind": "stated", "value": env.get("cap")},
+                      {"field": "forecast.cells_high", "kind": "measured", "value": env.get("cells_high")}]}
 
 
 def _status(view: dict, answers: list[dict]) -> str:
@@ -345,7 +421,12 @@ def open_now(state: dict) -> list[dict]:
     step4 = [v for v in views if v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED]
     if step4:
         return step4
-    return [v for v in views if v["route"] == ROUTE_TRADE and v["status"] not in TRADE_PUT]
+    trade = [v for v in views if v["route"] == ROUTE_TRADE and v["status"] not in TRADE_PUT]
+    if trade:
+        return trade
+    # the third intake last, and put once exactly as the trade is: there is none unless the geometry
+    # agent's step planned the part and its plan raised one
+    return [v for v in views if v["route"] == ROUTE_LATE and v["status"] not in TRADE_PUT]
 
 
 #: The budget trade is put ONCE. A customer who let its default stand has not confirmed a budget, so the
@@ -419,18 +500,24 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
     if view is None:
         raise SurveyError(f"there is no survey question {question_id!r}; the questions are "
                           f"{sorted(views)}")
-    if view["route"] not in (ROUTE_INTAKE, ROUTE_TRADE):
+    if view["route"] not in (ROUTE_INTAKE, ROUTE_TRADE, ROUTE_LATE):
         raise SurveyError(f"{question_id!r} is not put through this tool" + (
             ": the application asks for the unit itself" if view["route"] == ROUTE_APPLICATION else ""))
-    if view["route"] == ROUTE_TRADE and any(v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED
-                                            for v in views.values()):
+    if view["route"] in (ROUTE_TRADE, ROUTE_LATE) and any(
+            v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED for v in views.values()):
         raise SurveyError("the budget trade is only put once every other survey question is settled")
+    if view["route"] == ROUTE_LATE and view["status"] in TRADE_PUT:
+        # ASKED ONCE. A late question that was answered, skipped or let default is not put again, and an
+        # answer to it is not replaced by a second one
+        raise SurveyError(f"{question_id!r} was already put and settled as {view['status']}; it is asked once")
     if not said_by_customer(words, latest_user_message):
         raise SurveyError("that quote is not in the customer's latest message. Quote their own words "
                           "exactly; if they did not answer, do not record an answer")
     row: dict[str, Any] = {"question_id": question_id, "about": view["about"], "at": _now(),
                            "words": str(words)[:500], "principal": str(principal or "")[:256],
                            "via": "intake_conversation"}
+    if view["route"] == ROUTE_LATE:
+        row["stage"] = LATE_STAGE
     if skipped:
         return _append(state, {**row, "answered_by": CUSTOMER, "skipped": True, "subject": "",
                                "value": None})
@@ -526,10 +613,15 @@ def confirmed_roles(state: dict | None) -> dict[str, str]:
 
 
 def confirmed_cell_cap(state: dict | None) -> int | None:
-    """The budget the customer confirmed in the trade, or None. A stated budget is not this."""
+    """The budget the customer confirmed in the trade, or None. A stated budget is not this.
+
+    The trade at step 6 of the SURVEY, costed on the measurement alone. A budget confirmed at the third
+    intake, against the geometry agent's plan, is not composed back into the survey: that question is not
+    one of the survey's, and the composition it would change is the one the plan was made against. It
+    reaches the builder through the geometry agent's handoff instead (`application/geometry_step.py`)."""
     for a in reversed(live_answers(state)):
         if (isinstance(a, dict) and a.get("about") == "cell_budget" and a.get("answered_by") == CUSTOMER
-                and not a.get("skipped") and isinstance(a.get("value"), int)):
+                and not a.get("skipped") and isinstance(a.get("value"), int) and a.get("stage") != LATE_STAGE):
             return int(a["value"])
     return None
 
@@ -546,11 +638,17 @@ def intake_handoff(state: dict):
     never asked, and the package refuses a handoff that cannot tell them apart.
     """
     pkg = _package()
-    asked = list(state.get("asked") or [])
+    # THE THIRD INTAKE IS NOT IN THIS HANDOFF. Its question is not one of the survey's, so an answer to it
+    # here is an answer to a question the survey never raised, which `contract.intake.binds_to` refuses; it
+    # travels in its own `LateIntakeHandoff` (`application/geometry_step.late_handoff`)
+    late_id = str(((state.get("late") or {}) if isinstance(state.get("late"), dict) else {}).get("id") or "")
+    asked = [q for q in (state.get("asked") or []) if not late_id or q != late_id]
     answers = []
     answered_ids: set[str] = set()
     for a in live_answers(state):
         if a.get("answered_by") != CUSTOMER or a.get("skipped"):
+            continue
+        if a.get("stage") == LATE_STAGE or (late_id and a.get("question_id") == late_id):
             continue
         answers.append(pkg["intake"].Answer(question_id=a["question_id"], about=a["about"],
                                             subject=str(a.get("subject") or ""), value=a.get("value"),
@@ -812,6 +910,11 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
     state = record_answer(state, question_id=question_id, choice=choice, role=role, words=words,
                           latest_user_message=latest_user_message, principal=owner_id,
                           skipped=skipped, took_default=took_default)
+    late = late_view(state)
+    if late is not None and late["id"] == question_id:
+        # the third intake's answer goes to the job ledger as the `trade` stage, the way the chain writes it
+        from meshpipeline.application import geometry_step
+        state = geometry_step.note_late_answer(state)
     cap = confirmed_cell_cap(state)
     before = state.get("composed_for") or {}
     new_cap = cap is not None and before.get("cell_cap") != cap
@@ -844,10 +947,10 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
         return "skipped"
 
 
-__all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "ROUTE_ADVISORY", "ROUTE_APPLICATION", "ROUTE_INTAKE",
-           "ROUTE_TRADE", "STAGE_ASKING", "STAGE_SETTLED", "STAGE_SURVEYED", "STAGE_TRADE",
-           "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "builder_block", "carry_answers", "compose",
-           "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "live_answers", "load", "mark_asked",
-           "named_inlets", "open_now",
+__all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
+           "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_SETTLED", "STAGE_SURVEYED",
+           "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "builder_block", "carry_answers", "compose",
+           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "late_view",
+           "live_answers", "load", "mark_asked", "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
            "said_by_customer", "save", "stage_of", "survey_enabled", "survey_the_part"]

@@ -126,7 +126,7 @@ def regions_of(path) -> CadRegions:
 
 
 __all__ = ["CadRegions", "MEASURED_NOT_ATTEMPTED", "agent_block_for_state", "components_of",
-           "reading_for_source",
+           "planner_inputs_for_state", "reading_for_source",
            "regions_for_session", "regions_of", "stored_document_for_source",
            "surface_analysis_from_document"]
 
@@ -307,6 +307,61 @@ async def agent_block_for_state(state) -> dict | None:
         logger.warning("geometry agent block: unavailable for this run (%s) - the planner sees "
                        "exactly what it sees with no measurement", exc)
         return None
+
+
+async def planner_inputs_for_state(state) -> tuple[Any, dict | None, str]:
+    """What the mesh planner is handed for a run: `(request_txt, typed block, why the step was not used)`.
+
+    With GEOMETRY_AGENT_STEP_ENABLED off this is `state.get("request_txt", "")` and
+    `agent_block_for_state(state)`, the two values every planner call site read before this existed,
+    and the reason is empty. The gate is read before anything is imported.
+
+    With it on, STEP 7 OF THE CHAIN: the geometry agent's write-up in front of the request and the
+    block the package's `contract.deliver.builder_handoff` validated after the cut, carrying the survey,
+    intake's write-up, the flow patches and the plan's envelope. Whenever that cannot be had (no plan,
+    a failed step, a plan for other answers, a contract refusal, a read that threw) the answer is the
+    two values the step-off path gives, and the third element says why. It never raises.
+    """
+    import meshpipeline.settings.policy as polcfg
+
+    request_txt = (state or {}).get("request_txt", "")
+    if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
+        return request_txt, await agent_block_for_state(state), ""
+    try:
+        got = await _geometry_step_inputs(state, str(request_txt or ""))
+        return got["request_txt"], got["typed"], ""
+    except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
+        from meshpipeline.application.geometry_step import StepRefused
+
+        why = str(exc) if isinstance(exc, StepRefused) else f"{type(exc).__name__}: {exc}"
+    return request_txt, await agent_block_for_state(state), why[:1000]
+
+
+async def _geometry_step_inputs(state, request_txt: str) -> dict:
+    """The step's handoff for this run, recorded in the job ledger once. Raises with the reason."""
+    import asyncio
+
+    from meshpipeline.application import geometry_step as gst
+    from meshpipeline.application import geometry_survey as gs
+    from meshpipeline.contracts.geometry_source import GeometrySourceRef
+
+    if not gst.step_enabled():
+        raise gst.StepRefused("the survey is off, so the geometry agent's step has nothing to read")
+    payload = ((state or {}).get("geometry") or {}).get("ref")
+    if not payload:
+        raise gst.StepRefused("this run names no uploaded geometry")
+    ref = GeometrySourceRef.from_payload(payload)
+    document = await stored_document_for_source(ref)
+    if document is None:
+        raise gst.StepRefused("there is no stored measurement of these bytes")
+    survey = await gs.load(str(ref.owner_id), str(ref.source_id), sha256=str(ref.sha256))
+    if survey is None:
+        raise gst.StepRefused("no survey was stored for this upload")
+    handoff = await asyncio.to_thread(gst.builder_handoff, survey, document, request_txt=request_txt)
+    recorded = gst.record_handover(survey, handoff)
+    if recorded is not survey:
+        await gs.save(str(ref.owner_id), str(ref.source_id), recorded)
+    return {"request_txt": gst.request_with_write_up(handoff, request_txt), "typed": handoff["typed"]}
 
 
 async def _surveyed_block(ref, document: dict) -> dict | None:

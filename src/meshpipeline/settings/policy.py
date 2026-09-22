@@ -145,6 +145,34 @@ GEOMETRY_SURVEY_ENABLED: bool = (
     optional_env("GEOMETRY_SURVEY_ENABLED", "false").lower() == "true"
     and GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED)
 
+# THE GEOMETRY AGENT'S STEP, a FIFTH gate, off by default on its own and dead unless the survey is on.
+# It puts steps 5 and 6 of the chain on this platform. When intake submits, the geometry agent plans
+# the part from the stored survey and the customer's answers (the flow patches, where the cells go and
+# what that costs by the builder's own sizing), through the measurement package's own chain code; a
+# question only the plan can raise, the budget trade against the plan's envelope, is put once with a
+# default; and the builder receives intake's write-up and the geometry agent's, with the survey inside
+# the typed block. Every handoff is checked by the package's own contract and every step is written
+# to the job ledger on the survey row. If anything in it fails, the job runs exactly as it does with
+# this off and the reason is logged and kept on the row.
+#
+# What it costs: one run of the geometry agent's loop per submission whose answers changed, inside
+# the submission turn. The loop's own budget is GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS; over the clean
+# pair of 322-case learning runs the median case took 85 s and the p90 125 s (agent/loop.py).
+GEOMETRY_AGENT_STEP_ENABLED: bool = (
+    optional_env("GEOMETRY_AGENT_STEP_ENABLED", "false").lower() == "true"
+    and GEOMETRY_SURVEY_ENABLED)
+#: Which model plans. Named, never discovered, for the look's reason: the package's `auto` falls
+#: through providers, and a plan made by a model nobody chose is not a plan anybody measured.
+#: `reference` is the package's deterministic stand-in policy, for tests and proofs; its plans are
+#: grounded by the same checker and its ledger rows say `heuristic`, never `live`.
+GEOMETRY_AGENT_STEP_PROVIDER: str = optional_env("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek").strip().lower()
+#: The geometry agent's wall clock for one plan. Past it the step records a failure and the job runs
+#: as it does with the step off.
+GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300"))
+#: Where the job ledger's rows are ALSO appended as JSONL, for the package's own ledger tools. Empty,
+#: the default, keeps them on the survey row only, which is where the durable copy always lives.
+GEOMETRY_AGENT_LEDGER_PATH: str = optional_env("GEOMETRY_AGENT_LEDGER_PATH", "").strip()
+
 # durable graph checkpointing is MANDATORY outside genuinely-local dev/test. A silent
 # fallback from AsyncPostgresSaver to MemorySaver would make a mid-run restart re-run from scratch
 # (duplicate native/model work), lose in-flight state, or drop durable worker fencing - with NO

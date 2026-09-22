@@ -494,6 +494,33 @@ class IntakeToolExecutor:
         st.geometry_survey = state
         return gs.role_problems(state, st.geometry_document, args.get("patches"))
 
+    async def _geometry_step_gate(self, args: dict) -> list[str]:
+        """STEP 5 AND THE THIRD INTAKE, at the one moment both belong: after the customer's answers and
+        before the builder. The geometry agent plans the part here (once per set of answers), and a
+        question only its plan can raise is put before the submission goes through. Fails open: with the
+        step off, unarmed, or failing, this is empty and the submission is judged as it always was."""
+        import meshpipeline.settings.policy as polcfg
+
+        st = self.state
+        if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
+            return []
+        if not st.survey_armed or st.survey_source_ref is None or not isinstance(st.geometry_document, dict):
+            return []
+        from meshpipeline.application import geometry_step as gst
+
+        try:
+            state = await gst.at_submission(
+                owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
+                state=st.geometry_survey, document=st.geometry_document,
+                fidelity=str(args.get("mesh_fidelity") or "standard").strip().lower())
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            logger.warning("Intake: the geometry agent's step could not run (%s) - job_id=%s", exc, self._job_id)
+            return []
+        if state is None:
+            return []
+        st.geometry_survey = state
+        return gst.submission_problems(state)
+
     async def _do_submit_requirements(self, args: dict) -> IntakeToolResult:
         st = self.state
         st.submit_attempts += 1
@@ -547,6 +574,15 @@ class IntakeToolExecutor:
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 "Submission rejected - a port role must be the customer's: " + "; ".join(_unconfirmed)
                 + ". Nothing was saved."))
+
+        # THE GEOMETRY AGENT PLANS HERE, after every answer and before the builder, and the one question
+        # only its plan can raise is put once before this goes through. Empty with the step off.
+        _late = await self._geometry_step_gate(args)
+        if _late:
+            st.submit_rejections += 1
+            logger.info("Intake: submit held for the third intake's question - job_id=%s", self._job_id)
+            return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
+                "Submission held - " + "; ".join(_late) + ". Nothing was saved."))
 
         st.submit_args = args
         logger.info("Intake: submit_requirements AUTHORIZED - domain=%r - job_id=%s",

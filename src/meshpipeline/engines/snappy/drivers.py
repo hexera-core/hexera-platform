@@ -46,6 +46,34 @@ async def _agent_block(state) -> dict | None:
     return await agent_block_for_state(state)
 
 
+#: (job, reason) pairs already said, so a fallback is logged once per job and not once per plan call.
+_SAID_WHY: set[tuple[str, str]] = set()
+
+
+async def _planner_inputs(state, job_id: str = "") -> tuple[str, dict | None]:
+    """The request the planner reads and the typed block after its cut.
+
+    With GEOMETRY_AGENT_STEP_ENABLED off: `state.get("request_txt", "")` and `_agent_block(state)`,
+    exactly the two values every call site below read before the step existed. With it on: the geometry
+    agent's write-up in front of the request and its validated handoff as the block, or, when that cannot
+    be had, the step-off values and a log line and a job record saying why (`cad.regions`)."""
+    if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
+        return state.get("request_txt", ""), await _agent_block(state)
+    from meshpipeline.cad.regions import planner_inputs_for_state
+    request_txt, block, why = await planner_inputs_for_state(state)
+    if why and (str(job_id), why) not in _SAID_WHY:
+        _SAID_WHY.add((str(job_id), why))
+        logger.warning("geometry agent's step NOT used for this plan, the job runs as it does without it - "
+                       "job_id=%s: %s", job_id, why)
+        try:
+            from meshpipeline.capture.logger import TrainingLogger
+            TrainingLogger(str(job_id or "unknown")).log(
+                "geometry_step", {"used": False, "reason": why}, op_id="geometry_step:not_used")
+        except Exception:                          # noqa: BLE001 - the record is never worth a plan
+            pass
+    return request_txt, block
+
+
 async def _cell_ceiling(state) -> int:
     """The compute ceiling, or the customer's CONFIRMED cell budget when it is lower.
 
@@ -61,7 +89,10 @@ async def _cell_ceiling(state) -> int:
         return hard
     try:
         from meshpipeline.contracts.geometry_agent_block import confirmed_cell_cap
-        cap = confirmed_cell_cap(await _agent_block(state))
+        # the block the planner was handed: with the geometry agent's step off this is `_agent_block(state)`,
+        # and with it on it is the step's handoff, whose survey carries a budget confirmed at the third intake
+        _unused, _block = await _planner_inputs(state)
+        cap = confirmed_cell_cap(_block)
     except Exception:                              # noqa: BLE001 - a ceiling is never worth a mesh
         return hard
     return min(hard, cap) if cap else hard
@@ -326,15 +357,18 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
 
     for attempt in range(1, max_attempts + 1):
         if plan is None:   # repair: re-plan WITH the previous plan + critique (iterate with memory)
+            # the request and the typed block: the state's own and `_agent_block(state)` with the geometry
+            # agent's step off, its write-up and its handoff with it on (`_planner_inputs`)
+            _request, _block = await _planner_inputs(state, job_id)
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
                 workspace=workspace, job_id=job_id,
-                request_txt=state.get("request_txt", ""),
+                request_txt=_request,
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
                 prior_feedback=feedback, previous_plan=previous_plan,
                 # THE SECOND CHANNEL into the planner: a dict key, added after the 2,000-character
                 # cut, so it is never truncated. None adds no key and the prompt is unchanged.
-                geometry_agent=await _agent_block(state),
+                geometry_agent=_block,
                 # a real model round deserves the same public lifecycle
                 publish=publish, attempt=_attempt_of(state),
                 # WHICH re-plan this is. Each meshing pass plans against its own failure, so the
@@ -575,14 +609,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
 
     for attempt in range(1, max_attempts + 1):
         if plan is None:
+            _request, _block = await _planner_inputs(state, job_id)
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
                 workspace=workspace, job_id=job_id,
-                request_txt=state.get("request_txt", ""),
+                request_txt=_request,
                 mesh_fidelity=state.get("effective_mesh_fidelity", ""),
                 prior_feedback=feedback, previous_plan=previous_plan,
                 flow_regime="internal",
-                geometry_agent=await _agent_block(state),
+                geometry_agent=_block,
                 publish=publish, attempt=_attempt_of(state),
                 native_attempt=attempt, plan_call=run.plan_call_index)
             plan = _po.plan
@@ -759,13 +794,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if state.get("builder_mode", "initial") in ("initial", "rebuild"):
         prior_fb = (state.get("classifier_result", {}) or {}).get("summary", "") \
             or state.get("reviewer_feedback", "")
+        _request, _block = await _planner_inputs(state, job_id)
         _po = await plan_with_accounting(
             surface=_plan_surface(state, workspace),
             workspace=workspace, job_id=job_id,
-            request_txt=state.get("request_txt", ""),
+            request_txt=_request,
             mesh_fidelity=state.get("effective_mesh_fidelity", ""), prior_feedback=prior_fb,
             flow_regime="internal" if state.get("flow_topology") == "internal" else "external",
-            geometry_agent=await _agent_block(state),
+            geometry_agent=_block,
             # the first plan is a real model round too, and omitting the publisher traces
             # nothing: the plan still succeeds, so the only symptom is a silent card
             publish=publish, attempt=_attempt_of(state), plan_call=run.plan_call_index)
