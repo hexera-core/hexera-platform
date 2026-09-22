@@ -117,7 +117,7 @@ async function watchGeometryCheck(sessionId) {
     }
     if (status === "ready") {
       if (d.confirmed) return;                     // a reload after confirming: nothing to do
-      deps.geometryCheck(d, async (body) => {
+      deps.geometryCheck(sessionId, d, async (body) => {
         const reply = await confirmGeometryCheck(sessionId, body);
         deps.chat("assistant", reply.message);
         return reply;

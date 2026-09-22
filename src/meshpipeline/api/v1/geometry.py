@@ -88,10 +88,27 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             for s in payload.get("snapshots", [])]
         payload.pop("snapshots", None)
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
+        payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
     confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
     return payload
+
+
+@router.get("/{session_id}/check/skin")
+async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                         organization_id: str = Depends(org_dep)) -> dict:
+    """The part's skin as the viewer draws it - the structure a delivered surface has - for the
+    stage the user turns the part in. 404 when the check stored none."""
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        raise HTTPException(404, "The geometry check is not enabled on this deployment")
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application.geometry_check import check_object_key
+
+    payload = _read_json(check_object_key(str(session_id), "skin.json"))
+    if payload is None:
+        raise HTTPException(404, "No skin has been stored for this session's geometry check")
+    return {"session_id": str(session_id), **payload}
 
 
 def confirmation_message(body: ConfirmIn) -> str:
