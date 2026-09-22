@@ -641,6 +641,14 @@ def test_the_envelope_handed_over_is_the_stored_one_when_nothing_was_traded(arme
     assert stored, "the plan-time envelope is on the row"
     assert got["typed"]["plan_envelope"] == stored
 
+    # AND THE KEY ORDER IS THE ENVELOPE'S OWN, not whatever the row happened to be serialised with.
+    # Pinned because it is what moved when the handoff stopped reading the row, and because the two
+    # obvious rulers are both blind to it: dict equality ignores order, and so does the planner
+    # message's character count. The row's order is not ours to depend on anyway - Postgres JSONB does
+    # not preserve key order at all, and the tracked gate fixture was written with sorted keys - so a
+    # block composed from the type is the reproducible one.
+    assert list(got["typed"]["plan_envelope"])[0] == "cells_high"
+
 
 def test_a_raised_budget_moves_the_envelope_with_the_write_up_and_the_two_agree(armed):
     """THE JOB THE THIRD INTAKE EXISTS FOR. The envelope is a function of the cap - `planned_envelope`

@@ -478,6 +478,25 @@ customer budget inside that window it fires and runs to the end: on `manifold_00
 the plan costs 987,828, the question is put once with "hold 750,000" as its default, and the answer
 becomes `customer_cell_cap` in the builder's typed block and the mesh's own ceiling.
 
+**The envelope the builder gets is priced against the budget the customer settled on**, at the
+handoff, not read off the row. The envelope is a function of the cap: the package prices the plan
+twice, once properly and once held to the budget, and both halves move when the budget does. The
+stored one was priced at plan time, before the third intake existed, so on exactly the job the third
+intake is for the builder was handed a write-up composed for the new cap beside a typed envelope
+composed for the old one. On `manifold_001`, stated 750,000 and raised to 987,828, the write-up said
+688,485 cells of a 987,828 cap while the same dict's `plan_envelope` said a cap of 750,000 and
+`customer_cell_cap` beside it said 987,828. One dict, two caps. It is now priced again at the
+handoff: one cap, `held_cells_high` equal to the write-up's forecast to the cell, and the held note
+citing the cap the customer gave. The row keeps what it was priced at, because that is the record of
+what the trade traded. If the pricing cannot be done the step refuses the handoff and the job runs as
+it does with the step off: a wrong envelope is worse than none. No number moves on a job with no trade,
+which is most of them, and that was measured: 22 corpus parts, every envelope, cap, round count and
+message length identical to before the change, and the envelope compared field by field on two
+platforms. One thing did move: the key ORDER of that one dict, which used to be whatever the row was
+serialised with and is now the envelope type's own. That is the reproducible one, since Postgres JSONB
+does not preserve key order at all, and it is why the repository gate's F digest moved without a fact
+moving with it.
+
 **The agent opens the part itself, so the step fetches it.** Every mesh tool in the package goes
 through `ctx.mesh()`, which is `load_mesh(Path(facts.source_path))`, and the renderers read the same
 field. The stored measurement keeps that field empty on purpose: it was measured from an upload temp
@@ -491,16 +510,17 @@ Worth knowing because the deterministic table above could not see it. The stand-
 that opens the part, so all 49 of those rows passed with the path empty. The first LIVE run put
 `section_profile` on its second part and the step fell open with "unsupported format ''".
 
-**Measured live** on 2026-09-22 with `GEOMETRY_AGENT_STEP_PROVIDER=deepseek`, 8 draws on 8 corpus parts
-across all four representations, one draw each, through the same harness:
+**Measured live** on 2026-09-22 with `GEOMETRY_AGENT_STEP_PROVIDER=deepseek`, 9 draws through the same
+harness, over 7 corpus parts covering all four representations:
 
 | | |
 |---|---|
-| planned and reached the builder | 6 of 8: `venturi_orifice_001`, `tee_wye_001`, `cyclone_separator_001`, `static_mixer_001`, `s_duct_001`, `manifold_001` |
-| no plan, and the job ran without it | 2 of 8: `ahmed_variant_001` and `blade_row_passage_001`, both `grounding_rejected` after three submissions, because the model named a refinement kind (`farfield_box`, `preserve_blade_edges`) the catalog does not have. That is the package's own checker refusing a fact it cannot ground, not this step failing, and the builder got the step-off request and block with the sentence saying so |
-| one plan's wall clock | 37 to 55 s, median 46 s, on a live model |
+| planned and reached the builder | 6 of 9: `venturi_orifice_001`, `cyclone_separator_001`, `static_mixer_001`, `s_duct_001` twice, `manifold_001` |
+| no plan, and the job ran without it | 3 of 9: `ahmed_variant_001`, `blade_row_passage_001` and `venturi_orifice_001` on a second draw, every one `grounding_rejected` after three submissions, because the model named a refinement kind (`farfield_box`, `preserve_blade_edges`, `preserve_sharp_edges`) the catalog does not have. That is the package's own checker refusing a fact it cannot ground, not this step failing, and the builder got the step-off request and block with the sentence saying so |
+| one plan's wall clock | 32 to 55 s, on a live model |
 
-These are model outputs and eight draws, so read the two refusals as "it happens", not as a rate.
+Nine draws of a model output, so read the three refusals as "it happens on parts like these", not as a
+rate; `venturi_orifice_001` planned on one draw and was refused on another, which is the shape of it.
 
 ## Observability
 

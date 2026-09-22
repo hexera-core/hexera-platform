@@ -1,0 +1,453 @@
+WHAT THE BUILDER RECEIVES WITH THE GEOMETRY AGENT'S STEP ON, in full, for one real corpus part.
+
+Part: venturi_orifice_001 of Rehaan's 322-case export, a closed Venturi wall shell, representation
+wall_shell, purpose internal_cfd, fidelity standard, the customer's stated budget 2,000,000 cells.
+Produced on 2026-09-22 by:
+
+  python devtools/quality/run_geometry_step_on_corpus.py \
+      --cases venturi_orifice__venturi_orifice_001 --out DIR --provider reference \
+      --print venturi_orifice__venturi_orifice_001
+
+`--provider reference` is the measurement package's own deterministic stand-in, so no model was called
+and this file reproduces from the bytes. The whole chain ran through the platform's own functions:
+`geometry_measurement.measure_local_file`, `geometry_survey.compose`, the step-4 questions,
+`geometry_step.plan_the_part`, `geometry_step.builder_handoff`, and then
+`cad.regions.planner_inputs_for_state`, which is the call the snappy driver makes.
+
+READ IT AS THREE PARTS.
+  1  the geometry agent's write-up, the six lines after "REQUEST:", in FRONT of the request
+  2  the customer's own brief, unchanged
+  3  the typed block, added as a dict key AFTER the planner's 2,000-character cut, so it is never
+     truncated. The Surveyor is inside it, under "survey", beside intake's write-up ("intake"), the
+     flow patches ("flow_patches") and the plan's envelope ("plan_envelope")
+
+The look did not run here (`measure_local_file` stores `not_attempted`, and the look is a worker), so
+the closed ends only the look names are absent. The third intake did not fire: this plan's envelope,
+716,244 cells, fits the stated 2,000,000.
+
+-------------------------------------------------------------------------------------------------
+REQUEST:
+MESH PLAN (snappy internal): forecast 716,244 cells of your 2,000,000 cap.
+cells_across_diameter 24; surface_level 2; feature_level 3; n_layers 6; first_layer_rel 0.2; quality balanced; max_cells 716244
+first_layer_rel 0.2: the outer layer over the wall cell; your y+ asks 0.1258, outside the planner band 0.2 to 0.4, so the first cell lands at 1.59x the one sized.
+cells_across_diameter 24: inlet o1 bore 469.7 mm, wall cell 19.57 mm; the smallest port o1 spans 24.0 of them, floor 8.
+IF the critique says CARVE LEAKED: cells_across_diameter 32, The thinnest feature the carve has to seal measures 18.26, 0.93 wall cells at cells_across.
+
+Internal flow through a Venturi flow-meter body - 470.05 mm bore contracting to a 260.34 mm throat (area ratio 3.26) and diffusing back at 10.45 degrees included angle. I want the flow and pressure drop.
+
+Geometry is in millimetres. The overall bounding box is 3287.63 x 507.25 x 507.25 mm (X x Y x Z).
+
+Body surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. Put the seed point inside the bore just downstream of the inlet, at (369.96, 0, 0) mm. There is no far-field box.
+Engine: snappyHexMesh.
+Patches: inlet is the circular opening at (0, 0, 0) mm on the X=0 plane, bore diameter 470.05 mm (flow enters along +X); outlet is the circular opening at (3287.63, 0, 0) mm on the X=3287.63 plane, bore diameter 470.05 mm (flow exits along +X). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.
+Refinement: finer at junctions, bends and area changes than on straight runs.
+Mesh budget: keep the total cell count under 2 million cells.
+Steady state, incompressible, isothermal.
+
+MEASURED GEOMETRY (metres):
+{
+ "diag_m": 1.0,
+ "extent_m": [
+  1,
+  1,
+  1
+ ],
+ "surface_area_m2": 6.0,
+ "thinnest_feature_m": 0.01,
+ "recommended_surface_level": 2,
+ "recommended_feature_level": 3,
+ "affordable_level_at_4M_cells": 2,
+ "max_cells_HARD_CEILING": 8000000,
+ "geometry_agent": {
+  "status": "ok",
+  "representation": "wall_shell",
+  "agent_forecast_cells": 593124,
+  "agent_forecast_low": 593124,
+  "agent_forecast_basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 78.28 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [46, 10, 10] clamped 8..120, background cell 82.02, deficit 0 (snappy_runner.py:619-634)",
+   "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 469.7 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds",
+   "near band: volume within near_dist 263 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied",
+   "inlet o1: the largest mouth a person called the inlet, which is the one the builder sizes from",
+   "the builder emulator over the measurement alone, computed before the plan: the plan's own envelope is plan_envelope"
+  ],
+  "forecast_calibration": {
+   "arm": "facts_only",
+   "median_ratio": 0.52,
+   "p90_ratio": 1.29,
+   "n": 263,
+   "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered"
+  },
+  "customer_cell_cap": 2000000,
+  "inlet_bore_m": 0.4696604117817793,
+  "inlet_opening_id": "o1",
+  "smallest_port_min_dim_m": 0.4696604117817793,
+  "places": [
+   {
+    "id": "f1",
+    "kind": "throat",
+    "what": "the passage narrows to its smallest section here and opens out again on both sides",
+    "where_m": [
+     1.5289475652246556,
+     2.161856565264014e-17,
+     -1.1360545146943758e-09
+    ],
+    "measurement": {
+     "open_fraction": 0.3068,
+     "diameter_m": 0.26001637754348256,
+     "area_m2": 0.05314366236493831
+    },
+    "from": "coverage: centreline from o1",
+    "opening_id": "o1"
+   },
+   {
+    "id": "f2",
+    "kind": "section_change",
+    "what": "the passage section changes gradually along this stretch",
+    "where_m": [
+     2.1097290644913427,
+     3.885317008777393e-11,
+     3.0702476504415296e-11
+    ],
+    "measurement": {
+     "change": "taper",
+     "area_ratio": 3.2599,
+     "larger_side": "away_from_mouth",
+     "length_m": 1.2562085661251727,
+     "start_m": [
+      1.5809508407333521,
+      1.1802712502931443e-17,
+      -1.136054515013444e-09
+     ],
+     "end_m": [
+      2.8371593890928564,
+      2.2291388127180914e-17,
+      -1.727348521943922e-09
+     ],
+     "diameter_small_m": 0.26001637754348256,
+     "diameter_large_m": 0.4694656905113574,
+     "included_angle_deg": 10.417
+    },
+    "from": "coverage: centreline from o1",
+    "opening_id": "o1"
+   },
+   {
+    "id": "f3",
+    "kind": "section_change",
+    "what": "the passage section changes gradually along this stretch",
+    "where_m": [
+     1.1237543466224988,
+     4.271947925167389e-13,
+     -3.1716299641758364e-09
+    ],
+    "measurement": {
+     "change": "taper",
+     "area_ratio": 0.3068,
+     "larger_side": "towards_mouth",
+     "length_m": 0.7207230176590439,
+     "start_m": [
+      0.704218007892479,
+      7.271524161118927e-18,
+      -1.7273485425250436e-09
+     ],
+     "end_m": [
+      1.4249410142073424,
+      2.0001994830591165e-17,
+      -1.136054516182039e-09
+     ],
+     "diameter_small_m": 0.26001637754387447,
+     "diameter_large_m": 0.4694656905102151,
+     "included_angle_deg": 18.526
+    },
+    "from": "coverage: centreline from o1",
+    "opening_id": "o1"
+   },
+   {
+    "id": "t1",
+    "kind": "thin_region",
+    "what": "a thin wall: the body here is thin for a part of its size, under one and a half per cent of its bounding diagonal; extent_m is how far the thin stretch runs, which can be most of the part, and where_m is the middle of that stretch",
+    "where_m": [
+     1.640439985568495,
+     -1.90798348726947e-12,
+     9.748177451993548e-07
+    ],
+    "measurement": {
+     "thickness_min_m": 0.01825896657388982,
+     "extent_m": [
+      3.2876298828125,
+      0.5070923461914063,
+      0.5069347229003907
+     ]
+    }
+   }
+  ],
+  "source_sha256": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
+  "agent_git_sha": "10af5be81720c8d101263543d5bbc73291b512cb",
+  "units": "m",
+  "survey": {
+   "schema": "geometry_agent.contract.survey_block.v1",
+   "source_sha256": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
+   "facts_sha256": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
+   "representation": {
+    "kind": "measured",
+    "value": "wall_shell",
+    "field": "representation",
+    "source": "catalog.representation over the measured openings"
+   },
+   "unit": {
+    "kind": "measured",
+    "value": "mm",
+    "field": "unit",
+    "source": "coordinates.basis=occ_transfer"
+   },
+   "kinds": {
+    "measured": "an instrument computed it",
+    "seen": "a model said it from pictures, no numbers, with a trust tier",
+    "confirmed": "a person said it",
+    "stated": "the customer wrote it and nobody checked",
+    "assumed": "a default nobody stated"
+   },
+   "measured": {
+    "bbox_diagonal_m": {
+     "kind": "measured",
+     "value": 3.364912436781934,
+     "field": "bbox_diagonal_m",
+     "source": "facts.bbox.diagonal",
+     "unit": "m"
+    },
+    "inlet_bore_m": {
+     "kind": "measured",
+     "value": 0.4696604117817793,
+     "field": "inlet_bore_m",
+     "source": "forecast.builder.bore (the widest planar mouth, the builder's own choice)",
+     "unit": "m"
+    },
+    "forecast.cells_high": {
+     "kind": "measured",
+     "value": 593124,
+     "field": "forecast.cells_high",
+     "source": "forecast.cells_high (tools.estimate_builder_cells)"
+    },
+    "cell_budget": {
+     "kind": "stated",
+     "value": 2000000,
+     "field": "cell_budget",
+     "source": "brief: Mesh budget: keep the total cell count under 2 million cells"
+    }
+   },
+   "confirmed": {
+    "opening.role=inlet": {
+     "kind": "confirmed",
+     "value": "inlet",
+     "field": "opening.role",
+     "source": "question role_inlet answered by customer at 2026-09-22T21:43:10+00:00",
+     "applies_to": [
+      "o1"
+     ]
+    },
+    "opening.role=outlet": {
+     "kind": "confirmed",
+     "value": "outlet",
+     "field": "opening.role",
+     "source": "question role_outlet answered by customer at 2026-09-22T21:43:10+00:00",
+     "applies_to": [
+      "o2"
+     ]
+    }
+   },
+   "seen": {},
+   "unsettled": [],
+   "looked": false
+  },
+  "coverage": {
+   "version": "geometry_agent.coverage.v1",
+   "outside": {
+    "status": "measured",
+    "points_m": [
+     {
+      "side": "x_min",
+      "point": [
+       -0.16824562183909672,
+       0.0,
+       0.0001576385498046875
+      ]
+     },
+     {
+      "side": "x_max",
+      "point": [
+       3.4558755046515968,
+       0.0,
+       0.0001576385498046875
+      ]
+     },
+     {
+      "side": "y_min",
+      "point": [
+       1.64381494140625,
+       -0.42179179493479985,
+       0.0001576385498046875
+      ]
+     },
+     {
+      "side": "y_max",
+      "point": [
+       1.64381494140625,
+       0.42179179493479985,
+       0.0001576385498046875
+      ]
+     },
+     {
+      "side": "z_min",
+      "point": [
+       1.64381494140625,
+       0.0,
+       -0.42155534473948736
+      ]
+     },
+     {
+      "side": "z_max",
+      "point": [
+       1.64381494140625,
+       0.0,
+       0.42187062183909674
+      ]
+     }
+    ],
+    "margin_m": 0.16824562183909672,
+    "proof": "each point is past one face of the part's axis-aligned bounding box by the margin, so it is outside every closed surface of the part; the flow here is inside the part's surfaces, so the point is outside the flow domain. The margin is twenty times the largest chord sag the loader's tessellation allows"
+   },
+   "wall": {
+    "status": "measured",
+    "regions_total": 4,
+    "regions": [
+     {
+      "id": "w1",
+      "surface": "freeform",
+      "area_fraction": 0.5189,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.6405501037131716,
+       1.1019920651627142e-12,
+       1.0207292572461543e-06
+      ]
+     },
+     {
+      "id": "w2",
+      "surface": "freeform",
+      "area_fraction": 0.4745,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.6403195696851847,
+       -5.19944050931119e-12,
+       9.246128012909956e-07
+      ]
+     },
+     {
+      "id": "w3",
+      "surface": "plane",
+      "area_fraction": 0.0033,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.0,
+       1.7356355297414822e-17,
+       2.266748523302346e-08
+      ]
+     },
+     {
+      "id": "w4",
+      "surface": "plane",
+      "area_fraction": 0.0033,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       3.2876298828124995,
+       1.7356355297414822e-17,
+       2.2667485237107305e-08
+      ]
+     }
+    ]
+   },
+   "refused": [
+    "local_feature_size",
+    "vertex_curvature"
+   ]
+  },
+  "intake": {
+   "read_as": "`confirmed` is what the customer said and `assumed` is what nobody said. Build to both. REPORT BACK on anything under `assumed`: a default that gets reported becomes a question that gets answered, and a default that is treated as an answer becomes a fact nobody ever checked.",
+   "confirmed": {
+    "role:o1": "inlet",
+    "role:o2": "outlet"
+   },
+   "assumed": {},
+   "from_the_brief": {},
+   "still_open": [],
+   "write_up": "MEASURED: wall_shell, 2 openings, unit mm (occ_transfer).\nCONFIRMED by the customer: role:o1 = inlet; role:o2 = outlet."
+  },
+  "flow_patches": {
+   "o1": {
+    "role": "inlet",
+    "kind": "confirmed"
+   },
+   "o2": {
+    "role": "outlet",
+    "kind": "confirmed"
+   }
+  },
+  "plan_envelope": {
+   "cells_high": 716244,
+   "cells_low": 716244,
+   "held_cells_high": 716244,
+   "cap": 2000000,
+   "held_cells_across": 24,
+   "proper_cells_across": 24,
+   "held_notes": [
+    "first cell clamped: first_layer_rel 0.1258 is outside the planner's band 0.2 to 0.4, so the builder's first cell is 1.573 where the plan sized 0.9895 and the delivered y+ is 1.59x the target"
+   ],
+   "basis": [
+    "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+    "base cell = bore / cells_across x 2**surface_level = 78.28 (drivers.py:584)",
+    "pad max(2 base, 0.03 extent), divisions [46, 10, 10] clamped 8..120, background cell 82.02, deficit 0 (snappy_runner.py:619-634)",
+    "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 469.7 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds",
+    "near band: volume within near_dist 263 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+    "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+    "layers: 6 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+    "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+    "platform 57684388",
+    "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied"
+   ],
+   "source": "tools.estimate_builder_cells via hexera.forecast on hexera.builder_strategy for this plan"
+  }
+ }
+}
+
+ABOUT "geometry_agent" IN THE DICT ABOVE: it is a separate measurement of the customer's own file, in metres, made before any plan existed. Read it as follows.
+- agent_forecast_cells is an ENVELOPE, not an estimate of your plan. forecast_calibration carries its MEASURED error against 263 real jobs: before a plan exists it has come in at about 0.52x the cells actually delivered. So treat it as a FLOOR - the real mesh has usually been about twice it - and do NOT shave max_cells towards it.
+- inlet_bore_m is the bore the builder will size from. cells_across_diameter is defined relative to exactly this number.
+- smallest_port_min_dim_m is the smallest port the mesh has to resolve; your wall cell has to fit several cells across it.
+- places are MEASURED locations where this part needs more attention than normal, in the order the part needs it: the flow path first (a throat, a plate or baffle in the passage, a junction, a change of section, a bend, a passage end), then what limits the cell size (a narrow gap, a thin separation, a narrow passage, a small or tilted port mouth, a thin wall). Each has "where_m" (null with "where_missing" when it has no position) and "measurement". They describe the geometry, not the mesh: name them in "focus" and decide the settings yourself.
+- places_refused lists what the measurement has but will not state as a place, with the reason. Treat those spots as unknown, not as ordinary.
+- status "degraded" means the listed fields in "missing" could not be measured. Fields that are absent were not measured; do not infer a value for them.
+- If this block and the customer's own text disagree, the CUSTOMER is right: they can see the part and this is a measurement of a file.
+
+ABOUT "survey" INSIDE "geometry_agent": the customer was shown what the measurement could not settle about THIS file and asked. Every value says what kind of claim it is ("kinds" is the legend).
+- "confirmed" is the customer's own answer, with when they gave it. A role there says which measured mouth is which; it is the customer's decision about their part, and nothing else in this message overrides it.
+- "unsettled" is what nobody settled. A mouth listed there has no role anybody confirmed: do not reason about it as an inlet or an outlet.
+- A "cell_budget" is the customer's own number. "stated" means they wrote it; "confirmed" means they chose it when shown what resolving the part costs, and max_cells must not exceed it. customer_cell_cap above is the same number.
+- The survey describes the part. It names no mesh setting and predicts nothing about the mesh: the settings are yours.
+
+ABOUT "intake", "flow_patches" AND "plan_envelope" INSIDE "geometry_agent": the job ran through the geometry chain.
+- intake: "confirmed" is what the customer answered; "assumed" is a default nobody confirmed (report back on those); "from_the_brief" is what their own text said.
+- flow_patches: each opening's role and who it came from (customer, brief or the geometry agent's own decision). A role the customer confirmed is theirs; do not change it.
+- plan_envelope: the cells the geometry agent's plan costs on the builder's own sizing, with its source. It is an envelope, not a target.
+
+ABOUT "coverage" INSIDE "geometry_agent": "outside" holds points provably outside the flow domain (outside every closed surface of the part), usable as a leak check; "wall" names the part's surface regions by shape; "refused" names facts that were decided not to be given because the number would describe the tessellation rather than the part.

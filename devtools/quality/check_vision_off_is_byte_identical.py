@@ -80,6 +80,33 @@
 #   D  intake_system 0c2a15887e7e7a3f   intake_tools 9cb0145c2b4c5e72   planner_user 33ba4e6a760b8d88
 #   E  intake_system 7392ea8106df56b9   intake_tools 9cb0145c2b4c5e72   planner_user fa052d8f4050f316
 #   F  intake_system 7392ea8106df56b9   intake_tools 9cb0145c2b4c5e72   planner_user 7476234daccd37ac
+# Run again on 2026-09-22 after the geometry step was given the customer's file and its envelope was
+# priced at the handoff. Same verdicts, and A, B, C and E the same digests a third time:
+#   A  intake_system 0dccfc492c1bf82f   intake_tools 557b7c1b95c6d46e   planner_user 16e44b932da08e8b
+#   B  intake_system 858a67570d6f0895   intake_tools 557b7c1b95c6d46e   planner_user 855866e292055abb
+#   C  intake_system 858a67570d6f0895   intake_tools 557b7c1b95c6d46e   planner_user 855866e292055abb
+#   D  intake_system 0c2a15887e7e7a3f   intake_tools 9cb0145c2b4c5e72   planner_user 33ba4e6a760b8d88
+#   E  intake_system 7392ea8106df56b9   intake_tools 9cb0145c2b4c5e72   planner_user fa052d8f4050f316
+#   F  intake_system 7392ea8106df56b9   intake_tools 9cb0145c2b4c5e72   planner_user fc858827cc94579c
+# Run twice back to back, every digest identical both passes, so this gate is reproducible.
+#
+# WHY F's DIGEST MOVED, 7476234daccd37ac to fc858827cc94579c, and why no fact did. The handoff no
+# longer reads `plan_envelope` off the row; it prices it again against the budget the customer settled
+# on. On this row, which has no trade, every value is the same - checked field by field on Windows and
+# under WSL, both IDENTICAL - and the only difference in the whole message is the KEY ORDER of that one
+# dict: alphabetical when it came off the row, because the tracked fixture was written with sorted
+# keys, and the envelope type's own order now. Two rulers missed it. Dict equality ignores key order,
+# and so does the corpus harness's `planner_message_chars`, which a reordering leaves untouched. Only
+# this gate, which hashes the bytes, could see it. The order is now the code's rather than the
+# storage's, which is the reproducible one: Postgres JSONB does not preserve key order at all.
+#
+# RUN THE MEASUREMENT PACKAGE FROM ITS CHECKOUT, not from a copy of its `src`. Copying `src` alone to a
+# local disk to make this gate faster changed what the builder is told: `learn/store.py` takes its ROOT
+# from `Path(__file__).parents[3]`, so the fitted cell correction lives OUTSIDE `src`, and without it
+# the basis line degrades from "calibration multiplier 1.01 was fitted against ..." to the bare
+# "learn.calibration.cell_correction". The applied multiplier is 1.0 either way, so no number moves and
+# no test fails; one sentence the planner reads does. The faster ruler was the wrong ruler.
+#
 # A, B and C are the same three digests as before, which is the point of them. D's planner_user moved
 # against the 2026-09-18 run: the reference for D is `bae0fb2`, which predates the survey, and this
 # branch's own history has since changed the block a survey composes (`3ba42c0` composes it from the

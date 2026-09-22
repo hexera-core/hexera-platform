@@ -58,12 +58,14 @@
 #     byte-identical to the run before the fix, which is the point: the file is for the tools to open
 #   representations wall_shell 9, external 6, fluid_domain 5, annular_fluid 1
 #
-# AND LIVE, `--provider deepseek`, 8 draws on 8 parts, one draw each:
-#   planned 6 of 8 (venturi_orifice, tee_wye, cyclone_separator, static_mixer, s_duct, manifold)
-#   no plan on 2 (ahmed_variant, blade_row_passage), both `grounding_rejected`: the model named a
-#     refinement kind the catalog does not have, the package's checker refused it three times, and the
-#     builder got the step-off request and block with the sentence saying why
-#   one plan 37 to 55 s, median 46 s. Eight draws of a model output: not a rate
+# AND LIVE, `--provider deepseek`, 9 draws over 7 parts:
+#   planned 6 of 9 (venturi_orifice, cyclone_separator, static_mixer, s_duct twice, manifold)
+#   no plan on 3 (ahmed_variant, blade_row_passage, venturi_orifice on a second draw), every one
+#     `grounding_rejected`: the model named a refinement kind the catalog does not have, the package's
+#     checker refused it three times, and the builder got the step-off request and block with the
+#     sentence saying why
+#   one plan 32 to 55 s. Nine draws of a model output: not a rate, and venturi planned on one draw and
+#     was refused on another
 from __future__ import annotations
 
 import argparse
