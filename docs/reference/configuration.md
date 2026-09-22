@@ -296,7 +296,7 @@ its readers.
 | `GEOMETRY_SURVEY_ENABLED` | `false` | intake asks the measurement's own questions, stores the answers with who gave them, and the builder gets the survey |
 | `GEOMETRY_AGENT_STEP_ENABLED` | `false` | the geometry agent plans the part at submission from the survey and the answers, a question only the plan raises is put once, and the builder gets both write-ups; dead unless `GEOMETRY_SURVEY_ENABLED` is on too |
 | `GEOMETRY_AGENT_STEP_PROVIDER` | `deepseek` | which model plans: `deepseek`, `deepinfra`, `anthropic`, `generic`, `auto`, or `reference` for the package's deterministic stand-in. No key for it means no plan, never another provider |
-| `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | `300` | one plan's wall clock; past it the step records a failure and the job runs as it does with the step off |
+| `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | `300` | one plan's wall clock, and the loop's own budget; past it the step records a failure and the job runs as it does with the step off. 0 means no clock at all |
 | `GEOMETRY_AGENT_LEDGER_PATH` | (empty) | a JSONL file the job ledger's rows are also appended to; the durable copy always lives on the survey row |
 
 ### What the look is

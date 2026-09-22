@@ -517,9 +517,14 @@ def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, 
                             "model": _model_of(client), "exit": result.exit, "rounds": result.rounds,
                             "sent_back_by_the_survey": sent_back, "representation": given.representation,
                             "brief_sha256": inp.brief.sha256,
-                            "ledger": {"meta": {**meta, "key": ledger.key},
-                                       "events": list(((state.get("geometry_step") or {}).get("ledger") or {})
-                                                      .get("events") or [])}}
+                            # A NEW PLAN STARTS A NEW RECORD ON THE ROW. The events of a plan this row no
+                            # longer carries describe a job that no longer exists, and keeping them grew
+                            # the row by a whole plan for every answer the customer changed. Measured over
+                            # 49 corpus parts: one plan's events are a median 24 kB, and the row is a
+                            # median 23 kB without the step and 72 kB with it. The durable append-only
+                            # record, every plan kept, is GEOMETRY_AGENT_LEDGER_PATH. Nothing the customer
+                            # said is in here: their answers live in `answers` and are never rewritten.
+                            "ledger": {"meta": {**meta, "key": ledger.key}, "events": []}}
     if result.plan is None:
         ledger.put("plan", cj.plan_record(result, given, inp.facts, inp.brief, recs["survey"], "", inp.engine))
         ledger.flush()

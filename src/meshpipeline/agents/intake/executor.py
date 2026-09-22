@@ -513,13 +513,15 @@ class IntakeToolExecutor:
                 owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
                 state=st.geometry_survey, document=st.geometry_document,
                 fidelity=str(args.get("mesh_fidelity") or "standard").strip().lower())
+            if state is None:
+                return []
+            st.geometry_survey = state
+            # inside the try as well: reading the question back is as much a place to fall over as
+            # making it, and a submission that dies here is a turn lost to a step that is off by default
+            return gst.submission_problems(state)
         except Exception as exc:                   # noqa: BLE001 - never a turn
             logger.warning("Intake: the geometry agent's step could not run (%s) - job_id=%s", exc, self._job_id)
             return []
-        if state is None:
-            return []
-        st.geometry_survey = state
-        return gst.submission_problems(state)
 
     async def _do_submit_requirements(self, args: dict) -> IntakeToolResult:
         st = self.state

@@ -381,7 +381,7 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_SURVEY_ENABLED", "false", kind="bool", help="intake puts the measurement's own questions to the customer and stores their answers with who gave them, and the builder receives the survey in its typed block; does nothing unless GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED are also true"),
         EnvVar("GEOMETRY_AGENT_STEP_ENABLED", "false", kind="bool", help="at submission the geometry agent plans the part from the survey and the customer's answers, a question only the plan raises (the budget trade) is put once, and the builder receives both write-ups; any failure runs the job as with this off; does nothing unless GEOMETRY_SURVEY_ENABLED is also true"),
         EnvVar("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek", help="the model the geometry agent plans with: deepseek, deepinfra, anthropic, generic or reference (the package's deterministic stand-in); no key for it means no plan, never another provider"),
-        EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure and the job runs as with the step off"),
+        EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure and the job runs as with the step off. 0 means no clock at all"),
         EnvVar("GEOMETRY_AGENT_LEDGER_PATH", "", help="a JSONL file the job ledger's rows are also appended to, for the package's own ledger tools; empty keeps them on the survey row only"),
     ]),
 

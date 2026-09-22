@@ -457,3 +457,40 @@ def test_one_mouth_two_questions_and_one_answer_is_not_confirmed_and_assumed_at_
     assert planned["geometry_step"]["status"] == gst.PLANNED, planned["geometry_step"].get("reason")
     handoff = gst.builder_handoff(planned, doc, request_txt=_brief("transition_007_fluid"))
     assert handoff["typed"]["intake"]["write_up"]
+
+
+def test_a_second_plan_does_not_leave_the_first_ones_ledger_on_the_row(armed):
+    """One plan's events are a median 24 kB over the corpus, and a customer who changes an answer gets a
+    new plan. Keeping every plan's events grew the row by a whole plan each time, for a record of a job
+    the row no longer carries. GEOMETRY_AGENT_LEDGER_PATH is where every plan is kept."""
+    state, doc = _planned()
+    first = list(state["geometry_step"]["ledger"]["events"])
+    again = gs.recomposed(state, doc, cell_cap=1_500_000)
+    again = gst.plan_the_part(again, doc, job_id="job-1", client=gst.planner_client("reference"))
+    events = again["geometry_step"]["ledger"]["events"]
+    assert [e["event"] for e in events] == [e["event"] for e in first], "the same stages, once"
+    assert len(json.dumps(events)) < 2 * len(json.dumps(first))
+
+
+def test_the_submission_gate_never_costs_a_turn_whatever_the_step_does(armed, monkeypatch):
+    """The step is off by default, so anything it can throw is a turn lost to a feature nobody asked
+    for. Both halves are inside the gate's own guard: making the question and reading it back."""
+    from meshpipeline.agents.intake import executor as ex
+
+    async def _explodes(**_kw):
+        raise RuntimeError("the row could not be read")
+
+    monkeypatch.setattr(gst, "at_submission", _explodes)
+    gate = ex.IntakeToolExecutor.__dict__["_geometry_step_gate"]
+    state, doc = _answered()
+    st = type("S", (), {"survey_armed": True, "survey_source_ref": object(), "geometry_document": doc,
+                        "geometry_survey": state, "owner_id": "o", "session_id": "s"})()
+    who = type("E", (), {"state": st, "_job_id": "job-1"})()
+    assert asyncio.run(gate(who, {"mesh_fidelity": "standard"})) == []
+
+    async def _fine(**_kw):
+        return state
+
+    monkeypatch.setattr(gst, "at_submission", _fine)
+    monkeypatch.setattr(gst, "submission_problems", lambda _s: 1 / 0)
+    assert asyncio.run(gate(who, {"mesh_fidelity": "standard"})) == []

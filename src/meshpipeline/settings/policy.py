@@ -167,7 +167,12 @@ GEOMETRY_AGENT_STEP_ENABLED: bool = (
 #: grounded by the same checker and its ledger rows say `heuristic`, never `live`.
 GEOMETRY_AGENT_STEP_PROVIDER: str = optional_env("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek").strip().lower()
 #: The geometry agent's wall clock for one plan. Past it the step records a failure and the job runs
-#: as it does with the step off.
+#: as it does with the step off. ZERO MEANS NO CLOCK: the loop then runs to its own end, which on a
+#: model that will not settle is the submission turn waiting on it.
+#:
+#: The wait is `asyncio.wait_for` over `asyncio.to_thread`, so what the timeout ends is the WAITING,
+#: not the work: Python cannot stop a thread. The loop's own budget is what actually stops it, which
+#: is why it is given this number too.
 GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300"))
 #: Where the job ledger's rows are ALSO appended as JSONL, for the package's own ledger tools. Empty,
 #: the default, keeps them on the survey row only, which is where the durable copy always lives.
