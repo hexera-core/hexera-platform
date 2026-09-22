@@ -235,8 +235,8 @@ async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> N
         # `_id_of` is the narrowing every other handler already uses on a provider reference, and
         # the reason is bounded to the vocabulary's own length: both values that reach the logger
         # are strings this module produced, not slices of the provider's document.
-        log.info("invoice %s paid with billing_reason %r; no allowance is granted",
-                 _id_of(invoice.get("id")) or "?", reason[:64] or "(none)")
+        log.info("invoice %s paid with unsupported billing_reason (present=%s); no allowance is granted",
+                 _id_of(invoice.get("id")) or "?", bool(reason))
         return
 
     customer_id = _id_of(invoice.get("customer"))
