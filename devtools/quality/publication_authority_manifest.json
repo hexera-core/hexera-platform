@@ -3382,7 +3382,7 @@
   "roots": []
  },
  {
-  "context": "render/scout_snapshots.py::render_snapshots.shoot::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=WINDOW)",
+  "context": "render/scout_snapshots.py::render_snapshots.shoot::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))",
   "path": "render/scout_snapshots.py",
   "qualname": "render_snapshots.shoot",
   "semantic": "screenshot",
@@ -3393,7 +3393,7 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": [
-   "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=WINDOW)"
+   "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))"
   ]
  },
  {
