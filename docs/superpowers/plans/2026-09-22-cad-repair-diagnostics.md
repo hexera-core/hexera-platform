@@ -1157,4 +1157,3 @@ git commit -m "Stabilize CAD repair diagnostics"
 ```
 
 If no fixes were needed, do not create an empty commit.
-

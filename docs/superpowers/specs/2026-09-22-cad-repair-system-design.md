@@ -334,4 +334,3 @@ same downstream staging/admission checks the original failed, within a recorded 
 - Whether the console repair product is a separate top-level page or an upload preflight inside
   the existing simulation flow.
 - Which repair operations graduate from `conservative` to default-on before meshing.
-
