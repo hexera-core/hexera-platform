@@ -75,6 +75,8 @@ SURVEY_STATE_SCHEMA = "meshpipeline.geometry_survey.v1"
 #: Stages a row moves through. `surveyed`: composed, nothing put yet. `asking`: step-4 questions put.
 #: `trade`: the budget trade put. `settled`: nothing open that anybody will be asked.
 STAGE_SURVEYED, STAGE_ASKING, STAGE_TRADE, STAGE_SETTLED = "surveyed", "asking", "trade", "settled"
+#: The row is waiting on the third intake's question. Only reachable with the geometry agent's step on.
+STAGE_LATE = "third_intake"
 
 #: Who an answer came from. The CUSTOMER, and never their account id: the `source` of a confirmed
 #: claim rides into the planner's prompt, and a provider has no business reading who the customer
@@ -442,6 +444,10 @@ def stage_of(state: dict) -> str:
         return STAGE_ASKING if any(v["id"] in (state.get("asked") or []) for v in step4) else STAGE_SURVEYED
     if any(v["status"] not in TRADE_PUT for v in trade):
         return STAGE_TRADE
+    # a row whose third-intake question is still open is not settled, and the row says so rather than
+    # reporting the word that means every question has been put. There is none with the step off
+    if any(v["status"] not in TRADE_PUT for v in views if v["route"] == ROUTE_LATE):
+        return STAGE_LATE
     return STAGE_SETTLED
 
 
@@ -907,8 +913,24 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
     state = await load(owner_id, source_ref.source_id, sha256=source_ref.sha256)
     if state is None:
         raise SurveyError("there is no survey for this upload yet: call survey_the_part first")
+    state = answered(state, document, question_id=question_id, choice=choice, role=role, words=words,
+                     latest_user_message=latest_user_message, principal=owner_id,
+                     skipped=skipped, took_default=took_default)
+    await save(owner_id, source_ref.source_id, state)
+    return state
+
+
+def answered(state: dict, document: dict | None = None, *, question_id: str, choice: str = "",
+             role: str = "", words: str = "", latest_user_message: str = "", principal: str = "",
+             skipped: bool = False, took_default: bool = False) -> dict:
+    """One answer recorded into the row, with everything that follows from it. No database.
+
+    `answer` is this plus the load and the store. It is a function of its own so that a caller which
+    already holds the row - a test, the corpus harness that runs this chain on real parts - takes the
+    same path a customer's answer takes, rather than a second spelling of it that can drift from this
+    one. Raises `SurveyError`."""
     state = record_answer(state, question_id=question_id, choice=choice, role=role, words=words,
-                          latest_user_message=latest_user_message, principal=owner_id,
+                          latest_user_message=latest_user_message, principal=principal,
                           skipped=skipped, took_default=took_default)
     late = late_view(state)
     if late is not None and late["id"] == question_id:
@@ -924,9 +946,7 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
             state = recomposed(state, document, **({"cell_cap": cap} if cap is not None else {}))
         except SurveyError as exc:
             logger.warning("geometry survey: the confirmed answer could not be composed in (%s)", exc)
-    state = mark_asked(state, open_now(state))
-    await save(owner_id, source_ref.source_id, state)
-    return state
+    return mark_asked(state, open_now(state))
 
 
 async def recompose_after_look(source_id: str, owner_id: str, document: dict) -> str:
@@ -948,8 +968,9 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
 
 
 __all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
-           "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_SETTLED", "STAGE_SURVEYED",
-           "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "builder_block", "carry_answers", "compose",
+           "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
+           "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
+           "builder_block", "carry_answers", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "mark_asked", "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",

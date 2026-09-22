@@ -120,16 +120,6 @@ def plan_key(state: dict, fidelity: str) -> str:
                  "answers": answers, "fidelity": fidelity})[:32]
 
 
-def current_plan(state: dict | None) -> dict | None:
-    """The stored step when it planned THIS job, or None."""
-    step = (state or {}).get("geometry_step")
-    if not isinstance(step, dict) or step.get("status") != PLANNED:
-        return None
-    if step.get("for") != plan_key(state or {}, str(step.get("fidelity") or "standard")):
-        return None
-    return step
-
-
 # -------------------------------------------------------------------------------------------------
 # the model
 # -------------------------------------------------------------------------------------------------
@@ -459,7 +449,12 @@ def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", jo
                   client: Any = None) -> dict:
     """Step 5, and the question step 6 puts. Returns the row with `geometry_step` and, when the plan
     raised one, `late`. NEVER RAISES: a failure is stored as `status: failed` with its reason, and the
-    job then runs exactly as it does with the step off."""
+    job then runs exactly as it does with the step off.
+
+    A FAILED STEP ASKS NOBODY ANYTHING. A question an earlier plan raised and that was never put is
+    dropped here (`_with_late(..., None, None)`), because there is no plan left to price it against and
+    the customer would be held at the submission for an envelope this platform can no longer produce.
+    One already put stays put, with whatever they said: it is asked once."""
     fid = fidelity if fidelity in FIDELITIES else "standard"
     key = plan_key(state, fid)
     try:
@@ -467,6 +462,7 @@ def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", jo
     except Exception as exc:                       # noqa: BLE001 - the step is never worth the job
         reason = str(exc) if isinstance(exc, StepRefused) else f"{type(exc).__name__}: {exc}"
         logger.warning("geometry step: no plan for this submission, the job runs without it - %s", reason[:500])
+        state = _with_late(state, None, None)
         step = {**(state.get("geometry_step") or {}), "schema": STEP_SCHEMA, "status": FAILED, "for": key,
                 "fidelity": fid, "reason": reason[:1000], "at": _now()}
         for stale in ("plan", "envelope", "flow_patches", "unconfirmed_roles"):
@@ -503,7 +499,9 @@ def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, 
         ledger.flush()
         step["ledger"]["events"].extend(ledger.events)
         raise_with = f"the geometry agent submitted no plan ({result.exit}): {result.reason}"
-        failed = {**state, "geometry_step": {**step, "status": FAILED, "reason": raise_with[:1000]}}
+        # no plan, so nothing prices a trade: a question raised earlier and never put goes with it
+        failed = {**_with_late(state, None, None),
+                  "geometry_step": {**step, "status": FAILED, "reason": raise_with[:1000]}}
         logger.warning("geometry step: %s", raise_with[:500])
         return failed
     plan = result.plan
@@ -684,5 +682,5 @@ def record_handover(state: dict, handoff: dict) -> dict:
 
 
 __all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STEP_SCHEMA", "StepRefused", "at_submission",
-           "builder_handoff", "current_plan", "late_handoff", "note_late_answer", "plan_key", "plan_the_part",
+           "builder_handoff", "late_handoff", "note_late_answer", "plan_key", "plan_the_part",
            "planner_client", "record_handover", "request_with_write_up", "step_enabled", "submission_problems"]

@@ -46,56 +46,77 @@ async def _agent_block(state) -> dict | None:
     return await agent_block_for_state(state)
 
 
-#: (job, reason) pairs already said, so a fallback is logged once per job and not once per plan call.
-_SAID_WHY: set[tuple[str, str]] = set()
+async def _planner_inputs(state, job_id: str = "") -> tuple[str, dict | None, str]:
+    """The request the planner reads, the typed block after its cut, and why the step was not used.
 
-
-async def _planner_inputs(state, job_id: str = "") -> tuple[str, dict | None]:
-    """The request the planner reads and the typed block after its cut.
-
-    With GEOMETRY_AGENT_STEP_ENABLED off: `state.get("request_txt", "")` and `_agent_block(state)`,
-    exactly the two values every call site below read before the step existed. With it on: the geometry
-    agent's write-up in front of the request and its validated handoff as the block, or, when that cannot
-    be had, the step-off values and a log line and a job record saying why (`cad.regions`)."""
+    With GEOMETRY_AGENT_STEP_ENABLED off: `state.get("request_txt", "")`, `_agent_block(state)` and no
+    reason, exactly the two values every call site below read before the step existed. With it on: the
+    geometry agent's write-up in front of the request and its validated handoff as the block, or, when
+    that cannot be had, the step-off values and the sentence saying why (`cad.regions`)."""
     if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
-        return state.get("request_txt", ""), await _agent_block(state)
+        return state.get("request_txt", ""), await _agent_block(state), ""
     from meshpipeline.cad.regions import planner_inputs_for_state
-    request_txt, block, why = await planner_inputs_for_state(state)
-    if why and (str(job_id), why) not in _SAID_WHY:
-        _SAID_WHY.add((str(job_id), why))
+    return await planner_inputs_for_state(state)
+
+
+class _ForThisRun:
+    """The request, the typed block and the cell ceiling for ONE driver call, read at most once.
+
+    Before the geometry agent's step these were two reads of the stored row, cheap enough to repeat for
+    every plan call and every attempt's ceiling. With the step on the same read also rebuilds the survey
+    from its own inputs, validates the handoff against the package's contract and composes the planner
+    block again, so repeating it per attempt is that work four times over for an answer that cannot have
+    changed: nothing inside a driver call writes the row this reads. So it is read once and kept.
+
+    The reason the step was not used is logged and recorded ONCE per driver call, for the same reason the
+    value is read once: a fallback is one fact about the job, not one per meshing attempt.
+    """
+
+    def __init__(self, state, job_id: str = ""):
+        self._state, self._job_id = state, str(job_id or "")
+        self._planner: tuple[str, dict | None] | None = None
+
+    async def planner(self) -> tuple[str, dict | None]:
+        if self._planner is None:
+            request_txt, block, why = await _planner_inputs(self._state, self._job_id)
+            self._planner = (request_txt, block)
+            if why:
+                self._say(why)
+        return self._planner
+
+    def _say(self, why: str) -> None:
         logger.warning("geometry agent's step NOT used for this plan, the job runs as it does without it - "
-                       "job_id=%s: %s", job_id, why)
+                       "job_id=%s: %s", self._job_id, why)
         try:
             from meshpipeline.capture.logger import TrainingLogger
-            TrainingLogger(str(job_id or "unknown")).log(
+            TrainingLogger(self._job_id or "unknown").log(
                 "geometry_step", {"used": False, "reason": why}, op_id="geometry_step:not_used")
         except Exception:                          # noqa: BLE001 - the record is never worth a plan
             pass
-    return request_txt, block
 
+    async def ceiling(self) -> int:
+        """The compute ceiling, or the customer's CONFIRMED cell budget when it is lower.
 
-async def _cell_ceiling(state) -> int:
-    """The compute ceiling, or the customer's CONFIRMED cell budget when it is lower.
-
-    The one deterministic reader `cell_cap` has in this package. The planner is shown the customer's
-    budget in the typed block as `customer_cell_cap`; this is what holds the mesh to it when they
-    confirmed it in the budget trade. A budget they only wrote in the brief is `stated`, not
-    confirmed, and is left to the planner's reading: a sentence parsed into a number that nobody
-    checked does not get to starve a mesh. With the survey off this is the compute ceiling, read the
-    way it was always read.
-    """
-    hard = int(polcfg.CELL_HARD_LIMIT)
-    if not polcfg.GEOMETRY_SURVEY_ENABLED:
-        return hard
-    try:
-        from meshpipeline.contracts.geometry_agent_block import confirmed_cell_cap
-        # the block the planner was handed: with the geometry agent's step off this is `_agent_block(state)`,
-        # and with it on it is the step's handoff, whose survey carries a budget confirmed at the third intake
-        _unused, _block = await _planner_inputs(state)
-        cap = confirmed_cell_cap(_block)
-    except Exception:                              # noqa: BLE001 - a ceiling is never worth a mesh
-        return hard
-    return min(hard, cap) if cap else hard
+        The one deterministic reader `cell_cap` has in this package. The planner is shown the customer's
+        budget in the typed block as `customer_cell_cap`; this is what holds the mesh to it when they
+        confirmed it in the budget trade. A budget they only wrote in the brief is `stated`, not
+        confirmed, and is left to the planner's reading: a sentence parsed into a number that nobody
+        checked does not get to starve a mesh. With the survey off this is the compute ceiling, read the
+        way it was always read.
+        """
+        hard = int(polcfg.CELL_HARD_LIMIT)
+        if not polcfg.GEOMETRY_SURVEY_ENABLED:
+            return hard
+        try:
+            from meshpipeline.contracts.geometry_agent_block import confirmed_cell_cap
+            # the block the planner was handed: with the geometry agent's step off this is
+            # `_agent_block(state)`, and with it on it is the step's handoff, whose survey carries a
+            # budget confirmed at the THIRD intake as well as the survey's own trade
+            _request, block = await self.planner()
+            cap = confirmed_cell_cap(block)
+        except Exception:                          # noqa: BLE001 - a ceiling is never worth a mesh
+            return hard
+        return min(hard, cap) if cap else hard
 
 
 def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
@@ -354,12 +375,13 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400  # per-mesh cap; stays under the Cloud Run Job task-timeout
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
+    # the request and the typed block: the state's own and `_agent_block(state)` with the geometry
+    # agent's step off, its write-up and its handoff with it on; read once for this call
+    _for_run = _ForThisRun(state, job_id)
 
     for attempt in range(1, max_attempts + 1):
         if plan is None:   # repair: re-plan WITH the previous plan + critique (iterate with memory)
-            # the request and the typed block: the state's own and `_agent_block(state)` with the geometry
-            # agent's step off, its write-up and its handoff with it on (`_planner_inputs`)
-            _request, _block = await _planner_inputs(state, job_id)
+            _request, _block = await _for_run.planner()
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
                 workspace=workspace, job_id=job_id,
@@ -390,7 +412,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # Clamp the planner's budget to the compute ceiling (safety net - the planner is told
             # the ceiling, but this guarantees the mesh can't exceed what Cloud Run can build or what
             # the executor accepts, so an over-ambitious budget never wastes a run).
-            _ceiling = await _cell_ceiling(state)
+            _ceiling = await _for_run.ceiling()
             _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=_ceiling)
             # If the LAST attempt measurably overshot the ceiling, the inflation ratio is
             # known - correct by arithmetic rather than by hoping the model's next guess is
@@ -606,10 +628,11 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400
     last_valid = False
+    _for_run = _ForThisRun(state, job_id)
 
     for attempt in range(1, max_attempts + 1):
         if plan is None:
-            _request, _block = await _planner_inputs(state, job_id)
+            _request, _block = await _for_run.planner()
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
                 workspace=workspace, job_id=job_id,
@@ -629,7 +652,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _write_plan_memory(workspace, strategy)
 
         # strategy → concrete numbers (internal knobs; tolerant of external-style keys)
-        _ceiling = await _cell_ceiling(state)
+        _ceiling = await _for_run.ceiling()
         _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=_ceiling)
         # If the LAST attempt measurably overshot the ceiling, the inflation ratio is
         # known - correct by arithmetic rather than by hoping the model's next guess is
@@ -794,7 +817,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if state.get("builder_mode", "initial") in ("initial", "rebuild"):
         prior_fb = (state.get("classifier_result", {}) or {}).get("summary", "") \
             or state.get("reviewer_feedback", "")
-        _request, _block = await _planner_inputs(state, job_id)
+        _request, _block = await _ForThisRun(state, job_id).planner()
         _po = await plan_with_accounting(
             surface=_plan_surface(state, workspace),
             workspace=workspace, job_id=job_id,
