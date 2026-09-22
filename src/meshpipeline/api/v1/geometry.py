@@ -186,7 +186,9 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         tmp.unlink(missing_ok=True)
 
     async with get_db() as db:
-        session = await SessionRepository().get_internal(db, session_id)
+        # the same tenant-scoped read every request-facing module uses; never the internal one
+        session = await SessionRepository().get_for_owner(db, session_id, owner_id,
+                                                          organization_id=organization_id)
         if session is None:
             raise HTTPException(404, "Session not found")
         session.input_kind = body.input_kind
