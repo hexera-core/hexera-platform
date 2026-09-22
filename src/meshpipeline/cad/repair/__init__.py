@@ -14,6 +14,7 @@ from meshpipeline.cad.repair.contracts import (
     RepairStatus,
     RepairTarget,
 )
+from meshpipeline.cad.repair.inspect import inspect_geometry, repair_input_for
 
 __all__ = [
     "DefectCode",
@@ -28,4 +29,6 @@ __all__ = [
     "RepairResult",
     "RepairStatus",
     "RepairTarget",
+    "inspect_geometry",
+    "repair_input_for",
 ]
