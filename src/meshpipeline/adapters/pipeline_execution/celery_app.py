@@ -40,6 +40,7 @@ celery_app.conf.update(
         "tasks.cleanup.purge_expired_workspaces":  {"queue": "cleanup_tasks"},
         "tasks.cleanup.reap_stalled_jobs":         {"queue": "cleanup_tasks"},
         "tasks.cleanup.reconcile_orphan_artifacts": {"queue": "cleanup_tasks"},
+        "tasks.billing.report_pending_usage":       {"queue": "cleanup_tasks"},
         "tasks.export_conversation_data.export_conversation_sample": {"queue": "training_export"},
     },
     task_queue_max_priority={
@@ -68,6 +69,15 @@ celery_app.conf.update(
         "reconcile-orphan-artifacts": {
             "task": "tasks.cleanup.reconcile_orphan_artifacts",
             "schedule": 600.0,
+            "options": {"queue": "cleanup_tasks"},
+        },
+        # THE METER SWEEP. Five minutes, which is far more often than a bill is drawn - the point is
+        # not freshness but BACKLOG: each run is bounded, so a long provider outage drains over
+        # several runs instead of one that has to carry the whole thing. A deployment with no
+        # provider configured makes this a single query that finds nothing and returns.
+        "report-pending-usage": {
+            "task": "tasks.billing.report_pending_usage",
+            "schedule": 300.0,
             "options": {"queue": "cleanup_tasks"},
         },
     },

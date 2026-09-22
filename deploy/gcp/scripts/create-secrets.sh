@@ -48,6 +48,9 @@ OPENAI_SECRET="${OPENAI_API_KEY_SECRET:-openai-api-key}"
 MESH_API_KEY_SECRET_NAME="${MESH_API_KEY_SECRET:-mesh-api-key}"
 USER_TOKEN_SECRET_NAME="${USER_TOKEN_SECRET_SECRET:-user-token-secret}"
 AUTH_SECRET_NAME="${AUTH_SECRET_SECRET:-console-auth-secret}"
+ADMIN_API_KEY_SECRET_NAME="${ADMIN_API_KEY_SECRET:-admin-api-key}"
+STRIPE_API_KEY_SECRET_NAME="${STRIPE_API_KEY_SECRET:-stripe-api-key}"
+STRIPE_WEBHOOK_SECRET_NAME="${STRIPE_WEBHOOK_SECRET_SECRET:-stripe-webhook-secret}"
 
 # THE READERS: MIGRATE_SERVICE_ACCOUNT (written by bootstrap-env.sh), API_SERVICE_ACCOUNT,
 # WORKER_SERVICE_ACCOUNT and CONSOLE_SERVICE_ACCOUNT. Each is a service-account ID; the email is
@@ -94,6 +97,14 @@ SECRETS=(
   "MESH_API_KEY|${MESH_API_KEY_SECRET_NAME}|optional|API_SERVICE_ACCOUNT CONSOLE_SERVICE_ACCOUNT|the key the API presents when it submits a mesh job"
   "USER_TOKEN_SECRET|${USER_TOKEN_SECRET_NAME}|optional|API_SERVICE_ACCOUNT CONSOLE_SERVICE_ACCOUNT|the HMAC key user tokens are signed with - generated elsewhere, never here"
   "AUTH_SECRET|${AUTH_SECRET_NAME}|optional|CONSOLE_SERVICE_ACCOUNT|the key Auth.js signs console session cookies with - generated elsewhere, never here"
+  # THE CROSS-TENANT READ CREDENTIAL. Read by the API (which checks it) and by the ADMIN console
+  # (which presents it), and by nothing else - deliberately NOT the console or the worker, whose
+  # business is one tenant at a time. It is not MESH_API_KEY for exactly that reason.
+  "ADMIN_API_KEY|${ADMIN_API_KEY_SECRET_NAME}|optional|API_SERVICE_ACCOUNT ADMIN_SERVICE_ACCOUNT|the admin console's cross-tenant billing credential - generated elsewhere, never here"
+  # THE PAYMENT PROVIDER. Only the API talks to it: the worker never charges anything, and the
+  # consoles reach billing through the API rather than holding a provider key of their own.
+  "STRIPE_API_KEY|${STRIPE_API_KEY_SECRET_NAME}|optional|API_SERVICE_ACCOUNT|the payment provider key the billing routes present - a RESTRICTED key (rk_), never a secret key"
+  "STRIPE_WEBHOOK_SECRET|${STRIPE_WEBHOOK_SECRET_NAME}|optional|API_SERVICE_ACCOUNT|proves an inbound webhook is the provider's; the endpoint refuses outright without it"
 )
 
 info "Secret containers for ${DEPLOYMENT_ID} in ${GCP_PROJECT_ID} (${#SECRETS[@]} secrets, no values)"

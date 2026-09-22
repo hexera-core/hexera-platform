@@ -4,10 +4,12 @@
 // renders something. A section that is unavailable renders as text rather than a link, because
 // linking to a page that cannot render is worse than saying why it is not there.
 //
-// Billing is available even though it has no data. That is not an inconsistency with the rule
-// above - the page renders, and every panel on it states which table it is waiting for. Customers
-// stays unavailable because there is no page at all, and Outreach because it is a single prod-only
-// instance that this deployment may not be.
+// Billing reads real figures now: the `organizations` and `credit_ledger` tables exist, PLANS is
+// populated, and the Stripe integration fills both. Its panels still degrade individually, so the
+// section stays available even where no payment provider is configured - the plans, balances and
+// ledger are true without one, and only invoices need it. Customers stays unavailable because there
+// is no page at all, and Outreach because it is a single prod-only instance that this deployment
+// may not be.
 export type AdminSection = {
   href: string;
   label: string;

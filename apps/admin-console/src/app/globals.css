@@ -274,6 +274,30 @@ h1 {
   vertical-align: top;
 }
 
+/* One organisation's block inside a panel that lists several. The rule is a separator, not a box:
+   a panel already has a frame, and nesting a second one makes three tenants look like three
+   panels. */
+.admin-subsection {
+  border-top: 1px solid #efece6;
+  margin-top: 1.1rem;
+  padding-top: 0.9rem;
+}
+
+.admin-subsection:first-of-type {
+  border-top: 0;
+  margin-top: 0.4rem;
+  padding-top: 0;
+}
+
+.admin-subsection h3 {
+  color: #6b6863;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  margin: 0 0 0.55rem;
+  text-transform: uppercase;
+}
+
 .admin-controls {
   border-top: 1px solid #efece6;
   display: grid;

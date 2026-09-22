@@ -336,6 +336,9 @@ INVENTORY: list[Group] = [
     Group("Auth / environment", note="ENV=production enforces a non-empty MESH_API_KEY, non-wildcard CORS_ORIGINS, and a set POSTGRES_PASSWORD at startup. USER_TOKEN_SECRET enables signed X-User-Id so identity is not self-asserted.", vars=[
         EnvVar("ENV", "dev"),
         EnvVar("MESH_API_KEY", "", secret=True),
+        EnvVar("ADMIN_API_KEY", "", secret=True,
+               help="the admin console's CROSS-TENANT read credential for the billing routes; "
+                    "blank refuses them outright, and it is deliberately not MESH_API_KEY"),
         EnvVar("USER_TOKEN_SECRET", "", secret=True),
         EnvVar("CORS_ORIGINS", "*"),
         EnvVar("FIREBASE_PROJECT_ID", "",
@@ -359,6 +362,12 @@ INVENTORY: list[Group] = [
         EnvVar("MAX_CONCURRENT_JOBS", "20"),
         EnvVar("SIGNUP_GRANT_CREDITS", "100", kind="int",
                help="credits a newly provisioned organisation is granted once; 0 disables it"),
+        EnvVar("JOB_BASE_CREDITS", "10", kind="int",
+               help="credits one SUCCEEDED job costs before its minutes are counted; a failed "
+                    "job is never charged"),
+        EnvVar("CREDITS_PER_MESH_MINUTE", "1", kind="int",
+               help="credits per wall-clock minute between a job's started_at and ended_at, "
+                    "rounded up; 0 prices jobs at the base charge alone"),
         EnvVar("CONSOLE_SIGNUP_ENABLED", "true", kind="bool",
                help="whether an unknown Identity Platform account may provision itself an "
                     "organisation on first sign-in"),
@@ -366,6 +375,26 @@ INVENTORY: list[Group] = [
                help="how long a retryable artifact-reconciliation failure waits before the "
                     "sweep may claim it again"),
         EnvVar("CELERY_WORKER_CONCURRENCY", "2", kind="int", consumer="compose", help="read by docker-compose.yml when it starts the worker, not by the application"),
+    ]),
+    Group("Billing (Stripe)", note="Leave every value blank to run without billing: the routes answer 503 and nothing else changes. The price ids name objects inside ONE Stripe account, so a sandbox, CI and live each carry their own - which is why they are configuration and not constants.", vars=[
+        EnvVar("STRIPE_API_KEY", "", secret=True,
+               help="a RESTRICTED key (rk_) with customer, subscription, checkout and invoice "
+                    "write access - not a secret key (sk_), which can also move money out"),
+        EnvVar("STRIPE_WEBHOOK_SECRET", "", secret=True,
+               help="whsec_... - proves an inbound webhook is Stripe's; the endpoint refuses "
+                    "rather than trusting an unsigned body when this is blank"),
+        EnvVar("CONSOLE_BASE_URL", "http://localhost:3000", kind="url",
+               help="where Stripe returns the browser after checkout - the console's origin, "
+                    "not the API's"),
+        EnvVar("STRIPE_PRICE_STARTER", "",
+               help="recurring price id for the starter tier's flat fee; blank means the tier "
+                    "cannot be bought in this deployment"),
+        EnvVar("STRIPE_PRICE_STARTER_OVERAGE", "",
+               help="metered price id billed in arrears once the starter allowance is spent"),
+        EnvVar("STRIPE_PRICE_TEAM", "",
+               help="recurring price id for the team tier's flat fee"),
+        EnvVar("STRIPE_PRICE_TEAM_OVERAGE", "",
+               help="metered price id billed in arrears once the team allowance is spent"),
     ]),
     Group("Postgres connection pool", note="Per process. The API container and the worker each open their own pool against the local database.", vars=[
         EnvVar("DB_POOL_SIZE", "5"),
