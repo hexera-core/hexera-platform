@@ -71,6 +71,29 @@
 #   D  intake_system 0c2a15887e7e7a3f   intake_tools 9cb0145c2b4c5e72   planner_user 855866e292055abb
 # The A and B digests are the ones the first version of this gate recorded on 2026-09-15, so the node
 # path produces the same bytes the direct render did.
+#
+# Run on 2026-09-22 on feat/surveyor-geometry-step, with E and F and with the planner's two inputs taken
+# from the driver's own read. A, B, C and E byte for byte; D and F different as they must be.
+#   A  intake_system 0dccfc492c1bf82f   intake_tools 557b7c1b95c6d46e   planner_user 16e44b932da08e8b
+#   B  intake_system 858a67570d6f0895   intake_tools 557b7c1b95c6d46e   planner_user 855866e292055abb
+#   C  intake_system 858a67570d6f0895   intake_tools 557b7c1b95c6d46e   planner_user 855866e292055abb
+#   D  intake_system 0c2a15887e7e7a3f   intake_tools 9cb0145c2b4c5e72   planner_user 33ba4e6a760b8d88
+#   E  intake_system 7392ea8106df56b9   intake_tools 9cb0145c2b4c5e72   planner_user fa052d8f4050f316
+#   F  intake_system 7392ea8106df56b9   intake_tools 9cb0145c2b4c5e72   planner_user 7476234daccd37ac
+# A, B and C are the same three digests as before, which is the point of them. D's planner_user moved
+# against the 2026-09-18 run: the reference for D is `bae0fb2`, which predates the survey, and this
+# branch's own history has since changed the block a survey composes (`3ba42c0` composes it from the
+# inlet the customer names). E is the case that asks what THIS change moves, and it moves nothing.
+# F moves only the planner's message, which is where the step's change lands: the write-up in front of
+# the request and the handoff as the block. It leaves the tool list alone because the step adds no tool.
+#
+# HOW THIS RAN. On Windows the checkout is a git worktree whose `.git` names a Windows path, which the
+# Linux git cannot follow, so the four commits were extracted on the Windows side and named with
+# `--tree`; the gate itself ran under WSL Ubuntu-24.04 on the platform's own interpreter, with the
+# measurement package's checkout on PYTHONPATH:
+#
+#   for rev in main 91bb74b bae0fb2 3ba42c0; do git archive $rev | tar -x -C /tmp/$rev; done
+#   PYTHONPATH=/path/to/gz_complete/src python devtools/quality/check_vision_off_is_byte_identical.py #       --tree main=/tmp/main --tree 91bb74b=/tmp/91bb74b --tree bae0fb2=/tmp/bae0fb2 #       --tree 3ba42c0=/tmp/3ba42c0
 from __future__ import annotations
 
 import argparse
