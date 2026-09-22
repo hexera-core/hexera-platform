@@ -494,3 +494,24 @@ def test_the_submission_gate_never_costs_a_turn_whatever_the_step_does(armed, mo
     monkeypatch.setattr(gst, "at_submission", _fine)
     monkeypatch.setattr(gst, "submission_problems", lambda _s: 1 / 0)
     assert asyncio.run(gate(who, {"mesh_fidelity": "standard"})) == []
+
+
+def test_the_third_intakes_question_reaches_the_intake_prompt_in_its_own_words(armed):
+    """The Surveyor's block is what the intake model reads. A question raised by the plan has to appear
+    there, said as the plan says it, and marked as the one question left."""
+    from meshpipeline.agents.intake.geometry_brief import survey_lines
+
+    state = _with_a_raised_trade(_planned()[0])
+    block = "\n".join(survey_lines(state))
+    assert "now that the geometry agent has planned the part" in block
+    assert "[budget_after_plan]" in block
+    assert "hold at 2,000,000" in block and "raise to about 3,000,000" in block
+    # and it is gone from the prompt the moment the switch is not set
+    import meshpipeline.settings.policy as cfg
+    was, cfg.GEOMETRY_AGENT_STEP_ENABLED = cfg.GEOMETRY_AGENT_STEP_ENABLED, False
+    try:
+        off = "\n".join(survey_lines(state))
+    finally:
+        cfg.GEOMETRY_AGENT_STEP_ENABLED = was
+    assert "budget_after_plan" not in off
+    assert "Nothing is left to ask about the geometry" in off
