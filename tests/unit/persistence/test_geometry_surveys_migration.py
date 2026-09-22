@@ -9,12 +9,15 @@ from meshpipeline.persistence.models import GeometrySurvey
 
 REPO = Path(__file__).parents[3]
 REVISION = REPO / "alembic" / "versions" / "0004_geometry_surveys.py"
+#: Every later revision that adds a column to this table. The ORM's columns are what the create built
+#: plus what these added, so a column declared on the model and migrated by nobody is still caught.
+LATER = (REPO / "alembic" / "versions" / "0005_geometry_step.py",)
 TABLE = "geometry_surveys"
 
 
-def _calls(func_name: str, attr: str) -> list[ast.Call]:
+def _calls(func_name: str, attr: str, revision: Path = REVISION) -> list[ast.Call]:
     out = []
-    for node in ast.walk(ast.parse(REVISION.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(revision.read_text(encoding="utf-8"))):
         if not isinstance(node, ast.FunctionDef) or node.name != func_name:
             continue
         out += [inner for inner in ast.walk(node) if isinstance(inner, ast.Call)
@@ -31,8 +34,38 @@ def _created_columns() -> set[str]:
     raise AssertionError(f"the revision does not create {TABLE}")
 
 
-def test_the_revision_creates_every_column_the_orm_declares():
-    assert _created_columns() == {c.name for c in GeometrySurvey.__table__.columns}
+def _added_columns() -> set[str]:
+    """Columns a later revision adds to this table, and only to this table."""
+    out: set[str] = set()
+    for revision in LATER:
+        for call in _calls("upgrade", "add_column", revision):
+            if not (call.args and isinstance(call.args[0], ast.Constant) and call.args[0].value == TABLE):
+                continue
+            column = call.args[1]
+            if isinstance(column, ast.Call) and column.args and isinstance(column.args[0], ast.Constant):
+                out.add(column.args[0].value)
+    return out
+
+
+def test_the_revisions_create_every_column_the_orm_declares():
+    """A column on the model that no revision builds is a column that is not there on a real database,
+    and the code that writes it fails only in production."""
+    assert _created_columns() | _added_columns() == {c.name for c in GeometrySurvey.__table__.columns}
+
+
+def test_the_geometry_agents_step_is_two_nullable_columns_added_by_a_later_revision():
+    """Added, not baked into 0004: a deployment already carrying survey rows upgrades in place, and both
+    columns are null on every row it has, which is what the step being off means."""
+    assert _added_columns() == {"geometry_step", "late"}
+    columns = {c.name: c for c in GeometrySurvey.__table__.columns}
+    assert columns["geometry_step"].nullable is True and columns["geometry_step"].default is None
+    assert columns["late"].nullable is True and columns["late"].default is None
+
+
+def test_the_later_revision_drops_exactly_the_columns_it_added():
+    dropped = {c.args[1].value for c in _calls("downgrade", "drop_column", LATER[0])
+               if len(c.args) > 1 and isinstance(c.args[1], ast.Constant)}
+    assert dropped == _added_columns()
 
 
 def test_one_survey_per_upload_carrying_the_digest_an_answer_is_bound_to():

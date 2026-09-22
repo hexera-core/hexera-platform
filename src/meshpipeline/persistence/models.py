@@ -483,6 +483,15 @@ class GeometrySurvey(Base):
     asked:    Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     #: One row per answer, with `answered_by`, `at`, the words it came from and the option chosen.
     answers:  Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    #: THE GEOMETRY AGENT'S STEP, when it ran: its plan, the envelope, the flow patches, and the job
+    #: ledger's rows. Null with GEOMETRY_AGENT_STEP_ENABLED off, which is every deployment that has
+    #: not set it, and the whole row behaves then exactly as it did before this column existed.
+    #: It lives here and not in `survey` because `survey` is the package's own handoff, dumped as the
+    #: package dumped it, and this is the platform's record of what it did with it.
+    geometry_step: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: The THIRD intake's question, the one only a plan can raise, from the moment it is raised until
+    #: it is put and settled. Null with the step off, and null when no plan raised one.
+    late: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     agent_git_sha: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False,
                                                  server_default=func.now())

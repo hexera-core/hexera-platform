@@ -236,26 +236,72 @@ def settle_the_trade(state: dict, doc: dict, note: list[str], take: str, *, rout
 # step 7: the builder's own read, and the builder's own message
 # -------------------------------------------------------------------------------------------------
 
+async def through_the_row(state: dict) -> tuple[dict, str]:
+    """The state as the DATABASE would give it back, and why not when it cannot be had here.
+
+    THE REASON THIS IS NOT A PLAIN DICT. `GeometrySurveyRepository.record` writes a named list of keys
+    and silently drops any other, so a state that round-trips through a harness holding it in memory can
+    still lose half of itself in production: the geometry agent's plan and its third-intake question
+    were both lost exactly that way, and nothing above the repository could see it, this harness least
+    of all, because a double that keeps whatever it is handed agrees with every caller. So the state
+    goes through the repository's own mapping here, against a session that touches no database.
+
+    Where sqlalchemy is not installed - the measurement package's interpreter, which is the one that can
+    read STEP - the mapping cannot run, and the run says so rather than quietly proving less.
+    """
+    try:
+        import uuid as _uuid
+
+        from meshpipeline.persistence.repositories.geometry_survey_repository import (
+            GeometrySurveyRepository,
+            state_of,
+        )
+    except Exception as exc:                       # noqa: BLE001 - an absent driver is not a failed run
+        return state, f"{type(exc).__name__}: {exc}"
+
+    class _NoRowYet:
+        async def execute(self, _statement):
+            return self
+
+        def scalar_one_or_none(self):
+            return None
+
+        def add(self, _row):
+            return None
+
+        async def flush(self):
+            return None
+
+    row = await GeometrySurveyRepository().record(
+        _NoRowYet(), owner_id=OWNER, geometry_source_id=_uuid.uuid4(),
+        sha256=str(state.get("sha256") or ""), state=state)
+    return state_of(row), ""
+
+
 async def what_the_builder_gets(state: dict, doc: dict, ref, request_txt: str) -> dict:
     """`cad.regions.planner_inputs_for_state`, the call the snappy driver makes, run as it is written.
 
     The two stored reads it makes are answered from this run instead of from Postgres, which is the seam
     `check_vision_off_is_byte_identical.py` patches for the same reason. Everything between them - the
     gate, the contract, the handoff, the fallback - is the product's.
+
+    What the write GIVES BACK is the repository's own mapping of the state where that can run here, not
+    the dict it was handed: see `through_the_row`.
     """
     import meshpipeline.cad.regions as regions
     from meshpipeline.application import geometry_survey as gs
 
-    saved: dict[str, dict] = {}
+    stored, no_row_mapping = await through_the_row(state)
+    saved: dict[str, dict] = {"state": stored}
 
     async def _document(_ref, _digest):
         return doc
 
     async def _load(*_a, **_k):
-        return saved.get("state", state)
+        return saved["state"]
 
     async def _save(_owner, _source, new, **_k):
-        saved["state"] = new
+        saved["state"], _why = await through_the_row(new)
         return True
 
     before_doc, before_load, before_save = regions._stored_document, gs.load, gs.save
@@ -265,7 +311,8 @@ async def what_the_builder_gets(state: dict, doc: dict, ref, request_txt: str) -
         request, block, why = await regions.planner_inputs_for_state(pipeline_state)
     finally:
         regions._stored_document, gs.load, gs.save = before_doc, before_load, before_save
-    return {"request": request, "block": block, "why": why, "state": saved.get("state", state)}
+    return {"request": request, "block": block, "why": why, "state": saved["state"],
+            "no_row_mapping": no_row_mapping}
 
 
 async def planner_message(request: str, block: dict | None, workspace: Path, job_id: str) -> str:
@@ -399,6 +446,7 @@ async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: st
         "third_intake": bool(late_before), "third_intake_id": late_before.get("id", ""),
         "trade_skipped_because": step.get("trade_skipped_because", ""),
         "step_used_by_the_builder": not got["why"], "why_not": got["why"][:300],
+        "the_row_mapping_ran": not got["no_row_mapping"], "no_row_mapping": got["no_row_mapping"][:200],
         "request_chars": len(got["request"]), "prefix_chars": len(got["request"]) - len(brief) - 2,
         "brief_survives_the_2000_cut": bool(brief) and brief.strip()[-30:] in got["request"][:2000],
         "typed_keys": sorted(block.keys()),
@@ -459,6 +507,9 @@ def main() -> int:
             print(f"    reason: {row['reason']}")
         if row.get("why_not"):
             print(f"    the builder did not use it: {row['why_not']}")
+        if row.get("no_row_mapping"):
+            print(f"    NOTE: the row mapping did not run here, so what the database keeps is not "
+                  f"proved by this run: {row['no_row_mapping']}")
 
     out.mkdir(parents=True, exist_ok=True)
     (out / "summary.json").write_text(json.dumps(rows, indent=1, default=str), encoding="utf-8")
