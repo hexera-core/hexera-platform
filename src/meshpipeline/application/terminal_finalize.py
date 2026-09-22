@@ -3,6 +3,7 @@
 # Boundaries: one commit carries both the result and the outbox row, so the record and the announcement cannot disagree.
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 
@@ -15,6 +16,8 @@ from meshpipeline.persistence.lease import ExecutionOwnership, LeaseRepository
 from meshpipeline.persistence.models import FailedReason, JobStatus
 from meshpipeline.persistence.repositories.job_repository import JobRepository
 from meshpipeline.persistence.repositories.terminal_outbox_repository import TerminalOutboxRepository
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,16 @@ async def finalize_terminal_atomic(
         if failed_reason is not None and row is not None:
             row.failed_reason = failed_reason
         await job_repo.set_final_result(db, job_id, final_result_dict)
+        # 3a. THE CHARGE, written inside this same fenced transaction. The CAS above has already
+        # decided there is exactly one winner for this job's ending, so the debit inherits that
+        # decision and is exactly-once without needing a second guard of its own - a re-finalize, a
+        # redelivery or the reaper all take the `else` branch and charge nothing.
+        #
+        # It writes a ledger row and makes NO network call: reporting the consumption to the
+        # provider's meter happens after the commit, from a sweep that can be retried. See
+        # 0007_usage_metering for why that split is not optional.
+        if row is not None:
+            await _charge_fail_open(db, row)
         enqueued = await outbox_repo.enqueue(
             db, job_id=job_id, execution_generation=generation,
             terminal_status=durable_status.value,
@@ -71,6 +84,42 @@ async def finalize_terminal_atomic(
 
     return FinalizeOutcome(fenced=False, transition=tr, durable_status=durable_status,
                            enqueued=enqueued)
+
+
+async def _charge_fail_open(db: AsyncSession, row) -> None:
+    # FAIL-OPEN, deliberately, and the one place in billing that is.
+    #
+    # This runs inside the transaction that makes a job terminal. An exception escaping here rolls
+    # that back, so a metering defect would leave a finished four-hour mesh stuck as `running` until
+    # the reaper marks it failed - the customer loses the work AND is told it broke. An uncharged
+    # job, by contrast, is recoverable: the ledger is auditable, the job row still records what ran,
+    # and the charge can be written later from either.
+    #
+    # Losing revenue is the lesser failure, so it is the one this takes. The log is at ERROR because
+    # the recovery is manual and nothing else will raise the alarm.
+    try:
+        from meshpipeline.application import metering_service
+        # A SAVEPOINT, because catching the exception is not enough on its own.
+        #
+        # `credit_service.debit` FLUSHES. A failed insert or a dropped connection therefore leaves
+        # THIS session in a state that requires a rollback before it will accept another statement -
+        # so swallowing the exception here and carrying on would poison the outbox write and the
+        # commit that follow, roll back the terminal transition, and leave a finished job stuck
+        # non-terminal until the reaper marks it failed. That is the exact outcome the fail-open
+        # exists to prevent, and `except:` alone cannot prevent it.
+        #
+        # `begin_nested` issues a real SAVEPOINT. Its rollback unwinds only the debit and leaves the
+        # surrounding transaction usable, which is what makes "charge, but never at the cost of the
+        # job's ending" actually true rather than merely intended.
+        async with db.begin_nested():
+            await metering_service.charge_for_job(db, job=row)
+    except Exception:
+        # THE LOG LINE READS THE ROW DEFENSIVELY. An exception raised while HANDLING an exception
+        # escapes this block and rolls the transaction back - which is precisely the outcome the
+        # fail-open exists to prevent, arriving through the code that was supposed to prevent it.
+        # `getattr` here is not defensive habit; it is what keeps this handler a handler.
+        log.exception("could not charge job %s; it is finalised but unbilled",
+                      getattr(row, "id", "?"))
 
 
 __all__ = ["finalize_terminal_atomic", "FinalizeOutcome"]

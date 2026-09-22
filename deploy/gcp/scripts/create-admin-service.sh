@@ -103,7 +103,8 @@ for pair in "GOOGLE_CLIENT_SECRET:GOOGLE_CLIENT_SECRET_SECRET" \
             "OUTREACH_DB_PASSWORD:OUTREACH_DB_PASSWORD_SECRET" \
             "ANTHROPIC_API_KEY:ANTHROPIC_API_KEY_SECRET" \
             "APOLLO_API_KEY:APOLLO_API_KEY_SECRET" \
-            "VERIFIER_API_KEY:VERIFIER_API_KEY_SECRET"; do
+            "VERIFIER_API_KEY:VERIFIER_API_KEY_SECRET" \
+            "ADMIN_API_KEY:ADMIN_API_KEY_SECRET"; do
   runtime_var="${pair%%:*}"
   holder="${pair##*:}"
   secret_name="${!holder:-}"
@@ -370,6 +371,11 @@ ADMIN_ENV_PAIRS=(
   "OUTREACH_DB_NAME=${OUTREACH_DB_NAME:-}"
   "OUTREACH_DB_USER=${OUTREACH_DB_USER:-}"
   "GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}"
+  # WHERE THE BILLING PAGE READS FROM. The admin console holds no database credential for the
+  # product's own schema - it asks the API, which owns those tables and the migrations that shape
+  # them. Empty leaves the Billing panels reporting that they could not reach the API, which is the
+  # honest state for a deployment where the API's URL is not known yet.
+  "HEXERA_API_BASE_URL=${HEXERA_API_BASE_URL:-}"
   "DRY_RUN=${DRY_RUN:-1}"
 )
 # NOT reset here. The secret-backed names were appended to DECLARED_ENV_NAMES where they were
