@@ -120,3 +120,74 @@ def test_vtp_surface_reports_measurements(tmp_path):
     assert measurements["format"] == "vtp"
     assert measurements["n_triangles"] == 1
     assert measurements["n_points"] == 3
+
+
+def _facet(a, b, c):
+    return (
+        "facet normal 0 0 1\n  outer loop\n"
+        f"    vertex {a}\n    vertex {b}\n    vertex {c}\n"
+        "  endloop\nendfacet\n"
+    )
+
+
+def _solid(path, *facets):
+    path.write_text("solid s\n" + "".join(facets) + "endsolid s\n")
+    return path
+
+
+def test_empty_stl_is_rejected_instead_of_reported_clean(tmp_path):
+    path = tmp_path / "empty.stl"
+    path.write_bytes((b"\0" * 80) + (0).to_bytes(4, "little"))
+
+    report = inspect_surface_file(path)
+
+    assert report.summary == "Surface file contains no triangles."
+    assert _codes(report) == {DefectCode.engine_staging_failure}
+    assert report.defects[0].details["reason"] == "empty_surface"
+
+
+def test_non_finite_stl_coordinates_are_rejected(tmp_path):
+    path = _solid(tmp_path / "nan.stl", _facet("0 0 0", "nan 0 0", "0 1 0"))
+
+    report = inspect_surface_file(path)
+
+    assert report.summary == "Surface file contains non-finite vertex coordinates."
+    assert _codes(report) == {DefectCode.engine_staging_failure}
+    assert report.defects[0].details["reason"] == "non_finite_coordinates"
+    values = [m.value for m in report.measurements]
+    assert all(v == v for v in values if isinstance(v, float))
+
+
+def test_vertex_only_contact_between_fans_is_non_manifold(tmp_path):
+    path = _solid(
+        tmp_path / "bowtie.stl",
+        _facet("0 0 0", "1 0 0", "0 1 0"),
+        _facet("0 0 0", "-1 0 0", "0 -1 0"),
+    )
+
+    report = inspect_surface_file(path)
+
+    assert DefectCode.non_manifold_surface in _codes(report)
+    defect = next(
+        d for d in report.defects if "non_manifold_vertices" in d.details
+    )
+    assert defect.details["non_manifold_vertices"] == 1
+    measurements = {m.name: m.value for m in report.measurements}
+    assert measurements["non_manifold_edges"] == 0
+
+
+def test_closed_tetrahedron_has_no_non_manifold_vertices(tmp_path):
+    path = _solid(
+        tmp_path / "tetra.stl",
+        _facet("0 0 0", "1 0 0", "0 1 0"),
+        _facet("0 0 0", "0 1 0", "0 0 1"),
+        _facet("0 0 0", "0 0 1", "1 0 0"),
+        _facet("1 0 0", "0 1 0", "0 0 1"),
+    )
+
+    report = inspect_surface_file(path)
+
+    measurements = {m.name: m.value for m in report.measurements}
+    assert measurements["non_manifold_vertices"] == 0
+    assert measurements["boundary_edges"] == 0
+    assert _codes(report) == set()

@@ -56,6 +56,48 @@ def _edge_key(a: np.ndarray, b: np.ndarray) -> tuple:
     return tuple(sorted((pa, pb)))
 
 
+def _non_manifold_vertices(tris: np.ndarray) -> int:
+    """Count vertices whose incident triangles form more than one fan.
+
+    Two fans meeting at a single vertex are non-manifold there even when every
+    edge is used by at most two triangles, so edge counts alone cannot see it.
+    """
+    corners: list[tuple[tuple, tuple, tuple]] = [
+        (_point_key(tri[0]), _point_key(tri[1]), _point_key(tri[2])) for tri in tris
+    ]
+    incident: dict[tuple, list[int]] = {}
+    for index, keys in enumerate(corners):
+        for key in set(keys):
+            incident.setdefault(key, []).append(index)
+
+    count = 0
+    for vertex, triangle_indices in incident.items():
+        if len(triangle_indices) < 2:
+            continue
+        parent = {index: index for index in triangle_indices}
+
+        def find(index: int, parent: dict[int, int] = parent) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        seen_edges: dict[tuple, int] = {}
+        for index in triangle_indices:
+            for other in corners[index]:
+                if other == vertex:
+                    continue
+                edge = tuple(sorted((vertex, other)))
+                previous = seen_edges.setdefault(edge, index)
+                if previous != index:
+                    left, right = find(previous), find(index)
+                    if left != right:
+                        parent[left] = right
+        if len({find(index) for index in triangle_indices}) > 1:
+            count += 1
+    return count
+
+
 def _surface_metrics(tris: np.ndarray) -> dict:
     if len(tris) == 0:
         return {
@@ -67,6 +109,7 @@ def _surface_metrics(tris: np.ndarray) -> dict:
             "duplicate_faces": 0,
             "boundary_edges": 0,
             "non_manifold_edges": 0,
+            "non_manifold_vertices": 0,
         }
 
     points = tris.reshape(-1, 3)
@@ -92,6 +135,7 @@ def _surface_metrics(tris: np.ndarray) -> dict:
         "duplicate_faces": int(sum(v - 1 for v in face_counts.values() if v > 1)),
         "boundary_edges": int(sum(1 for v in edge_counts.values() if v == 1)),
         "non_manifold_edges": int(sum(1 for v in edge_counts.values() if v > 2)),
+        "non_manifold_vertices": _non_manifold_vertices(tris),
     }
 
 
@@ -127,6 +171,16 @@ def _defects(metrics: dict) -> tuple[RepairDefect, ...]:
                 details={"non_manifold_edges": metrics["non_manifold_edges"]},
             )
         )
+    if metrics["non_manifold_vertices"]:
+        defects.append(
+            RepairDefect(
+                code=DefectCode.non_manifold_surface,
+                severity=DefectSeverity.error,
+                message="Surface vertices joining separate triangle fans were found.",
+                count=metrics["non_manifold_vertices"],
+                details={"non_manifold_vertices": metrics["non_manifold_vertices"]},
+            )
+        )
     return tuple(defects)
 
 
@@ -150,6 +204,23 @@ def _fatal_read_report(path: Path, exc: Exception) -> RepairReport:
     )
 
 
+def _unusable_surface_report(path: Path, reason: str, message: str) -> RepairReport:
+    suffix = path.suffix.lower()
+    defect = RepairDefect(
+        code=DefectCode.engine_staging_failure,
+        severity=DefectSeverity.fatal,
+        message=message,
+        details={"path_suffix": suffix, "reason": reason},
+    )
+    return RepairReport(
+        defects=(defect,),
+        measurements=(RepairMeasurement(name="format", value=suffix.lstrip(".")),),
+        operations=({"name": "inspect_surface", "mutated": False},),
+        summary=message,
+        diagnostics={"path_suffix": suffix, "reason": reason},
+    )
+
+
 def inspect_surface_file(path: Path) -> RepairReport:
     p = Path(path)
     suffix = p.suffix.lower()
@@ -161,6 +232,18 @@ def inspect_surface_file(path: Path) -> RepairReport:
         raise
     except Exception as exc:
         return _fatal_read_report(p, exc)
+    if len(tris) == 0:
+        return _unusable_surface_report(
+            p,
+            "empty_surface",
+            "Surface file contains no triangles.",
+        )
+    if not bool(np.isfinite(tris).all()):
+        return _unusable_surface_report(
+            p,
+            "non_finite_coordinates",
+            "Surface file contains non-finite vertex coordinates.",
+        )
     metrics = _surface_metrics(tris)
     metrics["format"] = suffix.lstrip(".")
     defects = _defects(metrics)
