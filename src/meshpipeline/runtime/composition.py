@@ -48,6 +48,11 @@ def _enqueue_training_export(job_id: str, state: dict, *, created_at=None, ended
     )
 
 
+def _enqueue_geometry_scout(**kwargs) -> None:
+    from meshpipeline.adapters.pipeline_execution.celery import scout_geometry
+    scout_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-check-{kwargs.get('session_id', '')}")
+
+
 def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
@@ -68,6 +73,7 @@ def install_adapters() -> None:
         delivery_guard,
         event_stream,
         firebase_token,
+        geometry_check,
         inference_telemetry,
         mesh_execution,
         mesh_timing,
@@ -86,6 +92,7 @@ def install_adapters() -> None:
     object_storage.set_object_store(build_object_store())
     search.set_web_search_provider(build_web_search_provider())
     training_export.set_export_enqueuer(_enqueue_training_export)
+    geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     mesh_execution.set_mesh_executor(build_mesh_executor())
     # Console sign-in. The product knows only `contracts.firebase_token.verify`; which identity
     # provider is behind it - and therefore which certificate endpoint and which claim

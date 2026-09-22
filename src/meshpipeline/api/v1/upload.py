@@ -306,15 +306,14 @@ def _enqueue_geometry_check(session_id: str, owner_id: str, *, source_payload: d
     if not gcfg.GEOMETRY_CHECK_ENABLED:
         return
     try:
-        from meshpipeline.adapters.pipeline_execution.celery import scout_geometry
         from meshpipeline.application.geometry_check import STATUS_PENDING, write_status
+        from meshpipeline.contracts.geometry_check import enqueue_scout
 
-        write_status(session_id, STATUS_PENDING)
-        scout_geometry.apply_async(
-            kwargs={"session_id": session_id, "owner_id": owner_id, "source": source_payload,
-                    "interpretation": interpretation_payload},
-            task_id=f"geometry-check-{session_id}")
-        logger.info("upload_step_file: geometry check queued - session_id=%s", session_id)
+        queued = enqueue_scout(session_id=session_id, owner_id=owner_id, source=source_payload,
+                               interpretation=interpretation_payload)
+        if queued:
+            write_status(session_id, STATUS_PENDING)
+            logger.info("upload_step_file: geometry check queued - session_id=%s", session_id)
     except Exception as exc:  # noqa: BLE001 - the upload stands; the intake will ask instead
         logger.warning("upload_step_file: geometry check could not be queued (%s: %s) - "
                        "session_id=%s", type(exc).__name__, exc, session_id)

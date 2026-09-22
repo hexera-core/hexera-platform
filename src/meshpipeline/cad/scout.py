@@ -102,7 +102,8 @@ class ScoutResult:
 
     @property
     def size(self) -> tuple[float, float, float]:
-        return tuple(self.bbox_max[k] - self.bbox_min[k] for k in range(3))
+        return (self.bbox_max[0] - self.bbox_min[0], self.bbox_max[1] - self.bbox_min[1],
+                self.bbox_max[2] - self.bbox_min[2])
 
     def as_dict(self) -> dict:
         mm = 1000.0
@@ -162,25 +163,40 @@ def _read_shape(path: Path):
     return reader.OneShape()
 
 
-def _vec(p) -> tuple[float, float, float]:
-    return (p.X(), p.Y(), p.Z())
+Vec3 = tuple[float, float, float]
 
 
-def _sub(a, b):
-    return tuple(a[k] - b[k] for k in range(3))
+def _vec(p) -> Vec3:
+    return (float(p.X()), float(p.Y()), float(p.Z()))
 
 
-def _add(a, b, s=1.0):
-    return tuple(a[k] + s * b[k] for k in range(3))
+def _xyz(v) -> Vec3:
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _wh(v) -> tuple[float, float]:
+    return (float(v[0]), float(v[1]))
+
+
+def _sub(a, b) -> Vec3:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _add(a, b, s: float = 1.0) -> Vec3:
+    return (a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2])
+
+
+def _flip(v) -> Vec3:
+    return (-v[0], -v[1], -v[2])
 
 
 def _norm(v) -> float:
     return math.sqrt(sum(c * c for c in v))
 
 
-def _unit(v):
+def _unit(v) -> Vec3:
     n = _norm(v) or 1.0
-    return tuple(c / n for c in v)
+    return (v[0] / n, v[1] / n, v[2] / n)
 
 
 def _dot(a, b) -> float:
@@ -332,26 +348,32 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         BRepGProp.SurfaceProperties_s(f, g)
         area = g.Mass()
         centroid = _vec(g.CentreOfMass())
-        n = _unit(_vec(surf.Plane().Axis().Direction()))
+        normal = _unit(_vec(surf.Plane().Axis().Direction()))
         if f.Orientation() == TopAbs_REVERSED:
-            n = tuple(-c for c in n)
+            normal = _flip(normal)
         # the normal must point OUT of the material; a face's own orientation says so for a
         # well-formed solid, and the classifier settles it for the rest
         probe = 0.002 * diag
-        if solids and inside_any(_add(centroid, n, probe)) and not inside_any(_add(centroid, n, -probe)):
-            n = tuple(-c for c in n)
+        if solids and inside_any(_add(centroid, normal, probe)) and not inside_any(_add(centroid, normal, -probe)):
+            normal = _flip(normal)
         outer, inner = _measure_wires(f)
+        kind: str
+        o_area: float
+        o_centroid: tuple[float, float, float]
+        o_wh: tuple[float, float]
         if inner is not None and outer is not None and inner["area_m2"] >= MIN_RING_BORE_FRACTION * outer["area_m2"]:
             # an annular end face: the HOLE is the opening
-            kind, o_area, o_centroid, o_wh = "ring", float(inner["area_m2"]), tuple(inner["centroid"]), tuple(inner["wh_m"])
+            kind, o_area = "ring", float(inner["area_m2"])
+            o_centroid, o_wh = _xyz(inner["centroid"]), _wh(inner["wh_m"])
         else:
-            kind, o_area, o_centroid, o_wh = "disc", float(area), centroid, (tuple(outer["wh_m"]) if outer else (0.0, 0.0))
+            kind, o_area, o_centroid = "disc", float(area), centroid
+            o_wh = _wh(outer["wh_m"]) if outer else (0.0, 0.0)
         # on the part's extremity: the face sits on the bounding box in its own direction
-        t_edge = min(((bbox_max[k] if n[k] > 0 else bbox_min[k]) - o_centroid[k]) / n[k]
-                     for k in range(3) if abs(n[k]) > 1e-6)
+        t_edge = min(((bbox_max[k] if normal[k] > 0 else bbox_min[k]) - o_centroid[k]) / normal[k]
+                     for k in range(3) if abs(normal[k]) > 1e-6)
         on_extremity = t_edge <= 0.03 * diag
-        clear = clear_ahead(_add(o_centroid, n, 0.001 * diag), n, 0.0)
-        candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=n,
+        clear = clear_ahead(_add(o_centroid, normal, 0.001 * diag), normal, 0.0)
+        candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=normal,
                                   area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity))
 
     notes: list[str] = []

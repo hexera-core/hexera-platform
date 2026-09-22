@@ -66,9 +66,23 @@ class _Unsupported(RuntimeError):
     pass
 
 
+def _fetch(ref, work: Path) -> Path:
+    """The uploaded bytes, brought to the worker and checked against what the upload recorded.
+    The same integrity rule the job materializer applies; this needs no confirmed unit."""
+    from meshpipeline.contracts.geometry_source import safe_suffix, sha256_of
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    dest = work / f"geometry{safe_suffix(ref.suffix_hint)}"
+    get_object_store().download_file(object_key=ref.object_key, destination=dest)
+    digest, size = sha256_of(dest)
+    if size != int(ref.size_bytes) or digest != ref.sha256:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("the retrieved geometry does not match the upload")
+    return dest
+
+
 def _check(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None,
            purpose_text: str) -> dict:
-    from meshpipeline.application.geometry_materializer import materialize
     from meshpipeline.cad.scout import scout_cad, write_view_stl
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
     from meshpipeline.contracts.object_storage import get_object_store
@@ -82,15 +96,15 @@ def _check(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
 
     work = Path(tempfile.mkdtemp(prefix=f"geometry_check_{session_id[:8]}_"))
-    geometry = materialize(ref, interp_ref, workspace=work, job_id=f"check:{session_id[:8]}")
-    prepared, unit_note = _prepared_coordinates(geometry.local_path, interp_ref, ref)
+    local_path = _fetch(ref, work)
+    prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
 
-    facts = scout_cad(geometry.local_path, prepared=prepared).as_dict()
+    facts = scout_cad(local_path, prepared=prepared).as_dict()
     if unit_note:
         facts["notes"].append(unit_note)
 
     pictures = work / "pictures"
-    skin = write_view_stl(geometry.local_path, work / "skin.stl", prepared=prepared)
+    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
     shots = render_snapshots(skin, facts["openings"], pictures)
 
     vision = _name_with_vision(facts, shots, purpose_text=purpose_text, session_id=session_id,
@@ -219,7 +233,8 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
     from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
 
     async def _ask():
-        from meshpipeline.adapters.model_inference import router as llm_router
+        # the neutral contract the agents call through; the runtime injects the real router
+        from meshpipeline.contracts import model_inference as llm_router
 
         content = [{"type": "text", "text": _facts_text(facts, shots, purpose_text)}]
         content += [_image_part(s.path) for s in shots]

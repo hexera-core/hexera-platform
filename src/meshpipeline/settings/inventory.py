@@ -354,6 +354,12 @@ INVENTORY: list[Group] = [
         EnvVar("LANGFUSE_SECRET_KEY", "", secret=True),
         EnvVar("LANGFUSE_HOST", ""),
     ]),
+    Group("Geometry check", note="The labelled picture of an upload the user confirms before the intake asks: openings, kind of body, flow direction. Read by the API (whether to scout an upload and serve the result) and the worker (how long the picture-naming model may take).", vars=[
+        EnvVar("GEOMETRY_CHECK_ENABLED", "false", kind="bool",
+               help="scout every CAD upload on the worker and show the labelled picture to confirm"),
+        EnvVar("GEOMETRY_CHECK_VISION_TIMEOUT_S", "60", kind="int", exposure="internal",
+               help="seconds the vision naming step may take before the check ships with the code's own names"),
+    ]),
     Group("Quotas", vars=[
         EnvVar("MAX_JOBS_PER_OWNER", "5"),
         EnvVar("MAX_CONCURRENT_JOBS", "20"),

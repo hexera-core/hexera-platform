@@ -61,8 +61,9 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
 
     def shoot(name: str, position, direction, labels: list[str], *, translucent: bool = False,
               zoom: float = 1.0, focus=None) -> Snapshot:
-        pl = pv.Plotter(off_screen=True, window_size=WINDOW)
-        pl.set_background("white")
+        pl = pv.Plotter(off_screen=True, window_size=list(WINDOW))
+        # pyvista's decorated methods confuse the type checker; the calls are the documented ones
+        pl.set_background("white")  # type: ignore[arg-type]
         pl.add_mesh(skin, color=BODY, smooth_shading=True, opacity=0.35 if translucent else 1.0,
                     specular=0.2)
         for p in pts:
@@ -77,7 +78,7 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
         pl.camera.focal_point = focus if focus is not None else centre
         up = (0.0, 0.0, 1.0) if abs(direction[2]) < 0.9 else (0.0, 1.0, 0.0)
         pl.camera.up = up
-        pl.reset_camera()
+        pl.reset_camera()  # type: ignore[call-arg]
         pl.camera.zoom(zoom)
         if part_label:
             pl.add_text(part_label, position="upper_left", font_size=12, color="black")

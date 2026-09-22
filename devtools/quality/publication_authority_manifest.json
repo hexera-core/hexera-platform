@@ -3382,6 +3382,21 @@
   "roots": []
  },
  {
+  "context": "render/scout_snapshots.py::render_snapshots.shoot::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=WINDOW)",
+  "path": "render/scout_snapshots.py",
+  "qualname": "render_snapshots.shoot",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=WINDOW)"
+  ]
+ },
+ {
   "context": "runtime/observability/sentry.py::setup_sentry::error#1|NotAPublisher|not-a-publisher|",
   "path": "runtime/observability/sentry.py",
   "qualname": "setup_sentry",

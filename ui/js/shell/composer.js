@@ -10,7 +10,8 @@
  * Every listener is registered by `mountComposer`, called once by the entrypoint. Before, they
  * were registered at import time, so importing this file attached handlers.
  */
-import { uploadGeometry, sendMessage } from "../api/endpoints.js";
+import { confirmGeometryCheck, getGeometryCheck, sendMessage, uploadGeometry }
+  from "../api/endpoints.js";
 import { acceptAttribute, isOfferable, loadIntakeFormats, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
@@ -28,6 +29,8 @@ let deps = {
   onJobStarted() {},
   // advisory: the empty state's format line, filled from the server's capability description
   supportedCopy() {},
+  // the geometry check's labelled picture and proposal, with the confirm action to call
+  geometryCheck() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -86,10 +89,42 @@ async function upload(file) {
     $("step-file-input").disabled = true;
     enableInput();
     if (d.intake_greeting) deps.chat("assistant", d.intake_greeting);
+    watchGeometryCheck(d.session_id);
   } catch (e) {
     btn.disabled = false; btn.textContent = "Upload geometry";
     lbl.textContent = "No geometry file selected"; lbl.className = "";
     if (e.status !== 401) deps.notice.show("Upload failed: " + e.message, "error");
+  }
+}
+
+/* THE GEOMETRY CHECK. The worker scouts the upload as soon as it is stored; this polls until
+   the labelled picture is ready and hands it to the stage to show. A check that is off, fails,
+   or reads a file it cannot scout simply never appears - the intake asks as it always did. */
+const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 120;   // six minutes, then stop quietly
+
+async function watchGeometryCheck(sessionId) {
+  for (let n = 0; n < CHECK_POLL_MAX; n++) {
+    if (getState.sessionId() !== sessionId) return;
+    let d = null;
+    try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
+    const status = d && d.status;
+    if (status === "off" || status === "unsupported" || status === "failed") {
+      if (status === "failed" && d.reason) {
+        deps.notice.show("The geometry check could not read this file; the questions will "
+          + "cover it instead.", "warn");
+      }
+      return;
+    }
+    if (status === "ready") {
+      if (d.confirmed) return;                     // a reload after confirming: nothing to do
+      deps.geometryCheck(d, async (body) => {
+        const reply = await confirmGeometryCheck(sessionId, body);
+        deps.chat("assistant", reply.message);
+        return reply;
+      });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
 }
 
