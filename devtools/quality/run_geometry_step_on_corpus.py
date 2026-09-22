@@ -33,6 +33,18 @@
 #
 # DETERMINISTIC unless `--provider` names a model. With `reference`, the package's own stand-in policy plans
 # and the ledger rows say `heuristic`; every number below is then reproducible from the bytes.
+#
+# RUN ON 2026-09-22, 49 parts, `--provider reference`, the platform at `049137d`:
+#   planned 49 of 49, every one `submitted`; reached the builder with the plan 49 of 49
+#   representations wall_shell 21, external 13, fluid_domain 13, annular_fluid 2 (and `unknown` on a run
+#     with `--purpose internal_cfd`, which is the only way this corpus reaches that word)
+#   the typed block carried the survey, intake's write-up, the flow patches and the plan's envelope on all 49
+#   the envelope's source was `tools.estimate_builder_cells` on all 49
+#   the ledger's stages were the same seven on all 49
+#   the customer's brief survived the planner's 2,000-character read on 46 of 49
+#   one plan: median 0.21 s, longest 4.13 s
+#   the third intake fired on none of them; `--cap 750000` on manifold_001 puts it, and section "The
+#     geometry agent's step" of docs/reference/configuration.md says why that is where it lives
 from __future__ import annotations
 
 import argparse

@@ -453,8 +453,30 @@ and the fidelity are settled. The plan is made there, once, and the builder read
 package's own stand-in policy, so no model was called and every figure reproduces from the bytes):
 49 real corpus parts measured through this platform's own `measure_local_file`, surveyed, answered and
 planned, then handed to the builder through `cad.regions.planner_inputs_for_state`, the call the snappy
-driver makes. 49 of 49 planned; 49 of 49 reached the builder with the plan.
-`devtools/quality/run_geometry_step_on_corpus.py` is the harness.
+driver makes. `devtools/quality/run_geometry_step_on_corpus.py` is the harness.
+
+| | |
+|---|---|
+| planned | 49 of 49, every one `submitted` |
+| reached the builder with the plan | 49 of 49 |
+| representations covered | `wall_shell` 21, `external` 13, `fluid_domain` 13, `annular_fluid` 2; `unknown` on its own run, which is the only way this corpus reaches that word |
+| the typed block carried the survey, intake's write-up, the flow patches and the plan's envelope | 49 of 49 |
+| the envelope's source | `tools.estimate_builder_cells` on all 49, never `tools.refined_cell_estimate` |
+| the ledger's stages | the same seven on all 49: brief, survey, look, uncertainty, intake, plan, handover |
+| the customer's brief survived the planner's 2,000-character read | 46 of 49; on the other 3 the last 31 to 100 characters are the physics tail, which the assembly reads as having no reader |
+| one plan's wall clock | median 0.21 s, longest 4.13 s, with the stand-in policy and no model call |
+
+The look did not run in any of these: `measure_local_file` stores `not_attempted` and step 3 is a
+worker, so the closed ends only the look names are absent from every row above.
+
+**The third intake did not fire on any of the 49**, and the reason is worth knowing before turning the
+step on: on 39 the plan's envelope fit the stated budget, and on the other 10 the survey had already
+put its own budget question, which `contract.intake.binds_late` says is the end of it. The question
+exists exactly where the plan's envelope is over a budget the measurement's own forecast was under, and
+every brief in this export states two million cells where the whole corpus forecasts less. On a
+customer budget inside that window it fires and runs to the end: on `manifold_001` with 750,000 stated,
+the plan costs 987,828, the question is put once with "hold 750,000" as its default, and the answer
+becomes `customer_cell_cap` in the builder's typed block and the mesh's own ceiling.
 
 ## Observability
 
