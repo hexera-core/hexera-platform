@@ -345,6 +345,9 @@ EVENT_TYPES: dict[str, str] = {
     "final_result_built": "qa: the durable final_result facts + the message "
                           "rendered from them (deterministic, no model call)",
     "dispute_context":    "qa: provenance of dispute rebuilds (parent, flags)",
+    "geometry_step":      "qa: the geometry agent's step was NOT used for this plan and the job ran "
+                          "as it does with GEOMETRY_AGENT_STEP_ENABLED off, with the sentence saying "
+                          "why; nothing is written when it was used, so a row here is a fallback",
 }
 
 

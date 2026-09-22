@@ -81,10 +81,14 @@ class _ForThisRun:
             request_txt, block, why = await _planner_inputs(self._state, self._job_id)
             self._planner = (request_txt, block)
             if why:
-                self._say(why)
+                self._note_the_fallback(why)
         return self._planner
 
-    def _say(self, why: str) -> None:
+    # NOT `_say`: `contracts/rationale._say` is the name this codebase gives the publication seam, and
+    # the publication-authority scan resolves a caller's publisher by the function's bare name. A second
+    # `_say` anywhere in `src` leaves the rationale helper's own receiver UNRESOLVED and the hygiene gate
+    # fails on a file that did not change.
+    def _note_the_fallback(self, why: str) -> None:
         logger.warning("geometry agent's step NOT used for this plan, the job runs as it does without it - "
                        "job_id=%s: %s", self._job_id, why)
         try:

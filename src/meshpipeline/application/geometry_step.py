@@ -115,7 +115,8 @@ def plan_key(state: dict, fidelity: str) -> str:
 
     Not in it: the third intake's answer, which comes after the plan by construction and must not
     invalidate it. That answer is never composed back into the survey, so it moves nothing here."""
-    cf = state.get("composed_for") if isinstance(state.get("composed_for"), dict) else {}
+    stored = state.get("composed_for")
+    cf: dict[str, Any] = stored if isinstance(stored, dict) else {}
     inputs = {k: cf.get(k) for k in ("purpose", "engine", "declared", "unit", "unit_basis", "scale_to_metres",
                                      "brief_sha", "representation", "inlet_ids", "look_status",
                                      "cell_cap", "cell_cap_kind")}
@@ -640,7 +641,8 @@ async def at_submission(*, owner_id: str, session_id: str, source_ref: Any, stat
         logger.info("geometry step: not planning yet, the survey still has questions to put")
         return state
     fid = fidelity if fidelity in FIDELITIES else "standard"
-    step = state.get("geometry_step") if isinstance(state.get("geometry_step"), dict) else {}
+    stored = state.get("geometry_step")
+    step: dict[str, Any] = stored if isinstance(stored, dict) else {}
     if step.get("for") == plan_key(state, fid) and step.get("status") in (PLANNED, FAILED):
         return state
     budget = float(polcfg.GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS or 0)

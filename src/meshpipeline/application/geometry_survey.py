@@ -379,7 +379,8 @@ def late_view(state: dict | None) -> dict | None:
     late = (state or {}).get("late")
     if not isinstance(late, dict) or not late.get("id") or not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
         return None
-    env = late.get("envelope") if isinstance(late.get("envelope"), dict) else {}
+    stored = late.get("envelope")
+    env: dict[str, Any] = stored if isinstance(stored, dict) else {}
     view = {"id": str(late["id"]), "about": "cell_budget", "text": str(late.get("text") or ""),
             "options": [str(o) for o in (late.get("options") or [])], "subjects": [],
             "effect": "changes_mesh", "default": late.get("default"),
