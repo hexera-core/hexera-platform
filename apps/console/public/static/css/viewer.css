@@ -103,3 +103,25 @@
 .v-probe .ok{color:#34d399}
 .v-probe .why{margin-top:6px;color:#c9bba6}
 .v-probe .acts{display:flex;gap:8px;margin-top:8px}
+
+/* THE GEOMETRY STAGE - the part with a numbered sticker on every opening, the form beside it.
+   The pins are the yellow of the check's pictures; the selected one wears the product's orange. */
+.gc-stage .gc-panel{gap:10px}
+.gc-stage .gc-lead{font-size:12.5px;color:#9aa4b4;line-height:1.55}
+.gc-stage .gc-lead b{color:#f2f5f9}
+.gc-stage .rc-row{display:flex;gap:10px;align-items:center;padding:4px 0}
+.gc-stage .rc-k{flex:none;width:96px;font-size:11.5px;color:#8b96a7}
+.gc-stage .rc-v{flex:1;min-width:0}
+.gc-stage .gc-sel{width:100%}
+.gc-stage .gc-table{font-size:12px;table-layout:auto}
+.gc-stage .gc-table th,.gc-stage .gc-table td{padding:4px 5px}
+.gc-stage .gc-name{min-width:64px}
+.gc-stage .gc-role{padding:3px 4px}
+.gc-stage .gc-pos{display:none}
+.gc-stage .gc-table .gc-n{cursor:pointer}
+.gc-stage .gc-table .gc-n:hover{text-decoration:underline}
+.gc-stage .gc-table tr.sel td{background:rgba(255,79,0,.14)}
+.gc-stage .gc-actions{padding:10px 0 0;border-top:1px solid #222834}
+.gc-pin{background:#ffd400;color:#14171c;font-weight:700;border-color:rgba(255,255,255,.95)}
+.gc-pin.sel{background:#ff4f00;color:#fff}
+.gc-fit{position:absolute;right:10px;top:10px;z-index:5}

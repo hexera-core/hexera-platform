@@ -70,3 +70,10 @@
   #workbench .viewer .v-bar{grid-column:1;grid-row:2;border-left:0;border-top:1px solid var(--border);max-height:40vh}
   #workbench .viewer .v-flags{grid-column:1;grid-row:3;border-left:0}
 }
+
+/* the geometry stage's panel holds a form, so it gets a little more room than a parts list -
+   on a wide window only; below 900px the stage stacks like every other viewer */
+#workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr) clamp(340px,30vw,460px)}
+@media(max-width:900px){
+  #workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr)}
+}

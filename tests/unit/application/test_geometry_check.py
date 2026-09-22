@@ -4,6 +4,8 @@
 # Boundaries: pure functions only; no CAD, no rendering, no model, no database.
 from __future__ import annotations
 
+from pathlib import Path
+
 from meshpipeline.api.v1.geometry import (
     ConfirmedOpening,
     ConfirmIn,
@@ -150,3 +152,50 @@ def test_the_workspace_is_removed_even_when_the_check_fails(tmp_path, monkeypatc
     assert result["reason"].startswith("RuntimeError")
     assert not list(tmp_path.glob("geometry_check_*"))       # nothing left behind on the worker
     assert "sessions/abcdef12-0000/geometry_check/scout.json" in store.written
+
+
+# ------------------------------------------------------------------------------ the skin ----
+class _Scout:
+    def __init__(self, facts):
+        self._facts = facts
+
+    def as_dict(self):
+        return self._facts
+
+
+def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
+    """The stage renders the same skin the pictures were drawn from, in the shape the mesh
+    viewer already reads, and the stored result says the skin is there."""
+    import json
+    import tempfile
+
+    import meshpipeline.cad.scout as scout_mod
+    import meshpipeline.render.scout_snapshots as snaps_mod
+    from meshpipeline.cad.stl_io import _box_triangles, write_stl_binary
+    from meshpipeline.contracts import object_storage
+
+    store = _Store()
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(gc, "_fetch", lambda ref, work: (work / "geometry.step").write_text("step") or work / "geometry.step")
+    monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
+    monkeypatch.setattr(gc, "_name_with_vision", lambda *a, **k: {"error": "no model in this test"})
+    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared: _Scout(_facts()))
+
+    def _skin(path, dest, *, prepared):
+        write_stl_binary(Path(dest), _box_triangles((0, 0, 0), (1, 1, 1)))
+        return Path(dest)
+    monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
+    monkeypatch.setattr(snaps_mod, "render_snapshots", lambda skin, openings, out: [])
+
+    source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/elbow.step", "sha256": "0" * 64,
+              "size_bytes": 4, "original_filename": "elbow.step", "suffix_hint": ".step"}
+    result = gc.run_geometry_check(session_id="abcdef12-1111", owner_id="o1", source=source)
+    assert result.get("reason") is None, result
+    skin = json.loads(store.written["sessions/abcdef12-1111/geometry_check/skin.json"])
+    assert skin["kind"] == "stl" and skin["is_mesh"] is False and skin["mesh_units"] == "m"
+    assert skin["patches"][0]["name"] == "skin" and skin["patches"][0]["tri_count"] == 12
+    assert "positions_b64" in skin["patches"][0]
+    stored = json.loads(store.written["sessions/abcdef12-1111/geometry_check/scout.json"])
+    assert stored["skin_key"] == "sessions/abcdef12-1111/geometry_check/skin.json"
+    assert stored["proposal"]["openings"][0]["centroid_mm"] == [0.0, 0.0, 0.0]

@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 import meshpipeline.settings.geometry_check as gcfg
@@ -88,10 +89,34 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             for s in payload.get("snapshots", [])]
         payload.pop("snapshots", None)
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
+        payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
     confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
     return payload
+
+
+@router.get("/{session_id}/check/skin")
+async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                         organization_id: str = Depends(org_dep)) -> Response:
+    """The part's skin as the viewer draws it - the structure a delivered surface has - for the
+    stage the user turns the part in. 404 when the check stored none.
+
+    The stored bytes are handed through as they are: the worker already wrote the JSON the viewer
+    reads, so decoding and re-encoding it here would only make copies. The skin is drawn at a
+    picture's tessellation (a few thousand triangles, a few hundred kilobytes; the elbow is
+    4,844 and 0.23 MB) and the app's gzip middleware compresses it on the way out."""
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        raise HTTPException(404, "The geometry check is not enabled on this deployment")
+    await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        raw = get_object_store().get_bytes(object_key=check_object_key(str(session_id), "skin.json"))
+    except ObjectNotFound:
+        raise HTTPException(404, "No skin has been stored for this session's geometry check") from None
+    return Response(content=raw, media_type="application/json")
 
 
 def confirmation_message(body: ConfirmIn) -> str:

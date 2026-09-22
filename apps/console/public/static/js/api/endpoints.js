@@ -88,6 +88,14 @@ export async function confirmGeometryCheck(sessionId, body) {
   return r.json();
 }
 
+/** The part's skin as the viewer draws it - the same structure a delivered surface has. 404
+ *  when the check stored none, which the stage treats as "show the card instead". */
+export async function getGeometrySkin(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/skin`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The delivered mesh surface - the structure the viewer renders. */
 export async function getSurface(jobId) {
   const r = await fetch(`/api/v1/simulation/${jobId}/surface`, { headers: headers() });

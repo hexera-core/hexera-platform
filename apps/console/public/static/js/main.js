@@ -24,6 +24,7 @@ import { configureComposer, disableInput, enableInput, mountComposer, setPlaceho
   from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
+import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { openViewer } from "./viewer/viewer.js";
 
 /* the HTTP layer's two shared failures, given a voice */
@@ -96,7 +97,10 @@ configureComposer({
   brief: (b) => Stage.brief(b),
   supportedCopy: (t) => Stage.setSupportedCopy(t),
   onJobStarted: (id) => attachJob(id),
-  geometryCheck: (d, confirm) => Stage.geometryCheck(d, confirm),
+  // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its
+  // stickers, the form beside it. When the stage cannot open, the same form arrives as a card.
+  geometryCheck: (sessionId, d, confirm) => openGeometryStage(sessionId, d, confirm,
+    { anchorEl: Stage.col(), fallback: () => Stage.geometryCheck(d, confirm) }),
 });
 
 configureDispute({

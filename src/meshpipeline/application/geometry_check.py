@@ -26,18 +26,37 @@ def check_object_key(session_id: str, name: str) -> str:
     return f"sessions/{session_id}/geometry_check/{name}"
 
 
-def write_status(session_id: str, status: str, **fields) -> None:
-    """A small JSON marker so the API can tell 'not started' from 'still running'."""
+def _store_json(object_key: str, payload: dict) -> None:
     from meshpipeline.contracts.object_storage import get_object_store
 
-    payload = {"status": status, "session_id": session_id, "written_at": time.time(), **fields}
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
         json.dump(payload, fh)
         tmp = Path(fh.name)
     try:
-        get_object_store().upload_file(local_path=tmp, object_key=check_object_key(session_id, "scout.json"))
+        get_object_store().upload_file(local_path=tmp, object_key=object_key)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def write_status(session_id: str, status: str, **fields) -> None:
+    """A small JSON marker so the API can tell 'not started' from 'still running'."""
+    _store_json(check_object_key(session_id, "scout.json"),
+                {"status": status, "session_id": session_id, "written_at": time.time(), **fields})
+
+
+def skin_payload(skin_stl: Path) -> dict:
+    """The part's skin in the shape the mesh viewer already reads (render/viewer_pack's STL
+    form), so the console draws the part with the renderer it draws a delivered mesh with. It is
+    marked as the input skin, never as a mesh."""
+    from meshpipeline.cad.stl_io import read_stl_triangles
+    from meshpipeline.render.viewer_pack import stl_response
+
+    resp = stl_response({"skin": read_stl_triangles(Path(skin_stl))}, {}, "m")
+    if resp is None:
+        raise RuntimeError("the part's skin has no triangles to draw")
+    resp["is_mesh"] = False
+    resp["cell_count"] = 0
+    return resp
 
 
 # --------------------------------------------------------------------------- the check ----
@@ -108,6 +127,9 @@ def _check(*, session_id: str, owner_id: str, source: dict, interpretation: dict
 
         pictures = work / "pictures"
         skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+        # the same skin, stored for the stage the user turns the part in
+        skin_key = check_object_key(session_id, "skin.json")
+        _store_json(skin_key, skin_payload(skin))
         shots = render_snapshots(skin, facts["openings"], pictures)
 
         vision = _name_with_vision(facts, shots, purpose_text=purpose_text, session_id=session_id,
@@ -121,7 +143,7 @@ def _check(*, session_id: str, owner_id: str, source: dict, interpretation: dict
             store.upload_file(local_path=s.path, object_key=key)
             snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing)})
     return {"status": STATUS_READY, "facts": facts, "vision": vision, "proposal": proposal,
-            "snapshots": snapshots, "source": ref.to_payload()}
+            "snapshots": snapshots, "skin_key": skin_key, "source": ref.to_payload()}
 
 
 def _prepared_coordinates(path: Path, interp_ref, ref):
