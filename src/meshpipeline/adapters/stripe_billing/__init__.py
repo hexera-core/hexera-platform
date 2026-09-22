@@ -7,7 +7,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # TYPE-ONLY, so the SDK is still imported lazily inside the methods below. The adapter must stay
+    # importable with `stripe` absent - the contract's tests exercise every handler without it - and
+    # a module-level runtime import would take that away. mypy reads this branch; the interpreter
+    # never does.
+    from stripe.params.checkout import (
+        SessionCreateParams,
+        SessionCreateParamsLineItem,
+    )
 
 import meshpipeline.settings.billing as billcfg
 from meshpipeline.contracts.billing import (
@@ -70,29 +80,34 @@ class StripeBillingGateway:
         # CHECKOUT SESSIONS, not a hand-built PaymentIntent. Stripe hosts the page, so SCA, 3-D
         # Secure, wallets and local payment methods are handled there - and the card never touches
         # this process, which is the difference between SAQ A and SAQ D.
-        items: list[dict] = [{"price": price_id, "quantity": 1}]
+        items: list[SessionCreateParamsLineItem] = [{"price": price_id, "quantity": 1}]
         if overage_price_id:
             # THE METERED HALF OF THE HYBRID. A metered item carries no quantity: usage is reported
             # against it during the period and priced at the close. Sending one is rejected.
             items.append({"price": overage_price_id})
 
+        # ANNOTATED WITH THE SDK'S OWN PARAMS TYPE rather than left a bare dict. Without it mypy
+        # infers `dict[str, Collection[Collection[Any]]]` from the mixed literal and the call fails
+        # the ratchet - and more usefully, the annotation is what makes a MISSPELLED KEY here a
+        # build error instead of a Stripe 400 found by the first customer to reach checkout.
+        params: SessionCreateParams = {
+            "mode": "subscription",
+            "customer": customer_id,
+            "line_items": items,
+            "success_url": f"{self._console_base_url}/settings/billing?checkout=success",
+            "cancel_url": f"{self._console_base_url}/settings/billing?checkout=cancelled",
+            # ON THE SUBSCRIPTION, not only the session. The session is transient and absent from
+            # later events; the subscription is what `customer.subscription.updated` carries, and
+            # the handler needs to know which plan it names.
+            "subscription_data": {
+                "metadata": {"organization_id": organization_id, "plan": plan}},
+            "metadata": {"organization_id": organization_id, "plan": plan},
+            # NO `payment_method_types`. Omitting it enables dynamic payment methods, so what is
+            # offered is configured in the dashboard and chosen per customer. Naming them here would
+            # freeze the list in code and silently exclude whatever is added later.
+        }
         session = self._client.checkout.sessions.create(
-            {
-                "mode": "subscription",
-                "customer": customer_id,
-                "line_items": items,
-                "success_url": f"{self._console_base_url}/settings/billing?checkout=success",
-                "cancel_url": f"{self._console_base_url}/settings/billing?checkout=cancelled",
-                # ON THE SUBSCRIPTION, not only the session. The session is transient and absent
-                # from later events; the subscription is what `customer.subscription.updated`
-                # carries, and the handler needs to know which plan it names.
-                "subscription_data": {
-                    "metadata": {"organization_id": organization_id, "plan": plan}},
-                "metadata": {"organization_id": organization_id, "plan": plan},
-                # NO `payment_method_types`. Omitting it enables dynamic payment methods, so what is
-                # offered is configured in the dashboard and chosen per customer. Naming them here
-                # would freeze the list in code and silently exclude whatever is added later.
-            },
+            params,
             **self._idempotency("checkout", f"{organization_id}:{plan}:{uuid.uuid4()}"),
         )
         return str(session.url)
