@@ -515,3 +515,88 @@ def test_the_third_intakes_question_reaches_the_intake_prompt_in_its_own_words(a
         cfg.GEOMETRY_AGENT_STEP_ENABLED = was
     assert "budget_after_plan" not in off
     assert "Nothing is left to ask about the geometry" in off
+
+
+# -------------------------------------------------------------------------------------------------
+# THE PART ITSELF. The agent's own tools open the file; the stored row deliberately does not name one.
+# -------------------------------------------------------------------------------------------------
+
+def test_the_agents_tools_are_given_the_customers_own_file(armed, tmp_path):
+    """`tools.section_profile` and every other mesh tool go through `ctx.mesh()`, which is
+    `load_mesh(Path(facts.source_path))`, and the renderers read the same field. The stored measurement
+    keeps that field empty on purpose - it was measured from an upload temp file that is long gone - so
+    the step has to hand the loop a real local copy or the loop dies the first time the model reaches
+    for the part. It did: the first live run of this step failed with "unsupported format ''"."""
+    state, doc = _answered()
+    part = tmp_path / "part.step"
+    part.write_text("ISO-10303-21;\n", encoding="utf-8")
+
+    given = gst._inputs(state, doc, fidelity="standard", source_path=str(part))
+    assert given.facts.source_path == str(part)
+    assert Path(given.facts.source_path).is_file(), "the path handed to the loop has to be openable"
+
+    # and the stored document still names no file, so nothing composed from it moved
+    assert (doc.get("facts") or {}).get("source_path") == ""
+    assert gst._inputs(state, doc, fidelity="standard").facts.source_path == ""
+
+
+def test_the_file_the_tools_get_never_moves_the_plan_by_itself(armed, tmp_path):
+    """It is there for the tools to open, and for nothing else: on the same answers the plan, and the
+    key it is bound to, are what they were before the file was ever fetched."""
+    state, doc = _answered()
+    part = tmp_path / "part.step"
+    part.write_text("ISO-10303-21;\n", encoding="utf-8")
+    without = gst.plan_the_part(state, doc, fidelity="standard", job_id="job-1",
+                                client=gst.planner_client("reference"))
+    with_it = gst.plan_the_part(state, doc, fidelity="standard", job_id="job-1",
+                                client=gst.planner_client("reference"), source_path=str(part))
+    assert with_it["geometry_step"]["status"] == gst.PLANNED
+    assert with_it["geometry_step"]["plan"] == without["geometry_step"]["plan"]
+    assert with_it["geometry_step"]["for"] == without["geometry_step"]["for"]
+    assert with_it["geometry_step"]["envelope"] == without["geometry_step"]["envelope"]
+
+
+def test_bytes_that_cannot_be_had_are_not_a_failed_step(armed, tmp_path, monkeypatch):
+    """A retrieval that cannot be made is not a failure of the step: the loop runs exactly as it did
+    before the file was ever fetched, and only a tool that actually needs the part fails the plan.
+    Fetching is best effort; planning is not conditional on it."""
+    def _boom(*_a, **_k):
+        raise RuntimeError("the uploaded geometry is no longer in storage")
+
+    monkeypatch.setattr("meshpipeline.application.geometry_materializer.fetch_verified_bytes", _boom)
+    assert gst.the_bytes_again(object(), str(tmp_path), "job-1") == ""
+
+    state, doc = _answered()
+    anyway = gst.plan_the_part(state, doc, fidelity="standard", job_id="job-1",
+                               client=gst.planner_client("reference"), source_path="")
+    assert anyway["geometry_step"]["status"] == gst.PLANNED
+
+
+def test_at_submission_fetches_the_file_and_hands_it_to_the_plan(armed, monkeypatch, tmp_path):
+    """The fetch happens where the source ref is, and the path reaches `plan_the_part`. The directory
+    it lands in is this step's own and is gone when the submission turn is."""
+    seen: dict = {}
+
+    async def _save(*_a, **_k):
+        return True
+
+    def _fetch(_ref, workspace, job_id=""):
+        got = Path(workspace) / "part.step"
+        got.write_text("ISO-10303-21;\n", encoding="utf-8")
+        seen["workspace"] = str(workspace)
+        return str(got)
+
+    def _plan(state, _doc, *, fidelity, job_id, client, source_path=""):
+        seen["source_path"] = source_path
+        return {**state, "geometry_step": {"schema": gst.STEP_SCHEMA, "status": gst.PLANNED,
+                                           "for": gst.plan_key(state, fidelity), "reason": ""}}
+
+    monkeypatch.setattr(gs, "save", _save)
+    monkeypatch.setattr("meshpipeline.application.geometry_materializer.fetch_verified_bytes", _fetch)
+    monkeypatch.setattr(gst, "plan_the_part", _plan)
+    state, doc = _answered()
+    ref = type("Ref", (), {"source_id": "11111111-1111-4111-8111-111111111111"})()
+    asyncio.run(gst.at_submission(owner_id="o", session_id="s", source_ref=ref, state=state,
+                                  document=doc, fidelity="standard"))
+    assert seen["source_path"].endswith("part.step")
+    assert not Path(seen["workspace"]).exists(), "the step's temp directory outlives nothing"

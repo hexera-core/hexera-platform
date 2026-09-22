@@ -45,6 +45,25 @@
 #   one plan: median 0.21 s, longest 4.13 s
 #   the third intake fired on none of them; `--cap 750000` on manifold_001 puts it, and section "The
 #     geometry agent's step" of docs/reference/configuration.md says why that is where it lives
+#
+# WHAT THIS HARNESS WAS BLIND TO UNTIL 2026-09-22, because it is the lesson and not a footnote. Every
+# run above used `--provider reference`, and the stand-in policy calls no tool that OPENS the part. So
+# none of those 49 rows touched `ctx.mesh()`, and the step passed all of them while handing the loop an
+# empty `facts.source_path`. The first live run failed on its second part with "unsupported format ''".
+# The harness now passes the case's own STEP file to `plan_the_part`, as `at_submission` passes the one
+# it fetches, so a deterministic run exercises the same field a live one does.
+#
+# RE-RUN ON 2026-09-22 after that fix, 22 parts (one per corpus family), `--provider reference`:
+#   planned 22 of 22, reached the builder 22 of 22; every envelope, round count and message length
+#     byte-identical to the run before the fix, which is the point: the file is for the tools to open
+#   representations wall_shell 9, external 6, fluid_domain 5, annular_fluid 1
+#
+# AND LIVE, `--provider deepseek`, 8 draws on 8 parts, one draw each:
+#   planned 6 of 8 (venturi_orifice, tee_wye, cyclone_separator, static_mixer, s_duct, manifold)
+#   no plan on 2 (ahmed_variant, blade_row_passage), both `grounding_rejected`: the model named a
+#     refinement kind the catalog does not have, the package's checker refused it three times, and the
+#     builder got the step-off request and block with the sentence saying why
+#   one plan 37 to 55 s, median 46 s. Eight draws of a model output: not a rate
 from __future__ import annotations
 
 import argparse
@@ -414,6 +433,8 @@ async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: st
     doc = measured(case, exp, cache)
     if doc.get("status") != "ok":
         return {"case": case, "step": "measure", "status": doc.get("status"), "reason": doc.get("reason")}
+    #: the customer's own file, which on the platform `at_submission` fetches back out of object storage
+    step_file = Path(_mapped(exp["source"]))
     ref = source_ref(exp, doc, case)
     note: list[str] = []
 
@@ -431,10 +452,13 @@ async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: st
     state = settle_the_trade(state, doc, note, take, route="survey")
     waiting = gst.not_yet(state)
 
-    # step 5, and the question step 6 raises
+    # step 5, and the question step 6 raises. The customer's own file goes in as well: on the platform
+    # `at_submission` fetches it with `geometry_step.the_bytes_again` for the agent's own tools, and a
+    # harness that left it out would be blind to every tool that opens the part - which is what the
+    # first run of this harness was, because the stand-in policy never calls one
     planned_at = time.perf_counter()
     state = gst.plan_the_part(state, doc, fidelity=fidelity, job_id=case,
-                              client=gst.planner_client(provider))
+                              client=gst.planner_client(provider), source_path=str(step_file))
     plan_seconds = round(time.perf_counter() - planned_at, 2)
     step = dict(state.get("geometry_step") or {})
     late_before = dict(state.get("late") or {})

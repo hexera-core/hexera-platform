@@ -478,6 +478,30 @@ customer budget inside that window it fires and runs to the end: on `manifold_00
 the plan costs 987,828, the question is put once with "hold 750,000" as its default, and the answer
 becomes `customer_cell_cap` in the builder's typed block and the mesh's own ceiling.
 
+**The agent opens the part itself, so the step fetches it.** Every mesh tool in the package goes
+through `ctx.mesh()`, which is `load_mesh(Path(facts.source_path))`, and the renderers read the same
+field. The stored measurement keeps that field empty on purpose: it was measured from an upload temp
+file that no longer exists, and a stale path in a stored document is a lie. So `at_submission` fetches
+the bytes back with `geometry_materializer.fetch_verified_bytes`, the same verified retrieval the look
+uses, into a temporary directory that lives exactly as long as the plan, and puts that path on the
+facts object the loop gets and on nothing else. Retrieval is best effort: no bytes plans anyway, and
+only a tool that actually needs the part fails, which fails open like everything else here.
+
+Worth knowing because the deterministic table above could not see it. The stand-in policy calls no tool
+that opens the part, so all 49 of those rows passed with the path empty. The first LIVE run put
+`section_profile` on its second part and the step fell open with "unsupported format ''".
+
+**Measured live** on 2026-09-22 with `GEOMETRY_AGENT_STEP_PROVIDER=deepseek`, 8 draws on 8 corpus parts
+across all four representations, one draw each, through the same harness:
+
+| | |
+|---|---|
+| planned and reached the builder | 6 of 8: `venturi_orifice_001`, `tee_wye_001`, `cyclone_separator_001`, `static_mixer_001`, `s_duct_001`, `manifold_001` |
+| no plan, and the job ran without it | 2 of 8: `ahmed_variant_001` and `blade_row_passage_001`, both `grounding_rejected` after three submissions, because the model named a refinement kind (`farfield_box`, `preserve_blade_edges`) the catalog does not have. That is the package's own checker refusing a fact it cannot ground, not this step failing, and the builder got the step-off request and block with the sentence saying so |
+| one plan's wall clock | 37 to 55 s, median 46 s, on a live model |
+
+These are model outputs and eight draws, so read the two refusals as "it happens", not as a rate.
+
 ## Observability
 
 | Key | Default | Notes |

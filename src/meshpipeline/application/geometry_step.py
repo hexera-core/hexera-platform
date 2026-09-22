@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -210,7 +211,7 @@ def _stated_roles(document: dict, ports: list[dict]) -> dict[str, str]:
     return out
 
 
-def _inputs(state: dict, document: dict, *, fidelity: str) -> _Inputs:
+def _inputs(state: dict, document: dict, *, fidelity: str, source_path: str = "") -> _Inputs:
     """Handoffs 0 to 2 as the package's types, rebuilt from the row. Raises `StepRefused`.
 
     THE SURVEY IS THE ONE THE CUSTOMER ANSWERED, and that is checked, not assumed: the stored inputs are
@@ -243,6 +244,15 @@ def _inputs(state: dict, document: dict, *, fidelity: str) -> _Inputs:
     pkg["survey"].bound_to_brief(survey, brief.sha256)
     stored_look = document.get("look")
     look = stored_look if isinstance(stored_look, dict) and stored_look.get("status") == "ok" else None
+    # THE PART ITSELF, ON THE FACTS THE LOOP GETS AND NOWHERE ELSE. The stored document carries
+    # `source_path: ""` deliberately: it was measured from a temp file at upload that is long gone, and
+    # a stale path in a stored document is a lie. The agent's own tools do open the part, though
+    # (`tools.section_profile` and every other mesh tool go through `ctx.mesh()`, which is
+    # `load_mesh(facts.source_path)`), so the loop is given a real local copy. It is put on AFTER the
+    # composition and the survey comparison above, on this object only, so that everything composed
+    # from the facts is composed from exactly the dump the stored survey was composed from.
+    if source_path:
+        facts = facts.model_copy(update={"source_path": str(source_path)})
     return _Inputs(facts=facts, composed=composed, brief=brief, survey=survey, intake=gs.intake_handoff(state),
                    stated=_stated_roles(document, made["ports"]), look=look,
                    engine=str(composed.get("engine") or "snappy"), ports=made["ports"])
@@ -473,7 +483,7 @@ class _NotYet:
 
 
 def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", job_id: str = "",
-                  client: Any = None) -> dict:
+                  client: Any = None, source_path: str = "") -> dict:
     """Step 5, and the question step 6 puts. Returns the row with `geometry_step` and, when the plan
     raised one, `late`. NEVER RAISES: a failure is stored as `status: failed` with its reason, and the
     job then runs exactly as it does with the step off.
@@ -481,11 +491,16 @@ def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", jo
     A FAILED STEP ASKS NOBODY ANYTHING. A question an earlier plan raised and that was never put is
     dropped here (`_with_late(..., None, None)`), because there is no plan left to price it against and
     the customer would be held at the submission for an envelope this platform can no longer produce.
-    One already put stays put, with whatever they said: it is asked once."""
+    One already put stays put, with whatever they said: it is asked once.
+
+    `source_path` is a local copy of the customer's own file, for the agent's tools. Empty is allowed
+    and plans exactly as before it existed; a tool that then needs the part fails, and that fails open
+    like anything else here."""
     fid = fidelity if fidelity in FIDELITIES else "standard"
     key = plan_key(state, fid)
     try:
-        return _plan(state, document, key=key, fidelity=fid, job_id=job_id, client=client)
+        return _plan(state, document, key=key, fidelity=fid, job_id=job_id, client=client,
+                     source_path=source_path)
     except Exception as exc:                       # noqa: BLE001 - the step is never worth the job
         reason = str(exc) if isinstance(exc, StepRefused) else f"{type(exc).__name__}: {exc}"
         logger.warning("geometry step: no plan for this submission, the job runs without it - %s", reason[:500])
@@ -497,10 +512,11 @@ def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", jo
         return {**state, "geometry_step": step}
 
 
-def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, client: Any) -> dict:
+def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, client: Any,
+          source_path: str = "") -> dict:
     pkg = _package()
     cj = pkg["job"]
-    inp = _inputs(state, document, fidelity=fidelity)
+    inp = _inputs(state, document, fidelity=fidelity, source_path=source_path)
     given = _given(inp, state, with_late=False)
     client = client if client is not None else planner_client()
     meta = _ledger_meta(state, inp.facts.sha256, job_id, "heuristic" if _is_reference(client) else "live")
@@ -621,6 +637,34 @@ def submission_problems(state: dict | None) -> list[str]:
             f"submit again"]
 
 
+def the_bytes_again(source_ref: Any, workspace: str, job_id: str = "") -> str:
+    """A local copy of the customer's own file, for the geometry agent's OWN tools. "" when there is none.
+
+    WHY THE STEP NEEDS IT AT ALL. The stored measurement keeps `source_path: ""` on purpose, so the row
+    never holds a path that stopped existing when the upload's temp directory went. But the agent opens
+    the part itself: `tools.section_profile` and every other mesh tool go through `ctx.mesh()`, which is
+    `load_mesh(Path(facts.source_path))`, and the renderers take the same field. A step that hands the
+    loop an empty path therefore works only for as long as the model does not reach for one.
+
+    WHAT HID IT. The corpus proof of this step ran on the package's stand-in policy, which calls no tool
+    that opens the part, so every one of those runs passed with the path empty. The first live run put
+    `section_profile` on the second part it tried and the whole step fell open with "unsupported format
+    ''". The ruler had the same blind spot as the thing it was measuring.
+
+    THE SAME RETRIEVAL THE LOOK USES, and for the same reason: `fetch_verified_bytes` checks the bytes
+    against the sha the row names and keeps the file's own suffix, which is what the loader reads.
+
+    NEVER RAISES. No bytes means the loop runs as it did before this function existed.
+    """
+    try:
+        from meshpipeline.application.geometry_materializer import fetch_verified_bytes
+        return str(fetch_verified_bytes(source_ref, workspace=workspace, job_id=f"geometry-step:{job_id}"))
+    except Exception as exc:                       # noqa: BLE001 - the plan is attempted either way
+        logger.warning("geometry step: the uploaded geometry could not be retrieved for the agent's own tools "
+                       "(%s); the plan is attempted without it, and a tool that needs the part will fail it", exc)
+        return ""
+
+
 async def at_submission(*, owner_id: str, session_id: str, source_ref: Any, state: dict | None,
                         document: dict | None, fidelity: str | None = None, client: Any = None) -> dict | None:
     """Step 5 at the submission: the plan for these answers, made now when there is none. NEVER RAISES
@@ -646,20 +690,34 @@ async def at_submission(*, owner_id: str, session_id: str, source_ref: Any, stat
     if step.get("for") == plan_key(state, fid) and step.get("status") in (PLANNED, FAILED):
         return state
     budget = float(polcfg.GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS or 0)
-    try:
-        work = asyncio.to_thread(plan_the_part, state, document, fidelity=fid, job_id=session_id, client=client)
-        new = await (asyncio.wait_for(work, timeout=budget + THREAD_GRACE_S) if budget > 0 else work)
-    except Exception as exc:                       # noqa: BLE001 - a timeout included
-        reason = f"the geometry agent's step did not finish inside its budget: {type(exc).__name__}: {exc}"
-        logger.warning("geometry step: %s", reason)
-        new = {**state, "geometry_step": {**step, "schema": STEP_SCHEMA, "status": FAILED,
-                                          "for": plan_key(state, fid), "fidelity": fid, "reason": reason, "at": _now()}}
+    # `ignore_cleanup_errors`: what the timeout below ends is the WAITING, not the thread, so on a
+    # timeout the loop can still be holding this file open. A temp directory left behind is worth less
+    # than a submission turn that dies while tidying one up.
+    with tempfile.TemporaryDirectory(prefix="geometry-step-bytes-", ignore_cleanup_errors=True) as workspace:
+        new = await _planned(state, document, source_ref, workspace,
+                             fid=fid, step=step, budget=budget, session_id=session_id, client=client)
     view = gs.late_view(new)
     if view is not None and view["status"] not in gs.TRADE_PUT:
         # it is put in the refusal the submission returns, which is the model's next instruction
         new = gs.mark_asked(new, [view])
     await gs.save(owner_id, str(source_ref.source_id), new, session_id=session_id)
     return new
+
+
+async def _planned(state: dict, document: dict, source_ref: Any, workspace: str, *, fid: str, step: dict,
+                   budget: float, session_id: str, client: Any) -> dict:
+    """One attempt at the plan, inside the directory the customer's file was fetched into."""
+    local = the_bytes_again(source_ref, workspace, session_id)
+    try:
+        work = asyncio.to_thread(plan_the_part, state, document, fidelity=fid, job_id=session_id, client=client,
+                                 source_path=local)
+        return await (asyncio.wait_for(work, timeout=budget + THREAD_GRACE_S) if budget > 0 else work)
+    except Exception as exc:                       # noqa: BLE001 - a timeout included
+        reason = f"the geometry agent's step did not finish inside its budget: {type(exc).__name__}: {exc}"
+        logger.warning("geometry step: %s", reason)
+        return {**state, "geometry_step": {**step, "schema": STEP_SCHEMA, "status": FAILED,
+                                           "for": plan_key(state, fid), "fidelity": fid, "reason": reason,
+                                           "at": _now()}}
 
 
 # -------------------------------------------------------------------------------------------------
@@ -763,4 +821,5 @@ def record_handover(state: dict, handoff: dict) -> dict:
 
 __all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STEP_SCHEMA", "StepRefused", "at_submission",
            "builder_handoff", "late_handoff", "not_yet", "note_late_answer", "plan_key", "plan_the_part",
-           "planner_client", "record_handover", "request_with_write_up", "step_enabled", "submission_problems"]
+           "planner_client", "record_handover", "request_with_write_up", "step_enabled", "submission_problems",
+           "the_bytes_again"]
