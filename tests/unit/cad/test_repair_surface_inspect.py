@@ -54,6 +54,60 @@ def test_degenerate_stl_triangle_is_reported(tmp_path):
     assert DefectCode.degenerate_edge in _codes(report)
 
 
+def test_surface_topology_uses_exact_float_coordinates(tmp_path):
+    path = tmp_path / "near-duplicate.stl"
+    path.write_text(
+        "solid exact\n"
+        "facet normal 0 0 1\n  outer loop\n"
+        "    vertex 0 0 0\n    vertex 1 0 0\n    vertex 0 1 0\n"
+        "  endloop\nendfacet\n"
+        "facet normal 0 0 1\n  outer loop\n"
+        "    vertex 0 0 0\n    vertex 1.0000000000001 0 0\n    vertex 0 1 0\n"
+        "  endloop\nendfacet\n"
+        "endsolid exact\n"
+    )
+
+    report = inspect_surface_file(path)
+
+    measurements = {m.name: m.value for m in report.measurements}
+    assert measurements["n_points"] == 4
+    assert measurements["duplicate_faces"] == 0
+    assert measurements["bbox_max"] == [1.0000000000001, 1.0, 0.0]
+    assert DefectCode.duplicate_surface_data not in _codes(report)
+
+
+def test_corrupt_ascii_stl_returns_fatal_report(tmp_path):
+    path = tmp_path / "corrupt.stl"
+    path.write_text(
+        "solid corrupt\n"
+        "facet normal 0 0 1\n  outer loop\n"
+        "    vertex 0 nope 0\n"
+        "  endloop\nendfacet\n"
+        "endsolid corrupt\n"
+    )
+
+    report = inspect_surface_file(path)
+
+    assert report.summary == "Surface file could not be inspected."
+    assert len(report.defects) == 1
+    defect = report.defects[0]
+    assert defect.code is DefectCode.engine_staging_failure
+    assert defect.details["path_suffix"] == ".stl"
+
+
+def test_truncated_binary_stl_returns_fatal_report(tmp_path):
+    path = tmp_path / "truncated.stl"
+    path.write_bytes((b"\0" * 80) + (1).to_bytes(4, "little") + b"too short")
+
+    report = inspect_surface_file(path)
+
+    assert report.summary == "Surface file could not be inspected."
+    assert len(report.defects) == 1
+    defect = report.defects[0]
+    assert defect.code is DefectCode.engine_staging_failure
+    assert defect.details["path_suffix"] == ".stl"
+
+
 def test_vtp_surface_reports_measurements(tmp_path):
     pv = pytest.importorskip("pyvista")
     if getattr(pv, "PolyData", None) is object:

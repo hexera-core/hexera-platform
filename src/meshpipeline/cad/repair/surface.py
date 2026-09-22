@@ -37,13 +37,22 @@ def _triangles_from_vtp(path: Path) -> np.ndarray:
     return pts[faces]
 
 
+def _coord_key(coord: float) -> float:
+    value = float(coord)
+    return 0.0 if value == 0.0 else value
+
+
+def _point_key(point: np.ndarray) -> tuple[float, float, float]:
+    return tuple(_coord_key(c) for c in point)
+
+
 def _triangle_key(tri: np.ndarray) -> tuple:
-    return tuple(sorted(tuple(round(float(c), 12) for c in p) for p in tri))
+    return tuple(sorted(_point_key(p) for p in tri))
 
 
 def _edge_key(a: np.ndarray, b: np.ndarray) -> tuple:
-    pa = tuple(round(float(c), 12) for c in a)
-    pb = tuple(round(float(c), 12) for c in b)
+    pa = _point_key(a)
+    pb = _point_key(b)
     return tuple(sorted((pa, pb)))
 
 
@@ -61,7 +70,7 @@ def _surface_metrics(tris: np.ndarray) -> dict:
         }
 
     points = tris.reshape(-1, 3)
-    unique_points = {tuple(round(float(c), 12) for c in p) for p in points}
+    unique_points = {_point_key(p) for p in points}
     areas = 0.5 * np.linalg.norm(
         np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]), axis=1
     )
@@ -75,8 +84,8 @@ def _surface_metrics(tris: np.ndarray) -> dict:
     return {
         "n_triangles": int(len(tris)),
         "n_points": int(len(unique_points)),
-        "bbox_min": points.min(axis=0).round(12).tolist(),
-        "bbox_max": points.max(axis=0).round(12).tolist(),
+        "bbox_min": [_coord_key(c) for c in points.min(axis=0)],
+        "bbox_max": [_coord_key(c) for c in points.max(axis=0)],
         "degenerate_faces": int((areas <= 0.0).sum()),
         "duplicate_faces": int(sum(v - 1 for v in face_counts.values() if v > 1)),
         "boundary_edges": int(sum(1 for v in edge_counts.values() if v == 1)),
@@ -119,10 +128,37 @@ def _defects(metrics: dict) -> tuple[RepairDefect, ...]:
     return tuple(defects)
 
 
+def _fatal_read_report(path: Path, exc: Exception) -> RepairReport:
+    suffix = path.suffix.lower()
+    defect = RepairDefect(
+        code=DefectCode.engine_staging_failure,
+        severity=DefectSeverity.fatal,
+        message="Surface file could not be inspected.",
+        details={
+            "path_suffix": suffix,
+            "error": type(exc).__name__,
+        },
+    )
+    return RepairReport(
+        defects=(defect,),
+        measurements=(RepairMeasurement(name="format", value=suffix.lstrip(".")),),
+        operations=({"name": "inspect_surface", "mutated": False},),
+        summary="Surface file could not be inspected.",
+        diagnostics={"path_suffix": suffix},
+    )
+
+
 def inspect_surface_file(path: Path) -> RepairReport:
     p = Path(path)
     suffix = p.suffix.lower()
-    tris = _triangles_from_vtp(p) if suffix == ".vtp" else _triangles_from_stl(p)
+    if not p.exists():
+        raise FileNotFoundError(p)
+    try:
+        tris = _triangles_from_vtp(p) if suffix == ".vtp" else _triangles_from_stl(p)
+    except (FileNotFoundError, ImportError):
+        raise
+    except Exception as exc:
+        return _fatal_read_report(p, exc)
     metrics = _surface_metrics(tris)
     metrics["format"] = suffix.lstrip(".")
     defects = _defects(metrics)

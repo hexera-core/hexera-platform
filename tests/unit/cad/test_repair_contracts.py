@@ -1,6 +1,9 @@
 # Responsibility: Verify CAD repair reports have stable vocabulary, status derivation and JSON shape.
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from meshpipeline.cad.repair.contracts import (
     DefectCode,
     DefectSeverity,
@@ -100,3 +103,28 @@ def test_report_serialization_keeps_codes_and_details_stable():
     assert payload["defects"][0]["code"] == "duplicate_surface_data"
     assert payload["defects"][0]["details"] == {"duplicate_faces": 3}
     assert payload["operations"] == [{"name": "inspect_surface", "mutated": False}]
+
+
+def test_contract_import_does_not_eagerly_load_inspection_modules():
+    code = (
+        "import sys\n"
+        "import meshpipeline.cad.repair.contracts\n"
+        "blocked = [\n"
+        "    'meshpipeline.cad.repair.inspect',\n"
+        "    'meshpipeline.cad.repair.surface',\n"
+        "    'numpy',\n"
+        "]\n"
+        "loaded = [name for name in blocked if name in sys.modules]\n"
+        "print('\\n'.join(loaded))\n"
+        "raise SystemExit(1 if loaded else 0)\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
