@@ -1,13 +1,28 @@
 # Responsibility: Verify STEP/IGES repair inspection reports B-rep validity without mutation.
 from __future__ import annotations
 
+import importlib
+import sys
+import types
+
 import pytest
 from tests.cad_fixtures import write_iges, write_step
 
-pytest.importorskip("OCP.STEPControl")
+from meshpipeline.cad.repair import brep
+from meshpipeline.cad.repair.brep import inspect_brep_file
+from meshpipeline.cad.repair.contracts import DefectCode
 
-from meshpipeline.cad.repair.brep import inspect_brep_file  # noqa: E402
-from meshpipeline.cad.repair.contracts import DefectCode  # noqa: E402
+
+def _has_module(name: str) -> bool:
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        return False
+    return True
+
+
+OCP_AVAILABLE = _has_module("OCP.STEPControl")
+requires_ocp = pytest.mark.skipif(not OCP_AVAILABLE, reason="OCP.STEPControl unavailable")
 
 
 def _measurements(report):
@@ -18,6 +33,88 @@ def _codes(report):
     return {d.code for d in report.defects}
 
 
+def test_brep_module_imports_without_ocp():
+    assert callable(inspect_brep_file)
+
+
+def test_unexpected_inspection_error_propagates(monkeypatch, tmp_path):
+    path = tmp_path / "box.step"
+    path.write_text("fixture")
+    monkeypatch.setattr(brep, "_read_shape", lambda _path: object())
+    monkeypatch.setattr(
+        brep,
+        "_count_subshapes",
+        lambda _shape: (_ for _ in ()).throw(RuntimeError("programmer error")),
+    )
+
+    with pytest.raises(RuntimeError, match="programmer error"):
+        inspect_brep_file(path)
+
+
+def test_transfer_failure_is_reported_as_invalid_brep(monkeypatch, tmp_path):
+    class Reader:
+        def ReadFile(self, _path):
+            return 1
+
+        def TransferRoots(self):
+            return 0
+
+        def OneShape(self):  # pragma: no cover - transfer failure should stop earlier
+            raise AssertionError("OneShape should not be called")
+
+    _install_fake_ocp(monkeypatch, reader=Reader())
+    path = tmp_path / "empty.step"
+
+    with pytest.raises(brep._CadReadError, match="transfer roots"):
+        brep._read_shape(path)
+
+    report = inspect_brep_file(path)
+
+    assert DefectCode.invalid_brep in _codes(report)
+    assert _measurements(report)["is_valid"] is False
+    assert report.summary == "Automatic repair was not safe for this geometry."
+
+
+def test_null_shape_is_reported_as_invalid_brep(monkeypatch, tmp_path):
+    class NullShape:
+        def IsNull(self):
+            return True
+
+    class Reader:
+        def ReadFile(self, _path):
+            return 1
+
+        def TransferRoots(self):
+            return 1
+
+        def OneShape(self):
+            return NullShape()
+
+    _install_fake_ocp(monkeypatch, reader=Reader())
+    path = tmp_path / "empty.step"
+
+    with pytest.raises(brep._CadReadError, match="empty shape"):
+        brep._read_shape(path)
+
+    report = inspect_brep_file(path)
+
+    assert DefectCode.invalid_brep in _codes(report)
+    assert _measurements(report)["is_valid"] is False
+
+
+def _install_fake_ocp(monkeypatch, reader):
+    step = types.ModuleType("OCP.STEPControl")
+    step.STEPControl_Reader = lambda: reader
+    iges = types.ModuleType("OCP.IGESControl")
+    iges.IGESControl_Reader = lambda: reader
+    ifselect = types.ModuleType("OCP.IFSelect")
+    ifselect.IFSelect_RetDone = 1
+    monkeypatch.setitem(sys.modules, "OCP.STEPControl", step)
+    monkeypatch.setitem(sys.modules, "OCP.IGESControl", iges)
+    monkeypatch.setitem(sys.modules, "OCP.IFSelect", ifselect)
+
+
+@requires_ocp
 def test_valid_step_reports_shape_counts_and_no_mutation(tmp_path):
     path = write_step(tmp_path / "box.step", "MM")
     before = path.read_bytes()
@@ -34,6 +131,7 @@ def test_valid_step_reports_shape_counts_and_no_mutation(tmp_path):
     assert measurements["edges"] >= 12
 
 
+@requires_ocp
 def test_valid_iges_reports_shape_counts(tmp_path):
     path = write_iges(tmp_path / "box.iges", "MM")
 
@@ -45,6 +143,7 @@ def test_valid_iges_reports_shape_counts(tmp_path):
     assert measurements["faces"] >= 6
 
 
+@requires_ocp
 def test_unreadable_cad_is_reported_as_invalid_brep(tmp_path):
     path = tmp_path / "broken.step"
     path.write_text("not a STEP file")

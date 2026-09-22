@@ -13,6 +13,10 @@ from meshpipeline.cad.repair.contracts import (
 )
 
 
+class _CadReadError(ValueError):
+    """Expected input failure while reading or transferring a CAD B-rep."""
+
+
 def _reader_for(path: Path):
     from OCP.IGESControl import IGESControl_Reader
     from OCP.STEPControl import STEPControl_Reader
@@ -29,9 +33,13 @@ def _read_shape(path: Path):
 
     reader = _reader_for(path)
     if reader.ReadFile(str(path)) != IFSelect_RetDone:
-        raise ValueError(f"OpenCASCADE could not read CAD file: {path.name}")
-    reader.TransferRoots()
-    return reader.OneShape()
+        raise _CadReadError(f"OpenCASCADE could not read CAD file: {path.name}")
+    if reader.TransferRoots() <= 0:
+        raise _CadReadError(f"OpenCASCADE could not transfer roots from CAD file: {path.name}")
+    shape = reader.OneShape()
+    if shape is None or (hasattr(shape, "IsNull") and shape.IsNull()):
+        raise _CadReadError(f"OpenCASCADE produced an empty shape for CAD file: {path.name}")
+    return shape
 
 
 def _count_subshapes(shape) -> dict:
@@ -86,7 +94,7 @@ def inspect_brep_file(path: Path) -> RepairReport:
             )
         measurements = {"format": fmt, "is_valid": is_valid, **counts}
         summary = "Repair recommended before meshing." if defects else "No repair needed."
-    except Exception as exc:  # noqa: BLE001 - unreadable CAD is a reportable input defect
+    except _CadReadError as exc:
         defects = (
             RepairDefect(
                 code=DefectCode.invalid_brep,
