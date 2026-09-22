@@ -106,12 +106,19 @@ def plan_key(state: dict, fidelity: str) -> str:
     step-4 answers and the fidelity. A plan whose key is not the row's is a plan for another job and
     is never handed to a builder.
 
-    Not in it: the third intake's answer, which comes after the plan by construction, and the budget
-    the composition carries, which is either read out of the brief (whose digest is here) or confirmed
-    in the survey's own trade (whose answer is here)."""
+    THE BUDGET THE COMPOSITION CARRIES IS IN IT, not inferred from the answers. It was left out on the
+    argument that a confirmed budget always arrives with an answer that is here anyway, and on the
+    product's own paths that is true; but the whole composition the plan was measured against, its
+    forecast included, is composed for that number, and a key that says it identifies the composition
+    while leaving out a value the composition takes is a key that lies when anything ever composes with
+    an explicit cap. It costs two fields to be true instead of true-for-now.
+
+    Not in it: the third intake's answer, which comes after the plan by construction and must not
+    invalidate it. That answer is never composed back into the survey, so it moves nothing here."""
     cf = state.get("composed_for") if isinstance(state.get("composed_for"), dict) else {}
     inputs = {k: cf.get(k) for k in ("purpose", "engine", "declared", "unit", "unit_basis", "scale_to_metres",
-                                     "brief_sha", "representation", "inlet_ids", "look_status")}
+                                     "brief_sha", "representation", "inlet_ids", "look_status",
+                                     "cell_cap", "cell_cap_kind")}
     late_id = _late_id(state)
     answers = [[a.get("question_id"), a.get("subject"), a.get("value"), a.get("answered_by"), bool(a.get("skipped"))]
                for a in gs.live_answers(state)
@@ -564,6 +571,19 @@ def note_late_answer(state: dict) -> dict:
         return state
 
 
+def not_yet(state: dict | None) -> list[str]:
+    """The survey's own questions that have not been put, which step 5 waits for. Empty when none.
+
+    The Surveyor's questions and the survey's own budget trade both belong to the customer's turn, and
+    the geometry agent plans from their answers. A question still to be put is an answer the plan would
+    not have. `open_now` already returns exactly those, in the chain's order, and a question that was
+    PUT and skipped or left to its default is not one of them: the customer has had it, and a default
+    that stood rides to the builder as the open question it is.
+    """
+    return [f"{v['route']}:{v['id']}" for v in gs.open_now(state or {})
+            if v["route"] in (gs.ROUTE_INTAKE, gs.ROUTE_TRADE)]
+
+
 def submission_problems(state: dict | None) -> list[str]:
     """Why the submission waits: the plan raised a question and it has not been put. Empty otherwise."""
     view = gs.late_view(state)
@@ -584,6 +604,16 @@ async def at_submission(*, owner_id: str, session_id: str, source_ref: Any, stat
     One attempt per set of answers. A failure is not retried for the same answers, because every retry
     is another run of the loop inside the customer's submission turn; a changed answer makes a new key."""
     if not step_enabled() or not isinstance(state, dict) or not isinstance(document, dict) or source_ref is None:
+        return state
+    if not_yet(state):
+        # STEP 5 IS AFTER STEP 4, and the survey's own budget trade is part of step 4's turn. Planning
+        # against a survey whose budget is still open buys a plan the next answer throws away: confirming
+        # a budget composes the measurement again, which moves `plan_key`, and the builder then refuses
+        # the stored plan as one made for another job. Measured on the corpus before this guard existed:
+        # of ten parts run end to end, the four whose survey still had its trade open were the four the
+        # builder fell back on. Nothing is stored here, because this is "not yet" and not a failure: the
+        # next submission, once the question has been put, plans.
+        logger.info("geometry step: not planning yet, the survey still has questions to put")
         return state
     fid = fidelity if fidelity in FIDELITIES else "standard"
     step = state.get("geometry_step") if isinstance(state.get("geometry_step"), dict) else {}
@@ -682,5 +712,5 @@ def record_handover(state: dict, handoff: dict) -> dict:
 
 
 __all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STEP_SCHEMA", "StepRefused", "at_submission",
-           "builder_handoff", "late_handoff", "note_late_answer", "plan_key", "plan_the_part",
+           "builder_handoff", "late_handoff", "not_yet", "note_late_answer", "plan_key", "plan_the_part",
            "planner_client", "record_handover", "request_with_write_up", "step_enabled", "submission_problems"]

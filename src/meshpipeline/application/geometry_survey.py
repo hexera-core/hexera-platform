@@ -362,19 +362,25 @@ def question_views(state: dict) -> list[dict]:
         out.append(view)
     late = late_view(state)
     if late is not None:
-        late["status"] = _status(late, [a for a in answers if a.get("question_id") == late["id"]])
         out.append(late)
     return out
 
 
 def late_view(state: dict | None) -> dict | None:
-    """The third intake's question as a view, or None. Only while the geometry agent's step is on, and
-    only when its plan raised one: with the step off no row carries `late` and nothing here runs."""
+    """The third intake's question as a view, `status` and all, or None. Only while the geometry agent's
+    step is on, and only when its plan raised one: with the step off no row carries `late` and nothing
+    here runs.
+
+    It carries its own status because it is read on its own as often as it is read through
+    `question_views`: `submission_problems` and `at_submission` both ask this function whether the
+    question has been put. A view whose status only one of its two readers filled in is a view whose
+    other reader crashes, which is what happened before this line moved here.
+    """
     late = (state or {}).get("late")
     if not isinstance(late, dict) or not late.get("id") or not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
         return None
     env = late.get("envelope") if isinstance(late.get("envelope"), dict) else {}
-    return {"id": str(late["id"]), "about": "cell_budget", "text": str(late.get("text") or ""),
+    view = {"id": str(late["id"]), "about": "cell_budget", "text": str(late.get("text") or ""),
             "options": [str(o) for o in (late.get("options") or [])], "subjects": [],
             "effect": "changes_mesh", "default": late.get("default"),
             "evidence": [f"the plan's envelope {env.get('cells_high')} cells ({env.get('source')})",
@@ -385,6 +391,8 @@ def late_view(state: dict | None) -> dict | None:
             #: answer is settled from them and never parsed back out of the sentence
             "marks": [{"field": "cell_budget", "kind": "stated", "value": env.get("cap")},
                       {"field": "forecast.cells_high", "kind": "measured", "value": env.get("cells_high")}]}
+    view["status"] = _status(view, [a for a in live_answers(state) if a.get("question_id") == view["id"]])
+    return view
 
 
 def _status(view: dict, answers: list[dict]) -> str:
