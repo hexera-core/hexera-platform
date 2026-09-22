@@ -226,8 +226,17 @@ async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> N
     # nobody bought, every time, and the larger the customer the more often it would happen.
     reason = str(invoice.get("billing_reason", "")).strip()
     if reason not in ALLOWANCE_BILLING_REASONS:
+        # NOTHING IS READ OUT OF THE PAYLOAD MAPPING INLINE HERE. An invoice object carries
+        # `customer_email`, `customer_name`, `customer_phone` and `customer_address` alongside the
+        # two harmless fields this line wants, so a log statement that reaches into it is one edit
+        # away from putting a customer's PII in an operator's log - and CodeQL flags the whole
+        # shape, not the field, for exactly that reason.
+        #
+        # `_id_of` is the narrowing every other handler already uses on a provider reference, and
+        # the reason is bounded to the vocabulary's own length: both values that reach the logger
+        # are strings this module produced, not slices of the provider's document.
         log.info("invoice %s paid with billing_reason %r; no allowance is granted",
-                 invoice.get("id", "?"), reason or "(none)")
+                 _id_of(invoice.get("id")) or "?", reason[:64] or "(none)")
         return
 
     customer_id = _id_of(invoice.get("customer"))
