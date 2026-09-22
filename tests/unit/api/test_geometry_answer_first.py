@@ -102,3 +102,26 @@ def test_a_sticker_that_is_not_an_opening_is_no_patch():
     assert [p["name"] for p in patches_from(body)] == ["inlet", "outlet", "wall"]
     m = confirmation_message(body)
     assert "Sticker 3: not an opening" in m and "bolt_hole" not in m.split("Sticker 3")[1]
+
+
+def test_an_internal_part_with_no_confirmed_port_asks_instead_of_contradicting_itself():
+    body = ConfirmIn(input_kind="body-surface", flow="internal", openings=[
+        ConfirmedOpening(id=1, name="hole", role="not_an_opening", diameter_mm=8.0)])
+    m = confirmation_message(body)
+    assert "flows through it" in m
+    assert "flows around" not in m
+    assert "ask the user where the fluid enters and leaves" in m and "every sticker was marked" in m
+    assert patches_from(body) == []          # no ports, so no wall either
+
+
+def test_far_field_margins_must_be_positive():
+    import pytest as _pytest
+    from pydantic import ValidationError
+    with _pytest.raises(ValidationError):
+        ConfirmIn(input_kind="solid-body", flow="external", flow_axis="+x",
+                  extents={"upstream": 0, "downstream": 10, "lateral": 5, "vertical": 5})
+    with _pytest.raises(ValidationError):
+        ConfirmIn(input_kind="solid-body", flow="external", flow_axis="+x", extents={"sideways": 5})
+    ok = ConfirmIn(input_kind="solid-body", flow="external", flow_axis="+x",
+                   extents={"upstream": 3, "downstream": 10.5, "lateral": 5, "vertical": 5})
+    assert ok.extents == {"upstream": 3.0, "downstream": 10.5, "lateral": 5.0, "vertical": 5.0}

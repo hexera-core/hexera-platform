@@ -12,7 +12,8 @@ export const AXES = [["+x", "+x"], ["-x", "-x"], ["+y", "+y"], ["-y", "-y"], ["+
                      ["unknown", "not sure"]];
 const EXTENTS = [["upstream", "upstream"], ["downstream", "downstream"], ["lateral", "to each side"],
                  ["vertical", "above"]];
-const num = (v, d) => (v == null || isNaN(v)) ? d : Number(v);
+// a blank box is a box the user has not answered, never a zero
+const num = (v, d) => (v == null || v === "" || isNaN(v)) ? d : Number(v);
 
 export const mm = (v) => (v == null || isNaN(v)) ? "?" : String(Math.round(v));
 /* a name lands inside a double-quoted attribute; `esc` covers text, this covers the quote too,
@@ -80,7 +81,8 @@ export function applyFlow(root) {
 /** The external-flow answers as the form holds them now. */
 export function readExternal(root) {
   const ext = {};
-  root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { ext[el.dataset.k] = num(el.value, 5); });
+  // a margin below half a body length is no far field at all; a blank box keeps the default
+  root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { ext[el.dataset.k] = Math.max(0.5, num(el.value, 5)); });
   const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref"), gEl = root.querySelector(".gc-ground");
   return { flow_axis: axisEl ? axisEl.value : "unknown",
            reference_length_mm: refEl && num(refEl.value, 0) > 0 ? num(refEl.value, 0) : null,

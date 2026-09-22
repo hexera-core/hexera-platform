@@ -68,6 +68,8 @@ def test_a_body_in_a_flow_shows_the_arrow_and_the_box_and_confirms_the_far_field
       const axis = root.querySelector('.gc-axis'); axis.value = '-y'; axis.dispatchEvent(new Event('change', {{bubbles: true}}));
       const g = root.querySelector('.gc-ground'); g.checked = false; g.dispatchEvent(new Event('change', {{bubbles: true}}));
       const up = root.querySelector('.gc-ext-upstream'); up.value = '3'; up.dispatchEvent(new Event('input', {{bubbles: true}}));
+      const lat = root.querySelector('.gc-ext-lateral'); lat.value = ''; lat.dispatchEvent(new Event('input', {{bubbles: true}}));
+      const top = root.querySelector('.gc-ext-vertical'); top.value = '0'; top.dispatchEvent(new Event('input', {{bubbles: true}}));
       return {{before, after: h.external().actors, ext: h.external()}};
     }})()""")
     assert redrawn["before"] == 3 and redrawn["after"] == 2, redrawn     # the ground plate went with the flag
@@ -78,7 +80,8 @@ def test_a_body_in_a_flow_shows_the_arrow_and_the_box_and_confirms_the_far_field
     body = live.evaluate("window.__confirmed")
     assert body["flow"] == "external" and body["input_kind"] == "solid-body" and body["openings"] == []
     assert body["flow_axis"] == "-y" and body["reference_length_mm"] == 4200.0 and body["grounded"] is False
-    assert body["extents"] == {"upstream": 3, "downstream": 10, "lateral": 5, "vertical": 5}
+    # a blank box keeps its default and a zero is held to half a length: never a zero margin
+    assert body["extents"] == {"upstream": 3, "downstream": 10, "lateral": 5, "vertical": 0.5}
     assert live.evaluate(f"!document.getElementById('gstage-{SESSION}')") is True
     assert_clean(live, "the external geometry stage")
 

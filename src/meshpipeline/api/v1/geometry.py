@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import meshpipeline.settings.geometry_check as gcfg
 from meshpipeline.api.security import org_dep, owner_dep
@@ -51,6 +51,21 @@ class ConfirmIn(BaseModel):
     extents: dict[str, float] | None = None
     grounded: bool = False
 
+    @field_validator("extents")
+    @classmethod
+    def _extents_are_positive_lengths(cls, v):
+        if v is None:
+            return v
+        import math
+        allowed = {"upstream", "downstream", "lateral", "vertical"}
+        bad = sorted(k for k in v if k not in allowed)
+        if bad:
+            raise ValueError(f"unknown far-field margin(s): {', '.join(bad)}")
+        for k, x in v.items():
+            if not (isinstance(x, (int, float)) and math.isfinite(x) and x > 0):
+                raise ValueError(f"the {k} margin must be a positive number of body lengths")
+        return {k: float(x) for k, x in v.items()}
+
 
 #: The first words of the holding line the chat gives while the part is being drawn. The intake
 #: prompt names it so nothing in it is ever read as declared.
@@ -82,7 +97,10 @@ def purpose_from(messages: list[dict] | None) -> str:
 async def hold_for_naming(session, owner_id: str, organization_id: str):
     """Called by the chat turn once the user's message is stored. When this is the first answer
     the naming waits for, hand the user's words to the naming step, leave the holding line in the
-    conversation, and return it; otherwise None and the intake runs as usual."""
+    conversation, and return it; otherwise None and the intake runs as usual.
+
+    Done under the session's row lock: two answers sent at once must not both pass the "nobody
+    asked yet" test and queue two namings with two holding lines."""
     if not gcfg.GEOMETRY_CHECK_ENABLED:
         return None
     from meshpipeline.application.geometry_check import (
@@ -92,28 +110,31 @@ async def hold_for_naming(session, owner_id: str, organization_id: str):
         read_check,
     )
     from meshpipeline.contracts.geometry_check import enqueue_naming
-
-    sid = str(session.id)
-    stored = read_check(sid)
-    if not should_hold(stored, naming_requested(sid), _read_json(check_object_key(sid, "confirmed.json"))):
-        return None
-    purpose = purpose_from(session.messages)
-    queued = enqueue_naming(session_id=sid, owner_id=owner_id, purpose_text=purpose,
-                            interpretation=await _interpretation_payload(session, owner_id, organization_id))
-    if not queued:
-        return None
-    mark_naming_requested(sid, purpose)
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
     from meshpipeline.persistence.session import get_db
 
+    sid = str(session.id)
     async with get_db() as db:
-        await SessionRepository().append_message(db, session.id, "assistant", HOLD_REPLY)
+        repo = SessionRepository()
+        locked = await repo.get_for_update(db, session.id)
+        if locked is None or locked.owner_id != owner_id:
+            return None
+        stored = read_check(sid)
+        if not should_hold(stored, naming_requested(sid), _read_json(check_object_key(sid, "confirmed.json"))):
+            return None
+        purpose = purpose_from(locked.messages)
+        interpretation = await _interpretation_payload(db, locked, owner_id, organization_id)
+        if not enqueue_naming(session_id=sid, owner_id=owner_id, purpose_text=purpose,
+                              interpretation=interpretation):
+            return None
+        mark_naming_requested(sid, purpose)
+        await repo.append_message(db, session.id, "assistant", HOLD_REPLY)
         await db.commit()
     logger.info("geometry naming queued from the first answer - session_id=%s", sid)
     return HOLD_REPLY
 
 
-async def _interpretation_payload(session, owner_id: str, organization_id: str) -> dict | None:
+async def _interpretation_payload(db, session, owner_id: str, organization_id: str) -> dict | None:
     """The unit the user confirmed for this session's file, as the worker reads it, or None."""
     iid = getattr(session, "geometry_interpretation_id", None)
     if not iid:
@@ -124,11 +145,9 @@ async def _interpretation_payload(session, owner_id: str, organization_id: str) 
     from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
         GeometryInterpretationRepository,
     )
-    from meshpipeline.persistence.session import get_db
 
-    async with get_db() as db:
-        recorded = await GeometryInterpretationRepository().get_for_owner(
-            db, iid, owner_id, organization_id=organization_id)
+    recorded = await GeometryInterpretationRepository().get_for_owner(
+        db, iid, owner_id, organization_id=organization_id)
     return asdict(GeometryInterpretationRef.from_domain(recorded)) if recorded else None
 
 
@@ -235,7 +254,10 @@ def confirmation_message(body: ConfirmIn) -> str:
         if skipped:
             parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
     else:
-        parts.append("No openings: the fluid flows around the whole body.")
+        # the fluid flows through the part but no port was confirmed: the intake must ask
+        parts.append("No openings were confirmed on the picture"
+                     + (" (every sticker was marked not an opening)" if body.openings else "")
+                     + "; ask the user where the fluid enters and leaves.")
     if body.seed_point_mm and len(body.seed_point_mm) == 3:
         p = body.seed_point_mm
         parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")

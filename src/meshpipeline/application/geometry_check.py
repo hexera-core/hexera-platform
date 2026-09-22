@@ -25,8 +25,9 @@ STATUS_PENDING, STATUS_SCOUTED, STATUS_READY = "pending", "scouted", "ready"
 STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
 _CAD_SUFFIXES = (".step", ".stp", ".igs", ".iges")
 _MESH_SUFFIXES = (".stl", ".obj", ".vtp")
-#: How long the naming step waits for a scout that is still running before giving up.
-NAMING_WAIT_S = 180.0
+#: How long the naming step waits for a scout that is still running before giving up - the
+#: scout's own hard limit, so a slow queue is waited out rather than abandoned.
+NAMING_WAIT_S = 900.0
 
 
 def check_object_key(session_id: str, name: str) -> str:
@@ -78,6 +79,19 @@ def naming_requested(session_id: str) -> dict | None:
 def mark_naming_requested(session_id: str, purpose_text: str) -> None:
     _store_json(check_object_key(session_id, "naming.json"),
                 {"session_id": session_id, "purpose_text": purpose_text[:2000], "requested_at": time.time()})
+
+
+def clear_naming_request(session_id: str) -> None:
+    """Withdraw the marker, so a naming that could not run leaves the next chat turn free to
+    ask again instead of a session that waits for a stage that never comes."""
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        get_object_store().delete_object(object_key=check_object_key(session_id, "naming.json"))
+    except ObjectNotFound:
+        pass
+    except Exception as exc:  # noqa: BLE001 - said, not raised: the naming's own outcome matters more
+        logger.warning("geometry naming: could not clear the request marker for %s (%s)", session_id, exc)
 
 
 def skin_payload(skin_stl: Path) -> dict:
@@ -272,9 +286,13 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
     started = time.time()
     stored = _wait_for_scout(session_id)
     if stored is None or stored.get("status") not in (STATUS_SCOUTED, STATUS_READY):
-        logger.info("geometry naming skipped - session=%s scout status=%s", session_id,
-                    (stored or {}).get("status"))
-        return {"status": (stored or {}).get("status") or "missing", "named": False}
+        status = (stored or {}).get("status") or "missing"
+        if status in (STATUS_PENDING, "missing"):
+            # the scout never finished in time: withdraw the request, so the next chat turn may
+            # ask again once it has, instead of a conversation that waits forever
+            clear_naming_request(session_id)
+        logger.info("geometry naming skipped - session=%s scout status=%s", session_id, status)
+        return {"status": status, "named": False}
 
     facts = dict(stored["facts"])
     # THE UNIT THE USER CONFIRMED, when the scout had to assume one: every millimetre in the facts
@@ -287,6 +305,10 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
             facts["unit_assumed"] = False
             facts["scale_to_m"] = float(interp_ref.scale_to_metres)
             facts["notes"] = [n for n in facts.get("notes", []) if "assume millimetres" not in n]
+            # THE SKIN FOLLOWS THE FACTS: the stage places the pins at the corrected centroids on
+            # the stored skin, so the skin is re-read in the same unit. The pictures show shape
+            # only and stay as they are.
+            _rescale_skin(session_id, k)
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
         store = get_object_store()
@@ -340,6 +362,24 @@ def _rescaled(value, k: float):
     if isinstance(value, list):
         return [_rescaled(v, k) for v in value]
     return value
+
+
+def _rescale_skin(session_id: str, k: float) -> None:
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    key = check_object_key(session_id, "skin.json")
+    try:
+        skin = json.loads(get_object_store().get_bytes(object_key=key))
+    except ObjectNotFound:
+        return
+    import numpy as np
+
+    for p in skin.get("patches") or []:
+        for name in ("positions_b64", "points_b64"):
+            if p.get(name):
+                arr = np.frombuffer(base64.b64decode(p[name]), dtype=np.float32) * float(k)
+                p[name] = base64.b64encode(arr.astype(np.float32).tobytes()).decode("ascii")
+    _store_json(key, skin)
 
 
 def _scale_numbers(v, k: float):
