@@ -445,7 +445,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (226 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (228 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -510,6 +510,8 @@ Every supported setting (226 entries). `template` settings are the ones `.env.ex
 | `LANGFUSE_HOST` | template | app |  |
 | `LANGFUSE_PUBLIC_KEY` | template | app |  |
 | `LANGFUSE_SECRET_KEY` | template | app | yes |
+| `GEOMETRY_CHECK_ENABLED` | template | app |  |
+| `GEOMETRY_CHECK_VISION_TIMEOUT_S` | internal | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |

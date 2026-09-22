@@ -96,6 +96,7 @@ configureComposer({
   brief: (b) => Stage.brief(b),
   supportedCopy: (t) => Stage.setSupportedCopy(t),
   onJobStarted: (id) => attachJob(id),
+  geometryCheck: (d, confirm) => Stage.geometryCheck(d, confirm),
 });
 
 configureDispute({

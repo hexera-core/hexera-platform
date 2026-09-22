@@ -9,6 +9,7 @@ from meshpipeline.api.v1 import (
     chat,
     client_config,
     credits,
+    geometry,
     organization,
     simulation,
     stripe_webhook,
@@ -25,6 +26,7 @@ router.include_router(chat.router,       prefix="/chat",       tags=["chat"])
 router.include_router(credits.router,    prefix="/credits",    tags=["credits"])
 router.include_router(organization.router, prefix="/organization", tags=["organization"])
 router.include_router(api_keys.router,   prefix="/api-keys",   tags=["api-keys"])
+router.include_router(geometry.router,   prefix="/geometry",   tags=["geometry"])
 router.include_router(billing.router,    prefix="/billing",    tags=["billing"])
 # THE CROSS-TENANT SURFACE, mounted apart from /billing because it is a different trust level, not a
 # different noun: everything under /billing answers for ONE tenant and scopes on it, while these

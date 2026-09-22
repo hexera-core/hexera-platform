@@ -26,6 +26,21 @@ def run_simulation(**kwargs) -> dict:
     return run_pipeline(**kwargs)
 
 
+@celery_app.task(
+    name="worker.tasks.scout_geometry",
+    bind=False,
+    max_retries=0,
+    soft_time_limit=900,
+    time_limit=1200,
+)
+def scout_geometry(**kwargs) -> dict:
+    # THE GEOMETRY CHECK runs on the worker because reading CAD and drawing it need the mesh
+    # toolchain the API image does not carry. It shares the simulation queue for now, so on a
+    # busy fleet an upload waits behind a running job; a queue of its own is the next step.
+    from meshpipeline.application.geometry_check import run_geometry_check
+    return run_geometry_check(**kwargs)
+
+
 async def launch(db, job_id: str, payload: dict) -> None:
     # Strip the envelope (schema_version) and fill gaps HERE, exactly as the deferred backend
     # does via run_from_job → to_run_kwargs. run_pipeline takes no **kwargs, so passing the

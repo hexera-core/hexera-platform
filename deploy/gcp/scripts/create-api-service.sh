@@ -190,6 +190,10 @@ API_ENV_PAIRS=(
   # resulting token, so the API is the only place this is a real gate.
   "CONSOLE_SIGNUP_ENABLED=${CONSOLE_SIGNUP_ENABLED:-true}"
   "SIGNUP_GRANT_CREDITS=${SIGNUP_GRANT_CREDITS:-100}"
+  # Whether an upload is scouted on the worker and shown to the user as a labelled picture to
+  # confirm before the intake asks about it. Off unless the environment says so: the check
+  # spends worker time and a vision-model call per upload.
+  "GEOMETRY_CHECK_ENABLED=${GEOMETRY_CHECK_ENABLED:-false}"
 )
 # The mesh executor, if this deployment has one. The application reads the job as CLOUDRUN_JOB.
 if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then
