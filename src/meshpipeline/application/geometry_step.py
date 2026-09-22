@@ -667,7 +667,14 @@ def builder_handoff(state: dict, document: dict, *, request_txt: str) -> dict:
     platform's own `request_txt` so the two together fit the planner's 2,000-character read, and repeating
     the patch names when it pushes them past the cut. `typed` is the planner block composed for the
     customer's resolved budget and named inlet, with the survey, intake's write-up, the flow patches and
-    the plan's envelope, all after the cut."""
+    the plan's envelope, all after the cut.
+
+    WHEN THE TWO STILL DO NOT FIT the assembly says so, and so does this: on 3 of 49 corpus parts the
+    write-up shortens to its floor and the last 31 to 100 characters of the brief fall past the cut. The
+    assembly's own reading of those lines is `no reader`, the physics tail, and the budget sentence among
+    them reaches the planner through the typed block's `customer_cell_cap` instead. That is a judgement
+    the package makes and this module does not second-guess; what it does is say it out loud, because a
+    line of the customer's brief that the planner never read is not a thing to find out later."""
     step = state.get("geometry_step") if isinstance(state, dict) else None
     if not isinstance(step, dict):
         raise StepRefused("the geometry agent did not plan this job: no plan was made before it was submitted")
@@ -688,6 +695,7 @@ def builder_handoff(state: dict, document: dict, *, request_txt: str) -> dict:
     unit = str(given.value("unit") or plan.unit.assumed)
     assembly = pkg["hexera"].request_assembly(plan, inp.facts, str(request_txt or ""), inp.engine, given.budget,
                                               given.representation, unit, inp.brief.text or None)
+    _say_what_the_cut_takes(assembly)
     meta = dict(((step.get("ledger") or {}).get("meta")) or {})
     key = str(meta.get("key") or "")
     recs = _records(state, inp, key, {"part_key": meta.get("part_key", ""), "job_id": meta.get("job_id", ""),
@@ -700,6 +708,22 @@ def builder_handoff(state: dict, document: dict, *, request_txt: str) -> dict:
         final, given, geometry_write_up=assembly["block"], intake_block=pkg["handover"].intake_block(record),
         plan_envelope=dict(step.get("envelope") or {}) or None,
         patches=pkg["deliver"].flow_patches([p.model_dump(mode="json") for p in plan.patches], given))
+
+
+def _say_what_the_cut_takes(assembly: dict) -> None:
+    """What the planner's 2,000-character read does not reach, in the assembly's own words. Never raises."""
+    try:
+        if not assembly.get("request_truncated"):
+            return
+        uncovered = [str(d.get("line") or "") for d in (assembly.get("displaced_uncovered") or [])]
+        displaced = [f"{d.get('line')} ({d.get('status')})" for d in (assembly.get("displaced") or [])]
+        where = logger.warning if uncovered else logger.info
+        where("geometry step: the write-up and the request are %d characters and the planner reads 2,000, "
+              "so %d fall past the cut; displaced: %s%s", assembly.get("chars"), assembly.get("lost_chars"),
+              "; ".join(displaced) or "nothing the assembly names",
+              f"; NOT CARRIED: {'; '.join(uncovered)}" if uncovered else "")
+    except Exception as exc:                       # noqa: BLE001 - a log line is never worth a handoff
+        logger.debug("geometry step: the cut could not be described (%s)", exc)
 
 
 def request_with_write_up(handoff: dict, request_txt: str) -> str:

@@ -40,6 +40,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import types
@@ -59,6 +60,14 @@ CASES_DIR = Path(os.environ.get("GEOMETRY_CORPUS_CASES",
                                 r"C:\Users\rehaa\hexera-platform-v2\gz_complete\eval\corpus_export_cases"))
 
 OWNER = "corpus-harness-owner"
+
+#: The corpus generator writes one budget sentence into every brief, and `--cap` rewrites that sentence.
+#: THE ONLY THING IT CHANGES IS A NUMBER THE CUSTOMER WROTE. The geometry is the corpus part's, the
+#: measurement is the platform's, and the budget is as real a customer input as the one it replaces: it
+#: is where the third intake lives, because that question exists exactly when the plan's envelope is over
+#: a budget the measurement's own forecast was under, and the export's briefs all state 2,000,000 where
+#: the whole corpus forecasts less.
+_BUDGET_LINE = re.compile(r"^Mesh budget:.*$", re.M)
 
 
 def _sha256_of(path: Path) -> str:
@@ -308,13 +317,25 @@ async def planner_message(request: str, block: dict | None, workspace: Path, job
 # one case
 # -------------------------------------------------------------------------------------------------
 
-async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: str) -> dict:
+async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: str,
+                   fidelity: str = "standard", cap: int = 0, purpose: str = "") -> dict:
     from meshpipeline.application import geometry_step as gst
     from meshpipeline.application import geometry_survey as gs
 
     started = time.perf_counter()
     exp = json.loads((CASES_DIR / case / "expected.json").read_text(encoding="utf-8"))
     brief = str(exp.get("brief") or "")
+    if cap:
+        brief, swaps = _BUDGET_LINE.subn(
+            f"Mesh budget: keep the total cell count under {cap:,} cells.", brief)
+        if not swaps:
+            return {"case": case, "status": "harness_failed",
+                    "reason": "this brief states no mesh budget, so there is none to replace"}
+    if purpose:
+        # what the CUSTOMER says the analysis is for, which is step 1 and decides the representation.
+        # A solid bluff body whose owner says "internal flow" is read `unknown`, and that is the only
+        # way this corpus reaches that word: every case's own purpose is the one its shape was cut for
+        exp = {**exp, "purpose": purpose}
     doc = measured(case, exp, cache)
     if doc.get("status") != "ok":
         return {"case": case, "step": "measure", "status": doc.get("status"), "reason": doc.get("reason")}
@@ -337,7 +358,7 @@ async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: st
 
     # step 5, and the question step 6 raises
     planned_at = time.perf_counter()
-    state = gst.plan_the_part(state, doc, fidelity="standard", job_id=case,
+    state = gst.plan_the_part(state, doc, fidelity=fidelity, job_id=case,
                               client=gst.planner_client(provider))
     plan_seconds = round(time.perf_counter() - planned_at, 2)
     step = dict(state.get("geometry_step") or {})
@@ -361,7 +382,8 @@ async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: st
     block = got["block"] or {}
     places = [p.get("kind") for p in (block.get("places") or []) if isinstance(p, dict)]
     return {
-        "case": case, "family": exp.get("family"), "purpose": exp.get("purpose"),
+        "case": case, "family": exp.get("family"), "purpose": exp.get("purpose"), "fidelity": fidelity,
+        "budget_the_customer_stated": cap or "the corpus brief's own",
         "representation": (state.get("composed_for") or {}).get("representation"),
         "look": str((doc.get("look") or {}).get("status") or ""),
         "asked_at_step_4": asked_at_four, "answers": note,
@@ -401,6 +423,14 @@ def main() -> int:
                     help="GEOMETRY_AGENT_STEP_PROVIDER for the run; `reference` is deterministic")
     ap.add_argument("--take", default="skip", choices=("hold", "raise", "skip"),
                     help="what the simulated customer does with a budget trade")
+    ap.add_argument("--purpose", default="",
+                    help="the purpose the customer states, instead of the corpus case's own")
+    ap.add_argument("--cap", type=int, default=0,
+                    help="rewrite the brief's own budget sentence to this many cells: the customer's "
+                         "number, and the only thing it changes")
+    ap.add_argument("--fidelity", default="standard", choices=("draft", "standard", "max"),
+                    help="the mesh fidelity the customer asked for at submission, which the geometry "
+                         "agent plans against")
     ap.add_argument("--print", default="", help="print this case's builder message and typed block in full")
     args = ap.parse_args()
 
@@ -415,7 +445,8 @@ def main() -> int:
     rows = []
     for case in [c.strip() for c in args.cases.split(",") if c.strip()]:
         try:
-            row = asyncio.run(run_case(case, out, cache, provider=args.provider, take=args.take))
+            row = asyncio.run(run_case(case, out, cache, provider=args.provider, take=args.take,
+                                       fidelity=args.fidelity, cap=args.cap, purpose=args.purpose))
         except Exception as exc:                   # noqa: BLE001 - one case never stops the run
             row = {"case": case, "status": "harness_failed", "reason": f"{type(exc).__name__}: {exc}"}
         rows.append(row)
