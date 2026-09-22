@@ -731,6 +731,13 @@ class CreditLedgerEntry(Base):
     __table_args__: tuple = (
         # THE BALANCE QUERY, and the ledger view's ordering. Both read this index.
         Index("ix_credit_ledger_org_created", "organization_id", "created_at"),
+        # THE METER SWEEP'S BACKLOG - see 0007_usage_metering for why it is PARTIAL. Declared here
+        # as well as in the migration because alembic's autogenerate compares the two: an index the
+        # database has and the model does not is drift it proposes to remove, which is what
+        # test_migrated_schema_matches_the_orm_model refuses. The predicate must match the
+        # migration's exactly, or the comparison sees two different indexes rather than one.
+        Index("ix_credit_ledger_unmetered", "created_at",
+              postgresql_where=text("metered_at IS NULL AND entry_type = 'debit'")),
         # A zero-amount entry is a row that changes nothing and explains nothing.
         CheckConstraint("amount <> 0", name="ck_credit_ledger_amount_nonzero"),
     )

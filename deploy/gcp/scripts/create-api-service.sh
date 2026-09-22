@@ -129,7 +129,10 @@ for pair in "POSTGRES_PASSWORD:POSTGRES_PASSWORD_SECRET" \
             "DEEPSEEK_API_KEY:DEEPSEEK_API_KEY_SECRET" \
             "MESH_API_KEY:MESH_API_KEY_SECRET" \
             "OPENAI_API_KEY:OPENAI_API_KEY_SECRET" \
-            "USER_TOKEN_SECRET:USER_TOKEN_SECRET_SECRET"; do
+            "USER_TOKEN_SECRET:USER_TOKEN_SECRET_SECRET" \
+            "STRIPE_API_KEY:STRIPE_API_KEY_SECRET" \
+            "STRIPE_WEBHOOK_SECRET:STRIPE_WEBHOOK_SECRET_SECRET" \
+            "ADMIN_API_KEY:ADMIN_API_KEY_SECRET"; do
   runtime_var="${pair%%:*}"
   holder="${pair##*:}"
   secret_name="${!holder:-}"

@@ -259,3 +259,42 @@ def test_raising_an_invoice_without_a_configured_provider_is_a_503(client, orgs)
     res = client.post(f"/api/v1/admin/billing/organizations/{uuid.uuid4()}/invoices",
                       headers=HEADERS, json={"amount": 100, "description": "x"})
     assert res.status_code == 503
+
+
+# THE METER SWEEP, reachable over HTTP because the hosted deployment runs no Beat
+
+def test_the_sweep_requires_the_admin_credential(client):
+    assert client.post("/api/v1/admin/billing/meter/sweep").status_code == 403
+
+
+def test_the_sweep_runs_and_reports_what_it_did(client, monkeypatch):
+    from meshpipeline.application import metering_service
+
+    calls: list = []
+
+    async def _sweep(db, *, limit):
+        calls.append(limit)
+        return {"reported": 2, "skipped": 0, "billing": "configured"}
+
+    monkeypatch.setattr(metering_service, "report_pending_usage", _sweep)
+    res = client.post("/api/v1/admin/billing/meter/sweep", headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json()["reported"] == 2
+    # NO LIMIT GIVEN falls back to the service's own batch size rather than to an unbounded scan.
+    assert calls == [metering_service.SWEEP_BATCH]
+
+
+def test_the_sweep_limit_is_bounded(client, monkeypatch):
+    # A scheduler - or a finger slip - must not be able to ask for an unbounded transaction that
+    # holds a connection for minutes.
+    from meshpipeline.application import metering_service
+
+    calls: list = []
+
+    async def _sweep(db, *, limit):
+        calls.append(limit)
+        return {"reported": 0, "skipped": 0, "billing": "configured"}
+
+    monkeypatch.setattr(metering_service, "report_pending_usage", _sweep)
+    client.post("/api/v1/admin/billing/meter/sweep?limit=999999", headers=HEADERS)
+    assert calls == [1000]

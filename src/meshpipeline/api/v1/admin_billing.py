@@ -181,6 +181,30 @@ async def raise_invoice(organization_id: str, body: InvoiceRequest) -> dict:
     return {"invoice": _invoice(invoice)}
 
 
+@router.post("/meter/sweep", dependencies=[Depends(admin_dep)])
+async def sweep_meter(limit: int = 0) -> dict:
+    # THE METER SWEEP, REACHABLE OVER HTTP, because on the hosted deployment nothing else runs it.
+    #
+    # The sweep is also registered on Celery Beat, which is what drives it under docker-compose. The
+    # hosted deployment has no Beat and its worker listens only to `simulation_jobs`, so a task
+    # scheduled onto `cleanup_tasks` there is enqueued by nobody and drained by nobody. For cleanup
+    # that is untidy; for metering it means debits accumulate and no overage ever reaches the
+    # provider - silently, because an unrun sweep produces no error to notice.
+    #
+    # This route makes the API - which is already deployed, already holds the database and the
+    # gateway, and already has a credential of its own - the thing a scheduler can point at. Cloud
+    # Scheduler calls it with X-Admin-Key on whatever cadence the deployment wants.
+    #
+    # IT IS SAFE TO CALL AT ANY TIME, from anywhere, as often as anyone likes: each debit carries its
+    # own idempotency key, so a sweep that overlaps another re-presents keys the provider has already
+    # seen and the provider replays instead of double-charging.
+    from meshpipeline.application import metering_service
+
+    bounded = metering_service.SWEEP_BATCH if limit <= 0 else max(1, min(limit, 1000))
+    async with get_db() as db:
+        return await metering_service.report_pending_usage(db, limit=bounded)
+
+
 @router.get("/organizations/{organization_id}", dependencies=[Depends(admin_dep)])
 async def read_organization(organization_id: str) -> dict:
     organization = _parse(organization_id)

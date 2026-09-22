@@ -180,3 +180,47 @@ def test_an_http_exception_from_the_handler_is_not_swallowed_into_a_retry(client
     res = client.post("/api/v1/webhooks/stripe", content=b"{}",
                       headers={"Stripe-Signature": "t=1,v1=abc"})
     assert res.status_code >= 400
+
+
+# THE BODY CAP, which is the availability control that replaced the rate limiter
+
+def test_an_oversized_declared_body_is_refused_before_it_is_read(client):
+    # This route is public and exempt from the limiter, so the body is the one thing an anonymous
+    # caller controls before authentication. A declared length past the cap is refused for the cost
+    # of parsing an integer.
+    body = b"x" * (stripe_webhook.MAX_WEBHOOK_BODY_BYTES + 1)
+    billing_contract.set_billing_gateway(_Gateway(fail=True))
+    res = client.post("/api/v1/webhooks/stripe", content=body,
+                      headers={"Stripe-Signature": "t=1,v1=abc"})
+    assert res.status_code == 413
+
+
+def test_an_oversized_body_that_lies_about_its_length_is_still_refused(client):
+    # A caller can understate or omit content-length. The streamed read is what makes the cap real
+    # rather than advisory - the refusal has to land at the limit, not after the whole body is in
+    # memory, because holding it there is the exhaustion this guards against.
+    gateway = _Gateway(fail=True)
+    billing_contract.set_billing_gateway(gateway)
+
+    def _chunks():
+        for _ in range(8):
+            yield b"x" * 65536
+
+    res = client.post("/api/v1/webhooks/stripe", content=_chunks(),
+                      headers={"Stripe-Signature": "t=1,v1=abc"})
+    assert res.status_code == 413
+    # AND IT NEVER REACHED VERIFICATION: the point is to stop before doing work, not to do the work
+    # and then complain about it.
+    assert gateway.seen == []
+
+
+def test_a_body_within_the_cap_still_reaches_verification_byte_for_byte(client):
+    # The cap must not truncate or reshape an ordinary event - the signature is an HMAC over these
+    # exact bytes, so a cap that trimmed them would break every valid delivery.
+    body = b'{"id":"evt_1","padding":"' + b"y" * 1024 + b'"}'
+    gateway = _Gateway(event=BillingEvent(id="evt_1", type="customer.created", payload={}))
+    billing_contract.set_billing_gateway(gateway)
+    res = client.post("/api/v1/webhooks/stripe", content=body,
+                      headers={"Stripe-Signature": "t=1,v1=abc"})
+    assert res.status_code == 200
+    assert gateway.seen == [(body, "t=1,v1=abc")]

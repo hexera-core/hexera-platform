@@ -99,7 +99,20 @@ async def _charge_fail_open(db: AsyncSession, row) -> None:
     # the recovery is manual and nothing else will raise the alarm.
     try:
         from meshpipeline.application import metering_service
-        await metering_service.charge_for_job(db, job=row)
+        # A SAVEPOINT, because catching the exception is not enough on its own.
+        #
+        # `credit_service.debit` FLUSHES. A failed insert or a dropped connection therefore leaves
+        # THIS session in a state that requires a rollback before it will accept another statement -
+        # so swallowing the exception here and carrying on would poison the outbox write and the
+        # commit that follow, roll back the terminal transition, and leave a finished job stuck
+        # non-terminal until the reaper marks it failed. That is the exact outcome the fail-open
+        # exists to prevent, and `except:` alone cannot prevent it.
+        #
+        # `begin_nested` issues a real SAVEPOINT. Its rollback unwinds only the debit and leaves the
+        # surrounding transaction usable, which is what makes "charge, but never at the cost of the
+        # job's ending" actually true rather than merely intended.
+        async with db.begin_nested():
+            await metering_service.charge_for_job(db, job=row)
     except Exception:
         # THE LOG LINE READS THE ROW DEFENSIVELY. An exception raised while HANDLING an exception
         # escapes this block and rolls the transaction back - which is precisely the outcome the

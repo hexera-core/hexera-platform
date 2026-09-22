@@ -103,7 +103,8 @@ async def test_a_duplicate_delivery_applies_nothing(orgs, grants):
     # grant a second period's credits.
     db = _DbDouble(colliding=True)
     applied = await billing_service.handle_event(
-        db, _event("invoice.paid", {"id": "in_1", "customer": "cus_1"}))
+        db, _event("invoice.paid", {"id": "in_1", "customer": "cus_1",
+                                "billing_reason": "subscription_cycle"}))
     assert applied is False
     assert db.rolled_back is True
     assert grants == []
@@ -114,7 +115,8 @@ async def test_invoice_paid_grants_the_plans_allowance(orgs, grants):
     org_id = uuid.uuid4()
     orgs.organization = _Obj(id=org_id, plan="team", stripe_customer_id="cus_1")
     await billing_service.handle_event(
-        db := _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": "cus_1"}))
+        db := _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": "cus_1",
+                                "billing_reason": "subscription_cycle"}))
     assert db.added  # the event was claimed
     # THE AMOUNT COMES FROM THE PLAN CATALOGUE, not from the invoice. What the customer PAID and
     # what the tier INCLUDES are different numbers, and reading the invoice would conflate them.
@@ -128,7 +130,8 @@ async def test_a_plan_that_includes_nothing_grants_nothing(orgs, grants):
     # receive credits. The ledger's CHECK refuses a zero amount anyway; this stops the call.
     orgs.organization = _Obj(id=uuid.uuid4(), plan="", stripe_customer_id="cus_1")
     await billing_service.handle_event(
-        _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": "cus_1"}))
+        _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": "cus_1",
+                                "billing_reason": "subscription_cycle"}))
     assert grants == []
 
 
@@ -139,7 +142,8 @@ async def test_an_expanded_customer_object_resolves_like_a_bare_id(orgs, grants)
     org_id = uuid.uuid4()
     orgs.organization = _Obj(id=org_id, plan="starter", stripe_customer_id="cus_1")
     await billing_service.handle_event(
-        _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": {"id": "cus_1"}}))
+        _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": {"id": "cus_1"},
+                                "billing_reason": "subscription_cycle"}))
     assert [g["organization_id"] for g in grants] == [org_id]
 
 
@@ -219,3 +223,52 @@ async def test_a_plan_with_no_configured_price_cannot_be_checked_out(orgs, monke
     with pytest.raises(ValueError):
         await billing_service.start_checkout(
             _DbDouble(), organization_id=uuid.uuid4(), plan="team", email="a@example.com")
+
+
+# WHICH INVOICES CARRY AN ALLOWANCE
+
+@pytest.mark.asyncio
+async def test_a_standalone_invoice_grants_no_allowance(orgs, grants):
+    # THE SELF-INFLICTED ONE. `admin_billing.raise_invoice` raises STANDALONE invoices against the
+    # same customer to bill an enterprise account for an amount agreed off the product. Those arrive
+    # here as `invoice.paid` too, and granting a full plan allowance for one would hand out credits
+    # nobody bought - every time, and most often to the largest customer.
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(),
+        _event("invoice.paid", {"id": "in_1", "customer": "cus_1",
+                                "billing_reason": "manual"}))
+    assert grants == []
+
+
+@pytest.mark.asyncio
+async def test_an_invoice_with_no_billing_reason_grants_nothing(orgs, grants):
+    # Absent is not "probably a renewal". An allowance granted on a guess is indistinguishable from
+    # one that was paid for, and the ledger would carry it as though it had been.
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": "cus_1"}))
+    assert grants == []
+
+
+@pytest.mark.parametrize("reason", ["subscription_create", "subscription_cycle"])
+@pytest.mark.asyncio
+async def test_the_first_period_and_every_renewal_do_grant(orgs, grants, reason):
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(),
+        _event("invoice.paid", {"id": "in_1", "customer": "cus_1", "billing_reason": reason}))
+    assert [g["amount"] for g in grants] == [10_000]
+
+
+@pytest.mark.parametrize("reason", ["subscription_update", "subscription_threshold"])
+@pytest.mark.asyncio
+async def test_a_mid_cycle_subscription_invoice_grants_nothing(orgs, grants, reason):
+    # A prorated plan change and a usage threshold both name a subscription without starting a new
+    # period. Granting for either would hand out a full allowance twice in one month to a customer
+    # who simply changed their mind about a tier.
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(),
+        _event("invoice.paid", {"id": "in_1", "customer": "cus_1", "billing_reason": reason}))
+    assert grants == []

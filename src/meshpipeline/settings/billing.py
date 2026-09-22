@@ -54,10 +54,24 @@ STRIPE_PRICE_TEAM_OVERAGE: str = optional_env("STRIPE_PRICE_TEAM_OVERAGE", "")
 
 
 def enabled() -> bool:
-    # THE ONE QUESTION every caller asks before touching Stripe. A deployment without a key is not
-    # broken - it is a developer checkout, a test, or a self-hosted install that does not charge -
-    # and the routes answer 503 rather than raising, so the rest of the product serves normally.
-    return bool(STRIPE_API_KEY.strip())
+    # THE ONE QUESTION every caller asks before touching Stripe. A deployment without credentials is
+    # not broken - it is a developer checkout, a test, or a self-hosted install that does not charge
+    # - and the routes answer 503 rather than raising, so the rest of the product serves normally.
+    #
+    # BOTH CREDENTIALS, NOT JUST THE API KEY. With a key and no webhook secret the product would
+    # take money and never learn that it had: checkout succeeds, the customer is charged, and then
+    # every `checkout.session.completed`, `customer.subscription.created` and `invoice.paid` fails
+    # signature verification at the door. The subscription is never recorded, the plan never moves,
+    # and the period's allowance is never granted - a paying customer on the free tier, with no
+    # error anywhere that names the cause.
+    #
+    # Half-configured is the dangerous state precisely because it LOOKS configured. Refusing the
+    # whole surface keeps the two honest states - charging, or not charging - and removes the third.
+    #
+    # Read through the module so an operator's value and a test's monkeypatch both reach here.
+    import meshpipeline.settings.billing as self
+
+    return bool(self.STRIPE_API_KEY.strip()) and bool(self.STRIPE_WEBHOOK_SECRET.strip())
 
 
 def price_for(plan: str) -> tuple[str, str]:

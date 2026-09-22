@@ -47,7 +47,12 @@ def upgrade() -> None:
     # UNIQUE because the customer is the remote identity: two organisations pointing at one Stripe
     # customer would have their invoices and their credits cross. The index the constraint builds is
     # also the lookup the webhook path uses - an event names a customer, never an organisation.
-    op.create_index("ix_organizations_stripe_customer", "organizations",
+    # THE NAME IS SQLALCHEMY'S OWN CONVENTION, `ix_<table>_<column>`, because the ORM declares this
+    # column `index=True, unique=True` and generates exactly that name. A migration that spells it
+    # differently produces a schema alembic's autogenerate then wants to "fix" on every run - which
+    # is what test_migrated_schema_matches_the_orm_model refuses, and rightly: two names for one
+    # index means nobody can tell whether the database or the model is the one that is wrong.
+    op.create_index("ix_organizations_stripe_customer_id", "organizations",
                     ["stripe_customer_id"], unique=True)
 
     # THE SUBSCRIPTION, recorded so the plan can be reconciled against Stripe without a round trip
@@ -91,5 +96,5 @@ def downgrade() -> None:
     op.drop_column("organizations", "subscription_status")
     op.drop_column("organizations", "plan")
     op.drop_column("organizations", "stripe_subscription_id")
-    op.drop_index("ix_organizations_stripe_customer", table_name="organizations")
+    op.drop_index("ix_organizations_stripe_customer_id", table_name="organizations")
     op.drop_column("organizations", "stripe_customer_id")

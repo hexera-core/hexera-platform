@@ -162,6 +162,13 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "Depends(admin_dep), which checks ADMIN_API_KEY - a credential deliberately separate from "
         "MESH_API_KEY - and refuses with 404 when the deployment has not set one. "
         "test_every_route_carries_the_guard pins that no route there can lose it."),
+    "api/v1/admin_billing.py:sweep_meter": (
+        "POST /api/v1/admin/billing/meter/sweep is driven by a SCHEDULER, not by a person: it "
+        "reports debited consumption across every tenant to the billing provider's meter, because "
+        "the hosted deployment runs no Celery Beat and no cleanup-queue consumer. `owner_dep` "
+        "proves which ONE tenant a caller is, which a cross-tenant sweep has no use for and a "
+        "scheduler cannot supply. It is not ungated: it carries Depends(admin_dep) like every "
+        "route in that module, and test_every_route_carries_the_guard pins that."),
 }
 
 

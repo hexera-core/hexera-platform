@@ -202,10 +202,34 @@ async def _apply_subscription(db: AsyncSession, subscription: Mapping[str, Any],
         current_period_end=_period_end(subscription))
 
 
+#: THE INVOICE REASONS THAT CARRY AN ALLOWANCE. Stripe sets `billing_reason` on every invoice, and
+#: only these two are a subscription PERIOD being paid for: the first one at checkout, and each
+#: renewal after it.
+#:
+#: WHY AN ALLOWLIST RATHER THAN "has a subscription". `subscription_cycle` and `subscription_create`
+#: are the two that mean "a new period just started". `subscription_update` (a mid-cycle plan
+#: change, prorated) and `subscription_threshold` (a usage-billing threshold reached) also name a
+#: subscription, and granting a full period's credits for either would hand out an allowance for a
+#: period that has not begun - twice over, if the customer changes plan twice in a month.
+ALLOWANCE_BILLING_REASONS = frozenset({"subscription_create", "subscription_cycle"})
+
+
 async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> None:
     # THE PERIOD'S ALLOWANCE IS GRANTED WHEN THE MONEY ARRIVES, never at checkout and never on a
     # timer. `invoice.paid` fires for the first period and for every renewal, so one handler covers
     # both, and an organisation whose renewal fails simply does not receive the next grant.
+    #
+    # IT MUST BE A SUBSCRIPTION PERIOD, AND THAT IS NOT A FORMALITY. This deployment raises
+    # STANDALONE invoices of its own - `admin_billing.raise_invoice` bills an enterprise account for
+    # an amount agreed off the product - and those arrive here as `invoice.paid` against the same
+    # customer. Without this check, paying a one-off invoice would grant a full plan allowance that
+    # nobody bought, every time, and the larger the customer the more often it would happen.
+    reason = str(invoice.get("billing_reason", "")).strip()
+    if reason not in ALLOWANCE_BILLING_REASONS:
+        log.info("invoice %s paid with billing_reason %r; no allowance is granted",
+                 invoice.get("id", "?"), reason or "(none)")
+        return
+
     customer_id = _id_of(invoice.get("customer"))
     if not customer_id:
         return

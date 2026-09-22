@@ -250,6 +250,96 @@ async def test_charging_never_raises_on_a_row_shape_it_does_not_recognise():
 
 
 @pytest.mark.asyncio
+async def test_a_failed_debit_is_unwound_in_a_savepoint_not_left_poisoning_the_session():
+    # THE ONE THAT MATTERS MOST. `credit_service.debit` FLUSHES, so a failed insert or a dropped
+    # connection leaves the session requiring a rollback before it will accept another statement.
+    # Catching the exception is NOT sufficient: the outbox write and the commit that follow would
+    # fail, rolling back the terminal transition and leaving a finished four-hour mesh stuck
+    # non-terminal until the reaper marked it failed.
+    #
+    # The savepoint is what makes the fail-open true. This asserts the debit runs INSIDE one and
+    # that the savepoint is rolled back, leaving the outer transaction usable.
+    import types
+
+    from meshpipeline.application import terminal_finalize
+
+    class _Savepoint:
+        def __init__(self, db):
+            self.db = db
+
+        async def __aenter__(self):
+            self.db.events.append("savepoint-begin")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.db.events.append("savepoint-rollback" if exc_type else "savepoint-commit")
+            # False: the exception keeps propagating to the caller's own handler, exactly as a real
+            # savepoint context does. Swallowing it here would hide whether the handler copes.
+            return False
+
+    class _Session:
+        def __init__(self):
+            self.events: list[str] = []
+
+        def begin_nested(self):
+            return _Savepoint(self)
+
+    async def _explode(db, *, job):
+        db.events.append("debit-attempted")
+        raise RuntimeError("the ledger insert failed and this session now needs a rollback")
+
+    session = _Session()
+    original = metering_service.charge_for_job
+    metering_service.charge_for_job = _explode
+    try:
+        await terminal_finalize._charge_fail_open(session, types.SimpleNamespace(id="job-1"))
+    finally:
+        metering_service.charge_for_job = original
+
+    assert session.events == ["savepoint-begin", "debit-attempted", "savepoint-rollback"]
+
+
+@pytest.mark.asyncio
+async def test_a_successful_debit_commits_its_savepoint():
+    import types
+
+    from meshpipeline.application import terminal_finalize
+
+    class _Savepoint:
+        def __init__(self, db):
+            self.db = db
+
+        async def __aenter__(self):
+            self.db.events.append("savepoint-begin")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.db.events.append("savepoint-rollback" if exc_type else "savepoint-commit")
+            return False
+
+    class _Session:
+        def __init__(self):
+            self.events: list[str] = []
+
+        def begin_nested(self):
+            return _Savepoint(self)
+
+    async def _ok(db, *, job):
+        db.events.append("debit-written")
+        return 15
+
+    session = _Session()
+    original = metering_service.charge_for_job
+    metering_service.charge_for_job = _ok
+    try:
+        await terminal_finalize._charge_fail_open(session, types.SimpleNamespace(id="job-1"))
+    finally:
+        metering_service.charge_for_job = original
+
+    assert session.events == ["savepoint-begin", "debit-written", "savepoint-commit"]
+
+
+@pytest.mark.asyncio
 async def test_the_fail_open_handler_cannot_itself_raise(caplog):
     # A handler whose LOGGING raises escapes the except block and rolls back the transaction - which
     # is exactly the outcome the fail-open exists to prevent, arriving through the code meant to
@@ -261,9 +351,22 @@ async def test_the_fail_open_handler_cannot_itself_raise(caplog):
     async def _boom(db, *, job):
         raise RuntimeError("metering is broken")
 
+    class _Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Session:
+        def begin_nested(self):
+            return _Savepoint()
+
     original = metering_service.charge_for_job
     metering_service.charge_for_job = _boom
     try:
-        await terminal_finalize._charge_fail_open(None, types.SimpleNamespace())
+        # A ROW WITH NO `.id` AT ALL, driven through the real handler: the log line must read it
+        # defensively or the handler raises while handling and unwinds the transaction itself.
+        await terminal_finalize._charge_fail_open(_Session(), types.SimpleNamespace())
     finally:
         metering_service.charge_for_job = original
