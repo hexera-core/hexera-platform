@@ -115,7 +115,7 @@ def test_every_config_knob_has_a_reader():
 def test_intake_prompt_blocks_are_registered_and_composed():
     import meshpipeline.agents.intake.agent as intake
     names = [b[0] for b in intake.INTAKE_PROMPT_BLOCKS]
-    assert names == ["quality_criteria", "engine_first"]
+    assert names == ["quality_criteria", "engine_first", "geometry_check"]
     for name, purpose, build in intake.INTAKE_PROMPT_BLOCKS:
         assert purpose and callable(build)
     # composition uses exactly the registry (no stray system += in run_intake)

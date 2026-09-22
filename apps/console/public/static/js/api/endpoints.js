@@ -70,6 +70,24 @@ export async function disputeReview(jobId, { flags = [], comment = "", mode } = 
   return r.json();
 }
 
+/** The geometry check for an upload: `status` is off | none | pending | ready | unsupported |
+ *  failed; a ready check carries the proposal and picture links. Never throws on a plain
+ *  "not yet" - the composer polls it. */
+export async function getGeometryCheck(sessionId) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** What the user confirmed on the geometry-check picture. The reply carries the sentence the
+ *  intake will read, so the conversation can show it. */
+export async function confirmGeometryCheck(sessionId, body) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/confirm`,
+    { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The delivered mesh surface - the structure the viewer renders. */
 export async function getSurface(jobId) {
   const r = await fetch(`/api/v1/simulation/${jobId}/surface`, { headers: headers() });

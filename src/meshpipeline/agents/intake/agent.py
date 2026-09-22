@@ -652,11 +652,29 @@ def _block_engine_first() -> str:
 
 
 # (name, purpose, builder) - order is the order blocks appear in the prompt
+def _block_geometry_check() -> str:
+    return (
+        "\n\nGEOMETRY CHECK - FACTS SETTLED ON A PICTURE, NOT IN CHAT:\n"
+        "When an assistant message in the conversation begins 'GEOMETRY CHECK (confirmed by the "
+        "user):', the application has already shown the user their part with every opening "
+        "marked on a picture, and they confirmed it. Everything in that message is DECLARED by "
+        "the user: input_kind, whether the fluid flows through the part or around it, each "
+        "opening's name, role, size and position, and a point inside the flow. Do not ask about "
+        "any of it again, and do not read it back for confirmation. Carry every opening into "
+        "`patches` exactly as named, with its role, and put its diameter_mm (or width_mm and "
+        "height_mm) and near_mm on the patch entry as the message states them "
+        "(port_details_note = 'captured'). Ask only what the message does not contain - "
+        "typically the purpose, the fluid and its speed, and the engine when it is not settled."
+    )
+
+
 INTAKE_PROMPT_BLOCKS: tuple = (
     ("quality_criteria", "evidence-backed production-grade bars the intake can cite",
      _block_quality_criteria),
     ("engine_first", "engine as direct user input; native follow-ups; propose+confirm fallback",
      _block_engine_first),
+    ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
+     _block_geometry_check),
 )
 
 

@@ -204,6 +204,9 @@ async def upload_step_file(
                 suffix_hint=suffix, object_key=object_key, sha256=digest, size_bytes=counted)
             db.add(row)
             await db.flush()
+            from meshpipeline.contracts.geometry_source import GeometrySourceRef
+            _source_payload = GeometrySourceRef.from_row(row).to_payload()
+            _interpretation_payload = None
             # WHAT SIZE these bytes are, when the file itself says so credibly. Recorded in the
             # same transaction as the source, because a source with a verified declaration and no
             # interpretation would send the user a question the file already answered.
@@ -223,6 +226,10 @@ async def upload_step_file(
                     basis=ResolutionBasis.file_declared, evidence=evidence.detail,
                     organization_id=organization_id)
                 interpretation_id = _uuid.UUID(recorded.interpretation_id)
+                from dataclasses import asdict as _asdict
+
+                from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
+                _interpretation_payload = _asdict(GeometryInterpretationRef.from_domain(recorded))
             await db.execute(
                 _sa_update(ChatSession).where(ChatSession.id == session_id)
                 .values(geometry_source_id=source_id,
@@ -261,6 +268,12 @@ async def upload_step_file(
     logger.info("upload_step_file: stored %d bytes as source %s - session_id=%s owner=%s",
                 counted, source_id, session_id, owner_id)
 
+    # THE GEOMETRY CHECK: scouted on the worker from the moment the bytes are safe, so the
+    # labelled picture is ready by the time the user has answered the first question. Never in
+    # the upload's own failure path - a check that cannot start is a note, not a lost upload.
+    _enqueue_geometry_check(str(session_id), owner_id, source_payload=_source_payload,
+                            interpretation_payload=_interpretation_payload)
+
     # An upload is an upload. Nothing has been parsed, measured or checked at this point, so the
     # acknowledgement is a fixed server-owned sentence rather than a model turn: with no request
     # text and no materialised file there is nothing for a model to reason about, and the only
@@ -284,6 +297,27 @@ async def upload_step_file(
         trace=_project_trace(_greeting_trace),
     )
 
+
+
+def _enqueue_geometry_check(session_id: str, owner_id: str, *, source_payload: dict,
+                            interpretation_payload: dict | None) -> None:
+    import meshpipeline.settings.geometry_check as gcfg
+
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return
+    try:
+        from meshpipeline.adapters.pipeline_execution.celery import scout_geometry
+        from meshpipeline.application.geometry_check import STATUS_PENDING, write_status
+
+        write_status(session_id, STATUS_PENDING)
+        scout_geometry.apply_async(
+            kwargs={"session_id": session_id, "owner_id": owner_id, "source": source_payload,
+                    "interpretation": interpretation_payload},
+            task_id=f"geometry-check-{session_id}")
+        logger.info("upload_step_file: geometry check queued - session_id=%s", session_id)
+    except Exception as exc:  # noqa: BLE001 - the upload stands; the intake will ask instead
+        logger.warning("upload_step_file: geometry check could not be queued (%s: %s) - "
+                       "session_id=%s", type(exc).__name__, exc, session_id)
 
 
 def _declared_unit_evidence(staged: Path):
