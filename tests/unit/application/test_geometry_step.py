@@ -212,7 +212,17 @@ def _with_a_raised_trade(state: dict) -> dict:
                    "options": ["hold at 2,000,000", "raise to about 3,000,000"],
                    "options_from": "the stated budget and the builder emulator's envelope for this plan",
                    "default": "hold at 2,000,000", "effect": "changes_mesh", "evidence": []},
-        "depends_on": state.get("survey", {}).get("sha256", ""), "raised_at": "2026-09-22T00:00:00+00:00"}}
+        # WHAT IT DEPENDS ON, spelled the way `chain.job.third_intake` spells it: the plan's own digest.
+        # It was the survey block's `sha256`, a key that block does not have, so this read empty - and an
+        # empty `depends_on` is refused by `contract.intake.LateIntakeHandoff` the moment an ANSWER
+        # exists, which no test here had until the handoff was asked for one
+        "depends_on": _depends_on_the_plan(state), "raised_at": "2026-09-22T00:00:00+00:00"}}
+
+
+def _depends_on_the_plan(state: dict) -> str:
+    job = gst._package()["job"]
+    plan = (state.get("geometry_step") or {}).get("plan") or {}
+    return f"plan {job._sha(plan)[:16]}"
 
 
 def test_the_third_intake_is_the_last_question_and_only_after_the_survey_is_settled(armed):
@@ -600,3 +610,56 @@ def test_at_submission_fetches_the_file_and_hands_it_to_the_plan(armed, monkeypa
                                   document=doc, fidelity="standard"))
     assert seen["source_path"].endswith("part.step")
     assert not Path(seen["workspace"]).exists(), "the step's temp directory outlives nothing"
+
+
+def test_only_a_look_that_succeeded_reaches_the_geometry_agent(armed):
+    """The look rides to the agent only when it actually looked. Worth pinning because nothing in this
+    repository proves the other half: every stored fixture and every corpus row carries
+    `not_attempted` (step 3 is a worker and `measure_local_file` never runs it), so the step has never
+    been measured with a real look on the row. This test pins the rule, not the content."""
+    state, doc = _answered()
+    assert (doc.get("look") or {}).get("status") == "not_attempted"
+    assert gst._inputs(state, doc, fidelity="standard").look is None
+    for status in ("not_attempted", "failed", "skipped", "unstored", ""):
+        given = gst._inputs(state, {**doc, "look": {"status": status}}, fidelity="standard")
+        assert given.look is None, f"a look that says {status!r} is not a look"
+    looked = {"status": "ok", "impression": {}}
+    assert gst._inputs(state, {**doc, "look": looked}, fidelity="standard").look == looked
+
+
+# -------------------------------------------------------------------------------------------------
+# THE ENVELOPE THE BUILDER GETS IS PRICED AGAINST THE BUDGET THE CUSTOMER SETTLED ON
+# -------------------------------------------------------------------------------------------------
+
+def test_the_envelope_handed_over_is_the_stored_one_when_nothing_was_traded(armed):
+    """Most jobs never raise the third intake, and on those the budget at the handoff is the budget the
+    plan was priced against. Pinned because the handoff prices the envelope again rather than reading
+    the row: if that re-pricing moved anything here it would be changing jobs that had no trade."""
+    state, doc = _planned()
+    got = gst.builder_handoff(state, doc, request_txt=_brief())
+    stored = dict((state.get("geometry_step") or {}).get("envelope") or {})
+    assert stored, "the plan-time envelope is on the row"
+    assert got["typed"]["plan_envelope"] == stored
+
+
+def test_a_raised_budget_moves_the_envelope_with_the_write_up_and_the_two_agree(armed):
+    """THE JOB THE THIRD INTAKE EXISTS FOR. The envelope is a function of the cap - `planned_envelope`
+    prices the plan properly and again held to the budget, and both halves move when the budget does -
+    and the write-up is composed against the budget the customer settled on. Reading the plan-time
+    envelope put two caps in one dict: on `manifold_001` raised from 750,000 to 987,828 the write-up
+    said 688,485 cells of a 987,828 cap while `plan_envelope` beside it said a cap of 750,000."""
+    state = _with_a_raised_trade(_planned()[0])
+    doc = _doc()
+    qid = (state.get("late") or {})["id"]
+    raised = (state.get("late") or {})["options"][-1]
+    state = gs.answered(state, doc, question_id=qid, choice=raised, words=raised,
+                        latest_user_message=raised, principal="owner-7f3a")
+    got = gst.builder_handoff(state, doc, request_txt=_brief())
+    typed, envelope = got["typed"], got["typed"]["plan_envelope"]
+
+    # one cap in the dict, and it is the customer's own answer
+    assert envelope["cap"] == typed["customer_cell_cap"], "the typed block may not carry two caps"
+    stored = dict((state.get("geometry_step") or {}).get("envelope") or {})
+    assert envelope != stored, "the envelope priced at plan time was for the budget before the trade"
+    # and the row keeps what it was priced at, because that is the record of what the trade traded
+    assert stored["cap"] != typed["customer_cell_cap"]

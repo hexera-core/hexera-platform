@@ -81,6 +81,7 @@ def _package() -> dict[str, Any]:
     from geometry_agent.agent import catalog, hexera
     from geometry_agent.agent.loop import LoopConfig
     from geometry_agent.agent.schema import GeometryPlan
+    from geometry_agent.ask import trade as atrade
     from geometry_agent.chain import handover as chandover
     from geometry_agent.chain import job as cj
     from geometry_agent.chain import resolution, schema
@@ -90,7 +91,8 @@ def _package() -> dict[str, Any]:
     return {"catalog": catalog, "hexera": hexera, "LoopConfig": LoopConfig, "GeometryPlan": GeometryPlan,
             "handover": chandover, "job": cj, "resolution": resolution, "schema": schema,
             "KIND_TEACHES": KIND_TEACHES, "JobLedger": JobLedger, "brief": brief, "build": build,
-            "deliver": deliver, "given": given, "intake": intake, "marks": marks, "survey": survey}
+            "deliver": deliver, "given": given, "intake": intake, "marks": marks, "survey": survey,
+            "trade": atrade}
 
 
 # -------------------------------------------------------------------------------------------------
@@ -771,8 +773,36 @@ def builder_handoff(state: dict, document: dict, *, request_txt: str) -> dict:
                                      intake=recs["intake"], trade=_trade_record(state, key))
     return pkg["deliver"].builder_handoff(
         final, given, geometry_write_up=assembly["block"], intake_block=pkg["handover"].intake_block(record),
-        plan_envelope=dict(step.get("envelope") or {}) or None,
+        plan_envelope=_envelope_now(pkg, plan, inp, given, unit),
         patches=pkg["deliver"].flow_patches([p.model_dump(mode="json") for p in plan.patches], given))
+
+
+def _envelope_now(pkg: dict, plan: Any, inp: _Inputs, given: Any, unit: str) -> dict:
+    """What this plan costs against the budget the customer ACTUALLY resolved, priced here and not read
+    off the row. Raises `StepRefused`, which fails the step open, rather than shipping a stale number.
+
+    WHY IT IS NOT THE STORED ONE. The envelope is a function of the cap: `ask.trade.planned_envelope`
+    prices the plan twice, once properly and once held to the budget, and both halves move when the
+    budget does. The stored envelope was priced at PLAN time, before the third intake existed. So on
+    exactly the job the third intake is for - the one where the customer raises the budget - the builder
+    was handed a write-up composed for the new cap beside a typed envelope composed for the old one:
+    on `manifold_001` raised from 750,000 to 987,828 the write-up said 688,485 cells of a 987,828 cap
+    while the same dict's `plan_envelope` said 987,828 against a cap of 750,000, and `customer_cell_cap`
+    beside it said 987,828. One dict, two caps, and the builder had no way to tell which was the
+    customer's.
+
+    Nothing moves when the trade does not fire, which is most jobs: `given.budget` is then the budget the
+    plan was priced against and this returns what the row already held, pinned by a test and re-measured
+    on the corpus.
+    """
+    try:
+        env = pkg["trade"].planned_envelope(plan, inp.facts, representation=given.representation,
+                                            engine=inp.engine, cap=given.budget, unit=unit,
+                                            brief=inp.brief.text or None)
+        return env.as_dict()
+    except Exception as exc:                       # noqa: BLE001 - a wrong envelope is worse than none
+        raise StepRefused("the plan's envelope could not be priced against the budget the customer "
+                          f"settled on, so the builder is not handed one: {type(exc).__name__}: {exc}") from exc
 
 
 def _say_what_the_cut_takes(assembly: dict) -> None:
