@@ -95,28 +95,31 @@ def _check(*, session_id: str, owner_id: str, source: dict, interpretation: dict
                            f"{suffix or 'surface'} file, so the intake will ask about its openings")
     interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
 
-    work = Path(tempfile.mkdtemp(prefix=f"geometry_check_{session_id[:8]}_"))
-    local_path = _fetch(ref, work)
-    prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
+    # The workspace lives exactly as long as the check. The worker runs for weeks; every upload,
+    # skin and picture left behind in /tmp would stay there until the disk was full.
+    with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp:
+        work = Path(tmp)
+        local_path = _fetch(ref, work)
+        prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
 
-    facts = scout_cad(local_path, prepared=prepared).as_dict()
-    if unit_note:
-        facts["notes"].append(unit_note)
+        facts = scout_cad(local_path, prepared=prepared).as_dict()
+        if unit_note:
+            facts["notes"].append(unit_note)
 
-    pictures = work / "pictures"
-    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
-    shots = render_snapshots(skin, facts["openings"], pictures)
+        pictures = work / "pictures"
+        skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+        shots = render_snapshots(skin, facts["openings"], pictures)
 
-    vision = _name_with_vision(facts, shots, purpose_text=purpose_text, session_id=session_id,
-                               owner_id=owner_id)
-    proposal = _merge(facts, vision)
+        vision = _name_with_vision(facts, shots, purpose_text=purpose_text, session_id=session_id,
+                                   owner_id=owner_id)
+        proposal = _merge(facts, vision)
 
-    store = get_object_store()
-    snapshots = []
-    for s in shots:
-        key = check_object_key(session_id, f"{s.name}.png")
-        store.upload_file(local_path=s.path, object_key=key)
-        snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing)})
+        store = get_object_store()
+        snapshots = []
+        for s in shots:
+            key = check_object_key(session_id, f"{s.name}.png")
+            store.upload_file(local_path=s.path, object_key=key)
+            snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing)})
     return {"status": STATUS_READY, "facts": facts, "vision": vision, "proposal": proposal,
             "snapshots": snapshots, "source": ref.to_payload()}
 

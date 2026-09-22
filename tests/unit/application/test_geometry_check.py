@@ -4,7 +4,13 @@
 # Boundaries: pure functions only; no CAD, no rendering, no model, no database.
 from __future__ import annotations
 
-from meshpipeline.api.v1.geometry import ConfirmedOpening, ConfirmIn, confirmation_message, patches_from
+from meshpipeline.api.v1.geometry import (
+    ConfirmedOpening,
+    ConfirmIn,
+    confirmation_message,
+    patches_from,
+    with_declaration,
+)
 from meshpipeline.application import geometry_check as gc
 
 
@@ -103,3 +109,44 @@ def test_a_body_in_a_flow_confirms_with_no_openings_and_no_wall_patch():
     assert patches_from(body) == []
     assert "flows around it" in confirmation_message(body)
     assert "No openings" in confirmation_message(body)
+
+
+def test_a_second_confirmation_replaces_the_first_in_the_conversation():
+    first = confirmation_message(_confirm())
+    history = [{"role": "user", "content": "elbow, water"}, {"role": "assistant", "content": "Noted."}]
+    once = with_declaration(history, first)
+    assert once[:2] == history and once[-1] == {"role": "assistant", "content": first}
+    second = confirmation_message(ConfirmIn(input_kind="fluid-domain", flow="internal", openings=[]))
+    twice = with_declaration(once, second)
+    assert [m["content"] for m in twice] == ["elbow, water", "Noted.", second]   # one declaration, the latest
+
+
+# --------------------------------------------------------------------------- the workspace ----
+class _Store:
+    def __init__(self):
+        self.written = {}
+
+    def upload_file(self, *, local_path, object_key, **_):
+        self.written[object_key] = local_path.read_bytes()
+
+
+def test_the_workspace_is_removed_even_when_the_check_fails(tmp_path, monkeypatch):
+    import tempfile
+
+    from meshpipeline.contracts import object_storage
+
+    store = _Store()
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))     # every workspace lands here
+
+    def _fetch_fails(ref, work):
+        (work / "geometry.step").write_text("partial download")
+        raise RuntimeError("the retrieved geometry does not match the upload")
+
+    monkeypatch.setattr(gc, "_fetch", _fetch_fails)
+    source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/elbow.step", "sha256": "0" * 64,
+              "size_bytes": 10, "original_filename": "elbow.step", "suffix_hint": ".step"}
+    result = gc.run_geometry_check(session_id="abcdef12-0000", owner_id="o1", source=source)
+    assert result["reason"].startswith("RuntimeError")
+    assert not list(tmp_path.glob("geometry_check_*"))       # nothing left behind on the worker
+    assert "sessions/abcdef12-0000/geometry_check/scout.json" in store.written

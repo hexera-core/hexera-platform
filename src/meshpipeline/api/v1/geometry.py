@@ -22,6 +22,8 @@ router = APIRouter()
 
 STATUS_OFF, STATUS_NONE = "off", "none"
 _PICTURE_URL_TTL = timedelta(hours=1)
+#: How the confirmation announces itself in the conversation; the intake prompt block names it.
+CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
 
 
 class ConfirmedOpening(BaseModel):
@@ -99,7 +101,7 @@ def confirmation_message(body: ConfirmIn) -> str:
             "fluid-domain": "the fluid volume itself",
             "solid-body": "a solid body"}[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
-    parts = [f"GEOMETRY CHECK (confirmed by the user): the file is {kind}"
+    parts = [f"{CONFIRMED_MARK} the file is {kind}"
              + (f" ({body.part})" if body.part else "") + f"; the fluid flows {through}."]
     if body.openings:
         rows = []
@@ -119,6 +121,14 @@ def confirmation_message(body: ConfirmIn) -> str:
         s = body.size_mm
         parts.append(f"Part size: {s[0]:.0f} x {s[1]:.0f} x {s[2]:.0f} mm.")
     return " ".join(parts)
+
+
+def with_declaration(messages: list[dict] | None, message: str) -> list[dict]:
+    """The conversation with this confirmation as its only one: an earlier confirmation is
+    replaced, not joined, so a retry or a change of mind leaves one declaration for the intake."""
+    kept = [m for m in (messages or [])
+            if not (m.get("role") == "assistant" and str(m.get("content", "")).startswith(CONFIRMED_MARK))]
+    return [*kept, {"role": "assistant", "content": message}]
 
 
 def patches_from(body: ConfirmIn) -> list[dict]:
@@ -158,20 +168,13 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     import tempfile
     from pathlib import Path
 
-    from sqlalchemy import update as _sa_update
-
     from meshpipeline.application.geometry_check import check_object_key
     from meshpipeline.contracts.object_storage import get_object_store
-    from meshpipeline.persistence.models import ChatSession
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
     from meshpipeline.persistence.session import get_db
 
-    async with get_db() as db:
-        await db.execute(_sa_update(ChatSession).where(ChatSession.id == session_id)
-                         .values(input_kind=body.input_kind, intake_patches=patches))
-        await SessionRepository().append_message(db, session_id, "assistant", message)
-        await db.commit()
-
+    # The stored copy goes first. If the store is down the user sees an error and nothing has
+    # changed, so pressing the button again is safe; and a second press replaces, never repeats.
     record = {"confirmed_at": time.time(), "owner_id": owner_id, "message": message,
               "patches": patches, **body.model_dump()}
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
@@ -181,5 +184,14 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         get_object_store().upload_file(local_path=tmp, object_key=check_object_key(str(session_id), "confirmed.json"))
     finally:
         tmp.unlink(missing_ok=True)
+
+    async with get_db() as db:
+        session = await SessionRepository().get_internal(db, session_id)
+        if session is None:
+            raise HTTPException(404, "Session not found")
+        session.input_kind = body.input_kind
+        session.intake_patches = patches
+        session.messages = with_declaration(session.messages, message)
+        await db.commit()
     logger.info("geometry check confirmed - session_id=%s openings=%d", session_id, len(body.openings))
     return {"ok": True, "message": message, "patches": patches}
