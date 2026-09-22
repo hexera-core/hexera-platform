@@ -213,6 +213,32 @@ async def _apply_subscription(db: AsyncSession, subscription: Mapping[str, Any],
 #: period that has not begun - twice over, if the customer changes plan twice in a month.
 ALLOWANCE_BILLING_REASONS = frozenset({"subscription_create", "subscription_cycle"})
 
+#: THE BILLING REASONS THIS MODULE WILL NAME IN A LOG, mapped to their own literals.
+#:
+#: The LOOKUP is what makes the log line safe, not the contents. A Stripe invoice carries
+#: `customer_email`, `customer_name`, `customer_phone` and `customer_address` beside the field being
+#: read, so a value taken out of that mapping and handed to a logger is a step from putting a
+#: customer's PII in an operator's log. CodeQL flags the document rather than the one field, and it
+#: is right to: the risk is the next edit, not this one.
+#:
+#: Narrowing the string did not settle it and could not - a slice of the payload is still the
+#: payload's. What is logged is the DICTIONARY'S OWN literal, selected by the reason but never taken
+#: from it, and an unrecognised reason resolves to "other" rather than being echoed.
+#:
+#: The alternative was to log only whether a reason was present at all. That clears the alert and
+#: takes the log's entire purpose with it: "a reason was present" cannot tell an operator whether a
+#: customer's allowance was skipped because their enterprise invoice was paid by hand or because
+#: they changed tier mid-cycle, which is the whole question this line exists to answer.
+_LOGGABLE_BILLING_REASONS: dict[str, str] = {
+    "subscription_create": "subscription_create",
+    "subscription_cycle": "subscription_cycle",
+    "subscription_update": "subscription_update",
+    "subscription_threshold": "subscription_threshold",
+    "manual": "manual",
+    "upcoming": "upcoming",
+    "": "(none)",
+}
+
 
 async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> None:
     # THE PERIOD'S ALLOWANCE IS GRANTED WHEN THE MONEY ARRIVES, never at checkout and never on a
@@ -226,17 +252,12 @@ async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> N
     # nobody bought, every time, and the larger the customer the more often it would happen.
     reason = str(invoice.get("billing_reason", "")).strip()
     if reason not in ALLOWANCE_BILLING_REASONS:
-        # NOTHING IS READ OUT OF THE PAYLOAD MAPPING INLINE HERE. An invoice object carries
-        # `customer_email`, `customer_name`, `customer_phone` and `customer_address` alongside the
-        # two harmless fields this line wants, so a log statement that reaches into it is one edit
-        # away from putting a customer's PII in an operator's log - and CodeQL flags the whole
-        # shape, not the field, for exactly that reason.
-        #
-        # `_id_of` is the narrowing every other handler already uses on a provider reference, and
-        # the reason is bounded to the vocabulary's own length: both values that reach the logger
-        # are strings this module produced, not slices of the provider's document.
-        log.info("invoice %s paid with unsupported billing_reason (present=%s); no allowance is granted",
-                 _id_of(invoice.get("id")) or "?", bool(reason))
+        # THE REASON IS A LITERAL THIS MODULE OWNS, selected by the payload and never taken from it.
+        # The invoice id stays: it is what an operator joins on to find the delivery, and it is not
+        # what the rule objected to - the reason string was.
+        log.info("invoice %s paid with billing reason %s; it carries no allowance, none granted",
+                 _id_of(invoice.get("id")) or "?",
+                 _LOGGABLE_BILLING_REASONS.get(reason, "other"))
         return
 
     customer_id = _id_of(invoice.get("customer"))
