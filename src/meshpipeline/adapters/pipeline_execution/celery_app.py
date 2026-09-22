@@ -38,6 +38,7 @@ celery_app.conf.update(
     task_routes={
         "worker.tasks.run_simulation": {"queue": "simulation_jobs"},
         "worker.tasks.scout_geometry": {"queue": "simulation_jobs"},
+        "worker.tasks.name_geometry": {"queue": "simulation_jobs"},
         "tasks.cleanup.purge_expired_workspaces":  {"queue": "cleanup_tasks"},
         "tasks.cleanup.reap_stalled_jobs":         {"queue": "cleanup_tasks"},
         "tasks.cleanup.reconcile_orphan_artifacts": {"queue": "cleanup_tasks"},

@@ -190,8 +190,10 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
 
     source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/elbow.step", "sha256": "0" * 64,
               "size_bytes": 4, "original_filename": "elbow.step", "suffix_hint": ".step"}
+    monkeypatch.setattr(gc, "_name_with_vision", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the scout must not call the model")))
     result = gc.run_geometry_check(session_id="abcdef12-1111", owner_id="o1", source=source)
     assert result.get("reason") is None, result
+    assert result["status"] == "scouted" and result["named"] is False
     skin = json.loads(store.written["sessions/abcdef12-1111/geometry_check/skin.json"])
     assert skin["kind"] == "stl" and skin["is_mesh"] is False and skin["mesh_units"] == "m"
     assert skin["patches"][0]["name"] == "skin" and skin["patches"][0]["tri_count"] == 12

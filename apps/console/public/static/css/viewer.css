@@ -125,3 +125,12 @@
 .gc-pin{background:#ffd400;color:#14171c;font-weight:700;border-color:rgba(255,255,255,.95)}
 .gc-pin.sel{background:#ff4f00;color:#fff}
 .gc-fit{position:absolute;right:10px;top:10px;z-index:5}
+
+/* a body in a flow: the far-field answers, shown only when the flow is around the part */
+.gc-ext[hidden],.gc-int[hidden]{display:none!important}
+.gc-extents{display:flex;flex-wrap:wrap;gap:4px 10px}
+.gc-extents label{font-size:11.5px;color:#9aa4b4;display:inline-flex;align-items:center;gap:4px}
+.gc-num{font:inherit;font-size:12px;color:var(--text);background:var(--surface-1);border:1px solid var(--border);border-radius:4px;padding:3px 5px;width:64px}
+.gc-ref{width:84px}
+.gc-guess{margin-left:8px;font-size:11px;color:#f0b46b}
+.gc-ground{accent-color:#ff4f00}

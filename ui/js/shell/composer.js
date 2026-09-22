@@ -97,10 +97,12 @@ async function upload(file) {
   }
 }
 
-/* THE GEOMETRY CHECK. The worker scouts the upload as soon as it is stored; this polls until
-   the labelled picture is ready and hands it to the stage to show. A check that is off, fails,
-   or reads a file it cannot scout simply never appears - the intake asks as it always did. */
-const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 120;   // six minutes, then stop quietly
+/* THE GEOMETRY CHECK. The worker scouts the upload as soon as it is stored and names the
+   stickers once the user has answered the opening question; this polls until the named check is
+   ready and hands it to the stage to show. A check that is off, fails, or reads a file it cannot
+   scout simply never appears - the intake asks as it always did. The wait is long on purpose:
+   the naming waits for the user, and a user may take their time over the first answer. */
+const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;   // forty-five minutes, then stop quietly
 
 async function watchGeometryCheck(sessionId) {
   for (let n = 0; n < CHECK_POLL_MAX; n++) {
@@ -115,11 +117,19 @@ async function watchGeometryCheck(sessionId) {
       }
       return;
     }
-    if (status === "ready") {
+    if (status === "ready" && d.named !== false) {
       if (d.confirmed) return;                     // a reload after confirming: nothing to do
       deps.geometryCheck(sessionId, d, async (body) => {
         const reply = await confirmGeometryCheck(sessionId, body);
         deps.chat("assistant", reply.message);
+        // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
+        // is the next question - or the dispatch, when nothing was left to ask.
+        if (reply.next) {
+          if (reply.continued_with) deps.chat("user", reply.continued_with);
+          if (reply.next.reply) deps.chat("assistant", reply.next.reply);
+          deps.brief(reply.next.brief);
+          if (reply.next.done && reply.next.job_id) deps.onJobStarted(reply.next.job_id);
+        }
         return reply;
       });
       return;

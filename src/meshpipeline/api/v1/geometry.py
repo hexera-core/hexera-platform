@@ -30,7 +30,7 @@ CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
 class ConfirmedOpening(BaseModel):
     id: int
     name: str = Field(min_length=1, max_length=40)
-    role: Literal["inlet", "outlet"]
+    role: Literal["inlet", "outlet", "not_an_opening"]
     centroid_mm: list[float] | None = None
     diameter_mm: float | None = None
     width_mm: float | None = None
@@ -44,6 +44,92 @@ class ConfirmIn(BaseModel):
     seed_point_mm: list[float] | None = None
     size_mm: list[float] | None = None
     part: str = Field(default="", max_length=80)
+    # a body in a flow: which way the fluid travels, how long the part is along it, how far the
+    # far field reaches in those lengths, and whether the part stands on the ground
+    flow_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z", "unknown"] | None = None
+    reference_length_mm: float | None = Field(default=None, gt=0)
+    extents: dict[str, float] | None = None
+    grounded: bool = False
+
+
+#: The first words of the holding line the chat gives while the part is being drawn. The intake
+#: prompt names it so nothing in it is ever read as declared.
+DRAWING_MARK = "GEOMETRY CHECK (drawing your part):"
+HOLD_REPLY = (
+    f"{DRAWING_MARK} thanks - I'm drawing your part now. It will appear beside this chat in a few "
+    "seconds with a numbered sticker on every opening I found. Check the names, fix anything "
+    "wrong, and press Proceed. Then I'll ask only what is still missing."
+)
+CONTINUE_TEXT = "I confirmed the geometry check. Go on."
+
+
+def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | None) -> bool:
+    """Whether this chat turn is the one the naming waits for: a check exists and is not
+    terminal, nobody has asked the model yet, and nothing was confirmed. Pure, so the rule is
+    testable without a store."""
+    if stored is None or requested is not None or confirmed is not None:
+        return False
+    return stored.get("status") in ("pending", "scouted")
+
+
+def purpose_from(messages: list[dict] | None) -> str:
+    """Everything the user has said so far, for the model: the answer to the opening question,
+    and the unit answer when there was one."""
+    return "\n".join(str(m.get("content", "")).strip() for m in (messages or [])
+                      if m.get("role") == "user" and str(m.get("content", "")).strip())[:2000]
+
+
+async def hold_for_naming(session, owner_id: str, organization_id: str):
+    """Called by the chat turn once the user's message is stored. When this is the first answer
+    the naming waits for, hand the user's words to the naming step, leave the holding line in the
+    conversation, and return it; otherwise None and the intake runs as usual."""
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return None
+    from meshpipeline.application.geometry_check import (
+        check_object_key,
+        mark_naming_requested,
+        naming_requested,
+        read_check,
+    )
+    from meshpipeline.contracts.geometry_check import enqueue_naming
+
+    sid = str(session.id)
+    stored = read_check(sid)
+    if not should_hold(stored, naming_requested(sid), _read_json(check_object_key(sid, "confirmed.json"))):
+        return None
+    purpose = purpose_from(session.messages)
+    queued = enqueue_naming(session_id=sid, owner_id=owner_id, purpose_text=purpose,
+                            interpretation=await _interpretation_payload(session, owner_id, organization_id))
+    if not queued:
+        return None
+    mark_naming_requested(sid, purpose)
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+    from meshpipeline.persistence.session import get_db
+
+    async with get_db() as db:
+        await SessionRepository().append_message(db, session.id, "assistant", HOLD_REPLY)
+        await db.commit()
+    logger.info("geometry naming queued from the first answer - session_id=%s", sid)
+    return HOLD_REPLY
+
+
+async def _interpretation_payload(session, owner_id: str, organization_id: str) -> dict | None:
+    """The unit the user confirmed for this session's file, as the worker reads it, or None."""
+    iid = getattr(session, "geometry_interpretation_id", None)
+    if not iid:
+        return None
+    from dataclasses import asdict
+
+    from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
+    from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
+        GeometryInterpretationRepository,
+    )
+    from meshpipeline.persistence.session import get_db
+
+    async with get_db() as db:
+        recorded = await GeometryInterpretationRepository().get_for_owner(
+            db, iid, owner_id, organization_id=organization_id)
+    return asdict(GeometryInterpretationRef.from_domain(recorded)) if recorded else None
 
 
 async def _owned_session(session_id: uuid.UUID, owner_id: str, organization_id: str):
@@ -81,6 +167,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload = _read_json(check_object_key(str(session_id), "scout.json"))
     if payload is None:
         return {"status": STATUS_NONE}
+    from meshpipeline.contracts.geometry_fields import form_spec
+    payload["fields"] = form_spec()
+    payload.setdefault("named", payload.get("status") == "ready")
     if payload.get("status") == "ready":
         store = get_object_store()
         payload["pictures"] = [
@@ -128,15 +217,23 @@ def confirmation_message(body: ConfirmIn) -> str:
     through = "through it" if body.flow == "internal" else "around it"
     parts = [f"{CONFIRMED_MARK} the file is {kind}"
              + (f" ({body.part})" if body.part else "") + f"; the fluid flows {through}."]
-    if body.openings:
+    ports = [o for o in body.openings if o.role != "not_an_opening"]
+    if body.flow == "external":
+        from meshpipeline.contracts.geometry_fields import external_declaration
+        parts.append("No openings: the fluid flows around the whole body.")
+        parts.extend(external_declaration(body))
+    elif ports:
         rows = []
-        for o in body.openings:
+        for o in ports:
             size = (f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
                     else f"{o.width_mm:.0f} x {o.height_mm:.0f} mm" if o.width_mm and o.height_mm else "")
             at = (f" at ({o.centroid_mm[0]:.0f}, {o.centroid_mm[1]:.0f}, {o.centroid_mm[2]:.0f}) mm"
                   if o.centroid_mm and len(o.centroid_mm) == 3 else "")
             rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
         parts.append("Openings: " + "; ".join(rows) + ".")
+        skipped = [str(o.id) for o in body.openings if o.role == "not_an_opening"]
+        if skipped:
+            parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
     else:
         parts.append("No openings: the fluid flows around the whole body.")
     if body.seed_point_mm and len(body.seed_point_mm) == 3:
@@ -160,7 +257,11 @@ def patches_from(body: ConfirmIn) -> list[dict]:
     """The session's declared patches, in the shape the intake's submit tool already takes:
     name and role, plus the size and location fields the port binding reads."""
     patches: list[dict] = []
+    if body.flow == "external":
+        return patches
     for o in body.openings:
+        if o.role == "not_an_opening":
+            continue
         entry: dict = {"name": o.name, "type": o.role}
         if o.diameter_mm:
             entry["diameter_mm"] = float(o.diameter_mm)
@@ -221,4 +322,17 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         session.messages = with_declaration(session.messages, message)
         await db.commit()
     logger.info("geometry check confirmed - session_id=%s openings=%d", session_id, len(body.openings))
-    return {"ok": True, "message": message, "patches": patches}
+    # THE INTAKE PICKS UP FROM HERE. The hold left the conversation waiting on this button; one
+    # ordinary chat turn, in the user's name, lets the intake ask what is still missing. A turn
+    # that fails leaves the confirmation in place; the user's next message runs it again.
+    nxt = None
+    try:
+        from meshpipeline.api.schemas.chat import ChatMessageIn
+        from meshpipeline.api.v1.chat import chat_message
+        turn = await chat_message(ChatMessageIn(session_id=session_id, content=CONTINUE_TEXT),
+                                  owner_id=owner_id, organization_id=organization_id)
+        nxt = turn.model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001 - the confirmation stands; the next message resumes
+        logger.warning("geometry check: the intake could not continue after confirm (%s: %s) - session_id=%s",
+                       type(exc).__name__, exc, session_id)
+    return {"ok": True, "message": message, "patches": patches, "continued_with": CONTINUE_TEXT, "next": nxt}
