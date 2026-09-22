@@ -20,7 +20,18 @@ logger = logging.getLogger(__name__)
 # an authenticated endpoint that signs a ticket and reads the database - and, because the match
 # was a bare startswith, anything else beginning with those characters (/api/v1/wsfoo). It is
 # gone; ticket minting is ordinary authenticated API traffic and is limited as such.
-_EXEMPT_PATHS = ("/health", "/readyz", "/metrics", "/static", "/ui")
+# `/api/v1/webhooks/stripe` IS EXEMPT, and it is the only exempt path that is neither a probe nor a
+# static file. Stripe delivers in bursts from a small set of source addresses, so every event in a
+# burst shares one bucket here and the tail of it would 429. Stripe treats a 429 as a failure,
+# retries on a backoff, and DISABLES an endpoint that keeps failing - so throttling this path does
+# not shed load, it silently switches billing off.
+#
+# WHAT THAT COSTS, stated plainly: this is a public endpoint with no limiter in front of it. What
+# stands in its place is signature verification, which rejects an unsigned body before it is read as
+# data and before any database work happens. That is a cheaper refusal than the limiter's own Redis
+# round trip, so an unsigned flood is turned away more cheaply here than it would have been there.
+_EXEMPT_PATHS = ("/health", "/readyz", "/metrics", "/static", "/ui",
+                 "/api/v1/webhooks/stripe")
 
 
 def _is_exempt(path: str) -> bool:

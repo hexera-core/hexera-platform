@@ -114,6 +114,26 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/client-config"),
         ("GET", "/api/v1/credits"),
         ("GET", "/api/v1/credits/history"),      # the org's credit ledger, keyset paged
+        # BILLING, scoped to the caller's own organisation.
+        ("GET", "/api/v1/billing"),              # the org's plan, status and period
+        ("GET", "/api/v1/billing/plans"),        # the tiers this deployment can actually sell
+        ("POST", "/api/v1/billing/checkout"),    # opens a hosted checkout for a purchasable tier
+        ("POST", "/api/v1/billing/portal"),      # opens the provider's card/invoice/cancel surface
+        # THE CROSS-TENANT SURFACE, behind ADMIN_API_KEY rather than a tenant credential. Its
+        # consumer is the admin console's Billing page, not a customer.
+        ("GET", "/api/v1/admin/billing/organizations"),
+        ("GET", "/api/v1/admin/billing/organizations/{organization_id}"),
+        ("GET", "/api/v1/admin/billing/organizations/{organization_id}/invoices"),
+        ("POST", "/api/v1/admin/billing/organizations/{organization_id}/invoices"),
+        ("GET", "/api/v1/admin/billing/organizations/{organization_id}/ledger"),
+        ("GET", "/api/v1/admin/billing/plans"),
+        ("GET", "/api/v1/admin/billing/usage"),
+        # The meter sweep, reachable over HTTP because the hosted deployment runs no Celery Beat -
+        # its consumer is a scheduler, and without it debits never reach the provider.
+        ("POST", "/api/v1/admin/billing/meter/sweep"),
+        # THE PROVIDER'S OWN CALLER. Not a capability a person invokes: it is authenticated by
+        # signature rather than by any credential of ours, which is why it is listed apart.
+        ("POST", "/api/v1/webhooks/stripe"),
         ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),

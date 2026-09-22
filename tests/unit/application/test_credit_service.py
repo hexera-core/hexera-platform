@@ -1,4 +1,5 @@
-# Responsibility: Verify credits are issued exactly as configured, and that nothing here spends them.
+# Responsibility: Verify credits are issued exactly as configured, and that spending is exactly
+#                 debit and refund - both signed the one way their callers cannot get wrong.
 from __future__ import annotations
 
 import inspect
@@ -80,18 +81,50 @@ async def test_a_configured_zero_disables_the_signup_grant(ledger, monkeypatch):
     assert ledger.entries == []
 
 
-def test_the_service_offers_no_way_to_spend():
-    # An ALLOWLIST, not a denylist of suspicious names. Spending is out of scope for this cycle
-    # (design section 2), and the ledger's CHECK is `amount <> 0` rather than `amount > 0` - the
-    # database would accept a negative amount, so grant()'s refusal is the only guard. A denylist
-    # of names would let `deduct` or `withdraw` past; pinning the whole surface means any new
-    # public function has to be justified here first.
-    # `history` was admitted for the console's ledger page: it is a READ - it returns rows and
-    # writes nothing - so it cannot be the way this cycle gains a way to spend.
+def test_the_spending_surface_is_exactly_debit_and_refund():
+    # An ALLOWLIST, not a denylist of suspicious names, and it still pins the WHOLE surface: the
+    # ledger's CHECK is `amount <> 0` rather than `amount > 0`, so the database accepts a negative
+    # amount and each function's own refusal is the only guard. A denylist would let `deduct` or
+    # `withdraw` past; pinning the set means any new public function is justified here first.
+    #
+    # `debit` and `refund` were admitted when Stripe billing landed. The ledger was shaped for them
+    # from the start - CreditEntryType declared both while nothing wrote either - so spending
+    # arrived as a new caller and not as a migration, which is what this test was guarding.
     names = {n for n, _ in inspect.getmembers(credit_service, inspect.isfunction)
              if not n.startswith("_") and getattr(credit_service, n).__module__ ==
              credit_service.__name__}
-    assert names == {"grant", "balance", "grant_signup_credits", "history"}, names
+    assert names == {"grant", "debit", "refund", "balance",
+                     "grant_signup_credits", "history"}, names
+
+
+@pytest.mark.asyncio
+async def test_a_debit_is_stored_negated(ledger):
+    # THE CALLER PASSES A POSITIVE AMOUNT and the service negates it. No call site has to remember
+    # the sign convention, because a caller that got it backwards would write a debit that RAISES
+    # the balance and the ledger's only CHECK - `amount <> 0` - would not catch it.
+    org = uuid.uuid4()
+    await credit_service.debit(None, organization_id=org, amount=40, reason="mesh job")
+    assert ledger.entries == [{"organization_id": org, "entry_type": CreditEntryType.debit,
+                               "amount": -40, "reason": "mesh job"}]
+
+
+@pytest.mark.asyncio
+async def test_a_debit_refuses_a_negative_amount(ledger):
+    # The mirror of grant()'s refusal: a negative debit is a grant wearing the wrong name.
+    with pytest.raises(ValueError):
+        await credit_service.debit(None, organization_id=uuid.uuid4(), amount=-1)
+    assert ledger.entries == []
+
+
+@pytest.mark.asyncio
+async def test_a_refund_is_positive_and_keeps_its_own_type(ledger):
+    # A refund is NOT a grant, even though both raise the balance. The entry type is what makes
+    # "why is my balance this?" answerable - a refund names a debit that should not have stood,
+    # and recording it as a grant would lose that.
+    org = uuid.uuid4()
+    await credit_service.refund(None, organization_id=org, amount=40, reason="job failed")
+    assert ledger.entries == [{"organization_id": org, "entry_type": CreditEntryType.refund,
+                               "amount": 40, "reason": "job failed"}]
 
 
 def test_the_settings_are_declared_in_the_inventory():

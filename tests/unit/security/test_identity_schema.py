@@ -18,16 +18,54 @@ _COLUMNS = {
 }
 
 
+#: COLUMNS A LATER REVISION ADDED to a table this design created.
+#:
+#: `_COLUMNS` above is what 0003_identity_and_credits CREATED, and
+#: test_the_migration_creates_exactly_the_columns_the_orm_declares reads it against that revision's
+#: own AST - so it has to stay exactly that. The ORM, meanwhile, carries every column the table has
+#: today. Keeping the two facts apart is what lets both tests stay honest instead of one of them
+#: being loosened until it stops refusing anything.
+_ADDED_BY_LATER_REVISIONS: dict[str, set[str]] = {
+    # 0006_stripe_billing. See that revision for why the billing identity belongs on the tenant row.
+    "organizations": {"stripe_customer_id", "stripe_subscription_id", "plan",
+                      "subscription_status", "current_period_end"},
+    # 0007_usage_metering. NULL until the sweep reports a debit to the provider's meter, and NULL
+    # forever on a grant or a refund - only a debit is ever metered.
+    "credit_ledger": {"metered_at"},
+}
+
+
+def _orm_columns(table: str) -> set[str]:
+    return {c.name for c in Base.metadata.tables[table].columns}
+
+
+def _expected_today(table: str) -> set[str]:
+    return _COLUMNS[table] | _ADDED_BY_LATER_REVISIONS.get(table, set())
+
+
 def test_the_orm_declares_the_four_tables_the_design_specifies():
-    for table, columns in _COLUMNS.items():
+    for table in _COLUMNS:
         assert table in Base.metadata.tables, table
-        assert {c.name for c in Base.metadata.tables[table].columns} == columns, table
+        # THE CREATED SET PLUS WHAT LATER REVISIONS ADDED, never a subset check. A subset would let
+        # a column be added to the ORM with no migration behind it and no entry above - which is the
+        # drift this test exists to catch.
+        assert _orm_columns(table) == _expected_today(table), table
 
 
 def test_no_column_could_hold_a_password():
+    # READS THE ORM, not the pinned set, so a column added without updating either dict is still
+    # examined. A billing integration is exactly the kind of change that tries to put a credential
+    # on the tenant row, and this must refuse it whether or not the pins were kept current.
     for table in _COLUMNS:
-        names = {c.name for c in Base.metadata.tables[table].columns}
+        names = _orm_columns(table)
         assert not {n for n in names if "password" in n or "secret" in n}, table
+
+
+def test_every_later_column_is_actually_present():
+    # Stops _ADDED_BY_LATER_REVISIONS becoming a graveyard: an entry for a column that has since
+    # been dropped would silently widen what the pin above accepts.
+    for table, added in _ADDED_BY_LATER_REVISIONS.items():
+        assert added <= _orm_columns(table), table
 
 
 def test_the_lookup_columns_are_unique_and_indexed():

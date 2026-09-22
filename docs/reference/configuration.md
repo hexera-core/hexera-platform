@@ -445,7 +445,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (218 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (228 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -498,6 +498,7 @@ Every supported setting (218 entries). `template` settings are the ones `.env.ex
 | `WEB_SEARCH_BASE_URL` | template | app |  |
 | `WEB_SEARCH_ENABLED` | template | app |  |
 | `WEB_SEARCH_PROVIDER` | template | app |  |
+| `ADMIN_API_KEY` | template | app | yes |
 | `CORS_ORIGINS` | template | app |  |
 | `ENV` | template | app |  |
 | `FIREBASE_PROJECT_ID` | template | app |  |
@@ -513,10 +514,19 @@ Every supported setting (218 entries). `template` settings are the ones `.env.ex
 | `GEOMETRY_CHECK_VISION_TIMEOUT_S` | internal | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
+| `CREDITS_PER_MESH_MINUTE` | template | app |  |
+| `JOB_BASE_CREDITS` | template | app |  |
 | `MAX_CONCURRENT_JOBS` | template | app |  |
 | `MAX_JOBS_PER_OWNER` | template | app |  |
 | `RECONCILE_RETRY_DELAY_SECONDS` | template | app |  |
 | `SIGNUP_GRANT_CREDITS` | template | app |  |
+| `CONSOLE_BASE_URL` | template | app |  |
+| `STRIPE_API_KEY` | template | app | yes |
+| `STRIPE_PRICE_STARTER` | template | app |  |
+| `STRIPE_PRICE_STARTER_OVERAGE` | template | app |  |
+| `STRIPE_PRICE_TEAM` | template | app |  |
+| `STRIPE_PRICE_TEAM_OVERAGE` | template | app |  |
+| `STRIPE_WEBHOOK_SECRET` | template | app | yes |
 | `DB_MAX_OVERFLOW` | template | app |  |
 | `DB_POOL_RECYCLE` | template | app |  |
 | `DB_POOL_SIZE` | template | app |  |

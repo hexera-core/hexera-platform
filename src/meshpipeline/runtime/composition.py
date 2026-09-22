@@ -67,8 +67,10 @@ def install_adapters() -> None:
     from meshpipeline.adapters.object_storage.factory import build_object_store
     from meshpipeline.adapters.rate_limit.redis import RedisRateLimitStore
     from meshpipeline.adapters.search.factory import build_web_search_provider
+    from meshpipeline.adapters.stripe_billing import build_billing_gateway
     from meshpipeline.adapters.ws_ticket.redis import RedisWsTicketStore
     from meshpipeline.contracts import (
+        billing,
         dead_letter,
         delivery_guard,
         event_stream,
@@ -91,6 +93,15 @@ def install_adapters() -> None:
     event_stream.set_subscription_factory(RedisEventSubscription)
     object_storage.set_object_store(build_object_store())
     search.set_web_search_provider(build_web_search_provider())
+    # BILLING IS OPTIONAL, and it is the only capability here that is. Every other port has a local
+    # implementation that works with no credential; charging money has none, so a deployment with no
+    # provider key binds NOTHING and the accessor raises BillingUnavailable, which the routes turn
+    # into a 503. That is the ordinary state of a developer checkout, of CI, and of a self-hosted
+    # install that does not charge - so it must not stop the process from starting.
+    try:
+        billing.set_billing_gateway(build_billing_gateway())
+    except billing.BillingUnavailable:
+        billing.set_billing_gateway(None)
     training_export.set_export_enqueuer(_enqueue_training_export)
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     mesh_execution.set_mesh_executor(build_mesh_executor())
