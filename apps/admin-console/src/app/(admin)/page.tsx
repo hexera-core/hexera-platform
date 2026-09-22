@@ -26,6 +26,7 @@ import { FleetSummaryPanel } from "./_fleet/fleet-summary";
 import { InstanceTable } from "./_fleet/instance-table";
 import { ScalingPolicyPanel } from "./_fleet/scaling-policy";
 import { ServiceScalingPanel } from "./_fleet/service-scaling";
+import { WorkerCapacityPanel } from "./_fleet/worker-capacity";
 import { WorkerProfilePanel } from "./_fleet/worker-profile";
 
 // The gax status codes worth telling apart. A Compute error's `message` carries the whole JSON body
@@ -207,6 +208,8 @@ export default async function FleetPage() {
       <FleetSummaryPanel summary={summariseFleet(instances)} targetSize={state.targetSize} />
 
       <ScalingPolicyPanel maxAllowedReplicas={targets.maxAllowedReplicas} state={state} />
+
+      <WorkerCapacityPanel profile={profile} queue={queue} state={state} />
 
       <div className="admin-grid-2">
         <Panel heading="last 24h" title="Workers up">
