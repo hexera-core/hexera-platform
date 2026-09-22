@@ -43,7 +43,7 @@ def _coord_key(coord: float) -> float:
 
 
 def _point_key(point: np.ndarray) -> tuple[float, float, float]:
-    return tuple(_coord_key(c) for c in point)
+    return (_coord_key(point[0]), _coord_key(point[1]), _coord_key(point[2]))
 
 
 def _triangle_key(tri: np.ndarray) -> tuple:
@@ -75,7 +75,9 @@ def _surface_metrics(tris: np.ndarray) -> dict:
         np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]), axis=1
     )
     face_counts = Counter(_triangle_key(tri) for tri in tris)
-    edge_counts = Counter()
+    edge_counts: Counter[
+        tuple[tuple[float, float, float], tuple[float, float, float]]
+    ] = Counter()
     for tri in tris:
         edge_counts[_edge_key(tri[0], tri[1])] += 1
         edge_counts[_edge_key(tri[1], tri[2])] += 1

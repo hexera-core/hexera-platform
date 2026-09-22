@@ -15,7 +15,6 @@ from meshpipeline.cad.repair.contracts import (
     RepairProfile,
     RepairReport,
     RepairResult,
-    RepairStatus,
     RepairTarget,
     status_from_defects,
 )

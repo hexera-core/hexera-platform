@@ -123,8 +123,7 @@ def test_contract_import_does_not_eagerly_load_inspection_modules():
         [sys.executable, "-c", code],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr

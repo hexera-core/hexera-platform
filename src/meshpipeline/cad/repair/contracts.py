@@ -2,9 +2,9 @@
 # Boundaries: typed report shape only; it reads no geometry and mutates nothing.
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Sequence
 
 
 class RepairMode(str, Enum):

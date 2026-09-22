@@ -83,7 +83,7 @@ def inspect_brep_file(path: Path) -> RepairReport:
         shape = _read_shape(p)
         counts = _count_subshapes(shape)
         is_valid = _is_valid(shape)
-        defects = ()
+        defects: tuple[RepairDefect, ...] = ()
         if not is_valid:
             defects = (
                 RepairDefect(
