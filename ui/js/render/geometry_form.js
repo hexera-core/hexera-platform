@@ -9,6 +9,9 @@ export const KIND = [["body-surface", "the part's wall, hollow inside for the fl
                      ["solid-body", "a solid body the fluid flows around"]];
 
 export const mm = (v) => (v == null || isNaN(v)) ? "?" : String(Math.round(v));
+/* a name lands inside a double-quoted attribute; `esc` covers text, this covers the quote too,
+   so a model-given label like 2" inlet neither ends the value early nor smuggles markup in */
+export const attr = (v) => esc(v).replace(/"/g, "&quot;");
 
 function sel(cls, opts, cur) {
   return `<select class="${cls}">${opts.map(([v, l]) =>
@@ -22,8 +25,8 @@ export function formHtml(p) {
     const size = o.shape === "circle" ? `${mm(o.diameter_mm)} mm across`
                                       : `${mm(o.width_mm)} x ${mm(o.height_mm)} mm`;
     const at = (o.centroid_mm || []).map((v) => mm(v)).join(", ");
-    return `<tr data-id="${o.id}"><td class="gc-n" title="opening ${o.id}">${o.id}</td>
-      <td><input class="gc-name" value="${esc(o.name || "")}" maxlength="40" aria-label="name of opening ${o.id}"></td>
+    return `<tr data-id="${Number(o.id)}"><td class="gc-n" title="opening ${Number(o.id)}">${Number(o.id)}</td>
+      <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${Number(o.id)}"></td>
       <td>${sel("gc-role", [["inlet", "inlet"], ["outlet", "outlet"]], o.role)}</td>
       <td class="gc-dim">${esc(size)}</td><td class="gc-dim gc-pos">(${esc(at)}) mm</td>
       <td class="gc-conf" title="how sure the check is">${Math.round((o.confidence || 0) * 100)}%</td></tr>`;

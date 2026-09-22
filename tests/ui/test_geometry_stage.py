@@ -31,7 +31,8 @@ def _check() -> dict:
         "openings": [
             {"id": 1, "name": "inlet", "role": "inlet", "shape": "circle", "diameter_mm": 400.0,
              "centroid_m": [0.0, 0.25, 0.25], "centroid_mm": [0.0, 250.0, 250.0], "normal": [-1, 0, 0], "confidence": 0.9},
-            {"id": 2, "name": "outlet", "role": "outlet", "shape": "circle", "diameter_mm": 400.0,
+            # a name with a quote in it: it must survive the form's attribute, not end it early
+            {"id": 2, "name": '2" outlet', "role": "outlet", "shape": "circle", "diameter_mm": 400.0,
              "centroid_m": [1.0, 0.25, 0.25], "centroid_mm": [1000.0, 250.0, 250.0], "normal": [1, 0, 0], "confidence": 0.8},
         ]}}
 
@@ -99,7 +100,7 @@ def test_the_check_opens_as_a_stage_and_proceeding_confirms_the_edited_form(live
       hook: !!(window._vdbg && window._vdbg['gstage:{SESSION}'])}}))()""")
     body = done["body"]
     assert body["input_kind"] == "body-surface" and body["flow"] == "internal"
-    assert [o["name"] for o in body["openings"]] == ["water_in", "outlet"]
+    assert [o["name"] for o in body["openings"]] == ["water_in", '2" outlet']
     assert body["openings"][0]["diameter_mm"] == 400.0 and body["openings"][0]["centroid_mm"] == [0.0, 250.0, 250.0]
     assert body["seed_point_mm"] == [500.0, 250.0, 250.0]
     assert done["gone"] is True and done["wb"] is False and done["hook"] is False, done
