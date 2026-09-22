@@ -426,3 +426,34 @@ def test_with_the_step_off_the_builders_read_is_the_call_it_always_made(monkeypa
     got = asyncio.run(regions.planner_inputs_for_state({"request_txt": "mesh it"}))
     assert got == ("mesh it", {"schema": "geometry_agent.planner_block.v1"}, "")
     assert len(seen) == 1
+
+
+# -------------------------------------------------------------------------------------------------
+# ONE RESOLUTION PER FIELD: what the corpus refused
+# -------------------------------------------------------------------------------------------------
+
+def test_one_mouth_two_questions_and_one_answer_is_not_confirmed_and_assumed_at_once(armed):
+    """transition_007_fluid has one mouth left to place, so `role_inlet` and `role_outlet` are both
+    about it. The customer named it the outlet and skipped the inlet question. Keying the skipped
+    question's default on the same mouth put `role:o2` under `confirmed` and `assumed` together, and
+    the package refused the whole handoff, so the builder got nothing: 2 of 49 corpus parts.
+
+    A question every one of whose subjects another answer has settled has no field left to be about."""
+    doc = _doc("transition_007_fluid")
+    state = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd",
+                                              brief=_brief("transition_007_fluid"), engine="snappy"))
+    state = gs.mark_asked(state, gs.open_now(state))
+    views = {v["id"]: v for v in gs.open_now(state)}
+    assert views["role_inlet"]["subjects"] == views["role_outlet"]["subjects"] == ["o2"]
+    said = "o2 is where it leaves"
+    state = gs.answered(state, doc, question_id="role_outlet", choice="o2", words=said,
+                        latest_user_message=said, principal="owner-7f3a")
+    state = gs.answered(state, doc, question_id="role_inlet", words="I cannot say",
+                        latest_user_message="I cannot say", skipped=True, principal="owner-7f3a")
+    fields = [r.field for r in gst._resolutions(state, {})]
+    assert [f for f in fields if f.startswith("role:")] == ["role:o2"], fields
+    assert len(fields) == len(set(fields)), f"one resolution per field, got {fields}"
+    planned = gst.plan_the_part(state, doc, job_id="job-1", client=gst.planner_client("reference"))
+    assert planned["geometry_step"]["status"] == gst.PLANNED, planned["geometry_step"].get("reason")
+    handoff = gst.builder_handoff(planned, doc, request_txt=_brief("transition_007_fluid"))
+    assert handoff["typed"]["intake"]["write_up"]

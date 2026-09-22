@@ -306,26 +306,45 @@ def _uncertainty_records(survey: Any, asked: set[str], texts: dict[str, str]) ->
 
 def _resolutions(state: dict, stated: dict[str, str]) -> list[Any]:
     """What came back for every survey question, as the chain's five types. A default is never an answer:
-    a skip or a default that stood is `Defaulted`, a question never put is `Unasked`."""
+    a skip or a default that stood is `Defaulted`, a question never put is `Unasked`.
+
+    ONE RESOLUTION PER FIELD, and an answered field never also carries an assumption. Two questions can
+    be about the same mouth - "which is the inlet" and "which is the outlet" on a part with one mouth are
+    both about it - and on 2 of 49 corpus parts the customer answered one and skipped the other, which
+    put that mouth under `confirmed` and `assumed` at once and the package refused the whole handoff. It
+    was right to: an answer and a default are two things. So an unanswered question speaks only for the
+    subjects nothing has settled, and one whose subjects are all settled says nothing at all, because
+    there is no field left for it to be about.
+    """
     res = _package()["resolution"]
     at = _now()
     asked = set(state.get("asked") or [])
     late_id = _late_id(state)
     live = [a for a in gs.live_answers(state)
             if a.get("stage") != gs.LATE_STAGE and (not late_id or a.get("question_id") != late_id)]
+    views = [v for v in gs.question_views(state) if v["route"] != gs.ROUTE_LATE]
+    said_for = {v["id"]: [a for a in live if a.get("question_id") == v["id"]
+                          and a.get("answered_by") == gs.CUSTOMER and not a.get("skipped")] for v in views}
+    settled = {f"role:{oid}" for oid in stated}
+    for v in views:
+        settled |= {f"{_kind(v['about'])}:{a.get('subject') or ','.join(v['subjects']) or 'part'}"
+                    for a in said_for[v["id"]]}
     out: list[Any] = []
-    for v in gs.question_views(state):
-        if v["route"] == gs.ROUTE_LATE:
-            continue
-        kind, subject = _kind(v["about"]), ",".join(v["subjects"]) or "part"
+    for v in views:
+        kind = _kind(v["about"])
         rows = [a for a in live if a.get("question_id") == v["id"]]
-        said = [a for a in rows if a.get("answered_by") == gs.CUSTOMER and not a.get("skipped")]
-        if said:
-            for a in said:
-                out.append(res.Answered(field=f"{kind}:{a.get('subject') or subject}", value=str(a.get("value")),
+        if said_for[v["id"]]:
+            for a in said_for[v["id"]]:
+                subject = a.get("subject") or ",".join(v["subjects"]) or "part"
+                out.append(res.Answered(field=f"{kind}:{subject}", value=str(a.get("value")),
                                         question_id=v["id"], answered_by=gs.CUSTOMER,
                                         verbatim=str(a.get("words") or ""), at=str(a.get("at") or at)))
-        elif rows or v["id"] in asked:
+            continue
+        left = [s for s in v["subjects"] if f"{kind}:{s}" not in settled]
+        if v["subjects"] and not left:
+            continue
+        subject = ",".join(left) or "part"
+        if rows or v["id"] in asked:
             out.append(res.Defaulted(field=f"{kind}:{subject}", assumed=str(v.get("default") or "nothing"),
                                      question_id=v["id"], default_from="the survey's own default; nobody confirmed it",
                                      at=at))

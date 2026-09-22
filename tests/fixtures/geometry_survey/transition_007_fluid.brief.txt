@@ -1,0 +1,11 @@
+Internal flow through the fluid volume of a transition duct - a 180.04 x 224.65 mm rectangle morphing to a 82 mm circle over a 281.77 mm run - the flow region itself, already carved. I want the flow and pressure drop.
+
+Geometry is in millimetres. The overall bounding box is 477.51 x 180.04 x 224.65 mm (X x Y x Z).
+
+The STEP contains the FLUID REGIONS THEMSELVES (a fluid-domain model) - mesh these solids directly as the flow volume; do not carve a cavity.
+Engine: gmsh. Element order: 1 (first-order linear tetrahedra).
+Patches: inlet is the RECTANGULAR end face at (0, 0, 0) mm on the X=0 plane, bore 180.04 mm along Y by 224.65 mm along Z (flow enters along +X); outlet is the circular end face at (477.51, 0, 0) mm on the X=477.51 plane, diameter 82 mm (flow exits along +X). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. No prism layers - gmsh builds tetrahedra; resolve the near-wall with the tetrahedral surface sizing instead.
+Refinement: finer at junctions, bends and area changes than on straight runs.
+Mesh budget: keep the total cell count under 2 million cells.
+Steady state, incompressible, isothermal.

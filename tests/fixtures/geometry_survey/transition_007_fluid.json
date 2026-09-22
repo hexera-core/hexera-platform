@@ -1,0 +1,1860 @@
+{
+ "axes": {
+  "blunt_end_confidence": 0.8696063724965296,
+  "blunt_end_sign": -1,
+  "principal": [
+   [
+    0.9999999999951983,
+    7.155817179920637e-12,
+    -3.0989968870022863e-06
+   ],
+   [
+    3.0989968858577326e-06,
+    -2.958529931906817e-05,
+    0.9999999995575534
+   ],
+   [
+    -8.452893331392962e-11,
+    -0.999999999562355,
+    -2.9585299318846126e-05
+   ]
+  ],
+  "slenderness": 2.043032523609059,
+  "variance": [
+   19525.700931794294,
+   4677.955351642713,
+   3421.019698040333
+  ]
+ },
+ "bbox": {
+  "aspect": 2.6522440989360123,
+  "diagonal_file": 557.5821270149613,
+  "diagonal_m": 0.5575821270149613,
+  "diagonal_mm": 557.582,
+  "extent_file": [
+   477.510009765625,
+   180.0399932861328,
+   224.64999389648438
+  ],
+  "extent_m": [
+   0.477510009765625,
+   0.18003999328613282,
+   0.22464999389648438
+  ],
+  "extent_mm": [
+   477.51,
+   180.04,
+   224.65
+  ],
+  "longest_axis": 0,
+  "max_file": [
+   477.510009765625,
+   90.0199966430664,
+   112.32499694824219
+  ],
+  "max_m": [
+   0.477510009765625,
+   0.09001999664306641,
+   0.11232499694824219
+  ],
+  "min_file": [
+   0.0,
+   -90.0199966430664,
+   -112.32499694824219
+  ],
+  "min_m": [
+   0.0,
+   -0.09001999664306641,
+   -0.11232499694824219
+  ],
+  "shortest_axis": 1
+ },
+ "bodies": {
+  "count": 1,
+  "debris_components": 0,
+  "faces": 1390,
+  "interfaces": [],
+  "regions": 1,
+  "regions_detail": [
+   {
+    "contains": [],
+    "faces": 1390,
+    "id": "r1",
+    "nested_in": null,
+    "volume_m3": 0.009388299367986741,
+    "watertight": true
+   }
+  ],
+  "vertices": 697,
+  "watertight": true
+ },
+ "coordinates": {
+  "basis": "occ_transfer",
+  "candidates": [
+   [
+    "mm",
+    6.0
+   ],
+   [
+    "in",
+    2.0
+   ],
+   [
+    "cm",
+    2.0
+   ],
+   [
+    "m",
+    0.0
+   ],
+   [
+    "ft",
+    0.0
+   ]
+  ],
+  "claimed_unit": "mm",
+  "conflicts": [],
+  "declared_in_file": {
+   "source": "step_header",
+   "value": "mm"
+  },
+  "scale_to_metres": 0.001,
+  "unit": "mm"
+ },
+ "coverage": {
+  "outside": {
+   "margin_m": 0.027879106350748067,
+   "points_m": [
+    {
+     "point": [
+      -0.027879106350748067,
+      0.0,
+      0.0
+     ],
+     "side": "x_min"
+    },
+    {
+     "point": [
+      0.505389116116373,
+      0.0,
+      0.0
+     ],
+     "side": "x_max"
+    },
+    {
+     "point": [
+      0.2387550048828125,
+      -0.11789910299381447,
+      0.0
+     ],
+     "side": "y_min"
+    },
+    {
+     "point": [
+      0.2387550048828125,
+      0.11789910299381447,
+      0.0
+     ],
+     "side": "y_max"
+    },
+    {
+     "point": [
+      0.2387550048828125,
+      0.0,
+      -0.14020410329899025
+     ],
+     "side": "z_min"
+    },
+    {
+     "point": [
+      0.2387550048828125,
+      0.0,
+      0.14020410329899025
+     ],
+     "side": "z_max"
+    }
+   ],
+   "proof": "each point is past one face of the part's axis-aligned bounding box by the margin, so it is outside every closed surface of the part; the flow here is inside the part's surfaces, so the point is outside the flow domain. The margin is twenty times the largest chord sag the loader's tessellation allows",
+   "status": "measured"
+  },
+  "places": [
+   {
+    "from": "coverage: centreline from o2",
+    "id": "f1",
+    "kind": "section_change",
+    "measurement": {
+     "angle_refused": "the diameter does not change linearly with length: not a cone",
+     "area_ratio": 1.5464,
+     "change": "taper",
+     "diameter_large_m": 0.10049691858268282,
+     "diameter_small_m": 0.08191414340068076,
+     "end_m": [
+      0.31962500164595314,
+      4.8692337789952936e-11,
+      3.690844359464016e-08
+     ],
+     "included_angle_deg": null,
+     "larger_side": "away_from_mouth",
+     "length_m": 0.051385871583196276,
+     "start_m": [
+      0.37101087298218177,
+      7.314724545514984e-18,
+      -2.039065019815383e-06
+     ]
+    },
+    "opening_id": "o2",
+    "size_file": 81.91414340068076,
+    "what": "the passage section changes gradually along this stretch",
+    "where_file": [
+     337.9655993370464,
+     -6.434309396556726e-07,
+     1.7426748499432826e-07
+    ],
+    "where_m": [
+     0.3379655993370464,
+     -6.434309396556726e-10,
+     1.7426748499432825e-10
+    ]
+   }
+  ],
+  "refused": {
+   "local_feature_size": "A local feature size from the medial axis is not given. The medial axis of a triangulated surface is not the medial axis of the solid it stands for at any tessellation density: every convex edge adds a spurious branch, and the filters that prune them have no setting that is right across parts. A size read off it would be a property of the tessellator, reported as a property of the part.",
+   "vertex_curvature": "A per-vertex curvature is not given. Discrete mean curvature provably does not converge on a tessellated cylinder: with every vertex exactly on the surface it oscillates between about -3 and 0 as the mesh refines, from the valence pattern alone, and a CAD export's long thin facets are the condition under which the cheap operators fail worst."
+  },
+  "version": "geometry_agent.coverage.v1",
+  "wall": {
+   "creases_at_included_deg": 137.3431346944909,
+   "listed_area_fraction": 1.0,
+   "regions": [
+    {
+     "area_fraction": 0.8427,
+     "borders": [
+      "o1",
+      "o2"
+     ],
+     "box_max_m": [
+      0.477510009765625,
+      0.09001999664306641,
+      0.11232499694824219
+     ],
+     "box_min_m": [
+      0.0,
+      -0.09001999664306641,
+      -0.11232499694824219
+     ],
+     "centroid_m": [
+      0.1818787963694855,
+      -8.370735085919968e-18,
+      -2.1358615476508939e-07
+     ],
+     "half_angle_deg": null,
+     "id": "w1",
+     "neighbours": [
+      "w2",
+      "w3"
+     ],
+     "radius_m": null,
+     "surface": "freeform",
+     "why_no_radius": "doubly curved and not one sphere: a per-vertex curvature here would be the tessellation's and not the part's, so none is given"
+    },
+    {
+     "area_fraction": 0.1392,
+     "borders": [],
+     "box_max_m": [
+      0.0,
+      0.09001999664306641,
+      0.11232499694824219
+     ],
+     "box_min_m": [
+      0.0,
+      -0.09001999664306641,
+      -0.11232499694824219
+     ],
+     "centroid_m": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "half_angle_deg": null,
+     "id": "w2",
+     "is_opening": "o1",
+     "neighbours": [
+      "w1"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0181,
+     "borders": [],
+     "box_max_m": [
+      0.477510009765625,
+      0.04098725509643555,
+      0.041
+     ],
+     "box_min_m": [
+      0.477510009765625,
+      -0.04098725509643555,
+      -0.04094903564453125
+     ],
+     "centroid_m": [
+      0.47751000976562497,
+      1.401606667204861e-18,
+      -2.214082895899117e-10
+     ],
+     "half_angle_deg": null,
+     "id": "w3",
+     "is_opening": "o2",
+     "neighbours": [
+      "w1"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    }
+   ],
+   "regions_total": 3,
+   "status": "measured"
+  }
+ },
+ "default_cell": {
+  "source": "facts.cell_estimates",
+  "surface_cell_file": 1.7424441469217542,
+  "surface_cell_m": 0.0017424441469217542,
+  "tier": "standard"
+ },
+ "engine": "snappy",
+ "engine_source": "assumed",
+ "facts": {
+  "axes": {
+   "blunt_end_confidence": 0.8696063724965296,
+   "blunt_end_sign": -1,
+   "principal": [
+    [
+     0.9999999999951983,
+     7.155817179920637e-12,
+     -3.0989968870022863e-06
+    ],
+    [
+     3.0989968858577326e-06,
+     -2.958529931906817e-05,
+     0.9999999995575534
+    ],
+    [
+     -8.452893331392962e-11,
+     -0.999999999562355,
+     -2.9585299318846126e-05
+    ]
+   ],
+   "rotational_axis": 0,
+   "rotational_order": 2,
+   "rotational_score": 1.0,
+   "slenderness": 2.043032523609059,
+   "symmetry_measured": true,
+   "symmetry_normals": [
+    [
+     3.0989968858577326e-06,
+     -2.958529931906817e-05,
+     0.9999999995575534
+    ],
+    [
+     -8.452893331392962e-11,
+     -0.999999999562355,
+     -2.9585299318846126e-05
+    ]
+   ],
+   "symmetry_planes": [
+    1,
+    2
+   ],
+   "symmetry_scores": [
+    0.078,
+    1.0,
+    1.0
+   ],
+   "variance": [
+    19525.700931794294,
+    4677.955351642713,
+    3421.019698040333
+   ]
+  },
+  "bbox": {
+   "aspect": 2.6522440989360123,
+   "diagonal": 557.5821270149613,
+   "extent": [
+    477.510009765625,
+    180.0399932861328,
+    224.64999389648438
+   ],
+   "longest_axis": 0,
+   "max": [
+    477.510009765625,
+    90.0199966430664,
+    112.32499694824219
+   ],
+   "min": [
+    0.0,
+    -90.0199966430664,
+    -112.32499694824219
+   ],
+   "shortest_axis": 1
+  },
+  "bodies": 1,
+  "cell_estimates": [
+   {
+    "assumptions": [
+     "base cell = bbox diagonal / 40",
+     "1 surface refinement level(s), 3-cell band",
+     "3 prism layers on all surfaces",
+     "domain volume from enclosed volume",
+     "uniform base cell through the domain",
+     "castellation fill 0.7"
+    ],
+    "base_size": 13.939553175374034,
+    "cells": 38320,
+    "domain_volume": 9388299.36798674,
+    "layer_cells": 17947,
+    "surface_cell": 6.969776587687017,
+    "surface_cells": 17947,
+    "tier": "draft",
+    "volume_cells": 2426
+   },
+   {
+    "assumptions": [
+     "base cell = bbox diagonal / 80",
+     "2 surface refinement level(s), 3-cell band",
+     "8 prism layers on all surfaces",
+     "domain volume from enclosed volume",
+     "uniform base cell through the domain",
+     "castellation fill 0.7"
+    ],
+    "base_size": 6.969776587687017,
+    "cells": 1072302,
+    "domain_volume": 9388299.36798674,
+    "layer_cells": 765740,
+    "surface_cell": 1.7424441469217542,
+    "surface_cells": 287152,
+    "tier": "standard",
+    "volume_cells": 19410
+   },
+   {
+    "assumptions": [
+     "base cell = bbox diagonal / 160",
+     "3 surface refinement level(s), 3-cell band",
+     "15 prism layers on all surfaces",
+     "domain volume from enclosed volume",
+     "uniform base cell through the domain",
+     "castellation fill 0.7"
+    ],
+    "base_size": 3.4848882938435084,
+    "cells": 27721921,
+    "domain_volume": 9388299.36798674,
+    "layer_cells": 22972200,
+    "surface_cell": 0.43561103673043855,
+    "surface_cells": 4594440,
+    "tier": "max",
+    "volume_cells": 155281
+   }
+  ],
+  "chord": {
+   "chords_over_requested": 0,
+   "chords_sampled": 2229,
+   "chords_unprojected": 0,
+   "computable": true,
+   "faces_with_surface": 11,
+   "reason": "",
+   "requested_angular_deg": 11.459155902616466,
+   "requested_linear": 0.5575821235951526,
+   "sag_max": 0.4889553353355153,
+   "sag_median": 0.029798265657588686,
+   "sag_over_chord_max": 0.02946403810256613,
+   "sag_p95": 0.20035202795976065,
+   "surface_available": true
+  },
+  "coverage": {
+   "centrelines": [
+    {
+     "bends": [],
+     "intrusions": [],
+     "length": 464.74425870380685,
+     "mouth_diameter": 81.89806816651361,
+     "opening_id": "o2",
+     "reached_opening": "o1",
+     "stations": [
+      {
+       "area": 5272.8337461273095,
+       "hydraulic_diameter": 81.9068013309067,
+       "point": [
+        469.32020294897364,
+        -4.1580226341181154e-16,
+        -0.0012763622139833368
+       ],
+       "s": 0.0
+      },
+      {
+       "area": 5273.7262387743995,
+       "hydraulic_diameter": 81.92052097936505,
+       "point": [
+        452.9388428841131,
+        -2.9106235092112434e-16,
+        -0.003280426878692285
+       ],
+       "s": 16.38136018744727
+      },
+      {
+       "area": 5274.297133802045,
+       "hydraulic_diameter": 81.92924529792458,
+       "point": [
+        436.5547387503195,
+        1.3554463376190804e-16,
+        -0.004547710135053209
+       ],
+       "s": 32.76546437025204
+      },
+      {
+       "area": 5274.546208499313,
+       "hydraulic_diameter": 81.93297043813993,
+       "point": [
+        420.1688897118255,
+        1.580329419536464e-15,
+        -0.005067090423795207
+       ],
+       "s": 49.15131341697738
+      },
+      {
+       "area": 5274.473373869563,
+       "hydraulic_diameter": 81.93169505223047,
+       "point": [
+        403.78229563913413,
+        -5.343444724649058e-15,
+        -0.004828742217732815
+       ],
+       "s": 65.53790749140217
+      },
+      {
+       "area": 5274.0786194758275,
+       "hydraulic_diameter": 81.9254190097481,
+       "point": [
+        387.3959566731248,
+        5.197293517731805e-15,
+        -0.0038227404043155526
+       ],
+       "s": 81.92424648829211
+      },
+      {
+       "area": 5273.362013456311,
+       "hydraulic_diameter": 81.91414340068076,
+       "point": [
+        371.01087298218175,
+        7.314724545514984e-15,
+        -0.002039065019815383
+       ],
+       "s": 98.30933027632032
+      },
+      {
+       "area": 5469.102941306637,
+       "hydraulic_diameter": 83.31222553920512,
+       "point": [
+        354.62804441075684,
+        -2.2960504114817236e-15,
+        0.0007155172072849441
+       ],
+       "s": 114.69215907932073
+      },
+      {
+       "area": 6680.738712000082,
+       "hydraulic_diameter": 91.70298845635776,
+       "point": [
+        337.9655993370464,
+        -6.434309396556726e-07,
+        1.7426748499432826e-07
+       ],
+       "s": 131.35460416838654
+      },
+      {
+       "area": 8154.7560097015985,
+       "hydraulic_diameter": 100.49691858268282,
+       "point": [
+        319.62500164595315,
+        4.8692337789952934e-08,
+        3.690844359464016e-05
+       ],
+       "s": 149.6952018595166
+      },
+      {
+       "area": 9895.807226875995,
+       "hydraulic_diameter": 109.35747842723495,
+       "point": [
+        299.5256179294775,
+        -4.645850499437015e-09,
+        -1.7866406100222256e-06
+       ],
+       "s": 169.79458557602948
+      },
+      {
+       "area": 12004.772834526722,
+       "hydraulic_diameter": 118.93916983025603,
+       "point": [
+        277.65412224403065,
+        3.678471945235098e-10,
+        6.311359965041375e-08
+       ],
+       "s": 191.66608126147642
+      },
+      {
+       "area": 14499.015343697618,
+       "hydraulic_diameter": 128.82271214623174,
+       "point": [
+        253.86628827797944,
+        -4.4015897846650906e-10,
+        -2.7097883420114407e-09
+       ],
+       "s": 215.45391522752763
+      },
+      {
+       "area": 17483.727053506245,
+       "hydraulic_diameter": 139.5612172174599,
+       "point": [
+        228.1017458487331,
+        2.1343237712458547e-11,
+        8.69010776359227e-11
+       ],
+       "s": 241.21845765677398
+      },
+      {
+       "area": 20959.449235584023,
+       "hydraulic_diameter": 150.60048280002,
+       "point": [
+        200.1895024052411,
+        -1.8029360377708678e-12,
+        -2.229321077051679e-12
+       ],
+       "s": 269.130701100266
+      },
+      {
+       "area": 25104.21811655749,
+       "hydraulic_diameter": 162.64277790825034,
+       "point": [
+        170.0694058452371,
+        1.6717394656458345e-14,
+        -2.794862162632803e-14
+       ],
+       "s": 299.25079766027
+      },
+      {
+       "area": 30007.45835222833,
+       "hydraulic_diameter": 175.62723223149678,
+       "point": [
+        137.54085026358703,
+        -2.854214741675246e-14,
+        -1.5859479712853982e-13
+       ],
+       "s": 331.77935324192003
+      },
+      {
+       "area": 35745.937219303014,
+       "hydraulic_diameter": 189.36790956906248,
+       "point": [
+        102.41540381728768,
+        -1.4769055179231305e-14,
+        5.1070593612473574e-14
+       ],
+       "s": 366.9047996882194
+      },
+      {
+       "area": 40445.983392852824,
+       "hydraulic_diameter": 199.88625700591643,
+       "point": [
+        64.54182190347518,
+        2.8665625621404874e-15,
+        -1.3067969211577592e-14
+       ],
+       "s": 404.7783816020319
+      },
+      {
+       "area": 40445.983392852824,
+       "hydraulic_diameter": 199.88625700591643,
+       "point": [
+        24.564570502291893,
+        1.8873131029384814e-15,
+        -6.679960209729612e-15
+       ],
+       "s": 444.7556330032152
+      },
+      {
+       "area": 40445.983392852824,
+       "hydraulic_diameter": 199.88625700591643,
+       "point": [
+        4.575944801700249,
+        5.798202049368404e-15,
+        -9.10971335988268e-17
+       ],
+       "s": 464.74425870380685
+      }
+     ],
+     "status": "measured",
+     "stop_area_ratio": null,
+     "stop_point": null,
+     "stopped_by": "left_the_passage",
+     "straight": true,
+     "turn_deg": 0.006364972436491567,
+     "why": ""
+    }
+   ],
+   "local_feature_size": {
+    "evidence": [
+     "docs/research_computational_geometry.md 1.2: continuity of the medial axis needs C2 closeness (Chazal and Soufflet via Attali et al.), which no tessellation has",
+     "docs/research_computational_geometry.md 3.1 and 3.2, MEASURED on this corpus: an unfiltered shrinking-ball medial size read 0.00005 where the smallest passage is 0.0399 (800x too small), and no separation angle was right on more than 3 of 6 parts",
+     "docs/synthesis.md 2.1: do not emit a single filtered medial minimum",
+     "what IS given instead: the passage's own section, area and hydraulic diameter, at every station of every centreline (`centrelines[].stations`), which is a plane section and converges"
+    ],
+    "status": "refused",
+    "why": "A local feature size from the medial axis is not given. The medial axis of a triangulated surface is not the medial axis of the solid it stands for at any tessellation density: every convex edge adds a spurious branch, and the filters that prune them have no setting that is right across parts. A size read off it would be a property of the tessellator, reported as a property of the part."
+   },
+   "outside": null,
+   "partition": {
+    "area_listed_fraction": 1.0000000000000024,
+    "band": [
+     121.04068460689797,
+     153.6455847820839
+    ],
+    "crease_included_deg": 137.3431346944909,
+    "patches": [
+     {
+      "area": 244890.77382414893,
+      "area_fraction": 0.8426812435025719,
+      "axis": null,
+      "bbox_max": [
+       477.510009765625,
+       90.0199966430664,
+       112.32499694824219
+      ],
+      "bbox_min": [
+       0.0,
+       -90.0199966430664,
+       -112.32499694824219
+      ],
+      "borders": [
+       "o1",
+       "o2"
+      ],
+      "centroid": [
+       181.8787963694855,
+       -8.370735085919969e-15,
+       -0.00021358615476508937
+      ],
+      "faces": 1327,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w1",
+      "neighbours": [
+       "w2",
+       "w3"
+      ],
+      "opening_id": null,
+      "radius": null,
+      "region_id": "",
+      "surface": "freeform",
+      "why_no_radius": "doubly curved and not one sphere: a per-vertex curvature here would be the tessellation's and not the part's, so none is given"
+     },
+     {
+      "area": 40445.983392852824,
+      "area_fraction": 0.13917662575825723,
+      "axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       0.0,
+       90.0199966430664,
+       112.32499694824219
+      ],
+      "bbox_min": [
+       0.0,
+       -90.0199966430664,
+       -112.32499694824219
+      ],
+      "borders": [],
+      "centroid": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w2",
+      "neighbours": [
+       "w1"
+      ],
+      "opening_id": "o1",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 5272.266909689979,
+      "area_fraction": 0.01814213073917324,
+      "axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       477.510009765625,
+       40.98725509643555,
+       41.0
+      ],
+      "bbox_min": [
+       477.510009765625,
+       -40.98725509643555,
+       -40.94903564453125
+      ],
+      "borders": [],
+      "centroid": [
+       477.51000976562494,
+       1.4016066672048608e-15,
+       -2.2140828958991168e-07
+      ],
+      "faces": 61,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w3",
+      "neighbours": [
+       "w1"
+      ],
+      "opening_id": "o2",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     }
+    ],
+    "patches_total": 3,
+    "smallest_radius": null,
+    "smallest_radius_patch": null,
+    "status": "measured",
+    "why": ""
+   },
+   "places": [],
+   "skipped_mouths": [],
+   "timings": {},
+   "version": "geometry_agent.coverage.v1",
+   "vertex_curvature": {
+    "evidence": [
+     "docs/research_computational_geometry.md 4.1: Wardetzky, the 4-8 cylinder counterexample",
+     "docs/research_computational_geometry.md 4.2: Gatzke and Grimm, sensitivity to tangential vertex motion",
+     "what IS given instead: a radius fitted over each whole crease patch that is a cylinder or a sphere, with its residual, and refused when the residual is large (`partition.patches[].radius`), and the bend radius of each centreline turn (`centrelines[].bends[].radius`)"
+    ],
+    "status": "refused",
+    "why": "A per-vertex curvature is not given. Discrete mean curvature provably does not converge on a tessellated cylinder: with every vertex exactly on the surface it oscillates between about -3 and 0 as the mesh refines, from the valence pattern alone, and a CAD export's long thin facets are the condition under which the cheap operators fail worst."
+   },
+   "warnings": []
+  },
+  "debris_components": 0,
+  "faces": 1390,
+  "feature_edges": {
+   "bins": [
+    {
+     "edges": 0,
+     "included_hi": 30.0,
+     "included_lo": 0.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 60.0,
+     "included_lo": 30.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 90.0,
+     "included_lo": 60.0,
+     "length": 0.0
+    },
+    {
+     "edges": 71,
+     "included_hi": 120.0,
+     "included_lo": 90.0,
+     "length": 1370.323824099864
+    },
+    {
+     "edges": 4,
+     "included_hi": 150.0,
+     "included_lo": 120.0,
+     "length": 1200.4220552574495
+    },
+    {
+     "edges": 28,
+     "included_hi": 165.0,
+     "included_lo": 150.0,
+     "length": 1280.8888924619575
+    },
+    {
+     "edges": 285,
+     "included_hi": 175.0,
+     "included_lo": 165.0,
+     "length": 10236.047887500952
+    },
+    {
+     "edges": 462,
+     "included_hi": 178.0,
+     "included_lo": 175.0,
+     "length": 18298.46366209916
+    },
+    {
+     "edges": 484,
+     "included_hi": 179.0,
+     "included_lo": 178.0,
+     "length": 14296.350313669303
+    },
+    {
+     "edges": 592,
+     "included_hi": 179.9,
+     "included_lo": 179.0,
+     "length": 14154.332784611273
+    },
+    {
+     "edges": 159,
+     "included_hi": 180.0,
+     "included_lo": 179.9,
+     "length": 5153.120080813125
+    }
+   ],
+   "cumulative": [
+    [
+     20.0,
+     0,
+     0.0
+    ],
+    [
+     30.0,
+     0,
+     0.0
+    ],
+    [
+     45.0,
+     0,
+     0.0
+    ],
+    [
+     60.0,
+     0,
+     0.0
+    ],
+    [
+     90.0,
+     8,
+     1112.8199768066406
+    ],
+    [
+     120.0,
+     71,
+     1370.323824099864
+    ],
+    [
+     150.0,
+     75,
+     2570.7458793573137
+    ],
+    [
+     165.0,
+     103,
+     3851.634771819271
+    ],
+    [
+     175.0,
+     388,
+     14087.682659320224
+    ]
+   ],
+   "inconsistent_edges": 0,
+   "manifold_edges": 2085,
+   "non_manifold_edges": 0,
+   "open_edges": 0,
+   "widest_empty_band": [
+    20.0,
+    90.0
+   ]
+  },
+  "features": {
+   "closest_regions": null,
+   "edge_length_median": 22.848818690778174,
+   "edge_length_min": 0.3860250548185671,
+   "gap_clusters": [],
+   "gap_coverage": {
+    "every_face_tested": true,
+    "faces_cast": 1390,
+    "faces_total": 1390,
+    "minimum_exhaustive": true,
+    "oblique_fraction": 0.0,
+    "passage_fraction": 0.0,
+    "rejected_fraction": 0.0
+   },
+   "knife_edge_count": 0,
+   "knife_edge_length": 0.0,
+   "min_gap": null,
+   "min_gap_between_regions": null,
+   "near_touching_pairs": 0,
+   "non_manifold_edge_count": 0,
+   "sharp_edge_count": 9,
+   "sharp_edge_length": 1370.323824099864,
+   "sliver_faces": 36,
+   "sliver_fraction": 0.025899280575539568,
+   "thickness_coverage": {
+    "every_face_tested": true,
+    "faces_cast": 1390,
+    "faces_total": 1390,
+    "minimum_exhaustive": true,
+    "oblique_fraction": 0.0,
+    "passage_fraction": 0.0,
+    "rejected_fraction": 0.467353
+   },
+   "thickness_median": 142.02841388836072,
+   "thickness_min": 81.91768629563535,
+   "thickness_p05": 81.92379711161112,
+   "thin_clusters": [],
+   "winding_consistent": true
+  },
+  "interface_thickness": [],
+  "interfaces": [],
+  "measurement_revision": 2,
+  "names": [
+   {
+    "entity": "PRODUCT",
+    "implied_role": null,
+    "name": "Open CASCADE STEP translator"
+   }
+  ],
+  "opening_gate": {
+   "best_rejected_tubularity": 0.6482219664316173,
+   "candidates": 102,
+   "rejected_by_tubularity": 100
+  },
+  "openings": [
+   {
+    "area": 40445.983392852824,
+    "area_fraction_of_region": 0.13917662575825723,
+    "bbox_side": "x_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 226.93044194528395,
+    "face_count": 2,
+    "height": 180.0399932861328,
+    "hydraulic_diameter": 199.88625700591643,
+    "id": "o1",
+    "kind": "cap",
+    "normal": [
+     -1.0,
+     -0.0,
+     -0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 809.3799743652344,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 224.64999389648438
+   },
+   {
+    "area": 5272.266909689979,
+    "area_fraction_of_region": 0.01814213073917324,
+    "bbox_side": "x_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     477.51000976562494,
+     2.1563179495459396e-17,
+     -2.2140828958991168e-07
+    ],
+    "classification": "port_candidate",
+    "equivalent_diameter": 81.93203720045005,
+    "face_count": 61,
+    "height": 81.94903212812807,
+    "hydraulic_diameter": 81.89806816651361,
+    "id": "o2",
+    "kind": "cap",
+    "normal": [
+     1.0,
+     -0.0,
+     0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 257.5038472932233,
+    "region_id": "r1",
+    "shape": "circle",
+    "tubularity": 1.0,
+    "width": 81.97451299406862
+   }
+  ],
+  "regions": [
+   {
+    "bbox_extent": [
+     477.510009765625,
+     180.0399932861328,
+     224.64999389648438
+    ],
+    "bbox_max": [
+     477.510009765625,
+     90.0199966430664,
+     112.32499694824219
+    ],
+    "bbox_min": [
+     0.0,
+     -90.0199966430664,
+     -112.32499694824219
+    ],
+    "contains": [],
+    "faces": 1390,
+    "id": "r1",
+    "nested_in": null,
+    "rotational_axis": 0,
+    "rotational_order": 2,
+    "surface_area": 290609.02412669105,
+    "volume": 9388299.36798674,
+    "watertight": true
+   }
+  ],
+  "schema_version": 3,
+  "sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+  "source_format": "step",
+  "source_path": "",
+  "stubs": [
+   {
+    "end_point": [
+     99.94312850295822,
+     0.0,
+     0.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "length": 99.94312850295822,
+    "length_over_diameter": 0.5,
+    "opening_id": "o1",
+    "stations": 4,
+    "terminated_by": "area_change"
+   },
+   {
+    "end_point": [
+     354.6629075158545,
+     2.1563179495459396e-17,
+     -2.2140828958991168e-07
+    ],
+    "entry_area_ratio": 1.0000556628775445,
+    "entry_loops": 1,
+    "inward_direction": [
+     -1.0,
+     0.0,
+     -0.0
+    ],
+    "length": 122.84710224977042,
+    "length_over_diameter": 1.5,
+    "opening_id": "o2",
+    "stations": 10,
+    "terminated_by": "area_change"
+   }
+  ],
+  "timings": {
+   "axes": 0.112,
+   "chord": 0.167,
+   "connectivity": 0.0,
+   "coverage": 0.126,
+   "coverage_centrelines": 0.124,
+   "coverage_partition": 0.002,
+   "coverage_total": 0.126,
+   "feature_edges": 0.001,
+   "features": 0.011,
+   "interface_thickness": 0.0,
+   "interfaces": 0.0,
+   "load": 0.786,
+   "openings": 0.016,
+   "regions": 0.0,
+   "stubs": 0.016,
+   "total": 1.237
+  },
+  "total_surface_area": 290609.02412669105,
+  "total_volume": 9388299.36798674,
+  "units": {
+   "candidates": [
+    [
+     "mm",
+     6.0
+    ],
+    [
+     "in",
+     2.0
+    ],
+    [
+     "cm",
+     2.0
+    ],
+    [
+     "m",
+     0.0
+    ],
+    [
+     "ft",
+     0.0
+    ]
+   ],
+   "declared": "mm",
+   "declared_source": "step_header",
+   "plausible_for_purpose": {
+    "conjugate_heat_transfer": [
+     "mm"
+    ],
+    "external_cfd": [
+     "mm",
+     "cm",
+     "in"
+    ],
+    "internal_cfd": [
+     "mm"
+    ],
+    "structural": [
+     "mm",
+     "cm",
+     "in"
+    ]
+   }
+  },
+  "vertices": 697,
+  "warnings": [],
+  "watertight": true
+ },
+ "forecast": {
+  "basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 13.66 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [39, 17, 20] clamped 8..120, background cell 13.96, deficit 0 (snappy_runner.py:619-634)",
+   "fluid volume = the outer watertight bodies' enclosed volume",
+   "near band: volume within near_dist 40.97 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for fluid_domain: calibration multiplier 0.32 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied",
+   "no plan exists: this is the builder emulator over the measurement alone, which is not the same figure as a planned estimate"
+  ],
+  "breakdown": {
+   "background": 0,
+   "feature_edges": 0,
+   "fluid_volume": 9388299.36798674,
+   "layers": 280974,
+   "near_band": 1765499,
+   "near_band_volume": 9388299.36798674,
+   "transition": 0,
+   "wall_area": 285336.75721700105
+  },
+  "builder": {
+   "base_actual": 13.963567601505886,
+   "base_cell": 13.655339533408343,
+   "bore": 81.93203720045005,
+   "cells_across": 24,
+   "deficit": 0,
+   "divisions": [
+    39,
+    17,
+    20
+   ],
+   "feature_level": 3,
+   "flevel": 3,
+   "inlet_id": "o2",
+   "max_cells": 8000000,
+   "n_layers": 3,
+   "near_cell": 1.7454459501882358,
+   "near_dist": 40.96601860022503,
+   "near_level": 3,
+   "port_level": 1,
+   "smallest_port": {
+    "bore_over_extent": 0.1715106835283127,
+    "cells_across_builder": 23.99004959668609,
+    "grid_aligned": true,
+    "id": "o2",
+    "kind": "cap",
+    "min_dimension": 81.89806816651361,
+    "shape": "circle",
+    "tilt_deg": 0.0
+   },
+   "smax": 2,
+   "surface_level": 2,
+   "wall_cell": 3.4138348833520857
+  },
+  "calibration": {
+   "arm": "facts_only",
+   "by_representation": {
+    "carve": 0.69,
+    "external": 0.42,
+    "fluid_domain": 0.34
+   },
+   "max_ratio": 6.46,
+   "median_ratio": 0.52,
+   "n": 263,
+   "of": "cells_high over the cells the job delivered",
+   "p90_ratio": 1.29,
+   "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered",
+   "source": "docs/pipeline.md sections 0 and 3.4 (v7.py), 263 delivered corpus meshes"
+  },
+  "cell_cap": null,
+  "cells_high": 2046473,
+  "cells_low": 2046473,
+  "minutes_p90": 39.65,
+  "minutes_typical": 25.8,
+  "over_cap": null,
+  "passes_expected": null,
+  "strategy": null,
+  "tier": "over 2M"
+ },
+ "look": {
+  "caveat": "",
+  "impression": null,
+  "is_measurement": false,
+  "label": "VISUAL IMPRESSION (a vision model's words from nine rendered views; not a measurement)",
+  "model": "",
+  "provider": "",
+  "seconds": null,
+  "status": "not_attempted",
+  "views": []
+ },
+ "measured_purpose": "internal_cfd",
+ "names": [],
+ "opening_gate": {
+  "best_rejected_tubularity": 0.6482219664316173,
+  "candidates": 102,
+  "rejected_by_tubularity": 100
+ },
+ "openings": [
+  {
+   "area_file": 40445.983392852824,
+   "area_m2": 0.040445983392852825,
+   "area_mm2": 40445.983,
+   "bbox_side": "x_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "centroid_m": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "centroid_mm": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 199.88625700591643,
+   "hydraulic_diameter_m": 0.19988625700591645,
+   "hydraulic_diameter_mm": 199.8863,
+   "id": "o1",
+   "kind": "cap",
+   "min_dimension_file": 180.0399932861328,
+   "min_dimension_m": 0.18003999328613282,
+   "min_dimension_mm": 180.04,
+   "normal": [
+    -1.0,
+    -0.0,
+    -0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 5272.266909689979,
+   "area_m2": 0.00527226690968998,
+   "area_mm2": 5272.267,
+   "bbox_side": "x_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    477.51000976562494,
+    2.1563179495459396e-17,
+    -2.2140828958991168e-07
+   ],
+   "centroid_m": [
+    0.47751000976562497,
+    2.1563179495459397e-20,
+    -2.214082895899117e-10
+   ],
+   "centroid_mm": [
+    477.51,
+    0.0,
+    -0.0
+   ],
+   "classification": "port_candidate",
+   "hydraulic_diameter_file": 81.89806816651361,
+   "hydraulic_diameter_m": 0.08189806816651361,
+   "hydraulic_diameter_mm": 81.8981,
+   "id": "o2",
+   "kind": "cap",
+   "min_dimension_file": 81.89806816651361,
+   "min_dimension_m": 0.08189806816651361,
+   "min_dimension_mm": 81.8981,
+   "normal": [
+    1.0,
+    -0.0,
+    0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "circle",
+   "tilt_deg": 0.0
+  }
+ ],
+ "plan": null,
+ "planner_block": {
+  "agent_forecast_basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 13.66 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [39, 17, 20] clamped 8..120, background cell 13.96, deficit 0 (snappy_runner.py:619-634)",
+   "fluid volume = the outer watertight bodies' enclosed volume",
+   "near band: volume within near_dist 40.97 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for fluid_domain: calibration multiplier 0.32 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied",
+   "no plan exists: this is the builder emulator over the measurement alone, which is not the same figure as a planned estimate"
+  ],
+  "agent_forecast_cells": 2046473,
+  "agent_forecast_low": 2046473,
+  "agent_git_sha": "10af5be81720c8d101263543d5bbc73291b512cb",
+  "coverage": {
+   "outside": {
+    "margin_m": 0.027879106350748067,
+    "points_m": [
+     {
+      "point": [
+       -0.027879106350748067,
+       0.0,
+       0.0
+      ],
+      "side": "x_min"
+     },
+     {
+      "point": [
+       0.505389116116373,
+       0.0,
+       0.0
+      ],
+      "side": "x_max"
+     },
+     {
+      "point": [
+       0.2387550048828125,
+       -0.11789910299381447,
+       0.0
+      ],
+      "side": "y_min"
+     },
+     {
+      "point": [
+       0.2387550048828125,
+       0.11789910299381447,
+       0.0
+      ],
+      "side": "y_max"
+     },
+     {
+      "point": [
+       0.2387550048828125,
+       0.0,
+       -0.14020410329899025
+      ],
+      "side": "z_min"
+     },
+     {
+      "point": [
+       0.2387550048828125,
+       0.0,
+       0.14020410329899025
+      ],
+      "side": "z_max"
+     }
+    ],
+    "proof": "each point is past one face of the part's axis-aligned bounding box by the margin, so it is outside every closed surface of the part; the flow here is inside the part's surfaces, so the point is outside the flow domain. The margin is twenty times the largest chord sag the loader's tessellation allows",
+    "status": "measured"
+   },
+   "refused": [
+    "local_feature_size",
+    "vertex_curvature"
+   ],
+   "version": "geometry_agent.coverage.v1",
+   "wall": {
+    "regions": [
+     {
+      "area_fraction": 0.8427,
+      "centroid_m": [
+       0.1818787963694855,
+       -8.370735085919968e-18,
+       -2.1358615476508939e-07
+      ],
+      "half_angle_deg": null,
+      "id": "w1",
+      "radius_m": null,
+      "surface": "freeform"
+     },
+     {
+      "area_fraction": 0.1392,
+      "centroid_m": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "half_angle_deg": null,
+      "id": "w2",
+      "is_opening": "o1",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0181,
+      "centroid_m": [
+       0.47751000976562497,
+       1.401606667204861e-18,
+       -2.214082895899117e-10
+      ],
+      "half_angle_deg": null,
+      "id": "w3",
+      "is_opening": "o2",
+      "radius_m": null,
+      "surface": "plane"
+     }
+    ],
+    "regions_total": 3,
+    "status": "measured"
+   }
+  },
+  "customer_cell_cap": null,
+  "facts_schema_version": 3,
+  "facts_sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+  "forecast_calibration": {
+   "arm": "facts_only",
+   "median_ratio": 0.52,
+   "n": 263,
+   "p90_ratio": 1.29,
+   "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered"
+  },
+  "inlet_bore_m": 0.08193203720045006,
+  "inlet_opening_id": "o2",
+  "places": [
+   {
+    "from": "coverage: centreline from o2",
+    "id": "f1",
+    "kind": "section_change",
+    "measurement": {
+     "angle_refused": "the diameter does not change linearly with length: not a cone",
+     "area_ratio": 1.5464,
+     "change": "taper",
+     "diameter_large_m": 0.10049691858268282,
+     "diameter_small_m": 0.08191414340068076,
+     "end_m": [
+      0.31962500164595314,
+      4.8692337789952936e-11,
+      3.690844359464016e-08
+     ],
+     "included_angle_deg": null,
+     "larger_side": "away_from_mouth",
+     "length_m": 0.051385871583196276,
+     "start_m": [
+      0.37101087298218177,
+      7.314724545514984e-18,
+      -2.039065019815383e-06
+     ]
+    },
+    "opening_id": "o2",
+    "what": "the passage section changes gradually along this stretch",
+    "where_m": [
+     0.3379655993370464,
+     -6.434309396556726e-10,
+     1.7426748499432825e-10
+    ]
+   }
+  ],
+  "representation": "fluid_domain",
+  "schema": "geometry_agent.planner_block.v1",
+  "smallest_port_min_dim_m": 0.08189806816651361,
+  "source_sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+  "status": "ok",
+  "survey": {
+   "at_places": [],
+   "confirmed": {},
+   "facts_sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+   "kinds": {
+    "assumed": "a default nobody stated",
+    "confirmed": "a person said it",
+    "measured": "an instrument computed it",
+    "seen": "a model said it from pictures, no numbers, with a trust tier",
+    "stated": "the customer wrote it and nobody checked"
+   },
+   "looked": false,
+   "measured": {
+    "bbox_diagonal_m": {
+     "field": "bbox_diagonal_m",
+     "kind": "measured",
+     "source": "facts.bbox.diagonal",
+     "unit": "m",
+     "value": 0.557582
+    },
+    "forecast.cells_high": {
+     "field": "forecast.cells_high",
+     "kind": "measured",
+     "source": "forecast.cells_high",
+     "value": 2046473
+    },
+    "inlet_bore_m": {
+     "field": "inlet_bore_m",
+     "kind": "measured",
+     "source": "forecast.builder.bore",
+     "unit": "m",
+     "value": 0.081932
+    }
+   },
+   "representation": {
+    "field": "representation",
+    "kind": "measured",
+    "source": "catalog.representation over the measured openings",
+    "value": "fluid_domain"
+   },
+   "schema": "geometry_agent.contract.survey_block.v1",
+   "seen": {},
+   "source_sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+   "unit": {
+    "field": "unit",
+    "kind": "measured",
+    "source": "coordinates.basis=occ_transfer",
+    "value": "mm"
+   },
+   "unsettled": [
+    {
+     "about": "opening.role",
+     "subjects": [
+      "o2"
+     ],
+     "why": "no source here owns a role: the measurement has none and the look's word on a role is not admissible, so a boundary condition on these mouths waits for a person"
+    }
+   ]
+  },
+  "units": "m"
+ },
+ "projection": {
+  "diag": 0.5575821270149613,
+  "region_count": 1,
+  "region_names": [],
+  "region_source": "",
+  "self_intersecting": "unknown",
+  "thin_gap": 0.08191768629563535,
+  "units": "m"
+ },
+ "purpose": "internal_cfd",
+ "reason": "",
+ "representation": "fluid_domain",
+ "representation_corpus": "fluid_domain",
+ "schema": "geometry_agent.measurement.v1",
+ "seconds": 4.072,
+ "source": {
+  "original_filename": "transition_007_fluid.step",
+  "sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+  "size_bytes": 36495,
+  "suffix_hint": ".step"
+ },
+ "source_format": "step",
+ "source_sha256": "2cc1b0ccb8ca69ec0dacd1d28a3f8fd99201e5b89e037b32115c67f6604d744b",
+ "stamp": {
+  "agent_git_sha": "10af5be81720c8d101263543d5bbc73291b512cb",
+  "facts_schema_version": 3,
+  "measure_seconds": 1.237,
+  "measurement_revision": 2,
+  "occ_unit": "mm",
+  "platform_sha": "57684388c66c5968bed166f4c5121c1c9110dd48"
+ },
+ "status": "ok",
+ "stubs": [
+  {
+   "end_point_file": [
+    99.94312850295822,
+    0.0,
+    0.0
+   ],
+   "end_point_m": [
+    0.09994312850295822,
+    0.0,
+    0.0
+   ],
+   "length_m": 0.09994312850295822,
+   "length_over_diameter": 0.5,
+   "opening_id": "o1",
+   "stations": 4,
+   "terminated_by": "area_change"
+  },
+  {
+   "end_point_file": [
+    354.6629075158545,
+    2.1563179495459396e-17,
+    -2.2140828958991168e-07
+   ],
+   "end_point_m": [
+    0.3546629075158545,
+    2.1563179495459397e-20,
+    -2.214082895899117e-10
+   ],
+   "length_m": 0.12284710224977041,
+   "length_over_diameter": 1.5,
+   "opening_id": "o2",
+   "stations": 10,
+   "terminated_by": "area_change"
+  }
+ ],
+ "symmetry": {
+  "measured": true,
+  "plane_normals": [
+   [
+    3.0989968858577326e-06,
+    -2.958529931906817e-05,
+    0.9999999995575534
+   ],
+   [
+    -8.452893331392962e-11,
+    -0.999999999562355,
+    -2.9585299318846126e-05
+   ]
+  ],
+  "planes": [
+   1,
+   2
+  ],
+  "rotational_axis": 0,
+  "rotational_order": 2,
+  "rotational_score": 1.0,
+  "scores": [
+   0.078,
+   1.0,
+   1.0
+  ]
+ },
+ "targeted": {
+  "places": [],
+  "reason": "the look-driven targeted pass is not built yet",
+  "status": "skipped"
+ },
+ "thickness": {
+  "closest_regions": null,
+  "gap_clusters": [],
+  "gap_coverage": {
+   "every_face_tested": true,
+   "faces_cast": 1390,
+   "faces_total": 1390,
+   "minimum_exhaustive": true,
+   "oblique_fraction": 0.0,
+   "passage_fraction": 0.0,
+   "rejected_fraction": 0.0
+  },
+  "knife_edge_count": 0,
+  "knife_edge_length_m": 0.0,
+  "median_m": 0.1420284138883607,
+  "min_file": 81.91768629563535,
+  "min_gap_between_regions_m": null,
+  "min_gap_file": null,
+  "min_gap_m": null,
+  "min_m": 0.08191768629563535,
+  "min_mm": 81.9177,
+  "near_touching_pairs": 0,
+  "non_manifold_edge_count": 0,
+  "p05_m": 0.08192379711161113,
+  "sharp_edge_count": 9,
+  "sliver_fraction": 0.025899280575539568,
+  "thickness_coverage": {
+   "every_face_tested": true,
+   "faces_cast": 1390,
+   "faces_total": 1390,
+   "minimum_exhaustive": true,
+   "oblique_fraction": 0.0,
+   "passage_fraction": 0.0,
+   "rejected_fraction": 0.467353
+  },
+  "thin_clusters": [],
+  "winding_consistent": true
+ },
+ "triage": {
+  "declared_ports": 0,
+  "enforced": false,
+  "engine": "snappy",
+  "notes": [],
+  "planar_openings": 2,
+  "platform_rule_predicted": [],
+  "platform_sha": "57684388c66c5968bed166f4c5121c1c9110dd48",
+  "purpose": "internal_cfd",
+  "reasons": [],
+  "representation": "fluid_domain",
+  "verdict": "buildable"
+ },
+ "unit": {
+  "assumed": "mm",
+  "basis": "occ_transfer",
+  "candidates": [
+   [
+    "mm",
+    6.0
+   ],
+   [
+    "in",
+    2.0
+   ],
+   [
+    "cm",
+    2.0
+   ],
+   [
+    "m",
+    0.0
+   ],
+   [
+    "ft",
+    0.0
+   ]
+  ],
+  "declared": "mm",
+  "declared_source": "step_header",
+  "plausible_for_purpose": [
+   "mm"
+  ]
+ },
+ "warnings": []
+}

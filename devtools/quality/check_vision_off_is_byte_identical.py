@@ -19,7 +19,10 @@
 # stored rows it reads are answered from the document named below and nothing reaches a network.
 #
 # WHAT IS COMPARED: the intake system prompt, the exact tool list intake is offered, and the planner's
-# user message.
+# user message. The planner's two inputs are taken from the driver's OWN read for the checkout under
+# test - `_planner_inputs` where it exists, `_agent_block` where it does not - because the geometry
+# agent's step changes the request as well as the block, and a gate that read only the block would
+# report "identical" for the half of the change it never looked at.
 #
 #   A  every geometry gate off, this checkout against `main`
 #   B  GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED on, the look and the survey
@@ -29,6 +32,13 @@
 #   D  C with GEOMETRY_SURVEY_ENABLED on, against the same commit. This one MUST DIFFER, in the tool
 #      list and the intake prompt: it is the check that the harness can see the survey at all. A ruler
 #      that reports "identical" for a change it cannot see is how this project has been misled before
+#   E  the survey's whole chain on and GEOMETRY_AGENT_STEP_ENABLED off, against `3ba42c0`, the first
+#      complete Surveyor. Not against an empty row: the row it reads is a conversation answered to the
+#      end with the geometry agent's PLAN already on it, because "the step changes nothing until it is
+#      set" is only worth saying where there is something for it to change
+#   F  E with GEOMETRY_AGENT_STEP_ENABLED on. This one MUST DIFFER, in the planner's message, which is
+#      where the step's change lands: the agent's write-up in front of the request and its handoff as
+#      the block. Same reason as D
 #
 # ONE DELIBERATE CHANGE IS HELD APART, and it is the only one. work/complete rewrote the planner's note on
 # the measured block (`planner._AGENT_BLOCK_NOTE`): the places are now described as geometry in the order
@@ -73,6 +83,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DOCUMENT = Path(__file__).with_name("vision_off_gate_measurement.json")
+#: E and F read a measurement that kept its facts and the survey row a conversation left on it.
+#: `run_geometry_step_on_corpus.py` writes both; the tracked pair is venturi_orifice_001.
+DEFAULT_STEP_DOCUMENT = ROOT / "tests" / "fixtures" / "geometry_survey" / "venturi_orifice_001.json"
+DEFAULT_STEP_ROW = Path(__file__).with_name("geometry_step_gate_row.json")
 
 #: The commit each configuration is compared against.
 MAIN = "main"
@@ -81,8 +95,12 @@ MAIN = "main"
 MEASUREMENT_BASE = "91bb74b"
 #: The commit that added the look behind its own flag.
 LOOK_BASE = "bae0fb2"
+#: The first complete Surveyor: measurement, look and survey, and no geometry agent's step. The
+#: reference for E and F, which ask what the step's own switch moves.
+SURVEYOR_BASE = "3ba42c0"
 
 _MEASURED = "GEOMETRY_MEASUREMENT_ENABLED,GEOMETRY_REPORT_READERS_ENABLED"
+_SURVEYED = _MEASURED + ",GEOMETRY_VISION_ENABLED,GEOMETRY_SURVEY_ENABLED"
 PROMPTS = ("intake_system", "intake_tools", "planner_user")
 
 #: Run inside each checkout under that checkout's own unit-tier conftest, which pins the settings, stubs
@@ -101,8 +119,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 _DOC = os.environ.get("GATE_DOC") or ""
+_ROW = os.environ.get("GATE_ROW") or ""
 _NOTE_FROM = os.environ.get("GATE_NOTE_FROM") or ""
 DOC = json.loads(Path(_DOC).read_text(encoding="utf-8")) if _DOC else None
+#: A STORED SURVEY ROW, when the case supplies one: the row a customer's answered conversation leaves
+#: behind, carrying the geometry agent's plan. Without it `geometry_survey.load` answers None, which is
+#: what every case before the step existed wanted.
+ROW_STATE = json.loads(Path(_ROW).read_text(encoding="utf-8")) if _ROW else None
 FLAGS = [f for f in (os.environ.get("GATE_FLAGS") or "").split(",") if f]
 WS = Path(os.environ["GATE_WS"])
 SHA = str((DOC or {}).get("source_sha256") or "a" * 64)
@@ -143,10 +166,16 @@ def _stored_reads(monkeypatch):
     except ImportError:
         return
 
-    async def no_survey(*a, **k):
-        return None
+    async def survey_row(*a, **k):
+        return ROW_STATE
 
-    monkeypatch.setattr(geometry_survey, "load", no_survey)
+    async def stored_row(*a, **k):
+        return True
+
+    monkeypatch.setattr(geometry_survey, "load", survey_row)
+    # the step writes the handover back to the row; in here that write goes nowhere
+    if hasattr(geometry_survey, "save"):
+        monkeypatch.setattr(geometry_survey, "save", stored_row)
 
 
 def _state():
@@ -209,7 +238,18 @@ def _planner(monkeypatch):
                                           source_id="11111111-1111-1111-1111-111111111111",
                                           interpretation_id="22222222-2222-2222-2222-222222222222")}
     if "geometry_agent" in inspect.signature(planner.plan_with_accounting).parameters:
-        kwargs["geometry_agent"] = asyncio.run(drivers._agent_block(_state()))
+        # THROUGH THE DRIVER'S OWN READ, whichever one this checkout has. Before the geometry agent's
+        # step the driver read `_agent_block(state)` and passed the state's request through untouched;
+        # with the step it reads both from `_planner_inputs`, which is where the write-up in front of
+        # the request is decided. A gate that kept calling `_agent_block` here would be blind to the
+        # half of the change that lands on the request, which is most of it.
+        st = _state()
+        st["request_txt"] = kwargs["request_txt"]
+        if hasattr(drivers, "_planner_inputs"):
+            got = asyncio.run(drivers._planner_inputs(st))
+            kwargs["request_txt"], kwargs["geometry_agent"] = got[0], got[1]
+        else:
+            kwargs["geometry_agent"] = asyncio.run(drivers._agent_block(st))
     asyncio.run(planner.plan_with_accounting(**kwargs))
     return seen["user"]
 
@@ -245,12 +285,17 @@ def _working_copy(into: Path) -> Path:
 
 
 def _digests(tree: Path, label: str, document: Path | None, flags: str, python: str,
-             note_from: Path | None = None) -> dict[str, str]:
+             note_from: Path | None = None, row: Path | None = None) -> dict[str, str]:
     harness = tree / "tests" / "unit" / "gate_vision_off.py"
     harness.write_text(HARNESS, encoding="utf-8")
     workspace = tree / ".gate-workspace"
     env = {"GATE_WS": str(workspace), "GATE_DOC": str(document) if document else "",
-           "GATE_FLAGS": flags, "PYTHONPATH": "src", "GATE_NOTE_FROM": str(note_from) if note_from else ""}
+           "GATE_ROW": str(row) if row else "",
+           "GATE_FLAGS": flags, "GATE_NOTE_FROM": str(note_from) if note_from else "",
+           # the checkout's OWN src first, and then whatever the caller already had on the path: on a
+           # machine where the measurement package is a checkout rather than an installed distribution,
+           # replacing PYTHONPATH outright is a gate that silently runs every case with no package
+           "PYTHONPATH": os.pathsep.join(["src", *( [os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [] )])}
     try:
         run = subprocess.run([python, "-m", "pytest", str(harness.relative_to(tree)), "-s", "-q",
                               "-p", "no:randomly", "-p", "no:cacheprovider"],
@@ -272,6 +317,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--document", default=str(DEFAULT_DOCUMENT),
                     help="a stored geometry measurement document, as JSON")
+    ap.add_argument("--step-document", default=str(DEFAULT_STEP_DOCUMENT),
+                    help="the measurement E and F read: unlike --document it keeps its raw facts, "
+                         "because the geometry agent's step composes the survey again from them")
+    ap.add_argument("--step-row", default=str(DEFAULT_STEP_ROW),
+                    help="the stored survey row E and F read: a conversation answered to the end, "
+                         "with the geometry agent's plan on it")
     ap.add_argument("--python", default=sys.executable)
     ap.add_argument("--tree", action="append", default=[], metavar="REV=PATH",
                     help="use an already extracted checkout of REV instead of running git archive")
@@ -285,31 +336,42 @@ def main() -> int:
     document = Path(args.document).resolve()
     if not document.is_file():
         raise SystemExit(f"no stored measurement document at {document}")
+    step_document, row = Path(args.step_document).resolve(), Path(args.step_row).resolve()
+    for what, path in (("measurement", step_document), ("survey row", row)):
+        if not path.is_file():
+            raise SystemExit(f"no {what} for E and F at {path}")
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="vision-off-gate-") as tmp:
         tmp_path = Path(tmp)
         here = _working_copy(tmp_path / "working")
-        cases = [("A  every gate off", MAIN, None, "", True),
-                 ("B  measurement on, look and survey off", MEASUREMENT_BASE, document, _MEASURED, True),
+        cases = [("A  every gate off", MAIN, None, "", None, True, ""),
+                 ("B  measurement on, look and survey off", MEASUREMENT_BASE, document, _MEASURED, None, True, ""),
                  ("C  measurement and look on, survey off", LOOK_BASE, document,
-                  _MEASURED + ",GEOMETRY_VISION_ENABLED", True),
+                  _MEASURED + ",GEOMETRY_VISION_ENABLED", None, True, ""),
                  ("D  survey on: the harness has to see it", LOOK_BASE, document,
-                  _MEASURED + ",GEOMETRY_VISION_ENABLED,GEOMETRY_SURVEY_ENABLED", False)]
-        for label, rev, doc, flags, must_match in cases:
+                  _SURVEYED, None, False, "intake_tools"),
+                 ("E  the survey's whole chain on, the step OFF, an answered row with a plan on it",
+                  SURVEYOR_BASE, step_document, _SURVEYED, row, True, ""),
+                 ("F  the same, the step ON: the harness has to see it",
+                  SURVEYOR_BASE, step_document, _SURVEYED + ",GEOMETRY_AGENT_STEP_ENABLED", row,
+                  False, "planner_user")]
+        for label, rev, doc, flags, row_path, must_match, must_move in cases:
             old = _extract(rev, tmp_path / rev.replace("/", "_"), supplied)
-            # B and C read the rewritten note; the reference's is put back so nothing else can hide behind it
-            note = (old / "src" / "meshpipeline" / "engines" / "snappy" / "planner.py") if must_match and doc else None
-            mine = _digests(here, f"{label} (working copy)", doc, flags, args.python, note)
-            theirs = _digests(old, f"{label} ({rev})", doc, flags, args.python)
+            # B and C read the rewritten note; the reference's is put back so nothing else can hide
+            # behind it. E and F are against a commit that already has it, so nothing is put back
+            note = ((old / "src" / "meshpipeline" / "engines" / "snappy" / "planner.py")
+                    if must_match and doc and rev in (MEASUREMENT_BASE, LOOK_BASE) else None)
+            mine = _digests(here, f"{label} (working copy)", doc, flags, args.python, note, row_path)
+            theirs = _digests(old, f"{label} ({rev})", doc, flags, args.python, None, row_path)
             for prompt in PROMPTS:
                 same = mine[prompt] == theirs[prompt]
                 print(f"{'SAME' if same else 'DIFF'} {label}: {prompt} "
                       f"{mine[prompt][:16]} vs {rev} {theirs[prompt][:16]}")
                 if must_match and not same:
                     failures.append(f"{label}: {prompt}")
-            if not must_match and mine["intake_tools"] == theirs["intake_tools"]:
-                failures.append(f"{label}: the survey is on and the tool list did not move, so this "
-                                f"harness cannot see the survey and its other verdicts prove nothing")
+            if must_move and mine[must_move] == theirs[must_move]:
+                failures.append(f"{label}: {must_move} did not move, so this harness cannot see what "
+                                f"this case turns on and its other verdicts prove nothing")
     if failures:
         print("\nthe off state is not off, or the gate is blind: " + "; ".join(failures))
         return 1
