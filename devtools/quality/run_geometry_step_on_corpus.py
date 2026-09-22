@@ -61,6 +61,13 @@ CASES_DIR = Path(os.environ.get("GEOMETRY_CORPUS_CASES",
 
 OWNER = "corpus-harness-owner"
 
+#: `expected.json` names the STEP file by the absolute path the export was written on. Under WSL, which
+#: is where the platform's own dependencies live, that path is the same file under `/mnt/c`, so
+#: `--source-prefix FROM=TO` rewrites the head of it. It maps a path to the SAME BYTES on the same disk;
+#: the sha256 is still taken from the file that is opened, so a mapping to anything else measures
+#: something else and the row says which file it read.
+SOURCE_PREFIX: tuple[str, str] = ("", "")
+
 #: The corpus generator writes one budget sentence into every brief, and `--cap` rewrites that sentence.
 #: THE ONLY THING IT CHANGES IS A NUMBER THE CUSTOMER WROTE. The geometry is the corpus part's, the
 #: measurement is the platform's, and the budget is as real a customer input as the one it replaces: it
@@ -68,6 +75,15 @@ OWNER = "corpus-harness-owner"
 #: a budget the measurement's own forecast was under, and the export's briefs all state 2,000,000 where
 #: the whole corpus forecasts less.
 _BUDGET_LINE = re.compile(r"^Mesh budget:.*$", re.M)
+
+
+def _mapped(source: str) -> str:
+    """The corpus STEP file's path on THIS machine."""
+    head, tail = SOURCE_PREFIX
+    text = str(source)
+    if head and text.lower().startswith(head.lower()):
+        return (tail + text[len(head):]).replace("\\", "/")
+    return text
 
 
 def _sha256_of(path: Path) -> str:
@@ -99,7 +115,7 @@ def measured(case: str, exp: dict, cache: Path) -> dict:
     whole cost of a run, and the document is a pure function of the bytes and the purpose.
     """
     from meshpipeline.application.geometry_measurement import measure_local_file
-    src = Path(exp["source"])
+    src = Path(_mapped(exp["source"]))
     if not src.is_file():
         raise FileNotFoundError(f"{case}: the corpus STEP file is not on this machine: {src}")
     sha = _sha256_of(src)
@@ -471,6 +487,9 @@ def main() -> int:
                     help="GEOMETRY_AGENT_STEP_PROVIDER for the run; `reference` is deterministic")
     ap.add_argument("--take", default="skip", choices=("hold", "raise", "skip"),
                     help="what the simulated customer does with a budget trade")
+    ap.add_argument("--source-prefix", default="", metavar="FROM=TO",
+                    help="rewrite the head of the STEP paths in expected.json, for running the same "
+                         "corpus from another mount, as WSL mounts the Windows disk under /mnt/c")
     ap.add_argument("--purpose", default="",
                     help="the purpose the customer states, instead of the corpus case's own")
     ap.add_argument("--cap", type=int, default=0,
@@ -482,6 +501,10 @@ def main() -> int:
     ap.add_argument("--print", default="", help="print this case's builder message and typed block in full")
     args = ap.parse_args()
 
+    if args.source_prefix:
+        global SOURCE_PREFIX
+        head, _, tail = args.source_prefix.partition("=")
+        SOURCE_PREFIX = (head, tail)
     _arm(args.provider)
     import geometry_agent
     print(f"geometry_agent {geometry_agent.__file__}")
