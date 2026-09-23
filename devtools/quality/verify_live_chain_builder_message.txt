@@ -1,0 +1,1466 @@
+WHAT THE BUILDER RECEIVES, taken by the verifier's own harness
+==============================================================
+
+  devtools/quality/verify_live_chain.py --cases tee_wye__tee_wye_001 --provider reference
+      --look replay --fluid-side --measured-stops --answer-fluid-side
+
+Part           tee_wye__tee_wye_001, a WYE pipe fitting whose run dead-ends in a closed cap
+Representation wall_shell (measured; the brief settles the fluid side, so no question is put)
+Look           REPLAYED from eval/vision/results/w_ctl/looks, gpt-5.6-luna, the shipped panels_stops
+               prompt, 17 views. No model was called for the look, the plan or the planner.
+Closed ends    1, found by facts.passage_ends with the stops switch on. With the look off this part
+               still delivers it; with the stops switch off it delivers none.
+Envelope       1,086,904 cells against the customer's 2,000,000 cap, from tools.estimate_builder_cells.
+Ledger         brief, survey, look, uncertainty, intake, plan, handover.
+
+Three sections follow: the request the planner reads (it cuts at 2,000 characters), the typed block it
+is handed beside it, and the message the planner model would have received.
+
+==================================================================================================
+1. THE REQUEST THE PLANNER READS, IN FULL
+==================================================================================================
+
+MESH PLAN (snappy internal): forecast 1,078,777 cells of your 2,000,000 cap.
+cells_across_diameter 24; surface_level 1; feature_level 2; n_layers 6; first_layer_rel 0.2; quality balanced; max_cells 1078777
+first_layer_rel 0.2: the outer layer over the wall cell; your y+ asks 0.1084, outside the planner band 0.2 to 0.4, so the first cell lands at 1.84x the one sized.
+
+Internal flow through a WYE (lateral) pipe fitting - a 357.24 mm bore run splitting into two 301.38 mm bore branches 53.27 degrees apart; the run dead-ends in a closed cap just beyond the branch take-offs. I want the flow and pressure drop.
+
+Geometry is in millimetres. The overall bounding box is 2069.69 x 1565.33 x 388.14 mm (X x Y x Z).
+
+Body surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. Put the seed point inside the run bore, at (335.17, 0, 0) mm. There is no far-field box.
+Engine: snappyHexMesh.
+Patches: there is ONE inlet and TWO outlets: inlet is the circular opening at (0, 0, 0) mm on the X=0 plane, bore diameter 357.24 mm (flow enters along +X); outlet_1 is the circular opening at (1995.21, 634.15, 0) mm on the inclined plane with normal (0.894, 0.448, 0.000), bore diameter 301.38 mm (flow exits along the direction (0.894, 0.448, 0.000)); outlet_2 is the circular opening at (1995.21, -634.15, 0) mm on the inclined plane with normal (0.894, -0.448, 0.000), bore diameter 301.38 mm (flow exits along the direction (0.894, -0.448, 0.000)). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.
+Refinement: finer at junctions, bends and area changes than on straight runs.
+Mesh budget: keep the total cell count under 2 million cells.
+Steady state, incompressible, isothermal.
+==================================================================================================
+2. THE TYPED BLOCK, IN FULL (a dict argument, delivered after the request cut)
+==================================================================================================
+
+{
+ "agent_forecast_basis": [
+  "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+  "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)",
+  "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)",
+  "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds",
+  "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+  "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+  "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+  "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+  "platform 57684388",
+  "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied",
+  "inlet o1: the largest mouth a person called the inlet, which is the one the builder sizes from",
+  "the builder emulator over the measurement alone, computed before the plan: the plan's own envelope is plan_envelope"
+ ],
+ "agent_forecast_cells": 904514,
+ "agent_forecast_low": 904514,
+ "agent_git_sha": "26a8793e5e567d5bdc1aebdbf61e533598dbb57f",
+ "coverage": {
+  "outside": {
+   "margin_m": 0.13118631296985367,
+   "points_m": [
+    {
+     "point": [
+      -0.13118631296985367,
+      9.2315673828125e-05,
+      0.0
+     ],
+     "side": "x_min"
+    },
+    {
+     "point": [
+      2.2008755219542286,
+      9.2315673828125e-05,
+      0.0
+     ],
+     "side": "x_max"
+    },
+    {
+     "point": [
+      1.0348446044921875,
+      -0.913665622051885,
+      0.0
+     ],
+     "side": "y_min"
+    },
+    {
+     "point": [
+      1.0348446044921875,
+      0.9138502533995412,
+      0.0
+     ],
+     "side": "y_max"
+    },
+    {
+     "point": [
+      1.0348446044921875,
+      9.2315673828125e-05,
+      -0.3252563202940725
+     ],
+     "side": "z_min"
+    },
+    {
+     "point": [
+      1.0348446044921875,
+      9.2315673828125e-05,
+      0.3252563202940725
+     ],
+     "side": "z_max"
+    }
+   ],
+   "proof": "each point is past one face of the part's axis-aligned bounding box by the margin, so it is outside every closed surface of the part; the flow here is inside the part's surfaces, so the point is outside the flow domain. The margin is twenty times the largest chord sag the loader's tessellation allows",
+   "status": "measured"
+  },
+  "refused": [
+   "local_feature_size",
+   "vertex_curvature"
+  ],
+  "version": "geometry_agent.coverage.v1",
+  "wall": {
+   "regions": [
+    {
+     "area_fraction": 0.1875,
+     "centroid_m": [
+      1.4348562493553465,
+      0.36036384429970103,
+      -7.097383662332994e-06
+     ],
+     "half_angle_deg": null,
+     "id": "w1",
+     "radius_m": 0.16613948941535048,
+     "surface": "cylinder"
+    },
+    {
+     "area_fraction": 0.1875,
+     "centroid_m": [
+      1.4348607645734885,
+      -0.36036156048559903,
+      -1.060652579623472e-05
+     ],
+     "half_angle_deg": null,
+     "id": "w2",
+     "radius_m": 0.1661392990317531,
+     "surface": "cylinder"
+    },
+    {
+     "area_fraction": 0.172,
+     "centroid_m": [
+      1.429748800876559,
+      0.3561695001816191,
+      -7.758146585084675e-06
+     ],
+     "half_angle_deg": null,
+     "id": "w3",
+     "radius_m": 0.15068987816397375,
+     "surface": "cylinder"
+    },
+    {
+     "area_fraction": 0.172,
+     "centroid_m": [
+      1.4297548746125004,
+      -0.3561684051365952,
+      -9.440538530052322e-06
+     ],
+     "half_angle_deg": null,
+     "id": "w4",
+     "radius_m": 0.15068957891684276,
+     "surface": "cylinder"
+    },
+    {
+     "area_fraction": 0.1416,
+     "centroid_m": [
+      0.40284277204907304,
+      5.997592514195625e-07,
+      -7.437461354416677e-06
+     ],
+     "half_angle_deg": null,
+     "id": "w5",
+     "radius_m": 0.19406996765193288,
+     "surface": "cylinder"
+    },
+    {
+     "area_fraction": 0.1298,
+     "centroid_m": [
+      0.40055639993636966,
+      1.2451190888740122e-06,
+      7.048454356499196e-06
+     ],
+     "half_angle_deg": null,
+     "id": "w6",
+     "radius_m": 0.17861985306029035,
+     "surface": "cylinder"
+    },
+    {
+     "area_fraction": 0.0026,
+     "centroid_m": [
+      0.0,
+      -3.0216594470622087e-17,
+      -1.5944419923911518e-09
+     ],
+     "half_angle_deg": null,
+     "id": "w7",
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0022,
+     "centroid_m": [
+      1.9952076946814616,
+      -0.6341545846622627,
+      3.2692219172110773e-15
+     ],
+     "half_angle_deg": null,
+     "id": "w8",
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0022,
+     "centroid_m": [
+      1.9952076687536158,
+      0.6341546329402259,
+      2.8971962809982618e-15
+     ],
+     "half_angle_deg": null,
+     "id": "w9",
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0006,
+     "centroid_m": [
+      0.8533800048828124,
+      2.7977085802117727e-17,
+      0.17562348748687476
+     ],
+     "half_angle_deg": null,
+     "id": "w10",
+     "is_opening": "o5",
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0006,
+     "centroid_m": [
+      0.8533800048828125,
+      6.4644024012469e-17,
+      -0.17562348748687476
+     ],
+     "half_angle_deg": null,
+     "id": "w11",
+     "is_opening": "o4",
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0006,
+     "centroid_m": [
+      0.8379299926757813,
+      1.774042801751618e-18,
+      0.16025813489501914
+     ],
+     "half_angle_deg": null,
+     "id": "w12",
+     "is_opening": "o5",
+     "radius_m": null,
+     "surface": "plane"
+    }
+   ],
+   "regions_total": 13,
+   "status": "measured"
+  }
+ },
+ "customer_cell_cap": 2000000,
+ "facts_schema_version": 3,
+ "facts_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+ "flow_patches": {
+  "o1": {
+   "kind": "confirmed",
+   "role": "inlet"
+  },
+  "o2": {
+   "kind": "confirmed",
+   "role": "outlet"
+  }
+ },
+ "forecast_calibration": {
+  "arm": "facts_only",
+  "median_ratio": 0.52,
+  "n": 263,
+  "p90_ratio": 1.29,
+  "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered"
+ },
+ "inlet_bore_m": 0.3569439113147426,
+ "inlet_opening_id": "o1",
+ "intake": {
+  "assumed": {
+   "identity:part": {
+    "from": "the survey's own default",
+    "value": "a branched distribution manifold",
+    "why": "never asked (advisory)"
+   }
+  },
+  "confirmed": {
+   "role:o1": "inlet",
+   "role:o2": "outlet"
+  },
+  "from_the_brief": {},
+  "read_as": "`confirmed` is what the customer said and `assumed` is what nobody said. Build to both. REPORT BACK on anything under `assumed`: a default that gets reported becomes a question that gets answered, and a default that is treated as an answer becomes a fact nobody ever checked.",
+  "still_open": [],
+  "write_up": "MEASURED: wall_shell, 7 openings, unit mm (occ_transfer).\nCONFIRMED by the customer: role:o1 = inlet; role:o2 = outlet.\nASSUMED, nobody confirmed these, report back on them: identity:part = a branched distribution manifold."
+ },
+ "look": {
+  "at_places": [
+   {
+    "at": "o6+o7",
+    "declined": false,
+    "kind": "passage_end",
+    "the_look_says": "it reaches the edge of the model and leaves",
+    "where_from": "opening_centroid",
+    "where_m": [
+     0.8379299926757813,
+     -4.435107004379045e-19,
+     0.16025813489501914
+    ]
+   },
+   {
+    "at": "A",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "B",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "C",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore in one of two adjacent passages",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "D",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore in one of two adjacent passages",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "E",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore in one of two adjacent passages",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "F",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore in one of two adjacent passages",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "G",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "an open bore in one of two adjacent passages",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   },
+   {
+    "at": "H",
+    "declined": false,
+    "kind": "marked_place",
+    "the_look_says": "solid material",
+    "where_from": "",
+    "where_m": null,
+    "where_missing": "no_point"
+   }
+  ],
+  "at_places_read_as": "one finding per place, and the PLACE is measured while the words are not. The letter and the panel were chosen and drawn by the measurement before the model saw the picture, so where_m is a measured coordinate in metres and the_look_says is what the model wrote about that exact spot. where_from and where_missing are keys of at_places_where; a null where_m is never a guess. declined is the look saying it could not read that place, which is an answer and not a gap.",
+  "at_places_where": {
+   "no_point": "this run's render manifest has the letter but not the point it was drawn at, so this finding is delivered without a place",
+   "opening_centroid": "the measured centroid of the opening this panel was drawn for"
+  },
+  "candidates": {
+   "internal_features": [
+    "a passage splitting into two branch passages",
+    "a wall between the two branch passages"
+   ],
+   "looks_like": "a branched distribution manifold",
+   "opening_mouths": {
+    "o1": "flush",
+    "o2": "flush",
+    "o3": "flush",
+    "o6": "protruding",
+    "o7": "protruding"
+   },
+   "sharp_edges": [
+    "sharp mouth rims at the three large open ends",
+    "sharp rims at the small junction openings"
+   ]
+  },
+  "identity_confidence_max": 0.6,
+  "identity_confidence_max_why": "the name of the part is right on 215 of 322 at best, and the verdict changes on 9 to 11 of 40 identical repeat calls, so a name from the picture alone is about two thirds of an answer and is not reproducible; 0.6 is the ceiling that says so",
+  "is_measurement": false,
+  "model": "gpt-5.6-luna",
+  "provider": "openai",
+  "read_as": "words from rendered views, not a measurement: every digit was removed before you saw it. relied_on was measured to be right often enough to act on; candidates are places to measure and are never facts on their own.",
+  "relied_on": {
+   "confidence": "high",
+   "openings_seen": [
+    "o1",
+    "o2",
+    "o3",
+    "o6",
+    "o7"
+   ]
+  },
+  "withheld": {
+   "defects": "3 to 5 false alarms on clean files, 0 catches on the two with a real defect",
+   "likely_role": "a coin flip where it guesses; the measurement and the customer own a role",
+   "notes": "free prose, and the claims that land there held out worst",
+   "opening_class": "the measurement has it exactly",
+   "orientation": "the measurement has it exactly",
+   "symmetry": "the measurement has it exactly"
+  }
+ },
+ "places": [
+  {
+   "id": "junction_from_o3",
+   "kind": "junction",
+   "measurement": {
+    "passage_hydraulic_diameter_m": 0.3318669489439651
+   },
+   "reached_from": [
+    "o3"
+   ],
+   "what": "a passage meets another passage here, at the end of the run in from the mouth named in reached_from",
+   "where_m": [
+    1.0082373965484301,
+    0.13915574811968998,
+    4.094292570779075e-06
+   ]
+  },
+  {
+   "id": "junction_from_o2",
+   "kind": "junction",
+   "measurement": {
+    "passage_hydraulic_diameter_m": 0.3318669586469805
+   },
+   "reached_from": [
+    "o2"
+   ],
+   "what": "a passage meets another passage here, at the end of the run in from the mouth named in reached_from",
+   "where_m": [
+    1.0082399319378066,
+    -0.13915078231233902,
+    6.505471019072476e-07
+   ]
+  },
+  {
+   "from": "coverage: centreline from o1",
+   "id": "f2",
+   "kind": "junction",
+   "measurement": {
+    "islands": 2,
+    "open_area_m2": 0.031141510581303274,
+    "open_fraction": 0.1969,
+    "recovers": false
+   },
+   "opening_id": "o1",
+   "what": "the passage divides here",
+   "where_m": [
+    1.0655081409339562,
+    2.190301270485139e-06,
+    -3.142848495450821e-05
+   ]
+  },
+  {
+   "from": "coverage: centreline from o1",
+   "id": "f1",
+   "kind": "section_change",
+   "measurement": {
+    "area_ratio": 4.7706,
+    "change": "step",
+    "diameter_large_m": 0.35053687343451934,
+    "diameter_small_m": 0.03306147512092086,
+    "larger_side": "towards_mouth"
+   },
+   "opening_id": "o1",
+   "what": "the passage section changes abruptly here",
+   "where_m": [
+    1.0658745761508053,
+    2.0475858928342247e-06,
+    -3.1521505889468946e-05
+   ]
+  },
+  {
+   "found_by": "facts.passage_ends",
+   "id": "o6+o7",
+   "kind": "closed_end",
+   "measurement": {
+    "passage_hydraulic_diameter_m": 0.036715845138813374
+   },
+   "what": "a passage stops here at a wall, with no mouth",
+   "where_m": [
+    0.8379299926757813,
+    4.43759855185264e-19,
+    -0.0003496615694726578
+   ]
+  },
+  {
+   "id": "t1",
+   "kind": "thin_region",
+   "measurement": {
+    "extent_m": [
+     2.069689208984375,
+     1.5651432495117188,
+     0.3881400146484375
+    ],
+    "thickness_min_m": 0.015291744520782628
+   },
+   "what": "a thin wall: the body here is thin for a part of its size, under one and a half per cent of its bounding diagonal; extent_m is how far the thin stretch runs, which can be most of the part, and where_m is the middle of that stretch",
+   "where_m": [
+    1.149750725714748,
+    2.4250303930303463e-06,
+    1.0692534459357132e-05
+   ]
+  },
+  {
+   "id": "o2",
+   "kind": "tilted_port",
+   "measurement": {
+    "min_dimension_m": 0.3011302014738524,
+    "tilt_deg": 26.636
+   },
+   "what": "a circle port mouth whose face sits 26.6 degrees off the file's coordinate axes",
+   "where_m": [
+    1.9952076784164188,
+    -0.6341546199738033,
+    0.0
+   ]
+  },
+  {
+   "id": "o3",
+   "kind": "tilted_port",
+   "measurement": {
+    "min_dimension_m": 0.3011302124712322,
+    "tilt_deg": 26.635
+   },
+   "what": "a circle port mouth whose face sits 26.6 degrees off the file's coordinate axes",
+   "where_m": [
+    1.9952076764787947,
+    0.6341546243334574,
+    0.0
+   ]
+  }
+ ],
+ "plan_envelope": {
+  "basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)",
+   "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds",
+   "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 6 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied"
+  ],
+  "cap": 2000000,
+  "cells_high": 1086904,
+  "cells_low": 1086904,
+  "held_cells_across": 24,
+  "held_cells_high": 1086904,
+  "held_notes": [
+   "first cell clamped: first_layer_rel 0.1084 is outside the planner's band 0.2 to 0.4, so the builder's first cell is 1.195 where the plan sized 0.6482 and the delivered y+ is 1.84x the target"
+  ],
+  "proper_cells_across": 24,
+  "source": "tools.estimate_builder_cells via hexera.forecast on hexera.builder_strategy for this plan"
+ },
+ "representation": "wall_shell",
+ "schema": "geometry_agent.planner_block.v1",
+ "smallest_port_min_dim_m": 0.3011302014738524,
+ "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+ "status": "ok",
+ "survey": {
+  "confirmed": {
+   "opening.role=inlet": {
+    "applies_to": [
+     "o1"
+    ],
+    "field": "opening.role",
+    "kind": "confirmed",
+    "source": "question role_inlet answered by customer at 2026-09-23T00:13:18+00:00",
+    "value": "inlet"
+   },
+   "opening.role=outlet": {
+    "applies_to": [
+     "o2"
+    ],
+    "field": "opening.role",
+    "kind": "confirmed",
+    "source": "question role_outlet answered by customer at 2026-09-23T00:13:18+00:00",
+    "value": "outlet"
+   }
+  },
+  "facts_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+  "kinds": {
+   "assumed": "a default nobody stated",
+   "confirmed": "a person said it",
+   "measured": "an instrument computed it",
+   "seen": "a model said it from pictures, no numbers, with a trust tier",
+   "stated": "the customer wrote it and nobody checked"
+  },
+  "looked": true,
+  "measured": {
+   "bbox_diagonal_m": {
+    "field": "bbox_diagonal_m",
+    "kind": "measured",
+    "source": "facts.bbox.diagonal",
+    "unit": "m",
+    "value": 2.6237262593970736
+   },
+   "cell_budget": {
+    "field": "cell_budget",
+    "kind": "stated",
+    "source": "brief: Mesh budget: keep the total cell count under 2 million cells",
+    "value": 2000000
+   },
+   "forecast.cells_high": {
+    "field": "forecast.cells_high",
+    "kind": "measured",
+    "source": "forecast.cells_high (tools.estimate_builder_cells)",
+    "value": 904514
+   },
+   "inlet_bore_m": {
+    "field": "inlet_bore_m",
+    "kind": "measured",
+    "source": "forecast.builder.bore (opening o1, the largest mouth the customer called the inlet)",
+    "unit": "m",
+    "value": 0.3569439113147426
+   }
+  },
+  "representation": {
+   "field": "representation",
+   "kind": "measured",
+   "source": "catalog.side_reading over the measured openings",
+   "value": "wall_shell"
+  },
+  "schema": "geometry_agent.contract.survey_block.v1",
+  "seen": {
+   "identity.name": {
+    "confidence_max": 0.6,
+    "field": "identity.name",
+    "kind": "seen",
+    "source": "look.looks_like",
+    "tier": "candidate",
+    "value": "a branched distribution manifold"
+   },
+   "opening.mouth_standoff.flush": {
+    "applies_to": [
+     "o1",
+     "o2",
+     "o3"
+    ],
+    "field": "opening.mouth_standoff",
+    "kind": "seen",
+    "source": "look.openings_seen[].mouth",
+    "tier": "candidate",
+    "value": "flush"
+   },
+   "opening.mouth_standoff.protruding": {
+    "applies_to": [
+     "o6",
+     "o7"
+    ],
+    "field": "opening.mouth_standoff",
+    "kind": "seen",
+    "source": "look.openings_seen[].mouth",
+    "tier": "candidate",
+    "value": "protruding"
+   }
+  },
+  "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+  "unit": {
+   "field": "unit",
+   "kind": "measured",
+   "source": "coordinates.basis=occ_transfer",
+   "value": "mm"
+  },
+  "unsettled": []
+ },
+ "units": "m"
+}
+==================================================================================================
+3. THE BUILDER'S PLANNER MESSAGE, IN FULL
+==================================================================================================
+
+REQUEST:
+MESH PLAN (snappy internal): forecast 1,078,777 cells of your 2,000,000 cap.
+cells_across_diameter 24; surface_level 1; feature_level 2; n_layers 6; first_layer_rel 0.2; quality balanced; max_cells 1078777
+first_layer_rel 0.2: the outer layer over the wall cell; your y+ asks 0.1084, outside the planner band 0.2 to 0.4, so the first cell lands at 1.84x the one sized.
+
+Internal flow through a WYE (lateral) pipe fitting - a 357.24 mm bore run splitting into two 301.38 mm bore branches 53.27 degrees apart; the run dead-ends in a closed cap just beyond the branch take-offs. I want the flow and pressure drop.
+
+Geometry is in millimetres. The overall bounding box is 2069.69 x 1565.33 x 388.14 mm (X x Y x Z).
+
+Body surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. Put the seed point inside the run bore, at (335.17, 0, 0) mm. There is no far-field box.
+Engine: snappyHexMesh.
+Patches: there is ONE inlet and TWO outlets: inlet is the circular opening at (0, 0, 0) mm on the X=0 plane, bore diameter 357.24 mm (flow enters along +X); outlet_1 is the circular opening at (1995.21, 634.15, 0) mm on the inclined plane with normal (0.894, 0.448, 0.000), bore diameter 301.38 mm (flow exits along the direction (0.894, 0.448, 0.000)); outlet_2 is the circular opening at (1995.21, -634.15, 0) mm on the inclined plane with normal (0.894, -0.448, 0.000), bore diameter 301.38 mm (flow exits along the direction (0.894, -0.448, 0.000)). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.
+Near-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.
+Refinement: finer at junctions, bends and area changes than on straight runs.
+Mesh budget: keep the total cell count under 2 million cells.
+Steady state, incompressible, isothermal.
+
+MEASURED GEOMETRY (metres):
+{
+ "diag_m": 1.0,
+ "extent_m": [
+  1,
+  1,
+  1
+ ],
+ "surface_area_m2": 6.0,
+ "thinnest_feature_m": 0.01,
+ "recommended_surface_level": 2,
+ "recommended_feature_level": 3,
+ "affordable_level_at_4M_cells": 2,
+ "max_cells_HARD_CEILING": 8000000,
+ "geometry_agent": {
+  "status": "ok",
+  "representation": "wall_shell",
+  "agent_forecast_cells": 904514,
+  "agent_forecast_low": 904514,
+  "agent_forecast_basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)",
+   "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds",
+   "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied",
+   "inlet o1: the largest mouth a person called the inlet, which is the one the builder sizes from",
+   "the builder emulator over the measurement alone, computed before the plan: the plan's own envelope is plan_envelope"
+  ],
+  "forecast_calibration": {
+   "arm": "facts_only",
+   "median_ratio": 0.52,
+   "p90_ratio": 1.29,
+   "n": 263,
+   "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered"
+  },
+  "customer_cell_cap": 2000000,
+  "inlet_bore_m": 0.3569439113147426,
+  "inlet_opening_id": "o1",
+  "smallest_port_min_dim_m": 0.3011302014738524,
+  "places": [
+   {
+    "id": "junction_from_o3",
+    "kind": "junction",
+    "what": "a passage meets another passage here, at the end of the run in from the mouth named in reached_from",
+    "where_m": [
+     1.0082373965484301,
+     0.13915574811968998,
+     4.094292570779075e-06
+    ],
+    "measurement": {
+     "passage_hydraulic_diameter_m": 0.3318669489439651
+    },
+    "reached_from": [
+     "o3"
+    ]
+   },
+   {
+    "id": "junction_from_o2",
+    "kind": "junction",
+    "what": "a passage meets another passage here, at the end of the run in from the mouth named in reached_from",
+    "where_m": [
+     1.0082399319378066,
+     -0.13915078231233902,
+     6.505471019072476e-07
+    ],
+    "measurement": {
+     "passage_hydraulic_diameter_m": 0.3318669586469805
+    },
+    "reached_from": [
+     "o2"
+    ]
+   },
+   {
+    "id": "f2",
+    "kind": "junction",
+    "what": "the passage divides here",
+    "where_m": [
+     1.0655081409339562,
+     2.190301270485139e-06,
+     -3.142848495450821e-05
+    ],
+    "measurement": {
+     "open_fraction": 0.1969,
+     "open_area_m2": 0.031141510581303274,
+     "islands": 2,
+     "recovers": false
+    },
+    "from": "coverage: centreline from o1",
+    "opening_id": "o1"
+   },
+   {
+    "id": "f1",
+    "kind": "section_change",
+    "what": "the passage section changes abruptly here",
+    "where_m": [
+     1.0658745761508053,
+     2.0475858928342247e-06,
+     -3.1521505889468946e-05
+    ],
+    "measurement": {
+     "change": "step",
+     "area_ratio": 4.7706,
+     "larger_side": "towards_mouth",
+     "diameter_small_m": 0.03306147512092086,
+     "diameter_large_m": 0.35053687343451934
+    },
+    "from": "coverage: centreline from o1",
+    "opening_id": "o1"
+   },
+   {
+    "id": "o6+o7",
+    "kind": "closed_end",
+    "what": "a passage stops here at a wall, with no mouth",
+    "where_m": [
+     0.8379299926757813,
+     4.43759855185264e-19,
+     -0.0003496615694726578
+    ],
+    "measurement": {
+     "passage_hydraulic_diameter_m": 0.036715845138813374
+    },
+    "found_by": "facts.passage_ends"
+   },
+   {
+    "id": "t1",
+    "kind": "thin_region",
+    "what": "a thin wall: the body here is thin for a part of its size, under one and a half per cent of its bounding diagonal; extent_m is how far the thin stretch runs, which can be most of the part, and where_m is the middle of that stretch",
+    "where_m": [
+     1.149750725714748,
+     2.4250303930303463e-06,
+     1.0692534459357132e-05
+    ],
+    "measurement": {
+     "thickness_min_m": 0.015291744520782628,
+     "extent_m": [
+      2.069689208984375,
+      1.5651432495117188,
+      0.3881400146484375
+     ]
+    }
+   },
+   {
+    "id": "o2",
+    "kind": "tilted_port",
+    "what": "a circle port mouth whose face sits 26.6 degrees off the file's coordinate axes",
+    "where_m": [
+     1.9952076784164188,
+     -0.6341546199738033,
+     0.0
+    ],
+    "measurement": {
+     "tilt_deg": 26.636,
+     "min_dimension_m": 0.3011302014738524
+    }
+   },
+   {
+    "id": "o3",
+    "kind": "tilted_port",
+    "what": "a circle port mouth whose face sits 26.6 degrees off the file's coordinate axes",
+    "where_m": [
+     1.9952076764787947,
+     0.6341546243334574,
+     0.0
+    ],
+    "measurement": {
+     "tilt_deg": 26.635,
+     "min_dimension_m": 0.3011302124712322
+    }
+   }
+  ],
+  "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+  "agent_git_sha": "26a8793e5e567d5bdc1aebdbf61e533598dbb57f",
+  "units": "m",
+  "look": {
+   "is_measurement": false,
+   "read_as": "words from rendered views, not a measurement: every digit was removed before you saw it. relied_on was measured to be right often enough to act on; candidates are places to measure and are never facts on their own.",
+   "relied_on": {
+    "confidence": "high",
+    "openings_seen": [
+     "o1",
+     "o2",
+     "o3",
+     "o6",
+     "o7"
+    ]
+   },
+   "candidates": {
+    "looks_like": "a branched distribution manifold",
+    "internal_features": [
+     "a passage splitting into two branch passages",
+     "a wall between the two branch passages"
+    ],
+    "sharp_edges": [
+     "sharp mouth rims at the three large open ends",
+     "sharp rims at the small junction openings"
+    ],
+    "opening_mouths": {
+     "o1": "flush",
+     "o2": "flush",
+     "o3": "flush",
+     "o6": "protruding",
+     "o7": "protruding"
+    }
+   },
+   "withheld": {
+    "defects": "3 to 5 false alarms on clean files, 0 catches on the two with a real defect",
+    "likely_role": "a coin flip where it guesses; the measurement and the customer own a role",
+    "opening_class": "the measurement has it exactly",
+    "orientation": "the measurement has it exactly",
+    "symmetry": "the measurement has it exactly",
+    "notes": "free prose, and the claims that land there held out worst"
+   },
+   "identity_confidence_max": 0.6,
+   "identity_confidence_max_why": "the name of the part is right on 215 of 322 at best, and the verdict changes on 9 to 11 of 40 identical repeat calls, so a name from the picture alone is about two thirds of an answer and is not reproducible; 0.6 is the ceiling that says so",
+   "model": "gpt-5.6-luna",
+   "provider": "openai",
+   "at_places": [
+    {
+     "at": "o6+o7",
+     "kind": "passage_end",
+     "the_look_says": "it reaches the edge of the model and leaves",
+     "declined": false,
+     "where_m": [
+      0.8379299926757813,
+      -4.435107004379045e-19,
+      0.16025813489501914
+     ],
+     "where_from": "opening_centroid"
+    },
+    {
+     "at": "A",
+     "kind": "marked_place",
+     "the_look_says": "an open bore",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "B",
+     "kind": "marked_place",
+     "the_look_says": "an open bore",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "C",
+     "kind": "marked_place",
+     "the_look_says": "an open bore in one of two adjacent passages",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "D",
+     "kind": "marked_place",
+     "the_look_says": "an open bore in one of two adjacent passages",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "E",
+     "kind": "marked_place",
+     "the_look_says": "an open bore in one of two adjacent passages",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "F",
+     "kind": "marked_place",
+     "the_look_says": "an open bore in one of two adjacent passages",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "G",
+     "kind": "marked_place",
+     "the_look_says": "an open bore in one of two adjacent passages",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    },
+    {
+     "at": "H",
+     "kind": "marked_place",
+     "the_look_says": "solid material",
+     "declined": false,
+     "where_m": null,
+     "where_from": "",
+     "where_missing": "no_point"
+    }
+   ],
+   "at_places_read_as": "one finding per place, and the PLACE is measured while the words are not. The letter and the panel were chosen and drawn by the measurement before the model saw the picture, so where_m is a measured coordinate in metres and the_look_says is what the model wrote about that exact spot. where_from and where_missing are keys of at_places_where; a null where_m is never a guess. declined is the look saying it could not read that place, which is an answer and not a gap.",
+   "at_places_where": {
+    "opening_centroid": "the measured centroid of the opening this panel was drawn for",
+    "no_point": "this run's render manifest has the letter but not the point it was drawn at, so this finding is delivered without a place"
+   }
+  },
+  "survey": {
+   "schema": "geometry_agent.contract.survey_block.v1",
+   "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+   "facts_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b",
+   "representation": {
+    "kind": "measured",
+    "value": "wall_shell",
+    "field": "representation",
+    "source": "catalog.side_reading over the measured openings"
+   },
+   "unit": {
+    "kind": "measured",
+    "value": "mm",
+    "field": "unit",
+    "source": "coordinates.basis=occ_transfer"
+   },
+   "kinds": {
+    "measured": "an instrument computed it",
+    "seen": "a model said it from pictures, no numbers, with a trust tier",
+    "confirmed": "a person said it",
+    "stated": "the customer wrote it and nobody checked",
+    "assumed": "a default nobody stated"
+   },
+   "measured": {
+    "bbox_diagonal_m": {
+     "kind": "measured",
+     "value": 2.6237262593970736,
+     "field": "bbox_diagonal_m",
+     "source": "facts.bbox.diagonal",
+     "unit": "m"
+    },
+    "inlet_bore_m": {
+     "kind": "measured",
+     "value": 0.3569439113147426,
+     "field": "inlet_bore_m",
+     "source": "forecast.builder.bore (opening o1, the largest mouth the customer called the inlet)",
+     "unit": "m"
+    },
+    "forecast.cells_high": {
+     "kind": "measured",
+     "value": 904514,
+     "field": "forecast.cells_high",
+     "source": "forecast.cells_high (tools.estimate_builder_cells)"
+    },
+    "cell_budget": {
+     "kind": "stated",
+     "value": 2000000,
+     "field": "cell_budget",
+     "source": "brief: Mesh budget: keep the total cell count under 2 million cells"
+    }
+   },
+   "confirmed": {
+    "opening.role=inlet": {
+     "kind": "confirmed",
+     "value": "inlet",
+     "field": "opening.role",
+     "source": "question role_inlet answered by customer at 2026-09-23T00:13:18+00:00",
+     "applies_to": [
+      "o1"
+     ]
+    },
+    "opening.role=outlet": {
+     "kind": "confirmed",
+     "value": "outlet",
+     "field": "opening.role",
+     "source": "question role_outlet answered by customer at 2026-09-23T00:13:18+00:00",
+     "applies_to": [
+      "o2"
+     ]
+    }
+   },
+   "seen": {
+    "identity.name": {
+     "kind": "seen",
+     "value": "a branched distribution manifold",
+     "field": "identity.name",
+     "source": "look.looks_like",
+     "tier": "candidate",
+     "confidence_max": 0.6
+    },
+    "opening.mouth_standoff.flush": {
+     "kind": "seen",
+     "value": "flush",
+     "field": "opening.mouth_standoff",
+     "source": "look.openings_seen[].mouth",
+     "tier": "candidate",
+     "applies_to": [
+      "o1",
+      "o2",
+      "o3"
+     ]
+    },
+    "opening.mouth_standoff.protruding": {
+     "kind": "seen",
+     "value": "protruding",
+     "field": "opening.mouth_standoff",
+     "source": "look.openings_seen[].mouth",
+     "tier": "candidate",
+     "applies_to": [
+      "o6",
+      "o7"
+     ]
+    }
+   },
+   "unsettled": [],
+   "looked": true
+  },
+  "coverage": {
+   "version": "geometry_agent.coverage.v1",
+   "outside": {
+    "status": "measured",
+    "points_m": [
+     {
+      "side": "x_min",
+      "point": [
+       -0.13118631296985367,
+       9.2315673828125e-05,
+       0.0
+      ]
+     },
+     {
+      "side": "x_max",
+      "point": [
+       2.2008755219542286,
+       9.2315673828125e-05,
+       0.0
+      ]
+     },
+     {
+      "side": "y_min",
+      "point": [
+       1.0348446044921875,
+       -0.913665622051885,
+       0.0
+      ]
+     },
+     {
+      "side": "y_max",
+      "point": [
+       1.0348446044921875,
+       0.9138502533995412,
+       0.0
+      ]
+     },
+     {
+      "side": "z_min",
+      "point": [
+       1.0348446044921875,
+       9.2315673828125e-05,
+       -0.3252563202940725
+      ]
+     },
+     {
+      "side": "z_max",
+      "point": [
+       1.0348446044921875,
+       9.2315673828125e-05,
+       0.3252563202940725
+      ]
+     }
+    ],
+    "margin_m": 0.13118631296985367,
+    "proof": "each point is past one face of the part's axis-aligned bounding box by the margin, so it is outside every closed surface of the part; the flow here is inside the part's surfaces, so the point is outside the flow domain. The margin is twenty times the largest chord sag the loader's tessellation allows"
+   },
+   "wall": {
+    "status": "measured",
+    "regions_total": 13,
+    "regions": [
+     {
+      "id": "w1",
+      "surface": "cylinder",
+      "area_fraction": 0.1875,
+      "radius_m": 0.16613948941535048,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.4348562493553465,
+       0.36036384429970103,
+       -7.097383662332994e-06
+      ]
+     },
+     {
+      "id": "w2",
+      "surface": "cylinder",
+      "area_fraction": 0.1875,
+      "radius_m": 0.1661392990317531,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.4348607645734885,
+       -0.36036156048559903,
+       -1.060652579623472e-05
+      ]
+     },
+     {
+      "id": "w3",
+      "surface": "cylinder",
+      "area_fraction": 0.172,
+      "radius_m": 0.15068987816397375,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.429748800876559,
+       0.3561695001816191,
+       -7.758146585084675e-06
+      ]
+     },
+     {
+      "id": "w4",
+      "surface": "cylinder",
+      "area_fraction": 0.172,
+      "radius_m": 0.15068957891684276,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.4297548746125004,
+       -0.3561684051365952,
+       -9.440538530052322e-06
+      ]
+     },
+     {
+      "id": "w5",
+      "surface": "cylinder",
+      "area_fraction": 0.1416,
+      "radius_m": 0.19406996765193288,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.40284277204907304,
+       5.997592514195625e-07,
+       -7.437461354416677e-06
+      ]
+     },
+     {
+      "id": "w6",
+      "surface": "cylinder",
+      "area_fraction": 0.1298,
+      "radius_m": 0.17861985306029035,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.40055639993636966,
+       1.2451190888740122e-06,
+       7.048454356499196e-06
+      ]
+     },
+     {
+      "id": "w7",
+      "surface": "plane",
+      "area_fraction": 0.0026,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.0,
+       -3.0216594470622087e-17,
+       -1.5944419923911518e-09
+      ]
+     },
+     {
+      "id": "w8",
+      "surface": "plane",
+      "area_fraction": 0.0022,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.9952076946814616,
+       -0.6341545846622627,
+       3.2692219172110773e-15
+      ]
+     },
+     {
+      "id": "w9",
+      "surface": "plane",
+      "area_fraction": 0.0022,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       1.9952076687536158,
+       0.6341546329402259,
+       2.8971962809982618e-15
+      ]
+     },
+     {
+      "id": "w10",
+      "surface": "plane",
+      "area_fraction": 0.0006,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.8533800048828124,
+       2.7977085802117727e-17,
+       0.17562348748687476
+      ],
+      "is_opening": "o5"
+     },
+     {
+      "id": "w11",
+      "surface": "plane",
+      "area_fraction": 0.0006,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.8533800048828125,
+       6.4644024012469e-17,
+       -0.17562348748687476
+      ],
+      "is_opening": "o4"
+     },
+     {
+      "id": "w12",
+      "surface": "plane",
+      "area_fraction": 0.0006,
+      "radius_m": null,
+      "half_angle_deg": null,
+      "centroid_m": [
+       0.8379299926757813,
+       1.774042801751618e-18,
+       0.16025813489501914
+      ],
+      "is_opening": "o5"
+     }
+    ]
+   },
+   "refused": [
+    "local_feature_size",
+    "vertex_curvature"
+   ]
+  },
+  "intake": {
+   "read_as": "`confirmed` is what the customer said and `assumed` is what nobody said. Build to both. REPORT BACK on anything under `assumed`: a default that gets reported becomes a question that gets answered, and a default that is treated as an answer becomes a fact nobody ever checked.",
+   "confirmed": {
+    "role:o1": "inlet",
+    "role:o2": "outlet"
+   },
+   "assumed": {
+    "identity:part": {
+     "value": "a branched distribution manifold",
+     "why": "never asked (advisory)",
+     "from": "the survey's own default"
+    }
+   },
+   "from_the_brief": {},
+   "still_open": [],
+   "write_up": "MEASURED: wall_shell, 7 openings, unit mm (occ_transfer).\nCONFIRMED by the customer: role:o1 = inlet; role:o2 = outlet.\nASSUMED, nobody confirmed these, report back on them: identity:part = a branched distribution manifold."
+  },
+  "flow_patches": {
+   "o1": {
+    "role": "inlet",
+    "kind": "confirmed"
+   },
+   "o2": {
+    "role": "outlet",
+    "kind": "confirmed"
+   }
+  },
+  "plan_envelope": {
+   "cells_high": 1086904,
+   "cells_low": 1086904,
+   "held_cells_high": 1086904,
+   "cap": 2000000,
+   "held_cells_across": 24,
+   "proper_cells_across": 24,
+   "held_notes": [
+    "first cell clamped: first_layer_rel 0.1084 is outside the planner's band 0.2 to 0.4, so the builder's first cell is 1.195 where the plan sized 0.6482 and the delivered y+ is 1.84x the target"
+   ],
+   "basis": [
+    "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+    "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)",
+    "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)",
+    "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds",
+    "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+    "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+    "layers: 6 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+    "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+    "platform 57684388",
+    "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied"
+   ],
+   "source": "tools.estimate_builder_cells via hexera.forecast on hexera.builder_strategy for this plan"
+  }
+ }
+}
+
+ABOUT "geometry_agent" IN THE DICT ABOVE: it is a separate measurement of the customer's own file, in metres, made before any plan existed. Read it as follows.
+- agent_forecast_cells is an ENVELOPE, not an estimate of your plan. forecast_calibration carries its MEASURED error against 263 real jobs: before a plan exists it has come in at about 0.52x the cells actually delivered. So treat it as a FLOOR - the real mesh has usually been about twice it - and do NOT shave max_cells towards it.
+- inlet_bore_m is the bore the builder will size from. cells_across_diameter is defined relative to exactly this number.
+- smallest_port_min_dim_m is the smallest port the mesh has to resolve; your wall cell has to fit several cells across it.
+- places are MEASURED locations where this part needs more attention than normal, in the order the part needs it: the flow path first (a throat, a plate or baffle in the passage, a junction, a change of section, a bend, a passage end), then what limits the cell size (a narrow gap, a thin separation, a narrow passage, a small or tilted port mouth, a thin wall). Each has "where_m" (null with "where_missing" when it has no position) and "measurement". They describe the geometry, not the mesh: name them in "focus" and decide the settings yourself.
+- places_refused lists what the measurement has but will not state as a place, with the reason. Treat those spots as unknown, not as ordinary.
+- status "degraded" means the listed fields in "missing" could not be measured. Fields that are absent were not measured; do not infer a value for them.
+- If this block and the customer's own text disagree, the CUSTOMER is right: they can see the part and this is a measurement of a file.
+
+ABOUT "look" INSIDE "geometry_agent": a vision model was shown rendered views of this part and described it in words. It is NOT a measurement and it contains no number - every digit was removed before it was stored.
+- "relied_on" was measured against 322 parts and earned its place. Attachments and flanges in particular are found at full recall and no measurement reports them at all, so if one is named, it is there. An "inside_is_plain" of true means nothing was seen across the passage, and nothing has been.
+- "candidates" are places to look at, not facts. The identity is right about two times in three and is not reproducible; an internal feature repeats as a finding but not as a wording. Size for them if it is cheap to; do not justify a level by one of them alone.
+- "withheld" lists what the look said that you are NOT being shown, with the reason. Do not ask for it and do not infer it. The measured dict above already has the orientation, the symmetry and the opening classes exactly.
+- "at_places", when present, is one finding per place the MEASUREMENT chose and drew before the model saw the picture: "where_m" is a measured coordinate and "the_look_says" is the model's words about that spot. A null "where_m" is never a guess, and "declined" is the look saying it could not read that place.
+- The look never overrides a measured number, a port, a bore or a count. Where the two disagree, the measurement is right.
+
+ABOUT "survey" INSIDE "geometry_agent": the customer was shown what the measurement could not settle about THIS file and asked. Every value says what kind of claim it is ("kinds" is the legend).
+- "confirmed" is the customer's own answer, with when they gave it. A role there says which measured mouth is which; it is the customer's decision about their part, and nothing else in this message overrides it.
+- "unsettled" is what nobody settled. A mouth listed there has no role anybody confirmed: do not reason about it as an inlet or an outlet.
+- A "cell_budget" is the customer's own number. "stated" means they wrote it; "confirmed" means they chose it when shown what resolving the part costs, and max_cells must not exceed it. customer_cell_cap above is the same number.
+- The survey describes the part. It names no mesh setting and predicts nothing about the mesh: the settings are yours.
+
+ABOUT "intake", "flow_patches" AND "plan_envelope" INSIDE "geometry_agent": the job ran through the geometry chain.
+- intake: "confirmed" is what the customer answered; "assumed" is a default nobody confirmed (report back on those); "from_the_brief" is what their own text said.
+- flow_patches: each opening's role and who it came from (customer, brief or the geometry agent's own decision). A role the customer confirmed is theirs; do not change it.
+- plan_envelope: the cells the geometry agent's plan costs on the builder's own sizing, with its source. It is an envelope, not a target.
+
+ABOUT "coverage" INSIDE "geometry_agent": "outside" holds points provably outside the flow domain (outside every closed surface of the part), usable as a leak check; "wall" names the part's surface regions by shape; "refused" names facts that were decided not to be given because the number would describe the tessellation rather than the part.
+==================================================================================================
+4. THE JOB LEDGER
+==================================================================================================
+
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "brief", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": {"cell_cap": 2000000, "cell_cap_quote": "brief: Mesh budget: keep the total cell count under 2 million cells", "declared": [], "engine": "snappy", "fidelity": "standard", "purpose": "internal_cfd", "sha256": "c75490d4c25d33887a729626d412b3fa8bab6b431c33f45f96ccc1f09f33652a", "text": "Internal flow through a WYE (lateral) pipe fitting - a 357.24 mm bore run splitting into two 301.38 mm bore branches 53.27 degrees apart; the run dead-ends in a closed cap just beyond the branch take-offs. I want the flow and pressure drop.\n\nGeometry is in millimetres. The overall bounding box is 2069.69 x 1565.33 x 388.14 mm (X x Y x Z).\n\nBody surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. Put the seed point inside the run bore, at (335.17, 0, 0) mm. There is no far-field box.\nEngine: snappyHexMesh.\nPatches: there is ONE inlet and TWO outlets: inlet is the circular opening at (0, 0, 0) mm on the X=0 plane, bore diameter 357.24 mm (flow enters along +X); outlet_1 is the circular opening at (1995.21, 634.15, 0) mm on the inclined plane with normal (0.894, 0.448, 0.000), bore diameter 301.38 mm (flow exits along the direction (0.894, 0.448, 0.000)); outlet_2 is the circular opening at (1995.21, -634.15, 0) mm on the inclined plane with normal (0.894, -0.448, 0.000), bore diameter 301.38 mm (flow exits along the direction (0.894, -0.448, 0.000)). All remaining surfaces are the wall. Fixed pressure outlets at 0 Pa gauge.\nNear-wall: Wall-function approach, y+ 30-300, first layer sized for y+ 50-100. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.\nRefinement: finer at junctions, bends and area changes than on straight runs.\nMesh budget: keep the total cell count under 2 million cells.\nSteady state, incompressible, isothermal."}, "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "survey", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": {"authoritative": ["representation", "openings", "unit", "bbox_extent", "bodies", "watertight"], "bbox_extent": [2069.689208984375, 1565.1432495117188, 388.1400146484375], "bodies": 1, "brief_sha256": "c75490d4c25d33887a729626d412b3fa8bab6b431c33f45f96ccc1f09f33652a", "engine": "snappy", "facts_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "forecast_basis": ["bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)", "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)", "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)", "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds", "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)", "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell", "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)", "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim", "platform 57684388", "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied", "inlet o1: the largest mouth a person called the inlet, which is the one the builder sizes from", "no plan exists: this is the builder emulator over the measurement alone, which is not the same figure as a planned estimate"], "forecast_cells": 904514, "measurement_schema": "geometry_agent.measurement.v1", "openings": [{"area": 118126.26762340697, "bore_diameter": 356.9439113147426, "centroid": [0.0, 0.0, -5.903698149181548e-07], "classification": "ring", "hydraulic_diameter": 387.65751227731334, "id": "o1", "kind": "ring", "on_bbox_face": true, "region_id": "r1", "shape": "circle", "tilt_deg": 0.0}, {"area": 86572.13016904991, "bore_diameter": 301.13020147385237, "centroid": [1995.2076784164187, -634.1546199738033, 0.0], "classification": "ring", "hydraulic_diameter": 331.8669586469805, "id": "o2", "kind": "ring", "on_bbox_face": false, "region_id": "r1", "shape": "circle", "tilt_deg": 26.636}, {"area": 86572.12510798572, "bore_diameter": 301.13021247123214, "centroid": [1995.2076764787946, 634.1546243334574, 0.0], "classification": "ring", "hydraulic_diameter": 331.8669489439651, "id": "o3", "kind": "ring", "on_bbox_face": false, "region_id": "r1", "shape": "circle", "tilt_deg": 26.635}, {"area": 4291.129586661205, "bore_diameter": null, "centroid": [853.3800048828124, 6.612765735046008e-14, -175.62348748687478], "classification": "planar_face", "hydraulic_diameter": 38.01547624304248, "id": "o4", "kind": "cap", "on_bbox_face": false, "region_id": "r1", "shape": "irregular", "tilt_deg": 0.0}, {"area": 4291.129586661205, "bore_diameter": null, "centroid": [853.3800048828125, 2.6493452464126638e-14, 175.62348748687475], "classification": "planar_face", "hydraulic_diameter": 38.01547624304248, "id": "o5", "kind": "cap", "on_bbox_face": false, "region_id": "r1", "shape": "irregular", "tilt_deg": 0.0}, {"area": 4101.342767490976, "bore_diameter": null, "centroid": [837.9299926757812, -4.435107004379045e-16, 160.25813489501914], "classification": "planar_face", "hydraulic_diameter": 36.71584513881337, "id": "o6", "kind": "cap", "on_bbox_face": false, "region_id": "r1", "shape": "irregular", "tilt_deg": 0.0}, {"area": 4096.737262918497, "bore_diameter": null, "centroid": [837.9299926757811, 1.3320278700885126e-15, -160.25116530909384], "classification": "planar_face", "hydraulic_diameter": 36.67567459735935, "id": "o7", "kind": "cap", "on_bbox_face": false, "region_id": "r1", "shape": "irregular", "tilt_deg": 0.0}], "planner_block_status": "ok", "purpose": "internal_cfd", "representation": "wall_shell", "representation_without_brief": "wall_shell", "stated_cell_cap": 2000000, "unit": "mm", "unit_basis": "occ_transfer", "watertight": true}, "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "look", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": {"assertions": null, "attachments": [], "confidence": "high", "contradictions": null, "identity_confidence_max": 0.6, "inside_is_plain": false, "internal_features": ["a passage splitting into two branch passages", "a wall between the two branch passages"], "looks_like": "a branched distribution manifold", "model": "gpt-5.6-luna", "openings_seen": [{"id": "o1", "looks_like": "open end", "mouth": "flush", "role_said": "unsure", "why": "large open end on the straight trunk"}, {"id": "o2", "looks_like": "open end", "mouth": "flush", "role_said": "unsure", "why": "large open end on one branch"}, {"id": "o3", "looks_like": "open end", "mouth": "flush", "role_said": "unsure", "why": "large open end on the other branch"}, {"id": "o6", "looks_like": "hole", "mouth": "protruding", "role_said": "unsure", "why": "small side opening on a junction boss"}, {"id": "o7", "looks_like": "hole", "mouth": "protruding", "role_said": "unsure", "why": "small side opening on the opposite side of the junction"}], "prompt_sha256": "", "provider": "openai", "tiers": {"attachments": "relied_on", "cannot_tell": "recorded", "confidence": "relied_on", "could_not_check": "recorded", "defects": "recorded", "internal_features": "candidate", "looks_like": "candidate", "marks_seen": "relied_on", "notes": "recorded", "openings_seen": "relied_on", "openings_seen[].id": "relied_on", "openings_seen[].likely_role": "recorded", "openings_seen[].looks_like": "recorded", "openings_seen[].mouth": "candidate", "orientation": "recorded", "sharp_edges": "candidate", "stops_seen": "relied_on", "symmetry": "recorded", "thin_parts": "candidate", "walk": "recorded"}}, "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "uncertainty", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": [{"ask": "I can see 3 mouths on this file and I cannot tell which is the inlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours. The mouths I measure are o1, o2, o3.", "asked": true, "computed": null, "default": "", "default_from": "", "effect": "changes_bc", "id": "role:o1,o2,o3", "kind": "role", "known": {"facts.openings[o1].bore_diameter_m": 0.3569439113147426, "facts.openings[o1].centroid_m": [0.0, 0.0, -5.903698149181548e-10], "facts.openings[o1].min_dimension_m": 0.3569439113147426, "facts.openings[o1].shape": "circle", "facts.openings[o1].tilt_deg": 0.0, "facts.openings[o2].bore_diameter_m": 0.3011302014738524, "facts.openings[o2].centroid_m": [1.9952076784164188, -0.6341546199738033, 0.0], "facts.openings[o2].min_dimension_m": 0.3011302014738524, "facts.openings[o2].shape": "circle", "facts.openings[o2].tilt_deg": 26.636, "facts.openings[o3].bore_diameter_m": 0.3011302124712322, "facts.openings[o3].centroid_m": [1.9952076764787947, 0.6341546243334574, 0.0], "facts.openings[o3].min_dimension_m": 0.3011302124712322, "facts.openings[o3].shape": "circle", "facts.openings[o3].tilt_deg": 26.635}, "options": ["o1", "o2", "o3"], "options_from": "the measured mouths", "places": ["o1", "o2", "o3"], "raised_at": "second", "rank": 0.0, "settled_by": "", "subject": "o1,o2,o3", "teaches": "the role of one opening on a real part, at zero annotation cost, from a question we were asking anyway", "tier": "", "unsettled_because": "I can see 3 mouths on this file and I cannot tell which is the inlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours.", "why": "I can see 3 mouths on this file and I cannot tell which is the inlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours."}, {"ask": "I can see 3 mouths on this file and I cannot tell which is the outlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours. The mouths I measure are o1, o2, o3.", "asked": true, "computed": null, "default": "", "default_from": "", "effect": "changes_bc", "id": "role:o1,o2,o3", "kind": "role", "known": {"facts.openings[o1].bore_diameter_m": 0.3569439113147426, "facts.openings[o1].centroid_m": [0.0, 0.0, -5.903698149181548e-10], "facts.openings[o1].min_dimension_m": 0.3569439113147426, "facts.openings[o1].shape": "circle", "facts.openings[o1].tilt_deg": 0.0, "facts.openings[o2].bore_diameter_m": 0.3011302014738524, "facts.openings[o2].centroid_m": [1.9952076784164188, -0.6341546199738033, 0.0], "facts.openings[o2].min_dimension_m": 0.3011302014738524, "facts.openings[o2].shape": "circle", "facts.openings[o2].tilt_deg": 26.636, "facts.openings[o3].bore_diameter_m": 0.3011302124712322, "facts.openings[o3].centroid_m": [1.9952076764787947, 0.6341546243334574, 0.0], "facts.openings[o3].min_dimension_m": 0.3011302124712322, "facts.openings[o3].shape": "circle", "facts.openings[o3].tilt_deg": 26.635}, "options": ["o1", "o2", "o3"], "options_from": "the measured mouths", "places": ["o1", "o2", "o3"], "raised_at": "second", "rank": 0.0, "settled_by": "", "subject": "o1,o2,o3", "teaches": "the role of one opening on a real part, at zero annotation cost, from a question we were asking anyway", "tier": "", "unsettled_because": "I can see 3 mouths on this file and I cannot tell which is the outlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours.", "why": "I can see 3 mouths on this file and I cannot tell which is the outlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours."}, {"ask": "From the pictures this looks like a branched distribution manifold. Is that right?", "asked": false, "computed": null, "default": "a branched distribution manifold", "default_from": "the survey's own default", "effect": "advisory", "id": "identity:part", "kind": "identity", "known": {}, "options": ["yes", "no, it is something else"], "options_from": "a yes or no on the look's proposal", "places": [], "raised_at": "second", "rank": 0.0, "settled_by": "", "subject": "part", "teaches": "", "tier": "", "unsettled_because": "the name from the picture is right on 215 of 322 at best and changes on 9 to 11 of 40 identical repeat calls, so it is a name to confirm and never a name to state", "why": "the name from the picture is right on 215 of 322 at best and changes on 9 to 11 of 40 identical repeat calls, so it is a name to confirm and never a name to state"}], "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "intake", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": {"asked": [{"ask": "I can see 3 mouths on this file and I cannot tell which is the inlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours. The mouths I measure are o1, o2, o3.", "asked_at": "", "default": "", "default_from": "the survey's own default", "effect": "changes_bc", "id": "9c8665ec7db9__tee_wye__tee_wye_001#role_inlet", "options": ["o1", "o2", "o3"], "topic": "role", "uncertainty_id": "role_inlet"}, {"ask": "I can see 3 mouths on this file and I cannot tell which is the outlet. The measurement has no role for a mouth, and a role from the look is never offered: its guesses score about a coin flip (docs/vision.md), so the choice below is yours. The mouths I measure are o1, o2, o3.", "asked_at": "", "default": "", "default_from": "the survey's own default", "effect": "changes_bc", "id": "9c8665ec7db9__tee_wye__tee_wye_001#role_outlet", "options": ["o1", "o2", "o3"], "topic": "role", "uncertainty_id": "role_outlet"}], "resolutions": [{"answered_by": "customer", "at": "2026-09-23T00:13:18+00:00", "field": "role:o1", "question_id": "role_inlet", "resolution": "answered", "value": "inlet", "verbatim": "o1 is the inlet"}, {"answered_by": "customer", "at": "2026-09-23T00:13:18+00:00", "field": "role:o2", "question_id": "role_outlet", "resolution": "answered", "value": "outlet", "verbatim": "o2 is the outlet"}, {"assumed": "a branched distribution manifold", "at": "2026-09-23T00:13:19+00:00", "default_from": "the survey's own default", "field": "identity:part", "resolution": "unasked", "why_not_asked": "advisory"}], "turns": null, "write_up": "MEASURED: wall_shell, 7 openings, unit mm (occ_transfer).\nCONFIRMED by the customer: role:o1 = inlet; role:o2 = outlet.\nASSUMED, nobody confirmed these, report back on them: identity:part = a branched distribution manifold."}, "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "plan", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": {"accepted": true, "cell_estimate": 1132049, "engine": "snappy", "fidelity": "standard", "model": "", "policy": "submitted", "prompt_sha256": "", "questions_asked": 2, "refinement_regions": 1, "restates": {}, "risks": 9, "schema_version": 3, "used_confirmations": ["o1", "o2"], "write_up": "MESH PLAN (snappy internal): forecast 1,078,777 cells of your 2,000,000 cap.\ncells_across_diameter 24; surface_level 1; feature_level 2; n_layers 6; first_layer_rel 0.2; quality balanced; max_cells 1078777\nfirst_layer_rel 0.2: the outer layer over the wall cell; your y+ asks 0.1084, outside the planner band 0.2 to 0.4, so the first cell lands at 1.84x the one sized."}, "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
+{"at": "2026-09-23T00:13:19+00:00", "case": "", "event": "handover", "job_id": "tee_wye__tee_wye_001", "key": "9c8665ec7db9__tee_wye__tee_wye_001", "part_key": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "payload": {"brief_sha256": "c75490d4c25d33887a729626d412b3fa8bab6b431c33f45f96ccc1f09f33652a", "platform_drops_today": ["facts_schema_version", "facts_sha256"], "prefix_budget": 459, "request_prefix": "MESH PLAN (snappy internal): forecast 1,078,777 cells of your 2,000,000 cap.\ncells_across_diameter 24; surface_level 1; feature_level 2; n_layers 6; first_layer_rel 0.2; quality balanced; max_cells 1078777\nfirst_layer_rel 0.2: the outer layer over the wall cell; your y+ asks 0.1084, outside the planner band 0.2 to 0.4, so the first cell lands at 1.84x the one sized.", "schema": "geometry_agent.contract.builder_handoff.v1", "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "typed": {"agent_forecast_basis": ["bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)", "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)", "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)", "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds", "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)", "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell", "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)", "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim", "platform 57684388", "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied", "inlet o1: the largest mouth a person called the inlet, which is the one the builder sizes from", "the builder emulator over the measurement alone, computed before the plan: the plan's own envelope is plan_envelope"], "agent_forecast_cells": 904514, "agent_forecast_low": 904514, "agent_git_sha": "26a8793e5e567d5bdc1aebdbf61e533598dbb57f", "coverage": {"outside": {"margin_m": 0.13118631296985367, "points_m": [{"point": [-0.13118631296985367, 9.2315673828125e-05, 0.0], "side": "x_min"}, {"point": [2.2008755219542286, 9.2315673828125e-05, 0.0], "side": "x_max"}, {"point": [1.0348446044921875, -0.913665622051885, 0.0], "side": "y_min"}, {"point": [1.0348446044921875, 0.9138502533995412, 0.0], "side": "y_max"}, {"point": [1.0348446044921875, 9.2315673828125e-05, -0.3252563202940725], "side": "z_min"}, {"point": [1.0348446044921875, 9.2315673828125e-05, 0.3252563202940725], "side": "z_max"}], "proof": "each point is past one face of the part's axis-aligned bounding box by the margin, so it is outside every closed surface of the part; the flow here is inside the part's surfaces, so the point is outside the flow domain. The margin is twenty times the largest chord sag the loader's tessellation allows", "status": "measured"}, "refused": ["local_feature_size", "vertex_curvature"], "version": "geometry_agent.coverage.v1", "wall": {"regions": [{"area_fraction": 0.1875, "centroid_m": [1.4348562493553465, 0.36036384429970103, -7.097383662332994e-06], "half_angle_deg": null, "id": "w1", "radius_m": 0.16613948941535048, "surface": "cylinder"}, {"area_fraction": 0.1875, "centroid_m": [1.4348607645734885, -0.36036156048559903, -1.060652579623472e-05], "half_angle_deg": null, "id": "w2", "radius_m": 0.1661392990317531, "surface": "cylinder"}, {"area_fraction": 0.172, "centroid_m": [1.429748800876559, 0.3561695001816191, -7.758146585084675e-06], "half_angle_deg": null, "id": "w3", "radius_m": 0.15068987816397375, "surface": "cylinder"}, {"area_fraction": 0.172, "centroid_m": [1.4297548746125004, -0.3561684051365952, -9.440538530052322e-06], "half_angle_deg": null, "id": "w4", "radius_m": 0.15068957891684276, "surface": "cylinder"}, {"area_fraction": 0.1416, "centroid_m": [0.40284277204907304, 5.997592514195625e-07, -7.437461354416677e-06], "half_angle_deg": null, "id": "w5", "radius_m": 0.19406996765193288, "surface": "cylinder"}, {"area_fraction": 0.1298, "centroid_m": [0.40055639993636966, 1.2451190888740122e-06, 7.048454356499196e-06], "half_angle_deg": null, "id": "w6", "radius_m": 0.17861985306029035, "surface": "cylinder"}, {"area_fraction": 0.0026, "centroid_m": [0.0, -3.0216594470622087e-17, -1.5944419923911518e-09], "half_angle_deg": null, "id": "w7", "radius_m": null, "surface": "plane"}, {"area_fraction": 0.0022, "centroid_m": [1.9952076946814616, -0.6341545846622627, 3.2692219172110773e-15], "half_angle_deg": null, "id": "w8", "radius_m": null, "surface": "plane"}, {"area_fraction": 0.0022, "centroid_m": [1.9952076687536158, 0.6341546329402259, 2.8971962809982618e-15], "half_angle_deg": null, "id": "w9", "radius_m": null, "surface": "plane"}, {"area_fraction": 0.0006, "centroid_m": [0.8533800048828124, 2.7977085802117727e-17, 0.17562348748687476], "half_angle_deg": null, "id": "w10", "is_opening": "o5", "radius_m": null, "surface": "plane"}, {"area_fraction": 0.0006, "centroid_m": [0.8533800048828125, 6.4644024012469e-17, -0.17562348748687476], "half_angle_deg": null, "id": "w11", "is_opening": "o4", "radius_m": null, "surface": "plane"}, {"area_fraction": 0.0006, "centroid_m": [0.8379299926757813, 1.774042801751618e-18, 0.16025813489501914], "half_angle_deg": null, "id": "w12", "is_opening": "o5", "radius_m": null, "surface": "plane"}], "regions_total": 13, "status": "measured"}}, "customer_cell_cap": 2000000, "facts_schema_version": 3, "facts_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "flow_patches": {"o1": {"kind": "confirmed", "role": "inlet"}, "o2": {"kind": "confirmed", "role": "outlet"}}, "forecast_calibration": {"arm": "facts_only", "median_ratio": 0.52, "n": 263, "p90_ratio": 1.29, "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered"}, "inlet_bore_m": 0.3569439113147426, "inlet_opening_id": "o1", "intake": {"assumed": {"identity:part": {"from": "the survey's own default", "value": "a branched distribution manifold", "why": "never asked (advisory)"}}, "confirmed": {"role:o1": "inlet", "role:o2": "outlet"}, "from_the_brief": {}, "read_as": "`confirmed` is what the customer said and `assumed` is what nobody said. Build to both. REPORT BACK on anything under `assumed`: a default that gets reported becomes a question that gets answered, and a default that is treated as an answer becomes a fact nobody ever checked.", "still_open": [], "write_up": "MEASURED: wall_shell, 7 openings, unit mm (occ_transfer).\nCONFIRMED by the customer: role:o1 = inlet; role:o2 = outlet.\nASSUMED, nobody confirmed these, report back on them: identity:part = a branched distribution manifold."}, "look": {"at_places": [{"at": "o6+o7", "declined": false, "kind": "passage_end", "the_look_says": "it reaches the edge of the model and leaves", "where_from": "opening_centroid", "where_m": [0.8379299926757813, -4.435107004379045e-19, 0.16025813489501914]}, {"at": "A", "declined": false, "kind": "marked_place", "the_look_says": "an open bore", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "B", "declined": false, "kind": "marked_place", "the_look_says": "an open bore", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "C", "declined": false, "kind": "marked_place", "the_look_says": "an open bore in one of two adjacent passages", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "D", "declined": false, "kind": "marked_place", "the_look_says": "an open bore in one of two adjacent passages", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "E", "declined": false, "kind": "marked_place", "the_look_says": "an open bore in one of two adjacent passages", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "F", "declined": false, "kind": "marked_place", "the_look_says": "an open bore in one of two adjacent passages", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "G", "declined": false, "kind": "marked_place", "the_look_says": "an open bore in one of two adjacent passages", "where_from": "", "where_m": null, "where_missing": "no_point"}, {"at": "H", "declined": false, "kind": "marked_place", "the_look_says": "solid material", "where_from": "", "where_m": null, "where_missing": "no_point"}], "at_places_read_as": "one finding per place, and the PLACE is measured while the words are not. The letter and the panel were chosen and drawn by the measurement before the model saw the picture, so where_m is a measured coordinate in metres and the_look_says is what the model wrote about that exact spot. where_from and where_missing are keys of at_places_where; a null where_m is never a guess. declined is the look saying it could not read that place, which is an answer and not a gap.", "at_places_where": {"no_point": "this run's render manifest has the letter but not the point it was drawn at, so this finding is delivered without a place", "opening_centroid": "the measured centroid of the opening this panel was drawn for"}, "candidates": {"internal_features": ["a passage splitting into two branch passages", "a wall between the two branch passages"], "looks_like": "a branched distribution manifold", "opening_mouths": {"o1": "flush", "o2": "flush", "o3": "flush", "o6": "protruding", "o7": "protruding"}, "sharp_edges": ["sharp mouth rims at the three large open ends", "sharp rims at the small junction openings"]}, "identity_confidence_max": 0.6, "identity_confidence_max_why": "the name of the part is right on 215 of 322 at best, and the verdict changes on 9 to 11 of 40 identical repeat calls, so a name from the picture alone is about two thirds of an answer and is not reproducible; 0.6 is the ceiling that says so", "is_measurement": false, "model": "gpt-5.6-luna", "provider": "openai", "read_as": "words from rendered views, not a measurement: every digit was removed before you saw it. relied_on was measured to be right often enough to act on; candidates are places to measure and are never facts on their own.", "relied_on": {"confidence": "high", "openings_seen": ["o1", "o2", "o3", "o6", "o7"]}, "withheld": {"defects": "3 to 5 false alarms on clean files, 0 catches on the two with a real defect", "likely_role": "a coin flip where it guesses; the measurement and the customer own a role", "notes": "free prose, and the claims that land there held out worst", "opening_class": "the measurement has it exactly", "orientation": "the measurement has it exactly", "symmetry": "the measurement has it exactly"}}, "places": [{"id": "junction_from_o3", "kind": "junction", "measurement": {"passage_hydraulic_diameter_m": 0.3318669489439651}, "reached_from": ["o3"], "what": "a passage meets another passage here, at the end of the run in from the mouth named in reached_from", "where_m": [1.0082373965484301, 0.13915574811968998, 4.094292570779075e-06]}, {"id": "junction_from_o2", "kind": "junction", "measurement": {"passage_hydraulic_diameter_m": 0.3318669586469805}, "reached_from": ["o2"], "what": "a passage meets another passage here, at the end of the run in from the mouth named in reached_from", "where_m": [1.0082399319378066, -0.13915078231233902, 6.505471019072476e-07]}, {"from": "coverage: centreline from o1", "id": "f2", "kind": "junction", "measurement": {"islands": 2, "open_area_m2": 0.031141510581303274, "open_fraction": 0.1969, "recovers": false}, "opening_id": "o1", "what": "the passage divides here", "where_m": [1.0655081409339562, 2.190301270485139e-06, -3.142848495450821e-05]}, {"from": "coverage: centreline from o1", "id": "f1", "kind": "section_change", "measurement": {"area_ratio": 4.7706, "change": "step", "diameter_large_m": 0.35053687343451934, "diameter_small_m": 0.03306147512092086, "larger_side": "towards_mouth"}, "opening_id": "o1", "what": "the passage section changes abruptly here", "where_m": [1.0658745761508053, 2.0475858928342247e-06, -3.1521505889468946e-05]}, {"found_by": "facts.passage_ends", "id": "o6+o7", "kind": "closed_end", "measurement": {"passage_hydraulic_diameter_m": 0.036715845138813374}, "what": "a passage stops here at a wall, with no mouth", "where_m": [0.8379299926757813, 4.43759855185264e-19, -0.0003496615694726578]}, {"id": "t1", "kind": "thin_region", "measurement": {"extent_m": [2.069689208984375, 1.5651432495117188, 0.3881400146484375], "thickness_min_m": 0.015291744520782628}, "what": "a thin wall: the body here is thin for a part of its size, under one and a half per cent of its bounding diagonal; extent_m is how far the thin stretch runs, which can be most of the part, and where_m is the middle of that stretch", "where_m": [1.149750725714748, 2.4250303930303463e-06, 1.0692534459357132e-05]}, {"id": "o2", "kind": "tilted_port", "measurement": {"min_dimension_m": 0.3011302014738524, "tilt_deg": 26.636}, "what": "a circle port mouth whose face sits 26.6 degrees off the file's coordinate axes", "where_m": [1.9952076784164188, -0.6341546199738033, 0.0]}, {"id": "o3", "kind": "tilted_port", "measurement": {"min_dimension_m": 0.3011302124712322, "tilt_deg": 26.635}, "what": "a circle port mouth whose face sits 26.6 degrees off the file's coordinate axes", "where_m": [1.9952076764787947, 0.6341546243334574, 0.0]}], "plan_envelope": {"basis": ["bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)", "base cell = bore / cells_across x 2**surface_level = 59.49 (drivers.py:584)", "pad max(2 base, 0.03 extent), divisions [39, 30, 11] clamped 8..120, background cell 60.1, deficit 0 (snappy_runner.py:619-634)", "wall area = (surface area minus ring faces) / 2, the shell's inner skin; cavity volume = wall area x inlet hydraulic diameter 356.9 / 4 (a passage's V/A is D_h/4 for any section): agent-side assumptions, the renderer carves the cavity it finds", "near band: volume within near_dist 178.5 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)", "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell", "layers: 6 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)", "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim", "platform 57684388", "correction x1 for carve: calibration multiplier 1.01 was fitted against 'median over learning records of delivered cells / standard-tier estima', not the builder emulator; 1.0 applied"], "cap": 2000000, "cells_high": 1086904, "cells_low": 1086904, "held_cells_across": 24, "held_cells_high": 1086904, "held_notes": ["first cell clamped: first_layer_rel 0.1084 is outside the planner's band 0.2 to 0.4, so the builder's first cell is 1.195 where the plan sized 0.6482 and the delivered y+ is 1.84x the target"], "proper_cells_across": 24, "source": "tools.estimate_builder_cells via hexera.forecast on hexera.builder_strategy for this plan"}, "representation": "wall_shell", "schema": "geometry_agent.planner_block.v1", "smallest_port_min_dim_m": 0.3011302014738524, "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "status": "ok", "survey": {"confirmed": {"opening.role=inlet": {"applies_to": ["o1"], "field": "opening.role", "kind": "confirmed", "source": "question role_inlet answered by customer at 2026-09-23T00:13:18+00:00", "value": "inlet"}, "opening.role=outlet": {"applies_to": ["o2"], "field": "opening.role", "kind": "confirmed", "source": "question role_outlet answered by customer at 2026-09-23T00:13:18+00:00", "value": "outlet"}}, "facts_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "kinds": {"assumed": "a default nobody stated", "confirmed": "a person said it", "measured": "an instrument computed it", "seen": "a model said it from pictures, no numbers, with a trust tier", "stated": "the customer wrote it and nobody checked"}, "looked": true, "measured": {"bbox_diagonal_m": {"field": "bbox_diagonal_m", "kind": "measured", "source": "facts.bbox.diagonal", "unit": "m", "value": 2.6237262593970736}, "cell_budget": {"field": "cell_budget", "kind": "stated", "source": "brief: Mesh budget: keep the total cell count under 2 million cells", "value": 2000000}, "forecast.cells_high": {"field": "forecast.cells_high", "kind": "measured", "source": "forecast.cells_high (tools.estimate_builder_cells)", "value": 904514}, "inlet_bore_m": {"field": "inlet_bore_m", "kind": "measured", "source": "forecast.builder.bore (opening o1, the largest mouth the customer called the inlet)", "unit": "m", "value": 0.3569439113147426}}, "representation": {"field": "representation", "kind": "measured", "source": "catalog.side_reading over the measured openings", "value": "wall_shell"}, "schema": "geometry_agent.contract.survey_block.v1", "seen": {"identity.name": {"confidence_max": 0.6, "field": "identity.name", "kind": "seen", "source": "look.looks_like", "tier": "candidate", "value": "a branched distribution manifold"}, "opening.mouth_standoff.flush": {"applies_to": ["o1", "o2", "o3"], "field": "opening.mouth_standoff", "kind": "seen", "source": "look.openings_seen[].mouth", "tier": "candidate", "value": "flush"}, "opening.mouth_standoff.protruding": {"applies_to": ["o6", "o7"], "field": "opening.mouth_standoff", "kind": "seen", "source": "look.openings_seen[].mouth", "tier": "candidate", "value": "protruding"}}, "source_sha256": "9c8665ec7db9469edbc656015c3e817e637992acac8aedb7200964c5014a473b", "unit": {"field": "unit", "kind": "measured", "source": "coordinates.basis=occ_transfer", "value": "mm"}, "unsettled": []}, "units": "m"}}, "provenance": "heuristic", "schema": "geometry_agent.chain.ledger.v1"}
