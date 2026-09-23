@@ -1,0 +1,1 @@
+This is a machined block with a cylindrical boss on top and a single 16 mm bore. Geometry is in metres. The overall bounding box is 0.12 x 0.08 x 0.065 m. Engine: snappyHexMesh. I want the pressure drop and the flow field.
