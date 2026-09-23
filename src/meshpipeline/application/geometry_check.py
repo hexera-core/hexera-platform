@@ -345,7 +345,10 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         vision = _name_with_vision(facts, shots, purpose_text=purpose_text, session_id=session_id,
                                    owner_id=owner_id)
     proposal = _proposal(facts, vision)
-    result = {k: v for k, v in stored.items() if k not in ("status", "written_at", "seconds")}
+    # what the scout stored, minus the fields write_status writes itself: the status, the clock,
+    # and the session id - which it also takes as its first argument
+    result = {k: v for k, v in stored.items()
+              if k not in ("status", "written_at", "seconds", "session_id")}
     result.update(named=True, facts=facts, vision=vision, proposal=proposal,
                   purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
     write_status(session_id, STATUS_READY, **result)
