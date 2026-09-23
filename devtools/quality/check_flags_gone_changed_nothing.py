@@ -24,10 +24,11 @@
 # stage rather than the deletion.
 #
 # THE PARTS ARE REAL MEASUREMENTS, not shapes somebody typed out: `tests/fixtures/geometry_survey/*.json` is
-# what the measurement package wrote for five corpus parts. Four are run as the conversation stands after the
-# upload, with no survey row stored yet; the fifth, venturi_orifice_001, is run again with the answered survey
-# row that carries the geometry agent's plan (`geometry_step_gate_row.json`), so the write-up in front of the
-# request and the validated handoff are in the comparison too.
+# what the measurement package wrote for six corpus parts, one per representation, one of them with an `ok`
+# look on it. Five are run as the conversation stands after the upload, with no survey row stored yet; the
+# sixth, venturi_orifice_001, is run again with the answered survey row that carries the geometry agent's plan
+# (`geometry_step_gate_row.json`), so the write-up in front of the request and the validated handoff are in the
+# comparison too. See PARTS below for what the sixth fixture is for and where it came from.
 #
 # WHAT IS COMPARED, six probes, the union of what the two retired gates took between them:
 #   intake_system   the intake model's system prompt
@@ -48,6 +49,14 @@
 # at `gz_complete`: 36 comparisons, every one identical, and the blindness check moving 5 of the 6 probes.
 # The digests are in docs/reference/configuration.md rather than here, because that is where an operator
 # reading about the retired gate will be.
+#
+# ONE AGENT SRC AT A TIME IS THE POINT, AND RUNNING IT TWICE IS HOW YOU GET THE OTHER HALF. This gate holds
+# the measurement package still and moves the platform, which is the only way to say the platform's deletion
+# carried nothing. Run it a second time with the other package tree on `--agent-src` and compare the two runs'
+# digests: if both say SAME and the digests agree run to run, then the pre-cleanup platform with every flag on
+# and the pre-cleanup package hands a model exactly what the cleaned platform with no flags and the cleaned
+# package hands it, which is the claim about both repos rather than one. The verifier did that on 2026-09-23
+# at `gz_complete` and at `gy_clean`: 72 comparisons, every digest identical both ways.
 #
 # Where `git archive` cannot run from the interpreter that has the dependencies - a Windows worktree whose
 # `.git` names a Windows path the Linux git cannot follow - extract the commit by hand and name it:
@@ -81,8 +90,22 @@ PRE_CLEANUP_FLAGS = ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_REPORT_READERS_EN
 PROBES = ("intake_system", "intake_tools", "planner_user", "planner_system", "planner_block", "request_txt")
 
 #: The parts, and the survey row each is read with. None is the conversation as it stands after the upload.
+#:
+#: THE SIXTH PART CLOSES TWO HOLES the first five left, found by the verifier on 2026-09-23 and both of them
+#: the kind where a ruler is blind to what it measures. The five read `unknown`, `wall_shell`, `wall_shell`,
+#: `annular_fluid` and `fluid_domain`, so `external` was never hashed at all; and every one of the five carries
+#: `look: not_attempted`, so this gate had never once handed a model anything the look said, while claiming
+#: nothing a model is handed had moved. `ahmed_variant_001_external_looked.json` is `external` and carries an
+#: `ok` look with its impression, so both are in the comparison now.
+#:
+#: It is a real measurement like the others, and it was made differently, which is worth saying: the five came
+#: out of the measurement package's own stored rows, and this one is `chain.job.survey_document` over the same
+#: corpus STEP file `ahmed_variant_001.json` names, with the recorded look of the shipped prompt composed in and
+#: the platform's own envelope keys copied from `ahmed_variant_001.json`. Its only edit is that the measurement
+#: clock is scrubbed, so it hashes the same on any machine.
 PARTS: tuple[tuple[str, str | None], ...] = (
     ("ahmed_variant_001", None),
+    ("ahmed_variant_001_external_looked", None),
     ("bend_elbow_001", None),
     ("block_boss_sharp", None),
     ("transition_007_fluid", None),
