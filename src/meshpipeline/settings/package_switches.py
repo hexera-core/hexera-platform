@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 #: `{the package's variable: the platform setting that decides it}`. Documentation and the one place the pairing
 #: is written down; `arm` does not loop over it, for the reason in the header. Both names are declared in
 #: settings/inventory.py with exposure `external`, which is what they are.
+#:
+#: NOTHING IN PRODUCTION READS IT, and nothing should: `arm` takes the two booleans spelled out, so the map is
+#: for the devtools and tests that need to clear the package's variables before arming, and they import this
+#: module to get it. `settings/policy.py` used to carry a `GEOMETRY_PACKAGE_SWITCHES` copy of it for them,
+#: which gave the pairing a second place to drift from this one while having no production reader at all.
 PACKAGE_SWITCHES: dict[str, str] = {
     "GEOMETRY_AGENT_MEASURED_STOPS": "GEOMETRY_MEASURED_STOPS_ENABLED",
     "GEOMETRY_AGENT_FLUID_SIDE": "GEOMETRY_FLUID_SIDE_ENABLED"}

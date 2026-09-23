@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("geometry_agent.agent.catalog",
                     reason="the measurement package is not on this interpreter's path")
 
+import meshpipeline.settings.package_switches as package_switches  # noqa: E402
 import meshpipeline.settings.policy as polcfg  # noqa: E402
 from meshpipeline.application import geometry_survey as gs  # noqa: E402
 
@@ -33,7 +34,7 @@ def side_on(monkeypatch):
     """The package's own switch, armed the way the platform arms it and not by hand."""
     monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", True)
     monkeypatch.setattr(polcfg, "GEOMETRY_MEASURED_STOPS_ENABLED", False)
-    for name in polcfg.GEOMETRY_PACKAGE_SWITCHES:
+    for name in package_switches.PACKAGE_SWITCHES:
         monkeypatch.delenv(name, raising=False)
     assert polcfg.arm_the_package()["GEOMETRY_AGENT_FLUID_SIDE"] == "on"
 

@@ -43,6 +43,7 @@ def main() -> int:
                     help="the row to take the customer's own words from; the words are theirs, not this file's")
     args = ap.parse_args()
 
+    import meshpipeline.settings.package_switches as package_switches
     import meshpipeline.settings.policy as polcfg
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = "reference"
     # THE TWO PACKAGE STAGES AT THEIR SHIPPED DEFAULT, which is off, because that is the configuration the
@@ -51,7 +52,7 @@ def main() -> int:
     # shell wins over the platform, so the two are cleared first and the arming is asserted, not assumed.
     polcfg.GEOMETRY_MEASURED_STOPS_ENABLED = False
     polcfg.GEOMETRY_FLUID_SIDE_ENABLED = False
-    for name in polcfg.GEOMETRY_PACKAGE_SWITCHES:
+    for name in package_switches.PACKAGE_SWITCHES:
         os.environ.pop(name, None)
     armed = polcfg.arm_the_package()
     if set(armed.values()) != {"off"}:

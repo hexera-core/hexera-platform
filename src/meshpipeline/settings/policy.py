@@ -178,12 +178,6 @@ GEOMETRY_MEASURED_STOPS_ENABLED: bool = (
 GEOMETRY_FLUID_SIDE_ENABLED: bool = (
     optional_env("GEOMETRY_FLUID_SIDE_ENABLED", "false").lower() == "true")
 
-#: Which platform setting arms which of the package's own variables, re-exported from the module that does
-#: the writing. It lives there and not here because this module may not touch `os.environ` at all: the two
-#: variables are another component's contract, not a developer setting, and the rule that keeps every
-#: production module on a typed setting is worth more than two lines of convenience.
-GEOMETRY_PACKAGE_SWITCHES: dict[str, str] = dict(package_switches.PACKAGE_SWITCHES)
-
 
 def arm_the_package() -> dict[str, str]:
     """Put the two platform settings into the environment the measurement package reads them from.

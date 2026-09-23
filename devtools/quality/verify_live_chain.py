@@ -123,11 +123,12 @@ def _arm(provider: str, *, fluid_side: bool, measured_stops: bool) -> None:
     they are what the platform is being measured on, and an export left by an earlier run would win and hide
     the answer (the operator-wins rule in `settings/package_switches.arm`).
     """
+    import meshpipeline.settings.package_switches as package_switches
     import meshpipeline.settings.policy as polcfg
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = provider
     polcfg.GEOMETRY_MEASURED_STOPS_ENABLED = measured_stops
     polcfg.GEOMETRY_FLUID_SIDE_ENABLED = fluid_side
-    for name in polcfg.GEOMETRY_PACKAGE_SWITCHES:
+    for name in package_switches.PACKAGE_SWITCHES:
         os.environ.pop(name, None)
     armed = polcfg.arm_the_package()
     want = {"GEOMETRY_AGENT_MEASURED_STOPS": "on" if measured_stops else "off",

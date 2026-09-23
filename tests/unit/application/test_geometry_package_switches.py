@@ -19,6 +19,7 @@ import os
 
 import pytest
 
+import meshpipeline.settings.package_switches as package_switches
 import meshpipeline.settings.policy as polcfg
 
 THEIRS = ("GEOMETRY_AGENT_MEASURED_STOPS", "GEOMETRY_AGENT_FLUID_SIDE")
@@ -33,7 +34,7 @@ def _clean_environment(monkeypatch):
 
 def test_the_two_platform_settings_map_to_the_packages_own_variable_names():
     """Spelled once. A typo here is a switch that silently does nothing, which is what this file is about."""
-    assert polcfg.GEOMETRY_PACKAGE_SWITCHES == {
+    assert package_switches.PACKAGE_SWITCHES == {
         "GEOMETRY_AGENT_MEASURED_STOPS": "GEOMETRY_MEASURED_STOPS_ENABLED",
         "GEOMETRY_AGENT_FLUID_SIDE": "GEOMETRY_FLUID_SIDE_ENABLED"}
 
