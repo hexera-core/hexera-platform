@@ -195,9 +195,11 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
     assert result.get("reason") is None, result
     assert result["status"] == "scouted" and result["named"] is False
     skin = json.loads(store.written["sessions/abcdef12-1111/geometry_check/skin.json"])
-    assert skin["kind"] == "stl" and skin["is_mesh"] is False and skin["mesh_units"] == "m"
-    assert skin["patches"][0]["name"] == "skin" and skin["patches"][0]["tri_count"] == 12
-    assert "positions_b64" in skin["patches"][0]
+    assert skin["kind"] == "skin" and skin["is_mesh"] is False and skin["mesh_units"] == "m"
+    patch_ = skin["patches"][0]
+    assert patch_["name"] == "skin" and patch_["tri_count"] == 12
+    assert "points_b64" in patch_ and "polys_b64" in patch_ and "normals_b64" in patch_
+    assert skin["edges"]["count"] == 12                       # a box has twelve sharp edges
     stored = json.loads(store.written["sessions/abcdef12-1111/geometry_check/scout.json"])
     assert stored["skin_key"] == "sessions/abcdef12-1111/geometry_check/skin.json"
     assert stored["proposal"]["openings"][0]["centroid_mm"] == [0.0, 0.0, 0.0]
@@ -244,8 +246,9 @@ def test_the_naming_rescales_the_facts_and_the_skin_to_the_confirmed_unit(monkey
 
     sid = "abcdef12-2222"
     stored = _scouted(sid, unit_assumed=True, scale=0.001)
-    skin = {"kind": "stl", "patches": [{"name": "skin", "positions_b64":
-            base64.b64encode(struct.pack("<9f", *[0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001, 0.0])).decode()}]}
+    skin = {"kind": "skin", "patches": [{"name": "skin", "points_b64":
+            base64.b64encode(struct.pack("<9f", *[0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001, 0.0])).decode()}],
+            "edges": {"points_b64": base64.b64encode(struct.pack("<3f", 0.002, 0.0, 0.0)).decode(), "lines_b64": "", "count": 0}}
     store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(stored).encode(),
                           f"sessions/{sid}/geometry_check/skin.json": json.dumps(skin).encode()})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
@@ -263,8 +266,10 @@ def test_the_naming_rescales_the_facts_and_the_skin_to_the_confirmed_unit(monkey
     assert result["proposal"]["openings"][0]["name"] == "water_in"
     assert result["facts"]["unit_assumed"] is False
     new_skin = json.loads(store.objects[f"sessions/{sid}/geometry_check/skin.json"])
-    pts = struct.unpack("<9f", base64.b64decode(new_skin["patches"][0]["positions_b64"]))
+    pts = struct.unpack("<9f", base64.b64decode(new_skin["patches"][0]["points_b64"]))
     assert abs(pts[3] - 1.0) < 1e-6 and abs(pts[7] - 1.0) < 1e-6              # the skin moved with the facts
+    edge = struct.unpack("<3f", base64.b64decode(new_skin["edges"]["points_b64"]))
+    assert abs(edge[0] - 2.0) < 1e-6                                          # and so did its edges
 
 
 def test_a_naming_that_finds_no_scout_in_time_withdraws_its_request(monkeypatch):

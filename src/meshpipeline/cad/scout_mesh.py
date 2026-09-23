@@ -20,6 +20,7 @@ from meshpipeline.cad.scout import (
     ScoutResult,
     _name_openings,
     drop_flange_twins,
+    measured_faces,
 )
 
 #: Two triangles lie in one plane when their normals agree within this and their offsets within
@@ -148,6 +149,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
                                        bbox_min, bbox_max, diag))
 
     candidates = drop_flange_twins(candidates, (float(centre[0]), float(centre[1]), float(centre[2])))
+    measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.on_extremity]
     rim_openings = [c for c in candidates if c.kind == "rim"]
@@ -207,7 +209,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         openings=openings, seed_point=seed,
         confidence={"input_kind": conf,
                     "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0},
-        notes=notes)
+        notes=notes, faces=measured)
     # facts the CAD scout does not know: read by the check when it builds the proposal
     result.extra = {  # type: ignore[attr-defined]
         "components": n_components, "grounded": bool(grounded),
