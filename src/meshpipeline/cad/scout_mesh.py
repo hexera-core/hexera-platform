@@ -148,7 +148,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
             candidates.append(_opening(int(region[0]), "disc", outer[0], normal, area, outer[3],
                                        bbox_min, bbox_max, diag))
 
-    candidates = drop_flange_twins(candidates, diag, (float(centre[0]), float(centre[1]), float(centre[2])))
+    candidates = drop_flange_twins(candidates, (float(centre[0]), float(centre[1]), float(centre[2])))
     measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.on_extremity]

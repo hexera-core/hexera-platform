@@ -381,7 +381,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
                                   area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity))
 
     notes: list[str] = []
-    candidates = drop_flange_twins(candidates, diag, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
+    candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
     measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
@@ -467,11 +467,24 @@ def measured_faces(candidates: list[Opening]) -> list[dict]:
     return out
 
 
-def drop_flange_twins(candidates: list[Opening], diag: float, centre=(0.0, 0.0, 0.0)) -> list[Opening]:
+#: A plate's two faces surround one bore; the inner face's hole is the duct's outer wall, a
+#: wall's thickness wider. Holes further apart in size than this are two mouths, not one.
+SAME_HOLE_TOL = 0.25
+#: A plate is thin against the hole it surrounds: the gap between twins, in bores. Small bores
+#: carry flanges thicker than that, so a plate up to PLATE_MAX_M thick passes whatever the bore.
+PLATE_GAP = 0.5
+PLATE_MAX_M = 0.03
+
+
+def drop_flange_twins(candidates: list[Opening], centre=(0.0, 0.0, 0.0)) -> list[Opening]:
     """A flange plate at a duct's end has two flat faces with the same hole: the outside and the
     inside. Both read as openings a plate's thickness apart, facing opposite ways, over the same
     spot. Only the outer one is a mouth; the inner one is the same mouth seen from inside. Seen
-    on bend_elbow_003, which came back with four openings for a duct that has two."""
+    on bend_elbow_003, which came back with four openings for a duct that has two.
+
+    Every measure is the hole's own, never the whole part's: a manifold's short run has two real
+    mouths closer together than a tenth of the part, and a short reducer has two of different
+    size. Neither is a plate."""
     dropped: set[int] = set()
     for i, a in enumerate(candidates):
         if i in dropped:
@@ -482,12 +495,17 @@ def drop_flange_twins(candidates: list[Opening], diag: float, centre=(0.0, 0.0, 
             b = candidates[j]
             if _dot(a.normal, b.normal) > -0.95:
                 continue                                   # not facing opposite ways
+            if a.on_extremity and b.on_extremity:
+                continue                                   # two mouths at the part's ends: a run, however short
+            d_a, d_b = a.equivalent_diameter, b.equivalent_diameter
+            if abs(d_a - d_b) > SAME_HOLE_TOL * max(d_a, d_b, 1e-9):
+                continue                                   # different holes: a reducer's two ends
             between = _sub(b.centroid, a.centroid)
             gap = abs(_dot(between, a.normal))
-            if gap > 0.1 * diag:
-                continue                                   # a whole duct apart, not a plate apart
+            if gap > max(PLATE_GAP * min(d_a, d_b), PLATE_MAX_M):
+                continue                                   # a duct apart, not a plate apart
             across = _norm(_sub(between, tuple(_dot(between, a.normal) * c for c in a.normal)))
-            if across > 0.5 * max(a.equivalent_diameter, b.equivalent_diameter, 1e-9):
+            if across > 0.5 * max(d_a, d_b, 1e-9):
                 continue                                   # not over the same spot
             # the outer face is the one on the part's extremity; failing that, the one whose
             # normal points away from the part's centre (both faces of a plate point away from
