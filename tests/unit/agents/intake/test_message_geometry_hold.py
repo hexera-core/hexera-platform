@@ -70,3 +70,41 @@ async def test_when_nothing_can_run_the_naming_the_intake_carries_on(monkeypatch
 def test_the_hold_is_an_answered_turn_the_route_relays_without_a_model():
     outcome = msg.MessageOutcome(status=msg.MessageStatus.geometry_hold, reply=gh.HOLD_REPLY)
     assert outcome.answered and not outcome.continues_to_intake
+
+
+@pytest.mark.asyncio
+async def test_a_hold_whose_message_cannot_be_stored_withdraws_its_naming_request(monkeypatch):
+    monkeypatch.setattr(gh, "hold_applies", lambda sid: True)
+    monkeypatch.setattr(gh, "queue_naming", lambda *a: True)
+    withdrawn: list = []
+    monkeypatch.setattr(gh, "withdraw_naming", lambda sid: withdrawn.append(sid))
+    repo = MagicMock(); repo.append_message = AsyncMock(side_effect=RuntimeError("db down"))
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="a pipe", organization_id="")
+    with pytest.raises(RuntimeError):
+        await msg._settle(inbound, AsyncMock(), gate={}, locked=_locked(), messages=[],
+                          revision="r1", session_repo=repo, logger=MagicMock())
+    assert withdrawn == [str(SID)]
+
+
+@pytest.mark.asyncio
+async def test_a_hold_whose_commit_fails_withdraws_its_naming_request(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    withdrawn: list = []
+    monkeypatch.setattr(gh, "withdraw_naming", lambda sid: withdrawn.append(sid))
+
+    async def _held(*a, **k):
+        return msg.MessageOutcome(status=msg.MessageStatus.geometry_hold, reply=gh.HOLD_REPLY)
+    monkeypatch.setattr(msg, "_settle", _held)
+    db = AsyncMock(); db.commit = AsyncMock(side_effect=RuntimeError("commit failed"))
+
+    @asynccontextmanager
+    async def _db():
+        yield db
+    repo = MagicMock()
+    repo.get_for_update = AsyncMock(return_value=_locked(messages=[]))
+    repo.append_message = AsyncMock()
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="a pipe", organization_id="")
+    with pytest.raises(RuntimeError):
+        await msg.accept(inbound, session_repo=repo, db_factory=_db, logger=MagicMock())
+    assert withdrawn == [str(SID)]

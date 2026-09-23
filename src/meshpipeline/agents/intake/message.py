@@ -129,7 +129,14 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -
         gate = dict(getattr(locked, "intake_gate", None) or {})
         outcome = await _settle(inbound, db, gate=gate, locked=locked, messages=messages,
                                 revision=revision, session_repo=session_repo, logger=logger)
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception:
+            if outcome.status is MessageStatus.geometry_hold:
+                # the naming was queued for a turn that will not exist: let the next one hold
+                from meshpipeline.application import geometry_hold as gh
+                gh.withdraw_naming(str(inbound.session_id))
+            raise
 
     if outcome.status is MessageStatus.approve:
         # Dispatch is the approval authority's, and it takes the lock itself. Hand back the
@@ -224,7 +231,12 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
                                                      inbound.organization_id)
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
         return None
-    await session_repo.append_message(db, inbound.session_id, "assistant", gh.HOLD_REPLY)
+    try:
+        await session_repo.append_message(db, inbound.session_id, "assistant", gh.HOLD_REPLY)
+    except Exception:
+        # the turn will not be stored: withdraw the marker so the next turn can hold again
+        gh.withdraw_naming(session_id)
+        raise
     logger.info("intake message: held for the geometry check - session=%s", inbound.session_id)
     return MessageOutcome(status=MessageStatus.geometry_hold, reply=gh.HOLD_REPLY,
                           transition=GateTransition(revision=revision))

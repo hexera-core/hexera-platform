@@ -91,5 +91,15 @@ def queue_naming(session_id: str, owner_id: str, purpose_text: str, interpretati
     return True
 
 
+def withdraw_naming(session_id: str) -> None:
+    """The compensation for a hold whose turn could not be stored: the marker goes, so the next
+    turn asks again. The naming already queued still runs; a second one later merely writes the
+    same `ready` again."""
+    from meshpipeline.application.geometry_check import clear_naming_request
+
+    clear_naming_request(session_id)
+    logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
+
+
 __all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "hold_applies", "interpretation_payload",
-           "purpose_from", "queue_naming", "should_hold"]
+           "purpose_from", "queue_naming", "should_hold", "withdraw_naming"]
