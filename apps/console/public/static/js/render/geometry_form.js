@@ -4,6 +4,18 @@
 // about what is right; the card and the 3D stage both use it so the user answers one form.
 import { esc } from "../core/format.js";
 
+/* the two prefixes the conversation carries for the intake's sake; people see the words after them */
+export const DRAWING_MARK = "GEOMETRY CHECK (drawing your part):";
+export const CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):";
+
+/** A stored message as a person should read it: the marks the intake reads are taken off. */
+export function displayText(text) {
+  const t = String(text == null ? "" : text);
+  if (t.startsWith(DRAWING_MARK)) { const r = t.slice(DRAWING_MARK.length).trim(); return r.charAt(0).toUpperCase() + r.slice(1); }
+  if (t.startsWith(CONFIRMED_MARK)) return "Confirmed on the picture: " + t.slice(CONFIRMED_MARK.length).trim();
+  return t;
+}
+
 export const KIND = [["body-surface", "the part's wall, hollow inside for the fluid"],
                      ["fluid-domain", "the fluid volume itself"],
                      ["solid-body", "a solid body the fluid flows around"]];

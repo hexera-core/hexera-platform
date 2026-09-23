@@ -78,6 +78,8 @@ class MessageOutcome:
     transition: GateTransition = field(default_factory=GateTransition)
     #: the refreshed session, for the caller that goes on to run the intake turn
     session: Any = None
+    #: this turn handed the user's words to the geometry naming (so a failed commit withdraws it)
+    queued_naming: bool = False
     #: a deterministic reply, when the authority answered without the model
     reply: str = ""
     job_id: Any = None
@@ -132,8 +134,9 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -
         try:
             await db.commit()
         except Exception:
-            if outcome.status is MessageStatus.geometry_hold:
-                # the naming was queued for a turn that will not exist: let the next one hold
+            if outcome.queued_naming:
+                # the naming was queued for a turn that will not exist: let the next one hold.
+                # A wait-only turn queued nothing, and must not withdraw an earlier turn's request.
                 from meshpipeline.application import geometry_hold as gh
                 gh.withdraw_naming(str(inbound.session_id))
             raise
@@ -225,8 +228,17 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     from meshpipeline.application import geometry_hold as gh
 
     session_id = str(inbound.session_id)
-    if not gh.hold_applies(session_id):
+    decision = gh.hold_applies(session_id)
+    if not decision:
         return None
+    if decision == "wait":
+        # THE NAMING IS ALREADY RUNNING: a message sent meanwhile is answered with the wait line
+        # and nothing else, so the intake cannot ask past the stage. Bounded by WAIT_GRACE_S.
+        reply = gh.WAIT_REPLY
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        logger.info("intake message: still held for the geometry check - session=%s", inbound.session_id)
+        return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply,
+                              transition=GateTransition(revision=revision))
     interpretation = await gh.interpretation_payload(db, locked, inbound.owner_id,
                                                      inbound.organization_id)
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
@@ -238,7 +250,7 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
         gh.withdraw_naming(session_id)
         raise
     logger.info("intake message: held for the geometry check - session=%s", inbound.session_id)
-    return MessageOutcome(status=MessageStatus.geometry_hold, reply=gh.HOLD_REPLY,
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=gh.HOLD_REPLY, queued_naming=True,
                           transition=GateTransition(revision=revision))
 
 

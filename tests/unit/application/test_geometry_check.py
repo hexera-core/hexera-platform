@@ -278,3 +278,33 @@ def test_a_naming_that_finds_no_scout_in_time_withdraws_its_request(monkeypatch)
     assert result == {"status": "pending", "named": False}
     assert f"deleted:sessions/{sid}/geometry_check/naming.json" in store.written
     assert f"sessions/{sid}/geometry_check/naming.json" not in store.objects
+
+
+def test_a_late_naming_failure_never_replaces_a_ready_check(monkeypatch):
+    import json
+
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-4444"
+    ready = {"status": "ready", "named": True, "proposal": {"part": "elbow"}, "facts": {}}
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(ready).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(gc, "_name", lambda **k: (_ for _ in ()).throw(RuntimeError("provider down")))
+    result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="an elbow")
+    assert result["status"] == "ready" and result["named"] is True
+    assert json.loads(store.objects[f"sessions/{sid}/geometry_check/scout.json"])["status"] == "ready"
+    assert not any(k.endswith("scout.json") for k in store.written)      # nothing overwritten
+
+
+def test_a_naming_failure_on_an_unnamed_check_is_recorded(monkeypatch):
+    import json
+
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-5555"
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps({"status": "scouted"}).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(gc, "_name", lambda **k: (_ for _ in ()).throw(RuntimeError("provider down")))
+    result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="an elbow")
+    assert result["status"] == "failed" and "provider down" in result["reason"]
+    assert json.loads(store.written[f"sessions/{sid}/geometry_check/scout.json"])["status"] == "failed"
