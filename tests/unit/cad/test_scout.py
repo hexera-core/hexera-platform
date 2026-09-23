@@ -219,19 +219,34 @@ def test_every_measured_flat_face_rides_along_for_the_stage():
 
 
 # ---------------------------------------------------------------------- stacked rings ----
-def _band(x, side, *, y=0.0, nx=-1.0, kind="ring"):
+def _band(x, side, *, y=0.0, nx=-1.0, kind="ring", outer=None):
     from meshpipeline.cad.scout import Opening
     return Opening(face_index=int(x * 1e5 + side * 1e3), kind=kind, centroid=(x, y, 0.0), normal=(nx, 0.0, 0.0),
-                   area=side * side, wh=(side, side), clear_ahead=True, on_extremity=True)
+                   area=side * side, wh=(side, side), clear_ahead=True, on_extremity=True,
+                   outer_wh=(outer, outer) if outer is not None else (0.0, 0.0))
 
 
 def test_a_flanged_end_drawn_as_concentric_bands_is_one_mouth_the_smallest_hole():
     from meshpipeline.cad.scout import drop_stacked_rings
     # duct_radius_elbow's end: gasket face, duct wall, a 2 mm step, a chamfer - four rings over
-    # one spot, all facing -x, holes 650 / 600 / 600 / 596 mm
-    bands = [_band(0.0, 0.65), _band(0.0, 0.60), _band(0.002, 0.60), _band(0.0, 0.596)]
+    # one spot, all facing -x, holes 650 / 600 / 600 / 596 mm, each band's outer edge the hole
+    # of the band around it
+    bands = [_band(0.0, 0.65, outer=0.8), _band(0.0, 0.60, outer=0.65), _band(0.002, 0.60, outer=0.61),
+             _band(0.0, 0.596, outer=0.60)]
     kept = drop_stacked_rings(bands)
     assert len(kept) == 1 and kept[0].wh == (0.596, 0.596)
+    # the same bands in any order
+    kept = drop_stacked_rings([bands[3], bands[0], bands[2], bands[1]])
+    assert len(kept) == 1 and kept[0].wh == (0.596, 0.596)
+
+
+def test_a_coaxial_fittings_two_ports_face_the_same_way_in_one_plane_and_both_stay():
+    from meshpipeline.cad.scout import drop_stacked_rings
+    # an inner tube (bore 50, outside 56) inside an outer tube (bore 100): the annular passage
+    # between 56 and 100 is the second port, so the inner ring does not fill the outer's hole
+    inner, outer = _band(0.0, 0.05, outer=0.056), _band(0.0, 0.10, outer=0.11)
+    assert len(drop_stacked_rings([inner, outer])) == 2
+    assert len(drop_stacked_rings([outer, inner])) == 2
 
 
 def test_rings_facing_the_same_way_but_a_duct_apart_or_side_by_side_are_two_mouths():

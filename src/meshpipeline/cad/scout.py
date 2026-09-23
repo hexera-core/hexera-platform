@@ -49,6 +49,9 @@ class Opening:
     role: str = ""
     confidence: float = 0.0
     sticker: int = 0          # 1..n in the order proposed; the number on the picture
+    #: the face's outer extent (for a ring, around the hole): what tells a flange band, which
+    #: sits exactly inside the next band's hole, from a coaxial fitting's port, which leaves a gap
+    outer_wh: tuple[float, float] = (0.0, 0.0)
 
     @property
     def shape(self) -> str:
@@ -372,13 +375,15 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         else:
             kind, o_area, o_centroid = "disc", float(area), centroid
             o_wh = _wh(outer["wh_m"]) if outer else (0.0, 0.0)
+        outer_wh = _wh(outer["wh_m"]) if outer else o_wh
         # on the part's extremity: the face sits on the bounding box in its own direction
         t_edge = min(((bbox_max[k] if normal[k] > 0 else bbox_min[k]) - o_centroid[k]) / normal[k]
                      for k in range(3) if abs(normal[k]) > 1e-6)
         on_extremity = t_edge <= 0.03 * diag
         clear = clear_ahead(_add(o_centroid, normal, 0.001 * diag), normal, 0.0)
         candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=normal,
-                                  area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity))
+                                  area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity,
+                                  outer_wh=outer_wh))
 
     notes: list[str] = []
     candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
@@ -529,13 +534,21 @@ def drop_flange_twins(candidates: list[Opening], centre=(0.0, 0.0, 0.0)) -> list
 #: in bores, and the floor under it for small bores.
 STACK_GAP = 0.1
 STACK_GAP_M = 0.003
+#: A band sits exactly inside the next band's hole: its outer extent matches that hole to this
+#: fraction. A coaxial fitting's inner port leaves an annular gap to the outer port's hole.
+BAND_FIT = 0.1
 
 
 def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
     """A flanged end modelled as concentric bands gives several ring faces over the same spot,
     facing the same way, each with a hole a little smaller than the last. The fluid passes
     through the smallest: that one is the mouth; the rest are the flange around it. Seen on
-    duct_radius_elbow (seven openings for two mouths) and duct_square_round (six for two)."""
+    duct_radius_elbow (seven openings for two mouths) and duct_square_round (six for two).
+
+    A coaxial fitting also has concentric rings facing the same way in one plane - and both are
+    ports. What tells them apart is the gap: a band's outer edge IS the next band's hole; a
+    coaxial inner port's outer edge stops short of the outer port's hole by the annular passage.
+    A ring whose outer extent is unknown is taken for a band."""
     dropped: set[int] = set()
     for i, a in enumerate(candidates):
         if i in dropped or a.kind != "ring":
@@ -553,11 +566,19 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
             across = _norm(_sub(between, tuple(_dot(between, a.normal) * c for c in a.normal)))
             if across > 0.5 * max(d_a, d_b, 1e-9):
                 continue                                   # not over the same spot
+            small, big = (b, a) if d_b < d_a else (a, b)
+            if small.outer_wh != (0.0, 0.0) and not _sits_inside(small.outer_wh, big.wh):
+                continue                                   # a gap between them: two ports of a coaxial fitting
             if d_b < d_a:
                 dropped.add(i)                             # b's hole is the bore; a is a band around it
                 break
             dropped.add(j)
     return [c for k, c in enumerate(candidates) if k not in dropped]
+
+
+def _sits_inside(outer_wh, hole_wh) -> bool:
+    """Whether a face's outer extent fills the hole it sits in, to BAND_FIT."""
+    return all(abs(o - h) <= BAND_FIT * max(h, 1e-9) for o, h in zip(sorted(outer_wh), sorted(hole_wh)))
 
 
 def _name_openings(pool: list[Opening]) -> list[Opening]:

@@ -144,7 +144,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         if len(polys) >= 2 and polys[1][2] >= MIN_RING_BORE_FRACTION * outer[2]:
             hole = polys[1]
             candidates.append(_opening(int(region[0]), "ring", hole[0], normal, hole[2], hole[3],
-                                       bbox_min, bbox_max, diag))
+                                       bbox_min, bbox_max, diag, outer_wh=outer[3]))
         else:
             candidates.append(_opening(int(region[0]), "disc", outer[0], normal, area, outer[3],
                                        bbox_min, bbox_max, diag))
@@ -365,13 +365,15 @@ def _polygon(points: np.ndarray):
     return c, n, area, wh
 
 
-def _opening(face_index: int, kind: str, c, n, area: float, wh, bbox_min, bbox_max, diag: float) -> Opening:
+def _opening(face_index: int, kind: str, c, n, area: float, wh, bbox_min, bbox_max, diag: float,
+             outer_wh=None) -> Opening:
     n = np.asarray(n, dtype=float)
     ts = [((bbox_max[k] if n[k] > 0 else bbox_min[k]) - c[k]) / n[k] for k in range(3) if abs(n[k]) > 1e-6]
     on_extremity = bool(ts) and min(ts) <= 0.03 * diag
     return Opening(face_index=face_index, kind=kind, centroid=(float(c[0]), float(c[1]), float(c[2])),
                    normal=(float(n[0]), float(n[1]), float(n[2])), area=float(area),
-                   wh=(float(wh[0]), float(wh[1])), clear_ahead=on_extremity, on_extremity=on_extremity)
+                   wh=(float(wh[0]), float(wh[1])), clear_ahead=on_extremity, on_extremity=on_extremity,
+                   outer_wh=(float(outer_wh[0]), float(outer_wh[1])) if outer_wh is not None else (float(wh[0]), float(wh[1])))
 
 
 def _most_touch_ground(verts, faces, components, bbox_min, diag: float) -> bool:
