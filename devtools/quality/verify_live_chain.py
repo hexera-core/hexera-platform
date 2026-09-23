@@ -113,21 +113,17 @@ def _sha_stable(payload: Any) -> str:
 
 
 def _arm(provider: str, *, fluid_side: bool, measured_stops: bool) -> None:
-    """Every gate, set the way an operator would, and the package's two armed THROUGH THE PLATFORM.
+    """The model that plans, and the package's two stages armed THROUGH THE PLATFORM.
 
     This function used to write `GEOMETRY_AGENT_FLUID_SIDE` and `GEOMETRY_AGENT_MEASURED_STOPS` itself. That
-    made it blind to the only question an operator actually has: whether the platform's OWN flags reach the
+    made it blind to the only question an operator actually has: whether the platform's own settings reach the
     package. They did not. `policy.arm_the_package` was the missing wire, and a tool that sets the package's
     variables by hand would have reported gaps B and C working on every run where the platform armed nothing.
-    So the switches here are the platform's two flags, and the package's own variables are DELETED first: they
-    are what the platform is being measured on, and an export left by an earlier run would win and hide the
-    answer (the operator-wins rule in `settings/package_switches.arm`).
+    So the switches here are the platform's two settings, and the package's own variables are DELETED first:
+    they are what the platform is being measured on, and an export left by an earlier run would win and hide
+    the answer (the operator-wins rule in `settings/package_switches.arm`).
     """
     import meshpipeline.settings.policy as polcfg
-    polcfg.GEOMETRY_MEASUREMENT_ENABLED = True
-    polcfg.GEOMETRY_REPORT_READERS_ENABLED = True
-    polcfg.GEOMETRY_SURVEY_ENABLED = True
-    polcfg.GEOMETRY_AGENT_STEP_ENABLED = True
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = provider
     polcfg.GEOMETRY_MEASURED_STOPS_ENABLED = measured_stops
     polcfg.GEOMETRY_FLUID_SIDE_ENABLED = fluid_side
@@ -137,7 +133,7 @@ def _arm(provider: str, *, fluid_side: bool, measured_stops: bool) -> None:
     want = {"GEOMETRY_AGENT_MEASURED_STOPS": "on" if measured_stops else "off",
             "GEOMETRY_AGENT_FLUID_SIDE": "on" if fluid_side else "off"}
     if armed != want:
-        raise SystemExit(f"the platform's flags did not arm the package: asked {want}, got {armed}")
+        raise SystemExit(f"the platform's settings did not arm the package: asked {want}, got {armed}")
 
 
 # -------------------------------------------------------------------------------------------------

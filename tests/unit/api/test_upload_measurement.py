@@ -1,8 +1,7 @@
-# Responsibility: Verify the geometry measurement is off by default, invisible when off, and never able to fail an upload.
+# Responsibility: Verify the geometry measurement is invisible to the customer and never able to fail an upload.
 # Boundaries: the upload seam and the measurement's own decisions; the measurement package itself is not installed here.
 from __future__ import annotations
 
-import sys
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,37 +48,16 @@ async def _upload(tmp_path, *, filename: str = "wing.step", body: bytes = _VALID
                                 files={"file": (filename, body, "application/octet-stream")})
 
 
-# OFF BY DEFAULT, AND INVISIBLE WHEN OFF
+# THE UPLOAD IS WHAT IT WAS, AND THE RESPONSE SAYS NOTHING ABOUT THE MEASUREMENT
 
 
-def test_the_setting_is_off_in_a_deployment_that_says_nothing():
-    import meshpipeline.settings.policy as polcfg
-    assert polcfg.GEOMETRY_MEASUREMENT_ENABLED is False
-
-
-async def test_with_the_setting_off_the_upload_never_reaches_the_measurement_at_all(tmp_path):
-    """Not "it does nothing": it is not called. The gate is read in the route, so an image without
-    the measurement package imports nothing and an operator who turned nothing on pays nothing."""
-    name = "meshpipeline.application.geometry_measurement"
-    already = sys.modules.pop(name, None)
-    try:
-        with patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", False):
-            resp = await _upload(tmp_path)
-        assert name not in sys.modules, (
-            "the upload imported the measurement module with the feature switched off")
-    finally:
-        if already is not None:
-            sys.modules[name] = already
-    assert resp.status_code == 200
-
-
-async def test_with_the_setting_off_the_response_is_byte_for_byte_what_it_was(tmp_path):
-    """The whole claim, stated as an assertion: with the feature off, an upload returns exactly the
-    payload it returned before this path existed. The session id is the only value that moves, and
-    it is fixed by the double."""
+async def test_the_response_is_the_payload_the_upload_has_always_returned(tmp_path):
+    """The measurement never reaches the customer through this route. The session id is the only
+    value that moves, and it is fixed by the double."""
     from meshpipeline.api.v1.upload import UPLOAD_ACKNOWLEDGEMENT
 
-    with patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", False):
+    with patch("meshpipeline.application.geometry_measurement.on_upload",
+               new=AsyncMock(return_value="measured")):
         resp = await _upload(tmp_path)
     assert resp.status_code == 200
     assert resp.json() == {
@@ -91,38 +69,35 @@ async def test_with_the_setting_off_the_response_is_byte_for_byte_what_it_was(tm
 
 
 async def test_the_refusals_in_front_of_the_measurement_still_come_first(tmp_path):
-    """A file refused at upload is refused before anything measures it, with the feature on or off:
-    the measurement is keyed to durable bytes, and a refused upload has none."""
-    with patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True):
-        with patch("meshpipeline.application.geometry_measurement.on_upload",
-                   new=AsyncMock(side_effect=AssertionError("measured a refused upload"))):
-            bad = await _upload(tmp_path, body=b"PK\x03\x04 not a step file")
-            empty = await _upload(tmp_path, body=b"")
+    """A file refused at upload is refused before anything measures it: the measurement is keyed to
+    durable bytes, and a refused upload has none."""
+    with patch("meshpipeline.application.geometry_measurement.on_upload",
+               new=AsyncMock(side_effect=AssertionError("measured a refused upload"))):
+        bad = await _upload(tmp_path, body=b"PK\x03\x04 not a step file")
+        empty = await _upload(tmp_path, body=b"")
     assert bad.status_code == 400
     assert empty.status_code == 422
 
 
-# WITH IT ON, NOTHING IT DOES CAN COST AN UPLOAD
+# NOTHING THE MEASUREMENT DOES CAN COST AN UPLOAD
 
 
-async def test_with_the_setting_on_a_measurement_that_explodes_changes_nothing(tmp_path):
+async def test_a_measurement_that_explodes_changes_nothing(tmp_path):
     from meshpipeline.api.v1.upload import UPLOAD_ACKNOWLEDGEMENT
 
     boom = AsyncMock(side_effect=RuntimeError("the measurement package fell over"))
-    with patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True):
-        with patch("meshpipeline.application.geometry_measurement.on_upload", new=boom):
-            resp = await _upload(tmp_path)
+    with patch("meshpipeline.application.geometry_measurement.on_upload", new=boom):
+        resp = await _upload(tmp_path)
     assert boom.await_count == 1
     assert resp.status_code == 200
     assert resp.json()["intake_greeting"] == UPLOAD_ACKNOWLEDGEMENT
     assert resp.json()["step_filename"] == "wing.step"
 
 
-async def test_with_the_setting_on_the_measurement_is_handed_the_stored_bytes(tmp_path):
+async def test_the_measurement_is_handed_the_stored_bytes(tmp_path):
     seen = AsyncMock(return_value="measured")
-    with patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True):
-        with patch("meshpipeline.application.geometry_measurement.on_upload", new=seen):
-            resp = await _upload(tmp_path)
+    with patch("meshpipeline.application.geometry_measurement.on_upload", new=seen):
+        resp = await _upload(tmp_path)
     assert resp.status_code == 200
     (source_id, owner_id), kwargs = seen.await_args
     assert uuid.UUID(source_id)
@@ -142,8 +117,7 @@ async def test_a_corrected_file_is_a_new_session_with_its_own_measurement(tmp_pa
     invalidate, and the guard in the contract is what keeps it that way if rebinding ever lands."""
     seen = AsyncMock(return_value="measured")
     svc = _svc()
-    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True),
-          patch("meshpipeline.application.geometry_measurement.on_upload", new=seen),
+    with (patch("meshpipeline.application.geometry_measurement.on_upload", new=seen),
           patch("meshpipeline.persistence.session.get_db", _mock_get_db),
           patch("meshpipeline.application.job_service.JobService", return_value=svc),
           patch("meshpipeline.api.v1.upload._JOBS_DIR", tmp_path)):
@@ -159,18 +133,10 @@ async def test_a_corrected_file_is_a_new_session_with_its_own_measurement(tmp_pa
     assert len(ids) == 2 and ids[0] != ids[1], "two uploads measured the same source"
 
 
-async def test_nothing_happens_at_all_when_the_feature_is_off():
-    from meshpipeline.application.geometry_measurement import on_upload
-
-    with patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", False):
-        assert await on_upload("some-id", "owner", size_bytes=10) == "off"
-
-
 async def test_a_small_file_is_measured_inside_the_request():
     from meshpipeline.application import geometry_measurement as gm
 
-    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True),
-          patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
+    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
           patch.object(gm, "_run_in_thread", return_value={"status": "ok"}) as ran):
         assert await gm.on_upload("s", "o", size_bytes=1024) == "measured"
     assert ran.call_count == 1
@@ -179,8 +145,7 @@ async def test_a_small_file_is_measured_inside_the_request():
 async def test_a_large_file_goes_to_a_worker_and_the_request_returns():
     from meshpipeline.application import geometry_measurement as gm
 
-    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True),
-          patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
+    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
           patch.object(gm, "_run_in_thread", side_effect=AssertionError("measured inline")),
           patch("meshpipeline.application.geometry_measurement.enqueue_measurement",
                 return_value=True) as queued):
@@ -191,8 +156,7 @@ async def test_a_large_file_goes_to_a_worker_and_the_request_returns():
 async def test_a_queue_that_will_not_take_it_is_a_measurement_that_does_not_happen():
     from meshpipeline.application import geometry_measurement as gm
 
-    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True),
-          patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
+    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
           patch("meshpipeline.application.geometry_measurement.enqueue_measurement",
                 return_value=False)):
         assert await gm.on_upload("s", "o", size_bytes=64 * 1024 * 1024) == "skipped"
@@ -201,8 +165,7 @@ async def test_a_queue_that_will_not_take_it_is_a_measurement_that_does_not_happ
 async def test_an_inline_measurement_that_raises_is_swallowed_by_the_caller():
     from meshpipeline.application import geometry_measurement as gm
 
-    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_ENABLED", True),
-          patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
+    with (patch("meshpipeline.settings.policy.GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0),
           patch.object(gm, "_run_in_thread", side_effect=RuntimeError("native fault"))):
         assert await gm.on_upload("s", "o", size_bytes=1024) == "skipped"
 

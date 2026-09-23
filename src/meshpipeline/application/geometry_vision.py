@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 #: NEVER IN THE REQUEST. The measurement runs inline for a small upload, because a conversation that
 #: opens holding the port table is worth a second of the customer's wait. A look is not: it is a
 #: provider call of 12 to 60 seconds behind a render, and nothing downstream is blocked by its absence.
-#: So it is always a queued task, for every file size, and `geometry_measurement.measure_and_store`
-#: queues it only after the row it attaches to has been written.
+#: So it is always a queued task, for every file size, and `geometry_survey` queues it only once the
+#: row it attaches to has been written AND composed for what the customer said the part is for.
 
 #: NO 0004. The look needs no migration, and that was checked rather than assumed. Revision 0003
 #: gives `geometry_measurements.document` a JSONB column, and the look already has a key in that
@@ -48,21 +48,11 @@ logger = logging.getLogger(__name__)
 PACKAGE_ABSENT = "the geometry measurement package is not installed in this image, so nothing looked"
 
 
-def look_enabled() -> bool:
-    """Whether a look may happen at all.
-
-    BOTH gates, read together, every time. `policy.GEOMETRY_VISION_ENABLED` is already the `and` of the
-    two, and this repeats it because a test that reaches in and sets one constant must not be able to
-    turn the look on with the measurement off: there would be no row for it to attach to.
-    """
-    return bool(polcfg.GEOMETRY_MEASUREMENT_ENABLED and polcfg.GEOMETRY_VISION_ENABLED)
-
-
 def _package():
     """The look entry point and the fact schema, imported the first time something asks.
 
-    Deliberately not a module-level import, for the same reason the measurement's is not: with the
-    setting off this function is never called and an image without the distribution costs nothing.
+    Deliberately not a module-level import, for the same reason the measurement's is not: an image
+    that carries no look never reaches this function, and it costs such an image nothing.
     """
     from geometry_agent.agent import hexera
     from geometry_agent.facts.schema import GeometryFacts
@@ -186,9 +176,6 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
 
     Never raises. The return value is a summary for the caller's log, not something a customer sees.
     """
-    if not look_enabled():
-        return {"status": "off"}
-
     started = time.perf_counter()
     from meshpipeline.persistence.repositories.geometry_measurement_repository import (
         GeometryMeasurementRepository,
@@ -297,10 +284,9 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
 async def _composed_for(owner_id: str, source_id: str, sha256: str) -> tuple[str | None, str | None]:
     """The purpose and representation the customer's words decided, when the survey composed them.
 
-    (None, None) with the survey off or before it has been composed, which is the look as it was.
+    (None, None) before a survey has been composed, which is a look taken with nothing said about the
+    part yet.
     """
-    if not polcfg.GEOMETRY_SURVEY_ENABLED:
-        return None, None
     try:
         from meshpipeline.application import geometry_survey
         state = await geometry_survey.load(owner_id, str(source_id), sha256=sha256)
@@ -317,4 +303,4 @@ def look_and_store_blocking(source_id: str, owner_id: str) -> dict:
 
 
 __all__ = ["NO_READER", "PACKAGE_ABSENT", "attach_look", "look_and_store", "look_and_store_blocking",
-           "look_at_local_file", "look_enabled", "reader"]
+           "look_at_local_file", "reader"]

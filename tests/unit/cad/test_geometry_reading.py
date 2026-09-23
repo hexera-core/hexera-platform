@@ -165,13 +165,6 @@ def test_a_database_that_cannot_be_reached_is_an_absence_not_a_failure(monkeypat
     assert asyncio.run(regions.stored_document_for_source(REF)) is None
 
 
-def test_the_staging_reader_is_still_there_and_still_answers_a_staged_file(tmp_path):
-    """Kept for the one case it answers: a file staged and not yet cleaned up."""
-    (tmp_path / "s1").mkdir()
-    assert regions.regions_for_session("s1", tmp_path).count == 0        # nothing staged
-    assert regions.regions_for_session("missing", tmp_path).count == 0   # no directory at all
-
-
 def test_the_document_reader_returns_the_whole_document(monkeypatch):
     """Two readers want two different things and neither is derivable from the other."""
     _with_row(monkeypatch, _row(_document(openings=[{"id": "o1"}])))

@@ -73,26 +73,20 @@ def test_the_look_is_taken_for_the_purpose_and_representation_the_customer_decid
     assert (seen["purpose"], seen["representation"]) == ("internal_cfd", None)
 
 
-def test_with_the_survey_on_the_upload_no_longer_queues_the_look(monkeypatch):
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_VISION_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
+def test_the_upload_never_queues_the_look(monkeypatch):
+    """Step 3 comes after step 1: a look taken for the purpose ASSUMED at upload reads an external body
+    as internal flow, so the measurement records what will become of the look and queues nothing."""
     queued = []
     monkeypatch.setattr("meshpipeline.contracts.geometry_measurement.enqueue_look",
                         lambda *a, **k: queued.append(a) or True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", True)
-    assert geometry_measurement._queue_the_look("s", "o", "ok") == "deferred_to_survey"
+    assert geometry_measurement._look_outcome("ok") == "deferred_to_survey"
     assert queued == []
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", False)
-    assert geometry_measurement._queue_the_look("s", "o", "ok") == "queued"
-    assert len(queued) == 1
 
 
 def test_the_survey_queues_the_look_at_step_three_unless_it_was_already_taken(monkeypatch):
     pytest.importorskip("geometry_agent.contract.deliver")
     from meshpipeline.application import geometry_survey as gs
 
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_VISION_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
     queued = []
     monkeypatch.setattr("meshpipeline.contracts.geometry_measurement.enqueue_look",
                         lambda *a, **k: queued.append(a) or True)

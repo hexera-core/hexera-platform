@@ -484,8 +484,9 @@ class GeometrySurvey(Base):
     #: One row per answer, with `answered_by`, `at`, the words it came from and the option chosen.
     answers:  Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     #: THE GEOMETRY AGENT'S STEP, when it ran: its plan, the envelope, the flow patches, and the job
-    #: ledger's rows. Null with GEOMETRY_AGENT_STEP_ENABLED off, which is every deployment that has
-    #: not set it, and the whole row behaves then exactly as it did before this column existed.
+    #: ledger's rows. Null on a row whose step never had a survey to read, and the whole row behaves
+    #: then exactly as it did before this column existed. A step that RAN and failed is not null: it
+    #: is `status: failed` with the reason, because a failure and an absence are different facts.
     #: It lives here and not in `survey` because `survey` is the package's own handoff, dumped as the
     #: package dumped it, and this is the platform's record of what it did with it.
     geometry_step: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

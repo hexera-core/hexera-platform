@@ -1,4 +1,4 @@
-# Responsibility: Put this platform's two geometry stage flags into the environment variables the measurement
+# Responsibility: Put this platform's two geometry stage settings into the environment variables the measurement
 #                 package reads them out of, and report what was set.
 # Boundaries: the ONLY module that writes another component's environment contract. It decides nothing: the two
 #             booleans are decided in settings/policy.py and passed in. No package import, no file, no I/O.
@@ -23,8 +23,8 @@ from meshpipeline.settings.env import optional_env
 
 logger = logging.getLogger(__name__)
 
-#: `{the package's variable: the platform flag that decides it}`. Documentation and the one place the pairing is
-#: written down; `arm` does not loop over it, for the reason in the header. Both names are declared in
+#: `{the package's variable: the platform setting that decides it}`. Documentation and the one place the pairing
+#: is written down; `arm` does not loop over it, for the reason in the header. Both names are declared in
 #: settings/inventory.py with exposure `external`, which is what they are.
 PACKAGE_SWITCHES: dict[str, str] = {
     "GEOMETRY_AGENT_MEASURED_STOPS": "GEOMETRY_MEASURED_STOPS_ENABLED",

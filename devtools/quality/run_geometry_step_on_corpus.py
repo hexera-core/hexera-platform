@@ -24,7 +24,7 @@
 #   this file's     the customer's answers, looked up in the corpus generator's own brief (SIMULATED: nothing
 #                   below is a person's answer, and every row says so)
 #                   the two stored reads `planner_inputs_for_state` makes, answered from memory instead of
-#                   Postgres, which is the same seam `check_vision_off_is_byte_identical.py` patches
+#                   Postgres, which is the same seam `check_flags_gone_changed_nothing.py` patches
 #                   the planner model, which is NOT called: the message it would be handed is captured
 #
 # THE LOOK DOES NOT RUN HERE. `measure_local_file` stores `not_attempted`, and step 3 is a worker. Every row
@@ -128,12 +128,8 @@ def _sha256_of(path: Path) -> str:
 
 
 def _arm(provider: str) -> None:
-    """Every gate the step sits under, set the way an operator would set them in `.env`."""
+    """The one setting this harness chooses: which model plans. The chain itself is not a setting."""
     import meshpipeline.settings.policy as polcfg
-    polcfg.GEOMETRY_MEASUREMENT_ENABLED = True
-    polcfg.GEOMETRY_REPORT_READERS_ENABLED = True
-    polcfg.GEOMETRY_SURVEY_ENABLED = True
-    polcfg.GEOMETRY_AGENT_STEP_ENABLED = True
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = provider
 
 
@@ -331,7 +327,7 @@ async def what_the_builder_gets(state: dict, doc: dict, ref, request_txt: str) -
     """`cad.regions.planner_inputs_for_state`, the call the snappy driver makes, run as it is written.
 
     The two stored reads it makes are answered from this run instead of from Postgres, which is the seam
-    `check_vision_off_is_byte_identical.py` patches for the same reason. Everything between them - the
+    `check_flags_gone_changed_nothing.py` patches for the same reason. Everything between them - the
     gate, the contract, the handoff, the fallback - is the product's.
 
     What the write GIVES BACK is the repository's own mapping of the state where that can run here, not

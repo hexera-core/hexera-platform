@@ -28,10 +28,7 @@ def _brief(case: str = "venturi_orifice_001") -> str:
 
 @pytest.fixture
 def armed(monkeypatch):
-    """Every gate under the step on, as an operator would set them. The default is every one off."""
-    for name in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_REPORT_READERS_ENABLED",
-                 "GEOMETRY_SURVEY_ENABLED", "GEOMETRY_AGENT_STEP_ENABLED"):
-        monkeypatch.setattr(polcfg, name, True)
+    """The deterministic planner, so these tests measure the platform's chain and not a model."""
     monkeypatch.setattr(polcfg, "GEOMETRY_AGENT_STEP_PROVIDER", "reference")
 
 
@@ -64,33 +61,13 @@ def _planned(case: str = "venturi_orifice_001") -> tuple[dict, dict]:
 
 
 # -------------------------------------------------------------------------------------------------
-# THE SWITCH. Nothing below runs, and nothing it owns exists on a row, until it is set.
+# A ROW WITH NO PLAN. The step owns a key on the survey row, and a row without one asks nobody anything.
 # -------------------------------------------------------------------------------------------------
 
-def test_the_step_is_off_by_default_and_its_own_switch_is_not_enough():
-    assert polcfg.GEOMETRY_AGENT_STEP_ENABLED is False
-    assert gst.step_enabled() is False
-
-
-def test_the_switch_alone_does_nothing_without_the_survey(monkeypatch):
-    """`GEOMETRY_AGENT_STEP_ENABLED` is read with every gate beneath it, every time, so setting one
-    flag in a test or in an environment cannot arm a chain whose earlier steps are off."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_AGENT_STEP_ENABLED", True)
-    assert gst.step_enabled() is False
-    monkeypatch.setattr(polcfg, "GEOMETRY_MEASUREMENT_ENABLED", True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
-    assert gst.step_enabled() is False, "the survey is still off"
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", True)
-    assert gst.step_enabled() is True
-
-
-def test_with_the_step_off_the_survey_raises_no_late_question_and_reads_none(monkeypatch):
-    """A row that carries a `late` key - written before the switch was turned off, say - is not a
-    question with the step off: `late_view` is the only reader and it is gated."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_MEASUREMENT_ENABLED", True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", True)
-    state = {**_surveyed(), "late": {"schema": gst.LATE_SCHEMA, "id": "budget_after_plan",
+def test_a_row_with_no_plan_raises_no_late_question_and_reads_none():
+    """A `late` key with no question id behind it is not a question. `late_view` is the only reader and
+    every other reader goes through it, so a row like this asks the customer nothing."""
+    state = {**_surveyed(), "late": {"schema": gst.LATE_SCHEMA, "id": "",
                                      "text": "raise it?", "options": ["hold", "raise"],
                                      "default": "hold", "envelope": {"cap": 1, "cells_high": 2}}}
     assert gs.late_view(state) is None
@@ -101,14 +78,17 @@ def test_with_the_step_off_the_survey_raises_no_late_question_and_reads_none(mon
                          words="hold", latest_user_message="hold")
 
 
-def test_at_submission_with_the_step_off_returns_the_row_untouched_and_stores_nothing(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_AGENT_STEP_ENABLED", False)
+def test_at_submission_without_a_survey_row_returns_what_it_was_given_and_stores_nothing(monkeypatch):
+    """The step needs a survey, a document and an upload. Any of them missing is a job with nothing to
+    plan against, and nothing is written for it."""
     saved: list = []
     monkeypatch.setattr(gs, "save", lambda *a, **k: saved.append(a))
-    state, doc = _answered()
-    got = asyncio.run(gst.at_submission(owner_id="o", session_id="s", source_ref=object(), state=state,
-                                        document=doc, fidelity="standard"))
-    assert got is state and saved == []
+    _state, doc = _answered()
+    for kwargs in ({"state": None, "document": doc, "source_ref": object()},
+                   {"state": _answered()[0], "document": None, "source_ref": object()},
+                   {"state": _answered()[0], "document": doc, "source_ref": None}):
+        got = asyncio.run(gst.at_submission(owner_id="o", session_id="s", fidelity="standard", **kwargs))
+        assert got is kwargs["state"] and saved == []
 
 
 # -------------------------------------------------------------------------------------------------
@@ -422,22 +402,6 @@ def test_the_builders_own_read_falls_back_to_todays_two_values_and_says_why(arme
     assert why == "this run names no uploaded geometry"
 
 
-def test_with_the_step_off_the_builders_read_is_the_call_it_always_made(monkeypatch):
-    import meshpipeline.cad.regions as regions
-
-    monkeypatch.setattr(polcfg, "GEOMETRY_AGENT_STEP_ENABLED", False)
-    seen: list = []
-
-    async def _block(state):
-        seen.append(state)
-        return {"schema": "geometry_agent.planner_block.v1"}
-
-    monkeypatch.setattr(regions, "agent_block_for_state", _block)
-    got = asyncio.run(regions.planner_inputs_for_state({"request_txt": "mesh it"}))
-    assert got == ("mesh it", {"schema": "geometry_agent.planner_block.v1"}, "")
-    assert len(seen) == 1
-
-
 # -------------------------------------------------------------------------------------------------
 # ONE RESOLUTION PER FIELD: what the corpus refused
 # -------------------------------------------------------------------------------------------------
@@ -516,15 +480,10 @@ def test_the_third_intakes_question_reaches_the_intake_prompt_in_its_own_words(a
     assert "now that the geometry agent has planned the part" in block
     assert "[budget_after_plan]" in block
     assert "hold at 2,000,000" in block and "raise to about 3,000,000" in block
-    # and it is gone from the prompt the moment the switch is not set
-    import meshpipeline.settings.policy as cfg
-    was, cfg.GEOMETRY_AGENT_STEP_ENABLED = cfg.GEOMETRY_AGENT_STEP_ENABLED, False
-    try:
-        off = "\n".join(survey_lines(state))
-    finally:
-        cfg.GEOMETRY_AGENT_STEP_ENABLED = was
-    assert "budget_after_plan" not in off
-    assert "Nothing is left to ask about the geometry" in off
+    # and a row whose plan raised no trade says there is nothing left to ask
+    none_raised = "\n".join(survey_lines(_planned()[0]))
+    assert "budget_after_plan" not in none_raised
+    assert "Nothing is left to ask about the geometry" in none_raised
 
 
 # -------------------------------------------------------------------------------------------------

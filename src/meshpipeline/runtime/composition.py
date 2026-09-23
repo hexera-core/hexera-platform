@@ -93,12 +93,10 @@ def install_adapters() -> None:
     object_storage.set_object_store(build_object_store())
     search.set_web_search_provider(build_web_search_provider())
     training_export.set_export_enqueuer(_enqueue_training_export)
-    # Bound whether or not the feature is on. Binding a seam is not turning anything on: with
-    # GEOMETRY_MEASUREMENT_ENABLED false nothing ever calls it, and binding it here means an
-    # operator who does turn it on does not also have to redeploy a different composition.
+    # The upload's measurement, and the look that follows it once the survey has composed the
+    # measurement for what the customer said. A process that composes no adapters leaves both unbound,
+    # which the contract answers with a logged no-op rather than a failure.
     geometry_measurement.set_measurement_enqueuer(_enqueue_geometry_measurement)
-    # The same reasoning one gate further on: bound always, called only with GEOMETRY_VISION_ENABLED
-    # on AND a measurement row already written.
     geometry_measurement.set_look_enqueuer(_enqueue_geometry_look)
     mesh_execution.set_mesh_executor(build_mesh_executor())
 

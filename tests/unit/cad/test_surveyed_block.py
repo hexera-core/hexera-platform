@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import meshpipeline.settings.policy as polcfg
 from meshpipeline.cad import regions
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "geometry_survey"
@@ -42,7 +41,6 @@ def rows(monkeypatch):
 
     monkeypatch.setattr(regions, "stored_document_for_source", document)
     monkeypatch.setattr(gs, "load", load)
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     return doc, stored, gs
 
 
@@ -54,42 +52,31 @@ def _answered(gs, doc) -> dict:
     return gs.record_answer(state, question_id="role_outlet", choice="o1", words="o1 out", latest_user_message=said)
 
 
-def test_with_the_survey_off_the_planner_gets_the_measurements_own_block(rows, monkeypatch):
+def test_the_planner_gets_the_block_composed_for_the_customer(rows):
     doc, stored, gs = rows
     stored["survey"] = _answered(gs, doc)
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", False)
-    block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
-    assert block == doc["planner_block"]
-    assert "survey" not in block
-
-
-def test_with_the_survey_on_the_planner_gets_the_block_composed_for_the_customer(rows, monkeypatch):
-    doc, stored, gs = rows
-    stored["survey"] = _answered(gs, doc)
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_SURVEY_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
     block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
     assert block["survey"]["confirmed"]["opening.role=inlet"]["applies_to"] == ["o2"]
     assert block["customer_cell_cap"] == 2_000_000
     assert doc["planner_block"]["customer_cell_cap"] is None
 
 
-def test_with_no_survey_stored_the_planner_gets_the_measurements_own_block(rows, monkeypatch):
+def test_with_no_survey_stored_the_planner_gets_the_measurements_own_block(rows):
+    """A row measured but never surveyed is an absence, not a failure: the planner is handed the
+    measurement's own block and no `survey` key, exactly as it was before the survey existed."""
     doc, _stored, _gs = rows
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_SURVEY_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
-    assert asyncio.run(regions.agent_block_for_state(_state_for(doc))) == doc["planner_block"]
+    block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
+    assert block == doc["planner_block"]
+    assert "survey" not in block
 
 
-def test_a_look_that_landed_after_the_last_composition_is_composed_in_before_the_planner_reads(rows, monkeypatch):
+def test_a_look_that_landed_after_the_last_composition_is_composed_in_before_the_planner_reads(rows):
     doc, stored, gs = rows
     stored["survey"] = _answered(gs, doc)
     assert stored["survey"]["composed_for"]["look_status"] != "ok"
     doc["look"] = {**(doc.get("look") or {}), "status": "ok",
                    "impression": {"attachments": ["a flange at each end"], "internal_features": [],
                                   "openings_seen": []}}
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_SURVEY_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
     block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
     assert block["survey"]["looked"] is True
     assert block["survey"]["seen"]["attachments"]["value"] == ["a flange at each end"]

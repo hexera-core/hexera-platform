@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# Responsibility: Write `geometry_step_gate_row.json`, the answered survey row with a plan on it that the off
-#                 gate's cases E and F read, from the current code and the conversation the first one recorded.
+# Responsibility: Write `geometry_step_gate_row.json`, the answered survey row with a plan on it that
+#                 `check_flags_gone_changed_nothing.py` reads, from the current code and the conversation the
+#                 first one recorded.
 # Boundaries: a fixture generator. It composes through the platform's own `geometry_survey`, answers through
 #             `geometry_survey.answered`, and plans through `geometry_step.plan_the_part`. It decides nothing.
 #
@@ -8,18 +9,19 @@
 # only usable while it is what its own inputs COMPOSE to: `geometry_step` refuses to plan against a survey it
 # cannot reproduce, because the customer's answers are bound to the survey they were asked about. So the moment
 # the measurement package changed how a survey is composed (here: `52b95308`, which changed where the builder's
-# bore comes from), the fixture went stale and the step began falling back to its step-off values. Case F then
-# reported "the planner's message did not move" and the gate called ITSELF blind, which is the correct verdict
-# and a useless one: nothing was wrong with the platform, the ruler had rotted.
+# bore comes from), the fixture went stale and the step began falling back to the builder's own planner. The
+# gate that read it then reported "the planner's message did not move" and called ITSELF blind, which was the
+# correct verdict and a useless one: nothing was wrong with the platform, the ruler had rotted.
 #
 # The CONVERSATION is preserved and only the COMPOSITION is refreshed: the same two role answers on the same two
-# mouths, by the same principal, so E and F keep testing what they were written to test.
+# mouths, by the same principal, so the gate keeps testing what it was written to test.
 #
 #   python devtools/quality/make_geometry_step_gate_row.py [--out PATH] [--document PATH]
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,15 +44,18 @@ def main() -> int:
     args = ap.parse_args()
 
     import meshpipeline.settings.policy as polcfg
-    polcfg.GEOMETRY_MEASUREMENT_ENABLED = True
-    polcfg.GEOMETRY_REPORT_READERS_ENABLED = True
-    polcfg.GEOMETRY_SURVEY_ENABLED = True
-    polcfg.GEOMETRY_AGENT_STEP_ENABLED = True
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = "reference"
-    # the two package stages OFF: this row is the one every case reads, and a fixture that carried a stage the
-    # gate does not turn on would make E and F disagree with the configuration named in their own labels
+    # THE TWO PACKAGE STAGES AT THEIR SHIPPED DEFAULT, which is off, because that is the configuration the
+    # gate that reads this row runs under. A row composed with a stage its reader does not have is a row
+    # that reader cannot reproduce, and the step refuses a survey it cannot reproduce. An export in the
+    # shell wins over the platform, so the two are cleared first and the arming is asserted, not assumed.
     polcfg.GEOMETRY_MEASURED_STOPS_ENABLED = False
     polcfg.GEOMETRY_FLUID_SIDE_ENABLED = False
+    for name in polcfg.GEOMETRY_PACKAGE_SWITCHES:
+        os.environ.pop(name, None)
+    armed = polcfg.arm_the_package()
+    if set(armed.values()) != {"off"}:
+        raise SystemExit(f"the package's stages are not where this row is composed: {armed}")
 
     from meshpipeline.application import geometry_step as gst
     from meshpipeline.application import geometry_survey as gs
@@ -70,7 +75,7 @@ def main() -> int:
 
     step = state.get("geometry_step") or {}
     if str(step.get("status") or "") != "planned":
-        raise SystemExit(f"the step did not plan, so this row cannot witness case F: {step.get('reason')!r}")
+        raise SystemExit(f"the step did not plan, so this row witnesses nothing: {step.get('reason')!r}")
     for question_id, _o, _w in ANSWERS:
         if question_id not in (state.get("asked") or []):
             raise SystemExit(f"{question_id} was not asked, so the recorded conversation does not fit this survey")

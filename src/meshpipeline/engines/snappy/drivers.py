@@ -35,26 +35,16 @@ if TYPE_CHECKING:
 
 
 
-async def _agent_block(state) -> dict | None:
-    """The measurement package's typed block for this run's geometry, or None.
-
-    None is the whole of the fail-open: the planner adds no key and composes the dict it composes
-    today. It is also the answer with the setting off, with no measurement stored, with a row that
-    describes different bytes, and in an image that does not carry the measurement distribution.
-    """
-    from meshpipeline.cad.regions import agent_block_for_state
-    return await agent_block_for_state(state)
-
-
 async def _planner_inputs(state, job_id: str = "") -> tuple[str, dict | None, str]:
     """The request the planner reads, the typed block after its cut, and why the step was not used.
 
-    With GEOMETRY_AGENT_STEP_ENABLED off: `state.get("request_txt", "")`, `_agent_block(state)` and no
-    reason, exactly the two values every call site below read before the step existed. With it on: the
-    geometry agent's write-up in front of the request and its validated handoff as the block, or, when
-    that cannot be had, the step-off values and the sentence saying why (`cad.regions`)."""
-    if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
-        return state.get("request_txt", ""), await _agent_block(state), ""
+    The geometry agent's write-up in front of the request and its validated handoff as the block, or,
+    when that cannot be had, `state.get("request_txt", "")` with `regions.agent_block_for_state(state)`
+    - the two values every call site below read before the step existed - and the sentence saying why.
+
+    None for the block is the whole of the fail-open: the planner adds no key and composes the dict it
+    composes without one. It is the answer with no measurement stored, with a row that describes other
+    bytes, and in an image that does not carry the measurement distribution."""
     from meshpipeline.cad.regions import planner_inputs_for_state
     return await planner_inputs_for_state(state)
 
@@ -63,10 +53,10 @@ class _ForThisRun:
     """The request, the typed block and the cell ceiling for ONE driver call, read at most once.
 
     Before the geometry agent's step these were two reads of the stored row, cheap enough to repeat for
-    every plan call and every attempt's ceiling. With the step on the same read also rebuilds the survey
-    from its own inputs, validates the handoff against the package's contract and composes the planner
-    block again, so repeating it per attempt is that work four times over for an answer that cannot have
-    changed: nothing inside a driver call writes the row this reads. So it is read once and kept.
+    every plan call and every attempt's ceiling. The same read now also rebuilds the survey from its own
+    inputs, validates the handoff against the package's contract and composes the planner block again,
+    so repeating it per attempt is that work four times over for an answer that cannot have changed:
+    nothing inside a driver call writes the row this reads. So it is read once and kept.
 
     The reason the step was not used is logged and recorded ONCE per driver call, for the same reason the
     value is read once: a fallback is one fact about the job, not one per meshing attempt.
@@ -105,17 +95,15 @@ class _ForThisRun:
         budget in the typed block as `customer_cell_cap`; this is what holds the mesh to it when they
         confirmed it in the budget trade. A budget they only wrote in the brief is `stated`, not
         confirmed, and is left to the planner's reading: a sentence parsed into a number that nobody
-        checked does not get to starve a mesh. With the survey off this is the compute ceiling, read the
-        way it was always read.
+        checked does not get to starve a mesh. With nothing confirmed this is the compute ceiling, read
+        the way it was always read.
         """
         hard = int(polcfg.CELL_HARD_LIMIT)
-        if not polcfg.GEOMETRY_SURVEY_ENABLED:
-            return hard
         try:
             from meshpipeline.contracts.geometry_agent_block import confirmed_cell_cap
-            # the block the planner was handed: with the geometry agent's step off this is
-            # `_agent_block(state)`, and with it on it is the step's handoff, whose survey carries a
-            # budget confirmed at the THIRD intake as well as the survey's own trade
+            # the block the planner was handed: the step's handoff, whose survey carries a budget
+            # confirmed at the THIRD intake as well as the survey's own trade, or, where the step could
+            # not plan, the measurement's own block
             _request, block = await self.planner()
             cap = confirmed_cell_cap(block)
         except Exception:                          # noqa: BLE001 - a ceiling is never worth a mesh
@@ -379,8 +367,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400  # per-mesh cap; stays under the Cloud Run Job task-timeout
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
-    # the request and the typed block: the state's own and `_agent_block(state)` with the geometry
-    # agent's step off, its write-up and its handoff with it on; read once for this call
+    # the request and the typed block: the geometry agent's write-up and its validated handoff, or the
+    # state's own request and the measurement's block where it could not plan; read once for this call
     _for_run = _ForThisRun(state, job_id)
 
     for attempt in range(1, max_attempts + 1):

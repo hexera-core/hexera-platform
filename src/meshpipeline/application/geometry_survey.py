@@ -47,24 +47,25 @@ logger = logging.getLogger(__name__)
 #   The look worker recomposes the survey when the look lands, so the questions only the look can
 #   raise (a mouth the measurement did not find) arrive before the conversation ends.
 #
-#   Step 5 is `application/geometry_step.py`, behind GEOMETRY_AGENT_STEP_ENABLED. With it off the
-#   agent's reasoning pass is not called here; the builder's own planner decides what to do, and it
-#   is handed the survey as facts it may not re-decide. With it on, the geometry agent plans the part
-#   at submission, from the stored survey and the customer's answers, through the package's chain.
+#   Step 5 is `application/geometry_step.py`: the geometry agent plans the part at submission, from
+#   the stored survey and the customer's answers, through the package's chain. It decides what to DO
+#   and never re-decides what the geometry IS. When it cannot plan, the builder's own planner decides
+#   and is handed the survey as facts it may not re-decide, and the reason is on the row.
 #
-#   Step 6 is the budget trade, released only when every step-4 question is settled, and put once.
-#   With the step on, a trade costed on the geometry agent's PLAN is the third intake (`ROUTE_LATE`),
-#   and only when the survey had no budget question of its own.
+#   Step 6 is the budget trade, released only when every step-4 question is settled, and put once. A
+#   trade costed on the geometry agent's PLAN is the third intake (`ROUTE_LATE`), and only when the
+#   survey had no budget question of its own.
 #
-#   Step 7 is `cad.regions.agent_block_for_state`, which puts `survey` into the block the planner
-#   serialises after `request_txt[:2000]`; with the step on, `cad.regions.planner_inputs_for_state`
-#   hands the planner the geometry agent's write-up in front of the cut and its typed block after it.
+#   Step 7 is `cad.regions.planner_inputs_for_state`, which hands the planner the geometry agent's
+#   write-up in front of `request_txt[:2000]` and its typed block, carrying `survey`, after the cut.
+#   When there is no plan to hand over it is `cad.regions.agent_block_for_state` instead, which is the
+#   measurement's own block and no write-up, and the reason that happened is logged and recorded.
 CHAIN: tuple[tuple[str, str], ...] = (
     ("intake", "the customer states purpose, budget and boundary conditions"),
     ("measure", "the stored measurement is composed for what they said"),
     ("look", "the look is taken with the purpose and representation that decided"),
     ("intake", "the Surveyor's questions are put and the answers stored with who gave them"),
-    ("geometry", "the builder's planner decides what to do from facts it may not re-decide"),
+    ("geometry", "the geometry agent decides what to DO from facts it may not re-decide"),
     ("intake", "the budget trade, and only it, once the step-4 questions are settled"),
     ("builder", "the survey rides in the typed block after the request cut"),
 )
@@ -105,12 +106,6 @@ BRIEF_MAX_CHARS = 8000
 
 class SurveyError(RuntimeError):
     """A call this module refuses, with a sentence the model can act on. Never reaches a customer."""
-
-
-def survey_enabled() -> bool:
-    """All three gates, read together every time, so a test that sets one cannot arm the chain."""
-    return bool(polcfg.GEOMETRY_MEASUREMENT_ENABLED and polcfg.GEOMETRY_REPORT_READERS_ENABLED
-                and polcfg.GEOMETRY_SURVEY_ENABLED)
 
 
 # -------------------------------------------------------------------------------------------------
@@ -437,9 +432,8 @@ def question_views(state: dict) -> list[dict]:
 
 
 def late_view(state: dict | None) -> dict | None:
-    """The third intake's question as a view, `status` and all, or None. Only while the geometry agent's
-    step is on, and only when its plan raised one: with the step off no row carries `late` and nothing
-    here runs.
+    """The third intake's question as a view, `status` and all, or None. Only when a plan raised one:
+    a row whose step did not plan carries no `late` and nothing here runs.
 
     It carries its own status because it is read on its own as often as it is read through
     `question_views`: `submission_problems` and `at_submission` both ask this function whether the
@@ -447,7 +441,7 @@ def late_view(state: dict | None) -> dict | None:
     other reader crashes, which is what happened before this line moved here.
     """
     late = (state or {}).get("late")
-    if not isinstance(late, dict) or not late.get("id") or not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
+    if not isinstance(late, dict) or not late.get("id"):
         return None
     stored = late.get("envelope")
     env: dict[str, Any] = stored if isinstance(stored, dict) else {}
@@ -980,9 +974,6 @@ async def for_submission(*, owner_id: str, session_id: str, source_ref, document
 def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
     """Step 3, queued at the step it belongs to. Never raises."""
     try:
-        from meshpipeline.application import geometry_vision
-        if not geometry_vision.look_enabled():
-            return "off"
         stored_look = document.get("look")
         look = stored_look if isinstance(stored_look, dict) else {}
         if look.get("status") == "ok":
@@ -1049,8 +1040,6 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
 
 async def recompose_after_look(source_id: str, owner_id: str, document: dict) -> str:
     """The look landed: compose the survey again with it, keeping every answer still bound. Never raises."""
-    if not survey_enabled():
-        return "off"
     try:
         sha = str(((document.get("source") or {}).get("sha256")) or document.get("source_sha256") or "")
         state = await load(owner_id, source_id, sha256=sha)
@@ -1073,4 +1062,4 @@ __all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "ROUTE_ADVISORY",
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "mark_asked", "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
-           "said_by_customer", "save", "stage_of", "survey_enabled", "survey_the_part"]
+           "said_by_customer", "save", "stage_of", "survey_the_part"]

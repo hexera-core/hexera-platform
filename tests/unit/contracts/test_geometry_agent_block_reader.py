@@ -6,7 +6,6 @@ import sys
 
 import pytest
 
-import meshpipeline.settings.policy as polcfg
 from meshpipeline.cad import regions as cad_regions
 from meshpipeline.contracts import geometry_agent_block as gab
 
@@ -76,25 +75,13 @@ def test_a_package_that_raises_is_an_absence_not_a_failure(monkeypatch):
     assert gab.block_for_document({"status": "ok"}) is None
 
 
-def test_with_the_setting_off_nothing_is_read_at_all(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", False)
-
-    async def _never(_ref):
-        raise AssertionError("a measurement was read with the setting off")
-
-    monkeypatch.setattr("meshpipeline.cad.regions.stored_document_for_source", _never)
-    assert asyncio.run(cad_regions.agent_block_for_state(STATE)) is None
-
-
-def test_a_run_with_no_geometry_gets_no_block(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
+def test_a_run_with_no_geometry_gets_no_block():
     assert asyncio.run(cad_regions.agent_block_for_state({})) is None
     assert asyncio.run(cad_regions.agent_block_for_state({"geometry": {}})) is None
     assert asyncio.run(cad_regions.agent_block_for_state(None)) is None
 
 
 def test_a_state_with_geometry_reads_the_row_and_forwards_the_block(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     seen: list = []
 
     async def _read(ref, **_kw):
@@ -107,7 +94,6 @@ def test_a_state_with_geometry_reads_the_row_and_forwards_the_block(monkeypatch)
 
 
 def test_a_read_that_raises_never_fails_a_plan(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
 
     async def _boom(_ref, **_kw):
         raise RuntimeError("the database is unreachable")

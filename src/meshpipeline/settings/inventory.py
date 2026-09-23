@@ -78,6 +78,11 @@ _RETIRED_DATA_LAYOUT = (
 # Settings DELETED without an alias, and why. A removed name is rejected at startup rather than
 # ignored: silently accepting a stale variable is how an operator's configured value ends up
 # meaning something it never meant. THE authority: nothing else may keep a second list.
+_RETIRED_SURVEYOR = (
+    "deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and "
+    "the builder handoff - is on for every upload, so there is no off state for this to select. "
+    "`surveyor-v1-precleanup` is the tag where it still worked.")
+
 REMOVED: dict[str, str] = {
     "REVIEWER_MAX_TOOL_CALLS":
         "renamed to REVIEWER_MAX_ROUNDS: it limits provider ROUNDS, not tool calls. The old "
@@ -110,6 +115,16 @@ REMOVED: dict[str, str] = {
         "removed. The planner's per-attempt ceiling is PLANNER_TIMEOUT, one of the twelve declared "
         "settings of the planner model route. The old name briefly survived as the route's default "
         "and now controls nothing, so it is refused rather than read and discarded.",
+    # THE SURVEYOR'S FIVE GATES. They existed to prove the chain changed nothing while it was off, beside
+    # a running product, and the byte-identical off gate was run one last time on 2026-09-23 before they
+    # went. The chain is the product now, so a deployment that still sets one is asking for a state this
+    # code cannot produce, and is told so rather than started. The measurement package's own two stages
+    # are NOT here: they are still settings, because each is a real cost an operator may decline.
+    "GEOMETRY_MEASUREMENT_ENABLED": _RETIRED_SURVEYOR,
+    "GEOMETRY_REPORT_READERS_ENABLED": _RETIRED_SURVEYOR,
+    "GEOMETRY_VISION_ENABLED": _RETIRED_SURVEYOR,
+    "GEOMETRY_SURVEY_ENABLED": _RETIRED_SURVEYOR,
+    "GEOMETRY_AGENT_STEP_ENABLED": _RETIRED_SURVEYOR,
     "OUTPUTS_BASE": _RETIRED_DATA_LAYOUT,
     "UPLOADS_BASE": _RETIRED_DATA_LAYOUT,
     "UPLOAD_STAGING_ROOT": _RETIRED_DATA_LAYOUT,
@@ -369,22 +384,17 @@ INVENTORY: list[Group] = [
         EnvVar("PIPELINE_TOTAL_TIMEOUT_SECONDS", "21600", kind="int", help="one absolute wall-clock ceiling for an ENTIRE job across every attempt, retry and restart"),
     ]),
 
-    Group("Geometry measurement at upload", note="OFF by default. With it off an upload behaves exactly as it did before this path existed: nothing is imported, no task is queued and no row is written. Turning it on needs the geometry-agent distribution installed in the image that runs it.", vars=[
-        EnvVar("GEOMETRY_MEASUREMENT_ENABLED", "false", kind="bool", help="measure an uploaded file and store the report against its sha256"),
+    Group("The Surveyor: measuring, looking at and surveying an uploaded geometry", note="Every upload is measured, looked at and surveyed, and the geometry agent plans it at submission. It needs the geometry-agent distribution installed in the image that runs it; without it, every step records what it could not do and the job runs on what is there. Nothing here switches the chain on or off: the five flags that did are retired, and the register below says so.", vars=[
         EnvVar("GEOMETRY_MEASUREMENT_SYNC_MAX_MB", "4", kind="float", help="under this the measurement runs in the upload request; at or above it a worker takes it"),
         EnvVar("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900", kind="int", help="one measurement's deadline; past it the row records the failure and the conversation is unaffected"),
-        EnvVar("GEOMETRY_REPORT_READERS_ENABLED", "false", kind="bool", help="whether intake, the mesh planner and the admission slot ACT on a stored measurement; separate from writing one, and off on its own"),
-        EnvVar("GEOMETRY_VISION_ENABLED", "false", kind="bool", help="after the measurement, describe the part from rendered views with a vision model and store the words in the same row; does nothing unless GEOMETRY_MEASUREMENT_ENABLED is also true"),
         EnvVar("GEOMETRY_VISION_TIMEOUT_SECONDS", "180", kind="int", help="one look's deadline, render included; past it the row keeps the measurement and the look is abandoned"),
         EnvVar("GEOMETRY_VISION_PROVIDER", "openai", help="which provider the look reads with; a provider with no key in this environment is a look that does not happen, never a fall-through to another provider"),
         EnvVar("GEOMETRY_VISION_MODEL", "gpt-5.6-luna", help="the reader model the look uses on that provider"),
-        EnvVar("GEOMETRY_SURVEY_ENABLED", "false", kind="bool", help="intake puts the measurement's own questions to the customer and stores their answers with who gave them, and the builder receives the survey in its typed block; does nothing unless GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED are also true"),
-        EnvVar("GEOMETRY_AGENT_STEP_ENABLED", "false", kind="bool", help="at submission the geometry agent plans the part from the survey and the customer's answers, a question only the plan raises (the budget trade) is put once, and the builder receives both write-ups; any failure runs the job as with this off; does nothing unless GEOMETRY_SURVEY_ENABLED is also true"),
         EnvVar("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek", help="the model the geometry agent plans with: deepseek, deepinfra, anthropic, generic or reference (the package's deterministic stand-in); no key for it means no plan, never another provider"),
-        EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure and the job runs as with the step off. 0 means no clock at all"),
+        EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure on the row and the job runs without the plan. 0 means no clock at all"),
         EnvVar("GEOMETRY_AGENT_LEDGER_PATH", "", help="a JSONL file the job ledger's rows are also appended to, for the package's own ledger tools; empty keeps them on the survey row only"),
-        EnvVar("GEOMETRY_MEASURED_STOPS_ENABLED", "false", kind="bool", help="find where a passage stops with no mouth at measure time, so a closed pipe end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds facts.passage_ends; does nothing unless GEOMETRY_MEASUREMENT_ENABLED is also true"),
-        EnvVar("GEOMETRY_FLUID_SIDE_ENABLED", "false", kind="bool", help="where the file reads the same with the flow through its bores and with the file itself as the flow, put the question to the customer instead of letting the mesher's reading stand, and place nothing on the flow path until somebody answers; does nothing unless GEOMETRY_SURVEY_ENABLED is also true"),
+        EnvVar("GEOMETRY_MEASURED_STOPS_ENABLED", "false", kind="bool", help="find where a passage stops with no mouth at measure time, so a closed pipe end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds facts.passage_ends"),
+        EnvVar("GEOMETRY_FLUID_SIDE_ENABLED", "false", kind="bool", help="where the file reads the same with the flow through its bores and with the file itself as the flow, put the question to the customer instead of letting the mesher's reading stand, and place nothing on the flow path until somebody answers"),
     ]),
 
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[

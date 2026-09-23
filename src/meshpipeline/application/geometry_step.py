@@ -40,9 +40,11 @@ logger = logging.getLogger(__name__)
 # FAIL-OPEN, AND IT SAYS WHY. Anything that goes wrong here (no model configured, the loop runs out,
 # the plan is sent back three times, a contract refuses a handoff, the survey on the row is not what
 # its own inputs compose to) is stored on the row as `status: failed` with the sentence, logged, and
-# the job then runs exactly as it does with GEOMETRY_AGENT_STEP_ENABLED off: no third question, the
-# builder's request and typed block untouched. The builder's side says the same sentence again when
-# it falls back (`engines/snappy/drivers._planner_inputs`).
+# the job then runs without the plan: no third question, the builder's request and typed block as the
+# survey alone composes them. The builder's side says the same sentence again when it falls back
+# (`engines/snappy/drivers._planner_inputs`). A STEP THAT FAILED AND A STEP THAT HAD NOTHING TO DO
+# ARE DIFFERENT FACTS and the row keeps them apart: `status` is `planned` or `failed` with its reason,
+# and a row with no `geometry_step` at all is a job where the step never had a survey to read.
 
 #: The step's own name, written into every record this module stores on the survey row.
 STEP_SCHEMA = "meshpipeline.geometry_step.v1"
@@ -62,11 +64,6 @@ THREAD_GRACE_S = 120.0
 
 class StepRefused(RuntimeError):
     """The step cannot be used for this job, and the sentence says why. Never reaches a customer."""
-
-
-def step_enabled() -> bool:
-    """Every gate under the step, read together every time."""
-    return bool(polcfg.GEOMETRY_AGENT_STEP_ENABLED) and gs.survey_enabled()
 
 
 def _now() -> str:
@@ -680,7 +677,7 @@ async def at_submission(*, owner_id: str, session_id: str, source_ref: Any, stat
 
     One attempt per set of answers. A failure is not retried for the same answers, because every retry
     is another run of the loop inside the customer's submission turn; a changed answer makes a new key."""
-    if not step_enabled() or not isinstance(state, dict) or not isinstance(document, dict) or source_ref is None:
+    if not isinstance(state, dict) or not isinstance(document, dict) or source_ref is None:
         return state
     if not_yet(state):
         # STEP 5 IS AFTER STEP 4, and the survey's own budget trade is part of step 4's turn. Planning
@@ -857,5 +854,5 @@ def record_handover(state: dict, handoff: dict) -> dict:
 
 __all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STEP_SCHEMA", "StepRefused", "at_submission",
            "builder_handoff", "late_handoff", "not_yet", "note_late_answer", "plan_key", "plan_the_part",
-           "planner_client", "record_handover", "request_with_write_up", "step_enabled", "submission_problems",
+           "planner_client", "record_handover", "request_with_write_up", "submission_problems",
            "the_bytes_again"]

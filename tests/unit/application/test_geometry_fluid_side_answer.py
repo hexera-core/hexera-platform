@@ -31,7 +31,6 @@ THROUGH = "the fluid runs through the bores; the part is the solid around it"
 @pytest.fixture
 def side_on(monkeypatch):
     """The package's own switch, armed the way the platform arms it and not by hand."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", True)
     monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", True)
     monkeypatch.setattr(polcfg, "GEOMETRY_MEASURED_STOPS_ENABLED", False)
     for name in polcfg.GEOMETRY_PACKAGE_SWITCHES:

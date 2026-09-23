@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from tests.unit.engines.test_planner_look_block import BLOCK, _captured
 
+import meshpipeline.cad.regions as regions
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.geometry_agent_block import confirmed_cell_cap
 from meshpipeline.engines.snappy import drivers
@@ -97,22 +98,22 @@ def test_only_a_confirmed_budget_is_read_as_the_customers_cap():
     assert confirmed_cell_cap(None) is None
 
 
-def _ceiling(monkeypatch, block, *, on=True, hard=4_000_000):
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", on)
+def _ceiling(monkeypatch, block, *, hard=4_000_000):
     monkeypatch.setattr(polcfg, "CELL_HARD_LIMIT", hard)
 
     async def agent_block(_state):
         return block
 
-    monkeypatch.setattr(drivers, "_agent_block", agent_block)
+    # the step has no upload to read for this state, so the driver falls back to the block the
+    # measurement composed, which is the one supplied here
+    monkeypatch.setattr(regions, "agent_block_for_state", agent_block)
     # the ceiling is read off the inputs the driver already holds for this call, so it is asked of one
     # of those rather than of a free function: `_ForThisRun` is what every call site builds
     return asyncio.run(drivers._ForThisRun({}).ceiling())
 
 
-def test_the_ceiling_is_the_compute_limit_with_the_survey_off(monkeypatch):
-    confirmed = {"survey": {"confirmed": {"cell_budget": {"kind": "confirmed", "value": 100_000}}}}
-    assert _ceiling(monkeypatch, confirmed, on=False) == 4_000_000
+def test_no_block_at_all_is_the_compute_limit(monkeypatch):
+    assert _ceiling(monkeypatch, None) == 4_000_000
 
 
 def test_a_budget_the_customer_confirmed_holds_the_mesh_to_it(monkeypatch):
@@ -131,10 +132,8 @@ def test_a_confirmed_budget_above_the_compute_limit_never_raises_it(monkeypatch)
 
 
 def test_a_ceiling_that_cannot_be_read_is_the_compute_limit(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", True)
-
     async def boom(_state):
         raise RuntimeError("the row could not be read")
 
-    monkeypatch.setattr(drivers, "_agent_block", boom)
+    monkeypatch.setattr(regions, "agent_block_for_state", boom)
     assert asyncio.run(drivers._ForThisRun({}).ceiling()) == polcfg.CELL_HARD_LIMIT

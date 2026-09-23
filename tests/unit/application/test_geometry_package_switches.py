@@ -1,4 +1,4 @@
-# Responsibility: The platform's two package-stage flags actually reach the measurement package, and reach it
+# Responsibility: The platform's two package-stage settings actually reach the measurement package, and reach it
 #                 before the file is opened; off, they leave the package at its own shipped default.
 # Boundaries: the policy seam and the two functions that arm it. What the package then DOES with the switch is
 #             the package's own tests and the corpus runs; this file only proves the wire is connected.
@@ -8,6 +8,11 @@
 # GEOMETRY_MEASURED_STOPS_ENABLED were switches an operator could set and nothing would happen: the package
 # reads its OWN environment variables and never sees a platform attribute. Gaps B and C were unreachable
 # through the platform's own configuration, which is the only way anybody turns them on.
+#
+# THEY SURVIVED THE FLAG CLEANUP, and this file is where the reason is checked rather than asserted: they are
+# not "is the feature on" for anything this platform does. Each is a stage inside another component, each
+# costs something real - a pass over the mesh at upload, a question put to the customer - and each is still
+# off unless somebody asks for it.
 from __future__ import annotations
 
 import os
@@ -26,11 +31,17 @@ def _clean_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_the_two_platform_flags_map_to_the_packages_own_variable_names():
+def test_the_two_platform_settings_map_to_the_packages_own_variable_names():
     """Spelled once. A typo here is a switch that silently does nothing, which is what this file is about."""
     assert polcfg.GEOMETRY_PACKAGE_SWITCHES == {
         "GEOMETRY_AGENT_MEASURED_STOPS": "GEOMETRY_MEASURED_STOPS_ENABLED",
         "GEOMETRY_AGENT_FLUID_SIDE": "GEOMETRY_FLUID_SIDE_ENABLED"}
+
+
+def test_both_are_still_settings_and_both_are_still_off_by_default():
+    """The five gates over the Surveyor are gone; these two are not gates over it and did not go with them."""
+    assert polcfg.GEOMETRY_MEASURED_STOPS_ENABLED is False
+    assert polcfg.GEOMETRY_FLUID_SIDE_ENABLED is False
 
 
 def test_off_arms_the_package_to_off_and_never_to_nothing(monkeypatch):
@@ -47,7 +58,7 @@ def test_on_arms_the_package_on(monkeypatch):
     assert [os.environ[k] for k in THEIRS] == ["on", "on"]
 
 
-def test_an_operators_own_export_wins_over_the_platform_flag(monkeypatch):
+def test_an_operators_own_export_wins_over_the_platform_setting(monkeypatch):
     """A developer who exported the package's variable meant it; the platform must not overwrite it, or the
     package's own tests and evals stop being runnable in the same shell."""
     monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", False)

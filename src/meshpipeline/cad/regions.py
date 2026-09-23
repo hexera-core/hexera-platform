@@ -127,53 +127,20 @@ def regions_of(path) -> CadRegions:
 
 __all__ = ["CadRegions", "MEASURED_NOT_ATTEMPTED", "agent_block_for_state", "components_of",
            "planner_inputs_for_state", "reading_for_source",
-           "regions_for_session", "regions_of", "stored_document_for_source",
+           "regions_of", "stored_document_for_source",
            "surface_analysis_from_document"]
-
-
-#: Keyed by (path, size, mtime) so a replaced upload is re-read rather than answered from a stale
-#: entry. Reading a 25 MB STEP costs seconds; intake asks on every admission preview.
-_CACHE: dict[tuple[str, int, int], CadRegions] = {}
-
-
-def regions_for_session(session_id: str, jobs_dir) -> CadRegions:
-    """The staged upload, read where the API used to leave it.
-
-    THIS READS A DIRECTORY THAT IS EMPTY BY DESIGN. `api/v1/upload.py:253` unlinks the staging
-    buffer at the end of every successful upload, because the durable copy is the object in
-    storage; this lists that same directory. It has therefore returned an empty `CadRegions` on
-    every job ever run, which is why the admission preview has always compared the customer's
-    declaration against nothing and why `contracts/rationale.py` told them otherwise.
-
-    It is kept, unchanged, for the one case it still answers: a file staged and not yet cleaned up,
-    which is what an in-process test and a local run without object storage have. `reading_for_source`
-    below is the reader that actually sees a customer's geometry.
-    """
-    from meshpipeline.contracts.intake_formats import format_for_suffix
-
-    root = Path(jobs_dir) / str(session_id or "")
-    if not root.is_dir():
-        return CadRegions()
-    staged = sorted(p for p in root.iterdir()
-                    if p.is_file() and format_for_suffix(p.suffix.lower()))
-    if not staged:
-        return CadRegions()
-    path = staged[0]
-    stat = path.stat()
-    key = (str(path), stat.st_size, int(stat.st_mtime))
-    if key not in _CACHE:
-        _CACHE[key] = regions_of(path)
-    return _CACHE[key]
 
 
 # -------------------------------------------------------------------------------------------------
 # THE READING A SESSION GETS
 #
-# Three situations used to arrive as one value. `regions_for_session` returned an empty `CadRegions`
-# whether the file had no named regions, the directory was gone, or the read threw; intake's
-# `_geometry_facts` then turned every exception into `{}`; and `engines/base.py:430-434` only tests
-# `surface_analysis is not None`, so `{}` passed the gate carrying nothing. A reader could not tell
-# "measured and unremarkable" from "never measured".
+# Three situations used to arrive as one value. Intake's reader used to list the staging directory
+# `api/v1/upload.py` empties at the end of every upload, so it returned an empty reading whether the
+# file had no named regions, the directory was gone, or the read threw; `_geometry_facts` then turned
+# every exception into `{}`; and `engines/base.py:430-434` only tests `surface_analysis is not None`,
+# so `{}` passed the gate carrying nothing. A reader could not tell "measured and unremarkable" from
+# "never measured", and a request for five named wall patches was refused on a count of zero that came
+# from an empty directory rather than from anything anybody had looked at.
 #
 # The contract here, from docs/pipeline.md section 2.3:
 #   None                      the measured phase did not run. Not an error, and the common case.
@@ -282,14 +249,10 @@ async def agent_block_for_state(state) -> dict | None:
     itself (`tests/unit/hygiene/test_architecture_boundaries.py::test_contracts_are_neutral`) and
     the shape of the block is a contract while reading a row is not.
 
-    `None` means the mesh planner adds no key and composes exactly the dict it composes today. It is
-    the answer to every failure: the setting off, no measurement, a row for different bytes, a
-    document written before the block existed in an image without the package, or a read that threw.
+    `None` means the mesh planner adds no key and composes exactly the dict it composes without one.
+    It is the answer to every failure: no measurement, a row for different bytes, a document written
+    before the block existed in an image without the package, or a read that threw.
     """
-    import meshpipeline.settings.policy as polcfg
-
-    if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
-        return None
     try:
         from meshpipeline.contracts.geometry_agent_block import block_for_document
         from meshpipeline.contracts.geometry_source import GeometrySourceRef
@@ -312,21 +275,18 @@ async def agent_block_for_state(state) -> dict | None:
 async def planner_inputs_for_state(state) -> tuple[Any, dict | None, str]:
     """What the mesh planner is handed for a run: `(request_txt, typed block, why the step was not used)`.
 
-    With GEOMETRY_AGENT_STEP_ENABLED off this is `state.get("request_txt", "")` and
-    `agent_block_for_state(state)`, the two values every planner call site read before this existed,
-    and the reason is empty. The gate is read before anything is imported.
+    STEP 7 OF THE CHAIN: the geometry agent's write-up in front of the request and the block the
+    package's `contract.deliver.builder_handoff` validated after the cut, carrying the survey, intake's
+    write-up, the flow patches and the plan's envelope. Whenever that cannot be had (no plan, a failed
+    step, a plan for other answers, a contract refusal, a read that threw) the answer is
+    `state.get("request_txt", "")` and `agent_block_for_state(state)`, the two values every planner call
+    site read before the step existed, and the third element says why. It never raises.
 
-    With it on, STEP 7 OF THE CHAIN: the geometry agent's write-up in front of the request and the
-    block the package's `contract.deliver.builder_handoff` validated after the cut, carrying the survey,
-    intake's write-up, the flow patches and the plan's envelope. Whenever that cannot be had (no plan,
-    a failed step, a plan for other answers, a contract refusal, a read that threw) the answer is the
-    two values the step-off path gives, and the third element says why. It never raises.
+    THE THIRD VALUE IS THE FACT ON THE RECORD. An empty reason means the step was used; a reason means
+    it was not, and says which failure it was. The caller logs it and writes it to the job's record, so
+    a plan made without the geometry agent never looks like one made with it.
     """
-    import meshpipeline.settings.policy as polcfg
-
     request_txt = (state or {}).get("request_txt", "")
-    if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
-        return request_txt, await agent_block_for_state(state), ""
     try:
         got = await _geometry_step_inputs(state, str(request_txt or ""))
         return got["request_txt"], got["typed"], ""
@@ -345,8 +305,6 @@ async def _geometry_step_inputs(state, request_txt: str) -> dict:
     from meshpipeline.application import geometry_survey as gs
     from meshpipeline.contracts.geometry_source import GeometrySourceRef
 
-    if not gst.step_enabled():
-        raise gst.StepRefused("the survey is off, so the geometry agent's step has nothing to read")
     payload = ((state or {}).get("geometry") or {}).get("ref")
     if not payload:
         raise gst.StepRefused("this run names no uploaded geometry")
@@ -367,23 +325,16 @@ async def _geometry_step_inputs(state, request_txt: str) -> dict:
 async def _surveyed_block(ref, document: dict) -> dict | None:
     """STEP 7 of the chain: the block composed for what the customer said, with the survey in it.
 
-    None with the survey off, with no survey stored for these bytes, or when the package refuses the
-    pair, and the caller then hands the planner the measurement's own block, exactly as before. The
-    gate is read first, so with it off nothing is imported and no row is read.
+    None with no survey stored for these bytes, or when the package refuses the pair, and the caller
+    then hands the planner the measurement's own block.
 
     The survey's block is preferred because it was composed FOR the customer: their purpose decided
     the representation and their budget is `customer_cell_cap`. If the look landed after the survey
     was last composed and the recomposition on the look worker did not happen, it is composed again
     here, in memory, from the same stored inputs, so the planner never gets the older of the two.
     """
-    import meshpipeline.settings.policy as polcfg
-
-    if not polcfg.GEOMETRY_SURVEY_ENABLED:
-        return None
     from meshpipeline.application import geometry_survey as gs
 
-    if not gs.survey_enabled():
-        return None
     state = await gs.load(str(ref.owner_id), str(ref.source_id), sha256=str(ref.sha256))
     if state is None:
         return None

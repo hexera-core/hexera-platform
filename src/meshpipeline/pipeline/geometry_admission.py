@@ -66,10 +66,6 @@ async def _stored_analysis(state, job_id: str) -> dict | None:
     None means nothing was stored and the caller falls through to the probe it has always run. A
     dict always carries `status`, so a rule never infers a verdict from an absent key.
     """
-    import meshpipeline.settings.policy as polcfg
-
-    if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
-        return None
     try:
         from meshpipeline.cad.regions import reading_for_source
         from meshpipeline.pipeline.geometry_state import geometry_ref

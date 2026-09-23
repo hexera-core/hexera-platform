@@ -64,12 +64,16 @@ FAILED_JOB_RETENTION_HOURS: int = int(optional_env("FAILED_JOB_RETENTION_HOURS",
 UPLOAD_RETENTION_DAYS: int      = int(optional_env("UPLOAD_RETENTION_DAYS", "30"))
 STALLED_JOB_TIMEOUT_HOURS: int  = int(optional_env("STALLED_JOB_TIMEOUT_HOURS", "4"))
 
-# GEOMETRY MEASUREMENT AT UPLOAD. One gate over the whole path: with it off, an upload does exactly
-# what it did before this existed - no import of the measurement package, no task, no row, no column
-# read. It is off by default because the measurement runs a separate pinned distribution that an
-# image need not carry, and because nothing downstream requires the row: every reader treats an
-# absent measurement as "not attempted" and proceeds.
-GEOMETRY_MEASUREMENT_ENABLED: bool = optional_env("GEOMETRY_MEASUREMENT_ENABLED", "false").lower() == "true"
+# THE SURVEYOR. An upload is measured, looked at, put to the customer as questions, planned by the
+# geometry agent and handed to the builder. The seven switches that used to gate that chain are gone:
+# they existed to prove the feature changed nothing while it was off, beside a running product, and
+# that job is done. `surveyor-v1-precleanup` is the tree where they still worked, and the commit that
+# deleted them carries the last digests they produced. What remains below is configuration: how long
+# a step may take, and which model reads or plans.
+#
+# A MISSING MEASUREMENT IS STILL AN ABSENCE, not an error, and that has not changed with the gates:
+# every reader treats a row that is not there as "not attempted" and proceeds, because an upload whose
+# measurement failed is a conversation that must still work.
 #: Under this many mebibytes the measurement runs inside the upload request, so the conversation
 #: opens holding the table; at or above it the request returns immediately and a worker measures.
 #: The split is a wait, not a capability: 44 corpus files measure at a median of 1.11 s and a p90 of
@@ -81,15 +85,12 @@ GEOMETRY_MEASUREMENT_SYNC_MAX_MB: float = float(optional_env("GEOMETRY_MEASUREME
 GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS: int = int(
     optional_env("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900"))
 
-# LOOKING AT THE FILE, which is a THIRD gate and off by default on its own. It only does anything when
-# GEOMETRY_MEASUREMENT_ENABLED is already true, and the `and` below is where that is enforced rather
-# than in a comment: there is nothing for a look to be attached to without a measurement row, and the
-# renders are labelled with the openings the measurement found.
-#
-# What it turns on: after a file is measured and its row is written, a background task renders the part
-# and asks a vision model to describe it in words, and those words are stored in the same row. It never
-# runs in the upload request and it never delays an upload - the look is queued behind the measurement,
-# has its own deadline, and a failure leaves the row exactly as the measurement left it.
+# LOOKING AT THE FILE. After a file is measured and its row is written, a background task renders the
+# part and asks a vision model to describe it in words, and those words are stored in the same row. It
+# never runs in the upload request and it never delays an upload: the look is queued behind the
+# measurement, has its own deadline, and a failure leaves the row exactly as the measurement left it.
+# There is nothing for a look to attach to without a measurement row, and the renders are labelled with
+# the openings the measurement found, so the look follows the measurement and never precedes it.
 #
 # What it costs: one provider call per uploaded file. Measured on six corpus parts with gpt-5.6-luna on
 # OpenAI, 2026-09-15: 18.2 to 29.1 seconds of wall clock including the render, 7,308 to 7,350 prompt
@@ -102,31 +103,14 @@ GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS: int = int(
 # What it never does: produce a number. Every digit is removed from the description before it is stored,
 # and the fields the measurement found untrustworthy are kept out of every prompt by the measurement
 # package's own trust tiers rather than by anything here.
-GEOMETRY_VISION_ENABLED: bool = (
-    optional_env("GEOMETRY_VISION_ENABLED", "false").lower() == "true"
-    and GEOMETRY_MEASUREMENT_ENABLED)
-#: One look's wall clock, render included. Past it the look is abandoned, the row keeps the measurement
-#: it already had, and the conversation is exactly what it is with the look switched off.
+#: One look's wall clock, render included. Past it the look is abandoned and the row keeps the
+#: measurement it already had. A look that failed is recorded as failed: the builder must never read a
+#: failed look and a clear passage as the same thing.
 GEOMETRY_VISION_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_VISION_TIMEOUT_SECONDS", "180"))
-
-# WHO READS THE STORED MEASUREMENT. Deliberately a SECOND gate, and off by default on its own.
-# `GEOMETRY_MEASUREMENT_ENABLED` decides whether a file is measured and a row written; this decides
-# whether anything acts on that row. They are separable because the first can run for a week
-# producing rows nobody reads - which is how you learn what the measurement costs and what it says
-# before a customer's conversation depends on it - and because turning the reading off is then one
-# variable rather than a redeploy without the distribution.
-#
-# With this off, all four readers behave exactly as they do today: intake lists the staging
-# directory, the mesh planner composes the same eight-key dict, the admission slot stages and
-# measures the surface itself, and the finalised-requirements sentence says the geometry was not
-# measured. With it on and no row present, each one falls back to precisely the same behaviour: a
-# missing measurement is never an error, only an absence.
-GEOMETRY_REPORT_READERS_ENABLED: bool = (
-    optional_env("GEOMETRY_REPORT_READERS_ENABLED", "false").lower() == "true")
 
 # WHICH READER LOOKS. The measurement package's `auto` provider takes ANTHROPIC_API_KEY first, then
 # OPENAI_API_KEY, then DEEPINFRA_API_KEY, and this platform's own template carries only the last. So
-# an image with the look switched on and nothing else said would read every part with DeepInfra's
+# an image that said nothing else would read every part with DeepInfra's
 # Qwen, which is none of the readers the look was measured with. The reader is named here instead.
 # gpt-5.6-luna because the cheap reader was measured to be as good as the dear one once the ruler was
 # fixed (13, 13, 12, 13 of 13 against gpt-6-astra's 13 on four draws) at about a twenty-fifth of the
@@ -135,40 +119,26 @@ GEOMETRY_REPORT_READERS_ENABLED: bool = (
 GEOMETRY_VISION_PROVIDER: str = optional_env("GEOMETRY_VISION_PROVIDER", "openai").strip().lower()
 GEOMETRY_VISION_MODEL: str = optional_env("GEOMETRY_VISION_MODEL", "gpt-5.6-luna").strip()
 
-# THE SURVEY, and it is a FOURTH gate, off by default on its own and dead unless both the
-# measurement and its readers are on. What it turns on is the chain Rehaan settled, in his order:
-# the customer says what the part is for (intake), the stored measurement is composed against what
-# they said (measure), the look is taken with that purpose (look), intake puts the Surveyor's own
-# questions to them and posts the answers back with who gave them (intake), and the builder receives
-# the survey inside the typed block after the request cut. With this off, intake, the planner and
-# the look behave exactly as they do with only the measurement and its readers on.
-GEOMETRY_SURVEY_ENABLED: bool = (
-    optional_env("GEOMETRY_SURVEY_ENABLED", "false").lower() == "true"
-    and GEOMETRY_MEASUREMENT_ENABLED and GEOMETRY_REPORT_READERS_ENABLED)
-
-# THE GEOMETRY AGENT'S STEP, a FIFTH gate, off by default on its own and dead unless the survey is on.
-# It puts steps 5 and 6 of the chain on this platform. When intake submits, the geometry agent plans
-# the part from the stored survey and the customer's answers (the flow patches, where the cells go and
-# what that costs by the builder's own sizing), through the measurement package's own chain code; a
-# question only the plan can raise, the budget trade against the plan's envelope, is put once with a
-# default; and the builder receives intake's write-up and the geometry agent's, with the survey inside
-# the typed block. Every handoff is checked by the package's own contract and every step is written
-# to the job ledger on the survey row. If anything in it fails, the job runs exactly as it does with
-# this off and the reason is logged and kept on the row.
+# THE CHAIN, in Rehaan's order: the customer says what the part is for (intake), the stored measurement
+# is composed against what they said (measure), the look is taken with that purpose (look), intake puts
+# the Surveyor's own questions to them and posts the answers back with who gave them (intake), the
+# geometry agent plans the part from the survey and those answers (geometry), a question only the plan
+# can raise is put once (intake), and the builder receives both write-ups with the survey inside the
+# typed block after the request cut.
 #
-# What it costs: one run of the geometry agent's loop per submission whose answers changed, inside
-# the submission turn. The loop's own budget is GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS; over the clean
-# pair of 322-case learning runs the median case took 85 s and the p90 125 s (agent/loop.py).
-GEOMETRY_AGENT_STEP_ENABLED: bool = (
-    optional_env("GEOMETRY_AGENT_STEP_ENABLED", "false").lower() == "true"
-    and GEOMETRY_SURVEY_ENABLED)
+# THE GEOMETRY AGENT'S STEP costs one run of the agent's loop per submission whose answers changed,
+# inside the submission turn. The loop's own budget is GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS; over the
+# clean pair of 322-case learning runs the median case took 85 s and the p90 125 s (agent/loop.py).
+# Every handoff is checked by the package's own contract and every step is written to the job ledger on
+# the survey row. If anything in it fails, the job runs without the plan and the reason is logged and
+# kept on the row as `status: failed`, which is the fact the builder's side reads and says again.
 #: Which model plans. Named, never discovered, for the look's reason: the package's `auto` falls
 #: through providers, and a plan made by a model nobody chose is not a plan anybody measured.
 #: `reference` is the package's deterministic stand-in policy, for tests and proofs; its plans are
 #: grounded by the same checker and its ledger rows say `heuristic`, never `live`.
 GEOMETRY_AGENT_STEP_PROVIDER: str = optional_env("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek").strip().lower()
-#: The geometry agent's wall clock for one plan. Past it the step records a failure and the job runs
-#: as it does with the step off. ZERO MEANS NO CLOCK: the loop then runs to its own end, which on a
+#: The geometry agent's wall clock for one plan. Past it the step records a failure on the row and the
+#: job runs without the plan. ZERO MEANS NO CLOCK: the loop then runs to its own end, which on a
 #: model that will not settle is the submission turn waiting on it.
 #:
 #: The wait is `asyncio.wait_for` over `asyncio.to_thread`, so what the timeout ends is the WAITING,
@@ -179,9 +149,10 @@ GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_AGENT_STEP
 #: the default, keeps them on the survey row only, which is where the durable copy always lives.
 GEOMETRY_AGENT_LEDGER_PATH: str = optional_env("GEOMETRY_AGENT_LEDGER_PATH", "").strip()
 
-# TWO STAGES INSIDE THE MEASUREMENT PACKAGE, each its own gate, each off by default. They are the
-# package's switches and not this platform's behaviour, so the platform's job is to be the one place an
-# operator sets them and the one place they are documented. Without an entry here they were reachable
+# TWO STAGES INSIDE THE MEASUREMENT PACKAGE, each its own setting and each off by default. THESE ARE
+# NOT GATES OVER THIS PLATFORM'S OWN FEATURE, which is why they outlived the five that were: they are
+# the package's switches, they each cost something real, and this platform's job is to be the one place
+# an operator sets them and the one place they are documented. Without an entry here they were reachable
 # only by setting an undocumented environment variable by hand, which is not a switch anybody can find.
 #
 # WHERE A PASSAGE STOPS WITH NO MOUTH. The stops detector is a measurement and always was, but until
@@ -195,33 +166,31 @@ GEOMETRY_AGENT_LEDGER_PATH: str = optional_env("GEOMETRY_AGENT_LEDGER_PATH", "")
 # one's environment. Setting it once and never unsetting it is safe; setting and unsetting it around a
 # call would be two measurements in one worker racing each other over one variable.
 GEOMETRY_MEASURED_STOPS_ENABLED: bool = (
-    optional_env("GEOMETRY_MEASURED_STOPS_ENABLED", "false").lower() == "true"
-    and GEOMETRY_MEASUREMENT_ENABLED)
+    optional_env("GEOMETRY_MEASURED_STOPS_ENABLED", "false").lower() == "true")
 
 # WHICH SIDE OF THE SURFACE IS THE FLUID. A ring with one hole through a thick body reads the same as
 # the end of an annular passage and as the mouth of a bore through solid metal, and the file cannot say
 # which. Off, the mesher's own reading stands unremarked and a solid plate can reach the builder with
 # confident junction places on it. On, the survey says so, puts the question to the customer, and places
 # nothing on the flow path until somebody answers; an answer composes the survey again with the side
-# they named. Dead unless the survey is on, because the question is the survey's.
+# they named. It costs the customer a question they may not need: most briefs settle the side themselves.
 GEOMETRY_FLUID_SIDE_ENABLED: bool = (
-    optional_env("GEOMETRY_FLUID_SIDE_ENABLED", "false").lower() == "true"
-    and GEOMETRY_SURVEY_ENABLED)
+    optional_env("GEOMETRY_FLUID_SIDE_ENABLED", "false").lower() == "true")
 
-#: Which platform flag arms which of the package's own variables, re-exported from the module that does the
-#: writing. It lives there and not here because this module may not touch `os.environ` at all: the two
+#: Which platform setting arms which of the package's own variables, re-exported from the module that does
+#: the writing. It lives there and not here because this module may not touch `os.environ` at all: the two
 #: variables are another component's contract, not a developer setting, and the rule that keeps every
 #: production module on a typed setting is worth more than two lines of convenience.
 GEOMETRY_PACKAGE_SWITCHES: dict[str, str] = dict(package_switches.PACKAGE_SWITCHES)
 
 
 def arm_the_package() -> dict[str, str]:
-    """Put the two platform flags into the environment the measurement package reads them from.
+    """Put the two platform settings into the environment the measurement package reads them from.
 
     CALLED FROM EXACTLY TWO PLACES, named here so the next reader can check rather than trust this
     sentence: `application/geometry_measurement.measure_local_file` and
     `application/geometry_survey.composition`. This docstring said it was called at those two points
-    while nothing called it at all, and the two flags above were therefore switches an operator could
+    while nothing called it at all, and the two settings above were therefore switches an operator could
     set with no effect whatever. `tests/unit/application/test_geometry_package_switches.py` asserts the
     call at both, and asserts it happens BEFORE the package is reached.
 

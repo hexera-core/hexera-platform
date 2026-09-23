@@ -278,36 +278,97 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 | `MAX_CONCURRENT_JOBS` | `20` | across the deployment |
 | `CELERY_WORKER_CONCURRENCY` | `2` | pipeline runs per worker process |
 
-## Measuring and looking at an uploaded geometry
+## The Surveyor: measuring, looking at and surveying an uploaded geometry
 
-Four gates, each off by default. The look needs the measurement; the survey needs the measurement and
-its readers.
+Every upload is measured, looked at and surveyed, and the geometry agent plans it at submission. There
+is no switch for any of that any more; what is left here is how long a step may take and which model
+reads or plans. The image that runs it needs the geometry-agent distribution installed. Without it,
+every step records what it could not do and the job runs on what is there.
 
 | Key | Default | Notes |
 |---|---|---|
-| `GEOMETRY_MEASUREMENT_ENABLED` | `false` | measure an uploaded file and store the report against its sha256 |
 | `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | `4` | under this the measurement runs in the upload request; at or above it a worker takes it |
 | `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | `900` | one measurement's deadline |
-| `GEOMETRY_REPORT_READERS_ENABLED` | `false` | whether intake, the mesh planner and the admission slot ACT on a stored measurement |
-| `GEOMETRY_VISION_ENABLED` | `false` | after the measurement, describe the part from rendered views and store the words in the same row |
 | `GEOMETRY_VISION_TIMEOUT_SECONDS` | `180` | one look's deadline, render included |
 | `GEOMETRY_VISION_PROVIDER` | `openai` | the provider the look reads with; no key for it means no look, never another provider |
 | `GEOMETRY_VISION_MODEL` | `gpt-5.6-luna` | the reader model on that provider |
-| `GEOMETRY_SURVEY_ENABLED` | `false` | intake asks the measurement's own questions, stores the answers with who gave them, and the builder gets the survey |
-| `GEOMETRY_AGENT_STEP_ENABLED` | `false` | the geometry agent plans the part at submission from the survey and the answers, a question only the plan raises is put once, and the builder gets both write-ups; dead unless `GEOMETRY_SURVEY_ENABLED` is on too |
 | `GEOMETRY_AGENT_STEP_PROVIDER` | `deepseek` | which model plans: `deepseek`, `deepinfra`, `anthropic`, `generic`, `auto`, or `reference` for the package's deterministic stand-in. No key for it means no plan, never another provider |
-| `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | `300` | one plan's wall clock, and the loop's own budget; past it the step records a failure and the job runs as it does with the step off. 0 means no clock at all |
+| `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | `300` | one plan's wall clock, and the loop's own budget; past it the step records a failure on the row and the job runs without the plan. 0 means no clock at all |
 | `GEOMETRY_AGENT_LEDGER_PATH` | (empty) | a JSONL file the job ledger's rows are also appended to; the durable copy always lives on the survey row |
-| `GEOMETRY_MEASURED_STOPS_ENABLED` | `false` | find where a passage stops with no mouth at measure time, so a closed end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds `facts.passage_ends`. Dead unless `GEOMETRY_MEASUREMENT_ENABLED` is on |
-| `GEOMETRY_FLUID_SIDE_ENABLED` | `false` | where the file reads the same with the flow through its bores and with the file itself as the flow, ask the customer which rather than letting the mesher's reading stand; nothing is placed on the flow path until somebody answers. Dead unless `GEOMETRY_SURVEY_ENABLED` is on |
+| `GEOMETRY_MEASURED_STOPS_ENABLED` | `false` | find where a passage stops with no mouth at measure time, so a closed end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds `facts.passage_ends` |
+| `GEOMETRY_FLUID_SIDE_ENABLED` | `false` | where the file reads the same with the flow through its bores and with the file itself as the flow, ask the customer which rather than letting the mesher's reading stand; nothing is placed on the flow path until somebody answers |
+
+The last two are the measurement package's own stages rather than switches over this platform's feature,
+which is why they survived the cleanup below: each costs something real that an operator may decline, a
+pass over the mesh at upload and a question to the customer. They are described at the end of this
+section.
+
+### The gate that is retired, and why
+
+This chain was built beside a running product, so five flags carried it, one per step, each off by
+default. They are named, with the reason each went, in the retired-settings table at the end of this
+document. What they bought was one claim,
+checked by hashing rather than asserted: with every one of them at its shipped default, what the
+intake model and the mesh planner are handed is byte for byte what platform `main` hands them. That is
+what made the feature safe to merge, and that job is done. Setting one of them now makes the process
+refuse to start, naming it.
+
+**Taken one last time on 2026-09-23**, on `feat/surveyor-cleanup` at `a882eed`, before anything was
+deleted. `check_vision_off_is_byte_identical.py`, six configurations, each against the commit it
+claims to change nothing from:
+
+| case | what was on | vs | intake_system | intake_tools | planner_user |
+|---|---|---|---|---|---|
+| A | nothing | `main` | `0dccfc492c1bf82f` | `557b7c1b95c6d46e` | `16e44b932da08e8b` |
+| B | measurement, readers | `91bb74b` | `858a67570d6f0895` | `557b7c1b95c6d46e` | `855866e292055abb` |
+| C | B and the look | `bae0fb2` | `858a67570d6f0895` | `557b7c1b95c6d46e` | `855866e292055abb` |
+| D | C and the survey | `bae0fb2` | `0c2a15887e7e7a3f` | `9cb0145c2b4c5e72` | `33ba4e6a760b8d88` |
+| E | the whole chain, step off | `3ba42c0` | `7392ea8106df56b9` | `9cb0145c2b4c5e72` | `9128707bc1ba08e1` |
+| F | E and the step | `3ba42c0` | `7392ea8106df56b9` | `9cb0145c2b4c5e72` | `31fb6e24d6efa501` |
+
+A, B, C and E byte for byte with their reference; D and F different, as they must be, because a
+harness that cannot see the thing it switches proves nothing with its other verdicts. The second
+opinion, `off_state_second_opinion.py`, which took three probes that gate did not (the planner's
+SYSTEM prompt, the typed block itself, and the request), agreed on all six against `main`:
+`intake_system 0dccfc492c1bf82f`, `intake_tools 557b7c1b95c6d46e`, `planner_user 16e44b932da08e8b`,
+`planner_system 767029751e1e4fa7`, `planner_block NONE`, `request_txt 019971d3686db171`.
+
+**The proof that replaces it** is `devtools/quality/check_flags_gone_changed_nothing.py`: for real
+corpus parts, what the intake model and the mesh planner are handed with no gates in the code is byte
+for byte what `a882eed` handed them with all five ON. Same input, same output, less code. It takes all
+six probes, over five stored corpus measurements and one answered survey row carrying a plan, and it
+asserts which tree each import came from before it hashes anything, because both the platform and the
+measurement package are importable on that machine from a tree it was not pointed at.
+
+Run on 2026-09-23, 36 comparisons, every one identical:
+
+| part | intake_system | intake_tools | planner_user | planner_system | planner_block | request_txt |
+|---|---|---|---|---|---|---|
+| `ahmed_variant_001` | `548700b10be8ff13` | `9cb0145c2b4c5e72` | `37a607b379dc175b` | `767029751e1e4fa7` | `d9ea6c18ac1795f1` | `019971d3686db171` |
+| `bend_elbow_001` | `0068f7761871e6f0` | `9cb0145c2b4c5e72` | `d738b90290e71709` | `767029751e1e4fa7` | `2d0db816248824bc` | `019971d3686db171` |
+| `block_boss_sharp` | `aaee0fa6ead33045` | `9cb0145c2b4c5e72` | `1d6f956f441b466e` | `767029751e1e4fa7` | `ada8c00aa6ca26a6` | `019971d3686db171` |
+| `transition_007_fluid` | `d112622adb4ee503` | `9cb0145c2b4c5e72` | `cb17f4ca6b99d366` | `767029751e1e4fa7` | `d4aea896f5ba78e9` | `019971d3686db171` |
+| `venturi_orifice_001` | `10de62a63273b085` | `9cb0145c2b4c5e72` | `0c7f1016b4cdf637` | `767029751e1e4fa7` | `e83a1806ff5c6af4` | `019971d3686db171` |
+| `venturi_orifice_001` + the answered row | `7392ea8106df56b9` | `9cb0145c2b4c5e72` | `31fb6e24d6efa501` | `767029751e1e4fa7` | `b8bd3614977a9340` | `818d5bb571eb6df6` |
+
+The five row-less parts are the conversation as it stands after the upload, so on both trees the step
+says the same thing for the same reason, "no survey was stored for this upload", and the builder is
+handed the survey's own block. The gate prints that sentence rather than folding it into a digest: a
+ruler that cannot tell "nothing changed" from "nothing ran" is the one blind spot it exists to avoid.
+The sixth case is the whole chain, and its `request_txt` is 647 characters against the others' 7,
+which is the geometry agent's write-up in front of the request.
+
+And the gate checks that it can see what it claims to have removed: the same reference tree with the
+five gates ON and with them at their shipped default moves five of the six probes. Only the planner's
+SYSTEM prompt is the same in both, which is a fact about where the chain lands rather than a miss.
 
 ### What the look is
 
-With `GEOMETRY_VISION_ENABLED` on, a background task renders seventeen views of the measured file (the
-merged `geometry_agent.vision.look` builds them the same way the agent's own `look_at_views` does),
-asks a vision model what it is looking at, and stores the answer in the same `geometry_measurements`
-row. It needs `GEOMETRY_MEASUREMENT_ENABLED` as well: there is no row for a look to attach to without a
-measurement, and the views are labelled with the openings the measurement found.
+A background task renders seventeen views of the measured file (the merged
+`geometry_agent.vision.look` builds them the same way the agent's own `look_at_views` does), asks a
+vision model what it is looking at, and stores the answer in the same `geometry_measurements` row. It
+follows the measurement and never precedes it: there is no row for a look to attach to without one,
+and the views are labelled with the openings the measurement found.
 
 The reader is named, never discovered: `GEOMETRY_VISION_PROVIDER` at `GEOMETRY_VISION_MODEL`,
 `openai` and `gpt-5.6-luna` by default. The package's own `auto` provider takes Anthropic, then OpenAI,
@@ -374,13 +435,16 @@ Nothing happens, and nothing breaks. A provider error, a missing key, a reply th
 file this image cannot render and a look that outlives its deadline are all recorded as a look that
 did not work. The measurement row keeps the measurement it already had, the mesh planner's block
 carries no look key, intake renders no look lines, and the conversation and the mesh are exactly what
-they are with `GEOMETRY_VISION_ENABLED` off. A queue with no worker draining it is the same answer.
+they are on a job that was never looked at. A queue with no worker draining it is the same answer.
+What is NOT the same is the record: a look that failed is stored as failed, with the reason, and a
+look that was never attempted says that instead. A failed look and a clear passage must never read
+alike to the builder.
 The upload is never affected in any case: the look is always a queued task and never runs in a
 request.
 
 ### The survey, and the order of the chain
 
-`GEOMETRY_SURVEY_ENABLED` turns on the chain in this order, and the order is the design:
+The chain runs in this order, and the order is the design:
 
 | step | who | on this platform |
 |---|---|---|
@@ -388,8 +452,8 @@ request.
 | 2 | measure | the bytes were read once at upload; the stored reading is now composed FOR that purpose, those words and any ports they named, by the package's own `report_measured`, in milliseconds |
 | 3 | look | queued now, with the purpose and representation step 2 decided, and no longer at upload |
 | 4 | intake | the package's own questions (`contract.asking.questions_from`) are put, and intake asks nothing of its own about which opening is which; `answer_survey_question` stores each answer with who gave it |
-| 5 | geometry | with `GEOMETRY_AGENT_STEP_ENABLED` off, the builder's own planner decides what to do and is handed the survey as facts it may not re-decide. With it on, the geometry agent plans first (below) |
-| 6 | intake | the budget trade, and only it, once every step-4 question is settled. With the step on there is a THIRD intake after it, for the question only a plan can raise |
+| 5 | geometry | the geometry agent decides what to DO from the Surveyor's facts, which it may not re-decide (below). Where it cannot plan, the builder's own planner decides and is handed the survey as facts it may not re-decide either |
+| 6 | intake | the budget trade, and only it, once every step-4 question is settled, and then a THIRD intake for the question only a plan can raise |
 | 7 | builder | the survey rides in `metrics["geometry_agent"]["survey"]`, after the request cut, checked by the package's own validator |
 
 Why intake comes first, measured rather than argued: `ahmed_variant_001` is a bluff body with four
@@ -431,6 +495,9 @@ runs in a child process, so the copy has to happen before the file is opened or 
 not run. An environment that already carries the package's own variable is left alone, so a developer who
 exported it keeps it.
 
+They are not gates over the Surveyor, which is why they outlived the five that were. Each is a real cost
+an operator may decline, and neither is "is the feature on".
+
 Where a passage stops with no mouth is a measurement and always was, but until this switch it ran inside
 the look's renderer, so a closed end reached the builder only on a job that had looked. With it on the
 stage runs at measure time; off, `facts.passage_ends` is absent and the stored document is byte for byte
@@ -447,17 +514,13 @@ themselves ("carve the fluid cavity INSIDE it"), so on the export corpus the que
 
 ### The geometry agent's step
 
-`GEOMETRY_AGENT_STEP_ENABLED` puts steps 5 and 6 of the chain on this platform. It is off by default
-and dead unless the survey is on: every gate under it is read together, so setting one flag cannot arm
-a chain whose earlier steps are off. Nothing below happens until it is set, which the repository gate
-`devtools/quality/check_vision_off_is_byte_identical.py` proves by hashing what the intake model and the
-mesh planner are handed in this checkout and in `3ba42c0`, the commit before the step existed.
+Steps 5 and 6 of the chain happen on this platform.
 
-| | with the step off | with the step on |
+| | what happens | where it cannot plan |
 |---|---|---|
-| step 5 | nothing runs | at `submit_requirements`, `geometry_step.at_submission` runs the package's own chain (`chain.job.plan`) on the stored survey and the customer's answers, once per set of answers. It decides the flow patches, where the cells go, and what that costs by the builder's own sizing (`tools.estimate_builder_cells`, never `tools.refined_cell_estimate`) |
-| step 6 | the survey's own budget trade, and nothing after it | a THIRD intake, for a question that did not exist at step 4. The canonical one is the budget trade against what THIS PLAN costs; `contract.intake.binds_late` refuses any topic the survey already had. Put ONCE, with a default, and a default that stands is not a confirmation |
-| step 7 | the builder gets the survey in the typed block | the builder gets the geometry agent's write-up in front of the request and, in the typed block after the request cut, intake's write-up, the survey, the flow patches and the plan's envelope |
+| step 5 | at `submit_requirements`, `geometry_step.at_submission` runs the package's own chain (`chain.job.plan`) on the stored survey and the customer's answers, once per set of answers. It decides the flow patches, where the cells go, and what that costs by the builder's own sizing (`tools.estimate_builder_cells`, never `tools.refined_cell_estimate`) | nothing is planned and the row says `status: failed` with the reason |
+| step 6 | a THIRD intake, for a question that did not exist at step 4. The canonical one is the budget trade against what THIS PLAN costs; `contract.intake.binds_late` refuses any topic the survey already had. Put ONCE, with a default, and a default that stands is not a confirmation | no third question; the survey's own budget trade is the last one |
+| step 7 | the builder gets the geometry agent's write-up in front of the request and, in the typed block after the request cut, intake's write-up, the survey, the flow patches and the plan's envelope | the builder gets the survey in the typed block and its request untouched, and the reason is logged and written to the job's record |
 
 **It waits for the customer.** The geometry agent plans from their answers, so step 5 does not run while
 the survey still has a question to put, its own budget trade included: confirming a budget composes the
@@ -466,9 +529,12 @@ that was put and skipped, or left to its default, is not one that is waiting.
 
 **It fails open, and it says why.** No model configured, the loop out of time, a plan the checker sends
 back, a contract refusal, a survey the platform cannot compose again from its own stored inputs: each is
-stored on the survey row as `status: failed` with the sentence, logged, and the job then runs exactly as
-it does with the switch off. No third question, the builder's request and typed block untouched. The
-builder's own read says the same sentence again when it falls back.
+stored on the survey row as `status: failed` with the sentence, logged, and the job then runs without
+the plan. No third question, the builder's request and typed block as the survey alone composes them.
+The builder's own read says the same sentence again when it falls back, and writes it to the job's
+record under `geometry_step`, so a plan made without the geometry agent never looks like one made with
+it. A failed step is not an absent one: a row with no `geometry_step` at all is a job where the step
+never had a survey to read.
 
 **Where it runs and why there.** At `submit_requirements`, not in the pipeline graph: the graph runs
 after the customer has approved and left, and no node there can put a question to anybody. The
@@ -514,13 +580,13 @@ composed for the old one. On `manifold_001`, stated 750,000 and raised to 987,82
 `customer_cell_cap` beside it said 987,828. One dict, two caps. It is now priced again at the
 handoff: one cap, `held_cells_high` equal to the write-up's forecast to the cell, and the held note
 citing the cap the customer gave. The row keeps what it was priced at, because that is the record of
-what the trade traded. If the pricing cannot be done the step refuses the handoff and the job runs as
-it does with the step off: a wrong envelope is worse than none. No number moves on a job with no trade,
+what the trade traded. If the pricing cannot be done the step refuses the handoff and the job runs
+without the plan: a wrong envelope is worse than none. No number moves on a job with no trade,
 which is most of them, and that was measured: 22 corpus parts, every envelope, cap, round count and
 message length identical to before the change, and the envelope compared field by field on two
 platforms. One thing did move: the key ORDER of that one dict, which used to be whatever the row was
 serialised with and is now the envelope type's own. That is the reproducible one, since Postgres JSONB
-does not preserve key order at all, and it is why the repository gate's F digest moved without a fact
+does not preserve key order at all, and it is why the retired gate's F digest moved without a fact
 moving with it.
 
 **The agent opens the part itself, so the step fetches it.** Every mesh tool in the package goes
@@ -542,7 +608,7 @@ harness, over 7 corpus parts covering all four representations:
 | | |
 |---|---|
 | planned and reached the builder | 6 of 9: `venturi_orifice_001`, `cyclone_separator_001`, `static_mixer_001`, `s_duct_001` twice, `manifold_001` |
-| no plan, and the job ran without it | 3 of 9: `ahmed_variant_001`, `blade_row_passage_001` and `venturi_orifice_001` on a second draw, every one `grounding_rejected` after three submissions, because the model named a refinement kind (`farfield_box`, `preserve_blade_edges`, `preserve_sharp_edges`) the catalog does not have. That is the package's own checker refusing a fact it cannot ground, not this step failing, and the builder got the step-off request and block with the sentence saying so |
+| no plan, and the job ran without it | 3 of 9: `ahmed_variant_001`, `blade_row_passage_001` and `venturi_orifice_001` on a second draw, every one `grounding_rejected` after three submissions, because the model named a refinement kind (`farfield_box`, `preserve_blade_edges`, `preserve_sharp_edges`) the catalog does not have. That is the package's own checker refusing a fact it cannot ground, not this step failing, and the builder got the survey's own request and block with the sentence saying so |
 | one plan's wall clock | 32 to 55 s, on a live model |
 
 Nine draws of a model output, so read the three refusals as "it happens on parts like these", not as a
@@ -593,6 +659,11 @@ Setting one of these makes the process refuse to start, naming the variable and 
 | `DEBUG_ENDPOINTS_ENABLED` | yes | see guidance | deleted with the /api/v1/debug routes it guarded. Nothing consumed them. |
 | `EVENTS_LOG_TTL_HOURS` | yes | see guidance | deleted with the sweep it configured, which expired a file nothing wrote any more. |
 | `EXPORT_CONVERSATION_DATA` | yes | see guidance | deleted. It gated the whole corpus sample rather than the conversation, and only ever applied behind DATA_COLLECTION_ENABLED. |
+| `GEOMETRY_AGENT_STEP_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
+| `GEOMETRY_MEASUREMENT_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
+| `GEOMETRY_REPORT_READERS_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
+| `GEOMETRY_SURVEY_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
+| `GEOMETRY_VISION_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
 | `MESH_BACKEND` | yes | see guidance | deleted. The application always delegates meshing to the Cloud Run mesh job; it never meshes on the machine serving the UI. The native test tiers bind the local runner themselves and need no deployment setting. |
 | `MINIO_USE_SSL` | yes | see guidance | deleted. The object store is a service on the local stack, reached over plain HTTP. |
 | `OBJECT_STORE_BACKEND` | yes | see guidance | deleted. 'minio' was the only accepted value. The mesh-job exchange on GCS is addressed by the mesh adapter, not by this setting. |
@@ -670,7 +741,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (221 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (216 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -757,17 +828,12 @@ Every supported setting (221 entries). `template` settings are the ones `.env.ex
 | `STALLED_JOB_TIMEOUT_HOURS` | template | app |  |
 | `UPLOAD_RETENTION_DAYS` | template | app |  |
 | `GEOMETRY_AGENT_LEDGER_PATH` | template | app |  |
-| `GEOMETRY_AGENT_STEP_ENABLED` | template | app |  |
 | `GEOMETRY_AGENT_STEP_PROVIDER` | template | app |  |
 | `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | template | app |  |
 | `GEOMETRY_FLUID_SIDE_ENABLED` | template | app |  |
 | `GEOMETRY_MEASURED_STOPS_ENABLED` | template | app |  |
-| `GEOMETRY_MEASUREMENT_ENABLED` | template | app |  |
 | `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | template | app |  |
 | `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | template | app |  |
-| `GEOMETRY_REPORT_READERS_ENABLED` | template | app |  |
-| `GEOMETRY_SURVEY_ENABLED` | template | app |  |
-| `GEOMETRY_VISION_ENABLED` | template | app |  |
 | `GEOMETRY_VISION_MODEL` | template | app |  |
 | `GEOMETRY_VISION_PROVIDER` | template | app |  |
 | `GEOMETRY_VISION_TIMEOUT_SECONDS` | template | app |  |

@@ -112,7 +112,7 @@ def _resp(tool_calls=None, content=""):
         finish_reason="tool_calls" if tool_calls else "stop")
 
 
-def _run(state, responses):
+def _run(state, responses, reading=None):
     import meshpipeline.adapters.model_inference.router as llm_router
     calls = {"n": 0}
     it = iter(responses)
@@ -120,9 +120,20 @@ def _run(state, responses):
     async def _call(**_kw):
         calls["n"] += 1
         return next(it)
-    with patch.object(llm_router, "call_intake_model", _call):
+
+    async def _measured(_state):
+        return intake._GeometryReading(reading=reading)
+
+    with patch.object(llm_router, "call_intake_model", _call),          patch.object(intake, "_geometry_reading", _measured):
         out = asyncio.run(intake.node_intake(state))
     return out, calls["n"]
+
+
+#: A file that was MEASURED and carries one unnamed body: the honest way a five-wall-patch request is
+#: impossible. It used to be enough to supply no measurement at all, because the unmeasured path read an
+#: empty staging directory and reported `region_count: 0` - a fabricated zero that refused a request
+#: nothing had looked at. An absent measurement now says nothing, which is why this says something.
+ONE_REGION = {"status": "ok", "region_count": 1, "region_names": ["solid"], "region_source": "measured"}
 
 
 _FIVE_ARGS = json.dumps({"selected_engine": "snappy", "purpose": "external_cfd",
@@ -150,7 +161,7 @@ def test_impossible_preview_terminates_the_turn_and_discards_an_unsafe_paraphras
     out, ncalls = _run(state, [
         _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
         _resp(content="I should never be reached - you can also try cfmesh."),
-    ])
+    ], reading=ONE_REGION)
     # The second call is the refusal paraphrase: it carries no tool, so it can advance nothing, and
     # its output reaches the user only by passing the checks. This response names another engine -
     # the precise leak the terminal used to prevent by never asking - so it must be discarded and

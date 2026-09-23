@@ -648,8 +648,8 @@ class _GeometryReading:
     reading: dict | None = None
     #: The whole stored measurement document, or None. What the conversation says comes from this.
     document: dict | None = None
-    #: The Surveyor is switched on for this upload: the survey gate is on and there is a successful
-    #: measurement to compose. False everywhere else, and then nothing below changes.
+    #: The Surveyor has something to compose for this upload: a successful measurement of these bytes.
+    #: False everywhere else, and then nothing below changes.
     armed: bool = False
     #: The stored survey state for this upload, or None when none has been composed yet.
     survey: dict | None = None
@@ -664,10 +664,6 @@ async def _geometry_reading(state) -> _GeometryReading:
     turn, and there is no path that makes the customer wait: the measurement already ran at upload,
     and this is a row read by primary key.
     """
-    import meshpipeline.settings.policy as polcfg
-
-    if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
-        return _GeometryReading()
     try:
         from meshpipeline.cad.regions import reading_for_source, stored_document_for_source
         from meshpipeline.pipeline.geometry_state import geometry_ref
@@ -704,23 +700,17 @@ def _geometry_block(geometry: _GeometryReading) -> str:
 
 
 async def _survey_for(ref, document) -> tuple[bool, dict | None]:
-    """Whether the Surveyor is on for this upload, and its stored state. Never raises.
+    """Whether the Surveyor has anything for this upload, and its stored state. Never raises.
 
-    Armed only with the survey gate on AND a successful measurement of these bytes: there is nothing
-    to compose without one, and a conversation with nothing to compose is the conversation with the
-    survey off. The gate is read before anything is imported, so with it off no module loads.
+    Armed only by a SUCCESSFUL measurement of these bytes: there is nothing to compose without one, and
+    a conversation with nothing to compose is a conversation the Surveyor stays out of. A measurement
+    that failed is not armed and is not silence either - the block says the file was not measured.
     """
-    import meshpipeline.settings.policy as polcfg
-
-    if not polcfg.GEOMETRY_SURVEY_ENABLED:
-        return False, None
     if not isinstance(document, dict) or document.get("status") != "ok":
         return False, None
     try:
         from meshpipeline.application import geometry_survey as gs
 
-        if not gs.survey_enabled():
-            return False, None
         return True, await gs.load(str(ref.owner_id), str(ref.source_id), sha256=str(ref.sha256))
     except Exception as exc:                       # noqa: BLE001 - never a turn
         logger.warning("Intake: the survey could not be read (%s); the conversation proceeds without it",

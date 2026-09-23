@@ -73,10 +73,10 @@ def intake_compatibility(publish: Any, *, engine: str, purpose: str,
 
 #: WHAT WAS ACTUALLY CHECKED. Until 2026-09-15 this sentence told every customer their boundary
 #: assignments "were checked against the geometry and the selected engine". The engine half was
-#: true. The geometry half was not, on any job ever run: intake's one geometry reader calls
-#: `regions_for_session(session_id, JOBS_DIR)`, and `cad/regions.py:135-151` lists the staging
-#: directory `api/v1/upload.py:253` deletes at the end of every upload, so it always found an empty
-#: `CadRegions` and the check compared the declaration against nothing.
+#: true. The geometry half was not, on any job ever run: intake's one geometry reader listed the
+#: staging directory `api/v1/upload.py:253` deletes at the end of every upload, so it always found
+#: nothing and the check compared the declaration against nothing. That reader is gone; the sentence
+#: below is now true when it says it was checked, because a patch binding was made.
 #:
 #: TWO WAYS TO FIX A FALSE SENTENCE: make it true, or make it say what happened. Making it true is
 #: not this module's to do - it needs intake's reader to go to the stored measurement instead of a

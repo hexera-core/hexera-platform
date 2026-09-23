@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 import meshpipeline.agents.intake.executor as ex_mod
-import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake import geometry_brief as gb
 from meshpipeline.agents.intake.agent import INTAKE_TOOLS, SURVEY_TOOLS
 from meshpipeline.agents.intake.executor import (
@@ -32,11 +30,7 @@ def _brief(case: str = "bend_elbow_001") -> str:
     return (FIXTURES / f"{case}.brief.txt").read_text(encoding="utf-8")
 
 
-# WITH THE SURVEY OFF, NOTHING MOVES
-
-
-def test_the_survey_is_off_by_default_and_needs_both_gates_under_it():
-    assert polcfg.GEOMETRY_SURVEY_ENABLED is False
+# THE TOOL LIST, AND WHAT AN UNSURVEYED UPLOAD LOOKS LIKE
 
 
 def test_the_tool_list_intake_is_offered_is_untouched():
@@ -48,19 +42,14 @@ def test_the_tool_list_intake_is_offered_is_untouched():
     assert category_of("survey_the_part") == "survey" == category_of("answer_survey_question")
 
 
-def test_with_the_gate_off_the_survey_is_never_imported(monkeypatch):
+def test_a_measurement_that_did_not_succeed_arms_nothing():
+    """There is nothing to compose from a failed measurement, and a survey composed from one would be
+    a Surveyor speaking about a file nobody read."""
     from meshpipeline.agents.intake.agent import _survey_for
 
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", False)
-    name = "meshpipeline.application.geometry_survey"
-    was = sys.modules.pop(name, None)
-    try:
-        armed, state = asyncio.run(_survey_for(object(), _doc()))
-        assert (armed, state) == (False, None)
-        assert name not in sys.modules
-    finally:
-        if was is not None:
-            sys.modules[name] = was
+    for document in (None, {}, {"status": "measurement_failed", "reason": "x"},
+                     {"status": "refused", "reason": "too large"}):
+        assert asyncio.run(_survey_for(object(), document)) == (False, None)
 
 
 def test_the_unarmed_block_is_the_block_that_shipped():
@@ -94,8 +83,6 @@ def armed(monkeypatch):
                         reason="the measurement package is not on this interpreter's path")
     from meshpipeline.application import geometry_survey as gs
 
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_REPORT_READERS_ENABLED", "GEOMETRY_SURVEY_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
     store: dict = {}
 
     async def load(owner_id, source_id, *, sha256):
@@ -249,7 +236,7 @@ def test_a_submission_that_never_surveyed_is_surveyed_at_the_gate(armed):
 # THE REAL TURN: node_intake, on the state the chat route builds
 
 
-def _turn(monkeypatch, *, survey_on: bool, stored_survey: dict | None):
+def _turn(monkeypatch, *, stored_survey: dict | None):
     """One intake turn through `node_intake`, with the model call captured and the rows answered from
     the fixture. Returns what the model was handed: the system prompt and the tool names."""
     from types import SimpleNamespace
@@ -261,9 +248,6 @@ def _turn(monkeypatch, *, survey_on: bool, stored_survey: dict | None):
     from meshpipeline.contracts.model_inference import ModelRoundResult
 
     doc = _doc()
-    for gate in ("GEOMETRY_MEASUREMENT_ENABLED", "GEOMETRY_REPORT_READERS_ENABLED"):
-        monkeypatch.setattr(polcfg, gate, True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_SURVEY_ENABLED", survey_on)
 
     async def stored(_ref, _digest):
         return doc
@@ -294,16 +278,9 @@ def _turn(monkeypatch, *, survey_on: bool, stored_survey: dict | None):
     return seen["system"], seen["tools"]
 
 
-def test_with_the_survey_off_the_turn_offers_exactly_the_tools_it_always_did(monkeypatch):
-    pytest.importorskip("geometry_agent.contract.deliver")
-    system, tools = _turn(monkeypatch, survey_on=False, stored_survey=None)
-    assert tools == [t["function"]["name"] for t in INTAKE_TOOLS]
-    assert "Surveyor" not in system
-
-
 def test_armed_before_step_one_the_turn_offers_the_survey_and_says_how_to_start_it(monkeypatch):
     pytest.importorskip("geometry_agent.contract.deliver")
-    system, tools = _turn(monkeypatch, survey_on=True, stored_survey=None)
+    system, tools = _turn(monkeypatch, stored_survey=None)
     assert tools[-2:] == ["survey_the_part", "answer_survey_question"]
     assert "call survey_the_part" in system
     assert "the file holds:" not in system
@@ -314,7 +291,7 @@ def test_armed_with_a_survey_the_turn_puts_the_surveyors_questions(monkeypatch):
     from meshpipeline.application import geometry_survey as gs
 
     state = gs.carry_answers(None, gs.compose(_doc(), purpose="internal_cfd", brief=_brief()))
-    system, _tools = _turn(monkeypatch, survey_on=True, stored_survey=state)
+    system, _tools = _turn(monkeypatch, stored_survey=state)
     assert "## THE SURVEYOR'S QUESTIONS" in system and "[role_inlet]" in system
     assert "the file holds: the solid WALL" in system
 

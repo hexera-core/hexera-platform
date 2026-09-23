@@ -288,20 +288,12 @@ async def upload_step_file(
 
 
 async def _measure_geometry(source_id, owner_id: str, *, size_bytes: int, session_id) -> None:
-    """Measure the upload, or do nothing at all.
-
-    THE GATE IS READ HERE, before anything else, so that with the feature off this function imports
-    no module, touches no queue and reads no column - the upload path is byte for byte what it was
-    before the measurement existed. `tests/unit/api/test_upload_measurement.py` is what holds that
-    claim rather than this comment.
+    """Measure the upload.
 
     Nothing below may raise. An upload that stored its bytes and wrote its row has succeeded, and a
     description of the geometry is not worth turning that into a 500. The only thing a failure
     costs is the table intake would otherwise have opened with.
     """
-    import meshpipeline.settings.policy as polcfg
-    if not polcfg.GEOMETRY_MEASUREMENT_ENABLED:
-        return
     try:
         from meshpipeline.application.geometry_measurement import on_upload
         outcome = await on_upload(str(source_id), owner_id, size_bytes=size_bytes)

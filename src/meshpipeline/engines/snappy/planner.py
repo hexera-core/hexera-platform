@@ -130,7 +130,7 @@ GEOMETRY_AGENT_BLOCK_KEYS = (
     "look",
     #: THE SURVEY: what the customer's own answers settled about this file and what they did not,
     #: every value carrying its kind. Written by the measurement package's `contract.deliver`, checked
-    #: by its own validator below, and absent unless GEOMETRY_SURVEY_ENABLED composed one.
+    #: by its own validator below, and absent where no survey was composed for these bytes.
     "survey",
     #: What the measurement has and will not state as a place, with the reason: a distance on a wall
     #: shell that could be the bore or the outside, a thin place whose side is not settled. A refusal

@@ -165,36 +165,18 @@ class IntakeToolExecutor:
         situations arrived as one: never measured, measurement failed, and measured with nothing
         unusual about it. `None` now means the measured phase did not run and a dict always carries
         `status`, so no rule infers a verdict from an absent key.
-
-        With `GEOMETRY_REPORT_READERS_ENABLED` off this is exactly what it was, including the empty
-        dict, because that is what every engine rule on this path has always been handed.
         """
-        import meshpipeline.settings.policy as polcfg
-
-        if polcfg.GEOMETRY_REPORT_READERS_ENABLED:
-            # Read before the loop, in `node_intake`. Absent means nothing was measured and nothing
-            # could be read off the durable bytes, which is a legitimate outcome and not an error.
-            return self.state.geometry_reading
-        try:
-            import meshpipeline.settings.runtime as rtcfg
-            from meshpipeline.cad.regions import regions_for_session
-
-            return regions_for_session(str(self.state.session_id or ""), rtcfg.JOBS_DIR).as_facts()
-        except Exception as exc:
-            logger.debug("Intake: geometry regions unavailable (%s)", exc)
-            return {}
+        # Read before the loop, in `node_intake`. Absent means nothing was measured and nothing could
+        # be read off the durable bytes, which is a legitimate outcome and not an error.
+        return self.state.geometry_reading
 
 
     def _patch_binding(self, patches) -> dict:
         """Which declared flow boundaries resolved to a measured opening. Never fatal.
 
-        Off, or with no measurement, this is `{"checked": False, ...}` and the customer is told the
-        geometry was not measured - which is what has been true on every job ever run.
+        With no measurement this is `{"checked": False, ...}` and the customer is told the geometry
+        was not measured, which is a fact about the job and never a silence.
         """
-        import meshpipeline.settings.policy as polcfg
-
-        if not polcfg.GEOMETRY_REPORT_READERS_ENABLED:
-            return {"checked": False}
         try:
             from meshpipeline.agents.intake.geometry_brief import bind_patches
 
@@ -498,12 +480,8 @@ class IntakeToolExecutor:
         """STEP 5 AND THE THIRD INTAKE, at the one moment both belong: after the customer's answers and
         before the builder. The geometry agent plans the part here (once per set of answers), and a
         question only its plan can raise is put before the submission goes through. Fails open: with the
-        step off, unarmed, or failing, this is empty and the submission is judged as it always was."""
-        import meshpipeline.settings.policy as polcfg
-
+        step unarmed or failing, this is empty and the submission is judged as it always was."""
         st = self.state
-        if not polcfg.GEOMETRY_AGENT_STEP_ENABLED:
-            return []
         if not st.survey_armed or st.survey_source_ref is None or not isinstance(st.geometry_document, dict):
             return []
         from meshpipeline.application import geometry_step as gst

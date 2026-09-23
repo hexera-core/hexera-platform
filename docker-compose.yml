@@ -279,9 +279,8 @@ services:
   # geometry_measurement is listed so a queued measurement is CONSUMED rather than sitting in a
   # queue nobody drains. This image does not carry the geometry-agent distribution, so until it
   # does the task records a refusal naming the missing package - which is visible, where an
-  # undrained queue is not. The whole path is behind GEOMETRY_MEASUREMENT_ENABLED and nothing is
-  # ever enqueued with it off. geometry_look is the same arrangement one step further on: it is
-  # drained here, it is behind GEOMETRY_VISION_ENABLED as well, and with that off it stays empty.
+  # undrained queue is not. geometry_look is the same arrangement one step further on, and it is
+  # drained here for the same reason.
   worker-utility:
     build:
       context: .

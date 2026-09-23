@@ -246,41 +246,23 @@ async def measure_and_store(source_id: str, owner_id: str, *,
 
     logger.info("geometry measurement: %s - source_id=%s sha=%s seconds=%s",
                 document.get("status"), source_id, ref.sha256[:12], document.get("seconds"))
-    try:
-        looked = _queue_the_look(str(source_id), owner_id, str(document.get("status") or ""))
-    except Exception as exc:                       # noqa: BLE001 - a description is never worth a measurement
-        logger.warning("geometry look: could not be queued - source_id=%s: %s", source_id, exc)
-        looked = "skipped"
     return {"status": document.get("status"), "source_id": str(source_id),
-            "seconds": document.get("seconds"), "look": looked}
+            "seconds": document.get("seconds"), "look": _look_outcome(str(document.get("status") or ""))}
 
 
-def _queue_the_look(source_id: str, owner_id: str, status: str) -> str:
-    """Hand the look to a worker, now that there is a row for it to attach to. Never raises.
+def _look_outcome(status: str) -> str:
+    """What will become of the look for this measurement, for the row's log line.
 
-    HERE, and only here. Both paths into a measurement come through `measure_and_store`, so one call
-    site covers the upload that measured inline and the upload that went to a worker, and in both cases
-    the row is already committed when this runs. Queueing it from the upload instead would race: the
-    look would arrive at a row that does not exist yet and skip.
+    THE LOOK IS NOT QUEUED HERE, and it is not queued at the upload either. A look taken for the
+    purpose assumed at upload reads an external body as internal flow, so `application/geometry_survey`
+    queues it the moment the measurement has been composed for what the customer said the part is for,
+    which is step 3 of the chain and comes after step 1.
 
-    Returns what happened, for the caller's log line: `off`, `queued`, `skipped` or `not_measured`.
+    The two answers are different facts and stay different: a measurement that did not succeed has no
+    facts to label the views with and no document for the words to sit beside, so nothing will ever
+    look at it; one that did is waiting for the customer to say what it is for.
     """
-    from meshpipeline.application import geometry_vision
-
-    if not geometry_vision.look_enabled():
-        return "off"
-    if status != STATUS_OK:
-        # Nothing to describe. A failed measurement has no facts to label the views with and no
-        # document for the words to sit beside.
-        return "not_measured"
-    if polcfg.GEOMETRY_SURVEY_ENABLED:
-        # STEP 3 COMES AFTER STEP 1. With the survey on, the look waits for the customer to say what
-        # the part is for: a look taken for the purpose assumed at upload reads an external body as
-        # internal flow. `application/geometry_survey.py` queues it the moment the measurement has
-        # been composed for their purpose, which is the chain's order.
-        return "deferred_to_survey"
-    from meshpipeline.contracts.geometry_measurement import enqueue_look
-    return "queued" if enqueue_look(source_id, owner_id) else "skipped"
+    return "deferred_to_survey" if status == STATUS_OK else "not_measured"
 
 
 async def _interpretation_for(db, owner_id: str, source_uuid) -> tuple[str | None, float | None]:
@@ -315,15 +297,13 @@ async def on_upload(source_id: str, owner_id: str, *, size_bytes: int,
                     purpose: str = DEFAULT_PURPOSE) -> str:
     """Measure this upload now, hand it to a worker, or do nothing at all. Never raises.
 
-    Returns what happened, for the upload's own log line: `off`, `measured`, `queued` or `skipped`.
+    Returns what happened, for the upload's own log line: `measured`, `queued` or `skipped`.
 
     SMALL FILES ARE MEASURED IN THE REQUEST because the whole point is that the conversation opens
     holding the table rather than asking for what the file already answers; a measurement that
     lands after the first question is worth much less. Large ones go to a worker, because the only
     cost known before a file is opened is its size and a customer will not wait on the tail.
     """
-    if not polcfg.GEOMETRY_MEASUREMENT_ENABLED:
-        return "off"
     threshold = polcfg.GEOMETRY_MEASUREMENT_SYNC_MAX_MB * 1024 * 1024
     if threshold > 0 and int(size_bytes) < threshold:
         deadline = min(float(polcfg.GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS),

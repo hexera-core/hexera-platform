@@ -5,7 +5,6 @@ import asyncio
 
 import pytest
 
-import meshpipeline.settings.policy as polcfg
 from meshpipeline.pipeline import geometry_admission as ga
 
 # WHY THE SLOT STAYS. The measurement package refuses a bad file at step 2, seconds after the upload,
@@ -65,7 +64,6 @@ def _stored(monkeypatch, analysis):
 
 
 def test_it_reads_the_stored_verdict_and_does_not_compute_one(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     _no_compute(monkeypatch)
     _stored(monkeypatch, MEASURED_OK)
     assert asyncio.run(ga.node_geometry_admission(dict(STATE))) == {}
@@ -74,7 +72,6 @@ def test_it_reads_the_stored_verdict_and_does_not_compute_one(monkeypatch):
 def test_a_stored_verdict_that_rejects_still_stops_the_build(monkeypatch):
     """The slot is a check, not a formality: a measurement that says the surface self-intersects
     exhausts the budget and hands the reason to the executor short-circuit."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     _silent_publish(monkeypatch)
     _no_compute(monkeypatch)
     _stored(monkeypatch, {**MEASURED_OK, "self_intersecting": True})
@@ -87,14 +84,12 @@ def test_a_stored_verdict_that_rejects_still_stops_the_build(monkeypatch):
 def test_an_unmeasured_self_intersection_flag_never_rejects(monkeypatch):
     """`"unknown"` is truthy. Passing the measurement package's own word through to `base.py:565`
     would reject every vmtk upload for a defect nothing looked for."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     _no_compute(monkeypatch)
     _stored(monkeypatch, MEASURED_OK)
     assert asyncio.run(ga.node_geometry_admission(dict(STATE))) == {}
 
 
 def test_a_measurement_that_failed_defers_and_never_blames_the_customer(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     _no_compute(monkeypatch)
     _stored(monkeypatch, {"status": "measurement_failed", "reason": "the file could not be opened"})
     assert asyncio.run(ga.node_geometry_admission(dict(STATE))) == {}
@@ -102,7 +97,6 @@ def test_a_measurement_that_failed_defers_and_never_blames_the_customer(monkeypa
 
 def test_a_job_that_never_went_through_step_two_is_still_checked(monkeypatch):
     """The whole reason the slot stays: with nothing stored it stages and probes, exactly as today."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
     _silent_publish(monkeypatch)
     _stored(monkeypatch, None)
     probed: list = []
@@ -122,21 +116,9 @@ def test_a_job_that_never_went_through_step_two_is_still_checked(monkeypatch):
     assert out["executor_success"] is False
 
 
-def test_with_the_setting_off_nothing_is_read_at_all(monkeypatch):
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", False)
-
-    async def _never(_ref):
-        raise AssertionError("the slot read a stored measurement with the setting off")
-
-    monkeypatch.setattr("meshpipeline.cad.regions.reading_for_source", _never)
-    monkeypatch.setattr("meshpipeline.pipeline.geometry_state.materialized", lambda _s: None)
-    assert asyncio.run(ga.node_geometry_admission(dict(STATE))) == {}
-
-
 @pytest.mark.parametrize("engine", ["snappy", "gmsh", "cfmesh"])
 def test_an_engine_with_no_measured_rule_still_proceeds_instantly(monkeypatch, engine):
     """This keeps the gate free for the wrap-then-fill engines, which is every corpus case."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
 
     async def _never(_ref):
         raise AssertionError("a measurement was read for an engine that declares no measured rule")
@@ -147,7 +129,6 @@ def test_an_engine_with_no_measured_rule_still_proceeds_instantly(monkeypatch, e
 
 def test_a_read_that_raises_falls_through_to_the_probe(monkeypatch):
     """Nothing here fails a build. A reader that throws is a reader that produced nothing."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_REPORT_READERS_ENABLED", True)
 
     async def _boom(_ref):
         raise RuntimeError("the database is unreachable")

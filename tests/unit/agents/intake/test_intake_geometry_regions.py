@@ -2,12 +2,10 @@
 # Boundaries: the attribution seam; which combinations are impossible is the admission suite's proof.
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 
-import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.agents.intake.executor import IntakeExecutionState, IntakeToolExecutor
 from meshpipeline.agents.intake.validation import ADMIT_IMPOSSIBLE, preview_admission
 from meshpipeline.cad.regions import regions_of
@@ -80,22 +78,24 @@ def test_unknown_geometry_is_admitted_rather_than_refused_on_silence():
 
 # the facts actually reach admission
 
-def test_intake_supplies_the_facts_it_can_read(tmp_path, monkeypatch):
+def test_intake_supplies_the_facts_it_can_read():
     # The wiring, not the reader: an executor that silently returned {} would leave every refusal
-    # blaming the engine while looking correct in every other test.
-    if not NAMED.is_file():
-        pytest.skip("licensed CAD fixture is local-only")
-    (tmp_path / "s1").mkdir()
-    shutil.copy(NAMED, tmp_path / "s1" / "input.step")
-    monkeypatch.setattr(rtcfg, "JOBS_DIR", str(tmp_path))
-    ex = IntakeToolExecutor(state=IntakeExecutionState(session_id="s1"), job_id="j",
-                            implemented_engines=["snappy"], search_tool=None)
+    # blaming the engine while looking correct in every other test. The facts come off the stored
+    # measurement of the customer's own bytes, read once in `node_intake`.
+    measured = {"status": "ok", "region_count": 2, "region_names": ["inner", "outer"],
+                "region_source": "measured"}
+    ex = IntakeToolExecutor(state=IntakeExecutionState(session_id="s1", geometry_reading=measured),
+                            job_id="j", implemented_engines=["snappy"], search_tool=None)
     facts = ex._geometry_facts()
+    assert facts is measured
     assert facts.get("region_count", 0) >= 2, facts
 
 
-def test_a_session_with_no_upload_supplies_nothing_and_raises_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr(rtcfg, "JOBS_DIR", str(tmp_path))
+def test_a_session_with_no_measurement_supplies_NOTHING_rather_than_a_zero():
+    """`None`, not `{"region_count": 0}`. The reader this replaced listed a staging directory the
+    upload empties, so it answered zero regions for every job ever run, and `_supplies_fewer_regions`
+    refused a five-wall-patch request on that zero. A count nobody measured is worse than no count:
+    unknown says nothing, and the request goes through to be judged on what is actually known."""
     ex = IntakeToolExecutor(state=IntakeExecutionState(session_id="absent"), job_id="j",
                             implemented_engines=["snappy"], search_tool=None)
-    assert ex._geometry_facts().get("region_count") == 0
+    assert ex._geometry_facts() is None
