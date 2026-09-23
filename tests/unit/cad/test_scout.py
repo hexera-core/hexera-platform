@@ -247,6 +247,11 @@ def test_a_coaxial_fittings_two_ports_face_the_same_way_in_one_plane_and_both_st
     inner, outer = _band(0.0, 0.05, outer=0.056), _band(0.0, 0.10, outer=0.11)
     assert len(drop_stacked_rings([inner, outer])) == 2
     assert len(drop_stacked_rings([outer, inner])) == 2
+    # the bores nearly the same (90 and 100) with a 4 mm annular passage: still two ports
+    close_in, close_out = _band(0.0, 0.09, outer=0.092), _band(0.0, 0.10, outer=0.11)
+    assert len(drop_stacked_rings([close_in, close_out])) == 2
+    # a ring whose outer extent is unknown joins nothing
+    assert len(drop_stacked_rings([_band(0.0, 0.05), _band(0.0, 0.10, outer=0.11)])) == 2
 
 
 def test_bands_chain_through_each_other_and_a_face_drawn_twice_is_one():

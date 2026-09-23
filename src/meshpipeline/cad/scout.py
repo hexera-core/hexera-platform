@@ -534,9 +534,10 @@ def drop_flange_twins(candidates: list[Opening], centre=(0.0, 0.0, 0.0)) -> list
 #: in bores, and the floor under it for small bores.
 STACK_GAP = 0.1
 STACK_GAP_M = 0.003
-#: A band sits exactly inside the next band's hole: its outer extent matches that hole to this
-#: fraction. A coaxial fitting's inner port leaves an annular gap to the outer port's hole.
-BAND_FIT = 0.1
+#: A band reaches the hole of the band around it; a coaxial fitting's inner port stops short of
+#: the outer port's hole by the annular passage. A passage thinner than this fraction of the
+#: bore is not told from a band.
+BAND_FIT = 0.03
 
 
 def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
@@ -546,11 +547,12 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
     duct_radius_elbow (seven openings for two mouths) and duct_square_round (six for two).
 
     A coaxial fitting also has concentric rings facing the same way in one plane - and both are
-    ports. What tells them apart is the gap: a band's outer edge IS the next band's hole; a
-    coaxial inner port's outer edge stops short of the outer port's hole by the annular passage.
-    Bands chain - the chamfer fills the wall's hole, the wall fills the gasket face's hole - so
-    the rings are grouped through every such link, in any order, and each group keeps its
-    smallest hole. Two rings with the same hole over one spot are one face drawn twice."""
+    ports. What tells them apart is the gap: a band's outer edge reaches the next band's hole
+    (or beyond it, when a face is drawn twice); a coaxial inner port's outer edge stops short of
+    the outer port's hole by the annular passage, however close the two bores are. Bands chain -
+    the chamfer reaches the wall's hole, the wall reaches the gasket face's hole - so the rings
+    are grouped through every such link, in any order, and each group keeps its smallest hole.
+    A ring whose outer extent is unknown joins no group."""
     rings = [k for k, c in enumerate(candidates) if c.kind == "ring"]
     parent = {k: k for k in rings}
 
@@ -574,7 +576,7 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
             if across > 0.5 * max(d_a, d_b, 1e-9):
                 continue                                   # not over the same spot
             small, big = (b, a) if d_b < d_a else (a, b)
-            if not (_sits_inside(small.outer_wh, big.wh) or _sits_inside(small.wh, big.wh)):
+            if not _reaches(small.outer_wh, big.wh):
                 continue                                   # a gap between them: two ports of a coaxial fitting
             parent[root(i)] = root(j)
 
@@ -587,9 +589,12 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
     return [c for k, c in enumerate(candidates) if c.kind != "ring" or k in kept]
 
 
-def _sits_inside(outer_wh, hole_wh) -> bool:
-    """Whether a face's outer extent fills the hole it sits in, to BAND_FIT."""
-    return all(abs(o - h) <= BAND_FIT * max(h, 1e-9) for o, h in zip(sorted(outer_wh), sorted(hole_wh)))
+def _reaches(outer_wh, hole_wh) -> bool:
+    """Whether a face's outer extent reaches the hole it sits in - no annular gap between them
+    wider than BAND_FIT of the hole. An unknown extent reaches nothing."""
+    if tuple(outer_wh) == (0.0, 0.0):
+        return False
+    return all(o >= (1.0 - BAND_FIT) * h for o, h in zip(sorted(outer_wh), sorted(hole_wh)))
 
 
 def _name_openings(pool: list[Opening]) -> list[Opening]:
