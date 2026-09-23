@@ -98,10 +98,42 @@ ROUTE_INTAKE, ROUTE_TRADE, ROUTE_APPLICATION, ROUTE_ADVISORY = "intake", "trade"
 ROUTE_LATE = "late"
 #: The `stage` an answer to a late question carries, so the step-4 handoff never reads it as one of its own.
 LATE_STAGE = "third"
+#: The consequence tier the third intake sits at, in `ask.schema.TIERS`' own words. A cell ceiling is
+#: `resolution`: it decides how finely the part is meshed and never which face carries what.
+LATE_TIER = "resolution"
 
 #: The customer's own words, kept for recomposition. Bounded, because a pasted spec sheet is not a
 #: brief and the budget and the carve sentence are always near the top of one.
 BRIEF_MAX_CHARS = 8000
+
+#: WHICH FINDER PUTS THE QUESTIONS. ONE, and it is the package's own step-4 finder:
+#: `geometry_agent.ask.intake.ask_intake`. It is the one with the four settle cuts (somebody already
+#: answered it; the answer changes nothing; it is the same question; it is below the cap), the
+#: consequence ranking over `ask.schema.TIERS`, the `asked_before` tie-break inside a tier, the
+#: five-question cap and the wall-clock backstop that turned a 900 s hang on a 1,231-mouth part into an
+#: answer. `ask.say` writes the sentence a customer reads and `ask.record` writes the row that turns
+#: their answer into a label.
+#:
+#: WHAT THIS PLATFORM USED TO DO INSTEAD, and it is why this constant is written down. `composition`
+#: called `contract.build.survey_from` with no `uncertainties=`, so the package fell back to
+#: `contract.asking.uncertainties_from`, its own simpler finder, and `question_views` rendered THAT with
+#: `contract.asking.questions_from`, the identity map. Measured on the five stored fixtures, the product
+#: path had no cap, no ranking, no tie-break, none of `ask.say`'s wording, no `ask.record` row, and two
+#: kinds it cannot raise at all: `dispatch_refusal`, which is the TOP of the tier order and decides
+#: whether the job runs, and `flow_direction`, the only question the external path has. `block_boss_sharp`
+#: is the proof: the finder puts `q_dispatch`, `q_port_roles`, `q_unit`, and the old path put `unit` and
+#: two role questions and never mentioned that the file would be refused before it was meshed.
+#:
+#: `contract.asking` still renders a question from an uncertainty (`questions_from`, the words and the
+#: evidence) and that is all it is used for here. Its `uncertainties_from` is not called on this path and
+#: must not be: two finders is two question lists, and the survey's uncertainty list and the question list
+#: are the same object by construction or they are nothing.
+QUESTION_FINDER = "geometry_agent.ask.intake.ask_intake"
+
+#: The row's own name for the finder's decisions, stored beside the survey. The survey's uncertainty list
+#: cannot carry them: `contract.survey.Uncertainty` forbids extra keys, deliberately, because a tier or a
+#: cap decision is not a thing the Surveyor measured. So they ride here, keyed by question id.
+ASKING_SCHEMA = "meshpipeline.geometry_survey.asking.v1"
 
 
 class SurveyError(RuntimeError):
@@ -114,11 +146,16 @@ class SurveyError(RuntimeError):
 
 def _package():
     from geometry_agent.agent import catalog, hexera
+    from geometry_agent.ask import intake as ask_intake
+    from geometry_agent.ask import schema as ask_schema
+    from geometry_agent.ask import trade as ask_trade
+    from geometry_agent.chain import job as ask_job
     from geometry_agent.contract import asking, build, deliver, given, intake, marks, survey
     from geometry_agent.facts.schema import GeometryFacts
     return {"hexera": hexera, "asking": asking, "build": build, "deliver": deliver, "given": given,
             "intake": intake, "marks": marks, "survey": survey, "GeometryFacts": GeometryFacts,
-            "catalog": catalog}
+            "catalog": catalog, "ask": ask_intake, "ask_schema": ask_schema, "ask_job": ask_job,
+            "ask_trade": ask_trade}
 
 
 def _now() -> str:
@@ -138,7 +175,8 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             unit: str | None = None, scale_to_metres: float | None = None,
             unit_basis: str | None = None, cell_cap: int | None = None,
             inlet_ids: list[str] | None = None,
-            confirmed_representation: str | None = None) -> dict:
+            confirmed_representation: str | None = None,
+            asked_before: dict[str, int] | None = None) -> dict:
     """Step 2: the stored measurement composed for this purpose, these words and these ports.
 
     Nothing is measured again. `document["facts"]` is the instrument's reading of the bytes, stored
@@ -164,7 +202,8 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
     """
     made = composition(document, purpose=purpose, brief=brief, declared=declared, engine=engine, unit=unit,
                        scale_to_metres=scale_to_metres, unit_basis=unit_basis, cell_cap=cell_cap,
-                       inlet_ids=inlet_ids, confirmed_representation=confirmed_representation)
+                       inlet_ids=inlet_ids, confirmed_representation=confirmed_representation,
+                       asked_before=asked_before)
     composed, survey = made["composed"], made["survey"]
     brief_text, ports, cap, stated_cap = made["brief"], made["ports"], made["cap"], made["stated_cap"]
     inlet_ids = made["inlet_ids"]
@@ -175,6 +214,9 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
         "sha256": str(survey.source_sha256),
         "facts_sha256": str(survey.facts_sha256),
         "survey": survey.model_dump(mode="json"),
+        #: the finder's own decisions for this composition: which questions it PUT, which it held and why,
+        #: each one's tier and `ask.say`'s sentence. `question_views` reads it; nothing else may.
+        "asking": made["asking"],
         "planner_block": composed.get("planner_block"),
         "composed_for": {
             "purpose": purpose, "engine": engine or "", "declared": ports,
@@ -190,6 +232,14 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             #: nobody answered, which keeps the row byte for byte what it was.
             **({"confirmed_representation": str(confirmed_representation),
                 "fluid_side": str(made["fluid_side"])} if made["fluid_side"] else {}),
+            #: THE TIE-BREAK COUNTS THIS COMPOSITION WAS MADE WITH, so the recomposition
+            #: `application/geometry_step._inputs` makes reproduces this survey exactly. `asked_before`
+            #: breaks ties inside a tier, so it moves the ORDER of the ranked list and with it the order of
+            #: the survey's uncertainties; replayed with different counts the recomposed survey is not the
+            #: stored one field for field and the step refuses to plan against it. Absent when nobody passed
+            #: any, which is every composition today, and the row is then byte for byte what it was.
+            **({"asked_before": {str(k): int(v) for k, v in dict(asked_before).items()}}
+               if asked_before else {}),
             "composed_at": _now(),
         },
         "agent_git_sha": str((document.get("stamp") or {}).get("agent_git_sha") or ""),
@@ -201,13 +251,20 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
                 unit: str | None = None, scale_to_metres: float | None = None,
                 unit_basis: str | None = None, cell_cap: int | None = None,
                 inlet_ids: list[str] | None = None,
-                confirmed_representation: str | None = None) -> dict:
+                confirmed_representation: str | None = None,
+                asked_before: dict[str, int] | None = None) -> dict:
     """The package's own composition of the stored measurement, and the survey built from it.
 
     `compose` is this plus the row it stores. It is separate because the geometry agent's step needs
     the composed document itself (the opening table the agent's port rows are placed on, the survey
     record the ledger keeps), and a second spelling of the `report_measured` call would be a second
     thing to keep in step with this one. Raises `SurveyError`.
+
+    `asked_before` is `{ask kind: times this topic was asked}`, and it breaks ties INSIDE a tier, lowest
+    count first: at a fixed question budget it is the one change that makes the ledger learn faster, and it
+    never moves a question across a tier. It is a caller's argument and not read off this row, because it
+    moves the order of the ranked list and every recomposition of one survey has to reproduce the same
+    order; the counts a composition used are stored in `composed_for` so `composed_inputs` replays them.
     """
     # THE PACKAGE'S OWN SWITCHES, before anything of the package reads them. The side is read inside
     # `catalog` off the environment, so a composition made without this arms nothing and the platform's
@@ -230,23 +287,86 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     if inlet_ids is None:
         inlet_ids = _declared_inlets(document, ports)
     side = _side_of(pkg, facts, purpose, brief_text, ports, confirmed_representation)
-    try:
-        composed = pkg["hexera"].report_measured(
+    def measured(for_cap: int | None) -> dict:
+        return pkg["hexera"].report_measured(
             facts, unit, brief_text or None, purpose=purpose, engine=engine or None,
-            declared=ports or None, cell_cap=cap, look=document.get("look"), fluid_side=side,
+            declared=ports or None, cell_cap=for_cap, look=document.get("look"), fluid_side=side,
             scale_to_metres=scale_to_metres, unit_basis=unit_basis,
             stamp={k: v for k, v in (document.get("stamp") or {}).items()
                    if k in ("agent_git_sha", "platform_sha")},
             inlet_ids=list(inlet_ids) or None)
+
+    try:
+        composed = measured(cap)
+        # THE QUESTIONS ARE FOUND AGAINST THE BUDGET THE CUSTOMER WROTE, AND ONLY THE BUILDER HEARS THE ONE
+        # THEY CONFIRMED. `ask.uncertainty.budget_uncertainty` reads `forecast.over_cap`, which is computed
+        # against whatever cap the composition was given, so composing the finder's document with the CONFIRMED
+        # cap un-asks the very question the customer just answered: the trade drops off the survey, and with it
+        # the uncertainty their answer was bound to. Measured on bend_elbow_001 with a 100,000-cell brief and
+        # the trade raised to 575,554: the recomposition dropped `q_budget`, `carry_answers` retired the
+        # answer, `confirmed_cell_cap` went back to None, and `contract.deliver.survey_block` handed the
+        # builder a block with `customer_cell_cap` 575,554 and no confirmed budget in it. Worse, `earlier` in
+        # `chain.job.third_intake` no longer held `budget`, so the third intake was free to put the budget
+        # question a second time, which is the one thing "asked ONCE" forbids (audit item 18).
+        #
+        # A confirmed cap is not a measurement of the part, so it belongs in `report_measured` for the block's
+        # `customer_cell_cap` and the forecast the trade is priced on, and nowhere near the finder.
+        asking_doc = composed if cap == stated_cap else measured(stated_cap)
+        # STEP 4'S FINDER, AND IT IS THE ONLY ONE (`QUESTION_FINDER`). `ask_intake` reads the composed
+        # document, applies the four cuts, ranks what is left by consequence and puts at most
+        # `ask.intake.MAX_ASKED`; `ask_job.contract_uncertainties` is the package's own adapter from its
+        # `Asked` to the handoff's uncertainty list, the same one `chain/job.survey` uses, so the platform
+        # and the chain compose one list from one finder rather than two lists from two.
+        #
+        # A QUESTION THE CUTS HELD IS STILL AN UNCERTAINTY. The adapter keeps every question this pipeline
+        # chose not to put (below the cap, no consequence) so the builder is told it is unsettled, and drops
+        # the ones somebody else already answered, which are not uncertainties any more.
+        asked = pkg["ask"].ask_intake(asking_doc, declared=ports or None, brief=brief_text or None,
+                                      asked_before=dict(asked_before or {}) or None)
         # the package admits an engine nobody named as `assumed` (work/z-chain, `contract.marks.OWNERS`), so the
         # composed document goes to the survey as it is; the shim that stripped the engine is gone
-        survey = pkg["build"].survey_from(composed, brief=brief_text or None, declared=ports or None)
+        survey = pkg["build"].survey_from(
+            composed, brief=brief_text or None, declared=ports or None,
+            uncertainties=pkg["ask_job"].contract_uncertainties(asked, asking_doc))
     except pkg["marks"].ContractError as exc:
         raise SurveyError(f"the survey refused its own handoff: {exc}") from exc
     except Exception as exc:                       # noqa: BLE001 - never a turn, never a mesh
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
     return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
-            "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side}
+            "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side,
+            "asked": asked, "asking": asking_row(asked, pkg)}
+
+
+def asking_row(asked: Any, pkg: dict) -> dict:
+    """The finder's own decisions for one composition, keyed by question id, small enough to store.
+
+    WHY THE ROW CARRIES THEM AT ALL. `contract.survey.Uncertainty` forbids extra keys, so a tier, a cap
+    decision and `ask.say`'s sentence have nowhere to ride on the survey; and they are not measurements, so
+    they should not. Without them `question_views` cannot put the five the finder ranked and hold the rest,
+    which is the cap, and it renders `contract.asking._text_for` instead of the sentence `ask.say` wrote.
+
+    `put` is in the finder's RANKED ORDER, which is the order a customer is asked in. `held` is only what
+    this pipeline chose to hold (`ask.schema.OUR_CHOICE`): a question somebody else already answered is not
+    on the survey's uncertainty list at all, so there is no view of it to hold.
+    """
+    ours = pkg["ask_schema"].OUR_CHOICE
+    held = {q.id: {"settled_by": q.settled_by, "quote": q.settled_quote}
+            for q in asked.held if q.settled_by in ours}
+    return {
+        "schema": ASKING_SCHEMA, "finder": QUESTION_FINDER, "case": str(asked.case or ""),
+        "max_asked": int(pkg["ask"].MAX_ASKED),
+        "put": [q.id for q in asked.questions],
+        "held": held,
+        "tier": {q.id: q.tier for q in [*asked.questions, *asked.held] if q.id in held or q.asked},
+        #: `ask.say`'s own sentence, which is what a customer reads. `contract.asking.questions_from`
+        #: renders an uncertainty into words too, and its words are the fallback: on a role question it
+        #: says "I could not settle opening.role on ..." where `ask.say` says "I can see seven openings on
+        #: this part. None of them is named in what you have sent."
+        "text": {q.id: q.text for q in [*asked.questions, *asked.held] if q.id in held or q.asked},
+        #: WHAT MAKES THE ANSWER A LABEL (`ask.record`). Stored for the questions that are PUT, because an
+        #: answer only comes back for one of those, and it is the row the ledger keys the answer on.
+        "record": {q.id: q.record for q in asked.questions if q.record},
+    }
 
 
 def _side_of(pkg: dict, facts: Any, purpose: str, brief: str, ports: list[dict],
@@ -305,7 +425,8 @@ def composed_inputs(state: dict) -> dict:
             "unit_basis": before.get("unit_basis") or None,
             "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
             "inlet_ids": list(before.get("inlet_ids") or []),
-            "confirmed_representation": before.get("confirmed_representation") or None}
+            "confirmed_representation": before.get("confirmed_representation") or None,
+            "asked_before": dict(before.get("asked_before") or {}) or None}
 
 
 def _declared_inlets(document: dict, ports: list[dict]) -> list[str]:
@@ -338,7 +459,9 @@ def recomposed(state: dict, document: dict, **changes: Any) -> dict:
               "inlet_ids": named_inlets(state) or before.get("inlet_ids"),
               # and so does the side they answered, over the one composed before they had
               "confirmed_representation": (confirmed_representation(state)
-                                           or before.get("confirmed_representation") or None)}
+                                           or before.get("confirmed_representation") or None),
+              # the same tie-break counts, so a recomposition ranks the questions the way this row's did
+              "asked_before": dict(before.get("asked_before") or {}) or None}
     kwargs.update(changes)
     fresh = compose(document, **kwargs)
     return carry_answers(state, fresh)
@@ -395,25 +518,67 @@ def _route(q) -> str:
     return ROUTE_INTAKE
 
 
+def asking_of(state: dict | None) -> dict:
+    """The finder's decisions stored on this row, or an empty dict.
+
+    Empty means a row composed before the finder was wired, and then every question the survey raises is
+    put and none is ranked, which is what this platform did before. It is not silently the same thing: the
+    view says `finder: ""` and `put: True` on everything, so a reader can tell an unranked row from a
+    ranked one.
+    """
+    row = (state or {}).get("asking")
+    return dict(row) if isinstance(row, dict) else {}
+
+
 def question_views(state: dict) -> list[dict]:
-    """Every question the survey raises, as `contract.asking.questions_from` renders it, with its
-    route and whether it is settled. Advisory ones included, so the list is the uncertainty list one
-    for one and nothing is silently filtered."""
+    """Every question the survey raises, with its route, its tier, whether it is PUT and whether it is
+    settled. Advisory and held ones included, so the list is the uncertainty list one for one and nothing
+    is silently filtered.
+
+    THE SENTENCE IS `ask.say`'S WHERE THERE IS ONE. The finder writes the words a customer reads and stores
+    them on the row; `contract.asking.questions_from` renders an uncertainty into words as well and its
+    rendering is the fallback, for a row composed before the finder was wired.
+
+    `put` IS THE CAP. `ask.intake` ranks by consequence and puts at most `MAX_ASKED`; everything it held is
+    here with `put: False` and `settled_by` naming which cut held it, because a held question is still an
+    uncertainty the builder must be told about and an answer to it still overrules whatever held it.
+    """
     pkg = _package()
     try:
         questions = pkg["asking"].questions_from(survey_of(state), include_advisory=True)
     except Exception as exc:                       # noqa: BLE001
         logger.warning("geometry survey: the stored survey could not be read (%s)", exc)
         return []
+    asking = asking_of(state)
+    ranked = list(asking.get("put") or [])
+    held = dict(asking.get("held") or {})
+    tiers = dict(asking.get("tier") or {})
+    said = dict(asking.get("text") or {})
+    records = dict(asking.get("record") or {})
+    tier_why = dict(pkg["ask_schema"].TIER_WHY)
     answers = live_answers(state)
     out = []
     for q in questions:
         mine = [a for a in answers if a.get("question_id") == q.id]
         subjects = list(q.of.subjects or ([q.subject] if q.subject else []))
-        view = {"id": q.id, "about": q.about, "text": q.text, "options": list(q.options),
+        settled = held.get(q.id) or {}
+        view = {"id": q.id, "about": q.about, "text": str(said.get(q.id) or q.text),
+                "options": list(q.options),
                 "subjects": subjects, "effect": q.effect, "default": q.default,
                 "evidence": list(q.evidence), "route": _route(q),
                 "why": q.of.why, "options_from": q.of.options_from,
+                #: THE CAP AND THE RANKING, from the finder that made them. `put` False is a question the
+                #: finder held: it is never asked, it still rides to the builder as unsettled, and an answer
+                #: to it is still accepted, because a customer volunteering one overrules a cut.
+                "put": (q.id in ranked) if asking else True,
+                "held_because": str(settled.get("settled_by") or ""),
+                "held_quote": str(settled.get("quote") or ""),
+                "tier": str(tiers.get(q.id) or ""),
+                "tier_why": tier_why.get(str(tiers.get(q.id) or ""), ""),
+                #: WHAT TURNS THE ANSWER INTO A LABEL (`ask.record`), for the questions that are put. It is
+                #: the row the ledger keys an answer on, and it never existed on this path before.
+                "record": dict(records.get(q.id) or {}),
+                "finder": str(asking.get("finder") or ""),
                 #: WHAT EACH OPTION SETS, paired by position with `options`. The uncertainty writes it so a
                 #: consumer never has to read a machine value back out of the sentence a person was shown:
                 #: the fluid-side question's options are two sentences and its values are the two
@@ -425,6 +590,12 @@ def question_views(state: dict) -> list[dict]:
                 "marks": [pkg["marks"].as_json(m, compact=True) for m in q.of.evidence]}
         view["status"] = _status(view, mine)
         out.append(view)
+    # THE ORDER A CUSTOMER IS ASKED IN IS THE FINDER'S RANKING, not the uncertainty list's order. The ranking
+    # is lexicographic over `ask.schema.TIERS` (dispatch, boundary, domain, resolution, none) with the
+    # `asked_before` tie-break inside a tier, and `ask.intake` has already sorted `put` into it. A held
+    # question keeps its place after every put one, so `open_now[0]` is always the worst consequence open.
+    order = {qid: i for i, qid in enumerate(ranked)}
+    out.sort(key=lambda v: (order.get(v["id"], len(order)), v["id"]))
     late = late_view(state)
     if late is not None:
         out.append(late)
@@ -452,12 +623,36 @@ def late_view(state: dict | None) -> dict | None:
                          f"your stated budget {env.get('cap')} cells"],
             "route": ROUTE_LATE, "why": str(late.get("because") or ""),
             "options_from": "the stated budget and the builder emulator's envelope for this plan",
-            #: the two numbers the options were written from, in the marks `_trade_numbers` reads, so an
+            #: the same keys every other view carries, so a reader never has to know which kind of view it
+            #: holds. The third intake is always put (that is what raising it means) and it is not one of the
+            #: finder's questions, so it has no tier of the finder's and no `ask.record` row
+            "put": True, "held_because": "", "held_quote": "", "tier": LATE_TIER,
+            "tier_why": _package()["ask_schema"].TIER_WHY.get(LATE_TIER, ""),
+            "record": {}, "finder": "",
+            #: the two numbers the options were written from, in the marks `_trade_envelope` reads, so an
             #: answer is settled from them and never parsed back out of the sentence
             "marks": [{"field": "cell_budget", "kind": "stated", "value": env.get("cap")},
                       {"field": "forecast.cells_high", "kind": "measured", "value": env.get("cells_high")}]}
     view["status"] = _status(view, [a for a in live_answers(state) if a.get("question_id") == view["id"]])
     return view
+
+
+#: HOW A ROLE QUESTION IS ANSWERED, and there are two shapes because there are two kinds of role question.
+#: `MOUTH_FOR_ROLE` asks "which of these mouths is the inlet": its id names the role, its options are mouth
+#: ids, and one answer settles it. `ROLE_PER_MOUTH` asks "which of these carries the incoming flow, and which
+#: are outlets": its options are ROLES, the mouths it names are in `subjects`, and it is settled only when
+#: every mouth it named has a role. `ask.say.port_roles` writes the second and `contract.asking` writes the
+#: first, so the platform reads both rather than the one its old finder happened to produce.
+MOUTH_FOR_ROLE, ROLE_PER_MOUTH = "mouth_for_role", "role_per_mouth"
+
+_ROLE_FOR_ONE = re.compile(r"^role_(inlet|outlet)$")
+
+
+def _role_shape(view: dict) -> str:
+    """Which of the two role shapes this view is, or `""` when it is not a role question at all."""
+    if view.get("about") != "opening.role":
+        return ""
+    return MOUTH_FOR_ROLE if _ROLE_FOR_ONE.match(str(view.get("id") or "")) else ROLE_PER_MOUTH
 
 
 def _status(view: dict, answers: list[dict]) -> str:
@@ -468,7 +663,7 @@ def _status(view: dict, answers: list[dict]) -> str:
     unsettled is what rides to the builder under `unsettled`.
     """
     confirmed = [a for a in answers if a.get("answered_by") == CUSTOMER and not a.get("skipped")]
-    if view["about"] == "opening.role" and view["id"] == "role_count":
+    if _role_shape(view) == ROLE_PER_MOUTH:
         # one mouth at a time, and settled only when every mouth it named has a role from the customer
         named = {a.get("subject") for a in confirmed}
         if set(view["subjects"]) and set(view["subjects"]) <= named:
@@ -491,8 +686,12 @@ def open_now(state: dict) -> list[dict]:
     Step 4 first: every intake-routed question not yet settled. Only when none is left does the budget
     trade appear, and it appears once: a trade that was put and answered or skipped is never put
     again. A default that stood leaves a question open, so it is put again rather than read as a yes.
+
+    A QUESTION THE FINDER HELD IS NEVER HERE. `put` False is the cap and the two other cuts this pipeline
+    makes for itself; a held question is reported to the builder as unsettled and is not put to a person.
+    That is what makes `ask.intake.MAX_ASKED` a fact of the product rather than of a test.
     """
-    views = question_views(state)
+    views = [v for v in question_views(state) if v["put"]]
     step4 = [v for v in views if v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED]
     if step4:
         return step4
@@ -510,7 +709,9 @@ TRADE_PUT = (*SETTLED, "defaulted")
 
 
 def stage_of(state: dict) -> str:
-    views = question_views(state)
+    """Which stage the row is at. Only questions that are PUT can hold it open: a row whose one remaining
+    question the finder held is `settled`, because nobody will ever be asked it."""
+    views = [v for v in question_views(state) if v["put"]]
     step4 = [v for v in views if v["route"] == ROUTE_INTAKE]
     trade = [v for v in views if v["route"] == ROUTE_TRADE]
     if any(v["status"] not in SETTLED for v in step4):
@@ -562,7 +763,7 @@ def _canonical_option(choice: str, options: list[str]) -> str | None:
 
 def record_answer(state: dict, *, question_id: str, choice: str = "", role: str = "",
                   words: str = "", latest_user_message: str = "", principal: str = "",
-                  skipped: bool = False, took_default: bool = False) -> dict:
+                  skipped: bool = False, took_default: bool = False, subject: str = "") -> dict:
     """One answer, checked, appended. Raises `SurveyError` with a sentence for the model.
 
     WHAT MAKES IT THE CUSTOMER'S. The quote has to be in their latest message, and the choice has to
@@ -573,6 +774,15 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
     ownership table decides whether a person may set the field at all. A role is the mouth the
     customer picked, with the role the question was about; a budget is the number the option names,
     taken from the question's own evidence marks rather than parsed out of the words.
+
+    `subject` is WHICH MOUTH, for the one question that names several and whose options are the roles
+    (`ask.say.port_roles`). It is the other half of that answer: the option says what the mouth is for and
+    `subject` says which mouth, and neither alone is an answer.
+
+    AN ANSWER TO A HELD QUESTION IS STILL AN ANSWER. Every cut this pipeline makes for itself leaves the
+    question whole, and a customer who volunteers a role on a mouth the ranking held overrules the cut. What
+    is refused is a question nobody may answer here at all: the unit, which this platform asks in its own
+    words, and an advisory one, whose answer changes nothing.
     """
     views = {v["id"]: v for v in question_views(state)}
     view = views.get(question_id)
@@ -610,29 +820,27 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
     if option is None:
         raise SurveyError(f"{choice!r} is not one of the options for {question_id!r}: "
                           f"{view['options']}")
-    subject, value, note = _subject_and_value(view, option, role)
-    _refuse_conflict(state, view, subject, value)
-    answer = {**row, "answered_by": CUSTOMER, "subject": subject, "value": value, "option": option,
+    at, value, note = _subject_and_value(view, option, role, subject)
+    _refuse_conflict(state, view, at, value)
+    answer = {**row, "answered_by": CUSTOMER, "subject": at, "value": value, "option": option,
               "note": note}
     _check_with_the_package(answer)
     return _append(state, answer)
 
 
-def _subject_and_value(view: dict, option: str, role: str) -> tuple[str, Any, str]:
-    if view["about"] == "opening.role":
-        if view["id"].startswith("role_") and view["id"] != "role_count":
-            return option, view["id"][len("role_"):], ""
-        roles = _package()["asking"].ROLE_OPTIONS
-        wanted = _norm(role)
-        if wanted not in roles:
-            raise SurveyError(f"say which role the customer gave {option}: one of {list(roles)}")
-        return option, wanted, ""
+def _subject_and_value(view: dict, option: str, role: str, subject: str = "") -> tuple[str, Any, str]:
+    shape = _role_shape(view)
+    if shape == MOUTH_FOR_ROLE:
+        # "which of these mouths is the inlet": the id names the role and the option is the mouth
+        return option, view["id"][len("role_"):], ""
+    if shape == ROLE_PER_MOUTH:
+        return (*_role_answer(view, option, role, subject), "")
     if view["about"] == "cell_budget":
-        index = view["options"].index(option)
-        numbers = _trade_numbers(view)
-        if numbers is None:
-            raise SurveyError("the budget trade carries no numbers to settle it with")
-        return "", numbers[index], option
+        cap = _trade_cap(view, option)
+        if cap is None:
+            raise SurveyError(f"the budget trade cannot settle a cap from {option!r}: its numbers are "
+                              f"{_trade_envelope(view)} and the option names neither holding nor raising")
+        return "", cap, option
     values = view.get("option_values") or []
     index = view["options"].index(option)
     if index < len(values) and values[index]:
@@ -648,22 +856,76 @@ def _subject_and_value(view: dict, option: str, role: str) -> tuple[str, Any, st
     return view["subjects"][0] if len(view["subjects"]) == 1 else "", option, ""
 
 
-def _trade_numbers(view: dict) -> tuple[int, int] | None:
-    """(hold, raise) for the budget trade, from the uncertainty's own evidence marks.
+def _role_answer(view: dict, option: str, role: str, subject: str) -> tuple[str, str]:
+    """`(the mouth, the role)` for a question that asks a role per mouth. Raises `SurveyError`.
 
-    The option at index 0 holds the stated budget and the one at index 1 raises it to the measured
-    envelope (`contract.asking._budget_uncertainty`). The numbers are the marks' values, which is
-    what the options were written from, so nothing is parsed out of a sentence.
+    TWO QUESTIONS HAVE THIS SHAPE AND THEY LIST DIFFERENT THINGS. `ask.say.port_roles` puts ONE question
+    naming every unplaced mouth and its options are the ROLES ("inlet", "outlet", "wall", "closed for this
+    run"); `contract.asking`'s `role_count` lists the measured MOUTHS and the role is named beside the choice.
+    Which it is is read off the question's own options rather than off its id, and the caller names the other
+    half either way, so the answer that lands is always `subject = the mouth, value = the role`. Stored the
+    other way round, `Given.role_of(mouth)` finds nothing and every role a customer confirmed reads as
+    unsettled downstream.
+
+    The role words are the package's: `ask.say`'s "closed for this run" is the customer's phrase and
+    `chain.job.ROLE_WORD` is the package's own map onto the vocabulary `contract.marks` admits. It is read,
+    never restated here.
     """
-    hold = raise_to = None
+    pkg = _package()
+    roles = pkg["asking"].ROLE_OPTIONS
+    words = dict(pkg["ask_job"].ROLE_WORD)
+    if option in view["subjects"]:
+        mouth, said = option, _norm(role)
+    else:
+        mouth, said = str(subject or "").strip(), words.get(_norm(option), _norm(option))
+        if mouth not in view["subjects"]:
+            raise SurveyError(f"say which mouth the customer gave {option!r} to: one of "
+                              f"{list(view['subjects'])}")
+    wanted = words.get(said, said)
+    if wanted not in roles:
+        raise SurveyError(f"say which role the customer gave {mouth or option}: one of {list(roles)}")
+    return mouth, wanted
+
+
+def _trade_envelope(view: dict) -> dict | None:
+    """`{"cap": the stated budget, "cells_high": the measured envelope}` for a budget question, or None.
+
+    TWO PLACES CARRY THE NUMBERS BECAUSE TWO FINDERS WRITE THE QUESTION. `contract.asking` puts both on the
+    uncertainty as evidence marks, and so does the third intake's own view; `ask.say.budget` puts them in the
+    uncertainty's `measurement`, which reaches this platform through `ask.record`'s row. Both are read and
+    neither is parsed out of the sentence a person was shown.
+    """
+    cap = high = None
     for mark in view.get("marks") or []:
         if mark.get("field") == "cell_budget":
-            hold = mark.get("value")
+            cap = mark.get("value")
         elif mark.get("field") == "forecast.cells_high":
-            raise_to = mark.get("value")
-    if isinstance(hold, int) and isinstance(raise_to, int):
-        return hold, raise_to
+            high = mark.get("value")
+    for target in ((view.get("record") or {}).get("targets") or []):
+        measured = target.get("measurement") if isinstance(target, dict) else None
+        if not isinstance(measured, dict):
+            continue
+        cap = measured.get("cell_cap") if cap is None else cap
+        high = measured.get("cells_high") if high is None else high
+    if isinstance(cap, int) and isinstance(high, int):
+        return {"cap": int(cap), "cells_high": int(high)}
     return None
+
+
+def _trade_cap(view: dict, option: str) -> int | None:
+    """The budget ONE option sets, by the package's own rule and never by this module's own.
+
+    `ask.trade.Trade.value_of` is that rule: an option that holds keeps the number the customer stated and one
+    that raises takes the measured envelope. It is read rather than restated because the three questions that
+    can arrive here word their options three ways ("hold 2,000,000", "hold the budget", "hold it and tell me
+    what was lost") and an index into the list was wrong on the third the moment a third existed.
+    """
+    env = _trade_envelope(view)
+    if env is None:
+        return None
+    trade = _package()["ask_trade"].Trade(id=str(view["id"]), kind="", text="", options=list(view["options"]),
+                                          default="", default_is="operation", because="", envelope=env)
+    return trade.value_of(option)
 
 
 def _refuse_conflict(state: dict, view: dict, subject: str, value: Any) -> None:
@@ -987,7 +1249,7 @@ def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
 
 async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "", role: str = "",
                  words: str = "", latest_user_message: str = "", skipped: bool = False,
-                 took_default: bool = False, document: dict | None = None) -> dict:
+                 took_default: bool = False, document: dict | None = None, subject: str = "") -> dict:
     """Record one answer and store it. When it confirms a budget, the planner block is composed again
     for that budget, so `customer_cell_cap` is the number the customer chose; when it names the inlet,
     it is composed again from that inlet, so the block's bore and the budget trade that follows are the
@@ -997,14 +1259,14 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
         raise SurveyError("there is no survey for this upload yet: call survey_the_part first")
     state = answered(state, document, question_id=question_id, choice=choice, role=role, words=words,
                      latest_user_message=latest_user_message, principal=owner_id,
-                     skipped=skipped, took_default=took_default)
+                     skipped=skipped, took_default=took_default, subject=subject)
     await save(owner_id, source_ref.source_id, state)
     return state
 
 
 def answered(state: dict, document: dict | None = None, *, question_id: str, choice: str = "",
              role: str = "", words: str = "", latest_user_message: str = "", principal: str = "",
-             skipped: bool = False, took_default: bool = False) -> dict:
+             skipped: bool = False, took_default: bool = False, subject: str = "") -> dict:
     """One answer recorded into the row, with everything that follows from it. No database.
 
     `answer` is this plus the load and the store. It is a function of its own so that a caller which
@@ -1013,7 +1275,7 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
     one. Raises `SurveyError`."""
     state = record_answer(state, question_id=question_id, choice=choice, role=role, words=words,
                           latest_user_message=latest_user_message, principal=principal,
-                          skipped=skipped, took_default=took_default)
+                          skipped=skipped, took_default=took_default, subject=subject)
     late = late_view(state)
     if late is not None and late["id"] == question_id:
         # the third intake's answer goes to the job ledger as the `trade` stage, the way the chain writes it
@@ -1054,10 +1316,11 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
         return "skipped"
 
 
-__all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
+__all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
+           "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
-           "builder_block", "carry_answers", "compose",
+           "asking_of", "asking_row", "builder_block", "carry_answers", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "mark_asked", "named_inlets", "open_now",
