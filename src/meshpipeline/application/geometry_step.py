@@ -173,6 +173,10 @@ class _Inputs:
     look: dict | None
     engine: str
     ports: list[dict]
+    #: The side of the surface a person CONFIRMED is the fluid (`catalog.FLUID_SIDES`), or None. The loop's
+    #: context reads the part through it, and a context that read it without the answer disagreed with the
+    #: survey the answer had already changed, which is a refusal and not a plan.
+    fluid_side: str | None = None
 
 
 def _brief_rows(ports: list[dict], facts: Any, unit: str | None) -> list[dict]:
@@ -257,7 +261,8 @@ def _inputs(state: dict, document: dict, *, fidelity: str, source_path: str = ""
         facts = facts.model_copy(update={"source_path": str(source_path)})
     return _Inputs(facts=facts, composed=composed, brief=brief, survey=survey, intake=gs.intake_handoff(state),
                    stated=_stated_roles(document, made["ports"]), look=look,
-                   engine=str(composed.get("engine") or "snappy"), ports=made["ports"])
+                   engine=str(composed.get("engine") or "snappy"), ports=made["ports"],
+                   fluid_side=made["fluid_side"])
 
 
 def late_handoff(state: dict) -> Any:
@@ -527,7 +532,8 @@ def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, 
     for stage in ("brief", "survey", "look", "uncertainty", "intake"):
         ledger.put(stage, recs[stage])
     config = pkg["LoopConfig"](wall_budget_s=float(polcfg.GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS) or None)
-    result = cj.plan(inp.facts, inp.brief, given, inp.composed, client, look_block=inp.look, config=config)
+    result = cj.plan(inp.facts, inp.brief, given, inp.composed, client, look_block=inp.look, config=config,
+                     fluid_side=inp.fluid_side)
     sent_back = sum(1 for t in result.trace if t.get("rejection_kind") == "given")
     step: dict[str, Any] = {"schema": STEP_SCHEMA, "for": key, "at": _now(), "fidelity": fidelity,
                             "engine": inp.engine,

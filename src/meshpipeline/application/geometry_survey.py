@@ -118,11 +118,12 @@ def survey_enabled() -> bool:
 # -------------------------------------------------------------------------------------------------
 
 def _package():
-    from geometry_agent.agent import hexera
+    from geometry_agent.agent import catalog, hexera
     from geometry_agent.contract import asking, build, deliver, given, intake, marks, survey
     from geometry_agent.facts.schema import GeometryFacts
     return {"hexera": hexera, "asking": asking, "build": build, "deliver": deliver, "given": given,
-            "intake": intake, "marks": marks, "survey": survey, "GeometryFacts": GeometryFacts}
+            "intake": intake, "marks": marks, "survey": survey, "GeometryFacts": GeometryFacts,
+            "catalog": catalog}
 
 
 def _now() -> str:
@@ -141,7 +142,8 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             declared: list[dict] | None = None, engine: str | None = None,
             unit: str | None = None, scale_to_metres: float | None = None,
             unit_basis: str | None = None, cell_cap: int | None = None,
-            inlet_ids: list[str] | None = None) -> dict:
+            inlet_ids: list[str] | None = None,
+            confirmed_representation: str | None = None) -> dict:
     """Step 2: the stored measurement composed for this purpose, these words and these ports.
 
     Nothing is measured again. `document["facts"]` is the instrument's reading of the bytes, stored
@@ -160,10 +162,14 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
     widest one, which on the corpus cyclone is the outlet (108 mm against a 75 mm inlet, and a trade
     priced at 2.9M cells where the customer's inlet gives 4.8M). None reads the inlets out of the
     declared ports the customer named, bound to mouths the way the submission gate binds them.
+
+    `confirmed_representation` is the representation a person CONFIRMED by answering the fluid-side
+    question. None while nobody has, which is every composition until one is answered, and the whole path
+    is dead unless the package's own `GEOMETRY_AGENT_FLUID_SIDE` raises that question at all.
     """
     made = composition(document, purpose=purpose, brief=brief, declared=declared, engine=engine, unit=unit,
                        scale_to_metres=scale_to_metres, unit_basis=unit_basis, cell_cap=cell_cap,
-                       inlet_ids=inlet_ids)
+                       inlet_ids=inlet_ids, confirmed_representation=confirmed_representation)
     composed, survey = made["composed"], made["survey"]
     brief_text, ports, cap, stated_cap = made["brief"], made["ports"], made["cap"], made["stated_cap"]
     inlet_ids = made["inlet_ids"]
@@ -184,6 +190,11 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             "representation": composed.get("representation"),
             "inlet_ids": sorted(inlet_ids),
             "look_status": str(look.get("status") or "not_attempted"),
+            #: the representation a person confirmed and the side of the surface it means, so a reader of
+            #: the row can tell a representation the geometry settled from one a person did. Absent where
+            #: nobody answered, which keeps the row byte for byte what it was.
+            **({"confirmed_representation": str(confirmed_representation),
+                "fluid_side": str(made["fluid_side"])} if made["fluid_side"] else {}),
             "composed_at": _now(),
         },
         "agent_git_sha": str((document.get("stamp") or {}).get("agent_git_sha") or ""),
@@ -194,7 +205,8 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
                 declared: list[dict] | None = None, engine: str | None = None,
                 unit: str | None = None, scale_to_metres: float | None = None,
                 unit_basis: str | None = None, cell_cap: int | None = None,
-                inlet_ids: list[str] | None = None) -> dict:
+                inlet_ids: list[str] | None = None,
+                confirmed_representation: str | None = None) -> dict:
     """The package's own composition of the stored measurement, and the survey built from it.
 
     `compose` is this plus the row it stores. It is separate because the geometry agent's step needs
@@ -202,6 +214,10 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     record the ledger keeps), and a second spelling of the `report_measured` call would be a second
     thing to keep in step with this one. Raises `SurveyError`.
     """
+    # THE PACKAGE'S OWN SWITCHES, before anything of the package reads them. The side is read inside
+    # `catalog` off the environment, so a composition made without this arms nothing and the platform's
+    # own flag would be a switch that does nothing (`policy.arm_the_package`).
+    polcfg.arm_the_package()
     if not isinstance(document, dict) or document.get("status") != "ok":
         raise SurveyError("there is no successful measurement to compose")
     facts_dump = document.get("facts")
@@ -218,10 +234,11 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     ports = [dict(p) for p in (declared or []) if isinstance(p, dict)]
     if inlet_ids is None:
         inlet_ids = _declared_inlets(document, ports)
+    side = _side_of(pkg, facts, purpose, brief_text, ports, confirmed_representation)
     try:
         composed = pkg["hexera"].report_measured(
             facts, unit, brief_text or None, purpose=purpose, engine=engine or None,
-            declared=ports or None, cell_cap=cap, look=document.get("look"),
+            declared=ports or None, cell_cap=cap, look=document.get("look"), fluid_side=side,
             scale_to_metres=scale_to_metres, unit_basis=unit_basis,
             stamp={k: v for k, v in (document.get("stamp") or {}).items()
                    if k in ("agent_git_sha", "platform_sha")},
@@ -234,7 +251,50 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     except Exception as exc:                       # noqa: BLE001 - never a turn, never a mesh
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
     return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
-            "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids)}
+            "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side}
+
+
+def _side_of(pkg: dict, facts: Any, purpose: str, brief: str, ports: list[dict],
+             confirmed_representation: str | None) -> str | None:
+    """The side of the surface a CONFIRMED representation means (`catalog.FLUID_SIDES`), or None.
+
+    THE MAP IS THE PACKAGE'S, INVERTED, NEVER RESTATED HERE. `catalog.side_reading` carries `readings`,
+    `{side: the representation that side gives}`, and it is the same table the question's own options were
+    written from (`contract.asking._fluid_side_uncertainty`). So the side is the key whose reading is the
+    word the customer's answer set. Empty `readings` means the geometry or the brief already settled the
+    side, and then there is no question to have answered and nothing to pass on.
+
+    None on anything unexpected rather than a guess: a representation no reading gives is a mismatch this
+    function must not paper over, and `report_measured` with `fluid_side=None` is the composition the
+    platform has always made.
+    """
+    if not confirmed_representation:
+        return None
+    try:
+        readings = pkg["catalog"].side_reading(facts, purpose, brief or None,
+                                              declared=ports or None).readings or {}
+    except Exception as exc:                       # noqa: BLE001 - never worth losing a composition over
+        logger.warning("geometry survey: the fluid side could not be read back (%s)", exc)
+        return None
+    for side, reading in readings.items():
+        if str(reading) == str(confirmed_representation):
+            return str(side)
+    logger.warning("geometry survey: %r is not a representation either side reading gives (%s), so the "
+                   "composition is made without it", confirmed_representation, sorted(readings.values()))
+    return None
+
+
+def confirmed_representation(state: dict | None) -> str | None:
+    """The representation a PERSON confirmed, from the answers. None while nobody has.
+
+    A default that stood is not one: `_status` reads it as `defaulted`, the handoff lists it unanswered and
+    the flow path stays refused. That is the rule everywhere on this path and it is the one this field would
+    be easiest to break.
+    """
+    said = [a for a in live_answers(state)
+            if a.get("about") == "representation" and a.get("answered_by") == CUSTOMER
+            and not a.get("skipped") and a.get("value")]
+    return str(said[-1]["value"]) if said else None
 
 
 def composed_inputs(state: dict) -> dict:
@@ -249,7 +309,8 @@ def composed_inputs(state: dict) -> dict:
             "unit": before.get("unit") or None, "scale_to_metres": before.get("scale_to_metres"),
             "unit_basis": before.get("unit_basis") or None,
             "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
-            "inlet_ids": list(before.get("inlet_ids") or [])}
+            "inlet_ids": list(before.get("inlet_ids") or []),
+            "confirmed_representation": before.get("confirmed_representation") or None}
 
 
 def _declared_inlets(document: dict, ports: list[dict]) -> list[str]:
@@ -279,7 +340,10 @@ def recomposed(state: dict, document: dict, **changes: Any) -> dict:
               "unit_basis": before.get("unit_basis") or None,
               "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
               # the inlet the customer answered wins over the one their declared ports bind to
-              "inlet_ids": named_inlets(state) or before.get("inlet_ids")}
+              "inlet_ids": named_inlets(state) or before.get("inlet_ids"),
+              # and so does the side they answered, over the one composed before they had
+              "confirmed_representation": (confirmed_representation(state)
+                                           or before.get("confirmed_representation") or None)}
     kwargs.update(changes)
     fresh = compose(document, **kwargs)
     return carry_answers(state, fresh)
@@ -355,6 +419,12 @@ def question_views(state: dict) -> list[dict]:
                 "subjects": subjects, "effect": q.effect, "default": q.default,
                 "evidence": list(q.evidence), "route": _route(q),
                 "why": q.of.why, "options_from": q.of.options_from,
+                #: WHAT EACH OPTION SETS, paired by position with `options`. The uncertainty writes it so a
+                #: consumer never has to read a machine value back out of the sentence a person was shown:
+                #: the fluid-side question's options are two sentences and its values are the two
+                #: representations they mean. Without this the stored answer was the sentence, and the
+                #: sentence became the value of the `representation` fact the whole chain reads.
+                "option_values": [str(v) for v in (q.of.option_values or [])],
                 #: the evidence as the package's own marks, kind and value, for the one reader that
                 #: needs a number back out of a question: the budget trade's two options
                 "marks": [pkg["marks"].as_json(m, compact=True) for m in q.of.evidence]}
@@ -569,6 +639,18 @@ def _subject_and_value(view: dict, option: str, role: str) -> tuple[str, Any, st
         if numbers is None:
             raise SurveyError("the budget trade carries no numbers to settle it with")
         return "", numbers[index], option
+    values = view.get("option_values") or []
+    index = view["options"].index(option)
+    if index < len(values) and values[index]:
+        # WHAT THE OPTION SETS, not the sentence the person was shown. The fluid-side question's two
+        # options are sentences and its two values are the representations they mean, so the answer that
+        # reaches `contract.marks` is a representation and not prose. It was the sentence before this line,
+        # and `Given.representation` is a CONFIRMED field, so the sentence won over the measured word and
+        # the geometry agent's own consistency check refused every plan on a part whose side was answered:
+        # "the loop's context reads this part as 'annular_fluid' and the survey measured 'the fluid runs
+        # through the bores; the part is the solid around it'". Answering made the job worse than saying
+        # nothing. The words are kept in `note`, so nothing a person said is lost.
+        return view["subjects"][0] if len(view["subjects"]) == 1 else "", str(values[index]), option
     return view["subjects"][0] if len(view["subjects"]) == 1 else "", option, ""
 
 
@@ -950,7 +1032,14 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
     before = state.get("composed_for") or {}
     new_cap = cap is not None and before.get("cell_cap") != cap
     new_inlet = bool(named_inlets(state)) and named_inlets(state) != sorted(before.get("inlet_ids") or [])
-    if (new_cap or new_inlet) and isinstance(document, dict):
+    # A CONFIRMED SIDE IS A NEW COMPOSITION, and before this line it was not. The answer went onto the row,
+    # the row's `representation` stayed the one measured before anybody had answered, and the geometry
+    # agent's own check then refused the plan for contradicting the survey: on `F0_block_sharp`, a solid
+    # block with one bore, answering the question turned a planned job into a refused one. Measured here,
+    # not reasoned about.
+    said_side = confirmed_representation(state)
+    new_side = bool(said_side) and before.get("confirmed_representation") != said_side
+    if (new_cap or new_inlet or new_side) and isinstance(document, dict):
         try:
             state = recomposed(state, document, **({"cell_cap": cap} if cap is not None else {}))
         except SurveyError as exc:
@@ -980,7 +1069,8 @@ __all__ = ["CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "ROUTE_ADVISORY",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
            "builder_block", "carry_answers", "compose",
-           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_roles", "intake_handoff", "late_view",
+           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_representation",
+           "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "mark_asked", "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
            "said_by_customer", "save", "stage_of", "survey_enabled", "survey_the_part"]

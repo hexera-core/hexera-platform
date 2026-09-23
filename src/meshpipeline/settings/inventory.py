@@ -383,6 +383,8 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek", help="the model the geometry agent plans with: deepseek, deepinfra, anthropic, generic or reference (the package's deterministic stand-in); no key for it means no plan, never another provider"),
         EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure and the job runs as with the step off. 0 means no clock at all"),
         EnvVar("GEOMETRY_AGENT_LEDGER_PATH", "", help="a JSONL file the job ledger's rows are also appended to, for the package's own ledger tools; empty keeps them on the survey row only"),
+        EnvVar("GEOMETRY_MEASURED_STOPS_ENABLED", "false", kind="bool", help="find where a passage stops with no mouth at measure time, so a closed pipe end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds facts.passage_ends; does nothing unless GEOMETRY_MEASUREMENT_ENABLED is also true"),
+        EnvVar("GEOMETRY_FLUID_SIDE_ENABLED", "false", kind="bool", help="where the file reads the same with the flow through its bores and with the file itself as the flow, put the question to the customer instead of letting the mesher's reading stand, and place nothing on the flow path until somebody answers; does nothing unless GEOMETRY_SURVEY_ENABLED is also true"),
     ]),
 
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[
@@ -482,6 +484,8 @@ INVENTORY: list[Group] = [
         EnvVar("GOOGLE_APPLICATION_CREDENTIALS", "", kind="path", exposure="external", consumer="app", help="Compose mounts GOOGLE_ADC_FILE here and points google-auth at it"),
         EnvVar("PROMETHEUS_MULTIPROC_DIR", "", kind="path", exposure="external", consumer="app", help="prometheus_client's own variable; set by the worker entrypoint"),
         EnvVar("ALEMBIC_CONFIG", "", kind="path", exposure="external", consumer="app", help="alembic's own variable; the migration wrapper honours it when set"),
+        EnvVar("GEOMETRY_AGENT_MEASURED_STOPS", "", exposure="external", consumer="app", help="the measurement package's own variable for its closed-end stage, read inside facts.measure; policy.arm_the_package writes it from GEOMETRY_MEASURED_STOPS_ENABLED, and leaves an operator's own export alone"),
+        EnvVar("GEOMETRY_AGENT_FLUID_SIDE", "", exposure="external", consumer="app", help="the measurement package's own variable for reading and asking which side of the surface is the fluid, read inside agent.catalog; policy.arm_the_package writes it from GEOMETRY_FLUID_SIDE_ENABLED, and leaves an operator's own export alone"),
     ]),
     Group("Inference overrides", note="Two structured settings, each one declared name. They replace the MODEL_PRICE_<PROVIDER>_<MODEL> and MODEL_BUDGET_<DOMAIN> namespaces, where the variable NAME was built from provider and model data: so the supported surface was unlistable and a typo was indistinguishable from an unsupported setting.", vars=[
         EnvVar("MODEL_PRICE_OVERRIDES", "", help=(
