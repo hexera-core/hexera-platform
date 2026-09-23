@@ -37,19 +37,26 @@ function sel(cls, opts, cur) {
     `<option value="${v}"${cur === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
 }
 
+/** One row of the openings table. An opening the user added off any measured face has no size
+ *  yet: its size cell is a box to type the diameter into. */
+export function rowHtml(o) {
+  const id = Number(o.id);
+  const size = o.shape === "unknown"
+    ? `<input class="gc-num gc-dia" type="number" min="1" step="1" placeholder="mm across" aria-label="diameter of opening ${id} in millimetres">`
+    : o.shape === "circle" ? esc(`${mm(o.diameter_mm)} mm across`) : esc(`${mm(o.width_mm)} x ${mm(o.height_mm)} mm`);
+  const at = (o.centroid_mm || []).map((v) => mm(v)).join(", ");
+  return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}">${id}</td>
+      <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${id}"></td>
+      <td>${sel("gc-role", ROLES, o.role)}</td>
+      <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) mm</td>
+      <td class="gc-conf" title="how sure the check is">${o.added ? "you" : Math.round((o.confidence || 0) * 100) + "%"}</td>
+      <td class="gc-del"><button class="gc-x" type="button" title="remove this opening" aria-label="remove opening ${id}">×</button></td></tr>`;
+}
+
 /** The form for one proposal: the kind and flow selects, the openings table, the notes, and the
  *  one action. Every row carries its opening id so the reader can find it again. */
 export function formHtml(p) {
-  const rows = (p.openings || []).map((o) => {
-    const size = o.shape === "circle" ? `${mm(o.diameter_mm)} mm across`
-                                      : `${mm(o.width_mm)} x ${mm(o.height_mm)} mm`;
-    const at = (o.centroid_mm || []).map((v) => mm(v)).join(", ");
-    return `<tr data-id="${Number(o.id)}"><td class="gc-n" title="opening ${Number(o.id)}">${Number(o.id)}</td>
-      <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${Number(o.id)}"></td>
-      <td>${sel("gc-role", ROLES, o.role)}</td>
-      <td class="gc-dim">${esc(size)}</td><td class="gc-dim gc-pos">(${esc(at)}) mm</td>
-      <td class="gc-conf" title="how sure the check is">${Math.round((o.confidence || 0) * 100)}%</td></tr>`;
-  }).join("");
+  const rows = (p.openings || []).map(rowHtml).join("");
   const notes = (p.notes || []).map((n) => `<div class="gc-note">${esc(n)}</div>`).join("");
   const ext = p.extents || {};
   // A BODY IN A FLOW: which way the fluid travels, the part's length along it, how far the far
@@ -65,8 +72,9 @@ export function formHtml(p) {
   return `<div class="rc-row"><div class="rc-k">The file is</div><div class="rc-v">${sel("gc-sel gc-kind", KIND, p.input_kind)}</div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
-    ${rows ? `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th></tr></thead><tbody>${rows}</tbody></table>`
-           : `<div class="gc-note">No openings found. If the fluid flows through this part, say so below and the intake will ask for them.</div>`}
+    ${rows ? `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+           : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
+    <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><span class="gc-tools-hint">then click the part where it is</span></div>
     </div>
     ${external}
     ${notes}
@@ -107,7 +115,9 @@ export function readForm(root, p) {
     const id = Number(tr.dataset.id), o = (p.openings || []).find((x) => x.id === id) || {};
     const body = { id, name: tr.querySelector(".gc-name").value.trim() || o.name || `opening_${id}`,
                    role: tr.querySelector(".gc-role").value, centroid_mm: o.centroid_mm || null };
-    if (o.shape === "circle") body.diameter_mm = o.diameter_mm;
+    const dia = tr.querySelector(".gc-dia");
+    if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = v; }
+    else if (o.shape === "circle") body.diameter_mm = o.diameter_mm;
     else { body.width_mm = o.width_mm; body.height_mm = o.height_mm; body.diameter_mm = o.diameter_mm; }
     return body;
   });
@@ -115,6 +125,13 @@ export function readForm(root, p) {
                  openings, seed_point_mm: p.seed_point_mm || null, size_mm: p.size_mm || null };
   if (flow === "external") Object.assign(body, readExternal(root));
   return body;
+}
+
+/** Naming mode: the labels are the measuring step's and not yet the model's, so nothing is
+ *  editable and Proceed waits; off again when the model has answered or given up. */
+export function setNaming(root, on) {
+  root.classList.toggle("gc-naming", !!on);
+  root.querySelectorAll("input, select, button").forEach((el) => { el.disabled = !!on; });
 }
 
 /** Lock a form after it was accepted, and say so where the action was. */

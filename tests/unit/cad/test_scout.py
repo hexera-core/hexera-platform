@@ -203,3 +203,16 @@ def test_a_short_reducers_unequal_mouths_are_two_openings():
     # a plate's inner face is the same hole plus a wall: still one mouth
     outer, inner = _ring(0.0, -1.0, on_extremity=True, side=0.1), _ring(0.01, 1.0, on_extremity=False, side=0.108)
     assert len(drop_flange_twins([outer, inner])) == 1
+
+
+def test_every_measured_flat_face_rides_along_for_the_stage():
+    from meshpipeline.cad.scout import Opening, measured_faces
+    a = Opening(face_index=3, kind="ring", centroid=(0.0, 0.0, 0.0), normal=(-1.0, 0.0, 0.0), area=0.01,
+                wh=(0.1128, 0.1128), clear_ahead=True, on_extremity=True)
+    b = Opening(face_index=7, kind="disc", centroid=(1.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), area=0.02,
+                wh=(0.2, 0.1), clear_ahead=False, on_extremity=False)
+    faces = measured_faces([a, b])
+    assert [f["face"] for f in faces] == [7, 3]                    # largest first
+    assert faces[1]["shape"] == "circle" and faces[1]["diameter_mm"] == 112.84
+    assert faces[0]["shape"] == "rectangle" and faces[0]["width_mm"] == 200.0 and faces[0]["height_mm"] == 100.0
+    assert faces[1]["centroid_mm"] == [0.0, 0.0, 0.0] and faces[0]["normal"] == [1.0, 0.0, 0.0]

@@ -117,12 +117,15 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.geometry_fields import form_spec
     payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
-    if payload.get("status") == "ready":
-        store = get_object_store()
-        payload["pictures"] = [
-            {"name": s["name"], "facing": s.get("facing", []),
-             "url": store.create_download_url(object_key=s["object_key"], expires_in=_PICTURE_URL_TTL)}
-            for s in payload.get("snapshots", [])]
+    if payload.get("status") in ("ready", "scouted"):
+        # the stage opens on a scouted check too, with the code's labels; the pictures are for
+        # the card, which only shows once the check is ready
+        if payload.get("status") == "ready":
+            store = get_object_store()
+            payload["pictures"] = [
+                {"name": s["name"], "facing": s.get("facing", []),
+                 "url": store.create_download_url(object_key=s["object_key"], expires_in=_PICTURE_URL_TTL)}
+                for s in payload.get("snapshots", [])]
         payload.pop("snapshots", None)
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
         payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
