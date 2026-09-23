@@ -67,88 +67,16 @@ class ConfirmIn(BaseModel):
         return {k: float(x) for k, x in v.items()}
 
 
-#: The first words of the holding line the chat gives while the part is being drawn. The intake
-#: prompt names it so nothing in it is ever read as declared.
-DRAWING_MARK = "GEOMETRY CHECK (drawing your part):"
-HOLD_REPLY = (
-    f"{DRAWING_MARK} thanks - I'm drawing your part now. It will appear beside this chat in a few "
-    "seconds with a numbered sticker on every opening I found. Check the names, fix anything "
-    "wrong, and press Proceed. Then I'll ask only what is still missing."
+# The hold's words and rule live with the application; the route re-exports them for its callers.
+from meshpipeline.application.geometry_hold import (  # noqa: E402
+    CONTINUE_TEXT,
+    DRAWING_MARK,
+    HOLD_REPLY,
+    purpose_from,
+    should_hold,
 )
-CONTINUE_TEXT = "I confirmed the geometry check. Go on."
 
-
-def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | None) -> bool:
-    """Whether this chat turn is the one the naming waits for: a check exists and is not
-    terminal, nobody has asked the model yet, and nothing was confirmed. Pure, so the rule is
-    testable without a store."""
-    if stored is None or requested is not None or confirmed is not None:
-        return False
-    return stored.get("status") in ("pending", "scouted")
-
-
-def purpose_from(messages: list[dict] | None) -> str:
-    """Everything the user has said so far, for the model: the answer to the opening question,
-    and the unit answer when there was one."""
-    return "\n".join(str(m.get("content", "")).strip() for m in (messages or [])
-                      if m.get("role") == "user" and str(m.get("content", "")).strip())[:2000]
-
-
-async def hold_for_naming(session, owner_id: str, organization_id: str):
-    """Called by the chat turn once the user's message is stored. When this is the first answer
-    the naming waits for, hand the user's words to the naming step, leave the holding line in the
-    conversation, and return it; otherwise None and the intake runs as usual.
-
-    Done under the session's row lock: two answers sent at once must not both pass the "nobody
-    asked yet" test and queue two namings with two holding lines."""
-    if not gcfg.GEOMETRY_CHECK_ENABLED:
-        return None
-    from meshpipeline.application.geometry_check import (
-        check_object_key,
-        mark_naming_requested,
-        naming_requested,
-        read_check,
-    )
-    from meshpipeline.contracts.geometry_check import enqueue_naming
-    from meshpipeline.persistence.repositories.session_repository import SessionRepository
-    from meshpipeline.persistence.session import get_db
-
-    sid = str(session.id)
-    async with get_db() as db:
-        repo = SessionRepository()
-        locked = await repo.get_for_update(db, session.id)
-        if locked is None or locked.owner_id != owner_id:
-            return None
-        stored = read_check(sid)
-        if not should_hold(stored, naming_requested(sid), _read_json(check_object_key(sid, "confirmed.json"))):
-            return None
-        purpose = purpose_from(locked.messages)
-        interpretation = await _interpretation_payload(db, locked, owner_id, organization_id)
-        if not enqueue_naming(session_id=sid, owner_id=owner_id, purpose_text=purpose,
-                              interpretation=interpretation):
-            return None
-        mark_naming_requested(sid, purpose)
-        await repo.append_message(db, session.id, "assistant", HOLD_REPLY)
-        await db.commit()
-    logger.info("geometry naming queued from the first answer - session_id=%s", sid)
-    return HOLD_REPLY
-
-
-async def _interpretation_payload(db, session, owner_id: str, organization_id: str) -> dict | None:
-    """The unit the user confirmed for this session's file, as the worker reads it, or None."""
-    iid = getattr(session, "geometry_interpretation_id", None)
-    if not iid:
-        return None
-    from dataclasses import asdict
-
-    from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
-    from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
-        GeometryInterpretationRepository,
-    )
-
-    recorded = await GeometryInterpretationRepository().get_for_owner(
-        db, iid, owner_id, organization_id=organization_id)
-    return asdict(GeometryInterpretationRef.from_domain(recorded)) if recorded else None
+REEXPORTED = (CONTINUE_TEXT, DRAWING_MARK, HOLD_REPLY, purpose_from, should_hold)
 
 
 async def _owned_session(session_id: uuid.UUID, owner_id: str, organization_id: str):

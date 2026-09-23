@@ -93,8 +93,9 @@ def _require_session(session, session_id):
 async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
                        organization_id: str = Depends(org_dep)):
     """One chat turn, start to finish: the message is accepted, the authority settles what it can
-    without a model, the geometry check may hold the turn while the part is drawn, else the
-    intake answers. The geometry confirm runs a turn through here too, calling it directly."""
+    without a model (the units question, a deferred approval, the geometry check's hold while
+    the part is drawn), else the intake answers. The geometry confirm runs a turn through here
+    too, calling it directly."""
     from meshpipeline.agents.intake.agent import node_intake
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
@@ -121,13 +122,6 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
                             awaiting_confirmation=outcome.awaiting_confirmation)
 
     session = _require_session(outcome.session, session_id)
-    # THE GEOMETRY CHECK'S TURN. The first answer that reaches the intake is what the naming
-    # step waits for: the user's words go to the model with the pictures, the conversation holds
-    # while the part is drawn, and the intake resumes when the user proceeds on the stage.
-    from meshpipeline.api.v1.geometry import hold_for_naming
-    held = await hold_for_naming(session, owner_id, organization_id)
-    if held:
-        return ChatResponse(session_id=session_id, reply=held)
     state = _build_intake_state(session, owner_id)
     # The turn after submit_requirements: the user is answering "shall I proceed?".
     state["awaiting_confirmation"] = bool(session.request_txt)
