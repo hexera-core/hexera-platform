@@ -418,7 +418,13 @@ function initScene(sessionId, box, surf, p) {
     p.openings = [...(p.openings || []), o];
     const tbody = form.querySelector(".gc-table tbody");
     if (tbody) { tbody.insertAdjacentHTML("beforeend", rowHtml(o)); }
-    else { form.querySelector(".gc-int").innerHTML = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o)}</tbody></table>`; }
+    else {
+      // the first opening on a part that had none: the table takes the "no openings" note's
+      // place, and the Add button beside it stays
+      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o)}</tbody></table>`;
+      const note = form.querySelector(".gc-int .gc-note");
+      if (note) note.outerHTML = table; else form.querySelector(".gc-int").insertAdjacentHTML("afterbegin", table);
+    }
     addPin(o); rebind(); select(o.id); rw.render();
     return o;
   }

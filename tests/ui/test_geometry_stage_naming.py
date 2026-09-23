@@ -166,3 +166,35 @@ def test_when_the_naming_gives_up_the_codes_labels_open_for_editing(live):
     assert state["warn"] is True and "gave up" in state["banner"], state
     live.evaluate("window.__stage2.release()")
     assert_clean(live, "the geometry stage after the naming gave up")
+
+
+def test_the_first_opening_added_to_a_part_that_had_none_keeps_the_add_button(live):
+    check = _check("ready"); check["proposal"]["openings"] = []; check["proposal"]["faces"] = []
+    live.evaluate("""(async () => {
+      const SKIN = __SKIN__, CHECK = __CHECK__;
+      const real = window.fetch.bind(window);
+      window.fetch = (u, o) => String(u).includes('/geometry/__S__-empty/check/skin')
+        ? Promise.resolve(new Response(JSON.stringify(SKIN), {status: 200, headers: {'Content-Type': 'application/json'}}))
+        : real(u, o);
+      window.__confirmed3 = null;
+      const { openGeometryStage } = await import('/static/js/viewer/geometry_stage.js');
+      window.__stage3 = await openGeometryStage('__S__-empty', CHECK, async (b) => { window.__confirmed3 = b; return {message: 'ok'}; },
+        {anchorEl: document.getElementById('stage'), fallback: () => {}});
+    })()""".replace("__SKIN__", json.dumps(_skin())).replace("__CHECK__", json.dumps(check)).replace("__S__", SESSION), timeout=60)
+    live.wait_for(f"window._vdbg && window._vdbg['gstage:{SESSION}-empty']", timeout=90,
+                  what="the geometry stage to initialise")
+    state = live.evaluate(f"""(() => {{
+      const h = window._vdbg['gstage:{SESSION}-empty'], root = document.getElementById('gstage-{SESSION}-empty');
+      const before = {{note: !!root.querySelector('.gc-int .gc-note'), add: !!root.querySelector('.gc-add'), rows: root.querySelectorAll('.gc-table tbody tr').length}};
+      h.add([0.0, 0.25, 0.25], [-1, 0, 0]);
+      const mid = {{note: !!root.querySelector('.gc-int .gc-note'), add: !!root.querySelector('.gc-add'), rows: root.querySelectorAll('.gc-table tbody tr').length}};
+      root.querySelector('.gc-add').click();                                  // the button still arms
+      const armed = root.querySelector('.gc-add').classList.contains('armed');
+      h.add([1.0, 0.25, 0.25], [1, 0, 0]);
+      return {{before, mid, armed, after: {{add: !!root.querySelector('.gc-add'), rows: root.querySelectorAll('.gc-table tbody tr').length, pins: h.pins()}}}};
+    }})()""")
+    assert state["before"] == {"note": True, "add": True, "rows": 0}, state
+    assert state["mid"] == {"note": False, "add": True, "rows": 1}, state
+    assert state["armed"] is True and state["after"] == {"add": True, "rows": 2, "pins": 2}, state
+    live.evaluate("window.__stage3.release()")
+    assert_clean(live, "the geometry stage after adding to an empty table")

@@ -137,7 +137,7 @@ async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels greyed
   // out under a banner, and takes the model's labels when they arrive. The user is already
   // turning the part while the model thinks.
-  let stage = null;
+  let stage = null, stageFailed = false;
   const confirmFn = async (body) => {
     const reply = await confirmGeometryCheck(sessionId, body);
     deps.chat("assistant", reply.message);
@@ -173,9 +173,9 @@ async function watchGeometryCheck(sessionId) {
       if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
       return;
     }
-    if (status === "scouted" && d.skin && !stage) {
-      stage = await deps.geometryCheck(sessionId, d, confirmFn);   // null when it fell back to the card
-      if (stage === null) return;                                  // the card shows once ready, on the next poll
+    if (status === "scouted" && d.skin && !stage && !stageFailed) {
+      stage = await deps.geometryCheck(sessionId, d, confirmFn);   // null when the stage cannot draw
+      if (stage === null) stageFailed = true;                      // the card comes once the check is ready
     }
     if (status === "ready" && d.named !== false) {
       if (d.confirmed) { _checkState = "done"; releaseHold(); if (stage) stage.release(); return; }
