@@ -134,3 +134,28 @@
 .gc-ref{width:84px}
 .gc-guess{margin-left:8px;font-size:11px;color:#f0b46b}
 .gc-ground{accent-color:#ff4f00}
+
+/* THE STAGE, CAD-STYLE: a pale canvas, a naming banner, snap-view buttons, add/remove controls */
+.gc-stage .gc-canvas{background:#f3f5f8}
+.gc-stage .v-hint{color:#2b3340;background:rgba(255,255,255,.78);border:1px solid #d5dbe4}
+.gc-stage .gc-loading,.gc-stage .v-loading{background:#f3f5f8;color:#5b6b83}
+.gc-views{position:absolute;right:10px;top:150px;display:flex;flex-direction:column;gap:4px;z-index:5}
+.gc-views .v-btn{padding:4px 9px;font-size:11.5px;background:rgba(255,255,255,.85);color:#2b3340;border-color:#c9d2de}
+.gc-views .v-btn:hover{background:#fff;border-color:#8b96a7}
+.gc-stage .gc-fit{position:static}
+.gc-banner{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid #3a4657;border-radius:8px;background:#1d232d;color:#dfe5ee;font-size:12.5px}
+.gc-banner.warn{border-color:#7a5a2a;background:#2a2118;color:#f0d9b5}
+.gc-banner[hidden]{display:none}
+.gc-spin{width:12px;height:12px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#ffd400;animation:vspin .9s linear infinite;flex:none}
+.gc-banner.warn .gc-spin{display:none}
+.gc-naming .gc-table{opacity:.55}
+.gc-naming .gc-proceed{opacity:.5}
+.gc-tools{display:flex;align-items:center;gap:8px;padding:6px 0 2px}
+.gc-tools .gc-add{padding:5px 10px;font-size:12px}
+.gc-tools .gc-add.armed{background:#ff4f00;border-color:#ff4f00;color:#fff}
+.gc-tools-hint{font-size:11.5px;color:#79839b}
+.gc-card .gc-tools{display:none}
+.gc-del{width:22px;text-align:center}
+.gc-x{font:inherit;font-size:14px;line-height:1;color:#8fa3bd;background:none;border:0;cursor:pointer;padding:2px 5px;border-radius:5px}
+.gc-x:hover{color:#f87171;background:#252c37}
+.gc-dia{width:78px}

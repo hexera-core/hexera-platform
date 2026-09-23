@@ -99,6 +99,9 @@ class ScoutResult:
     seed_point: tuple[float, float, float] | None
     confidence: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    #: every flat face the scout measured, proposed or not, so a user can add an opening on one
+    #: and get its real size and position
+    faces: list[dict] = field(default_factory=list)
 
     @property
     def size(self) -> tuple[float, float, float]:
@@ -118,6 +121,7 @@ class ScoutResult:
             "seed_point_mm": None if self.seed_point is None else [round(v * mm, 2) for v in self.seed_point],
             "confidence": {k: round(float(v), 2) for k, v in self.confidence.items()},
             "notes": list(self.notes),
+            "faces": list(self.faces),
         }
 
 
@@ -378,6 +382,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
 
     notes: list[str] = []
     candidates = drop_flange_twins(candidates, diag, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
+    measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
@@ -439,7 +444,27 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         seed_point=seed,
         confidence={"input_kind": confidence_kind,
                     "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0},
-        notes=notes)
+        notes=notes, faces=measured)
+
+
+MAX_FACES = 200
+
+
+def measured_faces(candidates: list[Opening]) -> list[dict]:
+    """The flat faces as the console's "add an opening" reads them: position, normal, size and
+    kind, the largest first, capped so a part with a thousand facets ships a useful few."""
+    mm = 1000.0
+    out = []
+    for c in sorted(candidates, key=lambda o: o.area, reverse=True)[:MAX_FACES]:
+        d = {"face": c.face_index, "kind": c.kind, "shape": c.shape,
+             "centroid_m": [round(v, 6) for v in c.centroid],
+             "centroid_mm": [round(v * mm, 2) for v in c.centroid],
+             "normal": [round(v, 5) for v in c.normal], "area_mm2": round(c.area * mm * mm, 2),
+             "diameter_mm": round(c.equivalent_diameter * mm, 2)}
+        if c.shape != "circle":
+            d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, 2), round(c.wh[1] * mm, 2)
+        out.append(d)
+    return out
 
 
 def drop_flange_twins(candidates: list[Opening], diag: float, centre=(0.0, 0.0, 0.0)) -> list[Opening]:

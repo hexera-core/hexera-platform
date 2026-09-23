@@ -134,12 +134,31 @@ export function holdState() { return { held: _held, check: _checkState }; }
 export function noteCheckState(s) { _checkState = s; }
 
 async function watchGeometryCheck(sessionId) {
+  // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels greyed
+  // out under a banner, and takes the model's labels when they arrive. The user is already
+  // turning the part while the model thinks.
+  let stage = null;
+  const confirmFn = async (body) => {
+    const reply = await confirmGeometryCheck(sessionId, body);
+    deps.chat("assistant", reply.message);
+    // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
+    // is the next question - or the dispatch, when nothing was left to ask.
+    _checkState = "done";
+    releaseHold();
+    if (reply.next) {
+      if (reply.continued_with) deps.chat("user", reply.continued_with);
+      if (reply.next.reply) deps.chat("assistant", reply.next.reply);
+      deps.brief(reply.next.brief);
+      if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
+    }
+    return reply;
+  };
   for (let n = 0; n < CHECK_POLL_MAX; n++) {
     if (getState.sessionId() !== sessionId) return;
     let d = null;
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
-    if (status === "off" || status === "unsupported" || status === "failed") {
+    if (status === "off" || status === "unsupported" || (status === "failed" && !stage)) {
       if (status === "failed" && d.reason) {
         deps.notice.show("The geometry check could not read this file; the questions will "
           + "cover it instead.", "warn");
@@ -148,25 +167,21 @@ async function watchGeometryCheck(sessionId) {
       releaseHold();                               // nothing to wait for any more
       return;
     }
+    if (status === "failed" && stage) {
+      // the naming gave up after the stage opened: the code's labels stand, the user proceeds
+      stage.update(d); _checkState = "ready";
+      if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
+      return;
+    }
+    if (status === "scouted" && d.skin && !stage) {
+      stage = await deps.geometryCheck(sessionId, d, confirmFn);   // null when it fell back to the card
+      if (stage === null) return;                                  // the card shows once ready, on the next poll
+    }
     if (status === "ready" && d.named !== false) {
-      if (d.confirmed) { _checkState = "done"; releaseHold(); return; }  // a reload after confirming
+      if (d.confirmed) { _checkState = "done"; releaseHold(); if (stage) stage.release(); return; }
       _checkState = "ready";
       if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
-      deps.geometryCheck(sessionId, d, async (body) => {
-        const reply = await confirmGeometryCheck(sessionId, body);
-        deps.chat("assistant", reply.message);
-        // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
-        // is the next question - or the dispatch, when nothing was left to ask.
-        _checkState = "done";
-        releaseHold();
-        if (reply.next) {
-          if (reply.continued_with) deps.chat("user", reply.continued_with);
-          if (reply.next.reply) deps.chat("assistant", reply.next.reply);
-          deps.brief(reply.next.brief);
-          if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
-        }
-        return reply;
-      });
+      if (stage) stage.update(d); else await deps.geometryCheck(sessionId, d, confirmFn);
       return;
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));

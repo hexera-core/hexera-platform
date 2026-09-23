@@ -95,18 +95,21 @@ def clear_naming_request(session_id: str) -> None:
 
 
 def skin_payload(skin_stl: Path) -> dict:
-    """The part's skin in the shape the mesh viewer already reads (render/viewer_pack's STL
-    form), so the console draws the part with the renderer it draws a delivered mesh with. It is
-    marked as the input skin, never as a mesh."""
-    from meshpipeline.cad.stl_io import read_stl_triangles
-    from meshpipeline.render.viewer_pack import stl_response
+    """The part's skin as a CAD viewer draws it: shared vertices, smooth normals that break at
+    sharp corners, and the sharp edges as lines - in the shape the mesh viewer reads (its polyMesh
+    form, plus normals), so the console draws the part with the renderer it draws a delivered
+    mesh with. It is marked as the input skin, never as a mesh."""
+    import numpy as np
 
-    resp = stl_response({"skin": read_stl_triangles(Path(skin_stl))}, {}, "m")
-    if resp is None:
+    from meshpipeline.cad.stl_io import read_stl_triangles
+    from meshpipeline.render.skin_mesh import edges_block, prepare_skin, skin_patch
+
+    tris = np.asarray(read_stl_triangles(Path(skin_stl)), dtype=float).reshape(-1, 3, 3)
+    if len(tris) == 0:
         raise RuntimeError("the part's skin has no triangles to draw")
-    resp["is_mesh"] = False
-    resp["cell_count"] = 0
-    return resp
+    prepared = prepare_skin(tris)
+    return {"kind": "skin", "mesh_units": "m", "is_mesh": False, "cell_count": 0,
+            "patches": [skin_patch(prepared)], "edges": edges_block(prepared)}
 
 
 # ------------------------------------------------------------------------------ the scout ----
@@ -398,7 +401,10 @@ def _rescale_skin(session_id: str, k: float) -> None:
         return
     import numpy as np
 
-    for p in skin.get("patches") or []:
+    blocks = list(skin.get("patches") or [])
+    if isinstance(skin.get("edges"), dict):
+        blocks.append(skin["edges"])                 # the sharp edges ride on their own points
+    for p in blocks:
         for name in ("positions_b64", "points_b64"):
             if p.get(name):
                 arr = np.frombuffer(base64.b64decode(p[name]), dtype=np.float32) * float(k)
@@ -535,6 +541,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "size_mm": facts["size_mm"],
         "notes": list(facts.get("notes") or []),
         "read_as": facts.get("read_as", "cad"),
+        "faces": list(facts.get("faces") or []),      # every flat face measured: what "add an opening" snaps to
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
