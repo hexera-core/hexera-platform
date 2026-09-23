@@ -2,9 +2,10 @@
 # Boundaries: one table and its indexes; it touches nothing an earlier revision created.
 
 # Additive and reversible on its own terms. Nothing references this table, so the downgrade drops
-# exactly what it created and the schema underneath is untouched. The whole path that writes it is
-# behind GEOMETRY_MEASUREMENT_ENABLED, which is off by default, so a deployment that upgrades and
-# turns nothing on gains an empty table and no behaviour.
+# exactly what it created and the schema underneath is untouched. When this revision shipped the path
+# that writes it was behind a flag that was off by default, so a deployment that upgraded and turned
+# nothing on gained an empty table and no behaviour. The flag is retired and every upload is measured;
+# the table and this migration are unchanged by that.
 #
 # The unique constraint is on geometry_source_id alone: one upload, one measurement, because the
 # measurement is a pure function of the bytes. RESTRICT on the foreign key matches every other

@@ -2,9 +2,10 @@
 # Boundaries: one table and its indexes; it touches nothing an earlier revision created.
 
 # Additive and reversible on its own terms. Nothing references this table, so the downgrade drops
-# exactly what it created. The whole path that writes it is behind GEOMETRY_SURVEY_ENABLED, which is
-# off by default and dead unless the measurement and its readers are on too, so a deployment that
-# upgrades and turns nothing on gains an empty table and no behaviour.
+# exactly what it created. When this revision shipped the path that writes it was behind a flag that
+# was off by default and dead unless the measurement and its readers were on too, so a deployment that
+# upgraded and turned nothing on gained an empty table and no behaviour. Those flags are retired and
+# every upload is surveyed; the table and this migration are unchanged by that.
 #
 # Its own table rather than a key in geometry_measurements.document, because the look worker reads
 # that document, renders for thirty seconds and writes it back: an answer recorded in between would

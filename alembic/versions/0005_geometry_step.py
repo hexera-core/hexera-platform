@@ -2,9 +2,10 @@
 # Boundaries: two nullable columns on one existing table; it creates nothing and drops nothing.
 
 # Additive and reversible. Both columns are nullable with no default, so every row that exists stays
-# exactly as it is, and the whole path that writes them is behind GEOMETRY_AGENT_STEP_ENABLED, which is
-# off by default and dead unless the survey is on too. A deployment that upgrades and turns nothing on
-# gains two null columns and no behaviour.
+# exactly as it is. When this revision shipped the path that writes them was behind a flag that was off
+# by default and dead unless the survey was on too, so a deployment that upgraded and turned nothing on
+# gained two null columns and no behaviour. That flag is retired and the step runs on every submission
+# that has a survey to read; the columns and this migration are unchanged by that.
 #
 # WHY COLUMNS AND NOT KEYS INSIDE `survey`. `survey` is the measurement package's own handoff, dumped as
 # the package dumped it and checked against the package's own validator; the platform does not put its
