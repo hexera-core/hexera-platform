@@ -16,7 +16,7 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
-import { applyFlow, formHtml, markConfirmed, mm, readForm } from "./geometry_form.js";
+import { applyFlow, displayText, formHtml, markConfirmed, mm, readForm } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -54,7 +54,7 @@ export const Stage = {
   // overrides that when some other party is speaking.
   chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
-    else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(text)}</div>`;
+    else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(displayText(text))}</div>`;
     this.col().appendChild(g);this.scrollBottom();},
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn

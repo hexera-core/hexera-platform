@@ -4,6 +4,8 @@
 # Boundaries: pure functions and pydantic models; no store, no database, no model.
 from __future__ import annotations
 
+from pathlib import Path
+
 from meshpipeline.api.v1.geometry import (
     CONTINUE_TEXT,
     DRAWING_MARK,
@@ -15,6 +17,7 @@ from meshpipeline.api.v1.geometry import (
     purpose_from,
     should_hold,
 )
+from meshpipeline.application import geometry_hold as gf_hold
 from meshpipeline.contracts import geometry_fields as gf
 
 
@@ -125,3 +128,22 @@ def test_far_field_margins_must_be_positive():
     ok = ConfirmIn(input_kind="solid-body", flow="external", flow_axis="+x",
                    extents={"upstream": 3, "downstream": 10.5, "lateral": 5, "vertical": 5})
     assert ok.extents == {"upstream": 3.0, "downstream": 10.5, "lateral": 5.0, "vertical": 5.0}
+
+
+# ---------------------------------------------------------------------- queue, wait, or not ----
+def test_a_message_during_the_drawing_waits_and_one_after_the_grace_does_not():
+    requested = {"requested_at": 1000.0}
+    assert gf_hold.hold_decision({"status": "scouted"}, None, None, now=1000.0) == "queue"
+    assert gf_hold.hold_decision({"status": "scouted"}, requested, None, now=1010.0) == "wait"
+    assert gf_hold.hold_decision({"status": "pending"}, requested, None, now=1000.0 + gf_hold.WAIT_GRACE_S) == "wait"
+    assert gf_hold.hold_decision({"status": "scouted"}, requested, None, now=1000.0 + gf_hold.WAIT_GRACE_S + 1) is None
+    assert gf_hold.hold_decision({"status": "ready", "named": True}, requested, None, now=1010.0) is None
+    assert gf_hold.hold_decision({"status": "failed"}, requested, None, now=1010.0) is None
+    assert gf_hold.hold_decision({"status": "scouted"}, requested, {"confirmed_at": 1}, now=1010.0) is None
+    assert gf_hold.WAIT_REPLY.startswith(DRAWING_MARK) and "still drawing" in gf_hold.WAIT_REPLY
+
+
+def test_the_console_strips_the_same_marks_the_api_writes():
+    js = (Path(__file__).resolve().parents[3] / "ui" / "js" / "render" / "geometry_form.js").read_text()
+    assert f'DRAWING_MARK = "{DRAWING_MARK}"' in js
+    assert 'CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"' in js

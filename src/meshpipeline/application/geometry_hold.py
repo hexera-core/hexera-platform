@@ -19,17 +19,42 @@ HOLD_REPLY = (
     "seconds with a numbered sticker on every opening I found. Check the names, fix anything "
     "wrong, and press Proceed. Then I'll ask only what is still missing."
 )
+#: What the conversation says to a message sent while the part is still being drawn.
+WAIT_REPLY = (
+    f"{DRAWING_MARK} still drawing your part - it will appear beside this chat in a moment. "
+    "Check the openings there and press Proceed; I'll carry on from that."
+)
 #: What the confirm sends as the user's turn so the intake picks up where the hold left it.
 CONTINUE_TEXT = "I confirmed the geometry check. Go on."
+#: How long after the naming was requested a message is still answered with the wait line. A
+#: naming that never comes (a broken store, a dead worker) must not trap the conversation: past
+#: this the intake answers as it always did.
+WAIT_GRACE_S = 180.0
+
+
+def hold_decision(stored: dict | None, requested: dict | None, confirmed: dict | None,
+                  now: float | None = None) -> str | None:
+    """What this chat turn does about the geometry check: "queue" - the first answer, hand the
+    words to the naming and hold; "wait" - the naming is already running, hold again; None -
+    let the intake answer (no check, a finished or failed one, a confirmed one, or a naming that
+    has taken too long). Pure, so the rule is testable without a store."""
+    import time as _time
+
+    if stored is None or confirmed is not None:
+        return None
+    if stored.get("status") not in ("pending", "scouted"):
+        return None
+    if requested is None:
+        return "queue"
+    asked_at = float(requested.get("requested_at") or 0.0)
+    if (now if now is not None else _time.time()) - asked_at <= WAIT_GRACE_S:
+        return "wait"
+    return None
 
 
 def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | None) -> bool:
-    """Whether this chat turn is the one the naming waits for: a check exists and is not
-    terminal, nobody has asked the model yet, and nothing was confirmed. Pure, so the rule is
-    testable without a store."""
-    if stored is None or requested is not None or confirmed is not None:
-        return False
-    return stored.get("status") in ("pending", "scouted")
+    """Whether this chat turn is the one that hands the user's words to the naming."""
+    return hold_decision(stored, requested, confirmed) == "queue"
 
 
 def purpose_from(messages: list[dict] | None) -> str:
@@ -39,12 +64,13 @@ def purpose_from(messages: list[dict] | None) -> str:
                      if m.get("role") == "user" and str(m.get("content", "")).strip())[:2000]
 
 
-def hold_applies(session_id: str) -> bool:
-    """The rule, read against the store: off when the check is disabled or no check exists."""
+def hold_applies(session_id: str) -> str | None:
+    """The rule, read against the store: "queue", "wait" or None; None when the check is
+    disabled or no check exists."""
     import meshpipeline.settings.geometry_check as gcfg
 
     if not gcfg.GEOMETRY_CHECK_ENABLED:
-        return False
+        return None
     from meshpipeline.application.geometry_check import (
         check_object_key,
         naming_requested,
@@ -57,7 +83,7 @@ def hold_applies(session_id: str) -> bool:
         confirmed: dict | None = {}
     except ObjectNotFound:
         confirmed = None
-    return should_hold(read_check(session_id), naming_requested(session_id), confirmed)
+    return hold_decision(read_check(session_id), naming_requested(session_id), confirmed)
 
 
 async def interpretation_payload(db, session, owner_id: str, organization_id: str) -> dict | None:
@@ -101,5 +127,6 @@ def withdraw_naming(session_id: str) -> None:
     logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
 
 
-__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "hold_applies", "interpretation_payload",
-           "purpose_from", "queue_naming", "should_hold", "withdraw_naming"]
+__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "hold_applies",
+           "hold_decision", "interpretation_payload", "purpose_from", "queue_naming", "should_hold",
+           "withdraw_naming"]

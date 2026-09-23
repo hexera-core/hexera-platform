@@ -279,7 +279,22 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
     """The naming task body, run once the user has said what the part is. Waits for the scout
     when it is still measuring, brings the pictures back, asks the model with the user's words,
     and stores the proposal as `ready`. A scout that failed stays failed; the naming never
-    invents a check that was not made."""
+    invents a check that was not made. A naming that breaks is stored as `failed` where it can
+    be, so the conversation stops waiting for a stage that will not come."""
+    try:
+        return _name(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
+                     interpretation=interpretation)
+    except Exception as exc:  # noqa: BLE001 - the user is told, in one sentence, and the intake carries on
+        logger.exception("geometry naming failed - session=%s", session_id)
+        reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        try:
+            write_status(session_id, STATUS_FAILED, reason=reason, named=False)
+        except Exception:  # noqa: BLE001 - the store itself may be what broke
+            logger.warning("geometry naming: could not record the failure for %s", session_id)
+        return {"status": STATUS_FAILED, "named": False, "reason": reason}
+
+
+def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> dict:
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
     from meshpipeline.contracts.object_storage import get_object_store
 
