@@ -548,15 +548,22 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
     A coaxial fitting also has concentric rings facing the same way in one plane - and both are
     ports. What tells them apart is the gap: a band's outer edge IS the next band's hole; a
     coaxial inner port's outer edge stops short of the outer port's hole by the annular passage.
-    A ring whose outer extent is unknown is taken for a band."""
-    dropped: set[int] = set()
-    for i, a in enumerate(candidates):
-        if i in dropped or a.kind != "ring":
-            continue
-        for j in range(i + 1, len(candidates)):
+    Bands chain - the chamfer fills the wall's hole, the wall fills the gasket face's hole - so
+    the rings are grouped through every such link, in any order, and each group keeps its
+    smallest hole. Two rings with the same hole over one spot are one face drawn twice."""
+    rings = [k for k, c in enumerate(candidates) if c.kind == "ring"]
+    parent = {k: k for k in rings}
+
+    def root(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for n, i in enumerate(rings):
+        a = candidates[i]
+        for j in rings[n + 1:]:
             b = candidates[j]
-            if j in dropped or b.kind != "ring":
-                continue
             if _dot(a.normal, b.normal) < 0.95:
                 continue                                   # not facing the same way
             d_a, d_b = a.equivalent_diameter, b.equivalent_diameter
@@ -567,13 +574,17 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
             if across > 0.5 * max(d_a, d_b, 1e-9):
                 continue                                   # not over the same spot
             small, big = (b, a) if d_b < d_a else (a, b)
-            if small.outer_wh != (0.0, 0.0) and not _sits_inside(small.outer_wh, big.wh):
+            if not (_sits_inside(small.outer_wh, big.wh) or _sits_inside(small.wh, big.wh)):
                 continue                                   # a gap between them: two ports of a coaxial fitting
-            if d_b < d_a:
-                dropped.add(i)                             # b's hole is the bore; a is a band around it
-                break
-            dropped.add(j)
-    return [c for k, c in enumerate(candidates) if k not in dropped]
+            parent[root(i)] = root(j)
+
+    keep: dict[int, int] = {}                              # group -> the ring with the smallest hole
+    for i in rings:
+        g = root(i)
+        if g not in keep or candidates[i].equivalent_diameter < candidates[keep[g]].equivalent_diameter:
+            keep[g] = i
+    kept = set(keep.values())
+    return [c for k, c in enumerate(candidates) if c.kind != "ring" or k in kept]
 
 
 def _sits_inside(outer_wh, hole_wh) -> bool:

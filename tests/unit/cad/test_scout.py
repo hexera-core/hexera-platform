@@ -249,6 +249,20 @@ def test_a_coaxial_fittings_two_ports_face_the_same_way_in_one_plane_and_both_st
     assert len(drop_stacked_rings([outer, inner])) == 2
 
 
+def test_bands_chain_through_each_other_and_a_face_drawn_twice_is_one():
+    from meshpipeline.cad.scout import drop_stacked_rings
+    # duct_radius_elbow's real end: the lip (hole 450, outer 452), the gasket face (400 / 450)
+    # and the chamfer (396 / 400) - the chamfer does not fill the lip's hole, but it fills the
+    # face's, and the face fills the lip's: one group, the chamfer's hole
+    lip, face, chamfer = _band(0.0, 0.45, outer=0.452), _band(0.0, 0.40, outer=0.45), _band(0.0, 0.396, outer=0.40)
+    for order in ([lip, face, chamfer], [chamfer, lip, face], [face, chamfer, lip]):
+        kept = drop_stacked_rings(order)
+        assert len(kept) == 1 and kept[0].wh == (0.396, 0.396), order
+    # duct_square_round's end: three faces with the same hole and different outers
+    same = [_band(0.0, 0.296, outer=0.358), _band(0.0, 0.296, outer=0.30), _band(0.0, 0.296, outer=0.344)]
+    assert len(drop_stacked_rings(same)) == 1
+
+
 def test_rings_facing_the_same_way_but_a_duct_apart_or_side_by_side_are_two_mouths():
     from meshpipeline.cad.scout import drop_stacked_rings
     # two mouths of a manifold's branches pointing the same way, one 0.5 m behind the other
