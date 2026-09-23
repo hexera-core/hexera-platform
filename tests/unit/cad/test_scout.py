@@ -160,19 +160,46 @@ def test_a_flange_plates_inner_face_is_the_same_mouth_and_is_dropped():
     from meshpipeline.cad.scout import drop_flange_twins
     outer_a, inner_a = _ring(0.0, -1.0, on_extremity=True), _ring(0.014, 1.0, on_extremity=False)
     inner_b, outer_b = _ring(0.986, -1.0, on_extremity=False), _ring(1.0, 1.0, on_extremity=True)
-    kept = drop_flange_twins([inner_a, outer_a, outer_b, inner_b], diag=1.2)
+    kept = drop_flange_twins([inner_a, outer_a, outer_b, inner_b])
     assert [round(o.centroid[0], 3) for o in kept] == [0.0, 1.0]           # the two outer faces
 
 
 def test_the_two_ends_of_a_short_pipe_are_not_twins():
     from meshpipeline.cad.scout import drop_flange_twins
     a, b = _ring(0.0, -1.0, on_extremity=True), _ring(0.3, 1.0, on_extremity=True)
-    assert len(drop_flange_twins([a, b], diag=0.35)) == 2                  # a pipe apart, not a plate
+    assert len(drop_flange_twins([a, b])) == 2                             # a pipe apart, not a plate
 
 
 def test_without_an_extremity_hint_the_face_pointing_away_from_the_part_wins():
     from meshpipeline.cad.scout import drop_flange_twins
     # the part lies at positive x; the outer face at x=0 points to -x, away from it
     outer, inner = _ring(0.0, -1.0, on_extremity=False), _ring(0.01, 1.0, on_extremity=False)
-    kept = drop_flange_twins([inner, outer], diag=1.0, centre=(0.5, 0.0, 0.0))
+    kept = drop_flange_twins([inner, outer], centre=(0.5, 0.0, 0.0))
     assert len(kept) == 1 and kept[0].normal == (-1.0, 0.0, 0.0)
+
+
+def test_a_manifolds_short_run_keeps_both_mouths_however_long_the_branch():
+    from meshpipeline.cad.scout import drop_flange_twins
+    # a 2 m branch makes the part's diagonal long; the run's two 100 mm mouths sit 40 mm apart,
+    # opposite and coaxial - a tenth of the part - but both are at the part's ends, and a plate's
+    # inner face never is
+    a, b = _ring(0.0, -1.0, on_extremity=True), _ring(0.04, 1.0, on_extremity=True)
+    branch = _ring(2.0, 1.0, on_extremity=True)
+    assert len(drop_flange_twins([a, b, branch])) == 3
+
+
+def test_a_small_bores_thick_flange_is_still_one_mouth():
+    from meshpipeline.cad.scout import drop_flange_twins
+    # a 25 mm bore with a 16 mm plate: thicker than half the bore, thinner than any plate cap
+    outer, inner = _ring(0.0, -1.0, on_extremity=True, side=0.022), _ring(0.016, 1.0, on_extremity=False, side=0.024)
+    assert len(drop_flange_twins([outer, inner])) == 1
+
+
+def test_a_short_reducers_unequal_mouths_are_two_openings():
+    from meshpipeline.cad.scout import drop_flange_twins
+    # 100 mm in, 60 mm out, 30 mm apart: the same axis, close, opposite - and not the same hole
+    wide, narrow = _ring(0.0, -1.0, on_extremity=True, side=0.1), _ring(0.03, 1.0, on_extremity=True, side=0.06)
+    assert len(drop_flange_twins([wide, narrow])) == 2
+    # a plate's inner face is the same hole plus a wall: still one mouth
+    outer, inner = _ring(0.0, -1.0, on_extremity=True, side=0.1), _ring(0.01, 1.0, on_extremity=False, side=0.108)
+    assert len(drop_flange_twins([outer, inner])) == 1
