@@ -81,3 +81,18 @@ def test_a_look_that_landed_after_the_last_composition_is_composed_in_before_the
     assert block["survey"]["looked"] is True
     assert block["survey"]["seen"]["attachments"]["value"] == ["a flange at each end"]
     assert block["survey"]["confirmed"]["opening.role=outlet"]["applies_to"] == ["o1"]
+
+
+def test_a_look_that_failed_reaches_the_builder_as_a_look_that_did_not_happen(rows):
+    """THE ONE THING THE FLAGS USED TO SAY that a fact now has to: a failed look and a clear passage
+    must never read alike. A look that broke carries no impression, so the block says `looked: False`
+    and states nothing the look would have stated - it does not report an absence of findings as a
+    finding of absence. The row keeps `status: failed` with the reason either way."""
+    doc, stored, gs = rows
+    stored["survey"] = _answered(gs, doc)
+    doc["look"] = {**(doc.get("look") or {}), "status": "failed",
+                   "reason": "the provider returned something that was not JSON", "impression": None}
+    block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
+    assert block["survey"]["looked"] is False
+    assert not (block["survey"].get("seen") or {}), block["survey"].get("seen")
+    assert doc["look"]["status"] == "failed" and doc["look"]["reason"]
