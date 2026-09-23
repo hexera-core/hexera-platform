@@ -65,11 +65,12 @@ UPLOAD_RETENTION_DAYS: int      = int(optional_env("UPLOAD_RETENTION_DAYS", "30"
 STALLED_JOB_TIMEOUT_HOURS: int  = int(optional_env("STALLED_JOB_TIMEOUT_HOURS", "4"))
 
 # THE SURVEYOR. An upload is measured, looked at, put to the customer as questions, planned by the
-# geometry agent and handed to the builder. The seven switches that used to gate that chain are gone:
+# geometry agent and handed to the builder. The five switches that used to gate that chain are gone:
 # they existed to prove the feature changed nothing while it was off, beside a running product, and
 # that job is done. `surveyor-v1-precleanup` is the tree where they still worked, and the commit that
 # deleted them carries the last digests they produced. What remains below is configuration: how long
-# a step may take, and which model reads or plans.
+# a step may take, which model reads or plans, and two stages inside the measurement package that are
+# its switches rather than ours.
 #
 # A MISSING MEASUREMENT IS STILL AN ABSENCE, not an error, and that has not changed with the gates:
 # every reader treats a row that is not there as "not attempted" and proceeds, because an upload whose

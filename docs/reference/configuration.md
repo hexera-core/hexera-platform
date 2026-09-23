@@ -281,9 +281,10 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 ## The Surveyor: measuring, looking at and surveying an uploaded geometry
 
 Every upload is measured, looked at and surveyed, and the geometry agent plans it at submission. There
-is no switch for any of that any more; what is left here is how long a step may take and which model
-reads or plans. The image that runs it needs the geometry-agent distribution installed. Without it,
-every step records what it could not do and the job runs on what is there.
+is no switch for any of that any more; what is left here is how long a step may take, which model reads
+or plans, and two stages inside the measurement package that are its switches rather than ours. The
+image that runs it needs the geometry-agent distribution installed. Without it, every step records what
+it could not do and the job runs on what is there.
 
 | Key | Default | Notes |
 |---|---|---|
