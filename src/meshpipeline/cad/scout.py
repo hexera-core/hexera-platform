@@ -49,6 +49,9 @@ class Opening:
     role: str = ""
     confidence: float = 0.0
     sticker: int = 0          # 1..n in the order proposed; the number on the picture
+    #: the face's outer extent (for a ring, around the hole): what tells a flange band, which
+    #: sits exactly inside the next band's hole, from a coaxial fitting's port, which leaves a gap
+    outer_wh: tuple[float, float] = (0.0, 0.0)
 
     @property
     def shape(self) -> str:
@@ -99,6 +102,9 @@ class ScoutResult:
     seed_point: tuple[float, float, float] | None
     confidence: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    #: every flat face the scout measured, proposed or not, so a user can add an opening on one
+    #: and get its real size and position
+    faces: list[dict] = field(default_factory=list)
 
     @property
     def size(self) -> tuple[float, float, float]:
@@ -118,6 +124,7 @@ class ScoutResult:
             "seed_point_mm": None if self.seed_point is None else [round(v * mm, 2) for v in self.seed_point],
             "confidence": {k: round(float(v), 2) for k, v in self.confidence.items()},
             "notes": list(self.notes),
+            "faces": list(self.faces),
         }
 
 
@@ -368,16 +375,20 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         else:
             kind, o_area, o_centroid = "disc", float(area), centroid
             o_wh = _wh(outer["wh_m"]) if outer else (0.0, 0.0)
+        outer_wh = _wh(outer["wh_m"]) if outer else o_wh
         # on the part's extremity: the face sits on the bounding box in its own direction
         t_edge = min(((bbox_max[k] if normal[k] > 0 else bbox_min[k]) - o_centroid[k]) / normal[k]
                      for k in range(3) if abs(normal[k]) > 1e-6)
         on_extremity = t_edge <= 0.03 * diag
         clear = clear_ahead(_add(o_centroid, normal, 0.001 * diag), normal, 0.0)
         candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=normal,
-                                  area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity))
+                                  area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity,
+                                  outer_wh=outer_wh))
 
     notes: list[str] = []
     candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
+    candidates = drop_stacked_rings(candidates)
+    measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
@@ -439,7 +450,27 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         seed_point=seed,
         confidence={"input_kind": confidence_kind,
                     "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0},
-        notes=notes)
+        notes=notes, faces=measured)
+
+
+MAX_FACES = 200
+
+
+def measured_faces(candidates: list[Opening]) -> list[dict]:
+    """The flat faces as the console's "add an opening" reads them: position, normal, size and
+    kind, the largest first, capped so a part with a thousand facets ships a useful few."""
+    mm = 1000.0
+    out = []
+    for c in sorted(candidates, key=lambda o: o.area, reverse=True)[:MAX_FACES]:
+        d = {"face": c.face_index, "kind": c.kind, "shape": c.shape,
+             "centroid_m": [round(v, 6) for v in c.centroid],
+             "centroid_mm": [round(v * mm, 2) for v in c.centroid],
+             "normal": [round(v, 5) for v in c.normal], "area_mm2": round(c.area * mm * mm, 2),
+             "diameter_mm": round(c.equivalent_diameter * mm, 2)}
+        if c.shape != "circle":
+            d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, 2), round(c.wh[1] * mm, 2)
+        out.append(d)
+    return out
 
 
 #: A plate's two faces surround one bore; the inner face's hole is the duct's outer wall, a
@@ -496,6 +527,74 @@ def drop_flange_twins(candidates: list[Opening], centre=(0.0, 0.0, 0.0)) -> list
                 dropped.add(i)
                 break
     return [c for k, c in enumerate(candidates) if k not in dropped]
+
+
+#: Concentric rings in one plane, all facing the same way, are one flanged end drawn as bands -
+#: a gasket face, a step, a chamfer - not several openings. The gap allowed between the bands,
+#: in bores, and the floor under it for small bores.
+STACK_GAP = 0.1
+STACK_GAP_M = 0.003
+#: A band reaches the hole of the band around it; a coaxial fitting's inner port stops short of
+#: the outer port's hole by the annular passage. A passage thinner than this fraction of the
+#: bore is not told from a band.
+BAND_FIT = 0.03
+
+
+def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
+    """A flanged end modelled as concentric bands gives several ring faces over the same spot,
+    facing the same way, each with a hole a little smaller than the last. The fluid passes
+    through the smallest: that one is the mouth; the rest are the flange around it. Seen on
+    duct_radius_elbow (seven openings for two mouths) and duct_square_round (six for two).
+
+    A coaxial fitting also has concentric rings facing the same way in one plane - and both are
+    ports. What tells them apart is the gap: a band's outer edge reaches the next band's hole
+    (or beyond it, when a face is drawn twice); a coaxial inner port's outer edge stops short of
+    the outer port's hole by the annular passage, however close the two bores are. Bands chain -
+    the chamfer reaches the wall's hole, the wall reaches the gasket face's hole - so the rings
+    are grouped through every such link, in any order, and each group keeps its smallest hole.
+    A ring whose outer extent is unknown joins no group."""
+    rings = [k for k, c in enumerate(candidates) if c.kind == "ring"]
+    parent = {k: k for k in rings}
+
+    def root(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for n, i in enumerate(rings):
+        a = candidates[i]
+        for j in rings[n + 1:]:
+            b = candidates[j]
+            if _dot(a.normal, b.normal) < 0.95:
+                continue                                   # not facing the same way
+            d_a, d_b = a.equivalent_diameter, b.equivalent_diameter
+            between = _sub(b.centroid, a.centroid)
+            if abs(_dot(between, a.normal)) > max(STACK_GAP * min(d_a, d_b), STACK_GAP_M):
+                continue                                   # not in one plane
+            across = _norm(_sub(between, tuple(_dot(between, a.normal) * c for c in a.normal)))
+            if across > 0.5 * max(d_a, d_b, 1e-9):
+                continue                                   # not over the same spot
+            small, big = (b, a) if d_b < d_a else (a, b)
+            if not _reaches(small.outer_wh, big.wh):
+                continue                                   # a gap between them: two ports of a coaxial fitting
+            parent[root(i)] = root(j)
+
+    keep: dict[int, int] = {}                              # group -> the ring with the smallest hole
+    for i in rings:
+        g = root(i)
+        if g not in keep or candidates[i].equivalent_diameter < candidates[keep[g]].equivalent_diameter:
+            keep[g] = i
+    kept = set(keep.values())
+    return [c for k, c in enumerate(candidates) if c.kind != "ring" or k in kept]
+
+
+def _reaches(outer_wh, hole_wh) -> bool:
+    """Whether a face's outer extent reaches the hole it sits in - no annular gap between them
+    wider than BAND_FIT of the hole. An unknown extent reaches nothing."""
+    if tuple(outer_wh) == (0.0, 0.0):
+        return False
+    return all(o >= (1.0 - BAND_FIT) * h for o, h in zip(sorted(outer_wh), sorted(hole_wh)))
 
 
 def _name_openings(pool: list[Opening]) -> list[Opening]:

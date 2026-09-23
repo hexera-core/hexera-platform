@@ -20,6 +20,8 @@ from meshpipeline.cad.scout import (
     ScoutResult,
     _name_openings,
     drop_flange_twins,
+    drop_stacked_rings,
+    measured_faces,
 )
 
 #: Two triangles lie in one plane when their normals agree within this and their offsets within
@@ -142,12 +144,14 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         if len(polys) >= 2 and polys[1][2] >= MIN_RING_BORE_FRACTION * outer[2]:
             hole = polys[1]
             candidates.append(_opening(int(region[0]), "ring", hole[0], normal, hole[2], hole[3],
-                                       bbox_min, bbox_max, diag))
+                                       bbox_min, bbox_max, diag, outer_wh=outer[3]))
         else:
             candidates.append(_opening(int(region[0]), "disc", outer[0], normal, area, outer[3],
                                        bbox_min, bbox_max, diag))
 
     candidates = drop_flange_twins(candidates, (float(centre[0]), float(centre[1]), float(centre[2])))
+    candidates = drop_stacked_rings(candidates)
+    measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.on_extremity]
     rim_openings = [c for c in candidates if c.kind == "rim"]
@@ -207,7 +211,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         openings=openings, seed_point=seed,
         confidence={"input_kind": conf,
                     "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0},
-        notes=notes)
+        notes=notes, faces=measured)
     # facts the CAD scout does not know: read by the check when it builds the proposal
     result.extra = {  # type: ignore[attr-defined]
         "components": n_components, "grounded": bool(grounded),
@@ -361,13 +365,15 @@ def _polygon(points: np.ndarray):
     return c, n, area, wh
 
 
-def _opening(face_index: int, kind: str, c, n, area: float, wh, bbox_min, bbox_max, diag: float) -> Opening:
+def _opening(face_index: int, kind: str, c, n, area: float, wh, bbox_min, bbox_max, diag: float,
+             outer_wh=None) -> Opening:
     n = np.asarray(n, dtype=float)
     ts = [((bbox_max[k] if n[k] > 0 else bbox_min[k]) - c[k]) / n[k] for k in range(3) if abs(n[k]) > 1e-6]
     on_extremity = bool(ts) and min(ts) <= 0.03 * diag
     return Opening(face_index=face_index, kind=kind, centroid=(float(c[0]), float(c[1]), float(c[2])),
                    normal=(float(n[0]), float(n[1]), float(n[2])), area=float(area),
-                   wh=(float(wh[0]), float(wh[1])), clear_ahead=on_extremity, on_extremity=on_extremity)
+                   wh=(float(wh[0]), float(wh[1])), clear_ahead=on_extremity, on_extremity=on_extremity,
+                   outer_wh=(float(outer_wh[0]), float(outer_wh[1])) if outer_wh is not None else (float(wh[0]), float(wh[1])))
 
 
 def _most_touch_ground(verts, faces, components, bbox_min, diag: float) -> bool:
