@@ -36,14 +36,27 @@ def test_the_marks_are_stripped_in_the_conversation_and_plain_text_is_untouched(
 
 
 def test_the_hold_follows_what_the_poll_saw(live):
-    # a late chat reply must not install a drawing hold once the check gave up, and must install
-    # the stage's hold once the stage is open
+    # a drawing reply that arrives after the poll already knows the outcome installs the hold
+    # that matches: none once the check gave up or was confirmed, the stage's once the stage is
+    # open, the drawing hold otherwise; and Proceed (releaseHold) opens the box again
     out = live.evaluate("""(async () => {
       const c = await import('/static/js/shell/composer.js');
       c.mountComposer();
       const inp = document.getElementById('chat-input');
-      c.enableInput();
-      c.noteCheckState('over');
-      return {state: c.holdState(), disabled: inp.disabled};
+      const snap = () => ({disabled: inp.disabled, placeholder: inp.placeholder, held: c.holdState().held});
+      const r = {};
+      c.noteCheckState(null); c.enableInput(); c.holdForDrawing(); r.drawing = snap();
+      c.releaseHold(); r.released = snap();
+      c.noteCheckState('over'); c.holdForDrawing(); r.over = snap();
+      c.noteCheckState('done'); c.holdForDrawing(); r.done = snap();
+      c.noteCheckState('ready'); c.holdForDrawing(); r.ready = snap();
+      c.releaseHold(); r.afterProceed = snap();
+      return r;
     })()""", timeout=60)
-    assert out["state"]["check"] == "over"
+    assert out["drawing"]["disabled"] is True and out["drawing"]["held"] is True
+    assert "Drawing your part" in out["drawing"]["placeholder"]
+    assert out["released"]["disabled"] is False and out["released"]["held"] is False
+    assert out["over"]["disabled"] is False and out["over"]["held"] is False       # the check gave up: no hold
+    assert out["done"]["disabled"] is False and out["done"]["held"] is False       # already confirmed: no hold
+    assert out["ready"]["disabled"] is True and "press Proceed" in out["ready"]["placeholder"]
+    assert out["afterProceed"]["disabled"] is False and out["afterProceed"]["held"] is False

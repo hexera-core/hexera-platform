@@ -118,7 +118,7 @@ function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
   clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, ms);
 }
-function holdForDrawing() {
+export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
   if (_checkState === "ready") return holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
   holdInput("Drawing your part… it will appear beside this chat in a moment", DRAWING_WAIT_MS);
