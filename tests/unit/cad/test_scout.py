@@ -170,8 +170,9 @@ def test_the_two_ends_of_a_short_pipe_are_not_twins():
     assert len(drop_flange_twins([a, b], diag=0.35)) == 2                  # a pipe apart, not a plate
 
 
-def test_without_an_extremity_hint_the_face_pointing_out_of_the_plate_wins():
+def test_without_an_extremity_hint_the_face_pointing_away_from_the_part_wins():
     from meshpipeline.cad.scout import drop_flange_twins
+    # the part lies at positive x; the outer face at x=0 points to -x, away from it
     outer, inner = _ring(0.0, -1.0, on_extremity=False), _ring(0.01, 1.0, on_extremity=False)
-    kept = drop_flange_twins([inner, outer], diag=1.0)
+    kept = drop_flange_twins([inner, outer], diag=1.0, centre=(0.5, 0.0, 0.0))
     assert len(kept) == 1 and kept[0].normal == (-1.0, 0.0, 0.0)

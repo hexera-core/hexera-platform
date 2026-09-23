@@ -377,7 +377,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
                                   area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity))
 
     notes: list[str] = []
-    candidates = drop_flange_twins(candidates, diag)
+    candidates = drop_flange_twins(candidates, diag, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
@@ -442,7 +442,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         notes=notes)
 
 
-def drop_flange_twins(candidates: list[Opening], diag: float) -> list[Opening]:
+def drop_flange_twins(candidates: list[Opening], diag: float, centre=(0.0, 0.0, 0.0)) -> list[Opening]:
     """A flange plate at a duct's end has two flat faces with the same hole: the outside and the
     inside. Both read as openings a plate's thickness apart, facing opposite ways, over the same
     spot. Only the outer one is a mouth; the inner one is the same mouth seen from inside. Seen
@@ -465,14 +465,15 @@ def drop_flange_twins(candidates: list[Opening], diag: float) -> list[Opening]:
             if across > 0.5 * max(a.equivalent_diameter, b.equivalent_diameter, 1e-9):
                 continue                                   # not over the same spot
             # the outer face is the one on the part's extremity; failing that, the one whose
-            # normal points away from the other (out of the plate, not into it)
+            # normal points away from the part's centre (both faces of a plate point away from
+            # each other, so that alone would not tell them apart)
             if a.on_extremity and not b.on_extremity:
                 dropped.add(j)
             elif b.on_extremity and not a.on_extremity:
                 dropped.add(i)
                 break
-            elif _dot(a.normal, between) < 0:
-                dropped.add(j)                             # a faces away from b: a is outer
+            elif _dot(a.normal, _sub(a.centroid, centre)) >= _dot(b.normal, _sub(b.centroid, centre)):
+                dropped.add(j)
             else:
                 dropped.add(i)
                 break
