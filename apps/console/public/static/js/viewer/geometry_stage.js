@@ -139,6 +139,15 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   function bindProceed() {
     const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
     btn.onclick = async () => {
+      // an opening placed off any measured face has no size until the user types one; the
+      // confirm never receives a mouth of no size
+      const blank = [...form.querySelectorAll(".gc-dia")].find((i) => !(Number(i.value) > 0));
+      if (blank) {
+        const tr = blank.closest("tr");
+        hint.textContent = `Opening ${tr ? tr.dataset.id : ""} needs a size first: type how many mm across.`;
+        blank.focus();
+        return;
+      }
       const body = readForm(form, p);
       btn.disabled = true; btn.textContent = "Confirming…";
       try {
@@ -397,16 +406,21 @@ function initScene(sessionId, box, surf, p) {
       if (cid >= 0) cb(cellCentreNormal(sk, cid));
     }).catch(() => {});
   }
-  /** A new opening at a point on the part: snapped to the nearest measured flat face when one
-   *  is close, else the point itself with no size. Returns the opening added. */
+  /** A new opening at a point on the part: snapped to the measured flat face the click lands
+   *  on, else the point itself with no size. Of concentric faces - a coaxial fitting's inner
+   *  and outer port share a centre - the smallest one that still reaches the click is the one
+   *  clicked; a face turned away from the clicked surface is never it. Returns the opening. */
   function add(point, normal) {
     const faces = p.faces || [];
-    let best = null, bestD = Infinity;
+    let best = null, bestHalf = Infinity, bestD = Infinity;
     faces.forEach((f) => {
+      const fn = f.normal || [0, 0, 1];
+      if (normal && (fn[0] * normal[0] + fn[1] * normal[1] + fn[2] * normal[2]) < 0.5) return;
       const fc = f.centroid_m || (f.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
-      const reach = Math.max(f.width_mm || 0, f.height_mm || 0, f.diameter_mm || 0) / 1000 / 2 + 0.02 * diag;
+      const half = Math.max(f.width_mm || 0, f.height_mm || 0, f.diameter_mm || 0) / 1000 / 2;
       const dd = Math.hypot(point[0] - fc[0], point[1] - fc[1], point[2] - fc[2]);
-      if (dd <= reach && dd < bestD) { best = f; bestD = dd; }
+      if (dd > half + 0.02 * diag) return;                // the click is not on this face
+      if (half < bestHalf || (half === bestHalf && dd < bestD)) { best = f; bestHalf = half; bestD = dd; }
     });
     const nextId = Math.max(0, ...(p.openings || []).map((o) => Number(o.id) || 0)) + 1;
     const o = best

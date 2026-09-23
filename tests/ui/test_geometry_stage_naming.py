@@ -37,11 +37,15 @@ def _openings(named: bool) -> list:
 
 
 def _faces() -> list:
-    # the two mouths, and a flat face on the top the scout measured but did not propose
+    # the two mouths, and two concentric flat faces on the top the scout measured but did not
+    # propose - a coaxial fitting's outer (300 mm) and inner (100 mm) port, largest first as the
+    # scout lists them
     return [{"face": 1, "kind": "ring", "shape": "circle", "centroid_m": [0.0, 0.25, 0.25], "centroid_mm": [0.0, 250.0, 250.0],
              "normal": [-1, 0, 0], "area_mm2": 125664.0, "diameter_mm": 400.0},
             {"face": 2, "kind": "ring", "shape": "circle", "centroid_m": [1.0, 0.25, 0.25], "centroid_mm": [1000.0, 250.0, 250.0],
              "normal": [1, 0, 0], "area_mm2": 125664.0, "diameter_mm": 400.0},
+            {"face": 8, "kind": "ring", "shape": "circle", "centroid_m": [0.5, 0.25, 0.5], "centroid_mm": [500.0, 250.0, 500.0],
+             "normal": [0, 0, 1], "area_mm2": 70686.0, "diameter_mm": 300.0},
             {"face": 7, "kind": "disc", "shape": "circle", "centroid_m": [0.5, 0.25, 0.5], "centroid_mm": [500.0, 250.0, 500.0],
              "normal": [0, 0, 1], "area_mm2": 7854.0, "diameter_mm": 100.0}]
 
@@ -104,37 +108,56 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     assert ready["greyed"] is False and ready["allOn"] is True, ready
     assert ready["names"] == ["water_in", "air_out"] and ready["lead"] == "test duct", ready
 
-    # ADD: a point near the measured top face snaps to it and takes its size; a point off any
-    # measured face lands where it is, with a box for the size. DELETE: the row's button takes
-    # the row and its pin.
+    # ADD: a click near the centre of the two concentric top faces snaps to the inner one; a
+    # click 100 mm out, past the inner face, snaps to the outer one; a point off any measured
+    # face lands where it is, with a box for the size. DELETE: the row's button takes the row
+    # and its pin.
     edited = live.evaluate(f"""(() => {{
       const h = window._vdbg['gstage:{SESSION}'], root = document.getElementById('gstage-{SESSION}');
       const snapped = h.add([0.51, 0.26, 0.5], [0, 0, 1]);
+      const outer = h.add([0.6, 0.25, 0.5], [0, 0, 1]);
       const free = h.add([0.2, 0.0, 0.1], [0, -1, 0]);
       const freeRow = root.querySelector('tr[data-id="' + free.id + '"]');
-      freeRow.querySelector('.gc-dia').value = '55';
       freeRow.querySelector('.gc-name').value = 'drain';
       root.querySelector('tr[data-id="2"] .gc-x').click();
       return {{snapped: {{id: snapped.id, on: !!snapped.snapped, d: snapped.diameter_mm, at: snapped.centroid_mm}},
+               outer: {{id: outer.id, on: !!outer.snapped, d: outer.diameter_mm}},
                free: {{id: free.id, on: !!free.snapped, shape: free.shape, box: !!freeRow.querySelector('.gc-dia')}},
                ids: h.openings(), pins: h.pins(), selected: h.selected(),
                rows: [...root.querySelectorAll('.gc-table tbody tr')].map(tr => tr.dataset.id),
                pinEls: [...root.querySelectorAll('.gc-pin')].map(p => p.textContent)}};
     }})()""")
     assert edited["snapped"] == {"id": 3, "on": True, "d": 100.0, "at": [500.0, 250.0, 500.0]}, edited
-    assert edited["free"] == {"id": 4, "on": False, "shape": "unknown", "box": True}, edited
-    assert edited["ids"] == [1, 3, 4] and edited["pins"] == 3 and edited["rows"] == ["1", "3", "4"], edited
-    assert sorted(edited["pinEls"]) == ["1", "3", "4"] and edited["selected"] == 4, edited
+    assert edited["outer"] == {"id": 4, "on": True, "d": 300.0}, edited
+    assert edited["free"] == {"id": 5, "on": False, "shape": "unknown", "box": True}, edited
+    assert edited["ids"] == [1, 3, 4, 5] and edited["pins"] == 4 and edited["rows"] == ["1", "3", "4", "5"], edited
+    assert sorted(edited["pinEls"]) == ["1", "3", "4", "5"] and edited["selected"] == 5, edited
 
-    # PROCEED sends what is on the table now: the model's name for 1, the snapped face's size
-    # for 3, the typed size for 4, and nothing of 2
-    live.evaluate(f"""(() => {{ document.querySelector('#gstage-{SESSION} .gc-proceed').click(); }})()""")
+    # PROCEED refuses while the free opening has no size, and says which one
+    refused = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{SESSION}');
+      root.querySelector('.gc-proceed').click();
+      return {{confirmed: window.__confirmed, hint: root.querySelector('.gc-hint').textContent,
+               focused: document.activeElement && document.activeElement.classList.contains('gc-dia'),
+               enabled: !root.querySelector('.gc-proceed').disabled}};
+    }})()""")
+    assert refused["confirmed"] is None and "Opening 5" in refused["hint"] and "size" in refused["hint"], refused
+    assert refused["focused"] is True and refused["enabled"] is True, refused
+
+    # with the size typed, PROCEED sends what is on the table: the model's name for 1, the
+    # snapped faces' sizes for 3 and 4, the typed size for 5, and nothing of 2
+    live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{SESSION}');
+      root.querySelector('tr[data-id="5"] .gc-dia').value = '55';
+      root.querySelector('.gc-proceed').click();
+    }})()""")
     live.wait_for("window.__confirmed !== null", timeout=30, what="the confirmation to be sent")
     body = live.evaluate("window.__confirmed")
-    assert [o["id"] for o in body["openings"]] == [1, 3, 4]
-    assert [o["name"] for o in body["openings"]] == ["water_in", "opening_3", "drain"]
+    assert [o["id"] for o in body["openings"]] == [1, 3, 4, 5]
+    assert [o["name"] for o in body["openings"]] == ["water_in", "opening_3", "opening_4", "drain"]
     assert body["openings"][1]["diameter_mm"] == 100.0 and body["openings"][1]["centroid_mm"] == [500.0, 250.0, 500.0]
-    assert body["openings"][2]["diameter_mm"] == 55 and body["openings"][2]["centroid_mm"] == [200.0, 0.0, 100.0]
+    assert body["openings"][2]["diameter_mm"] == 300.0
+    assert body["openings"][3]["diameter_mm"] == 55 and body["openings"][3]["centroid_mm"] == [200.0, 0.0, 100.0]
     assert body["part"] == "test duct" and body["flow"] == "internal"
     assert live.evaluate(f"!document.getElementById('gstage-{SESSION}')") is True
     assert_clean(live, "the naming-mode geometry stage")
