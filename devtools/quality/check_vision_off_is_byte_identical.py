@@ -298,6 +298,13 @@ def _planner(monkeypatch):
         if hasattr(drivers, "_planner_inputs"):
             got = asyncio.run(drivers._planner_inputs(st))
             kwargs["request_txt"], kwargs["geometry_agent"] = got[0], got[1]
+            # AND THE THIRD VALUE, which this gate used to drop on the floor. `_planner_inputs` returns the
+            # reason the step was NOT used, and dropping it is how case F could report "the planner's message
+            # did not move" without being able to say that the step had fallen back to the step-off values.
+            # A ruler that cannot tell "nothing changed" from "nothing ran" is the one blind spot this file
+            # exists to avoid, so the reason is printed and `_digests` passes it through.
+            if len(got) > 2 and got[2]:
+                print(f"WHY the step was not used: {got[2]}")
         else:
             kwargs["geometry_agent"] = asyncio.run(drivers._agent_block(st))
     asyncio.run(planner.plan_with_accounting(**kwargs))
@@ -357,6 +364,10 @@ def _digests(tree: Path, label: str, document: Path | None, flags: str, python: 
         if line.startswith("GATE "):
             _, name, digest, _length = line.split()
             out[name] = digest
+        elif line.startswith("WHY "):
+            # printed, not collected: it is not part of the comparison, and a case whose digest did not move
+            # because the step never ran has to say so where whoever reads the verdict will see it
+            print(f"     {label}: {line[4:]}")
     if set(out) != set(PROMPTS):
         print(run.stdout[-4000:], file=sys.stderr)
         raise SystemExit(f"{label}: the harness did not print every digest")

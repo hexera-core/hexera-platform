@@ -4,7 +4,7 @@
   {
    "about": "opening.role",
    "answered_by": "customer",
-   "at": "2026-09-22T18:36:35+00:00",
+   "at": "2026-09-23T05:24:13+00:00",
    "note": "",
    "option": "o1",
    "principal": "owner-gate",
@@ -17,7 +17,7 @@
   {
    "about": "opening.role",
    "answered_by": "customer",
-   "at": "2026-09-22T18:36:35+00:00",
+   "at": "2026-09-23T05:24:13+00:00",
    "note": "",
    "option": "o2",
    "principal": "owner-gate",
@@ -37,7 +37,7 @@
   "brief_sha": "8e64f26cbfecf0cd",
   "cell_cap": 2000000,
   "cell_cap_kind": "stated",
-  "composed_at": "2026-09-22T18:36:35+00:00",
+  "composed_at": "2026-09-23T05:24:13+00:00",
   "declared": [],
   "engine": "snappy",
   "inlet_ids": [
@@ -52,7 +52,7 @@
  },
  "facts_sha256": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
  "geometry_step": {
-  "at": "2026-09-22T18:36:35+00:00",
+  "at": "2026-09-23T05:24:13+00:00",
   "brief_sha256": "8917c47f1fd5f2a088005892a9452ce7fb32c3bc9c3a29ed074a9f294ac62165",
   "engine": "snappy",
   "envelope": {
@@ -95,11 +95,11 @@
   "ledger": {
    "events": [
     {
-     "at": "2026-09-22T18:36:35+00:00",
+     "at": "2026-09-23T05:24:13+00:00",
      "case": "",
      "event": "brief",
-     "job_id": "gate-job",
-     "key": "a0fbd9519c71__gate-job",
+     "job_id": "gate-row",
+     "key": "a0fbd9519c71__gate-row",
      "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
      "payload": {
       "cell_cap": 2000000,
@@ -115,11 +115,11 @@
      "schema": "geometry_agent.chain.ledger.v1"
     },
     {
-     "at": "2026-09-22T18:36:35+00:00",
+     "at": "2026-09-23T05:24:13+00:00",
      "case": "",
      "event": "survey",
-     "job_id": "gate-job",
-     "key": "a0fbd9519c71__gate-job",
+     "job_id": "gate-row",
+     "key": "a0fbd9519c71__gate-row",
      "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
      "payload": {
       "authoritative": [
@@ -204,11 +204,11 @@
      "schema": "geometry_agent.chain.ledger.v1"
     },
     {
-     "at": "2026-09-22T18:36:35+00:00",
+     "at": "2026-09-23T05:24:13+00:00",
      "case": "",
      "event": "look",
-     "job_id": "gate-job",
-     "key": "a0fbd9519c71__gate-job",
+     "job_id": "gate-row",
+     "key": "a0fbd9519c71__gate-row",
      "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
      "payload": {
       "assertions": null,
@@ -229,11 +229,11 @@
      "schema": "geometry_agent.chain.ledger.v1"
     },
     {
-     "at": "2026-09-22T18:36:35+00:00",
+     "at": "2026-09-23T05:24:13+00:00",
      "case": "",
      "event": "uncertainty",
-     "job_id": "gate-job",
-     "key": "a0fbd9519c71__gate-job",
+     "job_id": "gate-row",
+     "key": "a0fbd9519c71__gate-row",
      "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
      "payload": [
       {
@@ -335,11 +335,11 @@
      "schema": "geometry_agent.chain.ledger.v1"
     },
     {
-     "at": "2026-09-22T18:36:35+00:00",
+     "at": "2026-09-23T05:24:13+00:00",
      "case": "",
      "event": "intake",
-     "job_id": "gate-job",
-     "key": "a0fbd9519c71__gate-job",
+     "job_id": "gate-row",
+     "key": "a0fbd9519c71__gate-row",
      "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
      "payload": {
       "asked": [
@@ -349,7 +349,7 @@
         "default": "",
         "default_from": "the survey's own default",
         "effect": "changes_bc",
-        "id": "a0fbd9519c71__gate-job#role_inlet",
+        "id": "a0fbd9519c71__gate-row#role_inlet",
         "options": [
          "o1",
          "o2"
@@ -363,7 +363,7 @@
         "default": "",
         "default_from": "the survey's own default",
         "effect": "changes_bc",
-        "id": "a0fbd9519c71__gate-job#role_outlet",
+        "id": "a0fbd9519c71__gate-row#role_outlet",
         "options": [
          "o1",
          "o2"
@@ -375,7 +375,7 @@
       "resolutions": [
        {
         "answered_by": "customer",
-        "at": "2026-09-22T18:36:35+00:00",
+        "at": "2026-09-23T05:24:13+00:00",
         "field": "role:o1",
         "question_id": "role_inlet",
         "resolution": "answered",
@@ -384,7 +384,7 @@
        },
        {
         "answered_by": "customer",
-        "at": "2026-09-22T18:36:35+00:00",
+        "at": "2026-09-23T05:24:13+00:00",
         "field": "role:o2",
         "question_id": "role_outlet",
         "resolution": "answered",
@@ -399,11 +399,11 @@
      "schema": "geometry_agent.chain.ledger.v1"
     },
     {
-     "at": "2026-09-22T18:36:35+00:00",
+     "at": "2026-09-23T05:24:13+00:00",
      "case": "",
      "event": "plan",
-     "job_id": "gate-job",
-     "key": "a0fbd9519c71__gate-job",
+     "job_id": "gate-row",
+     "key": "a0fbd9519c71__gate-row",
      "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
      "payload": {
       "accepted": true,
@@ -429,8 +429,8 @@
     }
    ],
    "meta": {
-    "job_id": "gate-job",
-    "key": "a0fbd9519c71__gate-job",
+    "job_id": "gate-row",
+    "key": "a0fbd9519c71__gate-row",
     "part_key": "a0fbd9519c71497001872d98d907a4b1e6ff0a495b541b6f19d6cb4b76a48339",
     "provenance": "heuristic"
    }
@@ -1544,7 +1544,7 @@
     "confidence_max": null,
     "field": "inlet_bore_m",
     "kind": "measured",
-    "source": "forecast.builder.bore (the widest planar mouth, the builder's own choice)",
+    "source": "forecast.builder.bore (opening o1, the largest mouth the customer called the inlet)",
     "tier": null,
     "unit": "m",
     "value": 0.4696604117817793,
