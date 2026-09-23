@@ -419,7 +419,7 @@ function initScene(sessionId, box, surf, p) {
       const fc = f.centroid_m || (f.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
       const half = Math.max(f.width_mm || 0, f.height_mm || 0, f.diameter_mm || 0) / 1000 / 2;
       const dd = Math.hypot(point[0] - fc[0], point[1] - fc[1], point[2] - fc[2]);
-      if (dd > half + 0.02 * diag) return;                // the click is not on this face
+      if (dd > 1.1 * half + 0.003) return;                // the click is not on this face (a tenth of slack)
       if (half < bestHalf || (half === bestHalf && dd < bestD)) { best = f; bestHalf = half; bestD = dd; }
     });
     const nextId = Math.max(0, ...(p.openings || []).map((o) => Number(o.id) || 0)) + 1;
