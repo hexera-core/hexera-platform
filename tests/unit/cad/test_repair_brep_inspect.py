@@ -64,6 +64,7 @@ def test_transfer_failure_is_reported_as_invalid_brep(monkeypatch, tmp_path):
 
     _install_fake_ocp(monkeypatch, reader=Reader())
     path = tmp_path / "empty.step"
+    path.write_text("fixture")
 
     with pytest.raises(brep._CadReadError, match="transfer roots"):
         brep._read_shape(path)
@@ -92,6 +93,7 @@ def test_null_shape_is_reported_as_invalid_brep(monkeypatch, tmp_path):
 
     _install_fake_ocp(monkeypatch, reader=Reader())
     path = tmp_path / "empty.step"
+    path.write_text("fixture")
 
     with pytest.raises(brep._CadReadError, match="empty shape"):
         brep._read_shape(path)
@@ -152,3 +154,55 @@ def test_unreadable_cad_is_reported_as_invalid_brep(tmp_path):
 
     assert DefectCode.invalid_brep in _codes(report)
     assert _measurements(report)["is_valid"] is False
+
+
+def test_missing_cad_file_raises_rather_than_reporting_a_defect(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        inspect_brep_file(tmp_path / "absent.step")
+
+
+def test_kernel_exception_is_reported_not_raised(monkeypatch, tmp_path):
+    class Standard_Failure(Exception):  # noqa: N801 - mirrors the OCC class name
+        pass
+
+    standard = types.ModuleType("OCP.Standard")
+    standard.Standard_Failure = Standard_Failure
+    monkeypatch.setitem(sys.modules, "OCP.Standard", standard)
+    monkeypatch.setattr(
+        brep,
+        "_read_shape",
+        lambda _path: (_ for _ in ()).throw(Standard_Failure("corrupt entity")),
+    )
+    path = tmp_path / "raises.step"
+    path.write_text("fixture")
+
+    report = inspect_brep_file(path)
+
+    assert _codes(report) == {DefectCode.invalid_brep}
+    assert report.defects[0].details["error"] == "Standard_Failure"
+    assert report.summary == "Automatic repair was not safe for this geometry."
+
+
+def test_shape_without_faces_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(brep, "_read_shape", lambda _path: object())
+    monkeypatch.setattr(
+        brep,
+        "_count_subshapes",
+        lambda _shape: {
+            "solids": 0,
+            "shells": 0,
+            "faces": 0,
+            "edges": 12,
+            "vertices": 8,
+        },
+    )
+    monkeypatch.setattr(brep, "_is_valid", lambda _shape: True)
+    path = tmp_path / "wireframe.step"
+    path.write_text("fixture")
+
+    report = inspect_brep_file(path)
+
+    assert _codes(report) == {DefectCode.invalid_brep}
+    assert report.defects[0].details["reason"] == "no_faces"
+    assert report.summary == "Automatic repair was not safe for this geometry."
+    assert _measurements(report)["edges"] == 12

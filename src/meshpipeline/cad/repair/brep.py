@@ -17,6 +17,20 @@ class _CadReadError(ValueError):
     """Expected input failure while reading or transferring a CAD B-rep."""
 
 
+def _kernel_failures() -> tuple[type[BaseException], ...]:
+    """Input failures the CAD kernel raises rather than returns.
+
+    OpenCASCADE reports some corrupt files through a return code and others by
+    raising, and both are facts about the file, not defects in this code. A
+    programmer error still propagates, so the two stay distinguishable.
+    """
+    try:
+        from OCP.Standard import Standard_Failure
+    except ImportError:
+        return (_CadReadError,)
+    return (_CadReadError, Standard_Failure)
+
+
 def _reader_for(path: Path):
     from OCP.IGESControl import IGESControl_Reader
     from OCP.STEPControl import STEPControl_Reader
@@ -29,6 +43,8 @@ def _reader_for(path: Path):
 
 
 def _read_shape(path: Path):
+    if not path.exists():
+        raise FileNotFoundError(path)
     from OCP.IFSelect import IFSelect_RetDone
 
     reader = _reader_for(path)
@@ -84,7 +100,16 @@ def inspect_brep_file(path: Path) -> RepairReport:
         counts = _count_subshapes(shape)
         is_valid = _is_valid(shape)
         defects: tuple[RepairDefect, ...] = ()
-        if not is_valid:
+        if counts["faces"] == 0:
+            defects = (
+                RepairDefect(
+                    code=DefectCode.invalid_brep,
+                    severity=DefectSeverity.fatal,
+                    message="The CAD file carries no faces to mesh.",
+                    details={"reason": "no_faces"},
+                ),
+            )
+        elif not is_valid:
             defects = (
                 RepairDefect(
                     code=DefectCode.invalid_brep,
@@ -93,8 +118,13 @@ def inspect_brep_file(path: Path) -> RepairReport:
                 ),
             )
         measurements = {"format": fmt, "is_valid": is_valid, **counts}
-        summary = "Repair recommended before meshing." if defects else "No repair needed."
-    except _CadReadError as exc:
+        if not defects:
+            summary = "No repair needed."
+        elif counts["faces"] == 0:
+            summary = "Automatic repair was not safe for this geometry."
+        else:
+            summary = "Repair recommended before meshing."
+    except _kernel_failures() as exc:
         defects = (
             RepairDefect(
                 code=DefectCode.invalid_brep,
