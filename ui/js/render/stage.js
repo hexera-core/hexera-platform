@@ -16,7 +16,7 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
-import { formHtml, markConfirmed, mm, readForm } from "./geometry_form.js";
+import { applyFlow, formHtml, markConfirmed, mm, readForm } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -114,6 +114,7 @@ export const Stage = {
     if(this._gcEl)this._gcEl.remove();
     const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
     this.col().appendChild(g);this._gcEl=g;
+    applyFlow(g);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
     btn.onclick=async()=>{

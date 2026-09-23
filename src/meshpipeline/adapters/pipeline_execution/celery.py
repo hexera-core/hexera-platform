@@ -41,6 +41,20 @@ def scout_geometry(**kwargs) -> dict:
     return run_geometry_check(**kwargs)
 
 
+@celery_app.task(
+    name="worker.tasks.name_geometry",
+    bind=False,
+    max_retries=0,
+    soft_time_limit=600,
+    time_limit=900,
+)
+def name_geometry(**kwargs) -> dict:
+    # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
+    # the user's words go to the vision model together. Same queue as the scout, for now.
+    from meshpipeline.application.geometry_check import run_geometry_naming
+    return run_geometry_naming(**kwargs)
+
+
 async def launch(db, job_id: str, payload: dict) -> None:
     # Strip the envelope (schema_version) and fill gaps HERE, exactly as the deferred backend
     # does via run_from_job → to_run_kwargs. run_pipeline takes no **kwargs, so passing the

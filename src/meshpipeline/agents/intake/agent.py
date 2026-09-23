@@ -663,8 +663,17 @@ def _block_geometry_check() -> str:
         "any of it again, and do not read it back for confirmation. Carry every opening into "
         "`patches` exactly as named, with its role, and put its diameter_mm (or width_mm and "
         "height_mm) and near_mm on the patch entry as the message states them "
-        "(port_details_note = 'captured'). Ask only what the message does not contain - "
-        "typically the purpose, the fluid and its speed, and the engine when it is not settled."
+        "(port_details_note = 'captured'). A sticker the message calls 'not an opening' is no "
+        "patch at all. For a body the fluid flows AROUND, the message states the flow axis, the "
+        "reference length in mm and the far-field margins in reference lengths: the user "
+        "confirmed them on the picture, so they are user-stated - carry them into flow_axis, "
+        "reference_length_m (mm / 1000) and requested_extents exactly as written. Ask only what "
+        "the message does not contain - typically the purpose, the fluid and its speed, and the "
+        "engine when it is not settled.\n"
+        "An assistant message beginning 'GEOMETRY CHECK (drawing your part):' is a holding line "
+        "while the picture is made: nothing in it is declared, and you never repeat it. A user "
+        "message saying they confirmed the geometry check is your cue to continue with the next "
+        "question, not to summarise."
     )
 
 

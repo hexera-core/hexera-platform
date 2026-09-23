@@ -53,6 +53,11 @@ def _enqueue_geometry_scout(**kwargs) -> None:
     scout_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-check-{kwargs.get('session_id', '')}")
 
 
+def _enqueue_geometry_naming(**kwargs) -> None:
+    from meshpipeline.adapters.pipeline_execution.celery import name_geometry
+    name_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-naming-{kwargs.get('session_id', '')}")
+
+
 def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
@@ -104,6 +109,7 @@ def install_adapters() -> None:
         billing.set_billing_gateway(None)
     training_export.set_export_enqueuer(_enqueue_training_export)
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
+    geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
     mesh_execution.set_mesh_executor(build_mesh_executor())
     # Console sign-in. The product knows only `contracts.firebase_token.verify`; which identity
     # provider is behind it - and therefore which certificate endpoint and which claim

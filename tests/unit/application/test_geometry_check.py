@@ -190,8 +190,10 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
 
     source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/elbow.step", "sha256": "0" * 64,
               "size_bytes": 4, "original_filename": "elbow.step", "suffix_hint": ".step"}
+    monkeypatch.setattr(gc, "_name_with_vision", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the scout must not call the model")))
     result = gc.run_geometry_check(session_id="abcdef12-1111", owner_id="o1", source=source)
     assert result.get("reason") is None, result
+    assert result["status"] == "scouted" and result["named"] is False
     skin = json.loads(store.written["sessions/abcdef12-1111/geometry_check/skin.json"])
     assert skin["kind"] == "stl" and skin["is_mesh"] is False and skin["mesh_units"] == "m"
     assert skin["patches"][0]["name"] == "skin" and skin["patches"][0]["tri_count"] == 12
@@ -199,3 +201,80 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
     stored = json.loads(store.written["sessions/abcdef12-1111/geometry_check/scout.json"])
     assert stored["skin_key"] == "sessions/abcdef12-1111/geometry_check/skin.json"
     assert stored["proposal"]["openings"][0]["centroid_mm"] == [0.0, 0.0, 0.0]
+
+
+# ------------------------------------------------------------------------------ the naming ----
+class _NamingStore(_Store):
+    """A store that also answers reads, so the naming can find the scout it waits for."""
+
+    def __init__(self, objects: dict):
+        super().__init__()
+        self.objects = dict(objects)
+
+    def upload_file(self, *, local_path, object_key, **_):
+        self.objects[object_key] = local_path.read_bytes()
+        self.written[object_key] = self.objects[object_key]
+
+    def get_bytes(self, *, object_key):
+        from meshpipeline.contracts.object_storage import ObjectNotFound
+        if object_key not in self.objects:
+            raise ObjectNotFound(object_key)
+        return self.objects[object_key]
+
+    def delete_object(self, *, object_key):
+        self.objects.pop(object_key, None)
+        self.written["deleted:" + object_key] = b""
+
+
+def _scouted(session_id: str, *, unit_assumed: bool, scale: float) -> dict:
+    facts = dict(_facts(), unit_assumed=unit_assumed, scale_to_m=scale, read_as="mesh")
+    return {"status": "scouted", "named": False, "facts": facts, "proposal": {},
+            "snapshots": [], "skin_key": f"sessions/{session_id}/geometry_check/skin.json"}
+
+
+def test_the_naming_rescales_the_facts_and_the_skin_to_the_confirmed_unit(monkeypatch):
+    import base64
+    import json
+    import struct
+
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-2222"
+    stored = _scouted(sid, unit_assumed=True, scale=0.001)
+    skin = {"kind": "stl", "patches": [{"name": "skin", "positions_b64":
+            base64.b64encode(struct.pack("<9f", *[0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001, 0.0])).decode()}]}
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(stored).encode(),
+                          f"sessions/{sid}/geometry_check/skin.json": json.dumps(skin).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(gc, "_name_with_vision", lambda facts, shots, **k: {
+        "part": "pipe elbow", "flow": "internal", "input_kind": "body-surface", "confidence": 0.9,
+        "openings": [{"id": 1, "name": "water_in", "role": "inlet", "confidence": 0.9}], "_size": facts["size_mm"]})
+    metres = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "m", "scale_to_metres": 1.0,
+              "basis": "user_confirmed", "evidence": "test"}
+    result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="water through the elbow",
+                                    interpretation=metres)
+    assert result["status"] == "ready" and result["named"] is True
+    assert result["facts"]["size_mm"] == [1448800.0, 1233400.0, 539300.0]      # a thousand times larger
+    assert result["facts"]["openings"][0]["centroid_mm"] == [0.0, 0.0, 0.0]
+    assert result["facts"]["openings"][1]["diameter_mm"] == 466200.0
+    assert result["proposal"]["openings"][0]["name"] == "water_in"
+    assert result["facts"]["unit_assumed"] is False
+    new_skin = json.loads(store.objects[f"sessions/{sid}/geometry_check/skin.json"])
+    pts = struct.unpack("<9f", base64.b64decode(new_skin["patches"][0]["positions_b64"]))
+    assert abs(pts[3] - 1.0) < 1e-6 and abs(pts[7] - 1.0) < 1e-6              # the skin moved with the facts
+
+
+def test_a_naming_that_finds_no_scout_in_time_withdraws_its_request(monkeypatch):
+    import json
+
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-3333"
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps({"status": "pending"}).encode(),
+                          f"sessions/{sid}/geometry_check/naming.json": b"{}"})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(gc, "NAMING_WAIT_S", 0.0)
+    result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="a pipe")
+    assert result == {"status": "pending", "named": False}
+    assert f"deleted:sessions/{sid}/geometry_check/naming.json" in store.written
+    assert f"sessions/{sid}/geometry_check/naming.json" not in store.objects

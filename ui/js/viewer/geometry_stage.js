@@ -16,7 +16,7 @@
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { formHtml, markConfirmed, mm, readForm } from "../render/geometry_form.js";
+import { applyFlow, formHtml, markConfirmed, mm, readExternal, readForm } from "../render/geometry_form.js";
 
 let _vtkP = null;
 function loadVtk() {
@@ -97,6 +97,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
+  applyFlow(panel);
   const btn = box.querySelector(".gc-proceed");
   const hint = box.querySelector(".gc-hint");
 
@@ -145,7 +146,7 @@ function initScene(sessionId, box, surf, p) {
   // until the user has moved the camera re-fits, and after that only "Fit" does.
   let touched = false, fits = 0;
   function fit() {
-    cam.setViewUp(0, 0, 1); ren.resetCamera();
+    cam.setViewUp(0, 0, 1); ren.resetCamera(partBounds);
     // resetCamera fits the part to the view's HEIGHT; a canvas taller than it is wide (the
     // drawer open on a small window) would crop the sides, so back off by the aspect
     const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
@@ -177,6 +178,9 @@ function initScene(sessionId, box, surf, p) {
   ren.resetCamera(); rw.render();
   const bs = ren.computeVisiblePropBounds();
   const diag = Math.max(Math.hypot(bs[1] - bs[0], bs[3] - bs[2], bs[5] - bs[4]), 1e-9);
+  // THE FIT IS THE PART'S. The far-field box, when drawn, is many part-lengths wide; framing on
+  // it would leave the part a speck in the middle.
+  const partBounds = bs.slice();
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -234,12 +238,77 @@ function initScene(sessionId, box, surf, p) {
   });
   document.getElementById("gs-fit-" + sessionId).onclick = fit;
 
+  /* A BODY IN A FLOW: an arrow for the way the fluid travels and the far-field box the mesh
+     will be built in, both drawn from the form and redrawn as the user changes it. */
+  const panel = box.querySelector(".gc-panel");
+  let decor = [];
+  function clearDecor() { decor.forEach((a) => ren.removeActor(a)); decor = []; }
+  function lineActor(pts, lines, color, width) {
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(Float32Array.from(pts), 3); pd.getLines().setData(Uint32Array.from(lines));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const pp = ac.getProperty(); pp.setColor(...color); pp.setLineWidth(width); pp.setLighting(false);
+    ren.addActor(ac); decor.push(ac); return ac;
+  }
+  const hintEl = document.getElementById("gs-hint-" + sessionId);
+  function refreshExternal() {
+    clearDecor();
+    const flowSel = panel.querySelector(".gc-flow");
+    const external = !!flowSel && flowSel.value === "external";
+    pins.forEach((pn) => { pn.actor.setVisibility(!external); if (external) pn.el.style.display = "none"; });
+    if (hintEl) hintEl.textContent = external
+      ? "rotate: drag · zoom: wheel or right-drag · the arrow is the flow, the box is the far field"
+      : HINT;
+    if (!external) { rw.render(); return; }
+    const ex = readExternal(panel);
+    const axis = ex.flow_axis && ex.flow_axis !== "unknown" ? ex.flow_axis : "+x";
+    const k = { x: 0, y: 1, z: 2 }[axis[1]], sign = axis[0] === "-" ? -1 : 1;
+    const dir = [0, 0, 0]; dir[k] = sign;
+    const size = [partBounds[1] - partBounds[0], partBounds[3] - partBounds[2], partBounds[5] - partBounds[4]];
+    const L = (ex.reference_length_mm || 0) > 0 ? ex.reference_length_mm / 1000 : (size[k] || diag);
+    const c = [(partBounds[0] + partBounds[1]) / 2, (partBounds[2] + partBounds[3]) / 2, (partBounds[4] + partBounds[5]) / 2];
+    // the arrow: a shaft through the part's centre and a head of three short strokes
+    const half = 0.7 * Math.max(size[k], 0.3 * diag);
+    const tail = c.map((v, i) => v - dir[i] * half), tip = c.map((v, i) => v + dir[i] * half);
+    const u = k === 2 ? [1, 0, 0] : [0, 0, 1], w = [dir[1] * u[2] - dir[2] * u[1], dir[2] * u[0] - dir[0] * u[2], dir[0] * u[1] - dir[1] * u[0]];
+    const h = 0.12 * half;
+    const back = tip.map((v, i) => v - dir[i] * h * 2);
+    const pts = [...tail, ...tip, ...back.map((v, i) => v + u[i] * h), ...back.map((v, i) => v - u[i] * h),
+                 ...back.map((v, i) => v + w[i] * h), ...back.map((v, i) => v - w[i] * h)];
+    lineActor(pts, [2, 0, 1, 2, 1, 2, 2, 1, 3, 2, 1, 4, 2, 1, 5], SEL, 3);
+    // the far-field box: upstream and downstream along the flow, sideways on the other
+    // horizontal axis, up on the vertical one; the floor is the ground or a margin below
+    const e = ex.extents || {};
+    const lo = partBounds.filter((_, i) => i % 2 === 0), hi = partBounds.filter((_, i) => i % 2 === 1);
+    const up = (sign > 0 ? e.upstream : e.downstream) || 5, down = (sign > 0 ? e.downstream : e.upstream) || 5;
+    lo[k] -= up * L; hi[k] += down * L;
+    const vert = k === 2 ? 1 : 2, side = [0, 1, 2].find((i) => i !== k && i !== vert);
+    lo[side] -= (e.lateral || 5) * L; hi[side] += (e.lateral || 5) * L;
+    hi[vert] += (e.vertical || 5) * L;
+    if (!ex.grounded) lo[vert] -= (e.vertical || 5) * L;
+    const P = [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]],
+               [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]];
+    const E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+    lineActor(P.flat(), E.flatMap(([a, b]) => [2, a, b]), [0.55, 0.72, 0.9], 1);
+    if (ex.grounded) {   // the ground drawn as a faint plate under the part
+      const g = lo[vert], Q = P.filter((p) => p[vert] === g);
+      lineActor(Q.flat(), [2, 0, 2, 2, 1, 3], [0.55, 0.72, 0.9], 1);
+    }
+    rw.render();
+  }
+  panel.addEventListener("change", (ev) => { if (ev.target.closest(".gc-flow,.gc-axis,.gc-ground,.gc-ext")) refreshExternal(); });
+  panel.addEventListener("input", (ev) => { if (ev.target.closest(".gc-ref,.gc-extents")) refreshExternal(); });
+  refreshExternal();
+
   let alive = true;
   (function pinLoop() {
     if (!alive || !document.body.contains(host)) return;
     const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
     const cp = cam.getPosition();
+    const externalNow = (panel.querySelector(".gc-flow") || {}).value === "external";
     pins.forEach((pn) => {
+      if (externalNow) { pn.el.style.display = "none"; return; }
       const [x, y, z] = pn.o.c;
       const nd = ren.worldToNormalizedDisplay(x, y, z, aspect);
       const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
@@ -260,8 +329,9 @@ function initScene(sessionId, box, surf, p) {
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
     pins: () => pins.length, selected: () => sel, select, look, diag,
+    external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
     render: () => rw.render(),
   };
-  return { stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; } };
+  return { stop: () => { alive = false; ro.disconnect(); clearDecor(); delete window._vdbg["gstage:" + sessionId]; } };
 }

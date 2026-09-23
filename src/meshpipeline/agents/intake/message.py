@@ -43,6 +43,8 @@ class MessageStatus(str, enum.Enum):
     unit_question = "unit_question"
     #: the user named a unit; it is durably bound - then run the turn
     unit_recorded = "unit_recorded"
+    #: the geometry check is drawing the part: the turn is answered with a holding line
+    geometry_hold = "geometry_hold"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -84,7 +86,7 @@ class MessageOutcome:
     @property
     def answered(self) -> bool:
         return self.status in (MessageStatus.approval_deferred, MessageStatus.unit_question,
-                               MessageStatus.already_dispatched)
+                               MessageStatus.already_dispatched, MessageStatus.geometry_hold)
 
     @property
     def continues_to_intake(self) -> bool:
@@ -127,7 +129,14 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -
         gate = dict(getattr(locked, "intake_gate", None) or {})
         outcome = await _settle(inbound, db, gate=gate, locked=locked, messages=messages,
                                 revision=revision, session_repo=session_repo, logger=logger)
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception:
+            if outcome.status is MessageStatus.geometry_hold:
+                # the naming was queued for a turn that will not exist: let the next one hold
+                from meshpipeline.application import geometry_hold as gh
+                gh.withdraw_naming(str(inbound.session_id))
+            raise
 
     if outcome.status is MessageStatus.approve:
         # Dispatch is the approval authority's, and it takes the lock itself. Hand back the
@@ -190,8 +199,46 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     unit = await _settle_unit(inbound, db, gate=gate, locked=locked, revision=revision,
                               session_repo=session_repo, logger=logger)
     if unit is not None:
+        if unit.status is MessageStatus.unit_recorded:
+            # the unit answer may be the first answer the geometry check waits for
+            hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
+                                               revision=revision, session_repo=session_repo,
+                                               logger=logger)
+            if hold is not None:
+                return hold
         return unit
+    hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
+                                       revision=revision, session_repo=session_repo, logger=logger)
+    if hold is not None:
+        return hold
     return MessageOutcome(status=MessageStatus.proceed,
+                          transition=GateTransition(revision=revision))
+
+
+async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages: list,
+                                revision: str, session_repo, logger) -> MessageOutcome | None:
+    """THE GEOMETRY CHECK'S TURN, taken here because it must be decided under the same row lock
+    as every other turn: two answers sent at once must not both find 'nobody asked the model
+    yet' and queue two namings with two holding lines. The first answer that reaches the intake
+    hands the user's words to the naming step; the conversation holds while the part is drawn,
+    and the intake resumes when the user proceeds on the stage."""
+    from meshpipeline.application import geometry_hold as gh
+
+    session_id = str(inbound.session_id)
+    if not gh.hold_applies(session_id):
+        return None
+    interpretation = await gh.interpretation_payload(db, locked, inbound.owner_id,
+                                                     inbound.organization_id)
+    if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
+        return None
+    try:
+        await session_repo.append_message(db, inbound.session_id, "assistant", gh.HOLD_REPLY)
+    except Exception:
+        # the turn will not be stored: withdraw the marker so the next turn can hold again
+        gh.withdraw_naming(session_id)
+        raise
+    logger.info("intake message: held for the geometry check - session=%s", inbound.session_id)
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=gh.HOLD_REPLY,
                           transition=GateTransition(revision=revision))
 
 

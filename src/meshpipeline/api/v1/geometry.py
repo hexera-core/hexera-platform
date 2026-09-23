@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import meshpipeline.settings.geometry_check as gcfg
 from meshpipeline.api.security import org_dep, owner_dep
@@ -30,7 +30,7 @@ CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
 class ConfirmedOpening(BaseModel):
     id: int
     name: str = Field(min_length=1, max_length=40)
-    role: Literal["inlet", "outlet"]
+    role: Literal["inlet", "outlet", "not_an_opening"]
     centroid_mm: list[float] | None = None
     diameter_mm: float | None = None
     width_mm: float | None = None
@@ -44,6 +44,39 @@ class ConfirmIn(BaseModel):
     seed_point_mm: list[float] | None = None
     size_mm: list[float] | None = None
     part: str = Field(default="", max_length=80)
+    # a body in a flow: which way the fluid travels, how long the part is along it, how far the
+    # far field reaches in those lengths, and whether the part stands on the ground
+    flow_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z", "unknown"] | None = None
+    reference_length_mm: float | None = Field(default=None, gt=0)
+    extents: dict[str, float] | None = None
+    grounded: bool = False
+
+    @field_validator("extents")
+    @classmethod
+    def _extents_are_positive_lengths(cls, v):
+        if v is None:
+            return v
+        import math
+        allowed = {"upstream", "downstream", "lateral", "vertical"}
+        bad = sorted(k for k in v if k not in allowed)
+        if bad:
+            raise ValueError(f"unknown far-field margin(s): {', '.join(bad)}")
+        for k, x in v.items():
+            if not (isinstance(x, (int, float)) and math.isfinite(x) and x > 0):
+                raise ValueError(f"the {k} margin must be a positive number of body lengths")
+        return {k: float(x) for k, x in v.items()}
+
+
+# The hold's words and rule live with the application; the route re-exports them for its callers.
+from meshpipeline.application.geometry_hold import (  # noqa: E402
+    CONTINUE_TEXT,
+    DRAWING_MARK,
+    HOLD_REPLY,
+    purpose_from,
+    should_hold,
+)
+
+REEXPORTED = (CONTINUE_TEXT, DRAWING_MARK, HOLD_REPLY, purpose_from, should_hold)
 
 
 async def _owned_session(session_id: uuid.UUID, owner_id: str, organization_id: str):
@@ -81,6 +114,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload = _read_json(check_object_key(str(session_id), "scout.json"))
     if payload is None:
         return {"status": STATUS_NONE}
+    from meshpipeline.contracts.geometry_fields import form_spec
+    payload["fields"] = form_spec()
+    payload.setdefault("named", payload.get("status") == "ready")
     if payload.get("status") == "ready":
         store = get_object_store()
         payload["pictures"] = [
@@ -128,17 +164,28 @@ def confirmation_message(body: ConfirmIn) -> str:
     through = "through it" if body.flow == "internal" else "around it"
     parts = [f"{CONFIRMED_MARK} the file is {kind}"
              + (f" ({body.part})" if body.part else "") + f"; the fluid flows {through}."]
-    if body.openings:
+    ports = [o for o in body.openings if o.role != "not_an_opening"]
+    if body.flow == "external":
+        from meshpipeline.contracts.geometry_fields import external_declaration
+        parts.append("No openings: the fluid flows around the whole body.")
+        parts.extend(external_declaration(body))
+    elif ports:
         rows = []
-        for o in body.openings:
+        for o in ports:
             size = (f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
                     else f"{o.width_mm:.0f} x {o.height_mm:.0f} mm" if o.width_mm and o.height_mm else "")
             at = (f" at ({o.centroid_mm[0]:.0f}, {o.centroid_mm[1]:.0f}, {o.centroid_mm[2]:.0f}) mm"
                   if o.centroid_mm and len(o.centroid_mm) == 3 else "")
             rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
         parts.append("Openings: " + "; ".join(rows) + ".")
+        skipped = [str(o.id) for o in body.openings if o.role == "not_an_opening"]
+        if skipped:
+            parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
     else:
-        parts.append("No openings: the fluid flows around the whole body.")
+        # the fluid flows through the part but no port was confirmed: the intake must ask
+        parts.append("No openings were confirmed on the picture"
+                     + (" (every sticker was marked not an opening)" if body.openings else "")
+                     + "; ask the user where the fluid enters and leaves.")
     if body.seed_point_mm and len(body.seed_point_mm) == 3:
         p = body.seed_point_mm
         parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")
@@ -160,7 +207,11 @@ def patches_from(body: ConfirmIn) -> list[dict]:
     """The session's declared patches, in the shape the intake's submit tool already takes:
     name and role, plus the size and location fields the port binding reads."""
     patches: list[dict] = []
+    if body.flow == "external":
+        return patches
     for o in body.openings:
+        if o.role == "not_an_opening":
+            continue
         entry: dict = {"name": o.name, "type": o.role}
         if o.diameter_mm:
             entry["diameter_mm"] = float(o.diameter_mm)
@@ -221,4 +272,17 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         session.messages = with_declaration(session.messages, message)
         await db.commit()
     logger.info("geometry check confirmed - session_id=%s openings=%d", session_id, len(body.openings))
-    return {"ok": True, "message": message, "patches": patches}
+    # THE INTAKE PICKS UP FROM HERE. The hold left the conversation waiting on this button; one
+    # ordinary chat turn, in the user's name, lets the intake ask what is still missing. A turn
+    # that fails leaves the confirmation in place; the user's next message runs it again.
+    nxt = None
+    try:
+        from meshpipeline.api.schemas.chat import ChatMessageIn
+        from meshpipeline.api.v1.chat import chat_message
+        turn = await chat_message(ChatMessageIn(session_id=session_id, content=CONTINUE_TEXT),
+                                  owner_id=owner_id, organization_id=organization_id)
+        nxt = turn.model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001 - the confirmation stands; the next message resumes
+        logger.warning("geometry check: the intake could not continue after confirm (%s: %s) - session_id=%s",
+                       type(exc).__name__, exc, session_id)
+    return {"ok": True, "message": message, "patches": patches, "continued_with": CONTINUE_TEXT, "next": nxt}
