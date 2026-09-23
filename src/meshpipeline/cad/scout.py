@@ -377,6 +377,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
                                   area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity))
 
     notes: list[str] = []
+    candidates = drop_flange_twins(candidates, diag)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
@@ -439,6 +440,43 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         confidence={"input_kind": confidence_kind,
                     "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0},
         notes=notes)
+
+
+def drop_flange_twins(candidates: list[Opening], diag: float) -> list[Opening]:
+    """A flange plate at a duct's end has two flat faces with the same hole: the outside and the
+    inside. Both read as openings a plate's thickness apart, facing opposite ways, over the same
+    spot. Only the outer one is a mouth; the inner one is the same mouth seen from inside. Seen
+    on bend_elbow_003, which came back with four openings for a duct that has two."""
+    dropped: set[int] = set()
+    for i, a in enumerate(candidates):
+        if i in dropped:
+            continue
+        for j in range(i + 1, len(candidates)):
+            if j in dropped:
+                continue
+            b = candidates[j]
+            if _dot(a.normal, b.normal) > -0.95:
+                continue                                   # not facing opposite ways
+            between = _sub(b.centroid, a.centroid)
+            gap = abs(_dot(between, a.normal))
+            if gap > 0.1 * diag:
+                continue                                   # a whole duct apart, not a plate apart
+            across = _norm(_sub(between, tuple(_dot(between, a.normal) * c for c in a.normal)))
+            if across > 0.5 * max(a.equivalent_diameter, b.equivalent_diameter, 1e-9):
+                continue                                   # not over the same spot
+            # the outer face is the one on the part's extremity; failing that, the one whose
+            # normal points away from the other (out of the plate, not into it)
+            if a.on_extremity and not b.on_extremity:
+                dropped.add(j)
+            elif b.on_extremity and not a.on_extremity:
+                dropped.add(i)
+                break
+            elif _dot(a.normal, between) < 0:
+                dropped.add(j)                             # a faces away from b: a is outer
+            else:
+                dropped.add(i)
+                break
+    return [c for k, c in enumerate(candidates) if k not in dropped]
 
 
 def _name_openings(pool: list[Opening]) -> list[Opening]:

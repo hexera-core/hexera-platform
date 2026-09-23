@@ -19,6 +19,7 @@ from meshpipeline.cad.scout import (
     Opening,
     ScoutResult,
     _name_openings,
+    drop_flange_twins,
 )
 
 #: Two triangles lie in one plane when their normals agree within this and their offsets within
@@ -146,6 +147,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
             candidates.append(_opening(int(region[0]), "disc", outer[0], normal, area, outer[3],
                                        bbox_min, bbox_max, diag))
 
+    candidates = drop_flange_twins(candidates, diag)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.on_extremity]
     rim_openings = [c for c in candidates if c.kind == "rim"]

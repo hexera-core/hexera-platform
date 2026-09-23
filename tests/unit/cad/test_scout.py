@@ -147,3 +147,31 @@ def test_a_file_that_is_not_cad_is_refused_in_plain_words(tmp_path):
     bad.write_text("this is not a STEP file")
     with pytest.raises(UnreadableCad, match="could not be read"):
         scout_cad(bad, prepared=_prepared(good))
+
+
+# ----------------------------------------------------------------------- flange twins ----
+def _ring(x, nx, *, on_extremity, side=0.1):
+    from meshpipeline.cad.scout import Opening
+    return Opening(face_index=int(x * 1000), kind="ring", centroid=(x, 0.0, 0.0), normal=(nx, 0.0, 0.0),
+                   area=side * side, wh=(side, side), clear_ahead=True, on_extremity=on_extremity)
+
+
+def test_a_flange_plates_inner_face_is_the_same_mouth_and_is_dropped():
+    from meshpipeline.cad.scout import drop_flange_twins
+    outer_a, inner_a = _ring(0.0, -1.0, on_extremity=True), _ring(0.014, 1.0, on_extremity=False)
+    inner_b, outer_b = _ring(0.986, -1.0, on_extremity=False), _ring(1.0, 1.0, on_extremity=True)
+    kept = drop_flange_twins([inner_a, outer_a, outer_b, inner_b], diag=1.2)
+    assert [round(o.centroid[0], 3) for o in kept] == [0.0, 1.0]           # the two outer faces
+
+
+def test_the_two_ends_of_a_short_pipe_are_not_twins():
+    from meshpipeline.cad.scout import drop_flange_twins
+    a, b = _ring(0.0, -1.0, on_extremity=True), _ring(0.3, 1.0, on_extremity=True)
+    assert len(drop_flange_twins([a, b], diag=0.35)) == 2                  # a pipe apart, not a plate
+
+
+def test_without_an_extremity_hint_the_face_pointing_out_of_the_plate_wins():
+    from meshpipeline.cad.scout import drop_flange_twins
+    outer, inner = _ring(0.0, -1.0, on_extremity=False), _ring(0.01, 1.0, on_extremity=False)
+    kept = drop_flange_twins([inner, outer], diag=1.0)
+    assert len(kept) == 1 and kept[0].normal == (-1.0, 0.0, 0.0)
