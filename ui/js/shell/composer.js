@@ -111,9 +111,17 @@ const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;   // forty-five minutes, then 
 const DRAWING_PREFIX = "GEOMETRY CHECK (drawing your part):";
 const DRAWING_WAIT_MS = 3 * 60 * 1000, STAGE_WAIT_MS = 10 * 60 * 1000;
 let _holdTimer = null, _held = false;
+// what the poll last saw of the check, so a chat reply that arrives late installs the hold that
+// matches: none once the check gave up or was confirmed, the stage's once the stage is open
+let _checkState = null;
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
   clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, ms);
+}
+function holdForDrawing() {
+  if (_checkState === "done" || _checkState === "over") return enableInput();
+  if (_checkState === "ready") return holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
+  holdInput("Drawing your part… it will appear beside this chat in a moment", DRAWING_WAIT_MS);
 }
 export function releaseHold() {
   if (!_held) return;
@@ -121,6 +129,9 @@ export function releaseHold() {
   setPlaceholder("Type your reply…"); enableInput();
 }
 export function isHeld() { return _held; }
+/* support hook for the ui tier: what the poll has seen and whether the box is held */
+export function holdState() { return { held: _held, check: _checkState }; }
+export function noteCheckState(s) { _checkState = s; }
 
 async function watchGeometryCheck(sessionId) {
   for (let n = 0; n < CHECK_POLL_MAX; n++) {
@@ -133,17 +144,20 @@ async function watchGeometryCheck(sessionId) {
         deps.notice.show("The geometry check could not read this file; the questions will "
           + "cover it instead.", "warn");
       }
+      _checkState = "over";
       releaseHold();                               // nothing to wait for any more
       return;
     }
     if (status === "ready" && d.named !== false) {
-      if (d.confirmed) { releaseHold(); return; }  // a reload after confirming: nothing to do
+      if (d.confirmed) { _checkState = "done"; releaseHold(); return; }  // a reload after confirming
+      _checkState = "ready";
       if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
       deps.geometryCheck(sessionId, d, async (body) => {
         const reply = await confirmGeometryCheck(sessionId, body);
         deps.chat("assistant", reply.message);
         // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
         // is the next question - or the dispatch, when nothing was left to ask.
+        _checkState = "done";
         releaseHold();
         if (reply.next) {
           if (reply.continued_with) deps.chat("user", reply.continued_with);
@@ -171,9 +185,7 @@ async function send() {
     deps.chat("assistant", d.reply);
     deps.brief(d.brief);
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
-    else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) {
-      holdInput("Drawing your part… it will appear beside this chat in a moment", DRAWING_WAIT_MS);
-    }
+    else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
     else enableInput();
   } catch (e) {
     if (e.status !== 401) {

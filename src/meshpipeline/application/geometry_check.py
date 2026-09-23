@@ -288,6 +288,12 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
         logger.exception("geometry naming failed - session=%s", session_id)
         reason = f"{type(exc).__name__}: {str(exc)[:200]}"
         try:
+            # a duplicate attempt may already have named the check: a late failure never
+            # replaces a result the user can act on
+            current = read_check(session_id)
+            if current is not None and current.get("status") == STATUS_READY and current.get("named"):
+                logger.info("geometry naming: a failed attempt left the ready check alone - session=%s", session_id)
+                return {"status": STATUS_READY, "named": True, "superseded_failure": reason}
             write_status(session_id, STATUS_FAILED, reason=reason, named=False)
         except Exception:  # noqa: BLE001 - the store itself may be what broke
             logger.warning("geometry naming: could not record the failure for %s", session_id)

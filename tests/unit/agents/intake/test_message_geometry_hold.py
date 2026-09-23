@@ -94,7 +94,7 @@ async def test_a_hold_whose_commit_fails_withdraws_its_naming_request(monkeypatc
     monkeypatch.setattr(gh, "withdraw_naming", lambda sid: withdrawn.append(sid))
 
     async def _held(*a, **k):
-        return msg.MessageOutcome(status=msg.MessageStatus.geometry_hold, reply=gh.HOLD_REPLY)
+        return msg.MessageOutcome(status=msg.MessageStatus.geometry_hold, reply=gh.HOLD_REPLY, queued_naming=True)
     monkeypatch.setattr(msg, "_settle", _held)
     db = AsyncMock(); db.commit = AsyncMock(side_effect=RuntimeError("commit failed"))
 
@@ -118,3 +118,33 @@ async def test_a_message_while_the_part_is_drawn_gets_the_wait_line_and_queues_n
     assert handed == {}                                   # no second naming
     repo.append_message.assert_awaited_once()
     assert repo.append_message.await_args.args[2:] == ("assistant", gh.WAIT_REPLY)
+
+
+@pytest.mark.asyncio
+async def test_a_wait_only_turn_whose_commit_fails_withdraws_nothing(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    withdrawn: list = []
+    monkeypatch.setattr(gh, "withdraw_naming", lambda sid: withdrawn.append(sid))
+
+    async def _waiting(*a, **k):
+        return msg.MessageOutcome(status=msg.MessageStatus.geometry_hold, reply=gh.WAIT_REPLY)
+    monkeypatch.setattr(msg, "_settle", _waiting)
+    db = AsyncMock(); db.commit = AsyncMock(side_effect=RuntimeError("commit failed"))
+
+    @asynccontextmanager
+    async def _db():
+        yield db
+    repo = MagicMock(); repo.get_for_update = AsyncMock(return_value=_locked(messages=[])); repo.append_message = AsyncMock()
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="ok", organization_id="")
+    with pytest.raises(RuntimeError):
+        await msg.accept(inbound, session_repo=repo, db_factory=_db, logger=MagicMock())
+    assert withdrawn == []                     # the earlier turn's request stays
+
+
+@pytest.mark.asyncio
+async def test_the_queueing_turn_says_so_on_its_outcome(monkeypatch):
+    outcome, _, _ = await _settle(monkeypatch, applies="queue")
+    assert outcome.queued_naming is True
+    waited, _, _ = await _settle(monkeypatch, applies="wait")
+    assert waited.queued_naming is False
