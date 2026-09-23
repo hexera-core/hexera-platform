@@ -382,6 +382,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
 
     notes: list[str] = []
     candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
+    candidates = drop_stacked_rings(candidates)
     measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
@@ -520,6 +521,42 @@ def drop_flange_twins(candidates: list[Opening], centre=(0.0, 0.0, 0.0)) -> list
             else:
                 dropped.add(i)
                 break
+    return [c for k, c in enumerate(candidates) if k not in dropped]
+
+
+#: Concentric rings in one plane, all facing the same way, are one flanged end drawn as bands -
+#: a gasket face, a step, a chamfer - not several openings. The gap allowed between the bands,
+#: in bores, and the floor under it for small bores.
+STACK_GAP = 0.1
+STACK_GAP_M = 0.003
+
+
+def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
+    """A flanged end modelled as concentric bands gives several ring faces over the same spot,
+    facing the same way, each with a hole a little smaller than the last. The fluid passes
+    through the smallest: that one is the mouth; the rest are the flange around it. Seen on
+    duct_radius_elbow (seven openings for two mouths) and duct_square_round (six for two)."""
+    dropped: set[int] = set()
+    for i, a in enumerate(candidates):
+        if i in dropped or a.kind != "ring":
+            continue
+        for j in range(i + 1, len(candidates)):
+            b = candidates[j]
+            if j in dropped or b.kind != "ring":
+                continue
+            if _dot(a.normal, b.normal) < 0.95:
+                continue                                   # not facing the same way
+            d_a, d_b = a.equivalent_diameter, b.equivalent_diameter
+            between = _sub(b.centroid, a.centroid)
+            if abs(_dot(between, a.normal)) > max(STACK_GAP * min(d_a, d_b), STACK_GAP_M):
+                continue                                   # not in one plane
+            across = _norm(_sub(between, tuple(_dot(between, a.normal) * c for c in a.normal)))
+            if across > 0.5 * max(d_a, d_b, 1e-9):
+                continue                                   # not over the same spot
+            if d_b < d_a:
+                dropped.add(i)                             # b's hole is the bore; a is a band around it
+                break
+            dropped.add(j)
     return [c for k, c in enumerate(candidates) if k not in dropped]
 
 

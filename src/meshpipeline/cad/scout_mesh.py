@@ -20,6 +20,7 @@ from meshpipeline.cad.scout import (
     ScoutResult,
     _name_openings,
     drop_flange_twins,
+    drop_stacked_rings,
     measured_faces,
 )
 
@@ -149,6 +150,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
                                        bbox_min, bbox_max, diag))
 
     candidates = drop_flange_twins(candidates, (float(centre[0]), float(centre[1]), float(centre[2])))
+    candidates = drop_stacked_rings(candidates)
     measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.on_extremity]

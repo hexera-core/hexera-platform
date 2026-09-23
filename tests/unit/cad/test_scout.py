@@ -216,3 +216,31 @@ def test_every_measured_flat_face_rides_along_for_the_stage():
     assert faces[1]["shape"] == "circle" and faces[1]["diameter_mm"] == 112.84
     assert faces[0]["shape"] == "rectangle" and faces[0]["width_mm"] == 200.0 and faces[0]["height_mm"] == 100.0
     assert faces[1]["centroid_mm"] == [0.0, 0.0, 0.0] and faces[0]["normal"] == [1.0, 0.0, 0.0]
+
+
+# ---------------------------------------------------------------------- stacked rings ----
+def _band(x, side, *, y=0.0, nx=-1.0, kind="ring"):
+    from meshpipeline.cad.scout import Opening
+    return Opening(face_index=int(x * 1e5 + side * 1e3), kind=kind, centroid=(x, y, 0.0), normal=(nx, 0.0, 0.0),
+                   area=side * side, wh=(side, side), clear_ahead=True, on_extremity=True)
+
+
+def test_a_flanged_end_drawn_as_concentric_bands_is_one_mouth_the_smallest_hole():
+    from meshpipeline.cad.scout import drop_stacked_rings
+    # duct_radius_elbow's end: gasket face, duct wall, a 2 mm step, a chamfer - four rings over
+    # one spot, all facing -x, holes 650 / 600 / 600 / 596 mm
+    bands = [_band(0.0, 0.65), _band(0.0, 0.60), _band(0.002, 0.60), _band(0.0, 0.596)]
+    kept = drop_stacked_rings(bands)
+    assert len(kept) == 1 and kept[0].wh == (0.596, 0.596)
+
+
+def test_rings_facing_the_same_way_but_a_duct_apart_or_side_by_side_are_two_mouths():
+    from meshpipeline.cad.scout import drop_stacked_rings
+    # two mouths of a manifold's branches pointing the same way, one 0.5 m behind the other
+    assert len(drop_stacked_rings([_band(0.0, 0.2), _band(0.5, 0.2)])) == 2
+    # two mouths in one plane, beside each other
+    assert len(drop_stacked_rings([_band(0.0, 0.2), _band(0.0, 0.2, y=0.3)])) == 2
+    # a disc over a ring is not a band: a fluid body's cap is left alone
+    assert len(drop_stacked_rings([_band(0.0, 0.2), _band(0.0, 0.15, kind="disc")])) == 2
+    # facing opposite ways is the flange-twin rule's business, not this one
+    assert len(drop_stacked_rings([_band(0.0, 0.2), _band(0.0, 0.18, nx=1.0)])) == 2
