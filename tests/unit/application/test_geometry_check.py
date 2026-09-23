@@ -228,7 +228,10 @@ class _NamingStore(_Store):
 
 def _scouted(session_id: str, *, unit_assumed: bool, scale: float) -> dict:
     facts = dict(_facts(), unit_assumed=unit_assumed, scale_to_m=scale, read_as="mesh")
-    return {"status": "scouted", "named": False, "facts": facts, "proposal": {},
+    # exactly what write_status stores, session id and clock included - the naming must re-store
+    # it without handing write_status a second session id
+    return {"status": "scouted", "session_id": session_id, "written_at": 1.0, "seconds": 11.4,
+            "named": False, "facts": facts, "proposal": {},
             "snapshots": [], "skin_key": f"sessions/{session_id}/geometry_check/skin.json"}
 
 
