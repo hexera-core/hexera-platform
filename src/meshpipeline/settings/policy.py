@@ -160,20 +160,43 @@ _VISION_KEY_NAMES = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY
                      "deepinfra": "DEEPINFRA_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "off": ""}
 
 
+def vision_reader_key_name(provider: str) -> str:
+    """The variable a given provider's key would be in, or "" for one that needs none.
+
+    Public because a caller that is NOT this process has to ask: `devtools/env/check_runtime_config.py`
+    reports on the `.env` the local containers will be handed, which is not the environment this module
+    imported under, so it needs the name to look up in the file it parsed.
+    """
+    return _VISION_KEY_NAMES.get(provider, "")
+
+
+def vision_reader_verdict(provider: str, key_is_set: bool) -> str:
+    """Why a deployment configured like this cannot look, or "" when it can. The one wording, for any inputs.
+
+    Separate from `vision_reader_has_no_key` for one reason: the question is asked about environments that are
+    not this process. `make dev-up` asks it about the `.env` the containers will read BEFORE any container
+    exists, and a function that could only answer for its own os.environ answered about the developer's shell
+    instead - a check with a different subject than the thing it checks, which is how a stack starts with no
+    reader and nothing says so.
+    """
+    if key_is_set or provider == "off":
+        return ""
+    return (f"GEOMETRY_VISION_PROVIDER={provider} but "
+            f"{vision_reader_key_name(provider) or 'its key'} is unset, so no upload will be looked at: "
+            f"every row stores 'the configured reader has no key in this environment'. The look is the "
+            f"half of the Surveyor that finds a passage the measurement calls plain.")
+
+
 def vision_reader_has_no_key() -> str:
-    """Why this deployment cannot look, or "" when it can. The one place the question is answered.
+    """Why THIS process's deployment cannot look, or "" when it can. The one place the question is answered.
 
     Said as a sentence rather than a boolean because every caller wants to repeat it: the refusal below,
     the deploy preflight, and a startup banner. It reports on the CONFIGURED reader only - a provider with
     no key is a look that does not happen, never a fall-through to another provider, so the other three
     keys are irrelevant to the verdict however many of them are set.
     """
-    if _VISION_KEY_PRESENT.get(GEOMETRY_VISION_PROVIDER, False):
-        return ""
-    return (f"GEOMETRY_VISION_PROVIDER={GEOMETRY_VISION_PROVIDER} but "
-            f"{_VISION_KEY_NAMES[GEOMETRY_VISION_PROVIDER]} is unset, so no upload will be looked at: "
-            f"every row stores 'the configured reader has no key in this environment'. The look is the "
-            f"half of the Surveyor that finds a passage the measurement calls plain.")
+    return vision_reader_verdict(GEOMETRY_VISION_PROVIDER,
+                                 _VISION_KEY_PRESENT.get(GEOMETRY_VISION_PROVIDER, False))
 
 
 # WHY THIS IS NOT A REFUSAL AT IMPORT, unlike the auth secrets above and the durable checkpointer below.

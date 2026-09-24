@@ -17,6 +17,7 @@ from meshpipeline.contracts.geometry_measurement import (
     STATUS_MEASUREMENT_FAILED,
     STATUS_OK,
     STATUS_REFUSED,
+    STATUS_UNSUPPORTED_FORMAT,
     enqueue_measurement,
 )
 from meshpipeline.contracts.geometry_source import GeometrySourceError, GeometrySourceRef
@@ -98,6 +99,40 @@ def _agent_git_sha() -> str:
         return ""
 
 
+#: What is said when a file's FORMAT is not one the measurement can open. A fact about the file, not
+#: about this deployment, and the one measurement outcome the customer can act on - so it names what
+#: to send instead. `pipeline/geometry_admission` refuses the job on this status, before any builder.
+UNSUPPORTED_FORMAT = ("this file's format ({suffix}) cannot be measured: the step that describes your part "
+                      "reads {readable}, and nothing else. {instead}")
+
+
+def readable_suffixes() -> frozenset[str] | None:
+    """Every suffix the INSTALLED measurement package can open, or None when it cannot be asked.
+
+    READ FROM THE PACKAGE AND NEVER LISTED HERE. `facts.load.load_mesh` branches on exactly these
+    three sets and raises `UnsupportedGeometry` for anything else, so they are the answer; a copy
+    kept on this side would say a format is readable on the day the agent stops reading it, which is
+    the shape of defect this whole round is about.
+
+    NONE IS NOT AN EMPTY SET. A package that cannot be asked - not installed, or reorganised so the
+    sets are somewhere else - leaves the caller to measure and let the measurement speak for itself.
+    Treating "I could not ask" as "it reads nothing" would refuse every upload in an image with no
+    package, where the honest answer is already `refused: PACKAGE_ABSENT`.
+    """
+    try:
+        from geometry_agent.facts import load as agent_load
+        found = frozenset(agent_load.MESH_SUFFIXES | agent_load.STEP_SUFFIXES | agent_load.IGES_SUFFIXES)
+    except Exception as exc:                       # noqa: BLE001 - not knowing is an outcome
+        logger.info("geometry measurement: the package's readable formats could not be read (%s); "
+                    "a file of any suffix will be handed to the measurement as before", exc)
+        return None
+    if not found:
+        logger.warning("geometry measurement: the package reports it can open no format at all, which is "
+                       "a parse of its loader gone wrong rather than a fact - ignoring it")
+        return None
+    return found
+
+
 def measure_local_file(path: Path, *, purpose: str = DEFAULT_PURPOSE, unit: str | None = None,
                        scale_to_metres: float | None = None, timeout_s: float | None = None,
                        source: dict | None = None) -> dict:
@@ -123,6 +158,21 @@ def measure_local_file(path: Path, *, purpose: str = DEFAULT_PURPOSE, unit: str 
     except _Unavailable as exc:
         logger.warning("geometry measurement: package unavailable: %s", exc)
         return failed(STATUS_REFUSED, PACKAGE_ABSENT)
+
+    # A FORMAT THE MEASUREMENT CANNOT OPEN IS REFUSED, NOT ATTEMPTED AND MISREPORTED. Before this,
+    # `measure_isolated` raised `UnsupportedGeometry` and the `except` below stored it as
+    # `measurement_failed` - the same status a timeout or a broken STEP gets - and `geometry_admission`
+    # deferred to the builder, because a failure of ours is never the customer's fault. Correct for
+    # every other failure and wrong for this one, which no retry can change and which the customer can
+    # act on. So it is separated here, at the one place that knows both the suffix and what the package
+    # can read, and it names what to send instead.
+    readable = readable_suffixes()
+    suffix = path.suffix.lower()
+    if readable is not None and suffix not in readable:
+        from meshpipeline.contracts.intake_formats import send_instead
+        return failed(STATUS_UNSUPPORTED_FORMAT, UNSUPPORTED_FORMAT.format(
+            suffix=suffix or "no suffix at all", readable=", ".join(sorted(readable)),
+            instead=send_instead(suffix)))
 
     # The package's own file ceiling and its own words for refusing at it. Read from the package
     # rather than restated here, so one number moves one place.

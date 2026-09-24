@@ -167,7 +167,7 @@ upload (cached; a 25 MB STEP costs seconds).
 | **snappy** | STEP → named STL solids → `snappyHexMeshDict` | `geometry { regions {...} }` + per-region `patchInfo`, and one layer entry per region |
 | **cfMesh** | STEP → named STL solids → `geom.fms` | `renameBoundary` maps each FMS solid to its own patch |
 | **gmsh** | STEP → imported into gmsh's own OCC kernel, **B-rep staged** | physical groups are assigned on CAD topology; no flat surface is involved |
-| **vmtk** | a lumen surface (`.vtp`), not a STEP assembly | `CellEntityIds` carry per-region identity through TetGen |
+| **vmtk** | a lumen surface (upload it as `.stl`), not a STEP assembly | `CellEntityIds` carry per-region identity through TetGen |
 | **snappy_multiregion** | STEP → **volume** regions (fluid/solid) | each region contributes its own named boundary patches |
 
 The two OpenFOAM engines share a shape - named solids in one surface file - and nothing else does.

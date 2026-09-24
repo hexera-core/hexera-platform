@@ -64,27 +64,76 @@ def credential_problem(value: str) -> str | None:
     return None
 
 
-def problems() -> list[str]:
+def _view() -> dict[str, str]:
+    """What the containers will actually be handed, by name.
+
+    The documented precedence, unchanged: an exported variable beats .env, and .env beats the value the code
+    falls back to. Every required setting, plus anything `notices()` asks about - a notice is about a setting
+    that is NOT required, so it is not in `required_names()`.
+    """
     from meshpipeline.settings.inventory import all_vars, required_names
+
+    defaults = {v.name: v.default for v in all_vars()}
+    env_file = parse_env(ENV.read_text(encoding="utf-8"))
+    names = set(required_names()) | set(defaults) | set(env_file)
+    return {n: (os.environ.get(n) or env_file.get(n) or defaults.get(n, "")).strip() for n in names}
+
+
+def problems() -> list[str]:
+    from meshpipeline.settings.inventory import required_names
 
     if not ENV.exists():
         return ["there is no .env - run: make setup"]
 
-    defaults = {v.name: v.default for v in all_vars()}
+    values = _view()
     required = required_names()
-    env_file = parse_env(ENV.read_text(encoding="utf-8"))
-    # The documented precedence, unchanged: an exported variable beats .env, and .env beats the
-    # value the code falls back to.
-    values = {n: (os.environ.get(n) or env_file.get(n) or defaults.get(n, "")).strip()
-              for n in required}
 
     found: list[str] = []
-    if missing := [n for n in required if not values[n]]:
+    if missing := [n for n in required if not values.get(n)]:
         found.append("these required settings are unset in .env: " + ", ".join(missing))
     if values.get(CREDENTIAL_FILE_SETTING):
         if fault := credential_problem(values[CREDENTIAL_FILE_SETTING]):
             found.append(fault)
     return found
+
+
+def notices() -> list[str]:
+    """What will not stop the stack and the person starting it still has to know. Never a refusal.
+
+    THE ONE NOTICE THERE IS, and why it is a notice and not a problem. A dev stack with no reader key for the
+    look starts, and it SHOULD: the look is the one step built on never taking anything down, and a developer
+    with no OpenAI account must still be able to run the platform. What it may not be is quiet. It was:
+    `deploy/docker/entrypoint.sh` warns inside the container, which nobody reads unless they already suspect
+    something, so a local stack whose Surveyor could never look at anything looked identical to one that
+    could - right up to a customer's upload coming back `not_attempted`. An honest refusal stored on a row is
+    still a useless upload.
+
+    ASKED ABOUT THE `.env` THE CONTAINERS GET, not about this shell. `policy.vision_reader_has_no_key()`
+    answers for the process that imported it, and on a host that is the developer's own environment with the
+    key almost never exported - the wrong subject, and a check with the wrong subject is the failure shape this
+    round is full of. So the values come from `_view()` and the WORDING comes from policy, which owns it.
+    """
+    if not ENV.exists():
+        return []
+    values = _view()
+    # A QUESTION THAT COULD NOT BE ASKED IS NOT A QUESTION THAT ANSWERED YES, and the whole computation is
+    # inside this, not only the import. `deploy/docker/entrypoint.sh` learned it the expensive way: it hid the
+    # failure of the same question behind `2>/dev/null || echo ""`, which collapsed "fine", "no key" and "could
+    # not ask" into one empty string, and a hosted container skipped the gate in silence.
+    try:
+        from meshpipeline.settings import policy
+        provider = values.get("GEOMETRY_VISION_PROVIDER", "")
+        key_name = policy.vision_reader_key_name(provider)
+        verdict = policy.vision_reader_verdict(provider, bool(values.get(key_name)) if key_name else False)
+    except Exception as exc:                       # noqa: BLE001 - a notice is never worth a refusal
+        return [f"whether the Surveyor can look at anything could not be determined ({exc.__class__.__name__}: "
+                f"{exc}); a question that could not be asked is not a question that answered yes"]
+    if not verdict:
+        return []
+    return [f"{verdict}\n"
+            f"      Put {key_name}=<your key> in .env to give it one, or GEOMETRY_VISION_PROVIDER=off to say "
+            f"this stack takes no look.\n"
+            f"      The stack still starts: every row will record that nothing looked."]
 
 
 def parse_env(text: str) -> dict[str, str]:
@@ -112,6 +161,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     found = problems()
+    # BEFORE the verdict and on stdout, because a notice is about a stack that IS starting. Printed whether
+    # or not there are problems: the two are independent and a developer fixing one should see the other.
+    if told := notices():
+        print("\n  The stack will start, and there is something it will not be able to do:\n")
+        for notice in told:
+            print(f"    - {notice}\n")
+        # Flushed, because the refusal below goes to stderr: unflushed stdout is block-buffered when this is
+        # piped, and the notice would arrive after the refusal it is meant to be read before.
+        sys.stdout.flush()
     if not found:
         return 0
     out = sys.stderr

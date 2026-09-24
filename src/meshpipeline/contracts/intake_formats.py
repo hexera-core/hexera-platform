@@ -65,6 +65,42 @@ def unsupported_message(suffix: str) -> str:
     return f"Unsupported file type '{suffix}'. Accepted geometry formats: {names}."
 
 
+#: WHAT TO SEND IN PLACE OF A FORMAT THE MEASUREMENT CANNOT OPEN, by suffix.
+#:
+#: This is NOT a second accepted-format list and it decides nothing about admission at upload. It
+#: answers one question: when the measurement reports that it cannot open a file's format at all -
+#: `contracts/geometry_measurement.STATUS_UNSUPPORTED_FORMAT` - what does the customer do about it?
+#:
+#: .vtp is here because it is the one accepted format the measurement cannot read. The package reads
+#: .stl/.obj/.ply/.off/.glb/.gltf through trimesh and .step/.stp/.iges/.igs through OpenCASCADE
+#: (`geometry_agent.facts.load`); VTK PolyData is readable only inside the mesh engine's own bundle,
+#: which is a different image from the ones that measure. So a .vtp upload used to be admitted and
+#: then silently measured by nothing: no port table, no questions, no look, no plan, and no sentence
+#: to the customer either. IT IS STILL ADMITTED - vmtk takes a .vtp natively and staging it loses
+#: nothing - and it is now REFUSED AT ADMISSION with this sentence, before any builder runs.
+#:
+#: NOTHING IS ADDED HERE ON A GUESS. The generic sentence below names the formats that are both
+#: accepted and measurable and stops there, because telling a customer to convert to something this
+#: product has not measured would be worse than telling them nothing.
+SEND_INSTEAD: dict[str, str] = {
+    ".vtp": "Export the same surface as .stl and send that: it meshes identically on the vmtk "
+            "engine, which takes either, and an .stl is measured, looked at and surveyed.",
+}
+
+
+def send_instead(suffix: str) -> str:
+    """What to send in place of this format, in a sentence a customer can act on.
+
+    Always a sentence. A refusal with no instruction is a wall, and this is reached only where the
+    product has already decided it cannot measure what it was given.
+    """
+    s = (suffix or "").lower()
+    if s in SEND_INSTEAD:
+        return SEND_INSTEAD[s]
+    return (f"Send the geometry as one of {', '.join(sorted(ACCEPTED_SUFFIXES - set(SEND_INSTEAD)))} "
+            f"instead: those are the formats this product can measure.")
+
+
 def capability_payload() -> dict:
     return {
         "formats": [

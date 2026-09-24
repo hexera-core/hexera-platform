@@ -129,11 +129,39 @@ async def node_geometry_admission(state: PipelineState) -> dict:
 
     if analysis is None:  # analysis unavailable/failed - defer to the builder, don't blame the user
         return {}
-    from meshpipeline.contracts.geometry_measurement import STATUS_OK
+    from meshpipeline.contracts.geometry_measurement import STATUS_OK, STATUSES_ABOUT_THE_FILE
+    if analysis.get("status") in STATUSES_ABOUT_THE_FILE:
+        # A FACT ABOUT THE FILE, AND THE ONE MEASUREMENT OUTCOME THAT IS REFUSED HERE. The format
+        # cannot be measured at all, so no retry and no other engine changes it: this part will be
+        # meshed with nothing measured, nothing looked at, nothing asked and nothing planned. That is
+        # the Surveyor absent, silently, which is the whole product missing - and it used to pass
+        # through this branch as "a step of ours failed" and reach the builder without a word.
+        # The measurement's own reason names what to send instead, so the refusal is an instruction.
+        reason = str(analysis.get("reason") or "").strip() or (
+            "this file's format cannot be measured, so nothing describes the part")
+        logger.error("geometry_admission: the geometry's format cannot be measured - job_id=%s: %s",
+                     job_id, reason)
+        await _publish(job_id, "ERROR", f"Input rejected - {reason}")
+        try:
+            from meshpipeline.capture.logger import TrainingLogger
+            TrainingLogger(job_id).log(
+                "geometry_admission", op_id="admission:rejected", payload={
+                    "engine": engine, "admitted": False, "codes": ["unsupported_format"],
+                    "phases": ["measured"], "reason": reason, "surface_analysis": analysis})
+        except Exception:  # noqa: BLE001 - the capture log is never load-bearing
+            pass
+        # The same shape a declared rejection returns: unfixable by retry, so exhaust the budget and
+        # hand the reason to the executor short-circuit.
+        return {
+            "geometry_unsuitable_reason": reason,
+            "executor_success":           False,
+            "retry_count":                bcfg.MAX_BUILDER_RETRIES + 1,
+        }
     if analysis.get("status") not in (None, STATUS_OK):
-        # The measurement ran and could not finish. It carries `status` and `reason` and no numbers,
-        # so there is nothing to judge: defer to the builder exactly as an unavailable probe does,
-        # and never blame the customer for a step of ours that failed.
+        # The measurement ran and could not finish, or declined for a reason of OUR deployment's. It
+        # carries `status` and `reason` and no numbers, so there is nothing to judge: defer to the
+        # builder exactly as an unavailable probe does, and never blame the customer for a step of
+        # ours that failed.
         logger.info("geometry_admission: the stored measurement did not succeed (%s) - deferring "
                     "to the builder - job_id=%s", analysis.get("status"), job_id)
         return {}
