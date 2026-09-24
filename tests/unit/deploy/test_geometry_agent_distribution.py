@@ -118,12 +118,15 @@ def test_the_environment_the_wheel_installs_into_carries_what_the_agent_imports(
 #: What trimesh reaches for ON THE AGENT'S BEHALF, with the path and what its absence costs. Neither is a
 #: Requires-Dist of the agent's wheel and the agent never writes either import, so reading the agent's own
 #: declarations - which is what the two requirements comments used to do - says the image is complete when it
-#: is not. MEASURED in the built `api` image: with both uninstalled, `detect_regions` measures a one-region
-#: part fine and raises `ModuleNotFoundError: No module named 'rtree'` on a two-region one.
+#: is not. MEASURED in the built `api` image on the real parts in tests/fixtures/geometry, through the
+#: platform's own `measure_local_file`: with both uninstalled, one region and two regions both come back
+#: `measurement_failed` with `No module named 'rtree'` in the reason. Either one alone is enough.
 TRIMESH_REACHES_FOR = {
     "rtree": "the r-tree trimesh builds for its fallback ray intersector "
-             "(detect_regions -> _encloses -> ray.intersects_any -> triangles_tree -> util.bounds_tree), "
-             "which is the path every multi-region part takes when embree is not loaded",
+             "(ray.intersects_any -> triangles_tree -> util.bounds_tree), which is the path EVERY part "
+             "takes when embree is not loaded: `facts.features.detect_features` casts rays through "
+             "`facts.chords` on all of them and `facts.regions.detect_regions` casts more on a part with "
+             "two or more regions",
     "embreex": "the embree intersector trimesh prefers, which is what the agent's own environment was "
                "measured on: the same nesting test costs 0.41 s on embree against 20.05 s on the rtree "
                "fallback at 209,408 faces, and the gap grows with face count",

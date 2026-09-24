@@ -177,11 +177,14 @@ tqdm==4.70.0
 #
 # WHAT THAT NOTE USED TO SAY, and it was wrong in the way that matters. It said networkx and
 # rtree were "confirmed absent from that image, which runs the package fine". Absent, yes. Fine,
-# no: rtree is absent and the package runs only until the first part with MORE THAN ONE region,
-# where `facts.regions.detect_regions` casts its nesting rays through trimesh's fallback
-# intersector and trimesh does `import rtree` on the agent's behalf. Measured by running it, not
-# by reading imports. rtree and embreex are pinned in their alphabetical places above and
-# requirements/runtime.txt carries the measurement; networkx is genuinely unused and stays out.
+# no: with neither rtree nor embreex in the image the package measures NOTHING. Every real part
+# fails, one region or forty, because `facts.features.detect_features` casts rays through
+# `facts.chords` on every part and trimesh does `import rtree` on the agent's behalf for the
+# intersector it falls back to without embree; `facts.regions.detect_regions` does the same again
+# for a part with two or more regions. Measured by running it in the built image on the real parts
+# in tests/fixtures/geometry, not by reading imports - the table is in requirements/runtime.txt.
+# rtree and embreex are pinned in their alphabetical places above; networkx is genuinely unused
+# and stays out.
 #
 # NOT a Gate C export: these are direct pins and their measured closure, recorded rather than
 # resolved fresh. The next full re-export from a Gate C image supersedes them.

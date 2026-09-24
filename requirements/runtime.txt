@@ -74,15 +74,28 @@ trimesh==5.1.0
 # rtree`; trimesh imports it ON THE AGENT'S BEHALF, which is why reading the agent's imports
 # said the image was complete when it was not.
 #
-# MEASURED, by running the measurement rather than by reading it. `facts.regions.detect_regions`
-# decides which region sits inside which, and it only asks once a part has TWO OR MORE regions
-# (`if len(out) < 2: return out`). The nesting test is `_encloses`, which casts rays:
-# `container.ray.intersects_any` -> `trimesh.ray.ray_triangle.intersects_id` ->
-# `mesh.triangles_tree` -> `trimesh.triangles.bounds_tree` -> `trimesh.util.bounds_tree`, whose
-# body is `import rtree`. With rtree blocked, a one-region part measures fine and a two-region
-# part raises ImportError inside `detect_regions`. That is a multi-region upload - a CHT part,
-# an assembly, a fluid volume with a sealed bubble - failing at the customer, on the image's
-# very first real job of that shape.
+# MEASURED, by running the measurement rather than by reading it. Two places in the agent cast
+# rays through trimesh, and trimesh builds an r-tree for the intersector it falls back to when
+# embree is not loaded: `trimesh.ray.ray_triangle.intersects_id` -> `mesh.triangles_tree` ->
+# `trimesh.triangles.bounds_tree` -> `trimesh.util.bounds_tree`, whose body is `import rtree`.
+# One of the two is `facts.regions.detect_regions`, which decides which region sits inside which
+# and only asks once a part has TWO OR MORE regions (`if len(out) < 2: return out`). The other is
+# `facts.features.detect_features`, through `facts.chords`, and it runs on EVERY part.
+#
+# SO THE BLAST RADIUS IS EVERY UPLOAD, not only the assemblies. Measured in the built `api`
+# image, on the real parts in tests/fixtures/geometry, through the platform's own
+# `application/geometry_measurement.measure_local_file`:
+#
+#   installed              plate_with_hole_2d.step (1 region)   cht_enclosing_2region.step (2)
+#   rtree + embreex        ok                                   ok
+#   embreex only           ok                                   ok
+#   rtree only             ok                                   ok
+#   NEITHER                measurement_failed: no rtree         measurement_failed: no rtree
+#
+# The last row is the image this file used to build. Every real upload came back
+# `measurement_failed` with a ModuleNotFoundError in the reason, which the platform swallows
+# (`on_upload` never fails an upload), so the conversation opened with no table at all. EITHER
+# library alone is enough; both are pinned, for the reason in the next paragraph.
 #
 # WHY NOBODY SAW IT. The agent's own venv also has embreex, so `mesh.ray` is the embree
 # intersector there, which needs no r-tree at all; the fallback path that needs rtree is the
@@ -100,8 +113,10 @@ trimesh==5.1.0
 # measure identically.
 #
 # deploy/verify_install.py RUNS this path at build time on a two-region part it builds itself,
-# so the next runtime dependency that hides behind trimesh fails the image instead of the
-# upload.
+# on both ray backends, so the next runtime dependency that hides behind trimesh fails the image
+# instead of the upload. It is rtree that the build refuses to go without: with embreex missing
+# and rtree present both of its runs use rtree and pass, so embreex is held by the unit lane
+# (tests/unit/application/test_geometry_multi_region_measurement.py) rather than by the build.
 rtree==1.4.1
 embreex==4.4.0
 

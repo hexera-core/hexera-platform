@@ -117,10 +117,17 @@ print(f"OK: geometry_agent installed at {gpkg} (version {gversion}), "
 
 # 5. THE PATH A MULTI-REGION PART TAKES, RUN. Everything above asks whether a file is there. That is
 #    strictly weaker than asking whether the code works, and the gap between the two is where this
-#    image's last real defect lived: the geometry agent imports fine with no `rtree` in the
-#    environment, measures a single-region part fine, and raises ImportError from inside
-#    `facts.regions.detect_regions` the first time a part has TWO regions - a CHT assembly, a
-#    fluid volume with a sealed bubble, anything with a body inside a body. At a customer's upload.
+#    image's last real defect lived: the geometry agent imports fine with no `rtree` and no
+#    `embreex` in the environment and then measures NOTHING. Measured in the built `api` image on
+#    the real parts in tests/fixtures/geometry: with neither library, one region and two regions
+#    both come back `measurement_failed` with `No module named 'rtree'` in the reason, because
+#    `facts.features.detect_features` casts rays on every part and `facts.regions.detect_regions`
+#    casts more on a part with two or more. At a customer's upload, silently: the platform never
+#    fails an upload over a measurement.
+#
+#    A MULTI-REGION PART IS WHAT THIS RUNS, because it is the stricter of the two: it exercises
+#    both ray paths, and it is the one whose absence a one-region check would miss if the reach in
+#    `facts.chords` ever goes away.
 #
 #    WHY NEITHER REQUIREMENTS FILE COULD HAVE TOLD US. `rtree` is not a Requires-Dist of the
 #    geometry-agent wheel and the agent never writes `import rtree`. trimesh writes it, on the

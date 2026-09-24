@@ -4,19 +4,27 @@
 #             can only read files.
 #
 # WHY IT EXISTS. `deploy/verify_install.py` imported the geometry agent and checked its subpackages and its
-# package data, and an image that passed all of it could not measure a part with TWO REGIONS. The reason is
-# that nothing in the agent's import closure names the library the path needs: `facts.regions.detect_regions`
-# casts rays for its nesting test, and trimesh reaches for an r-tree inside that call, on the agent's behalf.
-# So every check built on reading imports or reading the wheel's declarations said the image was complete.
+# package data, and an image that passed all of it could measure NOTHING. The reason is that nothing in the
+# agent's import closure names the library the path needs: the agent casts rays, and trimesh reaches for an
+# r-tree inside those calls, on the agent's behalf, for the intersector it falls back to without embree. So
+# every check built on reading imports or reading the wheel's declarations said the image was complete.
 #
-# MEASURED, in the built `api` image, with rtree and embreex uninstalled:
-#   one region : [('r1', None)]
-#   two regions: FAILED ModuleNotFoundError No module named 'rtree'
-# and with them installed, on the same image:
-#   two regions: [('r1', None), ('r2', 'r1')]      backend trimesh.ray.ray_pyembree
+# THERE ARE TWO SUCH CALLS AND ONLY ONE OF THEM IS ABOUT REGIONS. `facts.regions.detect_regions` casts rays
+# for its nesting test and asks only once a part has two or more regions, and `facts.features.detect_features`
+# casts rays through `facts.chords` on EVERY part. MEASURED in the built `api` image on the real parts in
+# tests/fixtures/geometry, through the platform's own `geometry_measurement.measure_local_file`:
 #
-# The first test below runs that path for real, so this environment is held to it too. The last one removes
-# the libraries the way the image used to lack them and pins the failure, so the day trimesh stops needing one
+#   installed              plate_with_hole_2d.step (1 region)   cht_enclosing_2region.step (2 regions)
+#   rtree + embreex        ok                                   ok
+#   embreex only           ok                                   ok
+#   rtree only             ok                                   ok
+#   NEITHER                measurement_failed: no rtree         measurement_failed: no rtree
+#
+# so the image this fix replaced failed at the first upload of any shape, not at the first assembly. Either
+# library alone is enough; requirements/runtime.txt says why both are pinned.
+#
+# The first tests below run those paths for real, so this environment is held to them too. The last two remove
+# the libraries the way the image used to lack them and pin the failure, so the day trimesh stops needing one
 # the comments in requirements/runtime.txt and requirements/constraints.txt are told they have gone stale
 # rather than quietly becoming untrue.
 from __future__ import annotations
@@ -28,8 +36,10 @@ import pytest
 from tests._surveyor_package import require
 
 require("geometry_agent.facts.regions", needs="the nesting test every multi-region upload runs")
+require("geometry_agent.facts.features", needs="the feature pass every upload runs, rays included")
 
 import trimesh  # noqa: E402
+from geometry_agent.facts.features import detect_features  # noqa: E402
 from geometry_agent.facts.regions import detect_regions  # noqa: E402
 
 #: The libraries trimesh imports inside the nesting call, in the order it prefers them. `embreex` gives the
@@ -135,9 +145,13 @@ def test_each_ray_backend_on_its_own_measures_the_same_nesting(backend):
             f"the nesting test answers differently with only {backend} available")
 
 
-def test_with_neither_of_them_a_one_region_part_still_measures_and_a_two_region_part_does_not():
-    """The image's actual defect, reproduced. This is the shape that made it invisible: nothing raised at
-    import, nothing raised on a simple part, and the first assembly failed at a customer's upload.
+def test_with_neither_of_them_the_nesting_test_is_the_call_that_raises():
+    """The nesting test, reproduced with neither library. It is the call `deploy/verify_install.py` runs.
+
+    `detect_regions` alone returns before the ray test on a single-region part (`if len(out) < 2: return
+    out`), and that early return is what made the gap look narrower than it is - measured on this call alone,
+    a simple part passes. The next test is the other half: the agent casts rays on a simple part too, just
+    not from here.
 
     If trimesh ever stops needing an r-tree here, this test fails - and that is the right outcome, not a
     nuisance: the pins and the notes that justify them in requirements/runtime.txt and
@@ -146,9 +160,32 @@ def test_with_neither_of_them_a_one_region_part_still_measures_and_a_two_region_
     with _Hide(*RAY_BACKENDS) as fresh:
         one = fresh.creation.box(extents=(0.2, 0.2, 0.2))
         assert _nesting(detect_regions(one)) == [("r1", None)], (
-            "a single-region part needs no ray test, so this is the part the broken image measured fine")
+            "the nesting test returns before the rays on one region, which is why measuring this call alone "
+            "said a simple part was fine")
         with pytest.raises(ImportError) as raised:
             detect_regions(_two_regions(fresh))
         assert "rtree" in str(raised.value), (
             f"a part with two regions failed for another reason ({raised.value}); the nesting test no longer "
             f"needs an r-tree and the requirements comments that say it does are now wrong")
+
+
+def test_with_neither_of_them_even_a_one_region_part_cannot_be_MEASURED():
+    """THE BLAST RADIUS, and the reason the note in requirements/runtime.txt is about every upload.
+
+    Reading `detect_regions` says a single-region part is safe without an r-tree. Running the MEASUREMENT
+    says it is not: `facts.features.detect_features` casts rays through `facts.chords` on every part, one
+    region or forty, and trimesh reaches for the same r-tree inside that call. MEASURED in the built `api`
+    image on the real parts in tests/fixtures/geometry through the platform's own `measure_local_file`: with
+    neither library, `plate_with_hole_2d.step` (one region) and `cht_enclosing_2region.step` (two) both come
+    back `measurement_failed` with `No module named 'rtree'` in the reason.
+
+    A box is enough to hold that here, and it keeps this test hermetic - no CAD reader, no fixture file. If
+    this ever stops raising, the reach really is confined to multi-region parts and three comments plus the
+    header of this file have to be narrowed back.
+    """
+    with _Hide(*RAY_BACKENDS) as fresh:
+        with pytest.raises(ImportError) as raised:
+            detect_features(fresh.creation.box(extents=(0.2, 0.1, 0.05)))
+    assert "rtree" in str(raised.value), (
+        f"the feature pass over a single-region part failed for another reason ({raised.value}); if it no "
+        f"longer reaches for an r-tree, the measured table in requirements/runtime.txt is now wrong")
