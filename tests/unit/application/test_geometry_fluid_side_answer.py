@@ -134,7 +134,12 @@ def test_a_skipped_side_confirms_nothing_and_places_nothing_on_the_flow_path(sid
     assert block["places"] == [], block["places"]
     unsettled = [u for u in block["survey"]["unsettled"] if u["about"] == "representation"]
     assert unsettled, "the builder is owed the reason there is no flow path"
-    # the finder's own sentence says what the wrong answer costs rather than what waits on the answer, and the
-    # empty `places` above is the thing that waits. Both halves are here, which is what the builder needs
-    assert "meshes the metal as the flow" in unsettled[0]["why"]
-    assert "the file is the fluid" in unsettled[0]["why"]
+    # THE BUILDER GETS THE SURVEYOR'S OWN SENTENCE, NOT THE FINDER'S, and that is deliberate. The finder's
+    # `why` is written for a PERSON at intake and is free to quote what the look said; `SURVEY_UNSETTLED_WHY`
+    # is written so that no sentence the look contributed to rides into a model. It says both halves anyway:
+    # what is not in the geometry, and that nothing on the flow path is placed until a person answers - and
+    # the empty `places` above is that second half in the block itself.
+    assert "which side of the surface is the fluid is not in the geometry" in unsettled[0]["why"]
+    assert "nothing on the flow path is placed until a person says" in unsettled[0]["why"]
+    # and the finder's own wording is still what the customer reads, one step upstream
+    assert "meshes the metal as the flow" in _side_view(_fresh())["why"]

@@ -438,7 +438,12 @@ def _crowded(**kw) -> dict:
     Every one of the six comes from the part or the brief and none is invented: the file would be refused by
     this platform's own pre-mesh rules (dispatch), two mouths need a role (boundary), the geometry reads the
     same both ways with the side switch on (domain), the look reports a mouth the measurement did not find
-    (domain), the brief asks for a thousand cells (resolution) and an STL declares no unit (resolution).
+    (domain), the brief asks for a thousand cells (resolution) and NOBODY declares a unit (resolution).
+
+    NOBODY means the brief too, which is why its unit sentence is removed here as well as the file's declared
+    unit. `ask.settle` reads "Geometry is in metres" and settles the unit question on it, so a fixture that
+    doctored only the facts was asking for a question the brief had already answered: five questions, and the
+    cap this test is about never fired. Removing the sentence is what makes the fixture mean what it says.
     """
     doc = _doc("block_boss_sharp")
     doc["facts"]["units"] = {**(doc["facts"].get("units") or {}), "declared": None, "declared_source": "none"}
@@ -446,21 +451,30 @@ def _crowded(**kw) -> dict:
         "looks_like": "a pierced block",
         "openings_seen": [{"id": "unlabelled", "mouth": "clear"}, {"id": "o1", "mouth": "clear"}],
         "internal_features": []}}
-    brief = _brief("block_boss_sharp") + "\nMesh budget: keep the total cell count under 1,000 cells.\n"
+    brief = (_brief("block_boss_sharp").replace("Geometry is in metres.", "")
+             + "\nMesh budget: keep the total cell count under 1,000 cells.\n")
+    assert "in metres" not in brief and "in millimetres" not in brief, brief
     return gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=brief, **kw))
 
 
 def test_the_five_question_cap_is_a_fact_of_the_product_and_the_ranking_is_the_tier_order(side_on):
     """MAX_ASKED and the consequence ranking were built and ran nowhere near a customer: the platform composed
-    its survey with the package's fallback finder, which has neither. Six questions, five put, and the order is
-    the tier order: dispatch, boundary, domain, domain, resolution."""
+    its survey with the package's fallback finder, which has neither. Six questions, five put, in tier order.
+
+    THE SIXTH IS THE BUDGET, and it used to be the unit. `ask.consequence` imported a name the units module
+    does not define, so every file with no declared unit raised inside that branch, the handler swallowed it
+    and landed the question on `resolution` - the ImportError's fallback, not a decision. With the crash fixed
+    the unit sits at `domain`, where a question deciding what every length MEANS belongs, so the ranking is
+    dispatch, boundary and three domain questions, and the budget trade at `resolution` is 6 of 6."""
     state = _crowded()
     views = {v["id"]: v for v in gs.question_views(state)}
     assert state["asking"]["max_asked"] == 5
     assert len(state["asking"]["put"]) == 5
     assert [views[q]["tier"] for q in state["asking"]["put"]] == [
-        "dispatch", "boundary", "domain", "domain", "resolution"]
+        "dispatch", "boundary", "domain", "domain", "domain"]
+    assert views["q_unit"]["tier"] == "domain", "the unit question is back on the ImportError fallback tier"
     (held,) = list(state["asking"]["held"])
+    assert held == "q_budget" and views[held]["tier"] == "resolution"
     assert views[held]["put"] is False
     assert views[held]["held_because"] == "below_the_cap"
     assert "at most 5 are put at once" in views[held]["held_quote"]
@@ -469,33 +483,57 @@ def test_the_five_question_cap_is_a_fact_of_the_product_and_the_ranking_is_the_t
     assert len(gs.open_now(state)) <= 5
 
 
-def test_a_held_question_still_reaches_the_builder_as_unsettled_and_an_answer_to_it_still_counts(side_on):
+def test_a_held_question_still_reaches_the_builder_as_unsettled(side_on):
     """NOTHING IS DELETED BY ANY OF THE FOUR CUTS. A question below the cap is not put, and it is still an
-    uncertainty: the builder is told it is unsettled, and a customer who volunteers an answer overrules the
-    cut rather than being refused."""
+    uncertainty, so the builder is told it is unsettled rather than left to assume somebody settled it.
+
+    THE ANSWER HALF IS ITS OWN TEST BELOW, because the question that now falls below the cap is the budget
+    trade, and the trade has a SECOND gate: it is only put once every other question is settled. An answer
+    volunteered to it is refused for that reason and not by the cap, and the two are worth telling apart.
+    """
+    state = _crowded()
+    (held,) = list(state["asking"]["held"])
+    assert held in {u["id"] for u in state["survey"]["uncertainties"]}, "a cut deleted the question"
+    about = {u["about"] for u in state["survey"]["uncertainties"] if u["id"] == held}
+    told = {r["about"] for r in gs.builder_block(state)["survey"]["unsettled"]}
+    assert about <= told, f"the builder is not told {held} is unsettled: {sorted(told)}"
+
+
+def test_volunteering_an_answer_to_the_held_budget_trade_is_refused_by_the_trades_own_gate(side_on):
+    """And the refusal says which gate it is. The cap holds a question back; the trade additionally waits for
+    every other question, because a budget answered before the roles and the unit is a budget priced against
+    a part nobody has finished describing."""
     state = _crowded()
     (held,) = list(state["asking"]["held"])
     view = [v for v in gs.question_views(state) if v["id"] == held][0]
-    assert view["id"] in {u["id"] for u in state["survey"]["uncertainties"]}
-    if view["route"] in (gs.ROUTE_INTAKE, gs.ROUTE_TRADE):
-        said = view["options"][0]
-        answered = gs.record_answer(state, question_id=held, choice=said, words=said, latest_user_message=said)
-        assert [a for a in gs.live_answers(answered) if a["question_id"] == held]
+    assert view["route"] == gs.ROUTE_TRADE
+    said = view["options"][0]
+    with pytest.raises(gs.SurveyError, match="only put once every other survey question is settled"):
+        gs.record_answer(state, question_id=held, choice=said, words=said, latest_user_message=said)
 
 
-def test_the_tie_break_inside_a_tier_decides_which_question_goes_below_the_cap(side_on):
-    """`asked_before` breaks ties INSIDE a tier, lowest count first, and never moves a question across one. The
-    budget and the unit are both `resolution` here, so the ledger's counts decide which of the two is put."""
-    assert "q_budget" in _crowded()["asking"]["put"]
-    seen_budget = _crowded(asked_before={"budget_envelope": 4})
-    assert "q_unit" in seen_budget["asking"]["put"]
-    assert list(seen_budget["asking"]["held"]) == ["q_budget"]
-    seen_unit = _crowded(asked_before={"unit": 4})
-    assert list(seen_unit["asking"]["held"]) == ["q_unit"]
-    # the tiers do not move, whatever the counts
-    for state in (seen_budget, seen_unit):
+def test_the_tie_break_inside_a_tier_decides_the_order_a_customer_is_asked_in(side_on):
+    """`asked_before` breaks ties INSIDE a tier, lowest count first, and never moves a question across one.
+
+    Three questions sit at `domain` on this part, so the ledger's counts decide the order those three are put
+    in: the topic with the highest count goes last in its tier. The tier itself never moves, and the budget
+    is the one below the cap whatever the counts say, because it is a whole tier lower.
+    """
+    def _domain(state) -> list[str]:
         tiers = {v["id"]: v["tier"] for v in gs.question_views(state)}
-        assert tiers["q_budget"] == tiers["q_unit"] == "resolution"
+        return [q for q in state["asking"]["put"] if tiers[q] == "domain"]
+
+    plain = _crowded()
+    assert _domain(plain) == ["q_fluid_side", "q_unit", "q_unlabelled_mouth"]
+    asked_unit = _crowded(asked_before={"unit": 4})
+    assert _domain(asked_unit) == ["q_fluid_side", "q_unlabelled_mouth", "q_unit"]
+    asked_side = _crowded(asked_before={"fluid_side": 4})
+    assert _domain(asked_side) == ["q_unit", "q_unlabelled_mouth", "q_fluid_side"]
+    for state in (plain, asked_unit, asked_side):
+        tiers = {v["id"]: v["tier"] for v in gs.question_views(state)}
+        assert tiers["q_fluid_side"] == tiers["q_unit"] == tiers["q_unlabelled_mouth"] == "domain"
+        assert tiers["q_budget"] == "resolution"
+        assert list(state["asking"]["held"]) == ["q_budget"]
 
 
 def test_the_counts_a_composition_used_are_replayed_by_every_later_composition(side_on):
@@ -598,24 +636,40 @@ def test_raising_the_budget_never_un_asks_the_question_the_customer_just_answere
 # THE BLOCK'S WHOLE CONTRACT, AND ITS CEILING
 
 
-def test_the_platform_refuses_a_builder_control_and_an_outcome_claim_the_packages_checker_accepts():
-    """`deliver.check_survey_block` runs four of the block's six rules. The other two,
-    `_refuse_builder_keys` and `_refuse_outcome_claims`, are private to `contract/survey.py` and fire only
-    inside a `SurveyHandoff`'s validator, and the look's free text is added to the block AFTER that validator
-    ran. So the checker accepts both of these, and the platform's own check does not."""
+def test_a_builder_control_and_an_outcome_claim_are_refused_by_BOTH_checkers():
+    """THIS TEST USED TO PROVE A GAP AND NOW PROVES IT IS SHUT, which is the only honest way to keep it.
+
+    `deliver.check_survey_block` ran four of the block's six rules. The other two, the builder-key refusal and
+    the outcome-claim refusal, were private to `contract/survey.py` and fired only inside a `SurveyHandoff`'s
+    validator, and the look's free text is added to the block AFTER that validator ran. So the package's own
+    checker accepted both of these and only the platform's refused them.
+
+    The package now runs all six off the same two public functions (`survey.refuse_builder_keys` and
+    `survey.refuse_outcome_claims`), so `check_the_survey_block` is a second call of the same rules rather
+    than the only one. Both are asserted here because a gap that closes in one place is how it reopens in the
+    other: if either checker stops refusing, this fails.
+    """
+    from geometry_agent.contract import survey as pkg_survey
     from geometry_agent.contract.deliver import check_survey_block
+    from geometry_agent.contract.marks import ContractError
+
+    # one implementation, not a copy: the platform's checker and the package's run the same object
+    assert pkg_survey.refuse_builder_keys is not None and pkg_survey.refuse_outcome_claims is not None
 
     good = gs.builder_block(_answered_elbow())["survey"]
     gs.check_the_survey_block(good)
+    check_survey_block(good)
     for hurt, what in (({"kind": "seen", "tier": "relied_on", "value": "a shoulder", "field": "marks_seen",
-                         "source": "look", "n_layers": "three"}, "builder control 'n_layers'"),
+                         "source": "look", "n_layers": "three"}, "n_layers"),
                        ({"kind": "seen", "tier": "relied_on", "value": "the mesh will collapse here",
-                         "field": "marks_seen", "source": "look"}, "says 'the mesh will'")):
+                         "field": "marks_seen", "source": "look"}, "the mesh will")):
         block = {**good, "seen": {**good["seen"], "shoulder": hurt}}
-        check_survey_block(block)  # the package's own checker accepts it, which is the finding
-        with pytest.raises(gs.SurveyError, match="never predicts how the mesh turns out") as refusal:
+        with pytest.raises(ContractError) as pkg_refusal:
+            check_survey_block(block)
+        assert what in str(pkg_refusal.value)
+        with pytest.raises(gs.SurveyError) as refusal:
             gs.check_the_survey_block(block)
-        assert what.split()[-1].strip("'") in str(refusal.value)
+        assert what in str(refusal.value)
 
 
 def test_no_row_of_the_block_names_more_mouths_than_the_ceiling_has_room_for():
@@ -639,8 +693,9 @@ def test_no_row_of_the_block_names_more_mouths_than_the_ceiling_has_room_for():
         gs.check_the_survey_block(survey)
         assert len(json.dumps(survey)) <= SURVEY_BLOCK_MAX
         (row,) = [r for r in survey["unsettled"] if r["about"] == "opening.role"]
-        assert len(row["subjects"]) == gs.BLOCK_LIST_MAX
-        assert f"stand for {mouths - gs.BLOCK_LIST_MAX} more" in row["why"], row["why"]
+        cap = gs.block_list_max()
+        assert len(row["subjects"]) == cap
+        assert f"stand for {mouths - cap} more" in row["why"], row["why"]
     # and the survey on the row still names every one of them: what is shortened is the block, said out loud
     assert len(big["survey"]["uncertainties"][0]["subjects"]) == 1300
     # a part small enough to name all its mouths is untouched

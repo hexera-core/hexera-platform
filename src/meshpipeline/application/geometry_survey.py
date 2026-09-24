@@ -102,29 +102,38 @@ LATE_STAGE = "third"
 #: `resolution`: it decides how finely the part is meshed and never which face carries what.
 LATE_TIER = "resolution"
 
-#: HOW MANY MOUTHS ONE ROW OF THE BUILDER'S BLOCK NAMES. The block has two lists that grow with the mouth
-#: count and the package caps neither: an unsettled row's `subjects`, one entry per mouth the question named,
-#: and a confirmed answer's `applies_to`, one entry per mouth that answer placed. What
-#: `deliver.SURVEY_BLOCK_ITEMS` caps is the number of ROWS, not the length of a row's list.
-#:
-#: MEASURED on bend_elbow_001, deterministically, with nothing answered: the block is 2,117 characters with two
-#: unplaced mouths and 8.0 characters longer for each further mouth, so it crosses `deliver.SURVEY_BLOCK_MAX`
-#: between 200 mouths (3,595 characters) and 300. Past the ceiling `deliver.survey_block` refuses,
-#: `builder_block` catches the refusal and returns None, and the planner is then handed
-#: `hexera.planner_block`'s own survey, which is composed with no intake: on a part with a few hundred mouths
-#: the builder silently lost every role the customer had confirmed. `ask.intake` names a measured part with
-#: 1,231 open mouths beside its wall-clock ceiling, so this is not a hypothetical size.
-#:
-#: WHY THE SUBJECTS ARE SHORTENED AND NOT THE ROW. The rule the package states is that a block which can be CUT
-#: can lose the one thing it was carrying, and that is about a block silently truncated in a prompt. Twenty ids
-#: and a sentence saying how many more there are loses no finding: the row still names the question, the count
-#: is in the `why` the finder wrote, and the full list is on the survey itself, which the platform keeps. No
-#: survey at all, which is what happened before, loses every one of them.
-#:
-#: IT IS APPLIED ALWAYS, not only when the block is too big, so one part's block does not change shape because
-#: another mouth was measured. No stored fixture has a row naming more than seven mouths, so nothing in the
-#: product's measured behaviour moves.
-BLOCK_LIST_MAX = 20
+# HOW MANY MOUTHS ONE ROW OF THE BUILDER'S BLOCK NAMES. The block has two lists that grow with the mouth
+# count and the package caps neither: an unsettled row's `subjects`, one entry per mouth the question named,
+# and a confirmed answer's `applies_to`, one entry per mouth that answer placed. What
+# `deliver.SURVEY_BLOCK_ITEMS` caps is the number of ROWS, not the length of a row's list.
+#
+# MEASURED on bend_elbow_001, deterministically, with nothing answered: the block is 2,117 characters with two
+# unplaced mouths and 8.0 characters longer for each further mouth, so it crosses `deliver.SURVEY_BLOCK_MAX`
+# between 200 mouths (3,595 characters) and 300. Past the ceiling `deliver.survey_block` refuses,
+# `builder_block` catches the refusal and returns None, and the planner is then handed
+# `hexera.planner_block`'s own survey, which is composed with no intake: on a part with a few hundred mouths
+# the builder silently lost every role the customer had confirmed. `ask.intake` names a measured part with
+# 1,231 open mouths beside its wall-clock ceiling, so this is not a hypothetical size.
+#
+# WHY THE SUBJECTS ARE SHORTENED AND NOT THE ROW. The rule the package states is that a block which can be CUT
+# can lose the one thing it was carrying, and that is about a block silently truncated in a prompt. Twenty ids
+# and a sentence saying how many more there are loses no finding: the row still names the question, the count
+# is in the `why` the finder wrote, and the full list is on the survey itself, which the platform keeps. No
+# survey at all, which is what happened before, loses every one of them.
+#
+# IT IS APPLIED ALWAYS, not only when the block is too big, so one part's block does not change shape because
+# another mouth was measured. No stored fixture has a row naming more than seven mouths, so nothing in the
+# product's measured behaviour moves.
+def block_list_max() -> int:
+    """How many mouths one unsettled row names before it starts counting, read off the package.
+
+    IT USED TO BE A NUMBER HERE, and shortening the survey before handing it over. `hexera._survey_unsettled`
+    rewrites every row's `why` from `SURVEY_UNSETTLED_WHY`, so the sentence this side wrote saying how many
+    were left out was thrown away again the moment the block was composed: the list was short and the count
+    was gone. The package caps its own rows now (`hexera.SURVEY_SUBJECTS_MAX`) and states the remainder in
+    the row it keeps, which is one implementation instead of two disagreeing.
+    """
+    return int(_package()["hexera"].SURVEY_SUBJECTS_MAX)
 
 #: WHAT HAPPENED TO THE LOOK, and there are four answers, not two. `survey.looked` is a BOOLEAN, so every
 #: one of these but the first reaches the builder as the same False, and the product rule is that a look that
@@ -333,11 +342,13 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     if inlet_ids is None:
         inlet_ids = _declared_inlets(document, ports)
     side = _side_of(pkg, facts, purpose, brief_text, ports, confirmed_representation)
+    the_unit, the_basis = unit, unit_basis
+
     def measured(for_cap: int | None) -> dict:
         return pkg["hexera"].report_measured(
-            facts, unit, brief_text or None, purpose=purpose, engine=engine or None,
+            facts, the_unit, brief_text or None, purpose=purpose, engine=engine or None,
             declared=ports or None, cell_cap=for_cap, look=document.get("look"), fluid_side=side,
-            scale_to_metres=scale_to_metres, unit_basis=unit_basis,
+            scale_to_metres=scale_to_metres, unit_basis=the_basis,
             stamp={k: v for k, v in (document.get("stamp") or {}).items()
                    if k in ("agent_git_sha", "platform_sha")},
             inlet_ids=list(inlet_ids) or None)
@@ -369,6 +380,29 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         # the ones somebody else already answered, which are not uncertainties any more.
         asked = pkg["ask"].ask_intake(asking_doc, declared=ports or None, brief=brief_text or None,
                                       asked_before=dict(asked_before or {}) or None)
+        # A UNIT THE BRIEF STATED IS A UNIT THIS DOCUMENT HAS, and until this ran, neither half said so.
+        # `ask.settle` reads "Geometry is in millimetres" and holds the unit question `settled_by='brief'`,
+        # so the finder drops it - a question somebody answered is not an uncertainty. But nothing put the
+        # answer on the document, so there was no unit MARK either, and `survey_from` refused the whole
+        # handoff: "no unit mark and no unit question: a length with no unit is the 1,000x error". Correct
+        # refusal, and the fix is to stop losing the answer rather than to soften it.
+        #
+        # `chain.job.brief_stated_facts` is the package's own reading of what the brief settled and the same
+        # one the chain uses, so the platform does not get a second opinion about it. The basis is `brief`,
+        # which `contract.build._part_marks` already maps to a STATED mark: the customer's word, ranked
+        # below a confirmation and above the file's own guess. A unit the caller supplied wins, because that
+        # one came from a person through `GeometryInterpretationRef`.
+        if the_unit is None:
+            _brief_unit = pkg["ask_job"].brief_stated_facts(asked).get("unit")
+            if _brief_unit:
+                the_unit, the_basis = str(_brief_unit), "brief"
+                composed = measured(cap)
+                asking_doc = composed if cap == stated_cap else measured(stated_cap)
+                # Found again against the document that now carries the unit: the unit question is settled
+                # either way, but its absence changes what the other questions cost, and the finder ranks
+                # them by consequence.
+                asked = pkg["ask"].ask_intake(asking_doc, declared=ports or None, brief=brief_text or None,
+                                              asked_before=dict(asked_before or {}) or None)
         # the package admits an engine nobody named as `assumed` (work/z-chain, `contract.marks.OWNERS`), so the
         # composed document goes to the survey as it is; the shim that stripped the engine is gone
         survey = pkg["build"].survey_from(
@@ -1124,7 +1158,7 @@ def builder_block(state: dict | None) -> dict | None:
         return None
     pkg = _package()
     try:
-        given = pkg["given"].Given.of(_named_briefly(survey_of(state)), intake_handoff(state))
+        given = pkg["given"].Given.of(survey_of(state), intake_handoff(state))
         block = pkg["deliver"].attach(dict(state["planner_block"]), given)
         return _with_the_look_state(block, state, pkg)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
@@ -1139,26 +1173,6 @@ def builder_block(state: dict | None) -> dict | None:
         _refused = state.get("planner_block", {}).get("survey_refused") if isinstance(state, dict) else None
         if _refused:
             logger.warning("geometry survey: the package composed no survey for this job: %s", _refused)
-
-
-def _named_briefly(survey: Any) -> Any:
-    """The survey with no uncertainty naming more than `BLOCK_LIST_MAX` mouths, each saying how many it stands
-    for. Used ONLY to compose the builder's block; the stored survey keeps every id.
-
-    The block is composed from this rather than edited afterwards, so every row in it is still
-    `deliver.survey_block`'s own and the validator runs on what the package built.
-    """
-    out = []
-    for u in survey.uncertainties:
-        rest = len(u.subjects) - BLOCK_LIST_MAX
-        if rest <= 0:
-            out.append(u)
-            continue
-        out.append(u.model_copy(update={
-            "subjects": list(u.subjects[:BLOCK_LIST_MAX]),
-            "why": (f"{u.why} The first {BLOCK_LIST_MAX} are named here and they stand for {rest} more; the "
-                    f"question is about every one of them and the whole list is on the survey.")}))
-    return survey.model_copy(update={"uncertainties": out})
 
 
 def check_the_survey_block(block: Any) -> None:
@@ -1549,7 +1563,7 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
         return "skipped"
 
 
-__all__ = ["ASKING_SCHEMA", "BLOCK_LIST_MAX", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
+__all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER", "block_list_max",
            "LOOK_BECAUSE", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_PENDING",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",

@@ -76,15 +76,31 @@ def test_arming_twice_says_the_same_thing(monkeypatch):
     assert polcfg.arm_the_package() == polcfg.arm_the_package()
 
 
-def test_the_words_written_are_words_the_package_accepts():
-    """`on` and `off`, not `true`/`false`: the package RAISES on anything it does not know, so a platform that
-    wrote `True` would turn a measurement into an exception rather than a switch."""
-    measure = require("geometry_agent.facts.measure", needs="the words the package accepts for its switches")
-    catalog = require("geometry_agent.agent.catalog", needs="the words the package accepts for its switches")
-    assert measure.measured_stops_on({"GEOMETRY_AGENT_MEASURED_STOPS": "on"}) is True
-    assert measure.measured_stops_on({"GEOMETRY_AGENT_MEASURED_STOPS": "off"}) is False
-    assert catalog.fluid_side_on({"GEOMETRY_AGENT_FLUID_SIDE": "on"}) is True
-    assert catalog.fluid_side_on({"GEOMETRY_AGENT_FLUID_SIDE": "off"}) is False
+def test_both_switches_are_hardwired_in_the_package_and_this_platform_still_writes_them():
+    """BOTH STAGES ARE NOW ALWAYS ON IN THE PACKAGE, so these two variables decide nothing.
+
+    They defaulted OFF. The package flipped them, verified that nothing but the stages' own output moved, and
+    then deleted the reads: `facts.measure.measured_stops_on` is GONE, and `agent.catalog.fluid_side_on`
+    survives returning a constant True with one caller left. So `on`/`off` is no longer a question about words
+    the package accepts - there is nothing left to accept them.
+
+    WHAT IS STILL TRUE, and it is why this test did not simply go: `arm_the_package` still writes both
+    variables at both call sites, and `optional_env` still means an operator's own export wins. That is now
+    two environment variables an operator can set with no effect whatever, which is the exact defect the
+    arming was built to remove, one level up. Removing them is a settings change: two declared names, the
+    generated template, the configuration roster and the certification. It is named here rather than left for
+    somebody to rediscover, and this test is what fails if the package grows a reader again.
+    """
+    measure = require("geometry_agent.facts.measure", needs="whether the measured-stops switch still exists")
+    catalog = require("geometry_agent.agent.catalog", needs="whether the fluid-side switch still exists")
+    assert not hasattr(measure, "measured_stops_on"), (
+        "the package has a measured-stops reader again; this platform's switch means something once more "
+        "and the `on`/`off` wording matters again")
+    assert catalog.fluid_side_on() is True and catalog.fluid_side_on({"GEOMETRY_AGENT_FLUID_SIDE": "off"}) is True, (
+        "the fluid side is meant to be hardwired on; a reader that answers False is a switch again")
+    # and the platform is still writing them, which is the finding
+    armed = polcfg.arm_the_package()
+    assert set(armed) == set(package_switches.PACKAGE_SWITCHES), armed
 
 
 def test_the_measurement_arms_the_package_before_it_opens_the_file(monkeypatch):
