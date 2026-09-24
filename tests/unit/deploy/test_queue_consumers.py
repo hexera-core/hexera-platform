@@ -362,7 +362,7 @@ def test_a_warm_pool_is_accepted(tmp_path):
     # deployment identity, this test passed on the refusal of its own fixture and reported the floor
     # rule healthy. A check that cannot fail when the thing it checks never ran has the same blind
     # spot as the thing it checks, which is what the queue checks above exist to close.
-    assert "WORKER_MIG" in out, out
+    assert "configuration valid" in out, out
 
 
 # ---------------------------------------------------------------- no worker escapes a target
