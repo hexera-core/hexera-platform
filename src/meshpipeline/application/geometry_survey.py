@@ -174,10 +174,12 @@ LOOK_BECAUSE: dict[str, str] = {
 
 #: WHAT THE PACKAGE'S OWN `survey["look_state"]` SAYS FOR EACH OF THESE, when it says anything.
 #:
-#: The agent's master composes `look_state` into the survey block beside `looked`, with three values and no
+#: The agent composes `look_state` into the survey block beside `looked`, with three values and no
 #: `pending`: a look in flight is a state of the platform's QUEUE, which the stored document cannot see, and
-#: the package refuses to claim it. The wheel this image ships (`vendor/wheels/`) does not write the key at
-#: all, so an absent key means THIS BLOCK DOES NOT SAY and there is nothing to compare.
+#: the package refuses to claim it. The wheel this image ships (`vendor/wheels/`) WRITES THE KEY as of agent
+#: 0428ad41, so the comparison below is live on every normal job rather than dormant. It was not: the wheel
+#: vendored before that was 14 agent commits behind and wrote no `look_state` at all, so an absent key still
+#: has to mean THIS BLOCK DOES NOT SAY - a stored row measured by an older image has none.
 #:
 #: WHY THE COMPARISON EXISTS. Once both are there they are two facts about one thing, written from two
 #: sources: the package reads the stored document, this module reads the ROW, which is the document plus the

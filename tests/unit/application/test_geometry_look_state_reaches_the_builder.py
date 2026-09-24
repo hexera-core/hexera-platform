@@ -275,11 +275,13 @@ def test_the_row_survives_the_planners_allowlist_and_the_note_tells_a_model_how_
 
 # THE OTHER HALF OF THE SAME FACT, WRITTEN BY THE PACKAGE
 #
-# The agent's master composes `survey["look_state"]` beside `looked`, with three values and no `pending`: a
-# look in flight is a state of THIS side's queue and the stored document cannot see it. The wheel in
-# vendor/wheels/ does not write the key at all, so in the image that ships today there is nothing to compare
-# and the row below is the whole distinction. Once both are there they are two facts about one look, written
-# from two sources, and a builder handed both and left to pick is back where it started.
+# The agent composes `survey["look_state"]` beside `looked`, with three values and no `pending`: a look in
+# flight is a state of THIS side's queue and the stored document cannot see it. The wheel in vendor/wheels/
+# WRITES THE KEY as of agent 0428ad41, so both facts are there in the image that ships today and the
+# comparison is live. The wheel vendored before that wrote none, which is why the branch below still handles
+# an absent key: a row measured by an older image has one and a row measured by this one does not. Once both
+# are there they are two facts about one look, written from two sources, and a builder handed both and left
+# to pick is back where it started.
 
 
 @pytest.mark.parametrize("representation,case,purpose,side", BY_REPRESENTATION,
@@ -287,10 +289,11 @@ def test_the_row_survives_the_planners_allowlist_and_the_note_tells_a_model_how_
 def test_whatever_the_package_says_about_the_look_this_row_agrees_with_it(armed, representation, case, purpose,
                                                                          side):
     """MEASURED on real parts rather than argued, in BOTH worlds, because this suite runs against the agent's
-    source tree on a workstation and against `vendor/wheels/` inside the image, and those two differ on exactly
-    this key. Where the package writes `look_state` it says what `PACKAGE_LOOK_STATE` maps this row onto, so the
-    refusal never fires on a normal job; where it does not, the row's sentence is the whole distinction and has
-    to be there. Neither branch is a skip."""
+    source tree on a workstation and against `vendor/wheels/` inside the image. Those two agreed about this key
+    only once the wheel was rebuilt from agent 0428ad41; before that they differed on exactly it, and a stored
+    row from an older image still carries no key. Where the package writes `look_state` it says what
+    `PACKAGE_LOOK_STATE` maps this row onto, so the refusal never fires on a normal job; where it does not, the
+    row's sentence is the whole distinction and has to be there. Neither branch is a skip."""
     state, doc = _planned(case, purpose, side)
     for row, expected in ((state, gs.LOOK_NONE), ({**state, "look_queued": gs.LOOK_QUEUED}, gs.LOOK_PENDING)):
         survey = _typed(row, doc, case)["survey"]
