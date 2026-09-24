@@ -78,6 +78,87 @@ def user_named_engine(engine: str, quote: str, latest_user_message: str) -> bool
     return any(n and n in q for n in names)
 
 
+#: The words that answer the question `render_selection_statement` asks - "Do you want to select X?".
+#: They live beside the renderer so the question and the reader of its answer cannot drift apart.
+#: Deliberately small: a word that is not here is not an answer, and a message that is not an answer
+#: never selects anything.
+_AFFIRM = frozenset({
+    "yes", "yeah", "yep", "yup", "ya", "yea", "aye", "ok", "okay", "sure", "correct", "right",
+    "confirm", "confirmed", "confirming", "proceed", "affirmative", "definitely", "absolutely",
+})
+
+#: Refusals and hesitations. Any one of these ANYWHERE in the message stops it counting as an answer,
+#: because "yes, no wait" and "yes but a different one" are not selections.
+_DENY = frozenset({
+    "no", "nope", "nah", "not", "dont", "don't", "never", "stop", "cancel", "wait", "hold",
+    "instead", "change", "different", "another", "other", "rather", "actually",
+})
+
+#: "yees", "yesss". A real user typed the first one at a question that would not take yes for an
+#: answer, which is the whole reason this reader exists.
+_YES_TYPO = re.compile(r"^y+e+s+$")
+
+
+def _words(text) -> list[str]:
+    return re.findall(r"[a-z']+", _norm(text))
+
+
+def affirms(latest_user_message) -> bool:
+    """Does this message answer YES to the yes/no question the application just put on screen?
+
+    Not "is it positive in tone". A denial or a hesitation anywhere in the message means there is no
+    answer here, and a question with no yes in it is not an answer either - someone replying "what is
+    it?" has chosen nothing.
+    """
+    msg = _norm(latest_user_message)
+    if not msg:
+        return False
+    ws = _words(msg)
+    if any(w in _DENY for w in ws):
+        return False
+    said_yes = any(w in _AFFIRM or _YES_TYPO.match(w) for w in ws)
+    return bool(said_yes)
+
+
+def names_engine(engine: str, latest_user_message) -> bool:
+    """The user's OWN message names this engine, with no quote from the model involved."""
+    msg = _norm(latest_user_message)
+    names = {_norm(engine), _norm(engine_label(engine))}
+    return any(n and n in msg for n in names)
+
+
+def answers_the_selection_question(engine: str, quote: str, latest_user_message,
+                                   *, outstanding: bool) -> bool:
+    """Has the user chosen this engine, by any proof this application accepts?
+
+    THE PROOF IS ALWAYS THE USER'S OWN WORDS. Three shapes of it:
+      - the model quoted them and the quote names the engine - `user_named_engine`, unchanged;
+      - their own message names the engine AND answers yes, so no quote is needed to see it;
+      - the application has ALREADY asked about this engine and their message answers yes, or simply
+        names it back at the question.
+
+    The third shape applies only while that question is outstanding, and that is what keeps "what is
+    snappyHexMesh?" from selecting anything: it answers nothing, so `affirms` is False, and a bare
+    mention counts only as the answer to a question that was actually asked.
+
+    WHY THE CODE READS THE MESSAGE ITSELF. The quote argument is OPTIONAL, so a model that simply
+    omitted it made this application re-ask a question the user had already answered - and since
+    re-proposing replaced the pending question, every further "yes" was spent re-asking rather than
+    answering. The consent was in hand and went unread. A message this code reads for itself cannot
+    be forgotten by a caller.
+    """
+    if user_named_engine(engine, quote, latest_user_message):
+        return True
+    named = names_engine(engine, latest_user_message)
+    said_yes = affirms(latest_user_message)
+    if named and said_yes:
+        return True
+    if outstanding and (said_yes or (named and "?" not in _norm(latest_user_message))):
+        return True
+    return False
+
+
+
 def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
             quote: str, latest_user_message: str,
             user_msg_count: int | None = None) -> tuple[dict | None, str]:

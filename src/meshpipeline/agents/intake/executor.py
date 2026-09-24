@@ -263,6 +263,47 @@ class IntakeToolExecutor:
         if eng not in self._engines:
             return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
                 f"{eng!r} is not a registered engine. Available: {', '.join(self._engines)}."))
+        quote = str(args.get("user_named_verbatim") or "")
+        shown = _vocab.to_display(_vocab.ENGINE, eng)
+        prior = st.selection
+        prior_state = es.state_of(prior)
+        same_engine = isinstance(prior, dict) and prior.get("engine") == eng
+
+        # ALREADY CHOSEN. Re-proposing the engine the user has already selected used to replace that
+        # selection with a fresh question, discarding consent this application had already recorded
+        # and verified. Nothing is learned by asking again, and the answer was already given.
+        if same_engine and prior_state == es.CONFIRMED:
+            logger.info("Intake: engine already selected, propose ignored engine=%s - job_id=%s",
+                        eng, self._job_id)
+            return IntakeToolResult(
+                tool="propose_engine_selection", accepted=True, advanced=False,
+                content=(f"{shown} is ALREADY SELECTED by the user - do not ask them again. Gather "
+                         "the remaining requirements and call preview_selected_admission."))
+
+        # ALREADY ASKED. Asking the identical question a second time is what made it unanswerable:
+        # a fresh proposal replaced the pending one, so the user's answer was spent on re-asking and
+        # the same question returned however many times they said yes.
+        if same_engine and prior_state == es.PROPOSED:
+            if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=True):
+                st.selection = {**prior, "state": es.CONFIRMED,
+                                "confirmed_revision": st.revision,
+                                "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
+                logger.info("Intake: engine selection CONFIRMED from the user's answer to the "
+                            "standing question engine=%s - job_id=%s", eng, self._job_id)
+                return IntakeToolResult(
+                    tool="propose_engine_selection", accepted=True, advanced=True,
+                    content=(f"The user answered the question already on screen, so {shown} is "
+                             "SELECTED - do not ask them to confirm it again. Gather the remaining "
+                             "requirements and call preview_selected_admission."))
+            logger.info("Intake: engine already proposed, not re-asked engine=%s - job_id=%s",
+                        eng, self._job_id)
+            return IntakeToolResult(
+                tool="propose_engine_selection", accepted=False,
+                content=(f"{shown} is already proposed and that question is on the user's screen "
+                         "unanswered. Do NOT ask it again - repeating it is how this conversation "
+                         "gets stuck. Wait for their next message and call "
+                         "confirm_engine_selection with the words they actually wrote."))
+
         # A NEW proposal invalidates the previous selection AND any admission preview or pending
         # canonical confirmation that the old selection authorized - including one obtained
         # EARLIER IN THIS SAME provider response.
@@ -273,8 +314,7 @@ class IntakeToolExecutor:
         # The confirmation question exists to prove the USER chose this engine. If their own latest
         # message already names it, that proof is in hand and asking again is a question with one
         # answer - so the selection is confirmed here instead of costing the user a round-trip.
-        quote = str(args.get("user_named_verbatim") or "")
-        if es.user_named_engine(eng, quote, st.latest_user_msg):
+        if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=False):
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
                             "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
@@ -282,7 +322,7 @@ class IntakeToolExecutor:
                         "- job_id=%s", eng, self._job_id)
             return IntakeToolResult(
                 tool="propose_engine_selection", accepted=True, advanced=True,
-                content=(f"The user named {_vocab.to_display(_vocab.ENGINE, eng)} themselves, so it is SELECTED - "
+                content=(f"The user named {shown} themselves, so it is SELECTED - "
                          "do not ask them to confirm it. Gather the remaining requirements and call "
                          "preview_selected_admission."))
         st.selection_prompt = es.render_selection_statement(eng)
@@ -291,6 +331,7 @@ class IntakeToolExecutor:
                                 content=("Proposed. The application will ask the user to confirm "
                                          "this engine; do not paraphrase it. Await their explicit "
                                          "answer."))
+
 
     async def _do_confirm_engine_selection(self, args: dict) -> IntakeToolResult:
         st = self.state
