@@ -127,6 +127,13 @@ def look_at_local_file(path: Path, document: dict, *, timeout_s: float | None = 
         client = None
         logger.warning("geometry look: the reader could not be built (%s)", exc)
     if client is None:
+        # Said in the LOG as well as on the row. A reader that cannot be BUILT warns above; a reader that
+        # was never configured used to return this block in silence, so a dev deployment looking at
+        # nothing had to be diagnosed from stored rows rather than from its own output. The sentence comes
+        # from the one function that answers the question, so the log, the row and the deploy preflight
+        # cannot disagree about why.
+        logger.warning("geometry look: nothing looked: %s",
+                       polcfg.vision_reader_has_no_key() or "the reader was not configured")
         return hexera.look_block(None, status="not_attempted", reason=NO_READER.format(
             provider=polcfg.GEOMETRY_VISION_PROVIDER, model=polcfg.GEOMETRY_VISION_MODEL))
 

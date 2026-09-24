@@ -1130,6 +1130,15 @@ def builder_block(state: dict | None) -> dict | None:
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry survey: the builder's block could not carry the survey (%s)", exc)
         return None
+    finally:
+        # `survey_refused` is what the package writes when it composed no survey and said why. It was
+        # written and read nowhere, on either side: the caller then hands the planner the raw block,
+        # which carries the reason in a key nobody looked at. The agent now reads it at
+        # deliver.check_builder_handoff; this is the platform's half, so the reason reaches a log on the
+        # machine that ran the job and not only a stored row.
+        _refused = state.get("planner_block", {}).get("survey_refused") if isinstance(state, dict) else None
+        if _refused:
+            logger.warning("geometry survey: the package composed no survey for this job: %s", _refused)
 
 
 def _named_briefly(survey: Any) -> Any:

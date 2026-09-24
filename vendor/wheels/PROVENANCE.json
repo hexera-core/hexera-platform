@@ -1,20 +1,21 @@
 {
   "_responsibility": "Which agent commit the vendored wheel was built from, and what it carries.",
   "_boundaries": "Written by deploy/vendor_geometry_agent.sh; never hand-edited. tests/unit/deploy/test_geometry_agent_distribution.py checks the wheel against it.",
-  "wheel": "hexera_geometry_agent-0.1.0+g386060ae38-py3-none-any.whl",
-  "sha256": "4c94358af059892cc7ae3187f0c059eefdf724c47e8b7a473ed125461908adbd",
-  "bytes": 1048974,
-  "version": "0.1.0+g386060ae38",
-  "agent_commit": "386060ae3846121084e452e57108929b692d2f49",
-  "agent_commit_short": "386060ae38",
+  "wheel": "hexera_geometry_agent-0.1.0+g2b90c4bc35-py3-none-any.whl",
+  "sha256": "620736535e7b3d678334e877188b49b5d4fb8f0e1256b0835be24a0aa60e23dd",
+  "bytes": 1069638,
+  "version": "0.1.0+g2b90c4bc35",
+  "agent_commit": "2b90c4bc35d2c20f4edcf4f18e919c35c50762ed",
+  "agent_commit_short": "2b90c4bc35",
   "agent_branch": "master",
   "agent_checkout_dirty": false,
-  "built_at": "2026-09-23T23:39:37Z",
-  "package_data_added_by_this_script": [
+  "built_at": "2026-09-24T01:21:35Z",
+  "package_data": [
     "agent/thresholds.json",
     "agent/identity_tests.json",
     "learn/rules.json"
   ],
+  "package_data_declared_by": "agent_pyproject",
   "top_level_modules": [
     "__init__",
     "agent",

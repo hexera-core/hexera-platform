@@ -116,6 +116,13 @@ def validate() -> None:
                 "MESH_API_KEY is empty - authentication is DISABLED on every route. "
                 "Set ENV=production to enforce auth at startup.",
                 RuntimeWarning, stacklevel=2)
+        # The reader. A hosted container is refused by deploy/docker/entrypoint.sh, which has the real
+        # values in hand; this is the same sentence for a process that never went through an entrypoint -
+        # a local uvicorn, a harness, a test runner. Without it, a deployment whose look silently does
+        # nothing says so only inside stored rows.
+        _no_reader = polmod.vision_reader_has_no_key()
+        if _no_reader:
+            _warnings.warn(_no_reader, RuntimeWarning, stacklevel=2)
         _missing = missing_provider_credentials()
         if _missing:
             _warnings.warn(

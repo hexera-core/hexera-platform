@@ -23,13 +23,15 @@
 #           for: the wheel's own version carries the agent commit, and the test refuses a wheel that is
 #           missing a module this repository imports.
 #
-# TWO THINGS THIS SCRIPT ADDS TO THE AGENT'S OWN PYPROJECT, both of them recorded in PROVENANCE.json:
+# WHAT THIS SCRIPT ADDS TO THE AGENT'S OWN PYPROJECT, recorded in PROVENANCE.json either way:
 #
-#   1. package-data. The agent's pyproject declares none, so a wheel built from it as-is ships .py files
-#      only and leaves behind agent/thresholds.json (the rule parameters in force),
+#   1. package-data, ONLY if the agent has not declared it. A wheel built from an agent that declares none
+#      ships .py files only and leaves behind agent/thresholds.json (the rule parameters in force),
 #      agent/identity_tests.json (read with .read_text(), so its absence is a FileNotFoundError the first
-#      time a plan is built) and learn/rules.json. This belongs in the agent's own pyproject; until it is
-#      there, it is applied here rather than shipping a package that cannot read its own tables.
+#      time a plan is built) and learn/rules.json. The agent now declares these three itself, which is where
+#      the declaration belongs, so the script adds nothing and records `package_data_declared_by:
+#      agent_pyproject`. Against an older agent checkout it still adds them and says so. It cannot do both:
+#      a second [tool.setuptools.package-data] table is a duplicate TOML key and fails the build.
 #   2. a local version segment, `+g<short sha>`. The agent's version is a static 0.1.0, so two wheels built
 #      six months apart are indistinguishable by name or metadata. With the segment,
 #      `importlib.metadata.version("hexera-geometry-agent")` inside the image names the commit it was built
@@ -90,16 +92,45 @@ assert text.count(needle) == 1, f"expected one {needle!r} in {path}, found {text
 open(path, "w", encoding="utf-8").write(text.replace(needle, f'version = "{new}"'))
 PYEOF
 
-# The package data the agent's pyproject does not declare. Named file by file rather than as a blanket
-# glob, so a NEW data file the agent starts reading is a build that leaves it out and a test that says so,
-# not a silent inclusion nobody reviewed.
+# The package data the agent must ship. Named file by file rather than as a blanket glob, so a NEW data
+# file the agent starts reading is a build that leaves it out and a test that says so, not a silent
+# inclusion nobody reviewed.
+#
+# This declaration now lives in the AGENT's own pyproject, which is where it belongs. Appending a second
+# [tool.setuptools.package-data] table would be a duplicate TOML key and fail the build outright, so the
+# script checks for the upstream one first: if it is there and names these three files, nothing is added
+# and PROVENANCE.json records that upstream owns it. If it is missing or names something narrower, the
+# script adds its own and says so, which keeps this working against an older agent checkout.
 DATA_GLOBS='"agent/thresholds.json", "agent/identity_tests.json", "learn/rules.json"'
-cat >> "${BUILD}/pyproject.toml" <<EOF
+DATA_OWNER="$("${PY}" - "${BUILD}/pyproject.toml" <<'PYEOF'
+import sys, tomllib
+from pathlib import Path
+
+path = Path(sys.argv[1])
+declared = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("setuptools", {}).get("package-data", {})
+wanted = {"agent/thresholds.json", "agent/identity_tests.json", "learn/rules.json"}
+have = set(declared.get("geometry_agent", []))
+if wanted <= have:
+    print("agent_pyproject")
+else:
+    missing = ", ".join(sorted(wanted - have))
+    if declared:
+        # A table exists but is narrower than what the package reads. Appending would be a duplicate key,
+        # so the build is refused rather than shipping a package that cannot read its own tables.
+        sys.exit(f"FAIL: the agent's pyproject declares [tool.setuptools.package-data] without {missing}. "
+                 f"Add them there; this script cannot append a second table.")
+    print("this_script")
+PYEOF
+)" || die "could not read the agent's package-data declaration"
+if [ "${DATA_OWNER}" = "this_script" ]; then
+  cat >> "${BUILD}/pyproject.toml" <<EOF
 
 # Added by the platform's deploy/vendor_geometry_agent.sh - see that script's header. Belongs upstream.
 [tool.setuptools.package-data]
 geometry_agent = [${DATA_GLOBS}]
 EOF
+fi
+printf 'package-data declared by: %s\n' "${DATA_OWNER}"
 
 OUT="${ROOT}/vendor/wheels"
 mkdir -p "${OUT}"
@@ -111,12 +142,12 @@ printf 'building hexera-geometry-agent %s from %s (%s)\n' "${VERSION}" "${AGENT}
 WHEEL="$(ls "${OUT}"/hexera_geometry_agent-*.whl)"
 [ -f "${WHEEL}" ] || die "pip reported success but no wheel landed in ${OUT}"
 
-"${PY}" - "${WHEEL}" "${SHA}" "${SHORT}" "${BRANCH}" "${DIRTY}" "${VERSION}" "${DATA_GLOBS}" "${OUT}/PROVENANCE.json" <<'PYEOF'
+"${PY}" - "${WHEEL}" "${SHA}" "${SHORT}" "${BRANCH}" "${DIRTY}" "${VERSION}" "${DATA_GLOBS}" "${OUT}/PROVENANCE.json" "${DATA_OWNER}" <<'PYEOF'
 import hashlib, json, sys, zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-wheel, sha, short, branch, dirty, version, data_globs, out = sys.argv[1:9]
+wheel, sha, short, branch, dirty, version, data_globs, out, data_owner = sys.argv[1:10]
 wheel = Path(wheel)
 blob = wheel.read_bytes()
 names = zipfile.ZipFile(wheel).namelist()
@@ -138,7 +169,8 @@ doc = {
     "agent_branch": branch,
     "agent_checkout_dirty": dirty == "true",
     "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "package_data_added_by_this_script": [g.strip().strip('"') for g in data_globs.split(",")],
+    "package_data": [g.strip().strip('"') for g in data_globs.split(",")],
+    "package_data_declared_by": data_owner,
     "top_level_modules": modules,
     "data_files": data,
 }

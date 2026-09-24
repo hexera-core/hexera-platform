@@ -189,10 +189,11 @@ def test_the_build_time_subpackage_gate_covers_what_the_application_actually_imp
                                  "geometry_agent/agent/identity_tests.json",
                                  "geometry_agent/learn/rules.json"])
 def test_the_vendored_wheel_carries_the_data_the_package_reads(rel):
-    # The agent's own pyproject declares no package-data, so a wheel built from it as-is ships .py files
-    # only. identity_tests.json is read with .read_text(), so its absence is a FileNotFoundError the
-    # first time a plan is built - at a customer's upload, not at build.
-    # deploy/vendor_geometry_agent.sh adds the declaration; this is what proves it stayed added.
+    # A wheel built without a package-data declaration ships .py files only. identity_tests.json is read
+    # with .read_text(), so its absence is a FileNotFoundError the first time a plan is built - at a
+    # customer's upload, not at build. The agent's own pyproject now declares these three;
+    # deploy/vendor_geometry_agent.sh adds them when an older agent checkout does not. This test asks the
+    # only question that matters either way, which is whether they are IN the wheel.
     names = set(zipfile.ZipFile(_the_wheel()).namelist())
     assert rel in names, (
         f"the vendored wheel does not carry {rel}. It was built without the package-data declaration "

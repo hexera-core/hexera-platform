@@ -68,6 +68,12 @@ INDEP = {
     "NEON_DATABASE_SECRET": "database-url", "UPSTASH_REDIS_SECRET": "redis-url",
     "TAVILY_API_KEY_SECRET": "tavily-api-key", "DEEPSEEK_API_KEY_SECRET": "deepseek-api-key",
     "DEEPINFRA_API_KEY_SECRET": "deepinfra-api-key", "MESH_API_KEY_SECRET": "mesh-api-key",
+    # The reader's key container. bootstrap-env.sh writes this by default, so a fixture without it stopped
+    # describing a fresh install the moment the look got a key. It is named here for that reason and not
+    # to satisfy a check: validate-config.sh warns on an unnamed container rather than refusing, because
+    # this layer sees container names and never values. The refusal lives at the container entrypoint,
+    # which has the value in hand.
+    "OPENAI_API_KEY_SECRET": "openai-api-key",
     "USER_TOKEN_SECRET_NAME": "user-token-secret",
     "PIPELINE_BACKEND": "celery", "WEB_SEARCH_PROVIDER": "tavily",
     "MESH_IMAGE": "REG/mesh:t",
