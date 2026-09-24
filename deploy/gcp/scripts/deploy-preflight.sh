@@ -51,8 +51,9 @@ skip(){ printf '   %s•%s SKIP  %s\n' "${c_yel}" "${c_off}" "$1"; SKIPPED+=("$1
 
 # the release record
 stage "the release record"
+REC_LABEL="${REC#"${REPO_ROOT}"/}"
 if [ ! -f "${REC}" ]; then
-  no "no release record at ${REC#"${REPO_ROOT}/"}"
+  no "no release record at ${REC_LABEL}"
   printf '     run: make release-validate && make release-publish\n'
 else
   # One authority decides promotability - the same module Gate C and release-publish use, so the
@@ -164,7 +165,7 @@ stage "deployment configuration"
 # The machine-owned deployment environment discovery wrote. Never the application root .env:
 # that file carries live API keys and must not reach a gcloud subprocess.
 ENV_FILE="${DEPLOY_ENV_FILE:-${REPO_ROOT}/deploy/gcp/generated.env}"
-ENV_LABEL="${ENV_FILE#"${REPO_ROOT}/"}"
+ENV_LABEL="${ENV_FILE#"${REPO_ROOT}"/}"
 if [ -f "${ENV_FILE}" ]; then
   ok "${ENV_LABEL} present"
   missing=()
@@ -180,8 +181,9 @@ if [ -f "${ENV_FILE}" ]; then
   # POSTGRES_PASSWORD and MINIO_SECRET_KEY - the two a live audit then found published as literal
   # values in a Cloud Run service spec. A second list is how that happens.
   SECRET_GATE="${REPO_ROOT}/devtools/quality/check_deploy_secrets.py"
+  SECRET_GATE_LABEL="${SECRET_GATE#"${REPO_ROOT}"/}"
   if [ ! -f "${SECRET_GATE}" ]; then
-    skip "credential-value check not run - ${SECRET_GATE#"${REPO_ROOT}/"} is absent"
+    skip "credential-value check not run - ${SECRET_GATE_LABEL} is absent"
   else
     gate_out="$("${PY}" "${SECRET_GATE}" "${ENV_FILE}" 2>&1)"; gate_rc=$?
     case "${gate_rc}" in
@@ -189,7 +191,7 @@ if [ -f "${ENV_FILE}" ]; then
       1) no "${ENV_LABEL} carries a credential VALUE - the deployment environment holds names only"
          # Only the offending NAMES. The gate never prints a value it found, and neither does this.
          printf '%s\n' "${gate_out}" | sed -n 's/^  - /       /p'
-         printf '       full report: %s %s\n' "${PY}" "${SECRET_GATE#"${REPO_ROOT}/"} ${ENV_LABEL}" ;;
+         printf '       full report: %s %s %s\n' "${PY}" "${SECRET_GATE_LABEL}" "${ENV_LABEL}" ;;
       # An interpreter that cannot import the settings catalogue tells us nothing about the file.
       # Unrun, not clean: it still blocks DEPLOYMENT READY rather than reading as a pass.
       *) skip "credential-value check not run - ${PY} could not run it: $(printf '%s\n' "${gate_out}" | tail -1)" ;;
@@ -248,14 +250,15 @@ fi
 
 # migration readiness
 stage "database migration readiness"
-if MIG="$("${PY}" - <<'PY' 2>&1
+MIGRATION_CHECK_SCRIPT="${TMPDIR:-/tmp}/hexera-migration-check-$$.py"
+cat >"${MIGRATION_CHECK_SCRIPT}" <<'PY'
 import pathlib, re
 d = pathlib.Path("alembic/versions")
 revs, downs = {}, {}
 for p in sorted(d.glob("*.py")):
     t = p.read_text()
-    m = re.search(r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)', t, re.M)
-    n = re.search(r'^down_revision(?::\s*\w[\w\[\], |]*)?\s*=\s*(?:["\']([^"\']+)|None)', t, re.M)
+    m = re.search(r"""^revision(?::\s*str)?\s*=\s*['"]([^'"]+)""", t, re.M)
+    n = re.search(r"""^down_revision(?::\s*\w[\w\[\], |]*)?\s*=\s*(?:['"]([^'"]+)|None)""", t, re.M)
     if not m:
         continue
     revs[m.group(1)] = p.name
@@ -268,7 +271,8 @@ for r, d in downs.items():
     assert d is None or d in revs, f"{revs[r]}: down_revision {d!r} does not exist"
 print(f"{len(revs)} revisions, one head ({sorted(heads)[0]}), chain resolves from the baseline")
 PY
-)"; then ok "${MIG}"; else no "alembic chain: ${MIG}"; fi
+if MIG="$("${PY}" "${MIGRATION_CHECK_SCRIPT}" 2>&1)"; then ok "${MIG}"; else no "alembic chain: ${MIG}"; fi
+rm -f "${MIGRATION_CHECK_SCRIPT}"
 
 # THE DEPLOY'S OWN ARGUMENTS, checked against the CLI that will run them.
 #
