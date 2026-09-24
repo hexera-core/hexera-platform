@@ -134,7 +134,8 @@ def test_a_turn_with_no_assistant_text_serialises_no_assistant_entry():
 def _ctx(**kw):
     base = {"job_id": "j", "session_id": "s", "owner_id": "o", "revision": 1,
             "latest_user_msg": "", "user_msg_count": 1, "source_ref": None,
-            "pending": {"a": 1}, "selection": {"s": 2}, "approval": None, "rec_authorized": False}
+            "pending": {"a": 1}, "selection": {"s": 2}, "approval": None, "rec_authorized": False,
+                "choice_deferred": False}
     base.update(kw)
     return turn.TurnContext(**base)
 
