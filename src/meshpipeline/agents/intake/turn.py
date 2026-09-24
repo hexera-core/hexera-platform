@@ -75,7 +75,17 @@ def hydrate(state, state_messages) -> TurnContext:
         value = gate.get(key)
         return dict(value) if isinstance(value, dict) and value else None
 
-    user_msgs = [m for m in state_messages if isinstance(m, dict) and m.get("role") == "user"]
+    # WHAT THE CUSTOMER SAID, AND NEVER WHAT THIS APPLICATION SAID TO ITSELF. `apply_budget_nudge`
+    # appends BUDGET_NUDGE to the transcript as a `user` message so the model reads it as a turn,
+    # and it is marked `_synthetic` for exactly this reason. Unfiltered, it became "the customer's
+    # latest message" the moment the conversation passed MAX_TURNS, and every check that asks
+    # whether the customer said something then examined this application's own words: a quoted
+    # agreement was never "in the user's latest message", so past turn 12 an engine could not be
+    # confirmed however many times they confirmed it, and `user_msg_count` ran one ahead so the
+    # pending question read as stale as well. A check that answers "did they say it?" against text
+    # they did not write has the same blind spot as the thing it is checking.
+    user_msgs = [m for m in state_messages if isinstance(m, dict)
+                 and m.get("role") == "user" and not m.get("_synthetic")]
     latest = str(user_msgs[-1].get("content", "")) if user_msgs else ""
     return TurnContext(
         job_id=str(state.get("job_id", "unknown")),

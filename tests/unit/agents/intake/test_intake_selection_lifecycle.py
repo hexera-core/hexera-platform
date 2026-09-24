@@ -287,3 +287,20 @@ def test_a_quote_the_user_never_wrote_still_confirms_nothing():
                         quote="yes use gmsh", latest_user_message="Actually, what about cfmesh?")
     assert c is None and "have not confirmed" in why
 
+
+def test_the_budget_nudge_is_not_the_customer_speaking():
+    # THE reason a real conversation could not select an engine at all. Past MAX_TURNS the
+    # application appends its own BUDGET_NUDGE to the transcript as a `user` turn, and every check
+    # that asks "did the customer say this?" then read that text instead of theirs.
+    import meshpipeline.agents.intake.turn as turn
+
+    msgs = [{"role": "user", "content": "yes, select snappyHexMesh"},
+            {"role": "assistant", "content": "Selected engine: snappyHexMesh ..."}]
+    _llm, nudged = turn.apply_budget_nudge([], msgs)
+    assert nudged[-1]["content"] == turn.BUDGET_NUDGE and nudged[-1]["role"] == "user"
+
+    ctx = turn.hydrate({"job_id": "j", "session_id": "s", "user_id": "u"}, nudged)
+    assert ctx.latest_user_msg == "yes, select snappyHexMesh", "the customer's words, not ours"
+    assert ctx.user_msg_count == 1, "a synthetic turn must not make the pending question stale"
+    assert es.quote_is_from_user("yes, select snappyHexMesh", ctx.latest_user_msg)
+
