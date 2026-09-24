@@ -135,14 +135,7 @@
 .gc-guess{margin-left:8px;font-size:11px;color:#f0b46b}
 .gc-ground{accent-color:#ff4f00}
 
-/* THE STAGE, CAD-STYLE: a pale canvas, a naming banner, snap-view buttons, add/remove controls */
-.gc-stage .gc-canvas{background:#f3f5f8}
-.gc-stage .v-hint{color:#2b3340;background:rgba(255,255,255,.78);border:1px solid #d5dbe4}
-.gc-stage .gc-loading,.gc-stage .v-loading{background:#f3f5f8;color:#5b6b83}
-.gc-views{position:absolute;right:10px;top:150px;display:flex;flex-direction:column;gap:4px;z-index:5}
-.gc-views .v-btn{padding:4px 9px;font-size:11.5px;background:rgba(255,255,255,.85);color:#2b3340;border-color:#c9d2de}
-.gc-views .v-btn:hover{background:#fff;border-color:#8b96a7}
-.gc-stage .gc-fit{position:static}
+/* THE STAGE: the naming banner, the add/remove controls */
 .gc-banner{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid #3a4657;border-radius:8px;background:#1d232d;color:#dfe5ee;font-size:12.5px}
 .gc-banner.warn{border-color:#7a5a2a;background:#2a2118;color:#f0d9b5}
 .gc-banner[hidden]{display:none}
