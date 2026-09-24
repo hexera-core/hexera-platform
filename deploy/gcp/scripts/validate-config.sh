@@ -70,6 +70,26 @@ if [ -n "${WORKER_MIG:-}" ] || [ -n "${WORKER_MIG_ZONE:-}" ]; then
   fi
   [ "${WORKER_JOBS_PER_INSTANCE:-1}" != "0" ] \
     || add "WORKER_JOBS_PER_INSTANCE is 0 - the autoscaler divides the queue depth by it"
+  # A FLEET THE AUTOSCALER CANNOT WAKE MUST NOT BE ALLOWED TO SLEEP.
+  #
+  # The fleet drains five queues (deploy/gcp/worker/startup.sh) and the autoscaler is driven by the
+  # depth of ONE of them: QUEUE_NAME, which is simulation_jobs. That was invisible while the fleet
+  # consumed simulation_jobs alone. Now that the same instances carry the measurement, the look, the
+  # cleanups and the training export, a floor of 0 means a queued measurement or look sits in the
+  # broker with no instance alive to take it and nothing that will ever start one. A queue nobody
+  # drains and a queue whose only drainer is asleep are the same silence to a customer.
+  #
+  # Two ways out, and the operator picks: hold a floor of at least one instance, or point the
+  # autoscaler at the queues the fleet is the only consumer of. Only the first is buildable today
+  # (single-instance-assignment is defined against exactly one time series), so it is the one this
+  # refusal names.
+  if [ "${WORKER_MIG_MIN_REPLICAS:-0}" = "0" ] && [ "${QUEUE_NAME:-simulation_jobs}" = "simulation_jobs" ]; then
+    add "WORKER_MIG_MIN_REPLICAS is 0 while the autoscaler watches ${QUEUE_NAME:-simulation_jobs} only.
+   The fleet is the sole consumer of geometry_measurement, geometry_look, cleanup_tasks and
+   training_export, so at zero instances a queued measurement or look is never picked up and nothing
+   wakes the group. Set WORKER_MIG_MIN_REPLICAS=1 (the prod floor) or give the autoscaler a signal
+   that covers those queues."
+  fi
 fi
 
 # THE API SERVICE. Empty CLOUDRUN_API_SERVICE means this deployment serves no API and the stage is
