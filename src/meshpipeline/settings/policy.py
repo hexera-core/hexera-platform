@@ -177,20 +177,20 @@ def vision_reader_has_no_key() -> str:
             f"half of the Surveyor that finds a passage the measurement calls plain.")
 
 
-# A MISSING KEY IS LOUD, NOT A ROW THAT SAYS NOTHING HAPPENED. Same shape as the auth secrets above and the
-# durable checkpointer below: outside the dev set, a configuration that silently degrades the product is a
-# refusal to start rather than a per-job note in a log nobody reads. Absence of a key is NOT a decision to
-# take no look - a default is not a confirmation - so the deployment has to say which it meant:
-# GEOMETRY_VISION_PROVIDER=off is a statement, and an unset key is an accident.
+# WHY THIS IS NOT A REFUSAL AT IMPORT, unlike the auth secrets above and the durable checkpointer below.
+# Those two are wrong in a way that corrupts what the product DOES: self-asserted identities, and a restart
+# that silently re-runs from scratch. A reader with no key costs the job the LOOK, and everything about the
+# look is built on it never taking anything down: the task records what it could not do, the row keeps the
+# measurement it already had, and the job runs on what is there. A settings import that killed the whole
+# platform over it would contradict that design in every direction at once.
 #
-# In the dev set it is not fatal: a developer with no OpenAI account must still be able to run the stack,
-# and `vision_reader_has_no_key()` is what the startup banner says it with.
-if requires_hardened_runtime(ENV):
-    _no_reader = vision_reader_has_no_key()
-    if _no_reader:
-        raise ConfigurationError(
-            f"ENV={ENV!r} is a non-dev (hosted) environment and {_no_reader} "
-            f"Set the key, or set GEOMETRY_VISION_PROVIDER=off to say this deployment takes no look.")
+# So the refusal lives at the DEPLOYMENT boundary, where it belongs, and where the real values are in hand:
+# deploy/docker/entrypoint.sh and worker_entrypoint.sh call the function above and refuse to bring a hosted
+# container up on a reader that cannot read, while a dev container says it once and carries on.
+# deploy/gcp/scripts/validate-config.sh says it earlier still, from the container names.
+#
+# A DEFAULT IS NOT A CONFIRMATION: an unset key is an accident and GEOMETRY_VISION_PROVIDER=off is a
+# statement, so only the statement gets a hosted container past it.
 
 # THE CHAIN, in Rehaan's order: the customer says what the part is for (intake), the stored measurement
 # is composed against what they said (measure), the look is taken with that purpose (look), intake puts

@@ -9,8 +9,15 @@
 # READ, and a contradiction a comment knows about is not a contradiction anything refuses.
 #
 # WHAT CHANGED. The template carries OPENAI_API_KEY, the deploy wires its Secret Manager container into the
-# API and the worker fleet, and a hosted environment whose configured reader has no key refuses to start.
-# `off` is the one way to say a deployment takes no look, because a default is not a confirmation.
+# API and the worker fleet, and a hosted CONTAINER refuses to come up on a reader that has no key. `off` is
+# the one way to say a deployment takes no look, because a default is not a confirmation.
+#
+# WHERE THE REFUSAL IS, and why not at `import policy`. A look that cannot happen must never take a process
+# down: that is the rule every other part of the look obeys (the task records what it could not do, the row
+# keeps its measurement, the job runs on what is there), and a settings import that killed the platform over
+# it would contradict that everywhere at once. So the refusal is at the deployment boundary - the container
+# entrypoints, which hold the real values and run before anything is served - and policy.py owns the one
+# function that answers the question, so nothing can drift from what the application reads.
 from __future__ import annotations
 
 import os
@@ -102,50 +109,67 @@ def test_the_reason_names_the_variable_that_would_fix_it():
     assert isinstance(reason, str)
 
 
+def _verdict(**env) -> str:
+    """What vision_reader_has_no_key() says under this environment, from a fresh process."""
+    code = "import meshpipeline.settings.policy as p; print(p.vision_reader_has_no_key())"
+    done = subprocess.run([sys.executable, "-c", code], env={**_BASE, **env},
+                          capture_output=True, text=True, timeout=180)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return done.stdout.strip()
+
+
 @pytest.mark.parametrize("env_name", ["production", "staging", "prod", "hosted", "aurora-eu-west-1"])
-def test_a_hosted_deployment_with_no_reader_key_refuses_to_start(env_name):
-    # LOUD, not a row per upload. Same shape as the auth secrets and the durable checkpointer: outside the
-    # dev set, a configuration that silently degrades the product is a refusal.
+def test_a_hosted_import_does_not_die_over_a_look_it_cannot_take(env_name):
+    # THE RULE THE LOOK OBEYS EVERYWHERE ELSE. The task records what it could not do, the row keeps its
+    # measurement, the job runs on what is there. A settings import that killed the platform over a missing
+    # reader key would contradict that in every direction, so the refusal is the entrypoint's, not this.
     ok, said = _imports(ENV=env_name, GEOMETRY_VISION_PROVIDER="openai", OPENAI_API_KEY="")
-    assert not ok, f"ENV={env_name} started with no reader key: {said}"
-    assert "OPENAI_API_KEY" in said and "GEOMETRY_VISION_PROVIDER=off" in said, (
-        f"the refusal does not name the key or the way to decline the look: {said}")
+    assert ok, f"importing policy under ENV={env_name} died over the look: {said}"
 
 
-@pytest.mark.parametrize("env_name", ["production", "hosted"])
-def test_a_hosted_deployment_that_says_it_takes_no_look_starts(env_name):
-    # A DEFAULT IS NOT A CONFIRMATION, but `off` is. This is the only way past the refusal without a key,
-    # and it is a statement somebody wrote rather than something nobody set.
-    ok, said = _imports(ENV=env_name, GEOMETRY_VISION_PROVIDER="off", OPENAI_API_KEY="")
-    assert ok, f"ENV={env_name} with GEOMETRY_VISION_PROVIDER=off refused to start: {said}"
+@pytest.mark.parametrize("env_name", ["production", "hosted", "dev", "ci"])
+def test_the_verdict_is_the_same_sentence_wherever_it_is_asked(env_name):
+    # ONE PLACE ANSWERS IT, so the entrypoint, the deploy and a startup banner cannot disagree about
+    # whether this deployment can look. What differs between environments is what is DONE about it.
+    said = _verdict(ENV=env_name, GEOMETRY_VISION_PROVIDER="openai", OPENAI_API_KEY="")
+    assert "OPENAI_API_KEY is unset" in said and "no upload will be looked at" in said, said
+    assert _verdict(ENV=env_name, GEOMETRY_VISION_PROVIDER="openai", OPENAI_API_KEY="sk-test") == ""
 
 
-@pytest.mark.parametrize("env_name", ["production", "hosted"])
-def test_a_hosted_deployment_with_the_key_starts(env_name):
-    ok, said = _imports(ENV=env_name, GEOMETRY_VISION_PROVIDER="openai", OPENAI_API_KEY="sk-test")
-    assert ok, f"ENV={env_name} with a reader key refused to start: {said}"
-
-
-@pytest.mark.parametrize("env_name", ["dev", "test", "ci", "local"])
-def test_a_developer_without_an_openai_account_can_still_run_the_stack(env_name):
-    # The cost of the refusal is paid by hosted deployments only. A developer runs everything and the look
-    # records that it did not happen, which is the truthful outcome on a workstation.
-    ok, said = _imports(ENV=env_name, GEOMETRY_VISION_PROVIDER="openai", OPENAI_API_KEY="")
-    assert ok, f"ENV={env_name} refused to start over a missing reader key: {said}"
+def test_a_deployment_that_says_it_takes_no_look_has_nothing_to_report():
+    # A DEFAULT IS NOT A CONFIRMATION, but `off` is: an unset key is an accident, and nothing downstream
+    # can tell an accident from a decision, so the decision has to be written down.
+    assert _verdict(ENV="production", GEOMETRY_VISION_PROVIDER="off", OPENAI_API_KEY="") == ""
 
 
 def test_the_key_for_a_switched_provider_is_the_one_that_is_checked():
     # A provider with no key is a look that does not happen, never a fall-through. So a deployment that
     # switched to DeepInfra is judged on DEEPINFRA_API_KEY and not on the three keys it does not use.
-    ok, said = _imports(ENV="production", GEOMETRY_VISION_PROVIDER="deepinfra",
-                        GEOMETRY_VISION_MODEL="Qwen/Qwen3-VL-235B-A22B-Instruct",
-                        DEEPINFRA_API_KEY="x", OPENAI_API_KEY="")
-    assert ok, f"a DeepInfra reader with a DeepInfra key was refused: {said}"
-    ok, said = _imports(ENV="production", GEOMETRY_VISION_PROVIDER="deepinfra",
-                        GEOMETRY_VISION_MODEL="Qwen/Qwen3-VL-235B-A22B-Instruct",
-                        DEEPINFRA_API_KEY="", OPENAI_API_KEY="sk-test")
-    assert not ok, "a DeepInfra reader with no DeepInfra key started because an OpenAI key was set"
-    assert "DEEPINFRA_API_KEY" in said
+    assert _verdict(ENV="production", GEOMETRY_VISION_PROVIDER="deepinfra",
+                    GEOMETRY_VISION_MODEL="Qwen/Qwen3-VL-235B-A22B-Instruct",
+                    DEEPINFRA_API_KEY="x", OPENAI_API_KEY="") == ""
+    said = _verdict(ENV="production", GEOMETRY_VISION_PROVIDER="deepinfra",
+                    GEOMETRY_VISION_MODEL="Qwen/Qwen3-VL-235B-A22B-Instruct",
+                    DEEPINFRA_API_KEY="", OPENAI_API_KEY="sk-test")
+    assert "DEEPINFRA_API_KEY is unset" in said, (
+        f"a DeepInfra reader with no DeepInfra key was judged on somebody else's key: {said}")
+
+
+@pytest.mark.parametrize("script", ["entrypoint.sh", "worker_entrypoint.sh"])
+def test_a_hosted_container_refuses_to_come_up_on_a_reader_that_cannot_read(script):
+    # The refusal, where it belongs: the real values are in the container's environment, it happens before
+    # anything is served, and it is the last point before a customer's upload is affected. BOTH entrypoints,
+    # because the look runs on the worker and the API is the one anybody would have thought of.
+    text = (REPO / "deploy" / "docker" / script).read_text(encoding="utf-8")
+    assert "vision_reader_has_no_key()" in text, (
+        f"{script} does not ask whether this deployment can look")
+    assert "REFUSING TO START" in text and "exit 1" in text, (
+        f"{script} notices a reader that cannot read and starts anyway")
+    assert "requires_hardened_runtime" in text, (
+        f"{script} refuses in every environment, including a developer's - it must warn there instead")
+    assert "GEOMETRY_VISION_PROVIDER=off" in text, (
+        f"{script} refuses without saying how to state that this deployment takes no look")
+    assert "WARNING" in text, f"{script} says nothing at all in a dev environment"
 
 
 def test_a_reader_nobody_can_use_is_refused_at_import_and_not_once_per_upload():
