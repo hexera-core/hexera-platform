@@ -1229,6 +1229,52 @@ def intake_handoff(state: dict):
         asked=asked, answers=answers, unanswered=[q for q in asked if q not in answered_ids])
 
 
+#: What the block says when step 5 could not plan the part and the row does not say why. The reason is
+#: normally the step's own, and this is the one case where there is a failed step and nothing kept the
+#: sentence - a row written before `plan_the_part` stored one, which is worth saying rather than dropping
+#: the whole row over.
+NO_PLAN_NO_REASON = "the step recorded no reason"
+
+
+def with_no_plan_if_the_step_failed(block: dict | None, state: dict | None) -> dict | None:
+    """The block, with one `unsettled` row saying step 5 made no plan for this part, and why. Never raises.
+
+    THE BLOCK THE BUILDER READ WAS BYTE FOR BYTE THE BLOCK OF A JOB THE GEOMETRY AGENT NEVER RAN ON. When the
+    step fails, `geometry_step.plan_the_part` stores `status: failed` with the reason, `builder_handoff` raises
+    `StepRefused`, and `cad/regions.planner_inputs_for_state` falls back to this block and writes the reason to
+    the job's record. So the platform knew, the record knew, the log knew - and the BUILDER, the one reader that
+    acts on it, was told nothing at all. It could not tell a job whose plan was attempted and failed from a job
+    where the step never ran.
+
+    IT IS THE ROW AND NOT THE BLOCK THAT IS AT RISK. Everything on this path fails open, because a block with
+    no sentence is where the builder already was and no block is worse; so a refusal of the row costs the row.
+
+    THE REASON IS SAFE TO CARRY AND THAT IS CHECKED RATHER THAN ASSUMED. `deliver.with_no_plan` passes it
+    through `deliver.safe_reason`, which proves the sentence against `refuse_outcome_claims` before writing it
+    and substitutes `REFUSAL_UNQUOTABLE` when it would not pass - and the platform's own two extra rules
+    (`check_the_survey_block`) cannot fire on it either, because `_refuse_builder_keys` reads dict KEYS and the
+    reason is a value. `test_a_reason_that_predicts_the_mesh_still_reaches_the_builder` holds that, with the
+    step's reason quoting every outcome phrase the rule knows.
+    """
+    # READ FROM THE MODULE THAT WRITES IT, never restated here: `geometry_step` owns the two words and a copy
+    # on this side would go on matching `failed` on the day that module stops writing it. Imported inside the
+    # function because `geometry_step` imports this one at its top.
+    from meshpipeline.application.geometry_step import FAILED as STEP_FAILED
+
+    step = state.get("geometry_step") if isinstance(state, dict) else None
+    if not isinstance(step, dict) or str(step.get("status") or "") != STEP_FAILED:
+        return block
+    try:
+        why = str(step.get("reason") or "").strip() or NO_PLAN_NO_REASON
+        out = _package()["deliver"].with_no_plan(block, why)
+        check_the_survey_block((out or {}).get("survey"))
+        return out
+    except Exception as exc:                       # noqa: BLE001 - the block is worth more than the row
+        logger.warning("geometry survey: the builder is not told that no plan was made for this part (%s) - "
+                       "it reads a block it cannot tell from one the geometry agent never ran on", exc)
+        return block
+
+
 def builder_block(state: dict | None) -> dict | None:
     """Step 7: the package's planner block composed for this customer, with the survey attached.
 
@@ -1236,6 +1282,10 @@ def builder_block(state: dict | None) -> dict | None:
     run the package's own validator on it before it returns. Nothing is computed here. None when
     there is no state, or when the package refuses the pair, and the caller then hands the planner
     the measurement's own block exactly as it does with the survey off.
+
+    A FAILED STEP IS SAID IN THE BLOCK, and this is the one place both routes to the builder pass through:
+    `cad/regions._surveyed_block` ends here, and the other route (`_with_the_look_state`, taken when no
+    survey was stored) has no `geometry_step` to read because that key lives on the survey ROW.
     """
     if not isinstance(state, dict) or not isinstance(state.get("planner_block"), dict):
         return None
@@ -1243,7 +1293,7 @@ def builder_block(state: dict | None) -> dict | None:
     try:
         given = pkg["given"].Given.of(survey_of(state), intake_handoff(state))
         block = pkg["deliver"].attach(dict(state["planner_block"]), given)
-        return with_the_look_state(block, look_state(state))
+        return with_no_plan_if_the_step_failed(with_the_look_state(block, look_state(state)), state)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry survey: the builder's block could not carry the survey (%s)", exc)
         return None
@@ -1592,10 +1642,21 @@ def look_state(state: dict | None) -> str:
     status = str(((state or {}).get("composed_for") or {}).get("look_status") or LOOK_NONE)
     if status == LOOK_OK:
         return LOOK_OK
-    if status in (LOOK_FAILED, "refused", "error"):
+    if status == LOOK_FAILED:
         return LOOK_FAILED
     if str((state or {}).get("look_queued") or "") in LOOK_ON_ITS_WAY or status == LOOK_PENDING:
         return LOOK_PENDING
+    if status != LOOK_NONE:
+        # AN UNKNOWN STORED STATUS IS READ AS A LOOK THAT FAILED, which is the careful direction and the
+        # direction the package reads it (`hexera._look_state`). It replaces branches for `"refused"` and
+        # `"error"`, two values NOTHING HAS EVER WRITTEN: `hexera.look_block` raises on any value outside
+        # `LOOK_STATES` and is the package's only composer of a look block, the shipped wheel writes only `ok`
+        # and `failed` from `vision/look.py` (its `refused` occurrences are MEASUREMENT statuses in `facts/`),
+        # and `git log -S` over the whole agent history finds neither as a look status in any version. A branch
+        # for a specific value nothing writes is worth less than a careful reading of every value nothing
+        # writes, and reading a stored status this side does not know as "nobody looked" was the one direction
+        # that turns a look into silence.
+        return LOOK_FAILED
     return LOOK_NONE
 
 
@@ -1612,9 +1673,13 @@ def look_state_of_document(document: dict | None) -> str:
     status = str((look or {}).get("status") or "") if isinstance(look, dict) else ""
     if status == LOOK_OK:
         return LOOK_OK
-    if status in (LOOK_FAILED, "refused", "error"):
-        return LOOK_FAILED
-    return LOOK_NONE
+    # NO LOOK BLOCK AND NO STATUS IN IT IS THE ONE THING THAT MEANS NOBODY LOOKED. Anything else that is not
+    # `ok` and not the package's own `not_attempted` is read as a look that FAILED, for the reason `look_state`
+    # gives above: the same careful direction the package reads it, in place of branches for two values
+    # (`"refused"`, `"error"`) that no version of the package has ever written.
+    if not status or status == LOOK_NONE:
+        return LOOK_NONE
+    return LOOK_FAILED
 
 
 def _noted_queue(state: dict, outcome: str) -> dict:
@@ -1739,7 +1804,7 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
 __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
            "PACKAGE_LOOK_STATE", "block_list_max",
            "LOOK_BECAUSE", "LOOK_CACHED", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_ON_ITS_WAY",
-           "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES",
+           "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES", "NO_PLAN_NO_REASON",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
@@ -1751,4 +1816,4 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
            "said_by_customer", "save", "stage_of", "survey_the_part", "what_the_surveyor_may_not_say",
-           "with_the_look_state"]
+           "with_no_plan_if_the_step_failed", "with_the_look_state"]

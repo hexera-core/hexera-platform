@@ -648,7 +648,7 @@ def _confirmation_block(state: dict) -> str:
 @dataclasses.dataclass(frozen=True)
 class _GeometryReading:
 
-    #: The five keys the engines read, or None when the measured phase did not run.
+    #: The keys the engines read off `surface_analysis`, or None when the measured phase did not run.
     reading: dict | None = None
     #: The whole stored measurement document, or None. What the conversation says comes from this.
     document: dict | None = None

@@ -505,9 +505,16 @@ def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", jo
     the customer would be held at the submission for an envelope this platform can no longer produce.
     One already put stays put, with whatever they said: it is asked once.
 
-    `source_path` is a local copy of the customer's own file, for the agent's tools. Empty is allowed
-    and plans exactly as before it existed; a tool that then needs the part fails, and that fails open
-    like anything else here."""
+    `source_path` is a local copy of the customer's own file, for the agent's tools. Empty is allowed and
+    plans exactly as before it existed: a tool that then needs the part returns an error to the model and
+    the run goes on (`agent.tools.run_tool`, which never raises).
+
+    IT DID NOT USED TO, and this docstring said it did. Until the agent's net existed, `run_tool` caught
+    `TypeError` alone, so `ctx.mesh()` on an empty path raised `UnsupportedGeometry` out through the loop and
+    into the `except` below, which logged "no plan for this submission" and stored a failed step. Measured on
+    the agent's 322-part export corpus with the file absent: 311 of 322 parts lost the plan that way, one per
+    part with an opening to probe. An empty path is STILL expensive - see `the_bytes_again` - but it now costs
+    rounds and not the plan."""
     fid = fidelity if fidelity in FIDELITIES else "standard"
     key = plan_key(state, fid)
     try:
@@ -668,13 +675,23 @@ def the_bytes_again(source_ref: Any, workspace: str, job_id: str = "") -> str:
     against the sha the row names and keeps the file's own suffix, which is what the loader reads.
 
     NEVER RAISES. No bytes means the loop runs as it did before this function existed.
+
+    AND IT IS LOGGED AS AN ERROR, because of what it costs rather than what it breaks. Every mesh tool the
+    model reaches for now answers "could not be measured on this part" instead of taking the plan with it
+    (`agent.tools.run_tool`), so the step no longer fails - it spends the customer's submission turn and the
+    model's whole round budget on probes that cannot answer, and delivers a plan made from the stored
+    measurement alone. That is a worse plan bought at full price, on every part in every job while the
+    retrieval is broken, and a warning in that stream is not the signal an operator needs.
     """
     try:
         from meshpipeline.application.geometry_materializer import fetch_verified_bytes
         return str(fetch_verified_bytes(source_ref, workspace=workspace, job_id=f"geometry-step:{job_id}"))
     except Exception as exc:                       # noqa: BLE001 - the plan is attempted either way
-        logger.warning("geometry step: the uploaded geometry could not be retrieved for the agent's own tools "
-                       "(%s); the plan is attempted without it, and a tool that needs the part will fail it", exc)
+        logger.error("geometry step: the uploaded geometry could not be retrieved for the agent's own tools "
+                     "(%s) - job_id=%s. The plan is still attempted, and every tool that opens the part now "
+                     "returns an error to the model rather than ending the run, so this costs rounds of the "
+                     "model's budget on probes that cannot answer and a plan made from the stored "
+                     "measurement alone. Fix the retrieval; nothing downstream will fail loudly.", exc, job_id)
         return ""
 
 

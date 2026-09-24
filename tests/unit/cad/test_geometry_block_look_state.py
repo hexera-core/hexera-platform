@@ -119,3 +119,49 @@ def test_a_refused_look_row_costs_the_row_and_never_the_block(monkeypatch):
 def test_a_block_that_is_not_a_block_comes_back_exactly_as_it_went_in(bad):
     """Every path through the geometry reading fails open, this one included."""
     assert regions._with_the_look_state(bad, _doc()) is bad
+
+
+def test_a_stored_status_this_side_does_not_know_is_read_as_a_LOOK_THAT_FAILED():
+    """THE CAREFUL DIRECTION, in place of branches for two values nothing has ever written.
+
+    Both readers used to name `"refused"` and `"error"` explicitly and read everything else as "nobody
+    looked". MEASURED: `hexera.look_block` raises `ContractError` on any value outside `LOOK_STATES` and is the
+    package's only composer of a look block; the vendored wheel writes only `ok` and `failed` out of
+    `vision/look.py`, and its `refused` occurrences are MEASUREMENT statuses in `facts/`; `git log -S` over the
+    whole agent history finds neither word as a look status in any version, and no `LOOK_REFUSED` or
+    `LOOK_ERROR` identifier ever existed. So the two branches were dead, and what was live was the fall-through
+    - which read a status this side does not recognise as a look nobody took, turning a look into silence.
+
+    ABSENT IS STILL ABSENT. No `look` key and an empty status are the one thing that means nobody looked, and
+    the package's own `not_attempted` says so in words. Everything else is a look that was taken.
+    """
+    assert gs.look_state_of_document(_doc(look={"status": "refused"})) == gs.LOOK_FAILED
+    assert gs.look_state_of_document(_doc(look={"status": "error"})) == gs.LOOK_FAILED
+    assert gs.look_state_of_document(_doc(look={"status": "a word from a later version"})) == gs.LOOK_FAILED
+    assert gs.look_state_of_document(_doc(look={"status": ""})) == gs.LOOK_NONE
+    assert gs.look_state_of_document(_doc(look={"status": gs.LOOK_NONE})) == gs.LOOK_NONE
+    assert gs.look_state_of_document(_doc()) == gs.LOOK_NONE
+
+
+def test_the_row_reader_reads_an_unknown_status_the_same_careful_way():
+    """`look_state` reads the ROW and has one more answer than the document reader, so the order matters: the
+    queue's own answer is more informative than a status nobody recognises and still has to win."""
+    def _row(status, queued=""):
+        return {"composed_for": {"look_status": status}, "look_queued": queued}
+    assert gs.look_state(_row("refused")) == gs.LOOK_FAILED
+    assert gs.look_state(_row("a word from a later version")) == gs.LOOK_FAILED
+    assert gs.look_state(_row("a word from a later version", gs.LOOK_QUEUED)) == gs.LOOK_PENDING
+    assert gs.look_state(_row("")) == gs.LOOK_NONE
+    assert gs.look_state(_row(gs.LOOK_NONE)) == gs.LOOK_NONE
+    assert gs.look_state(_row(gs.LOOK_OK)) == gs.LOOK_OK
+    assert gs.look_state(None) == gs.LOOK_NONE
+
+
+def test_neither_reader_names_a_status_no_version_has_written():
+    """A branch for a specific value nothing writes is a branch nobody can test and everybody has to read."""
+    source = (Path(regions.__file__).parents[1] / "application" / "geometry_survey.py").read_text(
+        encoding="utf-8")
+    body = source[source.index("def look_state(state:"):source.index("def _noted_queue(")]
+    code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+    for dead in ('"refused"', '"error"', "'refused'", "'error'"):
+        assert dead not in code, f"{dead} is still branched on where nothing can write it"

@@ -1682,6 +1682,19 @@
   ]
  },
  {
+  "context": "application/geometry_step.py::the_bytes_again::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_step.py",
+  "qualname": "the_bytes_again",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/maintenance/cleanup.py::_publish_terminal_log::closing#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
   "path": "application/maintenance/cleanup.py",
   "qualname": "_publish_terminal_log",

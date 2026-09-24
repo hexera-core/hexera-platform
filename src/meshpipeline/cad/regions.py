@@ -153,10 +153,19 @@ __all__ = ["CadRegions", "MEASURED_NOT_ATTEMPTED", "agent_block_for_state", "com
 #: this name exists so the intent is greppable rather than a bare literal at four call sites.
 MEASURED_NOT_ATTEMPTED = None
 
-#: The five keys `engines/base.py` reads off `surface_analysis`, plus the `status` that makes the
-#: three situations distinguishable. `region_count` and `region_names` at `base.py:172-178`,
+#: The keys `engines/base.py` reads off `surface_analysis`, plus the `status` that makes the three
+#: situations distinguishable. `region_count` and `region_names` at `base.py:172-178`,
 #: `self_intersecting` at `:565`, `diag` and `thin_gap` at `:573-574`.
-_PROJECTION_KEYS = ("region_names", "region_count", "region_source", "diag", "thin_gap")
+#:
+#: `connected_components` IS HOW MANY REGIONS THE FILE HAS, where `region_count` is how many it NAMES, and
+#: dropping it here is what made a correct refusal say something false. `region_count` is 1 for a file that
+#: names none of its parts - the right answer to this platform's question, because the mesher writes each
+#: patch under its region's name and an unnamed file can only ever deliver one - and `_wall_patch_cause` read
+#: that 1 as the number of regions and told the customer "Your geometry is one region with no component
+#: names". MEASURED on `tests/fixtures/geometry/cht_enclosing_2region.step`: two regions, one enclosing the
+#: other, and every name on it a generated OpenCASCADE translator name the agent drops. So the decision was
+#: right and the sentence was false about a part we had measured correctly.
+_PROJECTION_KEYS = ("region_names", "region_count", "region_source", "connected_components", "diag", "thin_gap")
 
 
 def surface_analysis_from_document(document: Any) -> dict | None:
@@ -235,7 +244,7 @@ async def stored_document_for_source(ref, *, sha256: str = "") -> dict | None:
     """The whole stored measurement document, or None. Never raises.
 
     Separate from `reading_for_source` because two different readers want two different things: the
-    engines want five keys, and the conversation wants the opening table. Neither is derivable from
+    engines want a handful of keys, and the conversation wants the opening table. Neither is derivable from
     the other, and both come from one row.
     """
     if ref is None:

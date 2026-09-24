@@ -178,6 +178,20 @@ def _region_names(evidence) -> list[str]:
     return [str(n) for n in ((evidence.surface_analysis or {}).get("region_names") or [])]
 
 
+def _connected_components(evidence) -> int | None:
+    """How many regions the FILE HAS, where `_region_count` is how many it NAMES. None when nothing says.
+
+    The two are different numbers and only one of them answers "how many named wall patches can this
+    deliver?". `region_count` does, and it is 1 for a file that names none of its parts, which is correct:
+    the mesher writes each patch under its region's name. This one exists so a refusal can describe the
+    file truthfully instead of repeating that 1 back as a count of regions. Absent on a measurement stored
+    by an older image, so it is read as "says nothing" and never as zero.
+    """
+    facts = evidence.surface_analysis or {}
+    got = facts.get("connected_components")
+    return int(got) if isinstance(got, int) and not isinstance(got, bool) else None
+
+
 def _unmatched_walls(evidence, walls: list[str]) -> list[str]:
     # Declared wall patches with no region of that name in the geometry. Names are what the mesher
     # writes the patches as, so a count alone proves nothing: six regions called a..f cannot become
@@ -212,6 +226,20 @@ def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
                 + (spec.single_wall_patch_reason + " " if spec.single_wall_patch_reason else ""))
     count = _region_count(evidence)
     if count is not None and count <= 1:
+        # WHICH OF TWO THINGS IS WRONG WITH THE FILE, because they have different fixes and this said the
+        # first whichever it was. A file with one region has to be exported as several; a file with several
+        # that names none of them needs the NAMES kept in the same export. MEASURED on
+        # tests/fixtures/geometry/cht_enclosing_2region.step: two regions, one enclosing the other, and every
+        # name on it a generated OpenCASCADE translator name the measurement drops - so `region_count` is its
+        # floor of 1 and this sentence told the customer their part was one region. The refusal was right and
+        # the reason was false, which sends them to fix the wrong thing. `connected_components` is absent on a
+        # measurement stored by an older image, and then there is nothing to correct and the sentence below is
+        # everything this platform knows.
+        parts = _connected_components(evidence)
+        if parts is not None and parts > 1:
+            return (f"Your geometry has {parts} separate regions but names none of them, so nothing "
+                    f"downstream can tell the parts apart - {spec.name} itself can keep named regions "
+                    "separate when the file names them. Re-export with the component or solid names kept. ")
         return ("Your geometry is one region with no component names, so nothing downstream can "
                 f"tell the parts apart - {spec.name} itself can keep named regions separate when "
                 "the file distinguishes them. ")

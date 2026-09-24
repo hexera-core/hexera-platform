@@ -114,3 +114,52 @@ def test_the_refusal_names_what_the_file_actually_offers():
         if r.code == "multiple_wall_patches_unsupported")
     assert "hub, shroud, blade" in rejection.message, rejection.message
     assert "wing" in rejection.message and "fuselage" in rejection.message
+
+
+# WHAT THE REFUSAL SAYS ABOUT THE FILE, which is not the same question as whether to refuse
+
+def test_a_file_with_several_unnamed_regions_is_not_called_one_region():
+    """THE DECISION WAS RIGHT AND THE SENTENCE WAS FALSE, which is the worst of the two to leave.
+
+    `region_count` is how many regions the file NAMES, and the measurement floors it at 1 because an
+    unnamed file delivers one wall patch whatever is in it. This refusal read that 1 as the number of
+    regions and said "Your geometry is one region with no component names" - false about a part with two,
+    and it sends the customer to re-export as several regions when what they need is the names kept.
+    MEASURED on tests/fixtures/geometry/cht_enclosing_2region.step: `facts.regions` is 2 and every name on
+    it is a generated `Open CASCADE STEP translator` name, which the measurement drops.
+    """
+    spec = get_spec("snappy")
+    facts = {"region_count": 1, "region_names": [], "connected_components": 2}
+    assert _refused(spec, _TWO_WALLS, facts), "a file that names no region still cannot deliver two patches"
+    message = next(r for r in spec.admit(_ev("snappy", _TWO_WALLS, facts))
+                   if r.code == "multiple_wall_patches_unsupported").message
+    assert "2 separate regions but names none of them" in message, message
+    assert "is one region with no component names" not in message, message
+    assert "names kept" in message, "the refusal has to say which of the two things to fix"
+
+
+def test_a_file_that_really_is_one_region_still_says_so():
+    spec = get_spec("snappy")
+    for facts in ({"region_count": 1, "region_names": [], "connected_components": 1},
+                  {"region_count": 1, "region_names": []}):
+        message = next(r for r in spec.admit(_ev("snappy", _TWO_WALLS, facts))
+                       if r.code == "multiple_wall_patches_unsupported").message
+        assert "is one region with no component names" in message, (facts, message)
+
+
+def test_a_measurement_stored_before_the_key_existed_changes_no_decision():
+    """The key is absent on every row an older image wrote, and absent must mean SAYS NOTHING. Read as a
+    zero it would claim a file has no regions; read as a one it would repeat the bug under a new name."""
+    spec = get_spec("snappy")
+    old = {"region_count": 2, "region_names": ["wing", "fuselage"]}
+    assert not _refused(spec, _TWO_WALLS, old)
+    for absent in (None, "", 0, True, "two"):
+        facts = {**old, "connected_components": absent} if absent is not None else dict(old)
+        assert not _refused(spec, _TWO_WALLS, facts), facts
+
+
+def test_the_projection_the_agent_writes_carries_both_numbers():
+    """The two numbers are only ever telling the truth together, and the platform drops every key it does
+    not list (`cad/regions._PROJECTION_KEYS`), which is how the second one was lost."""
+    from meshpipeline.cad.regions import _PROJECTION_KEYS
+    assert "connected_components" in _PROJECTION_KEYS and "region_count" in _PROJECTION_KEYS

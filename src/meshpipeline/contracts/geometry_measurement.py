@@ -175,8 +175,8 @@ def enqueue_look(source_id: str, owner_id: str) -> bool:
 def projection_of(document: dict | None) -> dict | None:
     """What an engine's admission reads off `surface_analysis`, or None when nothing was measured.
 
-    `engines/base.py` reads five keys: `region_count`, `region_names`, `self_intersecting`, `diag`
-    and `thin_gap`. The dict this returns always carries a `status`, because `base.py:430-434` only
+    `engines/base.py` reads `region_count`, `region_names`, `connected_components`,
+    `self_intersecting`, `diag` and `thin_gap`. The dict this returns always carries a `status`, because `base.py:430-434` only
     tests that `surface_analysis is not None` - so an empty dict passes the gate carrying nothing,
     and three different situations (never measured, measurement failed, measured and unremarkable)
     used to arrive as the same value.
