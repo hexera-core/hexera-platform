@@ -268,3 +268,22 @@ def test_a_question_about_an_engine_still_selects_nothing():
                        _resp(content="It is a tetrahedral volume mesher.")])
     assert out["intake_gate"]["selection"]["state"] == es.PROPOSED
 
+
+def test_a_confirmation_the_model_failed_to_quote_is_still_the_users_confirmation():
+    # The sibling of the propose defect, and the one that kept a real conversation stuck after the
+    # first was fixed: confirm_engine_selection read ONLY the model's quote, so a paraphrased or
+    # invented quote hid a confirmation the user had plainly written.
+    p = es.propose("gmsh", session_id="s", owner_id="u", revision="r1", user_msg_count=1)
+    c, why = es.confirm(p, session_id="s", owner_id="u", revision="r2", user_msg_count=2,
+                        quote="the user agreed to gmsh", latest_user_message="yes, select gmsh")
+    assert why == "" and es.state_of(c) == es.CONFIRMED
+
+
+def test_a_quote_the_user_never_wrote_still_confirms_nothing():
+    # The proof requirement is unchanged: neither the model's words nor a message that does not
+    # answer the question can select an engine.
+    p = es.propose("gmsh", session_id="s", owner_id="u", revision="r1", user_msg_count=1)
+    c, why = es.confirm(p, session_id="s", owner_id="u", revision="r2", user_msg_count=2,
+                        quote="yes use gmsh", latest_user_message="Actually, what about cfmesh?")
+    assert c is None and "have not confirmed" in why
+

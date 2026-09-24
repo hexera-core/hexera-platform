@@ -176,9 +176,17 @@ def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
         # a NEW user revision invalidates a pending selection rather than silently outliving it.
         return None, ("that engine question is stale - the user has said something else since; "
                       "propose the engine again and let them answer it")
-    if not quote_is_from_user(quote, latest_user_message):
-        return None, ("the words you quoted are not in the user's latest message - they have not "
-                      "confirmed the engine; ask them")
+    # THE USER'S OWN MESSAGE IS PROOF, whether or not the model managed to quote it. This gate read
+    # the quote ALONE, so a model that paraphrased, mis-copied or invented it made this application
+    # unable to see a confirmation the user had plainly written - and the refusal sent the model back
+    # to propose, which replaced the pending question and spent the answer. One real conversation
+    # looped through "yes", "select snappyHexMesh" and "yes, select snappyHexMesh" without ever
+    # selecting an engine. The proof required is unchanged, and is still never a default and never
+    # the model's prose: it is the user's own words, read here rather than relayed.
+    if not answers_the_selection_question(str(sel.get("engine") or ""), quote,
+                                          latest_user_message, outstanding=True):
+        return None, ("the words you quoted are not in the user's latest message, and that message "
+                      "does not confirm the engine either - they have not confirmed it; ask them")
     return {**sel, "state": CONFIRMED, "confirmed_revision": revision,
             "expires_at": time.time() + CONFIRMED_TTL_S}, ""
 
