@@ -246,6 +246,9 @@ WORKER_ENV_URI=${WORKER_ENV_URI:-}
 # devtools/quality/check_deploy_secrets.py fails the build on a value here.
 DEEPINFRA_API_KEY_SECRET=${DEEPINFRA_API_KEY_SECRET:-deepinfra-api-key}
 DEEPSEEK_API_KEY_SECRET=${DEEPSEEK_API_KEY_SECRET:-deepseek-api-key}
+# The look's reader. GEOMETRY_VISION_PROVIDER defaults to openai at gpt-5.6-luna, which is the reader
+# the look was measured with; without this container nothing is looked at and every row says so.
+OPENAI_API_KEY_SECRET=${OPENAI_API_KEY_SECRET:-openai-api-key}
 MESH_API_KEY_SECRET=${MESH_API_KEY_SECRET:-mesh-api-key}
 USER_TOKEN_SECRET_SECRET=${USER_TOKEN_SECRET_SECRET:-user-token-secret}
 

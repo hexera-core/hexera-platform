@@ -742,7 +742,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (216 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (218 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -838,6 +838,7 @@ Every supported setting (216 entries). `template` settings are the ones `.env.ex
 | `GEOMETRY_VISION_MODEL` | template | app |  |
 | `GEOMETRY_VISION_PROVIDER` | template | app |  |
 | `GEOMETRY_VISION_TIMEOUT_SECONDS` | template | app |  |
+| `OPENAI_API_KEY` | template | app | yes |
 | `PIPELINE_BACKEND` | template | app |  |
 | `REQUIRE_DURABLE_CHECKPOINTER` | template | app |  |
 | `WORKER_HEARTBEAT_SECONDS` | template | app |  |
@@ -867,6 +868,7 @@ Every supported setting (216 entries). `template` settings are the ones `.env.ex
 | `DEEPINFRA_WRITE_TIMEOUT` | template | app |  |
 | `MAX_BUILDER_RETRIES` | template | app |  |
 | `MAX_SNAPPY_ATTEMPTS` | template | app |  |
+| `ANTHROPIC_API_KEY` | internal | app | yes |
 | `TAVILY_API_KEY` | template | app | yes |
 | `WEB_SEARCH_MAX_RESULTS` | template | app |  |
 | `WEB_SEARCH_TIMEOUT` | template | app |  |

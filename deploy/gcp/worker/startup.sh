@@ -71,6 +71,7 @@ set +x
 for pair in "POSTGRES_PASSWORD:postgres-password-secret" \
             "MINIO_SECRET_KEY:minio-secret-key-secret" \
             "DEEPINFRA_API_KEY:deepinfra-api-key-secret" \
+            "OPENAI_API_KEY:openai-api-key-secret" \
             "DEEPSEEK_API_KEY:deepseek-api-key-secret"; do
   var="${pair%%:*}"; key="${pair##*:}"
   name="$(md "${key}" || true)"
