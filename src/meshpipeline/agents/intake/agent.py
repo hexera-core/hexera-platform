@@ -916,6 +916,7 @@ async def node_intake(state: PipelineState) -> dict:
         session_id=_ctx.session_id, owner_id=_ctx.owner_id, revision=_ctx.revision,
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
+        choice_deferred=_ctx.choice_deferred,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
         geometry_reading=_geometry.reading, geometry_document=_geometry.document,
         survey_armed=_geometry.armed, geometry_survey=_geometry.survey,

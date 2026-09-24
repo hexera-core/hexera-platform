@@ -72,6 +72,7 @@ class IntakeExecutionState:
     # opens them, so it holds the reference and no path.
     source_ref: object | None = None
     rec_authorized: bool = False
+    choice_deferred: bool = False
 
     pending: dict | None = None       # the issued admission token record
     selection: dict | None = None
@@ -256,7 +257,15 @@ class IntakeToolExecutor:
     async def _do_propose_engine_selection(self, args: dict) -> IntakeToolResult:
         st = self.state
         eng = str(args.get("engine") or "").strip().lower()
-        if st.recommended_this_turn:
+        # ONE EXCEPTION, AND ONLY ONE: the customer handed us the choice in this very message.
+        # The rule below exists so the model cannot select an engine merely because it just
+        # recommended one. It does not fit a customer who said "you decide": they are told
+        # "a recommendation is not a selection - ask which engine they want", which asks again
+        # the one person who has already said they do not want to be asked. That cost a real
+        # conversation three round trips for one choice. Deferring still selects NOTHING: the
+        # application shows its own question and the customer answers it in their own words,
+        # so house law 2 holds - a default is still not a confirmation.
+        if st.recommended_this_turn and not st.choice_deferred:
             return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
                 "Not allowed in this turn: you compared engines for the user. A recommendation is "
                 "not a selection - ask which engine they want and wait for their next message."))

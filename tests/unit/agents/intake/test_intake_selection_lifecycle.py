@@ -304,3 +304,35 @@ def test_the_budget_nudge_is_not_the_customer_speaking():
     assert ctx.user_msg_count == 1, "a synthetic turn must not make the pending question stale"
     assert es.quote_is_from_user("yes, select snappyHexMesh", ctx.latest_user_msg)
 
+
+def test_handing_over_the_choice_is_asking_for_a_recommendation():
+    # A customer who says "you decide" was told "would you like engine recommendations?" - the one
+    # person who had already said they did not want to be asked. Three round trips for one choice.
+    import meshpipeline.agents.intake.recommendation as rec
+
+    for said in ("u decide best case", "you decide", "you tell me", "your call", "up to you",
+                 "whatever you think", "best option", "doesn't matter", "pick for me"):
+        assert rec.choice_deferred(said), said
+        assert rec.recommendation_requested(said), said
+
+    # Deferring a CHOICE, not being ignorant of a FACT. These are how someone answers "what
+    # velocity?", and reading them as "pick an engine for me" volunteers alternatives nobody asked
+    # for - the false positive this module's own header warns about.
+    for said in ("i dont know", "no idea", "not sure", "what velocity is it", "yes"):
+        assert not rec.choice_deferred(said), said
+
+    # the original phrasing still works and is still not a deferral
+    assert rec.recommendation_requested("which engine should I use")
+    assert not rec.choice_deferred("which engine should I use")
+
+
+def test_the_turn_carries_whether_the_customer_handed_over_the_choice():
+    import meshpipeline.agents.intake.turn as turn
+
+    ctx = turn.hydrate({"job_id": "j", "session_id": "s", "user_id": "u"},
+                       [{"role": "user", "content": "you decide, whatever's best"}])
+    assert ctx.choice_deferred is True and ctx.rec_authorized is True
+    ctx2 = turn.hydrate({"job_id": "j", "session_id": "s", "user_id": "u"},
+                        [{"role": "user", "content": "use gmsh"}])
+    assert ctx2.choice_deferred is False
+

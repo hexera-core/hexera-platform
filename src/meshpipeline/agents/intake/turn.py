@@ -71,6 +71,7 @@ class TurnContext:
     selection: dict | None
     approval: dict | None
     rec_authorized: bool
+    choice_deferred: bool
 
 
 def hydrate(state, state_messages) -> TurnContext:
@@ -109,6 +110,7 @@ def hydrate(state, state_messages) -> TurnContext:
         selection=_sub("selection"),
         approval=_sub("approval"),
         rec_authorized=rec.recommendation_requested(latest),
+        choice_deferred=rec.choice_deferred(latest),
     )
 
 

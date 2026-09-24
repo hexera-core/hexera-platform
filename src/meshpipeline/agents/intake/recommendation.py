@@ -32,9 +32,45 @@ def _norm(text) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^0-9a-z]+", " ", str(text or "").casefold())).strip()
 
 
+#: HANDING THE CHOICE BACK IS ASKING FOR ONE. A customer who says "you decide" has asked which engine
+#: to use as plainly as one who says "which engine" - more plainly, because they have also said they
+#: do not want to be asked again. Without these, `recommendation_requested` was False for every one
+#: of them, `rec_authorized` was False, and UNAUTHORIZED_GUIDANCE told the model to reply "would you
+#: like engine recommendations?" - bouncing the question back at the one customer who had already
+#: said they did not want it. A real conversation said "you decide", "u decide best case" and "not
+#: sure" and was asked to choose anyway, every time.
+#:
+#: DEFERRAL OF A CHOICE, NOT IGNORANCE OF A FACT. "I don't know" and "no idea" are deliberately NOT
+#: here: they are how someone answers "what velocity?", and reading them as "pick an engine for me"
+#: would volunteer alternatives nobody asked for - the false positive this module's own header warns
+#: about. Every phrase below hands the DECISION over.
+_DEFER_PHRASES = (
+    "you decide", "u decide", "you choose", "u choose", "you pick", "u pick",
+    "you tell me", "u tell me", "your call", "ur call", "up to you", "up to u",
+    "you go ahead and pick", "whatever you think", "whatever u think",
+    "whatever is best", "whatever's best", "whichever is best", "whichever you",
+    "whichever u", "best one", "best option", "best case", "best fit", "best choice",
+    "you know best", "u know best", "doesn t matter", "does not matter", "no preference",
+    "i don t mind", "dont mind", "surprise me", "your choice", "ur choice",
+    "pick for me", "choose for me", "decide for me", "you suggest", "u suggest",
+)
+
+
+def choice_deferred(latest_user_message: str) -> bool:
+    """The customer has handed the decision to us in this message.
+
+    Separate from `recommendation_requested` because the two authorize different things: asking
+    which engines are compatible authorizes a COMPARISON, while handing the choice over also means
+    the customer does not want to be asked again, which is what lets the same turn go on to propose
+    one. Neither ever SELECTS - the application still shows its own question and the customer still
+    answers it in their own words.
+    """
+    return any(p in _norm(latest_user_message) for p in _DEFER_PHRASES)
+
+
 def recommendation_requested(latest_user_message: str) -> bool:
     t = _norm(latest_user_message)
-    return any(p in t for p in _REQUEST_PHRASES)
+    return any(p in t for p in _REQUEST_PHRASES) or choice_deferred(latest_user_message)
 
 
 UNAUTHORIZED_GUIDANCE = (
