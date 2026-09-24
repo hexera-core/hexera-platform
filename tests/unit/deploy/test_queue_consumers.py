@@ -209,6 +209,98 @@ def test_the_gate_reads_queues_across_shell_and_yaml_line_breaks(tmp_path):
     assert gate._workers_in(compose)[0].queues == ("c", "d")
 
 
+# ---------------------------------------------------------------- what the fleet REALLY starts
+
+# EVERYTHING ABOVE READS TEXT, AND THAT IS THIS FILE'S OWN BLIND SPOT. A gate that parses
+# `--queues` out of a shell script believes the script says what it does. The project's signature
+# failure is a check with the same hole as the thing it checks, so the fleet's startup script is also
+# EXECUTED here, against a fake docker, and the worker commands it really issues are read back off
+# that fake. Reading the file says what it should do; running it says what it does.
+
+_FAKE_CURL = """#!/bin/bash
+# The metadata server, answering the four instance attributes startup.sh reads and nothing else. An
+# unknown attribute exits non-zero, which is how the script learns a credential is not used here.
+for a in "$@"; do case "$a" in
+  *"attributes/worker-image") echo "reg/app@sha256:abc"; exit 0;;
+  *"attributes/redis-url") echo "redis://10.0.0.2:6379/0"; exit 0;;
+  *"attributes/database-url") echo ""; exit 0;;
+  *"attributes/env-uri") echo "gs://bucket/worker.env"; exit 0;;
+  *"project/project-id") echo "fake-project"; exit 0;;
+  *"attributes/"*) exit 1;;
+esac; done
+exit 1
+"""
+
+_FAKE_GCLOUD = """#!/bin/bash
+# `gcloud storage cp <src> <dst> --quiet` has to leave a file behind, because the script then chmods
+# it and appends the endpoints to it.
+if [ "$1" = "storage" ] && [ "$2" = "cp" ]; then printf 'POSTGRES_HOST=db\\n' > "$4"; fi
+exit 0
+"""
+
+_FAKE_DOCKER = """#!/bin/bash
+printf '%s\\n' "$*" >> "${DOCKER_LOG}"
+exit 0
+"""
+
+
+def _run_fleet_startup(tmp_path: Path, script_text: str) -> list[str]:
+    """Execute a fleet startup script with fake tools and return the docker commands it issued."""
+    import os
+    import shutil
+    import stat
+
+    if shutil.which("bash") is None:
+        pytest.skip("no bash on this machine, and this script is bash")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, text in (("curl", _FAKE_CURL), ("gcloud", _FAKE_GCLOUD), ("docker", _FAKE_DOCKER),
+                       ("systemctl", "#!/bin/bash\nexit 0\n")):
+        path = bin_dir / name
+        path.write_text(text, encoding="utf-8", newline="\n")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    # /etc/hexera is not writable here, and it is the ONLY path redirected: both `docker run` lines,
+    # which are what this test is about, run exactly as written.
+    etc = tmp_path / "etc"
+    script = tmp_path / "startup.sh"
+    script.write_text(script_text.replace("/etc/hexera", str(etc)), encoding="utf-8", newline="\n")
+    done = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=300,
+                          check=False,
+                          env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                               "DOCKER_LOG": str(log)})
+    assert done.returncode == 0, f"the startup script failed:\n{done.stdout[-2000:]}{done.stderr[-2000:]}"
+    return [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("run ")]
+
+
+def test_running_the_fleet_startup_script_starts_a_worker_for_every_published_queue(tmp_path):
+    startup = (REPO / "deploy" / "gcp" / "worker" / "startup.sh").read_text(encoding="utf-8")
+    issued = _run_fleet_startup(tmp_path, startup)
+    assert len(issued) == 2, f"expected two worker containers, got {issued}"
+    # The gate's own --queues pattern, applied to the command that was ISSUED rather than to the file
+    # that was read. That is the whole difference: the parser was never the doubtful part.
+    drained: set[str] = set()
+    for command in issued:
+        for match in gate._QUEUES.finditer(command):
+            drained.update(q for q in match.group("list").split(",") if q)
+    for queue in ("simulation_jobs", "cleanup_tasks", "training_export", "geometry_measurement",
+                  "geometry_look"):
+        assert queue in drained, (
+            f"the fleet does not start a worker for {queue}; it issued:\n" + "\n".join(issued))
+
+
+def test_the_same_run_against_the_shipped_script_starts_one_worker_for_one_queue(tmp_path):
+    # The defect, executed rather than described. If this ever stops being true of the pre-fix script,
+    # the harness above has stopped measuring what it claims to.
+    shipped = (REPO / "deploy" / "gcp" / "worker" / "startup.sh").read_text(encoding="utf-8")
+    one_worker = shipped.split("# The short work:")[0]
+    issued = _run_fleet_startup(tmp_path, one_worker)
+    assert len(issued) == 1, f"expected the mesh worker alone, got {issued}"
+    assert "geometry_look" not in issued[0]
+    assert "--queues simulation_jobs" in issued[0]
+
+
 # ---------------------------------------------------------------- a fleet that cannot be woken
 
 #: The smallest configuration validate-config.sh will read without falling over on something else.
