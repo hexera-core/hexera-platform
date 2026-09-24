@@ -421,7 +421,7 @@ async def planner_message(request: str, block: dict | None, workspace: Path, job
 # -------------------------------------------------------------------------------------------------
 
 async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: str, look: str,
-                   fluid_side: bool, measured_stops: bool, answer_side: bool,
+                   answer_side: bool,
                    fidelity: str, cap: int, purpose: str) -> dict:
     from meshpipeline.application import geometry_step as gst
     from meshpipeline.application import geometry_survey as gs
@@ -439,8 +439,11 @@ async def run_case(case: str, out: Path, cache: Path, *, provider: str, take: st
         exp = {**exp, "purpose": purpose}
 
     # STEP 1 and 2: the upload and its measurement of the real bytes
-    tag = f"stops{'On' if measured_stops else 'Off'}.side{'On' if fluid_side else 'Off'}"
-    doc = measured(case, exp, cache, tag=tag)
+    # BOTH PACKAGE STAGES ALWAYS RUN, so there is one shape of measurement and one cache key for it. The
+    # tag used to carry the two switches; they were retired with the stages they selected, and the two
+    # `args` that fed it were deleted from the parser while these lines still read them, so every case
+    # ended `harness_failed` on an AttributeError before it measured anything.
+    doc = measured(case, exp, cache, tag="stagesOn")
     if doc.get("status") != "ok":
         return {"case": case, "step": "measure", "status": doc.get("status"), "reason": doc.get("reason")}
     step_file = Path(_mapped(exp["source"]))
@@ -600,7 +603,6 @@ def main() -> int:
         try:
             row = asyncio.run(run_case(
                 case, out, cache, provider=args.provider, take=args.take, look=args.look,
-                fluid_side=args.fluid_side, measured_stops=args.measured_stops,
                 answer_side=args.answer_fluid_side, fidelity=args.fidelity, cap=args.cap,
                 purpose=args.purpose))
         except Exception as exc:                   # noqa: BLE001 - one case never stops the run

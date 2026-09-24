@@ -31,8 +31,6 @@ from tests._surveyor_package import require
 
 require("geometry_agent.contract.deliver", needs="a survey composed by the real chain to round-trip")
 
-import meshpipeline.settings.package_switches as package_switches  # noqa: E402
-import meshpipeline.settings.policy as polcfg  # noqa: E402
 from meshpipeline.application import geometry_survey as gs  # noqa: E402
 from meshpipeline.persistence.models import GeometrySurvey  # noqa: E402
 from meshpipeline.persistence.repositories.geometry_survey_repository import (  # noqa: E402
@@ -64,12 +62,17 @@ def _brief(case: str) -> str:
 
 @pytest.fixture
 def side_on(monkeypatch):
-    """The package's fluid-side switch, armed the way the platform arms it and not by hand."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_MEASURED_STOPS_ENABLED", False)
-    for name in package_switches.PACKAGE_SWITCHES:
-        monkeypatch.delenv(name, raising=False)
-    assert polcfg.arm_the_package()["GEOMETRY_AGENT_FLUID_SIDE"] == "on"
+    """THERE IS NOTHING LEFT TO ARM, and this fixture now says so rather than arming it.
+
+    This branch was cut before `settings/package_switches.py` and `policy.arm_the_package` were
+    retired, and it still armed `GEOMETRY_FLUID_SIDE_ENABLED` by hand. Both platform settings are
+    gone, the package deleted the reader, and the side is read on every composition, so the import
+    of the retired module ended collection for the WHOLE unit lane on the merged tree. What is left
+    worth holding is what `test_geometry_fluid_side_answer.py` holds: no export turns it back off.
+    """
+    from geometry_agent.agent import catalog
+    monkeypatch.setenv("GEOMETRY_AGENT_FLUID_SIDE", "off")
+    assert not hasattr(catalog, "FLUID_SIDE_ENV")
 
 
 class _OneRow:
