@@ -707,8 +707,19 @@ async def _survey_for(ref, document) -> tuple[bool, dict | None]:
     """Whether the Surveyor has anything for this upload, and its stored state. Never raises.
 
     Armed only by a SUCCESSFUL measurement of these bytes: there is nothing to compose without one, and
-    a conversation with nothing to compose is a conversation the Surveyor stays out of. A measurement
-    that failed is not armed and is not silence either - the block says the file was not measured.
+    a conversation with nothing to compose is a conversation the Surveyor stays out of.
+
+    A MEASUREMENT THAT FAILED IS SILENCE HERE, and this docstring used to claim it was not: it said
+    "the block says the file was not measured". It does not. `geometry_brief.render_block` returns the
+    empty string for any document whose status is not `ok`, and an empty block is its documented
+    fail-open - the system prompt is then character for character what it is with no measurement at all,
+    so intake asks what it has always asked and the customer is told nothing.
+
+    THAT IS RIGHT FOR A FAILURE OF OURS AND WRONG FOR A FACT ABOUT THE FILE. A broken STEP or a timeout
+    is ours and the conversation should carry on; `unsupported_format` is the customer's to act on and no
+    retry changes it, so today a .vtp upload holds a whole intake conversation with nothing measured
+    behind it and hears about it only at submission (`pipeline/geometry_admission`). Saying it here means
+    deciding what the customer reads in their first turn, which is a product decision and not a fix.
     """
     if not isinstance(document, dict) or document.get("status") != "ok":
         return False, None
