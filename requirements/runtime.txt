@@ -55,6 +55,18 @@ minio==7.2.11
 # Mesh geometry
 numpy==1.26.4
 
+# The Surveyor's measuring half. The geometry-agent distribution is installed from
+# vendor/wheels/ by the Dockerfile's `wheel` stage with --no-deps, exactly as the meshpipeline
+# wheel is, so the environment this file builds has to carry what it imports. Of its seven
+# declared dependencies only trimesh was absent here: numpy, scipy and httpx are pinned above,
+# pydantic arrives with fastapi and matplotlib with pyvista (the look's renderer falls back to
+# matplotlib when the offscreen GL path fails), and networkx and rtree are declared by the agent
+# but imported nowhere in it. CORE trimesh only - every optional extra it names is behind
+# `[easy]`, which nothing in the agent's own import closure reaches. 5.1.0 is the version the
+# agent's own environment has been run and measured on; its core requirement is numpy>=1.21, so
+# it resolves against the 1.26.4 pinned above.
+trimesh==5.1.0
+
 # Mesh renderer - VTK includes EGL support (GPU-accelerated headless rendering).
 # PINNED EXACTLY: these are graphics libraries whose offscreen-render behaviour
 # changes between minor versions. Unpinned (>=) ranges previously let `docker

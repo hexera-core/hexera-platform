@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 
-pytest.importorskip("geometry_agent.contract.deliver",
-                    reason="the measurement package is not on this interpreter's path")
+require("geometry_agent.contract.deliver", needs="the Surveyor's chain and the builder's block")
 
 from meshpipeline.application import geometry_survey as gs  # noqa: E402
 

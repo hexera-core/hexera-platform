@@ -16,9 +16,9 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 
-pytest.importorskip("geometry_agent.agent.catalog",
-                    reason="the measurement package is not on this interpreter's path")
+require("geometry_agent.agent.catalog", needs="the fluid-side question the catalog raises")
 
 import meshpipeline.settings.package_switches as package_switches  # noqa: E402
 import meshpipeline.settings.policy as polcfg  # noqa: E402

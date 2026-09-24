@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 
 from meshpipeline.cad import regions
 
@@ -25,8 +26,7 @@ def _state_for(doc: dict) -> dict:
 
 @pytest.fixture
 def rows(monkeypatch):
-    pytest.importorskip("geometry_agent.contract.deliver",
-                        reason="the measurement package is not on this interpreter's path")
+    require("geometry_agent.contract.deliver", needs="the surveyed block the regions are read from")
     from meshpipeline.application import geometry_survey as gs
 
     doc = _doc()

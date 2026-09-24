@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 from tests.unit.engines.test_planner_look_block import BLOCK, _captured
 
 import meshpipeline.cad.regions as regions
@@ -28,8 +29,7 @@ def _metrics(user: str) -> dict:
 def surveyed_block():
     """A real block with a real survey: bend_elbow_001, composed for the corpus brief, both roles
     answered by the customer, the way `application/geometry_survey.py` hands it to the planner."""
-    pytest.importorskip("geometry_agent.contract.deliver",
-                        reason="the measurement package is not on this interpreter's path")
+    require("geometry_agent.contract.deliver", needs="the survey block the planner validates")
     from meshpipeline.application import geometry_survey as gs
 
     doc = json.loads((FIXTURES / "bend_elbow_001.json").read_text(encoding="utf-8"))

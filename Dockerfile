@@ -125,18 +125,44 @@ RUN pip install --no-cache-dir -c requirements/constraints.txt -r requirements/r
 
 
 FROM base AS wheel
-# Build the ONE distribution, once. Every runtime target installs THIS artefact, so what runs
-# in production is the same wheel the tests install - not a source tree on PYTHONPATH that can
-# resolve differently (and that hid a bare find_spec("engines...") until it crashed a
-# container). The source lives only in this stage; it is never copied into a runtime image.
+# Build this repository's ONE distribution, once, and collect BESIDE it the one distribution the
+# product needs that is not built from this source: the geometry agent. Every runtime target
+# installs what lands in /dist, so what runs in production is the same wheel the tests install -
+# not a source tree on PYTHONPATH that can resolve differently (and that hid a bare
+# find_spec("engines...") until it crashed a container). The source lives only in this stage; it
+# is never copied into a runtime image.
 COPY pyproject.toml ./
 COPY src/ ./src/
 # `build` is pinned in requirements/dev.txt (the one toolchain source of truth), not inline.
 # This stage is discarded - no build tooling reaches a runtime image.
 COPY requirements/dev.txt ./requirements/dev.txt
 COPY --from=requirements /pins/constraints.txt ./requirements/constraints.txt
+# THE GEOMETRY AGENT, the Surveyor's measuring and looking half. It is a SEPARATE repository, so it
+# cannot be built here: the build context is this repository and a COPY cannot leave it. The wheel
+# is built from an agent checkout by deploy/vendor_geometry_agent.sh, which records the agent commit
+# in vendor/wheels/PROVENANCE.json and puts it in the wheel's own version, and it is committed here.
+# That script's header argues the choice against a path install, a git+ssh install and a vendored
+# source tree.
+#
+# It is copied into /dist next to the wheel built above, so the two runtime blocks below install it
+# with the `pip install /tmp/*.whl` line they already had, and neither can acquire the package
+# without the other. Nothing installed the geometry agent before this line: not runtime.txt, not
+# pyproject.toml, not a deploy script - and because every entry point wraps its import in
+# try/except and treats absence as an outcome, the images ran with no Surveyor and raised nothing.
+#
+# EXACTLY ONE geometry wheel, asserted below before it is copied. An empty vendor/wheels/ or a
+# second stale wheel left beside the current one stops the build here: an image that quietly lacks
+# the package is the defect these lines exist to make impossible.
+COPY vendor/wheels/ /vendor/wheels/
 RUN pip install --no-cache-dir -c requirements/constraints.txt -r requirements/dev.txt \
     && python -m build --wheel --outdir /dist \
+    && count="$(ls -1 /vendor/wheels/hexera_geometry_agent-*.whl 2>/dev/null | wc -l)" \
+    && if [ "$count" != "1" ]; then \
+         echo "FAIL: expected exactly one vendor/wheels/hexera_geometry_agent-*.whl, found $count." >&2; \
+         echo "      Build it: bash deploy/vendor_geometry_agent.sh /path/to/geometry_agent" >&2; \
+         exit 1; \
+       fi \
+    && cp /vendor/wheels/hexera_geometry_agent-*.whl /dist/ \
     && ls /dist/*.whl
 
 
@@ -279,7 +305,8 @@ LABEL org.opencontainers.image.title="Hexera Platform" \
       org.opencontainers.image.description="LLM multi-agent pipeline that generates solver-ready simulation meshes" \
       org.opencontainers.image.licenses="LicenseRef-Proprietary"
 
-# The installed distribution + the things that are NOT part of it: the frontend, the migration
+# The installed distributions - meshpipeline and the geometry agent, both built or collected in the
+# `wheel` stage - plus the things that are NOT part of them: the frontend, the migration
 # scripts, and the entrypoints.
 COPY --from=wheel /dist/*.whl /tmp/
 COPY deploy/verify_install.py /tmp/verify_install.py

@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 
-pytest.importorskip("geometry_agent.chain.job",
-                    reason="the measurement package is not on this interpreter's path")
+require("geometry_agent.chain.job", needs="the geometry agent's step and its job ledger")
 
 import meshpipeline.settings.policy as polcfg  # noqa: E402
 from meshpipeline.application import geometry_step as gst  # noqa: E402

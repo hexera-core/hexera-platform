@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.application import geometry_measurement, geometry_vision
@@ -20,8 +21,7 @@ def test_the_reader_defaults_to_the_cheap_one_the_look_was_measured_with():
 
 @pytest.fixture
 def client_module():
-    return pytest.importorskip("geometry_agent.vision.client",
-                               reason="the measurement package is not on this interpreter's path")
+    return require("geometry_agent.vision.client", needs="the reader the look is taken with")
 
 
 def test_the_named_provider_and_model_are_the_ones_used(monkeypatch, client_module):
@@ -45,7 +45,7 @@ def test_a_provider_with_no_key_is_no_look_and_never_another_provider(monkeypatc
 
 
 def test_with_no_reader_the_row_says_why_and_nothing_was_rendered(monkeypatch, tmp_path):
-    pytest.importorskip("geometry_agent.agent.hexera")
+    require("geometry_agent.agent.hexera", needs="the look block stored on the row")
     monkeypatch.setattr(geometry_vision, "reader", lambda: None)
     called = []
     monkeypatch.setattr(geometry_vision, "_package", lambda: (
@@ -84,7 +84,7 @@ def test_the_upload_never_queues_the_look(monkeypatch):
 
 
 def test_the_survey_queues_the_look_at_step_three_unless_it_was_already_taken(monkeypatch):
-    pytest.importorskip("geometry_agent.contract.deliver")
+    require("geometry_agent.contract.deliver", needs="the survey that queues the look")
     from meshpipeline.application import geometry_survey as gs
 
     queued = []

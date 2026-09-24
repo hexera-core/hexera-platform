@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._surveyor_package import require
 
 import meshpipeline.agents.intake.executor as ex_mod
 from meshpipeline.agents.intake import geometry_brief as gb
@@ -79,8 +80,7 @@ def test_before_the_customer_says_what_it_is_for_the_representation_is_not_state
 
 @pytest.fixture
 def armed(monkeypatch):
-    pytest.importorskip("geometry_agent.contract.deliver",
-                        reason="the measurement package is not on this interpreter's path")
+    require("geometry_agent.contract.deliver", needs="the survey the intake turn puts to the customer")
     from meshpipeline.application import geometry_survey as gs
 
     store: dict = {}
@@ -279,7 +279,7 @@ def _turn(monkeypatch, *, stored_survey: dict | None):
 
 
 def test_armed_before_step_one_the_turn_offers_the_survey_and_says_how_to_start_it(monkeypatch):
-    pytest.importorskip("geometry_agent.contract.deliver")
+    require("geometry_agent.contract.deliver", needs="the survey the intake turn offers")
     system, tools = _turn(monkeypatch, stored_survey=None)
     assert tools[-2:] == ["survey_the_part", "answer_survey_question"]
     assert "call survey_the_part" in system
@@ -287,7 +287,7 @@ def test_armed_before_step_one_the_turn_offers_the_survey_and_says_how_to_start_
 
 
 def test_armed_with_a_survey_the_turn_puts_the_surveyors_questions(monkeypatch):
-    pytest.importorskip("geometry_agent.contract.deliver")
+    require("geometry_agent.contract.deliver", needs="the Surveyor's own questions")
     from meshpipeline.application import geometry_survey as gs
 
     state = gs.carry_answers(None, gs.compose(_doc(), purpose="internal_cfd", brief=_brief()))
