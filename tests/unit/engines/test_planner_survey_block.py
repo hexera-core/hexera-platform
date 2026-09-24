@@ -36,8 +36,13 @@ def surveyed_block():
     brief = (FIXTURES / "bend_elbow_001.brief.txt").read_text(encoding="utf-8")
     state = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=brief))
     said = "o2 in, o1 out"
-    state = gs.record_answer(state, question_id="role_inlet", choice="o2", words="o2 in", latest_user_message=said)
-    state = gs.record_answer(state, question_id="role_outlet", choice="o1", words="o1 out", latest_user_message=said)
+    # ONE role question names both mouths and its options are the roles, so an answer is the role with the
+    # mouth beside it (`geometry_survey._role_answer`)
+    (role,) = [v for v in gs.question_views(state) if v["about"] == "opening.role"]
+    state = gs.record_answer(state, question_id=role["id"], choice="inlet", subject="o2", words="o2 in",
+                             latest_user_message=said)
+    state = gs.record_answer(state, question_id=role["id"], choice="outlet", subject="o1", words="o1 out",
+                             latest_user_message=said)
     return gs.builder_block(state)
 
 
