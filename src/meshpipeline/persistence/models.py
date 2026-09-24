@@ -471,8 +471,27 @@ class GeometrySurvey(Base):
     facts_sha256: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
     #: Where in the chain this upload is: `surveyed`, `asking`, `trade` or `settled`.
     stage:    Mapped[str] = mapped_column(String(32), nullable=False, server_default="surveyed")
+    #: WHICH VERSION OF THIS PLATFORM'S OWN STATE SHAPE the row was written under
+    #: (`geometry_survey.SURVEY_STATE_SCHEMA`). The measurement row carries the agent's two stamps for
+    #: exactly this reason and this row carried only one of them: the state dump has always named itself
+    #: and the name was dropped on the way to the table, so a reader across a shape change had nothing to
+    #: read. Empty on every row written before this column, which is itself the answer to "which shape".
+    state_schema: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
     #: The package's `SurveyHandoff`, as it dumped it. Never edited here.
     survey:   Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: THE QUESTION FINDER'S OWN DECISIONS for this composition, keyed by question id: which questions it
+    #: PUT and in what order, which it held and why, each one's tier, `ask.say`'s sentence, and the record
+    #: row that turns an answer into a label (`geometry_survey.asking_row`).
+    #:
+    #: IT IS NOT DECORATION, WHICH IS HOW IT WAS FOUND. `contract.survey.Uncertainty` forbids extra keys,
+    #: so the finder's numbers ride here or nowhere, and the two questions the whole chain exists to ask
+    #: read their machine values out of this row: the fluid-side question's `{side: representation}` map
+    #: and the budget trade's `{cap, cells_high}` envelope. With no column the state was written, the keys
+    #: were dropped, and the customer's answer to either question was ACCEPTED in memory and REFUSED after
+    #: a round trip - "names neither reading of this surface", "its numbers are None". So answering the
+    #: questions achieved nothing the moment the row was saved. `{}` is a row composed before the finder
+    #: was wired, and `geometry_survey.asking_of` already reads that as "nothing ranked".
+    asking:   Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     #: What it was composed FOR: the purpose, the declared ports, the unit basis, whether the look
     #: was in, and a digest of the customer's words. A composition for other inputs is another row
     #: version, never a silent edit of this one.
@@ -483,6 +502,16 @@ class GeometrySurvey(Base):
     asked:    Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     #: One row per answer, with `answered_by`, `at`, the words it came from and the option chosen.
     answers:  Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    #: WHAT THE LOOK'S QUEUE ANSWERED when step 3 was put on it: `queued`, `cached` or `skipped`
+    #: (`geometry_survey.LOOK_QUEUED` and friends), and empty where the look was never put to a queue.
+    #:
+    #: THE ONE THING THE STORED DOCUMENT CANNOT SAY. Until the render worker writes a reading the
+    #: measurement document carries no look at all, which reads as `not_attempted` whether one was queued
+    #: a second ago or never queued. A look that FAILED, one that has not happened yet and one that found
+    #: a clear passage are three different things to the builder, and with no column here the middle one
+    #: did not exist past the end of the request that queued it: `look_state` could return `pending` in
+    #: memory and never once from a stored row.
+    look_queued: Mapped[str] = mapped_column(String(16), nullable=False, server_default="")
     #: THE GEOMETRY AGENT'S STEP, when it ran: its plan, the envelope, the flow patches, and the job
     #: ledger's rows. Null on a row whose step never had a survey to read, and the whole row behaves
     #: then exactly as it did before this column existed. A step that RAN and failed is not null: it
