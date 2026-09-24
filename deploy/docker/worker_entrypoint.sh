@@ -59,9 +59,30 @@ mkdir -p /data/training /data/beat || true
 #
 # The question is answered by settings/policy.py's vision_reader_has_no_key() - one place, so this and the
 # deploy's own validate-config.sh cannot drift from what the application actually reads.
-reader_verdict="$(python -c 'import meshpipeline.settings.policy as p; print(p.vision_reader_has_no_key())' 2>/dev/null || echo "")"
-if [ -n "${reader_verdict}" ]; then
-    if python -c 'import sys, meshpipeline.settings.policy as p; sys.exit(0 if p.requires_hardened_runtime(p.ENV) else 1)' 2>/dev/null; then
+# A CHECK THAT COULD NOT RUN IS NOT A CHECK THAT PASSED. This used to be
+# `$(python -c ... 2>/dev/null || echo "")`, which collapsed three different answers into one empty string:
+# the reader is fine, the reader has no key, and the question could not be asked at all. The third happens:
+# `settings/policy.py` REFUSES ITS OWN IMPORT in a hosted environment missing an auth secret, so on exactly
+# the deployment this gate exists to protect, the gate was skipped in silence and the container went on to
+# migrations. Measured in the built image: ENV=production with no key reached "Running database migrations"
+# instead of refusing. The status is kept apart from the output now, and a question that could not be asked
+# refuses a hosted container and warns a dev one, which is the same rule applied to not knowing.
+# `|| reader_status=$?` AND NOT A BARE ASSIGNMENT, because `set -e` is on at the top of this file: a command
+# substitution that fails takes the script down at the assignment, before the next line can read the status,
+# so the container exited 1 and said nothing at all - a refusal with no reason, which is the thing being fixed.
+reader_status=0
+reader_verdict="$(python -c 'import meshpipeline.settings.policy as p; print(p.vision_reader_has_no_key())' 2>&1)" || reader_status=$?
+hardened() { python -c 'import sys, meshpipeline.settings.policy as p; sys.exit(0 if p.requires_hardened_runtime(p.ENV) else 1)' 2>/dev/null; }
+if [ "${reader_status}" -ne 0 ]; then
+    echo "[worker_entrypoint] the reader check could not run: ${reader_verdict}" >&2
+    if [ "${ENV:-dev}" != "dev" ] && [ "${ENV:-dev}" != "test" ] && [ "${ENV:-dev}" != "local" ]; then
+        echo "[worker_entrypoint] REFUSING TO START: this is not a dev environment and whether the Surveyor can look" >&2
+        echo "[worker_entrypoint] at anything is unknown. Fix the configuration the error above names." >&2
+        exit 1
+    fi
+    echo "[worker_entrypoint] WARNING: this is a dev environment so it is a warning, not a refusal."
+elif [ -n "${reader_verdict}" ]; then
+    if hardened; then
         echo "[worker_entrypoint] REFUSING TO START: ${reader_verdict}" >&2
         echo "[worker_entrypoint] Set the reader's key, or set GEOMETRY_VISION_PROVIDER=off to say this" >&2
         echo "[worker_entrypoint] deployment takes no look. ENV=dev warns instead of refusing." >&2
