@@ -28,12 +28,18 @@ def _said(**kwargs) -> tuple[str, str]:
 def test_the_default_does_not_claim_the_geometry_was_checked():
     """It claimed exactly that until 2026-09-15, on every job ever run, while intake's one geometry
     reader listed a directory the upload endpoint deletes. The default is what every caller gets,
-    so the default is the one that has to be true."""
+    so the default is the one that has to be true.
+
+    The honest branch used to read "the geometry itself was not measured", which was its own lie -
+    the measurement is attempted on every upload, and a farfield brief with no declared inlet
+    reaches this branch with a good measurement in hand. It now denies only the CONFIRMATION, which
+    is what `bind_patches` actually withheld; see
+    `test_the_unchecked_sentence_claims_nothing_about_the_measurement.py`."""
     _conclusion, because = _said()
     assert "checked against the selected engine" in because
-    assert "the geometry itself was not measured" in because
+    assert "not confirmed against the measured geometry" in because
     assert "checked against the geometry" not in because
-    assert "measured geometry" not in because
+    assert "checked against the measured geometry" not in because
 
 
 def test_the_conclusion_itself_is_unchanged():

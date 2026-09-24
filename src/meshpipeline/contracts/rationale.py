@@ -85,11 +85,33 @@ def intake_compatibility(publish: Any, *, engine: str, purpose: str,
 #: keyword that flips it back the moment the check exists. The default is `False` because that is
 #: the truth at every call site right now, and a default that has to be passed to be honest is a
 #: sentence that goes back to lying the first time someone adds a caller.
+#:
+#: AND THE HONEST BRANCH HAD A LIE OF ITS OWN, pointing the other way. It said "the geometry itself
+#: was not measured", which is a claim about the MEASUREMENT, and the measurement is attempted on
+#: every upload - `api/v1/upload.py:263` calls it on the committed bytes of every file, and the
+#: setting that once gated it is retired (`settings/inventory.py:126`). What is false on this branch
+#: is never the measurement: `agents/intake/geometry_brief.bind_patches` answers `checked=False` in
+#: FOUR different situations and only one of them is an absent measurement - no usable measurement
+#: row, a measurement that found no openings at all, a brief that DECLARED no inlet or outlet, and
+#: a declared port that resolved to no opening. The third is the input that exposed it: an
+#: external-CFD farfield job has no inlet and no outlet to declare - the body sits in a wind tunnel
+#: and the farfield is constructed, not declared - so every one of those customers was told their
+#: geometry had not been measured while the opening table from that very measurement sat in the
+#: same conversation.
+#:
+#: This function is handed one bool and cannot tell the four apart, so it now says the single thing
+#: that is true in all four and claims nothing about whether the measurement ran: the assignments
+#: were not CONFIRMED against the measured geometry, so the sizes and positions in the brief are
+#: still only the ones the customer stated. Naming one cause out of four from a bool is how the old
+#: sentence came to lie, and it is not traded here for a different guess at which cause it was.
+#: The claim is set-level on purpose - a partial binding is not a check (`geometry_brief.py:606`),
+#: so "they were not confirmed" stays true on the job whose other ports did bind.
 _GEOMETRY_CHECKED = ("{patches} boundary assignment(s) and a {dimensionality} domain were checked "
                      "against the measured geometry and the selected engine")
 _GEOMETRY_NOT_CHECKED = ("{patches} boundary assignment(s) and a {dimensionality} domain were "
-                         "checked against the selected engine; the geometry itself was not "
-                         "measured, so the sizes and positions here are the ones you stated")
+                         "checked against the selected engine; they were not confirmed against "
+                         "the measured geometry, so the sizes and positions here are the ones "
+                         "you stated")
 
 
 def intake_requirements_finalized(publish: Any, *, patches: int, dimensionality: str,

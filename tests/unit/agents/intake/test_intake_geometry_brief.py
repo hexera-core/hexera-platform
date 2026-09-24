@@ -295,13 +295,19 @@ def _finalised(monkeypatch, *, document, patches) -> str:
     return lines[-1]
 
 
-def test_the_sentence_says_the_geometry_was_not_measured_when_it_was_not(monkeypatch):
+def test_the_sentence_withholds_the_claim_when_nothing_bound(monkeypatch):
     """False on every job ever run until this phase: the checker read a directory `upload.py:253`
     empties, so the declaration was compared against nothing. An upload whose measurement never
-    landed is that same situation, and the sentence still has to say so."""
+    landed is that same situation, and the sentence still has to withhold the claim.
+
+    It withholds the CONFIRMATION and says nothing about whether the measurement ran: this same
+    `checked=False` arrives from four causes, one of which is a farfield brief with no declared
+    port and a perfectly good measurement, and one bool cannot tell them apart. See
+    `tests/unit/contracts/test_the_unchecked_sentence_claims_nothing_about_the_measurement.py`."""
     detail = _finalised(monkeypatch, document=None,
                         patches=[{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0]}])
-    assert "the geometry itself was not measured" in detail
+    assert "not confirmed against the measured geometry" in detail
+    assert "not measured" not in detail
 
 
 def test_the_sentence_becomes_true_only_when_every_declared_port_bound(monkeypatch):
@@ -313,7 +319,9 @@ def test_the_sentence_becomes_true_only_when_every_declared_port_bound(monkeypat
     # one port that cannot be placed, and the claim retreats
     partial = _finalised(monkeypatch, document=DOCUMENT,
                          patches=[*patches, {"name": "outlet_3", "type": "outlet"}])
-    assert "was not measured" in partial
+    assert "not confirmed against the measured geometry" in partial
+    # and it does not retreat into a claim about the measurement, which ran and succeeded here
+    assert "not measured" not in partial
 
 
 # what the engines are handed
