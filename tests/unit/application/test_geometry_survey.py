@@ -33,6 +33,20 @@ def _ids(views) -> list[str]:
     return [v["id"] for v in views]
 
 
+@pytest.fixture
+def side_on(monkeypatch):
+    """The package's fluid-side switch, armed the way the platform arms it and not by hand. The crowded part
+    below needs it: without the side question there are five questions and the cap never fires."""
+    import meshpipeline.settings.package_switches as package_switches
+    import meshpipeline.settings.policy as polcfg
+
+    monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", True)
+    monkeypatch.setattr(polcfg, "GEOMETRY_MEASURED_STOPS_ENABLED", False)
+    for name in package_switches.PACKAGE_SWITCHES:
+        monkeypatch.delenv(name, raising=False)
+    assert polcfg.arm_the_package()["GEOMETRY_AGENT_FLUID_SIDE"] == "on"
+
+
 def _role_question(state) -> dict:
     """The one role question the survey raises. There is one: `ask.say.port_roles` puts ONE question naming
     every mouth nothing has placed, not one question per mouth."""
@@ -413,6 +427,172 @@ def test_the_briefs_blanket_settles_the_remaining_mouths_only_once_every_named_p
 def test_an_external_purpose_raises_no_role_gate():
     state = _fresh("ahmed_variant_001", purpose="external_cfd")
     assert gs.role_problems(state, _doc("ahmed_variant_001"), [_WALL, {"name": "far", "type": "farfield"}]) == []
+
+
+# THE FINDER'S OWN WORK, ON THE PRODUCT PATH: THE CAP, THE RANKING, THE TIE-BREAK, AND THE TWO MISSING KINDS
+
+
+def _crowded(**kw) -> dict:
+    """block_boss_sharp with six questions on it, which is one more than the cap puts.
+
+    Every one of the six comes from the part or the brief and none is invented: the file would be refused by
+    this platform's own pre-mesh rules (dispatch), two mouths need a role (boundary), the geometry reads the
+    same both ways with the side switch on (domain), the look reports a mouth the measurement did not find
+    (domain), the brief asks for a thousand cells (resolution) and an STL declares no unit (resolution).
+    """
+    doc = _doc("block_boss_sharp")
+    doc["facts"]["units"] = {**(doc["facts"].get("units") or {}), "declared": None, "declared_source": "none"}
+    doc["look"] = {"status": "ok", "impression": {
+        "looks_like": "a pierced block",
+        "openings_seen": [{"id": "unlabelled", "mouth": "clear"}, {"id": "o1", "mouth": "clear"}],
+        "internal_features": []}}
+    brief = _brief("block_boss_sharp") + "\nMesh budget: keep the total cell count under 1,000 cells.\n"
+    return gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=brief, **kw))
+
+
+def test_the_five_question_cap_is_a_fact_of_the_product_and_the_ranking_is_the_tier_order(side_on):
+    """MAX_ASKED and the consequence ranking were built and ran nowhere near a customer: the platform composed
+    its survey with the package's fallback finder, which has neither. Six questions, five put, and the order is
+    the tier order: dispatch, boundary, domain, domain, resolution."""
+    state = _crowded()
+    views = {v["id"]: v for v in gs.question_views(state)}
+    assert state["asking"]["max_asked"] == 5
+    assert len(state["asking"]["put"]) == 5
+    assert [views[q]["tier"] for q in state["asking"]["put"]] == [
+        "dispatch", "boundary", "domain", "domain", "resolution"]
+    (held,) = list(state["asking"]["held"])
+    assert views[held]["put"] is False
+    assert views[held]["held_because"] == "below_the_cap"
+    assert "at most 5 are put at once" in views[held]["held_quote"]
+    # and it is never put to anybody, which is the whole difference between a cap and a comment
+    assert held not in _ids(gs.open_now(state))
+    assert len(gs.open_now(state)) <= 5
+
+
+def test_a_held_question_still_reaches_the_builder_as_unsettled_and_an_answer_to_it_still_counts(side_on):
+    """NOTHING IS DELETED BY ANY OF THE FOUR CUTS. A question below the cap is not put, and it is still an
+    uncertainty: the builder is told it is unsettled, and a customer who volunteers an answer overrules the
+    cut rather than being refused."""
+    state = _crowded()
+    (held,) = list(state["asking"]["held"])
+    view = [v for v in gs.question_views(state) if v["id"] == held][0]
+    assert view["id"] in {u["id"] for u in state["survey"]["uncertainties"]}
+    if view["route"] in (gs.ROUTE_INTAKE, gs.ROUTE_TRADE):
+        said = view["options"][0]
+        answered = gs.record_answer(state, question_id=held, choice=said, words=said, latest_user_message=said)
+        assert [a for a in gs.live_answers(answered) if a["question_id"] == held]
+
+
+def test_the_tie_break_inside_a_tier_decides_which_question_goes_below_the_cap(side_on):
+    """`asked_before` breaks ties INSIDE a tier, lowest count first, and never moves a question across one. The
+    budget and the unit are both `resolution` here, so the ledger's counts decide which of the two is put."""
+    assert "q_budget" in _crowded()["asking"]["put"]
+    seen_budget = _crowded(asked_before={"budget_envelope": 4})
+    assert "q_unit" in seen_budget["asking"]["put"]
+    assert list(seen_budget["asking"]["held"]) == ["q_budget"]
+    seen_unit = _crowded(asked_before={"unit": 4})
+    assert list(seen_unit["asking"]["held"]) == ["q_unit"]
+    # the tiers do not move, whatever the counts
+    for state in (seen_budget, seen_unit):
+        tiers = {v["id"]: v["tier"] for v in gs.question_views(state)}
+        assert tiers["q_budget"] == tiers["q_unit"] == "resolution"
+
+
+def test_the_counts_a_composition_used_are_replayed_by_every_later_composition(side_on):
+    """The counts move the ORDER of the ranked list and therefore the order of the survey's uncertainties, so a
+    recomposition made with different counts is a survey `geometry_step` cannot reproduce and refuses to plan
+    against. They ride on the row and `composed_inputs` hands them back."""
+    state = _crowded(asked_before={"budget_envelope": 4})
+    assert gs.composed_inputs(state)["asked_before"] == {"budget_envelope": 4}
+    again = gs.recomposed(state, _doc("block_boss_sharp"))
+    assert gs.composed_inputs(again)["asked_before"] == {"budget_envelope": 4}
+    # and a row composed with none is byte for byte what it was: the key is absent, not empty
+    assert "asked_before" not in _fresh("bend_elbow_001")["composed_for"]
+
+
+def test_the_two_kinds_the_old_finder_could_not_raise_are_raised_here():
+    """`dispatch_refusal` is the TOP of the tier order and decides whether the job runs at all;
+    `flow_direction` is the only question the external path has. `contract.asking.uncertainties_from` has no
+    finder for either, so on the product path neither had ever been put."""
+    dispatch = _fresh("block_boss_sharp")
+    first = gs.open_now(dispatch)[0]
+    assert first["id"] == "q_dispatch" and first["tier"] == "dispatch"
+    assert "the answer decides whether the job runs at all" in first["tier_why"]
+    # the platform's own rule, named, with the file and the line it would raise at
+    assert "engines/snappy/drivers.py" in first["why"]
+    assert "the mesher raises on this before it starts" in first["why"]
+
+    # the external half. The fixture's own brief states the axis, and cut 1 settles the question from it, so
+    # this asks with a brief that does not: an unstated flow axis on a blunt body is a real abstention
+    outside = gs.carry_answers(None, gs.compose(
+        _doc("ahmed_variant_001"), purpose="external_cfd",
+        brief="External aero on this body. Mesh budget: 5 million cells."))
+    (flow,) = [v for v in gs.open_now(outside) if v["about"] == "flow_direction"]
+    assert flow["id"] == "q_flow_direction" and flow["tier"] == "domain"
+    # every direction is offered, because the builder's own default with no declared axis is +x whatever the
+    # shape, and a brief that says "flow is along +X" cannot settle a question that does not offer x
+    assert [o for o in flow["options"] if o.startswith("along")] == [
+        f"along {s}{a}" for a in "xyz" for s in "+-"]
+
+
+def test_a_question_the_brief_already_answered_is_not_put_and_is_not_on_the_survey():
+    """CUT 1 from the brief. ahmed_variant_001's own brief says which way the flow comes, so the external
+    question is settled by their own words and never reaches the customer or the builder's unsettled list."""
+    state = _fresh("ahmed_variant_001", purpose="external_cfd")
+    assert [v for v in gs.question_views(state) if v["about"] == "flow_direction"] == []
+    assert gs.open_now(state) == []
+
+
+def test_the_sentence_a_customer_reads_is_the_finders_own_and_the_record_that_labels_it_is_there():
+    """`ask.say` writes the question and `ask.record` writes the row that turns the answer into a label.
+    Neither ran on this path before: the questions were rendered by `contract.asking.questions_from`, whose
+    role sentence begins "I could not settle opening.role on"."""
+    view = _role_question(_fresh("bend_elbow_001"))
+    assert view["text"].startswith("I can see two openings on this part.")
+    assert "I could not settle" not in view["text"]
+    assert view["finder"] == gs.QUESTION_FINDER
+    record = view["record"]
+    assert record["kind"] == "port_role" and record["question_id"] == view["id"]
+    assert [t["place"] for t in record["targets"]] == ["o1", "o2"]
+    assert all(t["field"] == f"openings[{t['place']}].role" for t in record["targets"])
+
+
+# ITEM 18: THE THIRD INTAKE
+
+
+def test_raising_the_budget_never_un_asks_the_question_the_customer_just_answered():
+    """THE LEAK, settled. `ask.uncertainty.budget_uncertainty` reads `forecast.over_cap`, which is computed
+    against whatever cap the composition was given. Composing the finder's document with the CONFIRMED cap
+    therefore un-asked the question the customer had just answered: the trade came off the survey,
+    `carry_answers` retired the answer with it, the confirmed cap went back to None, and `earlier` in
+    `chain.job.third_intake` no longer held `budget`, so the third intake was free to put the budget a second
+    time. The questions are found against the budget the customer WROTE; only the builder hears the one they
+    confirmed."""
+    from geometry_agent.chain.schema import canonical_kind
+
+    brief = _brief("bend_elbow_001").replace("under 2 million cells", "under 100,000 cells")
+    doc = _doc("bend_elbow_001")
+    state = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=brief))
+    said = "o2 in, o1 out, and raise it"
+    state = _say_role(state, "o2", "inlet", words="o2 in", said=said)
+    state = _say_role(state, "o1", "outlet", words="o1 out", said=said)
+    raise_to = [v for v in gs.question_views(state) if v["about"] == "cell_budget"][0]["options"][1]
+    state = gs.record_answer(state, question_id="q_budget", choice=raise_to, words="raise it",
+                             latest_user_message=said)
+    cap = gs.confirmed_cell_cap(state)
+    assert cap and cap > 100_000
+    state = gs.recomposed(state, doc, cell_cap=cap)
+
+    # the question is still the survey's, the answer is still live, and the cap survived the recomposition
+    assert [v for v in gs.question_views(state) if v["about"] == "cell_budget"], "the trade was un-asked"
+    assert gs.confirmed_cell_cap(state) == cap
+    assert state["planner_block"]["customer_cell_cap"] == cap
+    assert gs.builder_block(state)["survey"]["confirmed"]["cell_budget"]["value"] == cap
+
+    # and this is the exact set `chain.job.third_intake` reads to decide whether the budget was asked before
+    earlier = {canonical_kind(u["about"]) for u in state["survey"]["uncertainties"]
+               if u["about"] in ("cell_budget", "opening.role", "unit")}
+    assert "budget" in earlier, "the third intake would put the budget a second time"
 
 
 # THE BLOCK'S WHOLE CONTRACT, AND ITS CEILING
