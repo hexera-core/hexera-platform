@@ -782,10 +782,50 @@ def builder_handoff(state: dict, document: dict, *, request_txt: str) -> dict:
                                      job_id=str(meta.get("job_id") or ""),
                                      provenance=str(meta.get("provenance") or "live"),
                                      intake=recs["intake"], trade=_trade_record(state, key))
-    return pkg["deliver"].builder_handoff(
+    handoff = pkg["deliver"].builder_handoff(
         final, given, geometry_write_up=assembly["block"], intake_block=pkg["handover"].intake_block(record),
         plan_envelope=_envelope_now(pkg, plan, inp, given, unit),
         patches=pkg["deliver"].flow_patches([p.model_dump(mode="json") for p in plan.patches], given))
+    return _with_the_look_state(pkg, handoff, state, given)
+
+
+def _with_the_look_state(pkg: dict, handoff: dict, state: dict, given) -> dict:
+    """The handoff, with WHAT HAPPENED TO THE LOOK said in the typed block, in the survey's own words.
+
+    THE GAP THIS CLOSES, measured over the stored fixtures with the reference planner and all four
+    representations: on the path a job takes when the geometry agent produced NO plan, the block reached the
+    builder through `geometry_survey.builder_block`, which put one `unsettled` row naming the look's state.
+    On the path a PLANNED job takes - which is every normal job - the block reached the builder from here,
+    and carried `looked: false` and not one sentence. So a look that FAILED, a look still running and a look
+    nobody took were the same block to the builder, on the only path that usually runs.
+
+    IT IS THE SAME FUNCTION AND THE SAME SENTENCES, not a second wording: `geometry_survey.LOOK_BECAUSE` is
+    read once, by `geometry_survey.with_the_look_state`, and both paths call it. Two wordings of one fact
+    drift, and this fact is the one three rounds of work have been trying to keep straight.
+
+    THE PACKAGE'S LAST BOUNDARY RUNS AGAIN over the block that leaves. `deliver.builder_handoff` validated
+    the handoff BEFORE this row was in it, so validating only there would leave the row this platform adds as
+    the one thing in the block nothing checked. `check_builder_handoff` is a pure validator, so running it
+    twice costs a walk of the block and nothing else.
+
+    A REFUSAL IS A REFUSED STEP, not a block handed over without the row. `planner_inputs_for_state` then
+    falls back to `agent_block_for_state`, which composes through `builder_block` and carries the look's state
+    itself, and it writes the reason to the job's record. Silently dropping the row would put the builder back
+    where it was, which is the state this exists to end.
+    """
+    try:
+        typed = gs.with_the_look_state(handoff.get("typed"), gs.look_state(state))
+    except gs.SurveyError as exc:
+        raise StepRefused(f"the look's state cannot be put in the builder's block: {exc}") from exc
+    if not isinstance(typed, dict) or typed is handoff.get("typed"):
+        return handoff
+    out = {**handoff, "typed": typed}
+    try:
+        pkg["deliver"].check_builder_handoff(out, given)
+    except pkg["marks"].ContractError as exc:
+        raise StepRefused(f"the builder's block with the look's state in it breaks the package's own "
+                          f"contract: {exc}") from exc
+    return out
 
 
 def _envelope_now(pkg: dict, plan: Any, inp: _Inputs, given: Any, unit: str) -> dict:

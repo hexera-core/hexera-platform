@@ -57,15 +57,53 @@ numpy==1.26.4
 
 # The Surveyor's measuring half. The geometry-agent distribution is installed from
 # vendor/wheels/ by the Dockerfile's `wheel` stage with --no-deps, exactly as the meshpipeline
-# wheel is, so the environment this file builds has to carry what it imports. Of its seven
-# declared dependencies only trimesh was absent here: numpy, scipy and httpx are pinned above,
-# pydantic arrives with fastapi and matplotlib with pyvista (the look's renderer falls back to
-# matplotlib when the offscreen GL path fails), and networkx and rtree are declared by the agent
-# but imported nowhere in it. CORE trimesh only - every optional extra it names is behind
+# wheel is, so the environment this file builds has to carry what it imports. The vendored
+# wheel's own METADATA declares FIVE runtime dependencies - numpy, trimesh, scipy, pydantic,
+# httpx - and of those only trimesh was absent here: numpy and scipy are pinned above, httpx
+# below, and pydantic arrives with fastapi. Its four extras are `fixtures` (manifold3d,
+# shapely - the corpus builders, never a customer's upload), `render` (matplotlib, which
+# arrives with pyvista and which the look's renderer uses), `step` (cadquery-ocp, pinned
+# below) and `dev`. CORE trimesh only - every optional extra trimesh itself names is behind
 # `[easy]`, which nothing in the agent's own import closure reaches. 5.1.0 is the version the
-# agent's own environment has been run and measured on; its core requirement is numpy>=1.21, so
-# it resolves against the 1.26.4 pinned above.
+# agent's own environment has been run and measured on; its core requirement is numpy>=1.21,
+# so it resolves against the 1.26.4 pinned above.
 trimesh==5.1.0
+
+# WHAT THE WHEEL DECLARES IS NOT WHAT IT NEEDS, and these two lines are the whole difference.
+# Neither of them is a Requires-Dist of the vendored wheel and the agent never writes `import
+# rtree`; trimesh imports it ON THE AGENT'S BEHALF, which is why reading the agent's imports
+# said the image was complete when it was not.
+#
+# MEASURED, by running the measurement rather than by reading it. `facts.regions.detect_regions`
+# decides which region sits inside which, and it only asks once a part has TWO OR MORE regions
+# (`if len(out) < 2: return out`). The nesting test is `_encloses`, which casts rays:
+# `container.ray.intersects_any` -> `trimesh.ray.ray_triangle.intersects_id` ->
+# `mesh.triangles_tree` -> `trimesh.triangles.bounds_tree` -> `trimesh.util.bounds_tree`, whose
+# body is `import rtree`. With rtree blocked, a one-region part measures fine and a two-region
+# part raises ImportError inside `detect_regions`. That is a multi-region upload - a CHT part,
+# an assembly, a fluid volume with a sealed bubble - failing at the customer, on the image's
+# very first real job of that shape.
+#
+# WHY NOBODY SAW IT. The agent's own venv also has embreex, so `mesh.ray` is the embree
+# intersector there, which needs no r-tree at all; the fallback path that needs rtree is the
+# one that only ever runs where embreex is absent, which is every image this file builds.
+# embreex is pinned here too, and not as a nicety: on a 41-region part the same
+# `detect_regions` call measures 0.04 s on embree against 0.45 s on rtree at 15,872 faces, and
+# 0.41 s against 20.05 s at 209,408 faces. The answers were identical (41 regions, 40 nested);
+# the cost is not, and it grows with face count, so an image with rtree alone turns a
+# half-second stage into minutes on the assemblies `facts.regions` was written for.
+#
+# networkx IS NOT NEEDED and is deliberately not pinned. `trimesh.graph.connected_components`
+# is the only thing in the agent's closure that would want it, and it tries the scipy engine
+# first (`engines = OrderedDict((("scipy", ...), ("networkx", ...)))`); scipy is pinned above.
+# Measured the same way: with networkx blocked, both the one-region and the two-region part
+# measure identically.
+#
+# deploy/verify_install.py RUNS this path at build time on a two-region part it builds itself,
+# so the next runtime dependency that hides behind trimesh fails the image instead of the
+# upload.
+rtree==1.4.1
+embreex==4.4.0
 
 # Mesh renderer - VTK includes EGL support (GPU-accelerated headless rendering).
 # PINNED EXACTLY: these are graphics libraries whose offscreen-render behaviour

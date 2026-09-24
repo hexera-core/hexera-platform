@@ -267,11 +267,37 @@ async def agent_block_for_state(state) -> dict | None:
         if block is None or document is None:
             return None
         return with_the_stages_that_did_not_run(
-            _checked((await _surveyed_block(ref, document)) or block), document)
+            _checked((await _surveyed_block(ref, document)) or _with_the_look_state(block, document)), document)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry agent block: unavailable for this run (%s) - the planner sees "
                        "exactly what it sees with no measurement", exc)
         return None
+
+
+def _with_the_look_state(block: dict | None, document: dict) -> dict | None:
+    """The measurement's OWN block, with what happened to the look said in it. Never raises.
+
+    WHICH BLOCK THIS IS, and why it needed its own line. `_surveyed_block` returns None when no survey was
+    stored for these bytes, and the planner is then handed `hexera.planner_block`'s block, composed from the
+    document alone. That block carries `looked`, a boolean, so a look that FAILED and a look nobody took reach
+    the builder as the same False beside the same empty `seen` - the same collapse that
+    `geometry_survey.with_the_look_state` closes on the two paths that have a row. There is no row here, so
+    the state is read from the document (`geometry_survey.look_state_of_document`), which can say `ok`,
+    `failed` or `not_attempted` and deliberately never says `pending`: the queue's answer lives on the row.
+
+    NEVER RAISES, and that is this path's rule rather than a shortcut. Everything from here down is the
+    fail-open the planner gets when the geometry step did not run; a refusal of the row must cost the row and
+    not the block, because a block with no sentence is where the builder already was and a missing block is
+    worse. `_checked` then runs the whole contract over whatever comes back.
+    """
+    from meshpipeline.application import geometry_survey as gs
+
+    try:
+        return gs.with_the_look_state(block, gs.look_state_of_document(document))
+    except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
+        logger.warning("geometry agent block: the look's state is not in the block the builder reads (%s) - "
+                       "it says `looked` and no more, which cannot tell a failed look from an absent one", exc)
+        return block
 
 
 def _checked(block: dict | None) -> dict | None:

@@ -115,6 +115,76 @@ def test_the_environment_the_wheel_installs_into_carries_what_the_agent_imports(
         "level - the wheel installs but the first measurement raises ImportError")
 
 
+#: What trimesh reaches for ON THE AGENT'S BEHALF, with the path and what its absence costs. Neither is a
+#: Requires-Dist of the agent's wheel and the agent never writes either import, so reading the agent's own
+#: declarations - which is what the two requirements comments used to do - says the image is complete when it
+#: is not. MEASURED in the built `api` image: with both uninstalled, `detect_regions` measures a one-region
+#: part fine and raises `ModuleNotFoundError: No module named 'rtree'` on a two-region one.
+TRIMESH_REACHES_FOR = {
+    "rtree": "the r-tree trimesh builds for its fallback ray intersector "
+             "(detect_regions -> _encloses -> ray.intersects_any -> triangles_tree -> util.bounds_tree), "
+             "which is the path every multi-region part takes when embree is not loaded",
+    "embreex": "the embree intersector trimesh prefers, which is what the agent's own environment was "
+               "measured on: the same nesting test costs 0.41 s on embree against 20.05 s on the rtree "
+               "fallback at 209,408 faces, and the gap grows with face count",
+}
+
+
+@pytest.mark.parametrize("pin", sorted(TRIMESH_REACHES_FOR))
+def test_the_environment_carries_what_trimesh_reaches_for_on_the_agents_behalf(pin):
+    runtime = (REPO / "requirements" / "runtime.txt").read_text(encoding="utf-8")
+    constraints = (REPO / "requirements" / "constraints.txt").read_text(encoding="utf-8")
+    assert re.search(rf"^{pin}==", runtime, re.M), (
+        f"requirements/runtime.txt does not pin {pin}: {TRIMESH_REACHES_FOR[pin]}")
+    assert re.search(rf"^{pin}==", constraints, re.M), (
+        f"requirements/constraints.txt does not pin {pin}, so a rebuild resolves it freely while every "
+        f"other distribution in the image is locked")
+
+
+@pytest.mark.parametrize("pin", sorted(TRIMESH_REACHES_FOR))
+def test_the_wheel_declares_neither_of_them_which_is_why_reading_it_was_not_enough(pin):
+    """The premise of the two pins above, asserted rather than asserted-in-prose.
+
+    Both requirements files used to say these were "declared by the agent". They are not, and that is the
+    whole reason a dependency check built on the agent's declarations could not see the gap. The day the agent
+    declares one, this test fails and those comments have to be rewritten - which is the point: a note that
+    lies is the same defect one layer up.
+    """
+    with zipfile.ZipFile(_the_wheel()) as z:
+        name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+        declared = {re.split(r"[\s;<>=!~\[]", line.split(":", 1)[1].strip())[0].lower()
+                    for line in z.read(name).decode("utf-8").splitlines()
+                    if line.startswith("Requires-Dist:")}
+    assert declared, "the wheel declares no dependencies at all - this test is checking nothing"
+    assert pin not in declared, (
+        f"the agent's wheel now declares {pin}, so the comments in requirements/runtime.txt and "
+        f"requirements/constraints.txt saying it does NOT are stale - rewrite them")
+
+
+def test_the_build_runs_the_path_a_multi_region_part_takes_rather_than_only_importing_it():
+    """The gate that catches the next dependency hiding behind trimesh.
+
+    Importing `geometry_agent` proves the wheel is there. It proved exactly that while the image could not
+    measure a part with two regions at all, because the import closure of `facts.regions` does not name rtree
+    - trimesh reaches for it, inside the call. So the check has to RUN the call.
+    """
+    verify = (REPO / "deploy" / "verify_install.py").read_text(encoding="utf-8")
+    assert "detect_regions" in verify, (
+        "deploy/verify_install.py does not run the nesting test, so an image that imports the agent but "
+        "cannot measure a multi-region part still builds - and the first customer with a CHT assembly, a "
+        "body inside a body or a sealed bubble finds out instead")
+    assert verify.count("_measure_the_nesting(") == 3, (
+        "deploy/verify_install.py does not run the nesting test TWICE (one definition, two calls): the "
+        "measurement has two ray backends, and a run on the preferred one alone passes in an image whose "
+        "fallback raises ImportError the first time embree cannot load")
+    for token in ('_GEOMETRY_RAY_FALLBACK = "embreex"', "sys.meta_path.insert"):
+        assert token in verify, (
+            f"deploy/verify_install.py no longer hides {token!r} to reach the fallback backend, so the second "
+            f"run measures the same path as the first")
+    assert DOCKERFILE.count("python /tmp/verify_install.py") == 2, (
+        "the multi-region run does not reach both runtime blocks")
+
+
 # ---------------------------------------------------------------- what it installs is not stale
 
 def test_the_vendored_wheel_matches_its_recorded_provenance():

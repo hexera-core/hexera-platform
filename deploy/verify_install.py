@@ -1,5 +1,9 @@
-# Responsibility: Prove the installed wheels resolve from site-packages with their package data.
-# Boundaries: stdlib-only and import-safe: it runs inside the image build before anything else is trusted.
+# Responsibility: Prove the installed wheels resolve from site-packages with their package data, and that
+#                 the one path where a missing runtime dependency hides actually RUNS.
+# Boundaries: the checking code is stdlib-only, so it can report in an image where nothing else installed.
+#             The last section deliberately is not: it imports the geometry agent and trimesh and measures a
+#             two-region part, because importing a package proves less than running the thing it is imported
+#             for, and that difference is the defect this file exists to catch.
 from __future__ import annotations
 
 import pathlib
@@ -109,3 +113,101 @@ except Exception:  # noqa: BLE001 - an unnamed version is a weaker report, not a
     gversion = "n/a"
 print(f"OK: geometry_agent installed at {gpkg} (version {gversion}), "
       f"{len(GEOMETRY_SUBPACKAGES)} subpackages and {len(GEOMETRY_DATA)} data files present")
+
+
+# 5. THE PATH A MULTI-REGION PART TAKES, RUN. Everything above asks whether a file is there. That is
+#    strictly weaker than asking whether the code works, and the gap between the two is where this
+#    image's last real defect lived: the geometry agent imports fine with no `rtree` in the
+#    environment, measures a single-region part fine, and raises ImportError from inside
+#    `facts.regions.detect_regions` the first time a part has TWO regions - a CHT assembly, a
+#    fluid volume with a sealed bubble, anything with a body inside a body. At a customer's upload.
+#
+#    WHY NEITHER REQUIREMENTS FILE COULD HAVE TOLD US. `rtree` is not a Requires-Dist of the
+#    geometry-agent wheel and the agent never writes `import rtree`. trimesh writes it, on the
+#    agent's behalf, at the bottom of the nesting test:
+#      detect_regions -> _encloses -> container.ray.intersects_any
+#        -> trimesh.ray.ray_triangle.intersects_id -> mesh.triangles_tree
+#        -> trimesh.triangles.bounds_tree -> trimesh.util.bounds_tree -> `import rtree`
+#    So the only check that can see it is one that RUNS the call. This is that check.
+#
+#    IT RUNS ON BOTH RAY BACKENDS, deliberately. With `embreex` installed trimesh picks the embree
+#    intersector and never reaches for an r-tree at all, so a run on the default backend alone would
+#    pass in an image with no rtree and leave the fallback to fail at a customer. The second run
+#    hides embreex from the import system for the length of the call, which is the environment
+#    trimesh falls back to whenever embree cannot load, and measures that path too.
+import importlib as _importlib  # noqa: E402
+
+_GEOMETRY_RAY_FALLBACK = "embreex"
+
+
+class _Hide:
+    """Refuse one top-level module, so a fallback path can be measured rather than assumed."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] == self.name:
+            raise ImportError(f"hidden by deploy/verify_install.py: {name}")
+        return None
+
+
+def _two_region_part(trimesh):
+    """A box with a smaller box inside it: two surface regions, one nested in the other. Built here
+    rather than shipped, because a fixture file is a thing that can go missing from a wheel."""
+    return trimesh.util.concatenate([trimesh.creation.box(extents=(0.2, 0.2, 0.2)),
+                                     trimesh.creation.box(extents=(0.05, 0.05, 0.05))])
+
+
+def _measure_the_nesting(trimesh, detect_regions) -> str:
+    """Run the nesting test on a two-region part and return the backend it went through. Raises."""
+    part = _two_region_part(trimesh)
+    backend = type(part.ray).__module__
+    regions = detect_regions(part)
+    if len(regions) != 2:
+        raise AssertionError(f"the measurement found {len(regions)} regions in a part built with two")
+    inner = [r for r in regions if r.nested_in]
+    outer = [r for r in regions if not r.nested_in]
+    if len(inner) != 1 or len(outer) != 1 or inner[0].nested_in != outer[0].id:
+        raise AssertionError(f"the nesting test placed {[(r.id, r.nested_in) for r in regions]}, not one "
+                             f"region inside the other")
+    return backend
+
+
+try:
+    import trimesh as _trimesh
+    from geometry_agent.facts.regions import detect_regions as _detect_regions
+except Exception as exc:  # noqa: BLE001
+    sys.exit(f"FAIL: the geometry agent's measurement cannot even be imported in this image "
+             f"({type(exc).__name__}: {exc}). requirements/runtime.txt has to carry what the agent's "
+             f"wheel imports, and the wheel is installed with --no-deps.")
+
+try:
+    _default_backend = _measure_the_nesting(_trimesh, _detect_regions)
+except Exception as exc:  # noqa: BLE001
+    sys.exit(f"FAIL: measuring a part with two regions does not work in this image "
+             f"({type(exc).__name__}: {exc}).\n"
+             f"      This is the nesting test in geometry_agent.facts.regions.detect_regions, which every\n"
+             f"      multi-region upload runs: a CHT assembly, a body inside a body, a fluid volume with a\n"
+             f"      sealed bubble. A single-region part measures fine without it, so the absence shows up\n"
+             f"      at a customer's upload unless it shows up here. If this is an ImportError, pin what it\n"
+             f"      names in requirements/runtime.txt: trimesh reaches for rtree and embreex on the\n"
+             f"      agent's behalf and neither is declared by the agent's wheel.")
+
+sys.meta_path.insert(0, _Hide(_GEOMETRY_RAY_FALLBACK))
+try:
+    for _name in [m for m in list(sys.modules) if m.split(".")[0] in (_GEOMETRY_RAY_FALLBACK, "trimesh")]:
+        del sys.modules[_name]
+    _fallback = _importlib.import_module("trimesh")
+    _fallback_backend = _measure_the_nesting(_fallback, _detect_regions)
+except Exception as exc:  # noqa: BLE001
+    sys.exit(f"FAIL: with {_GEOMETRY_RAY_FALLBACK} hidden, measuring a part with two regions does not work "
+             f"({type(exc).__name__}: {exc}).\n"
+             f"      That is the backend trimesh falls back to whenever embree cannot load in this image,\n"
+             f"      and a fallback that raises is not a fallback. It needs rtree; pin it in\n"
+             f"      requirements/runtime.txt.")
+finally:
+    sys.meta_path.pop(0)
+
+print(f"OK: a two-region part measures and its nesting is found, on the backend this image will use "
+      f"({_default_backend}) and on the one it falls back to ({_fallback_backend})")
