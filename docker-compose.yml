@@ -170,7 +170,14 @@ services:
       # CDN/Vercel deploy without touching the API image).
       - ./ui:/srv/ui:ro
     ports:
-      - "8000:8000"
+      # LOOPBACK ONLY, like every other published port in this file. A bare
+      # "8000:8000" publishes on 0.0.0.0 AND [::], so the dev control plane -
+      # which holds uploaded geometry and answers /api/v1 without a browser -
+      # is reachable from anything on the same network. It was held as an
+      # uncommitted local edit and a fast-forward wiped it, which is why it is
+      # committed here: a security property that only survives while nobody
+      # runs `git merge` is not one.
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
