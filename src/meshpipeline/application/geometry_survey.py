@@ -143,6 +143,18 @@ def block_list_max() -> int:
 #: plan is made with no eyes and, until this, said nothing about it.
 LOOK_OK, LOOK_PENDING, LOOK_FAILED, LOOK_NONE = "ok", "pending", "failed", "not_attempted"
 
+#: EVERY STATE THE LOOK CAN BE IN, as one name. It exists so that nothing has to keep a list of them in
+#: step by hand: a test that enumerates this tuple fails the day a fifth state is added, where a test
+#: that hand-lists three of them goes on passing and says nothing about the fourth. That is how
+#: `look_queued` came to have no column - the round trip was checked against a list somebody wrote out.
+LOOK_STATES: tuple[str, ...] = (LOOK_OK, LOOK_PENDING, LOOK_FAILED, LOOK_NONE)
+
+#: The outcomes `_queue_the_look` can report, and which of them mean a worker is on its way. `skipped` is
+#: not one: the queue refused it and nothing will write a reading, so the row is `not_attempted` and not
+#: pending. Named here because `look_state` and the row that stores the answer must agree about it.
+LOOK_QUEUED, LOOK_CACHED, LOOK_SKIPPED = "queued", "cached", "skipped"
+LOOK_ON_ITS_WAY: tuple[str, ...] = (LOOK_QUEUED, LOOK_CACHED)
+
 #: What each state means for the `seen` half of the builder's block, in a sentence the builder reads. It is
 #: the same sentence in the row and in the block, because two wordings of one fact drift.
 LOOK_BECAUSE: dict[str, str] = {
@@ -1469,7 +1481,7 @@ def look_state(state: dict | None) -> str:
         return LOOK_OK
     if status in (LOOK_FAILED, "refused", "error"):
         return LOOK_FAILED
-    if str((state or {}).get("look_queued") or "") in ("queued", "cached") or status == LOOK_PENDING:
+    if str((state or {}).get("look_queued") or "") in LOOK_ON_ITS_WAY or status == LOOK_PENDING:
         return LOOK_PENDING
     return LOOK_NONE
 
@@ -1486,13 +1498,13 @@ def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
     try:
         stored_look = document.get("look")
         look = stored_look if isinstance(stored_look, dict) else {}
-        if look.get("status") == "ok":
-            return "cached"
+        if look.get("status") == LOOK_OK:
+            return LOOK_CACHED
         from meshpipeline.contracts.geometry_measurement import enqueue_look
-        return "queued" if enqueue_look(str(source_id), owner_id) else "skipped"
+        return LOOK_QUEUED if enqueue_look(str(source_id), owner_id) else LOOK_SKIPPED
     except Exception as exc:                       # noqa: BLE001
         logger.warning("geometry survey: the look could not be queued - source_id=%s: %s", source_id, exc)
-        return "skipped"
+        return LOOK_SKIPPED
 
 
 async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "", role: str = "",
@@ -1565,7 +1577,8 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
 
 
 __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER", "block_list_max",
-           "LOOK_BECAUSE", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_PENDING",
+           "LOOK_BECAUSE", "LOOK_CACHED", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_ON_ITS_WAY",
+           "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
