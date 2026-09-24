@@ -296,8 +296,6 @@ it could not do and the job runs on what is there.
 | `GEOMETRY_AGENT_STEP_PROVIDER` | `deepseek` | which model plans: `deepseek`, `deepinfra`, `anthropic`, `generic`, `auto`, or `reference` for the package's deterministic stand-in. No key for it means no plan, never another provider |
 | `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | `300` | one plan's wall clock, and the loop's own budget; past it the step records a failure on the row and the job runs without the plan. 0 means no clock at all |
 | `GEOMETRY_AGENT_LEDGER_PATH` | (empty) | a JSONL file the job ledger's rows are also appended to; the durable copy always lives on the survey row |
-| `GEOMETRY_MEASURED_STOPS_ENABLED` | `false` | find where a passage stops with no mouth at measure time, so a closed end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds `facts.passage_ends` |
-| `GEOMETRY_FLUID_SIDE_ENABLED` | `false` | where the file reads the same with the flow through its bores and with the file itself as the flow, ask the customer which rather than letting the mesher's reading stand; nothing is placed on the flow path until somebody answers |
 
 The last two are the measurement package's own stages rather than switches over this platform's feature,
 which is why they survived the cleanup below: each costs something real that an operator may decline, a
@@ -486,31 +484,24 @@ the planner as `customer_cell_cap` and holds nothing.
 The survey is stored in `geometry_surveys` (migration 0004), one row per upload, keyed by the file's
 sha256, so an answer can be bound to the part it was given about long after the conversation.
 
-### Two stages that live inside the measurement package
+### The two package stages are not settings any more
 
-`GEOMETRY_MEASURED_STOPS_ENABLED` and `GEOMETRY_FLUID_SIDE_ENABLED` are the platform's names for two
-switches the package reads out of its OWN environment (`GEOMETRY_AGENT_MEASURED_STOPS`,
-`GEOMETRY_AGENT_FLUID_SIDE`). `policy.arm_the_package` copies them across, and it is called at the two
-points the package consults them: when a file is measured and when a survey is composed. The measurement
-runs in a child process, so the copy has to happen before the file is opened or the stage silently does
-not run. An environment that already carries the package's own variable is left alone, so a developer who
-exported it keeps it.
+There were two settings here, one for the closed-end pass and one for the fluid-side reading, each off by
+default and each copied into a variable of the measurement package's own. The package has since deleted both
+readers: both stages run on every measurement, so there is no off state left for a setting to select. All four
+names are gone from this platform, the two platform names are refused at startup (they are in the retired
+table below, with the reason), and `policy.arm_the_package` and `settings/package_switches.py` are deleted.
 
-They are not gates over the Surveyor, which is why they outlived the five that were. Each is a real cost
-an operator may decline, and neither is "is the feature on".
+Where a passage stops with no mouth is a measurement and always was, but it once ran inside the look's
+renderer, so a closed end reached the builder only on a job that had looked. It runs at measure time now and
+`facts.passage_ends` is on every stored document.
 
-Where a passage stops with no mouth is a measurement and always was, but until this switch it ran inside
-the look's renderer, so a closed end reached the builder only on a job that had looked. With it on the
-stage runs at measure time; off, `facts.passage_ends` is absent and the stored document is byte for byte
-what it was.
-
-Which side of the surface is the fluid is not in the file. A ring with one hole through a thick body reads
-the same as the end of an annular passage and as the mouth of a bore through solid metal. Off, the mesher's
-reading stands unremarked: a solid block with one bore reaches the builder as `annular_fluid` with four
-`junction` places on it, and a block has no junctions. On, the survey says the side is unsettled, intake
-puts the question, and `places` is empty with a `flow_path` refusal naming the reason until somebody
-answers. An answer composes the survey again with the side they named, which on that block moves the
-representation to `wall_shell` and the cell forecast from 580,422 to 2,469,862. Most briefs settle the side
+Which side of the surface is the fluid is not in the file. A ring with one hole through a thick body reads the
+same as the end of an annular passage and as the mouth of a bore through solid metal. The survey says the side
+is unsettled, intake puts the question, and `places` is empty with a `flow_path` refusal naming the reason
+until somebody answers. An answer composes the survey again with the side they named, which on a solid block
+with one bore moves the representation from `annular_fluid` to `wall_shell` and the cell forecast from 580,422
+to 2,469,862, and takes four `junction` places off a part that has no junctions. Most briefs settle the side
 themselves ("carve the fluid cavity INSIDE it"), so on the export corpus the question never appears.
 
 ### The geometry agent's step
@@ -661,6 +652,8 @@ Setting one of these makes the process refuse to start, naming the variable and 
 | `EVENTS_LOG_TTL_HOURS` | yes | see guidance | deleted with the sweep it configured, which expired a file nothing wrote any more. |
 | `EXPORT_CONVERSATION_DATA` | yes | see guidance | deleted. It gated the whole corpus sample rather than the conversation, and only ever applied behind DATA_COLLECTION_ENABLED. |
 | `GEOMETRY_AGENT_STEP_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
+| `GEOMETRY_FLUID_SIDE_ENABLED` | yes | see guidance | deleted with the stage it selected. The measurement package reads neither this name nor its own GEOMETRY_AGENT_* variable any more: the closed-end pass and the fluid-side reading run on every measurement, so there is no off state for this to select. |
+| `GEOMETRY_MEASURED_STOPS_ENABLED` | yes | see guidance | deleted with the stage it selected. The measurement package reads neither this name nor its own GEOMETRY_AGENT_* variable any more: the closed-end pass and the fluid-side reading run on every measurement, so there is no off state for this to select. |
 | `GEOMETRY_MEASUREMENT_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
 | `GEOMETRY_REPORT_READERS_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
 | `GEOMETRY_SURVEY_ENABLED` | yes | see guidance | deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and the builder handoff - is on for every upload, so there is no off state for this to select. `surveyor-v1-precleanup` is the tag where it still worked. |
@@ -742,7 +735,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (218 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (214 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -831,8 +824,6 @@ Every supported setting (218 entries). `template` settings are the ones `.env.ex
 | `GEOMETRY_AGENT_LEDGER_PATH` | template | app |  |
 | `GEOMETRY_AGENT_STEP_PROVIDER` | template | app |  |
 | `GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS` | template | app |  |
-| `GEOMETRY_FLUID_SIDE_ENABLED` | template | app |  |
-| `GEOMETRY_MEASURED_STOPS_ENABLED` | template | app |  |
 | `GEOMETRY_MEASUREMENT_SYNC_MAX_MB` | template | app |  |
 | `GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS` | template | app |  |
 | `GEOMETRY_VISION_MODEL` | template | app |  |
@@ -897,8 +888,6 @@ Every supported setting (218 entries). `template` settings are the ones `.env.ex
 | `REVIEWER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
 | `ALEMBIC_CONFIG` | external | app |  |
 | `CLOUD_RUN_EXECUTION` | external | app |  |
-| `GEOMETRY_AGENT_FLUID_SIDE` | external | app |  |
-| `GEOMETRY_AGENT_MEASURED_STOPS` | external | app |  |
 | `GOOGLE_APPLICATION_CREDENTIALS` | external | app |  |
 | `PIPELINE_EXECUTION_ID` | external | app |  |
 | `PROMETHEUS_MULTIPROC_DIR` | external | app |  |

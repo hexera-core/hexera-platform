@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import meshpipeline.settings.env as env
-import meshpipeline.settings.package_switches as package_switches
 from meshpipeline.settings.env import (
     ConfigurationError,
     load_prompt,
@@ -222,58 +221,20 @@ GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_AGENT_STEP
 #: the default, keeps them on the survey row only, which is where the durable copy always lives.
 GEOMETRY_AGENT_LEDGER_PATH: str = optional_env("GEOMETRY_AGENT_LEDGER_PATH", "").strip()
 
-# TWO STAGES INSIDE THE MEASUREMENT PACKAGE, each its own setting and each off by default. THESE ARE
-# NOT GATES OVER THIS PLATFORM'S OWN FEATURE, which is why they outlived the five that were: they are
-# the package's switches, they each cost something real, and this platform's job is to be the one place
-# an operator sets them and the one place they are documented. Without an entry here they were reachable
-# only by setting an undocumented environment variable by hand, which is not a switch anybody can find.
+# THE MEASUREMENT PACKAGE'S TWO STAGES ARE GONE FROM HERE, and so is `arm_the_package`.
 #
-# WHERE A PASSAGE STOPS WITH NO MOUTH. The stops detector is a measurement and always was, but until
-# this stage it ran inside the look's renderer, so a closed pipe end reached the builder only on a job
-# that had looked. On, it runs at measure time and the builder is told about closed ends whether or not
-# the look ran. It costs one more pass over the mesh at upload and it adds `facts.passage_ends`; off,
-# that field is absent and the stored document is byte for byte what it was.
+# There were two settings, GEOMETRY_MEASURED_STOPS_ENABLED and GEOMETRY_FLUID_SIDE_ENABLED, each off by
+# default, each armed into the package's own GEOMETRY_AGENT_* variable at the two points the package was
+# reached. They were real switches once. The package then deleted both readers: `geometry_agent.facts.measure`
+# and `geometry_agent.agent.catalog` read neither variable on any line, the closed-end pass and the fluid-side
+# reading run on every measurement, and there is no off state left for a setting to select. What survived was
+# a platform that declared two settings, defaulted them false, and wrote two variables nothing read, on every
+# measurement and every survey. An operator could set either one and nothing whatever would happen.
 #
-# IT IS READ WHERE THE FILE IS OPENED, which is why `arm_the_package` exists: the package reads it from
-# the environment inside `facts.measure`, and the measurement runs in a child process that inherits this
-# one's environment. Setting it once and never unsetting it is safe; setting and unsetting it around a
-# call would be two measurements in one worker racing each other over one variable.
-GEOMETRY_MEASURED_STOPS_ENABLED: bool = (
-    optional_env("GEOMETRY_MEASURED_STOPS_ENABLED", "false").lower() == "true")
-
-# WHICH SIDE OF THE SURFACE IS THE FLUID. A ring with one hole through a thick body reads the same as
-# the end of an annular passage and as the mouth of a bore through solid metal, and the file cannot say
-# which. Off, the mesher's own reading stands unremarked and a solid plate can reach the builder with
-# confident junction places on it. On, the survey says so, puts the question to the customer, and places
-# nothing on the flow path until somebody answers; an answer composes the survey again with the side
-# they named. It costs the customer a question they may not need: most briefs settle the side themselves.
-GEOMETRY_FLUID_SIDE_ENABLED: bool = (
-    optional_env("GEOMETRY_FLUID_SIDE_ENABLED", "false").lower() == "true")
-
-
-def arm_the_package() -> dict[str, str]:
-    """Put the two platform settings into the environment the measurement package reads them from.
-
-    CALLED FROM EXACTLY TWO PLACES, named here so the next reader can check rather than trust this
-    sentence: `application/geometry_measurement.measure_local_file` and
-    `application/geometry_survey.composition`. This docstring said it was called at those two points
-    while nothing called it at all, and the two settings above were therefore switches an operator could
-    set with no effect whatever. `tests/unit/application/test_geometry_package_switches.py` asserts the
-    call at both, and asserts it happens BEFORE the package is reached.
-
-    Idempotent: it writes the same value every time and never unsets one, so two jobs in one worker
-    cannot disagree about it and a child process inherits whatever the operator set.
-
-    AN OPERATOR'S OWN SETTING WINS. Where the package's variable is already in the environment it is
-    left alone, because a developer who exported it meant it and a platform that overwrote it would make
-    the package's own tests and evals unrunnable in the same shell.
-
-    THE WRITING IS IN `settings/package_switches.py` and the DECIDING is here, which is the split the whole
-    settings tier keeps: no production module may touch `os.environ`, and giving this one module an exemption
-    for two lines would blind that rule to every future direct read in the platform's largest settings file.
-    """
-    return package_switches.arm(measured_stops=GEOMETRY_MEASURED_STOPS_ENABLED,
-                                fluid_side=GEOMETRY_FLUID_SIDE_ENABLED)
+# WHY IT SURVIVED, recorded because the check that should have caught it is still in the tree:
+# `devtools/quality/_flags_gone_emit.py` exists to prove no geometry gate is left, and it carried these two
+# exact names on its exemption list. Both names are now in `settings/inventory.REMOVED`, so a deployment that
+# still sets one is refused at startup rather than started with a setting that means nothing.
 
 # durable graph checkpointing is MANDATORY outside genuinely-local dev/test. A silent
 # fallback from AsyncPostgresSaver to MemorySaver would make a mid-run restart re-run from scratch

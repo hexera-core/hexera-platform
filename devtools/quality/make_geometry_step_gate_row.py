@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -43,20 +42,11 @@ def main() -> int:
                     help="the row to take the customer's own words from; the words are theirs, not this file's")
     args = ap.parse_args()
 
-    import meshpipeline.settings.package_switches as package_switches
     import meshpipeline.settings.policy as polcfg
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = "reference"
-    # THE TWO PACKAGE STAGES AT THEIR SHIPPED DEFAULT, which is off, because that is the configuration the
-    # gate that reads this row runs under. A row composed with a stage its reader does not have is a row
-    # that reader cannot reproduce, and the step refuses a survey it cannot reproduce. An export in the
-    # shell wins over the platform, so the two are cleared first and the arming is asserted, not assumed.
-    polcfg.GEOMETRY_MEASURED_STOPS_ENABLED = False
-    polcfg.GEOMETRY_FLUID_SIDE_ENABLED = False
-    for name in package_switches.PACKAGE_SWITCHES:
-        os.environ.pop(name, None)
-    armed = polcfg.arm_the_package()
-    if set(armed.values()) != {"off"}:
-        raise SystemExit(f"the package's stages are not where this row is composed: {armed}")
+    # THE TWO PACKAGE STAGES ARE NOT SETTINGS ANY MORE, so there is nothing to put at a default here. They
+    # were armed off for this row because that was the shipped configuration; the package now runs both on
+    # every measurement, so the row is composed the one way the reader can reproduce.
 
     from meshpipeline.application import geometry_step as gst
     from meshpipeline.application import geometry_survey as gs

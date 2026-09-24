@@ -30,10 +30,6 @@ APPROVED_LOADERS = {
 LIBRARY_CONTRACTS = {
     "runtime/metrics_server.py",    # PROMETHEUS_MULTIPROC_DIR - prometheus_client's own contract
     "runtime/migrate.py",           # ALEMBIC_CONFIG - alembic's own contract
-    # GEOMETRY_AGENT_MEASURED_STOPS and GEOMETRY_AGENT_FLUID_SIDE - the measurement package's own
-    # contract, which it reads out of the environment inside a child process. This module writes them
-    # and decides nothing; policy.py holds the two typed flags that decide, and stays under this rule.
-    "settings/package_switches.py",
     "sandbox/backend.py",           # sets VTK/Mesa vars; reads nothing
     "settings/runtime.py",          # the removed-name rejection
     "runtime/startup.py",           # the removed-name rejection

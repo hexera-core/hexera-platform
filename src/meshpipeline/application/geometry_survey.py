@@ -11,8 +11,6 @@ import uuid as _uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import meshpipeline.settings.policy as polcfg
-
 logger = logging.getLogger(__name__)
 
 # THE CHAIN, IN REHAAN'S ORDER, and it is not up for debate.
@@ -207,10 +205,43 @@ def _package():
     from geometry_agent.chain import job as ask_job
     from geometry_agent.contract import asking, build, deliver, given, intake, marks, survey
     from geometry_agent.facts.schema import GeometryFacts
+    from geometry_agent.reconcile import joint as reconcile_joint
     return {"hexera": hexera, "asking": asking, "build": build, "deliver": deliver, "given": given,
             "intake": intake, "marks": marks, "survey": survey, "GeometryFacts": GeometryFacts,
             "catalog": catalog, "ask": ask_intake, "ask_schema": ask_schema, "ask_job": ask_job,
-            "ask_trade": ask_trade, "ask_say": ask_say}
+            "ask_trade": ask_trade, "ask_say": ask_say, "reconcile": reconcile_joint}
+
+
+def _reconciled(pkg: dict, facts, representation: str, look: Any, case: str, brief: str = ""):
+    """STEP 4 ON THE PLATFORM'S OWN PATH: the measurement checking the look and the look checking the
+    measurement, on the document this composition was just built from. None when there is no pair.
+
+    WHY IT IS HERE AND NOT AT `geometry_vision.attach_look`. The bytes are held there and nowhere else, so a
+    profile cut across the 41 stations is only affordable there. But the OUTPUT of step 4 is two live objects
+    (`verdict.Reconciliation` and the monitor's alerts) and its one consumer is `ask.intake.ask_intake`, which
+    is called here. Storing it on the row in between would mean a second spelling of both objects and a
+    reconstruction of them on the way back, which is two more things to keep in step with the package. So step
+    4 runs where its consumer is, and pays for it: with no triangles in hand the 41-station profile REFUSES
+    (`profile.FlowProfile.refused_by == "no_mesh"`) and every claim and signal behind the axial channel goes
+    silent rather than guessing. `joint.Joint.readers` carries that absence, so a count of nought
+    contradictions is not read as agreement.
+
+    NEVER RAISES. Step 4 is pure addition: this platform composed surveys without it for four rounds, so a
+    fault in it costs the composition its reconciliation and nothing else.
+    """
+    try:
+        # THE ONE THING THE CUSTOMER SAYS THAT NO MEASUREMENT OWNS: which way the flow runs. One signed axis
+        # letter, read out of the brief's own flow sentence by the package's own reader, and it reaches exactly
+        # one place, the gate that refuses a single-axis area profile. It is refused for want of the triangles
+        # here anyway, so today this changes nothing on this path and it is passed so that the day the bytes are
+        # handed over (see the docstring) the gate is not judging a direction the customer never gave.
+        said = pkg["ask_job"].flow_axis_in_brief(brief)
+        return pkg["reconcile"].for_job(facts, representation, look if isinstance(look, dict) else None,
+                                        case=case, path=None, mesh=None, stated_axis=said)
+    except Exception as exc:                       # noqa: BLE001 - see the docstring
+        logger.warning("geometry survey: step 4 could not be run (%s: %s); the questions are composed "
+                       "without it", type(exc).__name__, exc)
+        return None
 
 
 def _now() -> str:
@@ -321,10 +352,8 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     moves the order of the ranked list and every recomposition of one survey has to reproduce the same
     order; the counts a composition used are stored in `composed_for` so `composed_inputs` replays them.
     """
-    # THE PACKAGE'S OWN SWITCHES, before anything of the package reads them. The side is read inside
-    # `catalog` off the environment, so a composition made without this arms nothing and the platform's
-    # own flag would be a switch that does nothing (`policy.arm_the_package`).
-    polcfg.arm_the_package()
+    # NO PACKAGE SWITCHES TO ARM. `catalog` read the fluid side off the environment once and no longer does:
+    # the reading is on for every composition, so there was nothing left for `policy.arm_the_package` to arm.
     if not isinstance(document, dict) or document.get("status") != "ok":
         raise SurveyError("there is no successful measurement to compose")
     facts_dump = document.get("facts")
@@ -369,6 +398,16 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         # A confirmed cap is not a measurement of the part, so it belongs in `report_measured` for the block's
         # `customer_cell_cap` and the forecast the trade is priced on, and nowhere near the finder.
         asking_doc = composed if cap == stated_cap else measured(stated_cap)
+        # STEP 4, BETWEEN THE LOOK AND THE QUESTIONS, and this is the only place a customer of this platform
+        # can reach it. `chain.job.run_job` runs it for the package's own chain, and nothing here calls
+        # `run_job`: this module composes its own document from `hexera.report_measured`. So the layer was
+        # wired for the tests and the eval and not for an upload, which is the same defect one level up from
+        # the pass-through parameters it replaced. A contradiction between the two sources needs no answer
+        # key, which is what makes it the one quality signal that works on a file nobody has seen.
+        joint = _reconciled(pkg, facts, str(composed.get("representation") or ""), document.get("look"),
+                            str(document.get("source_sha256") or ""), brief_text)
+        r_alerts = joint.alerts if joint is not None else None
+        r_found = joint.reconciliation if joint is not None else None
         # STEP 4'S FINDER, AND IT IS THE ONLY ONE (`QUESTION_FINDER`). `ask_intake` reads the composed
         # document, applies the four cuts, ranks what is left by consequence and puts at most
         # `ask.intake.MAX_ASKED`; `ask_job.contract_uncertainties` is the package's own adapter from its
@@ -379,7 +418,8 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         # chose not to put (below the cap, no consequence) so the builder is told it is unsettled, and drops
         # the ones somebody else already answered, which are not uncertainties any more.
         asked = pkg["ask"].ask_intake(asking_doc, declared=ports or None, brief=brief_text or None,
-                                      asked_before=dict(asked_before or {}) or None)
+                                      asked_before=dict(asked_before or {}) or None,
+                                      alerts=r_alerts, reconciliation=r_found)
         # A UNIT THE BRIEF STATED IS A UNIT THIS DOCUMENT HAS, and until this ran, neither half said so.
         # `ask.settle` reads "Geometry is in millimetres" and holds the unit question `settled_by='brief'`,
         # so the finder drops it - a question somebody answered is not an uncertainty. But nothing put the
@@ -402,7 +442,8 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
                 # either way, but its absence changes what the other questions cost, and the finder ranks
                 # them by consequence.
                 asked = pkg["ask"].ask_intake(asking_doc, declared=ports or None, brief=brief_text or None,
-                                              asked_before=dict(asked_before or {}) or None)
+                                              asked_before=dict(asked_before or {}) or None,
+                                              alerts=r_alerts, reconciliation=r_found)
         # the package admits an engine nobody named as `assumed` (work/z-chain, `contract.marks.OWNERS`), so the
         # composed document goes to the survey as it is; the shim that stripped the engine is gone
         survey = pkg["build"].survey_from(
@@ -414,7 +455,7 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
     return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
             "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side,
-            "asked": asked, "asking": asking_row(asked, pkg)}
+            "asked": asked, "asking": asking_row(asked, pkg), "joint": joint}
 
 
 def asking_row(asked: Any, pkg: dict) -> dict:

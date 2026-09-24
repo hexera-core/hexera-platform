@@ -59,11 +59,11 @@ def _flags(monkeypatch) -> None:
     import meshpipeline.settings.policy as polcfg
 
     if not FLAGS:
-        # The measurement package's own two stages are settings, not gates over this platform's feature, so
-        # they are not counted here. Every name below is one the cleanup deleted.
-        left = [n for n in dir(polcfg)
-                if n.startswith("GEOMETRY_") and n.endswith("_ENABLED")
-                and n not in ("GEOMETRY_MEASURED_STOPS_ENABLED", "GEOMETRY_FLUID_SIDE_ENABLED")]
+        # NO EXEMPTIONS. This list used to exclude GEOMETRY_MEASURED_STOPS_ENABLED and
+        # GEOMETRY_FLUID_SIDE_ENABLED as "settings, not gates". They outlived their readers inside the package
+        # and this check, whose whole job is to prove no geometry gate is left, was the one place that would
+        # have caught it and was told not to look. Both are retired now and nothing is excluded.
+        left = [n for n in dir(polcfg) if n.startswith("GEOMETRY_") and n.endswith("_ENABLED")]
         print(f"FG gates {','.join(left) if left else 'NONE'}")
         if EXPECT == "off":
             assert left, "this tree carries no geometry gate, so it cannot stand in for the one that did"

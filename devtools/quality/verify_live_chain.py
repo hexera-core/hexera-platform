@@ -112,29 +112,17 @@ def _sha_stable(payload: Any) -> str:
     return hashlib.sha256(_INSTANT.sub("<at>", text).encode("utf-8")).hexdigest()[:16]
 
 
-def _arm(provider: str, *, fluid_side: bool, measured_stops: bool) -> None:
-    """The model that plans, and the package's two stages armed THROUGH THE PLATFORM.
+def _arm(provider: str) -> None:
+    """The model that plans. There are no package stages left to arm.
 
-    This function used to write `GEOMETRY_AGENT_FLUID_SIDE` and `GEOMETRY_AGENT_MEASURED_STOPS` itself. That
-    made it blind to the only question an operator actually has: whether the platform's own settings reach the
-    package. They did not. `policy.arm_the_package` was the missing wire, and a tool that sets the package's
-    variables by hand would have reported gaps B and C working on every run where the platform armed nothing.
-    So the switches here are the platform's two settings, and the package's own variables are DELETED first:
-    they are what the platform is being measured on, and an export left by an earlier run would win and hide
-    the answer (the operator-wins rule in `settings/package_switches.arm`).
+    This used to set two platform settings and assert that `policy.arm_the_package` had put them into the
+    package's own GEOMETRY_AGENT_* variables, because a tool that wrote those variables by hand was blind to
+    whether the platform's settings reached the package at all. Both readers are now deleted inside the
+    package: the closed-end pass and the fluid-side reading run on every measurement, the two platform
+    settings are retired, and a tool that still set them would be measuring a state this code cannot produce.
     """
-    import meshpipeline.settings.package_switches as package_switches
     import meshpipeline.settings.policy as polcfg
     polcfg.GEOMETRY_AGENT_STEP_PROVIDER = provider
-    polcfg.GEOMETRY_MEASURED_STOPS_ENABLED = measured_stops
-    polcfg.GEOMETRY_FLUID_SIDE_ENABLED = fluid_side
-    for name in package_switches.PACKAGE_SWITCHES:
-        os.environ.pop(name, None)
-    armed = polcfg.arm_the_package()
-    want = {"GEOMETRY_AGENT_MEASURED_STOPS": "on" if measured_stops else "off",
-            "GEOMETRY_AGENT_FLUID_SIDE": "on" if fluid_side else "off"}
-    if armed != want:
-        raise SystemExit(f"the platform's settings did not arm the package: asked {want}, got {armed}")
 
 
 # -------------------------------------------------------------------------------------------------

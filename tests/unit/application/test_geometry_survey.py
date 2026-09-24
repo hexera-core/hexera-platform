@@ -35,16 +35,12 @@ def _ids(views) -> list[str]:
 
 @pytest.fixture
 def side_on(monkeypatch):
-    """The package's fluid-side switch, armed the way the platform arms it and not by hand. The crowded part
-    below needs it: without the side question there are five questions and the cap never fires."""
-    import meshpipeline.settings.package_switches as package_switches
-    import meshpipeline.settings.policy as polcfg
-
-    monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_MEASURED_STOPS_ENABLED", False)
-    for name in package_switches.PACKAGE_SWITCHES:
-        monkeypatch.delenv(name, raising=False)
-    assert polcfg.arm_the_package()["GEOMETRY_AGENT_FLUID_SIDE"] == "on"
+    """THERE IS NOTHING LEFT TO ARM. The side is read on every composition: the package deleted the reader
+    behind GEOMETRY_AGENT_FLUID_SIDE and both platform settings that wrote it are retired. The crowded part
+    below needs the side question, and it gets it unconditionally now."""
+    from geometry_agent.agent import catalog
+    monkeypatch.setenv("GEOMETRY_AGENT_FLUID_SIDE", "off")
+    assert not hasattr(catalog, "FLUID_SIDE_ENV")
 
 
 def _role_question(state) -> dict:

@@ -78,6 +78,10 @@ _RETIRED_DATA_LAYOUT = (
 # Settings DELETED without an alias, and why. A removed name is rejected at startup rather than
 # ignored: silently accepting a stale variable is how an operator's configured value ends up
 # meaning something it never meant. THE authority: nothing else may keep a second list.
+_RETIRED_PACKAGE_STAGE = (
+    "deleted with the stage it selected. The measurement package reads neither this name nor its own "
+    "GEOMETRY_AGENT_* variable any more: the closed-end pass and the fluid-side reading run on every "
+    "measurement, so there is no off state for this to select.")
 _RETIRED_SURVEYOR = (
     "deleted with the gate it was. The Surveyor - measure, look, survey, the geometry agent's step and "
     "the builder handoff - is on for every upload, so there is no off state for this to select. "
@@ -118,13 +122,21 @@ REMOVED: dict[str, str] = {
     # THE SURVEYOR'S FIVE GATES. They existed to prove the chain changed nothing while it was off, beside
     # a running product, and the byte-identical off gate was run one last time on 2026-09-23 before they
     # went. The chain is the product now, so a deployment that still sets one is asking for a state this
-    # code cannot produce, and is told so rather than started. The measurement package's own two stages
-    # are NOT here: they are still settings, because each is a real cost an operator may decline.
+    # code cannot produce, and is told so rather than started.
     "GEOMETRY_MEASUREMENT_ENABLED": _RETIRED_SURVEYOR,
     "GEOMETRY_REPORT_READERS_ENABLED": _RETIRED_SURVEYOR,
     "GEOMETRY_VISION_ENABLED": _RETIRED_SURVEYOR,
     "GEOMETRY_SURVEY_ENABLED": _RETIRED_SURVEYOR,
     "GEOMETRY_AGENT_STEP_ENABLED": _RETIRED_SURVEYOR,
+    # THE MEASUREMENT PACKAGE'S TWO STAGES. This comment used to say they were NOT retired "because each is
+    # a real cost an operator may decline", which was true when it was written and stopped being true when the
+    # package deleted the readers: `geometry_agent.facts.measure` and `geometry_agent.agent.catalog` read
+    # neither variable on any line, both stages run on every measurement, and there is no off state left to
+    # select. The platform went on declaring the two settings, defaulting both false, and writing the package's
+    # own variables on every measurement and every survey, so an operator could set one and nothing whatever
+    # would happen. Refused at startup rather than read and discarded.
+    "GEOMETRY_MEASURED_STOPS_ENABLED": _RETIRED_PACKAGE_STAGE,
+    "GEOMETRY_FLUID_SIDE_ENABLED": _RETIRED_PACKAGE_STAGE,
     "OUTPUTS_BASE": _RETIRED_DATA_LAYOUT,
     "UPLOADS_BASE": _RETIRED_DATA_LAYOUT,
     "UPLOAD_STAGING_ROOT": _RETIRED_DATA_LAYOUT,
@@ -394,8 +406,6 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek", help="the model the geometry agent plans with: deepseek, deepinfra, anthropic, generic or reference (the package's deterministic stand-in); no key for it means no plan, never another provider"),
         EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure on the row and the job runs without the plan. 0 means no clock at all"),
         EnvVar("GEOMETRY_AGENT_LEDGER_PATH", "", help="a JSONL file the job ledger's rows are also appended to, for the package's own ledger tools; empty keeps them on the survey row only"),
-        EnvVar("GEOMETRY_MEASURED_STOPS_ENABLED", "false", kind="bool", help="find where a passage stops with no mouth at measure time, so a closed pipe end reaches the builder whether or not the look ran; costs one more pass over the mesh at upload and adds facts.passage_ends"),
-        EnvVar("GEOMETRY_FLUID_SIDE_ENABLED", "false", kind="bool", help="where the file reads the same with the flow through its bores and with the file itself as the flow, put the question to the customer instead of letting the mesher's reading stand, and place nothing on the flow path until somebody answers"),
     ]),
 
     Group("Worker lease and fencing", note="A claim is valid for the lease without a heartbeat; the owner heartbeats well inside it, and a takeover is only allowed once the lease has EXPIRED.", vars=[
@@ -496,8 +506,6 @@ INVENTORY: list[Group] = [
         EnvVar("GOOGLE_APPLICATION_CREDENTIALS", "", kind="path", exposure="external", consumer="app", help="Compose mounts GOOGLE_ADC_FILE here and points google-auth at it"),
         EnvVar("PROMETHEUS_MULTIPROC_DIR", "", kind="path", exposure="external", consumer="app", help="prometheus_client's own variable; set by the worker entrypoint"),
         EnvVar("ALEMBIC_CONFIG", "", kind="path", exposure="external", consumer="app", help="alembic's own variable; the migration wrapper honours it when set"),
-        EnvVar("GEOMETRY_AGENT_MEASURED_STOPS", "", exposure="external", consumer="app", help="the measurement package's own variable for its closed-end stage, read inside facts.measure; policy.arm_the_package writes it from GEOMETRY_MEASURED_STOPS_ENABLED, and leaves an operator's own export alone"),
-        EnvVar("GEOMETRY_AGENT_FLUID_SIDE", "", exposure="external", consumer="app", help="the measurement package's own variable for reading and asking which side of the surface is the fluid, read inside agent.catalog; policy.arm_the_package writes it from GEOMETRY_FLUID_SIDE_ENABLED, and leaves an operator's own export alone"),
     ]),
     Group("Inference overrides", note="Two structured settings, each one declared name. They replace the MODEL_PRICE_<PROVIDER>_<MODEL> and MODEL_BUDGET_<DOMAIN> namespaces, where the variable NAME was built from provider and model data: so the supported surface was unlistable and a typo was indistinguishable from an unsupported setting.", vars=[
         EnvVar("MODEL_PRICE_OVERRIDES", "", help=(

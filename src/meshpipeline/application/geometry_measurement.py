@@ -94,11 +94,9 @@ def measure_local_file(path: Path, *, purpose: str = DEFAULT_PURPOSE, unit: str 
     """
     started = time.perf_counter()
     base = {"schema": MEASUREMENT_SCHEMA, "source": dict(source or {}), "measured_purpose": purpose}
-    # THE PACKAGE'S OWN SWITCHES, put into the environment BEFORE the file is opened. `measure_isolated`
-    # measures in a CHILD PROCESS, which inherits this environment and cannot be told anything else: a flag
-    # set after the spawn would arrive too late and a flag set nowhere is a platform switch that does
-    # nothing. Idempotent, and an operator's own export wins (`policy.arm_the_package`).
-    polcfg.arm_the_package()
+    # NO PACKAGE SWITCHES TO ARM. This line used to call `policy.arm_the_package`, which put two platform
+    # settings into two GEOMETRY_AGENT_* variables before the child process was spawned. The package deleted
+    # both readers: the closed-end pass runs on every measurement and there is nothing here to select.
 
     def failed(status: str, reason: str) -> dict:
         return {**base, "status": status, "reason": reason, "plan": None,

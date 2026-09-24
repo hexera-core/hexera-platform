@@ -27,8 +27,6 @@ from tests._surveyor_package import require
 
 require("geometry_agent.agent.catalog", needs="the fluid-side question the catalog raises")
 
-import meshpipeline.settings.package_switches as package_switches  # noqa: E402
-import meshpipeline.settings.policy as polcfg  # noqa: E402
 from meshpipeline.application import geometry_survey as gs  # noqa: E402
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "geometry_survey"
@@ -41,12 +39,15 @@ THROUGH = "the fluid flows through the bore; the part is the solid around it"
 
 @pytest.fixture
 def side_on(monkeypatch):
-    """The package's own switch, armed the way the platform arms it and not by hand."""
-    monkeypatch.setattr(polcfg, "GEOMETRY_FLUID_SIDE_ENABLED", True)
-    monkeypatch.setattr(polcfg, "GEOMETRY_MEASURED_STOPS_ENABLED", False)
-    for name in package_switches.PACKAGE_SWITCHES:
-        monkeypatch.delenv(name, raising=False)
-    assert polcfg.arm_the_package()["GEOMETRY_AGENT_FLUID_SIDE"] == "on"
+    """THERE IS NOTHING LEFT TO ARM, and this fixture now says so rather than arming it.
+
+    The reading ran behind GEOMETRY_AGENT_FLUID_SIDE, which the platform wrote from
+    GEOMETRY_FLUID_SIDE_ENABLED. The package deleted the reader, both platform settings are retired, and the
+    side is read on every composition. What this fixture holds is that no export can turn it back off, which
+    is the only thing left worth asserting."""
+    from geometry_agent.agent import catalog
+    monkeypatch.setenv("GEOMETRY_AGENT_FLUID_SIDE", "off")
+    assert not hasattr(catalog, "FLUID_SIDE_ENV")
 
 
 def _doc() -> dict:
