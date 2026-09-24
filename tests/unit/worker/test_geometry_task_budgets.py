@@ -164,15 +164,20 @@ def test_the_gate_refuses_rather_than_passes_when_it_finds_no_pairs(monkeypatch,
     assert "no nested deadline pairs" in capsys.readouterr().out
 
 
-def test_the_gate_reports_the_inline_path_it_does_not_own():
-    # The one pair this change cannot fix: the inline upload path lives in application/, and its
-    # request wait is shorter than the package's retry budget for the deadline it passes. It ABANDONS
-    # rather than kills, so it is reported and not failed - but it is reported on every single run, with
-    # both numbers and the fix, so it cannot go quiet.
-    rows = [p for p in gate.pairs() if not p.owned_here]
-    assert len(rows) == 1, f"the unowned rows changed: {rows}"
+def test_the_inline_upload_path_is_measured_whether_or_not_it_is_fixed():
+    # The one pair this change cannot fix: the inline upload path lives in application/, and its request
+    # wait is shorter than the package's retry budget for the deadline it passes. It ABANDONS rather than
+    # kills, so the gate reports it rather than failing on it - but it reports it on every single run,
+    # with both numbers and the fix, so it cannot go quiet.
+    #
+    # THIS TEST MUST NOT FAIL WHEN SOMEBODY FIXES IT. A test that goes red on an improvement teaches
+    # people to stop improving. So it asserts that the pair is MEASURED, and that while it is still
+    # broken the report carries the fix; the day it nests, this passes unchanged.
+    rows = [p for p in gate.pairs() if "inline upload path" in p.what]
+    assert len(rows) == 1, f"the inline upload path is no longer among the measured pairs: {gate.pairs()}"
     inline = rows[0]
-    assert not inline.nests, (
-        "the inline upload path now nests, so this row should be owned here and failed on rather than "
-        "reported: set owned_here=True in check_timeout_nesting.pairs()")
-    assert inline.note, "a violation this check does not fix has to carry the fix in its own report"
+    assert inline.inner_s > 0 and inline.outer_s > 0, f"neither number was read: {inline}"
+    if not inline.nests:
+        assert inline.note, "a violation this check does not fix has to carry the fix in its own report"
+        assert not inline.owned_here, (
+            "a pair this repository owns and does not nest must FAIL the gate, not be reported by it")

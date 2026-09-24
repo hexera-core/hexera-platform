@@ -111,14 +111,22 @@ def pairs() -> list[Pair]:
     # carry on. It ABANDONS rather than kills - nothing is lost, and a thread and a child process
     # outlive the response that said the measurement was skipped - which is why it is reported rather
     # than failed here. The fix is one line and it is named in the note.
-    ceiling = _literal("src/meshpipeline/application/geometry_measurement.py",
-                       "SYNCHRONOUS_DEADLINE_CEILING_S")
+    inline_source = "src/meshpipeline/application/geometry_measurement.py"
+    ceiling = _literal(inline_source, "SYNCHRONOUS_DEADLINE_CEILING_S")
     inline_fits = budgets.largest_per_attempt_within(ceiling)
+    # WHAT THE INLINE PATH HANDS THE PACKAGE, and this is the line that lets this gate ever say
+    # "fixed". Today it hands the ceiling itself as the PER-ATTEMPT deadline, so the packaged budget is
+    # three times the wait in front of it. A gate that only ever read the ceiling could never report
+    # that fixed however the fix was written, and a check that cannot say "fixed" gets ignored. So it
+    # looks for the one call that derives the per-attempt deadline from this law.
+    derived = "largest_per_attempt_within" in _source(inline_source)
+    per_attempt = inline_fits if derived else ceiling
     rows.append(Pair(
         what="the inline upload path: the package's retry budget, inside the request's own wait",
-        inner_s=budgets.packaged_measurement_budget_s(ceiling),
-        inner_is=f"{budgets.ISOLATED_ATTEMPTS} attempts x {ceiling:.0f}s "
-                 f"+ {budgets.ISOLATED_ATTEMPTS - 1} waits x {budgets.ISOLATED_RETRY_WAIT_S:.0f}s",
+        inner_s=budgets.packaged_measurement_budget_s(per_attempt),
+        inner_is=f"{budgets.ISOLATED_ATTEMPTS} attempts x {per_attempt:.0f}s "
+                 f"+ {budgets.ISOLATED_ATTEMPTS - 1} waits x {budgets.ISOLATED_RETRY_WAIT_S:.0f}s"
+                 + ("" if derived else " (the ceiling, handed over as a per-attempt deadline)"),
         outer_s=ceiling + 5.0,
         outer_is="asyncio.wait_for(deadline + 5.0) in geometry_measurement.on_upload",
         owned_here=False,
