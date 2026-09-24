@@ -39,3 +39,41 @@ runs:
     # The suites run against the INSTALLED package (PyPA src layout), never a path hack.
     - shell: bash
       run: pip install -e . --no-deps
+
+    # THE SURVEYOR'S OWN HALF. The geometry-agent distribution is vendored as a wheel and the image
+    # installs it (the Dockerfile's `wheel` stage, proven by deploy/verify_install.py). Every CI lane
+    # ran WITHOUT it, so tests/_surveyor_package.require - which fails loudly rather than skipping -
+    # ended three module bodies at import, pytest answered with "Interrupted: 3 errors during
+    # collection", and the unit lane ran ZERO of its 7252 tests on every commit. Two things were
+    # wrong: the failure arrived at the wrong granularity (fixed in tests/_surveyor_package.py, so a
+    # module-scope gate now fails its own module's tests and nothing else), and CI had no reason to be
+    # missing the package at all. This is the second half. With the wheel installed, 86 tests that
+    # exercise the Surveyor's chain run here rather than on one developer's laptop.
+    #
+    # --no-deps, exactly as the Dockerfile installs it: everything it imports is pinned in
+    # requirements/runtime.txt and requirements/constraints.txt, and resolving it freshly here would
+    # let CI run against versions no image ever carries.
+    - shell: bash
+      run: |
+        set -euo pipefail
+        # A glob that matched nothing used to be pip's problem to report; it is stated here because the
+        # wheel being absent is a broken checkout rather than a pip error, and that has to read clearly.
+        shopt -s nullglob
+        wheels=(vendor/wheels/hexera_geometry_agent-*.whl)
+        if [ ${#wheels[@]} -eq 0 ]; then
+          echo "::error file=vendor/wheels::no hexera_geometry_agent wheel is committed. The Surveyor's" \
+               "measuring and looking half comes from it, the image installs it, and without it every" \
+               "surveyor test in this lane fails. Re-vendor with deploy/vendor_geometry_agent.sh."
+          exit 1
+        fi
+        if [ ${#wheels[@]} -gt 1 ]; then
+          echo "::error file=vendor/wheels::${#wheels[@]} geometry-agent wheels are committed" \
+               "(${wheels[*]}). Which one the image installs would then depend on glob order, so this" \
+               "refuses rather than picking one."
+          exit 1
+        fi
+        pip install --no-deps "${wheels[0]}"
+        # The install is not the point; importing it is. A wheel that installs and cannot import is the
+        # defect this whole arrangement exists to catch, and it has to be caught here rather than as 86
+        # confusing failures later.
+        python -c "import geometry_agent; print('geometry agent:', geometry_agent.__file__)"

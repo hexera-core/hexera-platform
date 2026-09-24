@@ -214,6 +214,13 @@ jobs:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
           persist-credentials: false
       - uses: ./.github/actions/setup-hexera
+      # BEFORE the suite, because a suite that never ran is the failure this step exists to name. Three
+      # module-scope failures once ended collection with "Interrupted: 3 errors during collection" and
+      # 7252 tests ran zero times on every commit, which reads like three broken tests rather than a
+      # lane that said nothing about anything. This refuses a collection error, a collapse in the
+      # number collected, and any area of the suite that contributed nothing.
+      - name: The whole suite is collectable before any of it runs
+        run: python devtools/quality/check_unit_collection.py
       - run: make test-fast
 
   boundary:
