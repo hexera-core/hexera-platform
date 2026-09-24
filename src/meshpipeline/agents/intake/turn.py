@@ -5,8 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-#: The conversation bound. Reaching it never forces a submit - see `budget_nudge`.
-MAX_TURNS = 12
+#: The conversation bound, and a backstop against a runaway - NOT a budget a real intake is
+#: meant to spend. Reaching it never forces a submit; see `BUDGET_NUDGE`.
+#:
+#: IT WAS 12, WITH NO REASON RECORDED, AND A NORMAL PART EXCEEDED IT. One real elbow was asked
+#: what it was for, which opening was the inlet, which way the flow ran and again when the
+#: answer was not known, what fluid, at what velocity, what the run was for, which engine, to
+#: confirm that engine, what refinement and layers, and how to name the patches: eleven
+#: questions, every one of them legitimate, before any fault. A customer answering "not sure"
+#: once - an ordinary thing to say - reached the bound through ordinary use, and spent the rest
+#: of the conversation being nudged. A bound a careful intake hits by being careful is measuring
+#: the wrong thing.
+MAX_TURNS = 30
 
 #: The fail-safe nudge. A blind "submit now" invited the model to INVENT the values it was still
 #: missing: the validator would reject them, but the prompt should not ask for a fabricated
