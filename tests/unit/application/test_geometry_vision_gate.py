@@ -106,7 +106,7 @@ def test_no_enqueuer_bound_is_a_logged_no_op():
 # a look had broken on a part nothing had looked at yet.
 
 
-def test_the_measurement_says_nothing_looked_and_never_lets_the_package_decide_what_that_means():
+def test_the_measurement_says_nothing_looked_and_never_lets_the_package_decide_what_that_means(tmp_path):
     """The status is PASSED, not defaulted. A stand-in `look_block` that refuses to default is the whole
     test: it fails if this platform ever stops saying which of the states it means."""
     seen: list[dict] = []
@@ -128,7 +128,7 @@ def test_the_measurement_says_nothing_looked_and_never_lets_the_package_decide_w
     run = MagicMock()
     run.file_ceiling_bytes.return_value = 0
     with patch.object(measurement, "_package", lambda: (hexera, run, monkey)):
-        document = measurement.measure_local_file(_a_file(), timeout_s=1.0)
+        document = measurement.measure_local_file(_a_file(tmp_path), timeout_s=1.0)
     assert document["status"] == "ok", document.get("reason")
     assert seen == [{"status": measurement.LOOK_NOT_ATTEMPTED, "impression": None}]
     assert document["look"]["status"] == measurement.LOOK_NOT_ATTEMPTED
@@ -145,12 +145,12 @@ def test_the_word_the_measurement_writes_is_the_word_look_state_reads():
     assert measurement.LOOK_NOT_ATTEMPTED not in (gs.LOOK_FAILED, gs.LOOK_OK, gs.LOOK_PENDING)
 
 
-def test_the_reader_that_was_never_configured_says_the_same_word(monkeypatch):
+def test_the_reader_that_was_never_configured_says_the_same_word(monkeypatch, tmp_path):
     """The other place this platform writes the block itself. A reader with no key in this environment did
     not fail to look: nothing looked, and the row has to say which."""
     monkeypatch.setattr(vision, "reader", lambda: None)
     monkeypatch.setattr(vision, "_package", lambda: (MagicMock(), MagicMock(), _RecordingHexera()))
-    block = vision.look_at_local_file(_a_file(), DOCUMENT)
+    block = vision.look_at_local_file(_a_file(tmp_path), DOCUMENT)
     assert block["status"] == measurement.LOOK_NOT_ATTEMPTED
     assert "has no key in this environment" in block["reason"]
 
@@ -161,9 +161,19 @@ class _RecordingHexera:
         return {"status": status, "impression": impression, "reason": reason}
 
 
-def _a_file():
-    """A path that exists and is small, so `measure_local_file` reaches the report rather than the ceiling."""
-    return Path(__file__)
+def _a_file(tmp_path):
+    """A path that exists, is small, and carries a suffix the measurement can open.
+
+    THE SUFFIX MATTERS NOW and it did not before. This used to be `Path(__file__)` - a .py file handed to
+    `measure_local_file` as geometry, which worked only because nothing looked at the suffix. It does now:
+    a format the measurement cannot open is refused as `unsupported_format` before the package is asked
+    anything (see contracts/geometry_measurement's status vocabulary), so a .py reaches neither the report
+    nor the ceiling. The bytes are still irrelevant here - every test in this file stubs the measurement -
+    so this is this file's own bytes under a name the measurement would accept.
+    """
+    path = Path(tmp_path) / "part.stl"
+    path.write_bytes(Path(__file__).read_bytes())
+    return path
 
 
 # FAIL OPEN IN BOTH DIRECTIONS

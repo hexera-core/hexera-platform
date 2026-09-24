@@ -15,15 +15,32 @@ logger = logging.getLogger(__name__)
 #: a row written by a different artefact cannot be read as this one.
 MEASUREMENT_SCHEMA = "geometry_agent.measurement.v1"
 
-#: THE THREE ANSWERS, and they are three. `ok` carries measurements. `refused` means the package
-#: declined before opening the file - too large, or switched off - which is neither a broken file
-#: nor a broken measurement. `measurement_failed` means it opened the file and could not finish.
-#: A row always carries one of them. No row at all is a FOURTH answer, "never attempted", and it is
-#: the absence of the row that says so - never a status string, and never an empty dict.
+#: THE FOUR ANSWERS. `ok` carries measurements. `refused` means the package declined before opening
+#: the file - too large, or not installed - which is neither a broken file nor a broken measurement.
+#: `measurement_failed` means it opened the file and could not finish. A row always carries one of
+#: them. No row at all is "never attempted", and it is the absence of the row that says so - never a
+#: status string, and never an empty dict.
+#:
+#: `unsupported_format` IS THE FOURTH, AND IT IS THE ONLY ONE THAT IS THE CUSTOMER'S TO ACT ON. It
+#: means the file's FORMAT is not one the measurement can open at all, so no part sent this way can
+#: ever be measured, looked at, surveyed or planned, however many times it is retried. It was folded
+#: into `measurement_failed` and that made it invisible: a .vtp upload was accepted, the package
+#: raised UnsupportedGeometry, the row said `measurement_failed`, and `pipeline/geometry_admission`
+#: deferred to the builder - correctly, because a step of OURS that failed is never the customer's
+#: fault. So the Surveyor was silently skipped for that format and nobody was told. Told apart from
+#: the other three, it can be refused at admission with a sentence naming what to send instead,
+#: while every failure that IS ours still defers and is never blamed on the customer.
 STATUS_OK = "ok"
 STATUS_REFUSED = "refused"
 STATUS_MEASUREMENT_FAILED = "measurement_failed"
-STATUSES = (STATUS_OK, STATUS_REFUSED, STATUS_MEASUREMENT_FAILED)
+STATUS_UNSUPPORTED_FORMAT = "unsupported_format"
+STATUSES = (STATUS_OK, STATUS_REFUSED, STATUS_MEASUREMENT_FAILED, STATUS_UNSUPPORTED_FORMAT)
+
+#: The statuses that are a fact about the FILE rather than about this platform's machinery, so a
+#: caller deciding whether to blame the customer never has to enumerate them itself. `refused` is
+#: NOT here: it covers a file over the ceiling, which is the customer's, AND a package that is not
+#: installed, which is ours, and nothing downstream can tell those apart from the status alone.
+STATUSES_ABOUT_THE_FILE = (STATUS_UNSUPPORTED_FORMAT,)
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
