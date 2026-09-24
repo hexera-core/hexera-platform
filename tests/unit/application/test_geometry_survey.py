@@ -415,6 +415,95 @@ def test_an_external_purpose_raises_no_role_gate():
     assert gs.role_problems(state, _doc("ahmed_variant_001"), [_WALL, {"name": "far", "type": "farfield"}]) == []
 
 
+# THE BLOCK'S WHOLE CONTRACT, AND ITS CEILING
+
+
+def test_the_platform_refuses_a_builder_control_and_an_outcome_claim_the_packages_checker_accepts():
+    """`deliver.check_survey_block` runs four of the block's six rules. The other two,
+    `_refuse_builder_keys` and `_refuse_outcome_claims`, are private to `contract/survey.py` and fire only
+    inside a `SurveyHandoff`'s validator, and the look's free text is added to the block AFTER that validator
+    ran. So the checker accepts both of these, and the platform's own check does not."""
+    from geometry_agent.contract.deliver import check_survey_block
+
+    good = gs.builder_block(_answered_elbow())["survey"]
+    gs.check_the_survey_block(good)
+    for hurt, what in (({"kind": "seen", "tier": "relied_on", "value": "a shoulder", "field": "marks_seen",
+                         "source": "look", "n_layers": "three"}, "builder control 'n_layers'"),
+                       ({"kind": "seen", "tier": "relied_on", "value": "the mesh will collapse here",
+                         "field": "marks_seen", "source": "look"}, "says 'the mesh will'")):
+        block = {**good, "seen": {**good["seen"], "shoulder": hurt}}
+        check_survey_block(block)  # the package's own checker accepts it, which is the finding
+        with pytest.raises(gs.SurveyError, match="never predicts how the mesh turns out") as refusal:
+            gs.check_the_survey_block(block)
+        assert what.split()[-1].strip("'") in str(refusal.value)
+
+
+def test_no_row_of_the_block_names_more_mouths_than_the_ceiling_has_room_for():
+    """ITEM 23, measured. One role question names every unplaced mouth, so ONE unsettled row carried every id:
+    the block was 2,117 characters with two mouths and 8.0 longer per mouth, crossing the 4,000 ceiling between
+    200 and 300. Past it the package refused, `builder_block` returned None, and the planner got
+    `hexera.planner_block`'s intake-less survey instead, losing every confirmed role. No answer is needed to
+    reach this, which is what made it the reachable half."""
+    from geometry_agent.contract.deliver import SURVEY_BLOCK_MAX
+
+    state = _fresh("bend_elbow_001")
+    small = len(json.dumps(gs.builder_block(state)["survey"]))
+    for mouths in (200, 500, 1300):
+        big = json.loads(json.dumps(state))
+        for u in big["survey"]["uncertainties"]:
+            if u["about"] == "opening.role":
+                u["subjects"] = [f"o{i}" for i in range(mouths)]
+        block = gs.builder_block(big)
+        assert block is not None, f"{mouths} mouths lost the survey altogether"
+        survey = block["survey"]
+        gs.check_the_survey_block(survey)
+        assert len(json.dumps(survey)) <= SURVEY_BLOCK_MAX
+        (row,) = [r for r in survey["unsettled"] if r["about"] == "opening.role"]
+        assert len(row["subjects"]) == gs.BLOCK_LIST_MAX
+        assert f"stand for {mouths - gs.BLOCK_LIST_MAX} more" in row["why"], row["why"]
+    # and the survey on the row still names every one of them: what is shortened is the block, said out loud
+    assert len(big["survey"]["uncertainties"][0]["subjects"]) == 1300
+    # a part small enough to name all its mouths is untouched
+    assert small == len(json.dumps(gs.builder_block(_fresh("bend_elbow_001"))["survey"]))
+
+
+def test_a_block_over_the_ceiling_is_never_handed_over_and_the_other_list_is_still_uncapped():
+    """THE HALF OF ITEM 23 THAT IS NOT CLOSED HERE, with the number, so nobody has to guess at it again.
+
+    `applies_to` is one entry per mouth ONE answer placed, and capping it would make the block claim fewer
+    confirmed mouths than the customer gave, which is worse than a long list: the builder binds patches from
+    what it is handed. So it is left alone, and what is pinned instead is that an oversized block is never
+    handed over. Measured on bend_elbow_001 with every mouth confirmed as wall: 1,921 characters at 2 mouths,
+    3,399 at 200, 3,799 at 250, and over the 4,000 ceiling by 300. Reaching it takes 251 separate answers from
+    one customer on one part. The fix belongs in `deliver.survey_block`, which should shorten the list and say
+    how many more there are, the way it already caps the number of rows.
+    """
+    from geometry_agent.contract.deliver import SURVEY_BLOCK_MAX
+
+    base = _fresh("bend_elbow_001")
+    (role,) = [v for v in gs.question_views(base) if v["about"] == "opening.role"]
+    sizes = {}
+    for mouths in (2, 250, 300):
+        state = json.loads(json.dumps(base))
+        for u in state["survey"]["uncertainties"]:
+            if u["about"] == "opening.role":
+                u["subjects"] = [f"o{i}" for i in range(mouths)]
+        state["answers"] = [
+            {"question_id": role["id"], "about": "opening.role", "at": "2026-09-23T00:00:00+00:00",
+             "words": "all wall", "principal": "p", "via": "intake_conversation",
+             "answered_by": gs.CUSTOMER, "subject": f"o{i}", "value": "wall", "option": "wall", "note": ""}
+            for i in range(mouths)]
+        block = gs.builder_block(state)
+        sizes[mouths] = None if block is None else len(json.dumps(block["survey"]))
+        if block is not None:
+            # NEVER OVERSIZED. A block that can be cut is a block that can lose what it was carrying, so the
+            # only two outcomes are a block under the ceiling or no survey key at all
+            assert sizes[mouths] <= SURVEY_BLOCK_MAX
+            gs.check_the_survey_block(block["survey"])
+    assert sizes[250] is not None and sizes[250] > sizes[2]
+    assert sizes[300] is None, "the survey is refused rather than truncated, and that is the remaining cost"
+
+
 # THE LOOK: FOUR STATES, NOT A BOOLEAN
 
 

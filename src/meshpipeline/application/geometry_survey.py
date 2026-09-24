@@ -102,6 +102,30 @@ LATE_STAGE = "third"
 #: `resolution`: it decides how finely the part is meshed and never which face carries what.
 LATE_TIER = "resolution"
 
+#: HOW MANY MOUTHS ONE ROW OF THE BUILDER'S BLOCK NAMES. The block has two lists that grow with the mouth
+#: count and the package caps neither: an unsettled row's `subjects`, one entry per mouth the question named,
+#: and a confirmed answer's `applies_to`, one entry per mouth that answer placed. What
+#: `deliver.SURVEY_BLOCK_ITEMS` caps is the number of ROWS, not the length of a row's list.
+#:
+#: MEASURED on bend_elbow_001, deterministically, with nothing answered: the block is 2,117 characters with two
+#: unplaced mouths and 8.0 characters longer for each further mouth, so it crosses `deliver.SURVEY_BLOCK_MAX`
+#: between 200 mouths (3,595 characters) and 300. Past the ceiling `deliver.survey_block` refuses,
+#: `builder_block` catches the refusal and returns None, and the planner is then handed
+#: `hexera.planner_block`'s own survey, which is composed with no intake: on a part with a few hundred mouths
+#: the builder silently lost every role the customer had confirmed. `ask.intake` names a measured part with
+#: 1,231 open mouths beside its wall-clock ceiling, so this is not a hypothetical size.
+#:
+#: WHY THE SUBJECTS ARE SHORTENED AND NOT THE ROW. The rule the package states is that a block which can be CUT
+#: can lose the one thing it was carrying, and that is about a block silently truncated in a prompt. Twenty ids
+#: and a sentence saying how many more there are loses no finding: the row still names the question, the count
+#: is in the `why` the finder wrote, and the full list is on the survey itself, which the platform keeps. No
+#: survey at all, which is what happened before, loses every one of them.
+#:
+#: IT IS APPLIED ALWAYS, not only when the block is too big, so one part's block does not change shape because
+#: another mouth was measured. No stored fixture has a row naming more than seven mouths, so nothing in the
+#: product's measured behaviour moves.
+BLOCK_LIST_MAX = 20
+
 #: WHAT HAPPENED TO THE LOOK, and there are four answers, not two. `survey.looked` is a BOOLEAN, so every
 #: one of these but the first reaches the builder as the same False, and the product rule is that a look that
 #: FAILED is never the same as a look that found a clear passage. It is not the same as one that was never
@@ -1100,12 +1124,81 @@ def builder_block(state: dict | None) -> dict | None:
         return None
     pkg = _package()
     try:
-        given = pkg["given"].Given.of(survey_of(state), intake_handoff(state))
+        given = pkg["given"].Given.of(_named_briefly(survey_of(state)), intake_handoff(state))
         block = pkg["deliver"].attach(dict(state["planner_block"]), given)
         return _with_the_look_state(block, state, pkg)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry survey: the builder's block could not carry the survey (%s)", exc)
         return None
+
+
+def _named_briefly(survey: Any) -> Any:
+    """The survey with no uncertainty naming more than `BLOCK_LIST_MAX` mouths, each saying how many it stands
+    for. Used ONLY to compose the builder's block; the stored survey keeps every id.
+
+    The block is composed from this rather than edited afterwards, so every row in it is still
+    `deliver.survey_block`'s own and the validator runs on what the package built.
+    """
+    out = []
+    for u in survey.uncertainties:
+        rest = len(u.subjects) - BLOCK_LIST_MAX
+        if rest <= 0:
+            out.append(u)
+            continue
+        out.append(u.model_copy(update={
+            "subjects": list(u.subjects[:BLOCK_LIST_MAX]),
+            "why": (f"{u.why} The first {BLOCK_LIST_MAX} are named here and they stand for {rest} more; the "
+                    f"question is about every one of them and the whole list is on the survey.")}))
+    return survey.model_copy(update={"uncertainties": out})
+
+
+def check_the_survey_block(block: Any) -> None:
+    """The package's own validator on a survey block, PLUS the two rules it does not run. Raises `SurveyError`.
+
+    WHY THIS EXISTS, and it is the audit's central lesson in one function. `contract.deliver.check_survey_block`
+    is the block's contract in executable form and it runs four rules: the required keys, every leaf a valid
+    mark, no `seen` mark carrying a digit, and the ceiling. It does NOT run the other two,
+    `contract.survey._refuse_builder_keys` and `_refuse_outcome_claims`, which are private to `contract/survey.py`
+    and fire only inside a `SurveyHandoff`'s own validator. The look's free text is added to the block AFTER that
+    validator has run (`hexera.planner_survey` puts `seen` and `at_places` on after `survey_from`), and that block
+    is what reaches the builder whenever the geometry step did not run.
+
+    MEASURED on the platform's own block for `ahmed_variant_001_external_looked`: `check_survey_block` accepts a
+    `seen` row carrying the key `n_layers`, and accepts the value "the mesh will collapse here". The first is a
+    builder control the Surveyor has no business naming; the second is a prediction of how the mesh turns out,
+    which this handoff never makes. Both are refused here.
+
+    The two word lists are the package's and are READ, never restated: `contract.survey.BUILDER_KEYS` and
+    `OUTCOME_WORDS` are both public. The day the block fixer runs these inside `check_survey_block`, this
+    function becomes a second call of the same rules and costs nothing.
+    """
+    pkg = _package()
+    try:
+        pkg["deliver"].check_survey_block(block)
+    except pkg["marks"].ContractError as exc:
+        raise SurveyError(f"the survey block breaks the package's own contract: {exc}") from exc
+    keys, words = pkg["survey"].BUILDER_KEYS, pkg["survey"].OUTCOME_WORDS
+    for where, found in _contract_breaks(block, keys, words):
+        raise SurveyError(f"the survey block at {where or 'its root'} {found}; the Surveyor names places and "
+                          f"measurements, never a builder setting, and never predicts how the mesh turns out")
+
+
+def _contract_breaks(node: Any, keys, words, path: str = ""):
+    """Every place a block carries a builder control or an outcome claim, walked the way the package walks it."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}".lstrip(".")
+            if str(key) in keys:
+                yield here, f"carries the builder control {key!r}"
+            yield from _contract_breaks(value, keys, words, here)
+    elif isinstance(node, (list, tuple)):
+        for i, value in enumerate(node):
+            yield from _contract_breaks(value, keys, words, f"{path}[{i}]")
+    elif isinstance(node, str):
+        low = node.lower()
+        for word in words:
+            if word in low:
+                yield path, f"says {word!r}"
 
 
 def _with_the_look_state(block: dict | None, state: dict, pkg: dict) -> dict | None:
@@ -1132,9 +1225,9 @@ def _with_the_look_state(block: dict | None, state: dict, pkg: dict) -> dict | N
             *[r for r in (survey.get("unsettled") or []) if r.get("about") != "look"]]
     survey["unsettled"] = rows[:pkg["deliver"].SURVEY_BLOCK_ITEMS]
     out = {**block, "survey": survey}
-    # the package's own validator, again, on the block this platform actually hands over. A row that takes it
-    # over its ceiling is refused here rather than cut in the prompt, which is the whole point of the rule
-    pkg["deliver"].check_survey_block(survey)
+    # the whole contract, again, on the block this platform actually hands over. A row that takes it over its
+    # ceiling is refused here rather than cut in the prompt, which is the whole point of the rule
+    check_the_survey_block(survey)
     return out
 
 
@@ -1447,12 +1540,13 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
         return "skipped"
 
 
-__all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
+__all__ = ["ASKING_SCHEMA", "BLOCK_LIST_MAX", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
            "LOOK_BECAUSE", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_PENDING",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
-           "asking_of", "asking_row", "builder_block", "carry_answers", "compose",
+           "asking_of", "asking_row", "builder_block", "carry_answers",
+           "check_the_survey_block", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "look_state", "mark_asked", "named_inlets", "open_now",
