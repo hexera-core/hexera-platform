@@ -199,7 +199,7 @@ function initScene(sessionId, box, surf, p) {
   /* THE LIGHTS: a key from the upper left, a fill from the right and a faint rim from behind,
      all riding with the camera, so a turned part is always lit the way a CAD viewer lights it */
   if (vtk.Rendering.Core.vtkLight) {
-    [[-0.7, 0.9, 1.0, 0.85], [0.9, 0.25, 0.7, 0.45], [0.0, -0.4, -1.0, 0.25]].forEach(([x, y, z, i]) => {
+    [[-0.7, 0.9, 1.0, 0.62], [0.9, 0.25, 0.7, 0.28], [0.0, -0.4, -1.0, 0.14]].forEach(([x, y, z, i]) => {
       const l = vtk.Rendering.Core.vtkLight.newInstance();
       if (l.setLightTypeToCameraLight) l.setLightTypeToCameraLight();
       l.setPosition(x, y, z); l.setFocalPoint(0, 0, 0); l.setIntensity(i); l.setColor(1, 1, 1);
