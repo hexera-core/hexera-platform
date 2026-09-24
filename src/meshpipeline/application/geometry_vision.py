@@ -33,7 +33,9 @@ logger = logging.getLogger(__name__)
 #: NO 0004. The look needs no migration, and that was checked rather than assumed. Revision 0003
 #: gives `geometry_measurements.document` a JSONB column, and the look already has a key in that
 #: document: `report_measured` has written `look` since the measurement path shipped, as
-#: `look_block(None)` meaning nothing looked. Turning the look on fills that key in and recomposes
+#: `look_block(None, status=LOOK_NOT_ATTEMPTED)` - the status is PASSED and not defaulted, because
+#: `look_block(None)` on its own says `failed`, which is a look that was taken and brought nothing back.
+#: Turning the look on fills that key in and recomposes
 #: `planner_block` beside it, both inside the same JSONB value. No new column, no new index, no new
 #: constraint, and no change to what `document_for` reads or what the sha256 guard compares.
 #:
