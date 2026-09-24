@@ -128,9 +128,13 @@ def test_the_environment_carries_this_ray_backend(backend):
     original defect survived every check.
     """
     assert _present(backend), (
+        # The constraints path stays on ONE line with its `-c`: `check_dependency_drift._install_commands`
+        # scans the tracked tree line by line, so a wrap between the flag and its argument made this
+        # sentence look like an installer that constrains with `"` and turned
+        # `test_no_second_constraint_authority` red on a file that installs nothing.
         f"{backend} is not importable on this interpreter. requirements/runtime.txt pins it for the nesting "
-        f"test every multi-region upload runs; re-run the environment setup, or `pip install -c "
-        f"requirements/constraints.txt {backend}`.")
+        f"test every multi-region upload runs; re-run the environment setup, or run pip install with "
+        f"-c requirements/constraints.txt {backend}.")
 
 
 @pytest.mark.parametrize("backend", RAY_BACKENDS)

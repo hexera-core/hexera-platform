@@ -65,16 +65,21 @@ def _answered(doc: dict) -> dict:
                             latest_user_message=f"{pick} it is", principal="owner-7f3a")
 
 
+#: One planned row per look status, kept for the session. A plan is the expensive step here, and the KEY is
+#: the look's status because the row is composed FROM the document: `builder_block` refuses a row whose
+#: `composed_for.look_status` disagrees with the block the package composed, which is a real cross-check and
+#: not something a test may fake. Memoising on nothing let a randomised order hand one test the other's row.
 _ROWS: dict[str, dict] = {}
 
 
 def _planned(doc: dict) -> dict:
-    if "state" not in _ROWS:
+    key = str(((doc.get("look") or {}) if isinstance(doc.get("look"), dict) else {}).get("status") or "")
+    if key not in _ROWS:
         state = gst.plan_the_part(_answered(doc), doc, fidelity="standard", job_id="job-1",
                                   client=gst.planner_client("reference"))
         assert state["geometry_step"]["status"] == gst.PLANNED, state["geometry_step"].get("reason")
-        _ROWS["state"] = state
-    return _ROWS["state"]
+        _ROWS[key] = state
+    return _ROWS[key]
 
 
 def _failed(doc: dict, reason: str) -> dict:
@@ -156,12 +161,17 @@ def test_a_failed_step_with_no_reason_kept_still_says_there_is_no_plan(armed):
 
 
 def test_the_row_and_the_looks_row_do_not_displace_each_other(armed):
-    """Two platform-authored rows go in the same list, first, and both have to survive the other."""
+    """Two platform-authored rows go in the same list, first, and both have to survive the other.
+
+    The row is COMPOSED from a document whose look failed rather than patched into that state: `builder_block`
+    refuses a row whose `composed_for.look_status` disagrees with the block the package composed from the same
+    document, which is the platform's own guard against a row nobody recomposed after a look landed.
+    """
     doc = {**_doc(), "look": {"status": "failed", "reason": "the reader returned nothing"}}
     state = _failed(doc, "the model never answered")
-    state = {**state, "composed_for": {**(state.get("composed_for") or {}), "look_status": "failed"}}
+    assert gs.look_state(state) == gs.LOOK_FAILED
     block = gs.builder_block(state)
-    assert block is not None
+    assert block is not None, "the block was lost, so neither row reached the builder"
     rows = block["survey"]["unsettled"]
     assert [r["why"] for r in rows if r.get("about") == "look"] == [gs.LOOK_BECAUSE[gs.LOOK_FAILED]]
     assert len(_plan_rows(block)) == 1
