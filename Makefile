@@ -50,7 +50,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         mesh-setup mesh-deploy mesh-doctor mesh-adopt mesh-destroy mesh-decommission-legacy dev-images env-bootstrap \
         rebuild restart logs-api logs-worker logs-all migrate migrate-auto db-shell \
         shell-api shell-worker test-integration test-container test-external-fixtures \
-        test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
+        test-ui test-all smoke wheel dependencies deps vendored-agent lint typecheck wait-postgres \
         check-fast release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
         clean-workspaces
@@ -191,7 +191,7 @@ check-fast: ##! GATE A - seconds: lint + import sweep + graph wiring + configura
 		tests/unit/infra/test_import_sweep.py \
 		tests/unit/hygiene/test_publication_authority_manifest.py
 
-check: lint typecheck dependencies ## GATE B - may this commit produce a release? (ruff + mypy + deps + the full hermetic suite + UI)
+check: lint typecheck dependencies vendored-agent ## GATE B - may this commit produce a release? (ruff + mypy + deps + the vendored agent + the full hermetic suite + UI)
 	$(PY) -m pytest -q tests/unit -m "not external_fixture"
 	$(PY) -m pytest -q tests/ui
 
@@ -463,6 +463,11 @@ typecheck: ##! mypy ratchet - 0 exit while the baseline holds, fail on any NEW e
 dependencies: ##! Validate the one dependency source of truth (requirements/runtime.txt + dev.txt)
 	$(PY) devtools/quality/check_dependency_drift.py
 deps: dependencies ##! Alias for `make dependencies`
+# The wheel in vendor/wheels/ is the agent this product measures and looks with, and it went fourteen commits
+# stale in silence because nothing compared PROVENANCE.json to the agent. No --allow-unavailable here: on a
+# machine that can reach the agent checkout, "I could not look" is a failure and not a pass.
+vendored-agent: ##! Prove the vendored geometry-agent wheel is the agent source it says it is (needs the agent checkout)
+	$(PY) devtools/quality/check_vendored_agent.py
 # Maintainer check, not a release step: prove the distribution still builds and still contains
 # exactly ONE top-level package, then delete every artifact. Nothing is uploaded, and nothing is
 # left behind - a stale dist/ shadows the source tree (see test_no_stale_build_artifacts_shadow_

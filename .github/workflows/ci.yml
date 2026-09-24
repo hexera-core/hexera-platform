@@ -194,6 +194,14 @@ jobs:
       # be killed part way through a retry.
       - name: Every inner deadline is shorter than the outer one that kills it
         run: python devtools/quality/check_timeout_nesting.py
+      # The vendored geometry-agent wheel went fourteen agent commits stale in silence: PROVENANCE.json
+      # recorded the commit faithfully and nothing compared it to the agent. This runner clones THIS
+      # repository alone, so it has no agent checkout to compare against and --allow-unavailable turns
+      # that into a printed line rather than a red lane. The line is the point: the real enforcement is
+      # `make check` and `make dev-up` on a machine that CAN reach the agent, and this step exists so
+      # that a reader of this lane can see which of the two happened.
+      - name: The vendored geometry agent is the agent source it says it is
+        run: python devtools/quality/check_vendored_agent.py --allow-unavailable
       # The deploy scripts are the release path; a parse error in one is found here or in prod.
       - name: Deploy and release shell parses
         run: |
