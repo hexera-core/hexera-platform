@@ -1,8 +1,8 @@
 # Responsibility: Verify the stage opens the moment the part is measured - labels greyed out under
 # the naming banner, nothing editable - fills in the model's labels when they arrive, lets the
 # user add a sticker (snapped to a measured face, or free with a size to type) and remove one,
-# and sends exactly those openings when proceeding. Also that the CAD-style skin draws: smooth
-# normals, sharp edges, the view cube.
+# and sends exactly those openings when proceeding. Also that the prepared skin draws - smooth
+# normals, sharp edges - with none of the view cube, snap buttons or hint bar that were removed.
 # Boundaries: the skin is the one the worker stores, built through the same code; only the
 # network is stood in for. Pixel picking is not driven here (the hook adds at a point instead).
 from __future__ import annotations
