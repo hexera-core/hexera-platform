@@ -69,8 +69,14 @@ def test_with_no_survey_stored_the_planner_gets_the_measurements_own_block(rows)
     measurement's own block and no `survey` key, exactly as it was before the survey existed."""
     doc, _stored, _gs = rows
     block = asyncio.run(regions.agent_block_for_state(_state_for(doc)))
-    assert block == doc["planner_block"]
+    assert {k: v for k, v in block.items() if k != "places_refused"} == doc["planner_block"]
     assert "survey" not in block
+    # ONE THING IS ADDED AND IT IS NOT THE MEASUREMENT'S. This fixture was measured before the passage-ends
+    # stage existed, so it carries no `passage_ends` key, so nothing measured where this part's passages stop
+    # at a wall with no mouth. The block says so rather than letting an empty place list read as a measured
+    # zero (`regions.with_the_stages_that_did_not_run`, and `tests/unit/cad/test_geometry_block_skipped_stage`).
+    assert [r["kind"] for r in block["places_refused"]] == ["closed_end"]
+    assert "did not run on this part" in block["places_refused"][0]["why"]
 
 
 def test_a_look_that_landed_after_the_last_composition_is_composed_in_before_the_planner_reads(rows):

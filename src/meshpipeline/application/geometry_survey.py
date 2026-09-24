@@ -1219,6 +1219,22 @@ def check_the_survey_block(block: Any) -> None:
                           f"measurements, never a builder setting, and never predicts how the mesh turns out")
 
 
+def what_the_surveyor_may_not_say(node: Any) -> str:
+    """The first place `node` names a builder control or predicts how the mesh turns out, or "".
+
+    THE SAME TWO RULES `check_the_survey_block` runs, over any node rather than over a whole survey block, for
+    the other thing this platform puts in front of the builder in words of its own: the refusal row
+    `cad/regions.py` writes when a stage of the measurement did not run. That row's sentence is the platform's
+    and the quote inside it is the measurement's, so both are checked here rather than trusted. The two word
+    lists are the package's and are read, never restated (`contract.survey.BUILDER_KEYS` and `OUTCOME_WORDS`).
+    """
+    pkg = _package()
+    keys, words = pkg["survey"].BUILDER_KEYS, pkg["survey"].OUTCOME_WORDS
+    for where, found in _contract_breaks(node, keys, words):
+        return f"{where or 'its root'} {found}"
+    return ""
+
+
 def _contract_breaks(node: Any, keys, words, path: str = ""):
     """Every place a block carries a builder control or an outcome claim, walked the way the package walks it."""
     if isinstance(node, dict):
@@ -1588,4 +1604,4 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "look_state", "mark_asked", "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
-           "said_by_customer", "save", "stage_of", "survey_the_part"]
+           "said_by_customer", "save", "stage_of", "survey_the_part", "what_the_surveyor_may_not_say"]
