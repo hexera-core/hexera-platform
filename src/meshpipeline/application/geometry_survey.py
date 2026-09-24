@@ -212,7 +212,7 @@ def _package():
             "ask_trade": ask_trade, "ask_say": ask_say, "reconcile": reconcile_joint}
 
 
-def _reconciled(pkg: dict, facts, representation: str, look: Any, case: str, brief: str = ""):
+def _reconciled(pkg: dict, facts, representation: str, look: Any, case: str):
     """STEP 4 ON THE PLATFORM'S OWN PATH: the measurement checking the look and the look checking the
     measurement, on the document this composition was just built from. None when there is no pair.
 
@@ -229,15 +229,22 @@ def _reconciled(pkg: dict, facts, representation: str, look: Any, case: str, bri
     NEVER RAISES. Step 4 is pure addition: this platform composed surveys without it for four rounds, so a
     fault in it costs the composition its reconciliation and nothing else.
     """
+    # WHAT THIS CALL MAY NAME IS WHAT THE VENDORED WHEEL CARRIES, and that is not a matter of taste. The image
+    # installs `vendor/wheels/`, built from ONE recorded agent commit, so a name the agent's master has and the
+    # wheel does not is an AttributeError or a TypeError inside the `except` below: step 4 would be skipped in
+    # silence, on every job, with one warning line behind it. That is this round's own failure shape one level
+    # in, and it was real: the wheel vendored before this change carried `reconcile/joint.py` without `for_job`
+    # at all, so the subpackage staleness gate passed it.
+    # `tests/unit/deploy/test_geometry_agent_distribution.AGENT_CALLS` now reads the wheel and checks the
+    # functions and keywords this application names, against the WHEEL and never against a developer's
+    # PYTHONPATH, which is the one environment where a stale wheel cannot be allowed to look fine.
+    #
+    # WHAT IS DELIBERATELY NOT PASSED: the customer's own flow direction (`stated_axis`). It reaches only the
+    # gate on the 41-station profile, and that profile refuses here for want of the triangles whatever it is
+    # told, so it would change nothing. It belongs in the same change as the bytes.
     try:
-        # THE ONE THING THE CUSTOMER SAYS THAT NO MEASUREMENT OWNS: which way the flow runs. One signed axis
-        # letter, read out of the brief's own flow sentence by the package's own reader, and it reaches exactly
-        # one place, the gate that refuses a single-axis area profile. It is refused for want of the triangles
-        # here anyway, so today this changes nothing on this path and it is passed so that the day the bytes are
-        # handed over (see the docstring) the gate is not judging a direction the customer never gave.
-        said = pkg["ask_job"].flow_axis_in_brief(brief)
         return pkg["reconcile"].for_job(facts, representation, look if isinstance(look, dict) else None,
-                                        case=case, path=None, mesh=None, stated_axis=said)
+                                        case=case, path=None, mesh=None)
     except Exception as exc:                       # noqa: BLE001 - see the docstring
         logger.warning("geometry survey: step 4 could not be run (%s: %s); the questions are composed "
                        "without it", type(exc).__name__, exc)
@@ -405,7 +412,7 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         # the pass-through parameters it replaced. A contradiction between the two sources needs no answer
         # key, which is what makes it the one quality signal that works on a file nobody has seen.
         joint = _reconciled(pkg, facts, str(composed.get("representation") or ""), document.get("look"),
-                            str(document.get("source_sha256") or ""), brief_text)
+                            str(document.get("source_sha256") or ""))
         r_alerts = joint.alerts if joint is not None else None
         r_found = joint.reconciliation if joint is not None else None
         # STEP 4'S FINDER, AND IT IS THE ONLY ONE (`QUESTION_FINDER`). `ask_intake` reads the composed

@@ -206,3 +206,60 @@ def test_the_wheel_ships_no_test_or_eval_tree():
     names = zipfile.ZipFile(_the_wheel()).namelist()
     stowaways = [n for n in names if n.startswith(("tests/", "eval/", "docs/"))]
     assert not stowaways, f"the vendored wheel ships {len(stowaways)} files it should not: {stowaways[:5]}"
+
+
+#: THE CALLS THIS APPLICATION MAKES INTO THE AGENT THAT A SUBPACKAGE LIST CANNOT COVER, as
+#: `(module path inside the wheel, what the application names, the keywords it passes)`.
+#:
+#: WHY THIS IS NOT THE SUBPACKAGE GATE AGAIN. `test_the_vendored_wheel_carries_every_subpackage_the_application
+#: _imports` asks whether `geometry_agent.reconcile` is in the wheel at all. It was, on the day
+#: `application/geometry_survey` started calling `reconcile.joint.for_job`, and it would have been on the day
+#: somebody passed that function a keyword only the agent's master has. The wheel is built from ONE recorded agent
+#: commit, and every entry point here wraps its agent call in try/except, so a `TypeError: unexpected keyword
+#: argument` is a step that is skipped in silence on every job with one warning line behind it. That is the
+#: failure shape this file exists for, one level further in: not an absent module, an absent argument.
+#:
+#: Checked against the WHEEL and never against an import, for the reason at the head of this file: on a
+#: developer's machine `geometry_agent` comes off PYTHONPATH from a checkout that is ahead of the wheel, which is
+#: the one environment where this cannot be allowed to pass.
+AGENT_CALLS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("geometry_agent/reconcile/joint.py", "for_job", ("case", "path", "mesh")),
+    ("geometry_agent/agent/hexera.py", "report_measured", ("look", "fluid_side", "inlet_ids")),
+    ("geometry_agent/ask/intake.py", "ask_intake", ("declared", "brief", "asked_before", "alerts",
+                                                    "reconciliation")),
+)
+
+
+@pytest.mark.parametrize("rel,name,keywords", AGENT_CALLS)
+def test_the_vendored_wheel_carries_the_calls_this_application_makes(rel, name, keywords):
+    import ast
+    with zipfile.ZipFile(_the_wheel()) as z:
+        assert rel in set(z.namelist()), f"the vendored wheel does not carry {rel}"
+        tree = ast.parse(z.read(rel).decode("utf-8"))
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name), None)
+    assert fn is not None, (
+        f"{rel} in the vendored wheel defines no {name}; src/meshpipeline calls it. The wheel is stale - "
+        f"rebuild it with deploy/vendor_geometry_agent.sh from an agent checkout that has it.")
+    args = fn.args
+    accepted = {a.arg for a in (*args.args, *args.posonlyargs, *args.kwonlyargs)}
+    takes_kwargs = args.kwarg is not None
+    missing = sorted(k for k in keywords if k not in accepted)
+    assert takes_kwargs or not missing, (
+        f"src/meshpipeline calls {name}({', '.join(k + '=' for k in missing)}...) and the {name} in the "
+        f"vendored wheel does not accept {'them' if len(missing) > 1 else 'it'}. Against this wheel that call is "
+        f"a TypeError the caller swallows, so the step is skipped on every job. Rebuild the wheel with "
+        f"deploy/vendor_geometry_agent.sh.")
+
+
+def test_the_recorded_agent_commit_is_one_this_checkout_can_name():
+    """A wheel whose provenance names a commit nobody can look up cannot be checked against anything.
+
+    NOT that it is the newest commit: this repository does not own the agent's branch and a wheel one commit
+    behind is a normal, deliberate state. What it may not be is unidentifiable.
+    """
+    recorded = json.loads(PROVENANCE.read_text(encoding="utf-8"))
+    assert re.fullmatch(r"[0-9a-f]{40}", str(recorded.get("agent_commit") or "")), recorded.get("agent_commit")
+    assert str(recorded.get("agent_commit", "")).startswith(str(recorded.get("agent_commit_short", "x")))
+    assert recorded.get("agent_checkout_dirty") is False, (
+        "the vendored wheel was built from a dirty agent checkout, so the commit it records does not describe it")
