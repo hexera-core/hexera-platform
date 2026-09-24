@@ -1170,7 +1170,8 @@ def builder_block(state: dict | None) -> dict | None:
         # which carries the reason in a key nobody looked at. The agent now reads it at
         # deliver.check_builder_handoff; this is the platform's half, so the reason reaches a log on the
         # machine that ran the job and not only a stored row.
-        _refused = state.get("planner_block", {}).get("survey_refused") if isinstance(state, dict) else None
+        _block = state.get("planner_block") if isinstance(state, dict) else None
+        _refused = _block.get("survey_refused") if isinstance(_block, dict) else None
         if _refused:
             logger.warning("geometry survey: the package composed no survey for this job: %s", _refused)
 
