@@ -69,7 +69,11 @@ def collect() -> tuple[int, list[str], str]:
          "--collect-only", "-q", "-p", "no:cacheprovider"],
         capture_output=True, text=True, cwd=str(ROOT), timeout=3600, check=False)
     output = done.stdout + done.stderr
-    ids = [line.strip() for line in done.stdout.splitlines() if "::" in line and line.startswith("tests/")]
+    # Backslashes normalised because pytest prints node ids with the platform's separator. Without this
+    # the whole parse yields nothing on Windows and the gate refuses a tree that is perfectly fine,
+    # which is the opposite failure to the one it exists for but just as useless.
+    ids = [line.strip().replace("\\", "/") for line in done.stdout.splitlines()
+           if "::" in line and line.strip().lower().startswith("tests")]
     return done.returncode, ids, output
 
 
