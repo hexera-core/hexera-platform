@@ -1622,6 +1622,31 @@ def _noted_queue(state: dict, outcome: str) -> dict:
     return out
 
 
+def _the_queue_has_been_answered(state: dict) -> dict:
+    """The row with `look_queued` dropped, for the one caller that knows a worker has WRITTEN.
+
+    WHY THIS EXISTS, and it is the same collapse from the other side. `look_queued` is the only thing that can
+    tell a look on its way from one nobody took, because the document reads as `not_attempted` in both cases,
+    and `carry_answers` deliberately carries it across a recomposition so a recomposition for some OTHER reason
+    (the purpose moved, ports were declared) does not lose a look in flight. But the look landing is itself a
+    recomposition, and the queue's answer was carried across that one too.
+
+    MEASURED in the built `api` image on a real part, in the configuration a deployment with no vision key
+    runs: the worker writes `look_block(None, status="not_attempted", reason="the configured reader (openai,
+    gpt-5.6-luna) has no key in this environment, so nothing looked")`, the row is recomposed for it, and
+    `look_state` went on answering `pending` for good. So the builder was told "the render worker was queued
+    and has not written its reading" about a reading that had arrived and said nobody looked. A look that will
+    never come back, reported as one still coming, on every upload in that deployment.
+
+    A FAILED look never had this, because `look_state` reads `failed` before it reads the queue. `ok` likewise.
+    It is only `not_attempted` the queue's answer could overrule, which is exactly the state a missing reader
+    produces, which is the state this platform is in until a key is set.
+    """
+    if "look_queued" not in state:
+        return state
+    return {k: v for k, v in state.items() if k != "look_queued"}
+
+
 def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
     """Step 3, queued at the step it belongs to. Never raises."""
     try:
@@ -1690,13 +1715,17 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
 
 
 async def recompose_after_look(source_id: str, owner_id: str, document: dict) -> str:
-    """The look landed: compose the survey again with it, keeping every answer still bound. Never raises."""
+    """The look landed: compose the survey again with it, keeping every answer still bound. Never raises.
+
+    AND THE QUEUE'S ANSWER IS SPENT HERE, which is the whole of `_the_queue_has_been_answered`. This is the
+    one caller that knows a worker has WRITTEN, so it is the one place that can take the row out of `pending`.
+    """
     try:
         sha = str(((document.get("source") or {}).get("sha256")) or document.get("source_sha256") or "")
         state = await load(owner_id, source_id, sha256=sha)
         if state is None:
             return "no_survey"
-        fresh = recomposed(state, document)
+        fresh = _the_queue_has_been_answered(recomposed(state, document))
         await save(owner_id, source_id, fresh)
         return "recomposed"
     except Exception as exc:                       # noqa: BLE001

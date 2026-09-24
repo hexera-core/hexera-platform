@@ -2,6 +2,7 @@
 # Boundaries: pure functions over real stored measurements of three corpus parts; the database and the conversation are other tests.
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -832,6 +833,50 @@ def test_the_queue_answer_survives_a_recomposition_so_a_pending_look_stays_pendi
     landed = {**(doc.get("look") or {}), "status": "ok",
               "impression": {"looks_like": "a pipe elbow", "openings_seen": [], "internal_features": []}}
     assert gs.look_state(gs.recomposed(state, {**doc, "look": landed})) == gs.LOOK_OK
+
+
+def test_a_look_that_landed_saying_nobody_looked_stops_being_reported_as_still_on_its_way(monkeypatch):
+    """THE SAME COLLAPSE FROM THE OTHER SIDE, and it is the state a deployment with no vision key is in.
+
+    `look_queued` is the only thing that can tell a look on its way from one nobody took, because the document
+    reads `not_attempted` either way, and `carry_answers` carries it across a recomposition on purpose. But
+    the look LANDING is a recomposition too. MEASURED in the built `api` image on a real part with the reader
+    unconfigured: the worker writes `status="not_attempted"` with "the configured reader (openai,
+    gpt-5.6-luna) has no key in this environment, so nothing looked", the row is recomposed for it, and
+    `look_state` went on saying `pending` for good - so the builder was told "the render worker was queued and
+    has not written its reading" about a reading that had arrived and said nobody looked.
+
+    `recompose_after_look` is the one caller that knows a worker has written, so it is the one place the
+    queue's answer can be spent. A failed look never had this (`look_state` reads `failed` first) and neither
+    did `ok`; `not_attempted` is the only state the queue's answer could overrule, and it is the one a missing
+    reader produces.
+    """
+    doc = _doc("bend_elbow_001")
+    state = {**_answered_elbow(), "look_queued": "queued"}
+    assert gs.look_state(state) == gs.LOOK_PENDING
+    nobody_looked = {**doc, "look": {"status": "not_attempted", "impression": None,
+                                     "reason": "the configured reader (openai, gpt-5.6-luna) has no key in "
+                                               "this environment, so nothing looked"}}
+    saved: dict = {}
+
+    async def _load(*_a, **_k):
+        return state
+
+    async def _save(_owner, _source, row):
+        saved["row"] = row
+
+    monkeypatch.setattr(gs, "load", _load)
+    monkeypatch.setattr(gs, "save", _save)
+    assert asyncio.run(gs.recompose_after_look("src-1", "owner-7f3a", nobody_looked)) == "recomposed"
+    after = saved["row"]
+    assert "look_queued" not in after, "the queue's answer outlived the reading that answered it"
+    assert gs.look_state(after) == gs.LOOK_NONE
+    why = _look_row(after)["why"]
+    assert why == gs.LOOK_BECAUSE[gs.LOOK_NONE]
+    assert "has not written" not in why, (
+        "the builder is still being told a reading is on its way, and the reading has already arrived")
+    # and every answer the customer gave is still bound, which is what the recomposition is for
+    assert gs.confirmed_roles(after) == gs.confirmed_roles(state)
 
 
 # RECOMPOSITION KEEPS WHAT IS STILL BOUND AND DROPS WHAT IS NOT
