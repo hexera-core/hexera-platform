@@ -300,6 +300,10 @@ AGENT_CALLS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("geometry_agent/agent/hexera.py", "report_measured", ("look", "fluid_side", "inlet_ids")),
     ("geometry_agent/ask/intake.py", "ask_intake", ("declared", "brief", "asked_before", "alerts",
                                                     "reconciliation")),
+    #: `application/geometry_survey.dispatch_refusals` reads the customer's answer to the ONE question that
+    #: decides whether the job runs through this. A wheel without it cannot tell "send it back" from "try it
+    #: anyway", so that gate passes every submission - which is where this platform was before the gate existed.
+    ("geometry_agent/ask/say.py", "dispatch_of", ()),
 )
 
 

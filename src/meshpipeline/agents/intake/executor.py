@@ -477,6 +477,33 @@ class IntakeToolExecutor:
         st.geometry_survey = state
         return gs.role_problems(state, st.geometry_document, args.get("patches"))
 
+    def _dispatch_gate(self, args: dict) -> list[str]:
+        """Why this file may not be dispatched at all: the customer was asked and said send it back.
+
+        Empty with the survey off and empty on every file whose measurement predicted no refusal. It reads the
+        row `_survey_gate` has just refreshed rather than composing a second one, which is also what keeps it
+        honest: a recomposition that no longer raises the question retires the answer, and a retired answer is
+        the record of what was said and not a refusal of this submission.
+
+        AND ONLY WHEN THE ROW IS ABOUT THIS SUBMISSION'S PURPOSE. `hexera.triage` predicts a refusal against a
+        purpose and an engine, so "send it back" is an answer about meshing this file for THAT analysis. When
+        `for_submission` composed nothing - a purpose the Surveyor does not compose for - the row on the state
+        is the previous purpose's, and refusing on it would hold a submission with an answer about another job.
+        """
+        st = self.state
+        if not st.survey_armed or not isinstance(st.geometry_survey, dict):
+            return []
+        composed = (st.geometry_survey.get("composed_for") or {}).get("purpose") or ""
+        if str(composed) != str(args.get("purpose") or ""):
+            return []
+        from meshpipeline.application import geometry_survey as gs
+
+        try:
+            return gs.dispatch_refusals(st.geometry_survey)
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            logger.warning("Intake: the dispatch gate could not run (%s) - job_id=%s", exc, self._job_id)
+            return []
+
     async def _geometry_step_gate(self, args: dict) -> list[str]:
         """STEP 5 AND THE THIRD INTAKE, at the one moment both belong: after the customer's answers and
         before the builder. The geometry agent plans the part here (once per set of answers), and a
@@ -555,6 +582,19 @@ class IntakeToolExecutor:
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 "Submission rejected - a port role must be the customer's: " + "; ".join(_unconfirmed)
                 + ". Nothing was saved."))
+
+        # A FILE THE CUSTOMER ASKED US TO SEND BACK IS NOT DISPATCHED. The Surveyor's first question is
+        # whether this file gets through the mesher at all (`ask.schema.TIERS`, the `dispatch` tier), and the
+        # product's own words for it are "I can send it back to you now rather than spend the run finding
+        # out". Their answer was recorded and nothing read it, so the run was spent anyway. Empty with the
+        # survey off and on every file whose measurement predicted no refusal.
+        _send_back = self._dispatch_gate(args)
+        if _send_back:
+            st.submit_rejections += 1
+            logger.warning("Intake: submit rejected - the customer asked for this file to be sent back: %s "
+                           "- job_id=%s", _send_back, self._job_id)
+            return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
+                "Submission rejected - " + "; ".join(_send_back) + ". Nothing was saved."))
 
         # THE GEOMETRY AGENT PLANS HERE, after every answer and before the builder, and the one question
         # only its plan can raise is put once before this goes through. Empty with the step off.

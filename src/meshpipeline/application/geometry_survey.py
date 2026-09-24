@@ -1431,8 +1431,78 @@ def with_the_look_state(block: dict | None, look: str) -> dict | None:
 
 
 # -------------------------------------------------------------------------------------------------
-# the gate at submission: a port role the customer did not confirm does not reach port_declaration
+# the gate at submission: a port role the customer did not confirm does not reach port_declaration,
+# and neither does a file the customer asked us to send back
 # -------------------------------------------------------------------------------------------------
+
+#: WHAT THE CUSTOMER'S ANSWER TO THE DISPATCH QUESTION MEANS, in the package's own word for it
+#: (`ask.say.DISPATCH_WORDS`). `send_back` is the branch that says there is no job.
+SEND_BACK = "send_back"
+
+
+def dispatch_refusals(state: dict | None) -> list[str]:
+    """Why this file may not be dispatched, in sentences for the model. Empty means it may.
+
+    THE ONE QUESTION WHOSE ANSWER DECIDES WHETHER THERE IS A JOB AT ALL, and until this function nothing read
+    it. `ask.intake` ranks it first of every question this product asks (`ask.schema.TIERS`: "the answer
+    decides whether the job runs at all; nothing below this matters if it does not"), `ask.say.dispatch` puts
+    it in these words - "I do not think this file will get through the mesher as it stands ... I can send it
+    back to you now rather than spend the run finding out. Shall I?" - and `record_answer` stores the
+    customer's yes as a confirmed claim on `dispatch`. Then the submission went through, the job was
+    dispatched, and the run was spent on a file the product had just offered to send back.
+    Measured on tests/_fixtures/manifold_short.stl for internal_cfd: `hexera.triage` predicts
+    `engines/snappy/drivers.py:540`, which refuses an STL for an internal build before the mesher starts, so
+    the question is raised on EVERY STL uploaded for internal flow, and answering it changed nothing.
+    The builder's block carried `confirmed: {"dispatch": {"value": "send it back now"}}` while the mesh ran.
+    `hexera.triage` states `enforced: False` and `contract.marks.OWNERS` says why: the prediction is a
+    measurement of the file against THIS platform's rules and the decision is the customer's. Nothing in the
+    package can stop a job, so the platform is where the decision has to be read - here, at the last moment
+    before `submit_requirements` authorises anything.
+
+    WHICH BRANCH THEY CHOSE IS READ OFF THE PACKAGE (`ask.say.dispatch_of`) and never off the position of an
+    option or a sentence restated on this side, for the reason `_trade_cap` gives about the budget's three
+    wordings. An answer this platform cannot map to a branch is refused rather than read as consent: the
+    question is "shall I send it back", and anything that is not the option meaning "try it anyway" is not a
+    yes to meshing. A package too old to be asked at all is the one case that passes, because then this
+    platform cannot tell the two branches apart and inventing a refusal would be a guess of its own.
+
+    A DEFAULT IS NOT A CONFIRMATION HERE EITHER, in the other direction: only the customer's own answer is
+    read, so a question they skipped or let default blocks nothing. It rides to the builder as unsettled,
+    which is what `_status` and the survey block already do with it.
+    """
+    if not isinstance(state, dict):
+        return []
+    views = [v for v in question_views(state) if v.get("about") == "dispatch"]
+    if not views:
+        return []
+    try:
+        read = _package()["ask_say"].dispatch_of
+    except Exception as exc:                       # noqa: BLE001 - a package that cannot be asked is not a refusal
+        logger.warning("geometry survey: the customer's dispatch answer cannot be read in this image (%s), so "
+                       "the submission is judged without it", exc)
+        return []
+    answers = live_answers(state)
+    problems: list[str] = []
+    for v in views:
+        mine = [a for a in answers if a.get("question_id") == v["id"]
+                and a.get("answered_by") == CUSTOMER and not a.get("skipped")]
+        if not mine:
+            continue
+        said = mine[-1]
+        chose = read(str(said.get("option") or said.get("value") or ""))
+        if chose == SEND_BACK:
+            problems.append(
+                f"the customer answered survey question {v['id']} and asked for this file to be sent back "
+                f"rather than meshed: {v['why']}. Do not submit it. Tell them what has to change about the "
+                f"file, and submit only if they tell you to run it as it stands")
+        elif chose is None:
+            problems.append(
+                f"the customer's answer to survey question {v['id']} is {said.get('option') or said.get('value')!r}, "
+                f"which names neither branch of the question that decides whether this file is meshed at all, so "
+                f"it cannot be read as permission to mesh it. Put the question again and record one of "
+                f"{v['options']}")
+    return problems
+
 
 def _roled(patches: Any) -> list[dict]:
     return [p for p in (patches or []) if isinstance(p, dict)
@@ -1802,7 +1872,7 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
 
 
 __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
-           "PACKAGE_LOOK_STATE", "block_list_max",
+           "PACKAGE_LOOK_STATE", "SEND_BACK", "block_list_max", "dispatch_refusals",
            "LOOK_BECAUSE", "LOOK_CACHED", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_ON_ITS_WAY",
            "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES", "NO_PLAN_NO_REASON",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",

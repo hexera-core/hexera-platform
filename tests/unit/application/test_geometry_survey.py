@@ -570,6 +570,53 @@ def test_the_two_kinds_the_old_finder_could_not_raise_are_raised_here():
         f"along {s}{a}" for a in "xyz" for s in "+-"]
 
 
+def test_the_file_the_customer_asked_us_to_send_back_is_not_dispatched():
+    """THE ANSWER THAT DECIDES WHETHER THERE IS A JOB, read at last. `q_dispatch` is the top of the tier
+    order and `ask.say.dispatch` puts it as "I can send it back to you now rather than spend the run finding
+    out. Shall I?". block_boss_sharp is the fixture the finder raises it on - an STL for an internal build,
+    which `engines/snappy/drivers.py` refuses before the mesher starts - so a customer answering yes was
+    recorded as a confirmed claim on `dispatch`, the submission went through, and the run was spent on the
+    file the product had just offered to send back. Nothing on this platform read the answer.
+
+    WHICH BRANCH THEY CHOSE IS THE PACKAGE'S OWN READING (`ask.say.dispatch_of`), so "try it anyway" is the
+    one answer that lets the job through and a skip or a default that stood blocks nothing: those ride to the
+    builder as unsettled, which is what every other question does with them.
+    """
+    state = _fresh("block_boss_sharp")
+    assert gs.open_now(state)[0]["id"] == "q_dispatch"
+    assert gs.dispatch_refusals(state) == [], "nobody has answered it yet"
+
+    words = "send it back now"
+    sent_back = gs.record_answer(state, question_id="q_dispatch", choice=words, words=words,
+                                 latest_user_message=words, principal="owner-1")
+    (refusal,) = gs.dispatch_refusals(sent_back)
+    assert "asked for this file to be sent back rather than meshed" in refusal
+    assert "engines/snappy/drivers.py" in refusal, "the reason is the measurement's own, not ours"
+    assert "Do not submit it" in refusal
+
+    ran = gs.record_answer(state, question_id="q_dispatch", choice="try it anyway", words="try it anyway",
+                           latest_user_message="try it anyway", principal="owner-1")
+    assert gs.dispatch_refusals(ran) == []
+
+    for kw in ({"skipped": True}, {"took_default": True}):
+        left = gs.record_answer(state, question_id="q_dispatch", words="you decide",
+                                latest_user_message="you decide", principal="owner-1", **kw)
+        assert gs.dispatch_refusals(left) == [], f"{kw} is not an answer and is not a refusal either"
+
+
+def test_an_answer_to_the_dispatch_question_that_names_neither_branch_is_not_read_as_a_yes():
+    """A confirmed answer to the one question that decides whether the file is meshed, which this platform
+    cannot map onto a branch, is refused rather than passed. The question is "shall I send it back", so
+    anything that is not the option meaning "try it anyway" is not permission to mesh."""
+    state = _fresh("block_boss_sharp")
+    words = "send it back now"
+    said = gs.record_answer(state, question_id="q_dispatch", choice=words, words=words,
+                            latest_user_message=words, principal="owner-1")
+    said["answers"][-1]["option"] = said["answers"][-1]["value"] = "whichever you think"
+    (refusal,) = gs.dispatch_refusals(said)
+    assert "names neither branch" in refusal and "cannot be read as permission to mesh it" in refusal
+
+
 def test_a_question_the_brief_already_answered_is_not_put_and_is_not_on_the_survey():
     """CUT 1 from the brief. ahmed_variant_001's own brief says which way the flow comes, so the external
     question is settled by their own words and never reaches the customer or the builder's unsettled list."""
