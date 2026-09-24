@@ -214,3 +214,57 @@ def test_a_stale_token_from_the_previous_selection_cannot_dispatch():
     new_sel = es.select_from_structured_input("cfmesh", session_id="s", owner_id="u", revision="r2")
     ok, why = at.verify_for_confirm(tok, tok["token"], selection=new_sel)
     assert ok is False and "selection changed" in why
+
+
+# the question must be answerable - see the commit that added these
+
+
+def test_a_yes_to_the_standing_question_selects_it_without_the_model_quoting_anything():
+    # The whole defect in one test: the user answers the question on their screen, the model calls
+    # propose again and passes no `user_named_verbatim`, and this used to re-ask - spending the
+    # answer on the question instead of on the selection.
+    proposed = es.propose("gmsh", session_id="s", owner_id="u", revision="r", user_msg_count=0)
+    state = _state("yes", gate={"selection": proposed, "admission": None})
+    out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
+                       _resp(content="Good - now the flow conditions.")])
+    gate = out["intake_gate"]
+    assert gate["selection"]["state"] == es.CONFIRMED
+    assert gate["selection"]["id"] == proposed["id"], "the standing question was answered, not replaced"
+    assert "not a selection" not in out["messages"][-1]["content"], "the question must not come back"
+
+
+def test_the_same_engine_is_never_put_to_the_user_twice():
+    # A question still waiting for its answer is not asked again. Repeating it is what consumed the
+    # pending proposal and made the conversation unable to move.
+    proposed = es.propose("gmsh", session_id="s", owner_id="u", revision="r", user_msg_count=0)
+    state = _state("hold on, what does that change?",
+                   gate={"selection": proposed, "admission": None})
+    out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
+                       _resp(content="It changes how the boundary layers are built.")])
+    gate = out["intake_gate"]
+    assert gate["selection"]["state"] == es.PROPOSED, "a question is not an answer"
+    assert gate["selection"]["id"] == proposed["id"]
+    assert "Selected engine" not in out["messages"][-1]["content"]
+
+
+def test_proposing_the_engine_already_selected_does_not_discard_the_selection():
+    # Re-proposing used to overwrite a CONFIRMED selection with a fresh question, throwing away
+    # consent this application had already recorded and verified.
+    sel = es.select_from_structured_input("gmsh", session_id="s", owner_id="u", revision="r")
+    state = _state("ok", gate={"selection": sel, "admission": None})
+    out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
+                       _resp(content="Still gmsh - what are the flow conditions?")])
+    gate = out["intake_gate"]
+    assert gate["selection"]["state"] == es.CONFIRMED
+    assert gate["selection"]["id"] == sel["id"], "the recorded selection must survive"
+
+
+def test_a_question_about_an_engine_still_selects_nothing():
+    # The proof requirement is unchanged. Naming an engine while asking about it is not choosing it,
+    # whether or not a question about that engine is outstanding.
+    proposed = es.propose("gmsh", session_id="s", owner_id="u", revision="r", user_msg_count=0)
+    state = _state("what is gmsh?", gate={"selection": proposed, "admission": None})
+    out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
+                       _resp(content="It is a tetrahedral volume mesher.")])
+    assert out["intake_gate"]["selection"]["state"] == es.PROPOSED
+
