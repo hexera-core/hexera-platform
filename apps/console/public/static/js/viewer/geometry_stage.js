@@ -561,7 +561,7 @@ function initScene(sessionId, box, surf, p) {
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
-    camera: () => cam.getPosition(), edges: () => edgeCount, axes: () => axesNow,
+    camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     render: () => rw.render(),
   };
