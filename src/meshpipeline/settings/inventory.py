@@ -384,12 +384,13 @@ INVENTORY: list[Group] = [
         EnvVar("PIPELINE_TOTAL_TIMEOUT_SECONDS", "21600", kind="int", help="one absolute wall-clock ceiling for an ENTIRE job across every attempt, retry and restart"),
     ]),
 
-    Group("The Surveyor: measuring, looking at and surveying an uploaded geometry", note="Every upload is measured, looked at and surveyed, and the geometry agent plans it at submission. It needs the geometry-agent distribution installed in the image that runs it; without it, every step records what it could not do and the job runs on what is there. Nothing here switches the chain on or off: the five flags that did are retired, and the register below says so.", vars=[
+    Group("The Surveyor: measuring, looking at and surveying an uploaded geometry", note="Every upload is measured, looked at and surveyed, and the geometry agent plans it at submission. The geometry-agent distribution is installed in every image from vendor/wheels/ and the build fails without it; if one ever lacks it, every step records what it could not do and the job runs on what is there. The look needs a reader key - see OPENAI_API_KEY below. Nothing here switches the chain on or off: the five flags that did are retired, and the register below says so.", vars=[
         EnvVar("GEOMETRY_MEASUREMENT_SYNC_MAX_MB", "4", kind="float", help="under this the measurement runs in the upload request; at or above it a worker takes it"),
         EnvVar("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900", kind="int", help="one measurement's deadline; past it the row records the failure and the conversation is unaffected"),
         EnvVar("GEOMETRY_VISION_TIMEOUT_SECONDS", "180", kind="int", help="one look's deadline, render included; past it the row keeps the measurement and the look is abandoned"),
-        EnvVar("GEOMETRY_VISION_PROVIDER", "openai", help="which provider the look reads with; a provider with no key in this environment is a look that does not happen, never a fall-through to another provider"),
-        EnvVar("GEOMETRY_VISION_MODEL", "gpt-5.6-luna", help="the reader model the look uses on that provider"),
+        EnvVar("GEOMETRY_VISION_PROVIDER", "openai", help="which provider the look reads with: openai, anthropic, deepinfra, deepseek, or off to take no look. A provider with no key in this environment is a look that does not happen, never a fall-through to another provider - outside the dev environments the server refuses to start rather than store that on every row. Changing this means changing GEOMETRY_VISION_MODEL too: the default model below is an OpenAI model id"),
+        EnvVar("OPENAI_API_KEY", "", secret=True, help="the key the look reads with while GEOMETRY_VISION_PROVIDER=openai. gpt-5.6-luna is the reader the look was measured with, $5.30 per 1,000 cold jobs. Without it nothing is looked at; the alternative that needs no new account is GEOMETRY_VISION_PROVIDER=deepinfra with GEOMETRY_VISION_MODEL=Qwen/Qwen3-VL-235B-A22B-Instruct, which no draw of this look has been scored on"),
+        EnvVar("GEOMETRY_VISION_MODEL", "gpt-5.6-luna", help="the reader model the look uses on that provider; it must be a model THAT provider serves"),
         EnvVar("GEOMETRY_AGENT_STEP_PROVIDER", "deepseek", help="the model the geometry agent plans with: deepseek, deepinfra, anthropic, generic or reference (the package's deterministic stand-in); no key for it means no plan, never another provider"),
         EnvVar("GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS", "300", kind="int", help="the geometry agent's wall clock for one plan; past it the step records a failure on the row and the job runs without the plan. 0 means no clock at all"),
         EnvVar("GEOMETRY_AGENT_LEDGER_PATH", "", help="a JSONL file the job ledger's rows are also appended to, for the package's own ledger tools; empty keeps them on the survey row only"),
@@ -449,6 +450,7 @@ INVENTORY: list[Group] = [
         EnvVar("WEB_SEARCH_MAX_RESULTS", "5", kind="int"),
         EnvVar("WEB_SEARCH_TIMEOUT", "20", kind="int"),
         EnvVar("TAVILY_API_KEY", "", secret=True, help="required only when WEB_SEARCH_PROVIDER=tavily"),
+        EnvVar("ANTHROPIC_API_KEY", "", secret=True, exposure="internal", help="read only to answer whether GEOMETRY_VISION_PROVIDER=anthropic has a key; no measured reader runs there, so it is not in the ordinary template"),
     ]),
 
     Group("Mesh toolchain", vars=[

@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from tests._surveyor_package import require
 
 import meshpipeline.settings.package_switches as package_switches
 import meshpipeline.settings.policy as polcfg
@@ -78,8 +79,8 @@ def test_arming_twice_says_the_same_thing(monkeypatch):
 def test_the_words_written_are_words_the_package_accepts():
     """`on` and `off`, not `true`/`false`: the package RAISES on anything it does not know, so a platform that
     wrote `True` would turn a measurement into an exception rather than a switch."""
-    measure = pytest.importorskip("geometry_agent.facts.measure")
-    catalog = pytest.importorskip("geometry_agent.agent.catalog")
+    measure = require("geometry_agent.facts.measure", needs="the words the package accepts for its switches")
+    catalog = require("geometry_agent.agent.catalog", needs="the words the package accepts for its switches")
     assert measure.measured_stops_on({"GEOMETRY_AGENT_MEASURED_STOPS": "on"}) is True
     assert measure.measured_stops_on({"GEOMETRY_AGENT_MEASURED_STOPS": "off"}) is False
     assert catalog.fluid_side_on({"GEOMETRY_AGENT_FLUID_SIDE": "on"}) is True

@@ -117,8 +117,80 @@ GEOMETRY_VISION_TIMEOUT_SECONDS: int = int(optional_env("GEOMETRY_VISION_TIMEOUT
 # fixed (13, 13, 12, 13 of 13 against gpt-6-astra's 13 on four draws) at about a twenty-fifth of the
 # price. A provider with no key for it is a look that does not happen, never a fall-through to
 # another provider.
+#
+# THE READER HAD NO KEY. This default said `openai` while the template carried only DEEPSEEK_API_KEY and
+# DEEPINFRA_API_KEY, so vision/client.py's `_openai` returned None, `reader()` returned None, and every row
+# stored the NO_READER sentence. The comment above stated the contradiction and nothing acted on it: a key
+# that is WRITTEN DOWN is not a key that is READ.
+#
+# The default stays `openai`, and the template now carries OPENAI_API_KEY. gpt-5.6-luna on OpenAI is the
+# reader the look was actually measured with, at $5.30 a thousand cold jobs. Switching the default to
+# DeepInfra because a key for it already exists would have been worse twice over: the model named below is
+# an OpenAI model id that DeepInfra does not serve, so every look would 404, and DeepInfra's own reader is
+# Qwen3-VL, which no draw of this look has ever been scored on. A provider switch is a MODEL switch too;
+# the template says so where an operator will read it.
 GEOMETRY_VISION_PROVIDER: str = optional_env("GEOMETRY_VISION_PROVIDER", "openai").strip().lower()
 GEOMETRY_VISION_MODEL: str = optional_env("GEOMETRY_VISION_MODEL", "gpt-5.6-luna").strip()
+
+#: The providers the measurement package's vision client accepts (geometry_agent.vision.client.PROVIDERS),
+#: minus `auto`. `auto` is deliberately NOT accepted here: it falls through providers by whichever key
+#: happens to be set, and a part read by a model nobody chose is not a look anybody measured. `off` is the
+#: one way to say this deployment takes no look, and it is a STATEMENT - which is why it is the only value
+#: that gets past the refusal below with no key.
+GEOMETRY_VISION_PROVIDERS = ("openai", "anthropic", "deepinfra", "deepseek", "off")
+if GEOMETRY_VISION_PROVIDER not in GEOMETRY_VISION_PROVIDERS:
+    raise ConfigurationError(
+        f"GEOMETRY_VISION_PROVIDER={GEOMETRY_VISION_PROVIDER!r} is not a reader this deployment can use - "
+        f"one of {GEOMETRY_VISION_PROVIDERS}. The package would raise on it at the first look and the row "
+        f"would record a failure per upload; refusing here says it once. Use `off` to take no look.")
+
+#: Whether each provider's key is present, one literal name per read. Spelled out rather than looped over a
+#: table of names because the configuration certification refuses a name built from data
+#: (devtools/quality/config_inventory.py) and it is right to: a name assembled at runtime is one no
+#: catalogue can check. The names are the measurement package's own
+#: (geometry_agent.vision.client._openai / _anthropic / _deepinfra / _deepseek).
+_VISION_KEY_PRESENT: dict[str, bool] = {
+    "openai": bool(optional_env("OPENAI_API_KEY", "").strip()),
+    "anthropic": bool(optional_env("ANTHROPIC_API_KEY", "").strip()),
+    "deepinfra": bool(optional_env("DEEPINFRA_API_KEY", "").strip()),
+    "deepseek": bool(optional_env("DEEPSEEK_API_KEY", "").strip()),
+    "off": True}
+#: The variable the configured reader's key would be in, for a message that names it. Read from a table, not
+#: used to read the environment, so it is documentation rather than a lookup.
+_VISION_KEY_NAMES = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+                     "deepinfra": "DEEPINFRA_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "off": ""}
+
+
+def vision_reader_has_no_key() -> str:
+    """Why this deployment cannot look, or "" when it can. The one place the question is answered.
+
+    Said as a sentence rather than a boolean because every caller wants to repeat it: the refusal below,
+    the deploy preflight, and a startup banner. It reports on the CONFIGURED reader only - a provider with
+    no key is a look that does not happen, never a fall-through to another provider, so the other three
+    keys are irrelevant to the verdict however many of them are set.
+    """
+    if _VISION_KEY_PRESENT.get(GEOMETRY_VISION_PROVIDER, False):
+        return ""
+    return (f"GEOMETRY_VISION_PROVIDER={GEOMETRY_VISION_PROVIDER} but "
+            f"{_VISION_KEY_NAMES[GEOMETRY_VISION_PROVIDER]} is unset, so no upload will be looked at: "
+            f"every row stores 'the configured reader has no key in this environment'. The look is the "
+            f"half of the Surveyor that finds a passage the measurement calls plain.")
+
+
+# WHY THIS IS NOT A REFUSAL AT IMPORT, unlike the auth secrets above and the durable checkpointer below.
+# Those two are wrong in a way that corrupts what the product DOES: self-asserted identities, and a restart
+# that silently re-runs from scratch. A reader with no key costs the job the LOOK, and everything about the
+# look is built on it never taking anything down: the task records what it could not do, the row keeps the
+# measurement it already had, and the job runs on what is there. A settings import that killed the whole
+# platform over it would contradict that design in every direction at once.
+#
+# So the refusal lives at the DEPLOYMENT boundary, where it belongs, and where the real values are in hand:
+# deploy/docker/entrypoint.sh and worker_entrypoint.sh call the function above and refuse to bring a hosted
+# container up on a reader that cannot read, while a dev container says it once and carries on.
+# deploy/gcp/scripts/validate-config.sh says it earlier still, from the container names.
+#
+# A DEFAULT IS NOT A CONFIRMATION: an unset key is an accident and GEOMETRY_VISION_PROVIDER=off is a
+# statement, so only the statement gets a hosted container past it.
 
 # THE CHAIN, in Rehaan's order: the customer says what the part is for (intake), the stored measurement
 # is composed against what they said (measure), the look is taken with that purpose (look), intake puts

@@ -103,6 +103,42 @@ if [ -n "${MIGRATE_DB_HOST:-}" ]; then
     || add "MIGRATE_DB_HOST is set but POSTGRES_PASSWORD_SECRET names no Secret Manager container"
 fi
 
+# THE LOOK'S READER. A deployment whose configured reader has no key looks at nothing and stores "the
+# configured reader has no key in this environment" on every single upload, quietly, per job, in a log.
+#
+# WHAT THIS LAYER CAN AND CANNOT PROVE. generated.env carries container NAMES, never values, so all that
+# can be checked here is whether a container is named at all - `create-secrets.sh` provisions this one as
+# optional, so a named container may still hold no version. A named container is therefore reported as a
+# WARNING and not a refusal: the refusal on the actual key belongs to the process that can read it, and
+# settings/policy.py makes it at import, refusing to start a hosted deployment whose reader has no key.
+# What IS refused here is the pair of configurations that cannot work however good the key is.
+reader="${GEOMETRY_VISION_PROVIDER:-openai}"
+reader_container=""
+case "${reader}" in
+  off)       reader_container="n/a" ;;
+  openai)    reader_container="${OPENAI_API_KEY_SECRET:-}" ;;
+  deepinfra) reader_container="${DEEPINFRA_API_KEY_SECRET:-}" ;;
+  deepseek)  reader_container="${DEEPSEEK_API_KEY_SECRET:-}" ;;
+  anthropic) reader_container="${ANTHROPIC_API_KEY_SECRET:-}" ;;
+  *) add "GEOMETRY_VISION_PROVIDER '${reader}' is not a reader this deployment can use - one of openai, anthropic, deepinfra, deepseek, off. The application refuses to start on it, so this deploy would roll out a service that never comes up";;
+esac
+if [ -z "${reader_container}" ]; then
+  warn "GEOMETRY_VISION_PROVIDER is ${reader} but no Secret Manager container is named for its key, so no
+       upload would be looked at: every row would record that the reader has no key. bootstrap-env.sh
+       writes OPENAI_API_KEY_SECRET by default, so an unset one was removed deliberately. Set it, or set
+       GEOMETRY_VISION_PROVIDER=off to say this deployment takes no look - a hosted service refuses to
+       start on the accident and starts on the statement."
+fi
+
+# A PROVIDER SWITCH IS A MODEL SWITCH, and this one cannot work at any key: the default model is an
+# OpenAI model id, and pointed at another provider every look 404s. The rows would record that as a
+# failed look rather than as the misconfiguration it is, so it is refused here.
+if [ -n "${GEOMETRY_VISION_MODEL:-}" ] && [ "${reader}" != "openai" ] && [ "${reader}" != "off" ]; then
+  case "${GEOMETRY_VISION_MODEL}" in
+    gpt-*) add "GEOMETRY_VISION_PROVIDER is ${reader} but GEOMETRY_VISION_MODEL is '${GEOMETRY_VISION_MODEL}', an OpenAI model id that provider does not serve - every look would fail";;
+  esac
+fi
+
 if [ ${#errs[@]} -gt 0 ]; then
   warn "configuration is invalid:"
   for e in "${errs[@]}"; do printf '    - %s\n' "${e}" >&2; done

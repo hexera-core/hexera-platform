@@ -127,6 +127,7 @@ for pair in "POSTGRES_PASSWORD:POSTGRES_PASSWORD_SECRET" \
             "MINIO_SECRET_KEY:MINIO_SECRET_KEY_SECRET" \
             "DEEPINFRA_API_KEY:DEEPINFRA_API_KEY_SECRET" \
             "DEEPSEEK_API_KEY:DEEPSEEK_API_KEY_SECRET" \
+            "OPENAI_API_KEY:OPENAI_API_KEY_SECRET" \
             "MESH_API_KEY:MESH_API_KEY_SECRET" \
             "USER_TOKEN_SECRET:USER_TOKEN_SECRET_SECRET"; do
   runtime_var="${pair%%:*}"
@@ -232,7 +233,7 @@ fi
 # src/meshpipeline/settings/inventory.py, restated here for exactly that blind spot.
 SECRET_BEARING=(POSTGRES_PASSWORD DATABASE_URL REDIS_PASSWORD MINIO_SECRET_KEY MESH_API_KEY
                 USER_TOKEN_SECRET LANGFUSE_SECRET_KEY TAVILY_API_KEY SENTRY_DSN
-                DEEPSEEK_API_KEY DEEPINFRA_API_KEY)
+                DEEPSEEK_API_KEY DEEPINFRA_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY)
 if [ -n "${API_EXTRA_ENV:-}" ]; then
   IFS='|' read -r -a _extra_pairs <<<"${API_EXTRA_ENV}"
   for pair in ${_extra_pairs[@]+"${_extra_pairs[@]}"}; do
