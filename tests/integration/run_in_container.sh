@@ -35,7 +35,9 @@ PG=ci-local-postgres
 RD=ci-local-redis
 MN=ci-local-minio
 IMG=meshpipeline-pipeline:test
-MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+# MinIO's own images left quay.io (every tag answers "unauthorized"); Bitnami's legacy
+# repository still serves this same release. It runs as uid 1001 and owns /bitnami/minio/data.
+MINIO_IMAGE=docker.io/bitnamilegacy/minio:2025.4.22-debian-12-r1@sha256:d7cd0e172c4cc0870f4bdc3142018e2a37be9acf04d68f386600daad427e0cab
 # Every resource this script creates carries this label, so teardown can prove ownership instead
 # of subtracting one inventory from another.
 LABEL=hexera-ci-local
@@ -135,7 +137,7 @@ docker run -d --label "$LABEL=1" --name "$PG" --network "$NET" \
   postgres:16-alpine >/dev/null
 docker run -d --label "$LABEL=1" --name "$MN" --network "$NET" \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-  "$MINIO_IMAGE" server /data >/dev/null
+  "$MINIO_IMAGE" minio server /bitnami/minio/data >/dev/null
 
 echo "── health-checking Redis ──"
 ok=""; for i in $(seq 1 20); do
