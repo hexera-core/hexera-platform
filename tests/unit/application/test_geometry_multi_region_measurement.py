@@ -22,9 +22,7 @@
 from __future__ import annotations
 
 import importlib.util
-import site
 import sys
-from pathlib import Path
 
 import pytest
 from tests._surveyor_package import require
@@ -48,19 +46,6 @@ def _present(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except ImportError:
         return False
-
-
-def _installed_distribution() -> bool:
-    """True when meshpipeline resolves from an install root: a BUILT environment, so the image's rules apply.
-
-    The same line `tests/_surveyor_package.py` draws, for the same reason: a developer's checkout is allowed
-    to be incomplete, an artefact is not.
-    """
-    import meshpipeline
-
-    pkg = Path(meshpipeline.__file__).resolve().parent
-    roots = [Path(p).resolve() for p in (site.getsitepackages() + [site.getusersitepackages()])]
-    return any(root in pkg.parents for root in roots)
 
 
 def _nesting(regions) -> list[tuple[str, str | None]]:
@@ -122,36 +107,29 @@ def test_a_part_with_two_regions_measures_and_its_nesting_is_found():
     assert _nesting(detect_regions(_two_regions(trimesh))) == NESTED
 
 
-def test_a_built_environment_carries_both_ray_backends():
-    """In an IMAGE both pins must be there: one for the path to work at all, one for it to work in seconds.
+@pytest.mark.parametrize("backend", RAY_BACKENDS)
+def test_the_environment_carries_this_ray_backend(backend):
+    """Both pins, required, in any environment that runs this suite. NOT skipped where one is absent.
 
-    In a source checkout this passes without them, because a workstation is allowed to be incomplete and the
-    build gate (`deploy/verify_install.py`) is where an artefact is held to it. What is NOT allowed anywhere is
-    having neither, which is the state the fallback test below describes.
+    requirements/runtime.txt pins both and every installer resolves that file, so an environment without one
+    is an environment that did not install what the product declares. rtree is what the path needs to work at
+    all; embreex is what it needs to work in seconds (0.41 s against 20.05 s at 209,408 faces). A skip here
+    would be this suite declining to answer about the thing the image shipped without, which is how the
+    original defect survived every check.
     """
-    have = [name for name in RAY_BACKENDS if _present(name)]
-    assert have, ("neither embreex nor rtree is importable here, so the nesting test every multi-region part "
-                  "runs cannot work at all; requirements/runtime.txt pins both")
-    if _installed_distribution():
-        assert sorted(have) == sorted(RAY_BACKENDS), (
-            f"this environment installed meshpipeline, so it was BUILT, and it carries only {have}. "
-            f"requirements/runtime.txt pins both: rtree so the fallback intersector does not raise, embreex "
-            f"so the nesting test costs 0.41 s instead of 20.05 s at 209,408 faces.")
+    assert _present(backend), (
+        f"{backend} is not importable on this interpreter. requirements/runtime.txt pins it for the nesting "
+        f"test every multi-region upload runs; re-run the environment setup, or `pip install -c "
+        f"requirements/constraints.txt {backend}`.")
 
 
 @pytest.mark.parametrize("backend", RAY_BACKENDS)
-def test_each_ray_backend_this_environment_has_measures_the_same_nesting(backend):
+def test_each_ray_backend_on_its_own_measures_the_same_nesting(backend):
     """Either library alone is enough, and the answer does not depend on which one ran.
 
-    This is what keeps both pins live rather than one of them being insurance nobody exercises. A backend this
-    interpreter does not have is reported as such rather than silently passing: the assertion below fails,
-    which is the loud half, unless this is a checkout that never installed it.
+    This is what keeps both pins live rather than one of them being insurance nobody exercises: the preferred
+    backend is measured by the first test, and the fallback is measured here by hiding the preferred one.
     """
-    if not _present(backend):
-        assert not _installed_distribution(), (
-            f"a built environment without {backend} - see "
-            f"test_a_built_environment_carries_both_ray_backends for what each of them is for")
-        pytest.skip(f"{backend} is not installed on this interpreter; the built image is held to both")
     with _Hide(*(n for n in RAY_BACKENDS if n != backend)) as fresh:
         assert _nesting(detect_regions(_two_regions(fresh))) == NESTED, (
             f"the nesting test answers differently with only {backend} available")

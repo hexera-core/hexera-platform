@@ -185,6 +185,14 @@ ABOUT "look" INSIDE "geometry_agent": a vision model was shown rendered views of
 
 #: How to read `survey`, sent ONLY when a survey is present, for the same reason the look's note rides
 #: with the look.
+#:
+#: IT NAMES THE LOOK ROW, and it had to. `unsettled` carries one row per thing nobody settled, and the
+#: platform puts a row there for WHAT HAPPENED TO THE LOOK (`geometry_survey.with_the_look_state`): a look
+#: that failed, a look still running, a look never taken. Every other row names mouths, and this note used to
+#: say only that - "a mouth listed there has no role anybody confirmed" - so the one row with no mouth in it
+#: reached the model with nothing telling it how to read it. `look` is absent in exactly those three states,
+#: so `_AGENT_LOOK_NOTE` does not ride either: this row is the only thing the model gets, and a row nobody
+#: explained is a row nobody uses.
 _AGENT_CHAIN_NOTE = """
 
 ABOUT "intake", "flow_patches" AND "plan_envelope" INSIDE "geometry_agent": the job ran through the geometry chain.
@@ -203,6 +211,7 @@ _AGENT_SURVEY_NOTE = """
 ABOUT "survey" INSIDE "geometry_agent": the customer was shown what the measurement could not settle about THIS file and asked. Every value says what kind of claim it is ("kinds" is the legend).
 - "confirmed" is the customer's own answer, with when they gave it. A role there says which measured mouth is which; it is the customer's decision about their part, and nothing else in this message overrides it.
 - "unsettled" is what nobody settled. A mouth listed there has no role anybody confirmed: do not reason about it as an inlet or an outlet.
+- One "unsettled" row may have "about": "look" and no mouths. It says what happened to the LOOK of this part, and there are three things it can say: the look was never taken, the look has been queued and has not come back yet, or the look FAILED. In all three there is no "look" key above and nothing in this message is a look finding. A look that failed is NOT a part with nothing to report: treat the absence as unknown, never as clear.
 - A "cell_budget" is the customer's own number. "stated" means they wrote it; "confirmed" means they chose it when shown what resolving the part costs, and max_cells must not exceed it. customer_cell_cap above is the same number.
 - The survey describes the part. It names no mesh setting and predicts nothing about the mesh: the settings are yours."""
 

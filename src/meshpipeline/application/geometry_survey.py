@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 #   write-up in front of `request_txt[:2000]` and its typed block, carrying `survey`, after the cut.
 #   When there is no plan to hand over it is `cad.regions.agent_block_for_state` instead, which is the
 #   measurement's own block and no write-up, and the reason that happened is logged and recorded.
+#
+#   THREE BLOCKS REACH THE BUILDER AND ALL THREE NAME THE LOOK'S STATE. `geometry_step.builder_handoff`
+#   when the agent planned the job, `builder_block` here when it did not, and the measurement's own
+#   block in `cad/regions` when no survey was stored for these bytes. `with_the_look_state` is the one
+#   writer for all three: `survey.looked` is a boolean over four states, so without it a look that
+#   FAILED and a look nobody took are the same block, and only the first of the three used to say so.
 CHAIN: tuple[tuple[str, str], ...] = (
     ("intake", "the customer states purpose, budget and boundary conditions"),
     ("measure", "the stored measurement is composed for what they said"),
@@ -165,6 +171,21 @@ LOOK_BECAUSE: dict[str, str] = {
     LOOK_NONE: ("no look has been taken of this part, so this survey is the measurement alone. Every claim "
                 "a look would make is absent because nothing looked, not because there was nothing there"),
 }
+
+#: WHAT THE PACKAGE'S OWN `survey["look_state"]` SAYS FOR EACH OF THESE, when it says anything.
+#:
+#: The agent's master composes `look_state` into the survey block beside `looked`, with three values and no
+#: `pending`: a look in flight is a state of the platform's QUEUE, which the stored document cannot see, and
+#: the package refuses to claim it. The wheel this image ships (`vendor/wheels/`) does not write the key at
+#: all, so an absent key means THIS BLOCK DOES NOT SAY and there is nothing to compare.
+#:
+#: WHY THE COMPARISON EXISTS. Once both are there they are two facts about one thing, written from two
+#: sources: the package reads the stored document, this module reads the ROW, which is the document plus the
+#: queue's answer. They can only disagree when the row is stale against the document, which is the very thing
+#: `cad/regions._surveyed_block` recomposes to prevent - so a disagreement is that recomposition not having
+#: happened, and the builder must not be handed both answers and left to pick.
+PACKAGE_LOOK_STATE: dict[str, str] = {LOOK_OK: "ok", LOOK_FAILED: "failed", LOOK_NONE: "not_attempted",
+                                      LOOK_PENDING: "not_attempted"}
 
 #: The customer's own words, kept for recomposition. Bounded, because a pasted spec sheet is not a
 #: brief and the budget and the carve sentence are always near the top of one.
@@ -1220,7 +1241,7 @@ def builder_block(state: dict | None) -> dict | None:
     try:
         given = pkg["given"].Given.of(survey_of(state), intake_handoff(state))
         block = pkg["deliver"].attach(dict(state["planner_block"]), given)
-        return _with_the_look_state(block, state, pkg)
+        return with_the_look_state(block, look_state(state))
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry survey: the builder's block could not carry the survey (%s)", exc)
         return None
@@ -1301,8 +1322,12 @@ def _contract_breaks(node: Any, keys, words, path: str = ""):
                 yield path, f"says {word!r}"
 
 
-def _with_the_look_state(block: dict | None, state: dict, pkg: dict) -> dict | None:
-    """The block, with the look's state named in the one channel the block has for it.
+def with_the_look_state(block: dict | None, look: str) -> dict | None:
+    """The block, with the look's state named in the one channel the block has for it. Raises `SurveyError`.
+
+    `look` is one of `LOOK_STATES`, read by the caller from whatever it has: `look_state(row)` where there is
+    a survey row, `look_state_of_document(document)` where there is only the stored measurement. It is a
+    string and not a row because the three callers hold three different things and the sentence is the same.
 
     WHY IT IS AN `unsettled` ROW. `deliver.survey_block` carries `looked`, a boolean, and three of the four
     states it can stand for are False: never taken, still running, and FAILED. A builder reading `looked:
@@ -1314,16 +1339,38 @@ def _with_the_look_state(block: dict | None, state: dict, pkg: dict) -> dict | N
     IT GOES FIRST and the list keeps its length. `SURVEY_BLOCK_ITEMS` is the package's cap on this list and
     appending past it would break the package's own policy from outside; the look changes how every other row
     in the block reads, so it is the row that keeps its place.
+
+    IT IS PUBLIC, AND THAT IS THE FIX FOR THE PATH EVERY NORMAL JOB TAKES. It used to be private to
+    `builder_block`, which is the block the planner gets when the geometry agent produced NO plan. The block a
+    planned job gets is `geometry_step.builder_handoff`'s typed block, composed through the same
+    `deliver.attach` and handed over without ever passing here. MEASURED over the stored fixtures with the
+    reference planner: every planned part carried `looked: false` and not one sentence about the look, while
+    the same part on the no-plan path carried one. So a look that FAILED and a look nobody took were the same
+    block to the builder on exactly the path almost every job takes. All THREE paths a block reaches the
+    builder by go through this function now - `geometry_step.builder_handoff` when the agent planned the job,
+    `builder_block` when it did not, and `cad/regions._with_the_look_state` when there is no survey row at all
+    - so there is one wording and one place it can go wrong.
+
+    AND IT REFUSES TWO ANSWERS. Where the block already carries the package's own `look_state`, this checks it
+    against `look` and raises rather than putting a sentence beside a key that says something else. See
+    `PACKAGE_LOOK_STATE` for which of the platform's four states each of the package's three stands for, and
+    why `pending` maps onto `not_attempted` rather than being a disagreement.
     """
     if not isinstance(block, dict) or not isinstance(block.get("survey"), dict):
         return block
-    because = LOOK_BECAUSE.get(look_state(state))
+    said = block["survey"].get("look_state")
+    if said is not None and said != PACKAGE_LOOK_STATE.get(look):
+        raise SurveyError(f"the measurement package's block says the look was {said!r} and this row says "
+                          f"{look!r}: two facts about one look, and the builder cannot tell which to read. "
+                          f"The row is composed from the document plus the queue's answer, so this is a row "
+                          f"that was not recomposed after the look's status changed")
+    because = LOOK_BECAUSE.get(look)
     if because is None:
         return block
     survey = dict(block["survey"])
     rows = [{"about": "look", "subjects": [], "why": because},
             *[r for r in (survey.get("unsettled") or []) if r.get("about") != "look"]]
-    survey["unsettled"] = rows[:pkg["deliver"].SURVEY_BLOCK_ITEMS]
+    survey["unsettled"] = rows[:_package()["deliver"].SURVEY_BLOCK_ITEMS]
     out = {**block, "survey": survey}
     # the whole contract, again, on the block this platform actually hands over. A row that takes it over its
     # ceiling is refused here rather than cut in the prompt, which is the whole point of the rule
@@ -1550,6 +1597,24 @@ def look_state(state: dict | None) -> str:
     return LOOK_NONE
 
 
+def look_state_of_document(document: dict | None) -> str:
+    """What the STORED MEASUREMENT alone says happened to the look: `LOOK_OK`, `LOOK_FAILED` or `LOOK_NONE`.
+
+    NEVER `LOOK_PENDING`, and that is the honest answer rather than a missing case. The queue's own answer
+    lives on the survey ROW (`look_queued`), so with no row there is nothing that can tell a look on its way
+    from one never taken, and this does not claim to. It is read by the one path that has a document and no
+    row: `cad/regions.agent_block_for_state`, when no survey was stored for these bytes and the builder is
+    handed the measurement's own block.
+    """
+    look = (document or {}).get("look")
+    status = str((look or {}).get("status") or "") if isinstance(look, dict) else ""
+    if status == LOOK_OK:
+        return LOOK_OK
+    if status in (LOOK_FAILED, "refused", "error"):
+        return LOOK_FAILED
+    return LOOK_NONE
+
+
 def _noted_queue(state: dict, outcome: str) -> dict:
     """The queue's answer on the row, so `look_state` can tell pending from never attempted."""
     out = {**state, "look_queued": str(outcome or "")}
@@ -1640,7 +1705,8 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
         return "skipped"
 
 
-__all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER", "block_list_max",
+__all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
+           "PACKAGE_LOOK_STATE", "block_list_max",
            "LOOK_BECAUSE", "LOOK_CACHED", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_ON_ITS_WAY",
            "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
@@ -1650,6 +1716,8 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "check_the_survey_block", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
-           "live_answers", "load", "look_state", "mark_asked", "named_inlets", "open_now",
+           "live_answers", "load", "look_state", "look_state_of_document", "mark_asked", "named_inlets",
+           "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
-           "said_by_customer", "save", "stage_of", "survey_the_part", "what_the_surveyor_may_not_say"]
+           "said_by_customer", "save", "stage_of", "survey_the_part", "what_the_surveyor_may_not_say",
+           "with_the_look_state"]
