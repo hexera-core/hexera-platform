@@ -120,7 +120,21 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     ? "Naming the openings… you can turn the part meanwhile"
     : "Answer the question in the chat and I'll name the openings - you can turn the part meanwhile");
   let naming = d.named === false;
-  if (naming) { showBanner(bannerFor(d)); setNaming(form, true); }
+  // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
+  // the form opens with the measuring step's labels so the user can go on. The model's names
+  // still fill any row the user has not touched when they do arrive.
+  const STALL_MS = opts.stallMs || 3 * 60 * 1000;
+  let askedAt = null, stallTimer = null;
+  function noteAsked(d1) {
+    if (!(d1 && d1.naming_requested) || askedAt !== null) return;
+    askedAt = Date.now();
+    stallTimer = setTimeout(() => {
+      if (!naming) return;
+      naming = false; setNaming(form, false);
+      showBanner("The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn");
+    }, STALL_MS);
+  }
+  if (naming) { showBanner(bannerFor(d)); setNaming(form, true); noteAsked(d); }
 
   let scene = null;
   try {
@@ -169,16 +183,23 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   function update(d2) {
     if (d2 && d2.status === "scouted") {              // still measuring-step labels: only the banner moves
       if (naming) showBanner(bannerFor(d2));
+      noteAsked(d2);
       return;
     }
+    clearTimeout(stallTimer);
     const p2 = (d2 && d2.proposal) || {};
     const failed = d2 && d2.status === "failed";
     if (!failed) {
       // keep the code's measurements, take the model's words - IN PLACE: the scene holds the
-      // same object, and what the user adds or removes there is what Proceed reads
+      // same object, and what the user adds or removes there is what Proceed reads. A row the
+      // user already changed (after a stall opened the form) keeps the user's words.
       const byId = new Map((p2.openings || []).map((o) => [o.id, o]));
+      const typed = new Map([...form.querySelectorAll(".gc-table tbody tr")].map((tr) => [Number(tr.dataset.id),
+        { name: (tr.querySelector(".gc-name") || {}).value, role: (tr.querySelector(".gc-role") || {}).value }]));
       const merged = (p.openings || []).map((o) => {
-        const m = byId.get(o.id); return m ? { ...o, name: m.name, role: m.role, confidence: m.confidence } : o; });
+        const m = byId.get(o.id), u = typed.get(Number(o.id));
+        if (u && u.name !== undefined && (u.name !== (o.name || "") || u.role !== o.role)) return { ...o, name: u.name, role: u.role };
+        return m ? { ...o, name: m.name, role: m.role, confidence: m.confidence } : o; });
       Object.assign(p, p2, { openings: merged });
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
@@ -193,7 +214,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     scene.refresh();
   }
 
-  return { release: () => { scene.stop(); release(); }, update, isNaming: () => naming };
+  return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update, isNaming: () => naming };
 }
 
 function initScene(sessionId, box, surf, p) {

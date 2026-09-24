@@ -98,6 +98,23 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     ax = naming["axes"]
     assert ax["el"] is True and ax["lines"] == 3 and ax["labels"] == ["X", "Y", "Z"], ax
     assert ax["now"]["z"][1] > 0.7, ax
+    # turn the camera to look at the front (from -Y, Z up): X runs right, Z up, Y straight away
+    # from the viewer and dimmed; then to look from above: Y runs up the screen, Z at the viewer
+    turned = live.evaluate(f"""(() => {{
+      const h = window._vdbg['gstage:{SESSION}'], root = document.getElementById('gstage-{SESSION}');
+      const cam = h.cam(), fp = cam.getFocalPoint();
+      const dimmed = () => ['x', 'y', 'z'].map(k => root.querySelector('.gc-axes line.ax-' + k).classList.contains('back'));
+      cam.setPosition(fp[0], fp[1] - 3, fp[2]); cam.setViewUp(0, 0, 1);
+      const front = {{axes: h.axes(), dimmed: dimmed()}};
+      cam.setPosition(fp[0], fp[1], fp[2] + 3); cam.setViewUp(0, 1, 0);
+      const top = {{axes: h.axes(), dimmed: dimmed()}};
+      return {{front, top}};
+    }})()""")
+    fr = turned["front"]["axes"]
+    assert abs(fr["x"][0] - 1) < 0.01 and abs(fr["z"][1] - 1) < 0.01 and fr["y"][2] < -0.99, turned
+    assert turned["front"]["dimmed"] == [False, True, False], turned
+    tp = turned["top"]["axes"]
+    assert abs(tp["y"][1] - 1) < 0.01 and tp["z"][2] > 0.99 and turned["top"]["dimmed"] == [False, False, False], turned
 
     # the user answered: the check says the naming was asked for, and the banner says so, with
     # the form still greyed out
@@ -237,3 +254,35 @@ def test_the_first_opening_added_to_a_part_that_had_none_keeps_the_add_button(li
     assert state["armed"] is True and state["after"] == {"add": True, "rows": 2, "pins": 2}, state
     live.evaluate("window.__stage3.release()")
     assert_clean(live, "the geometry stage after adding to an empty table")
+
+
+def test_a_naming_that_never_comes_opens_the_form_and_a_late_answer_keeps_the_users_edits(live):
+    live.evaluate("""(async () => {
+      const SKIN = __SKIN__, ASKED = __ASKED__;
+      const real = window.fetch.bind(window);
+      window.fetch = (u, o) => String(u).includes('/geometry/__S__-stall/check/skin')
+        ? Promise.resolve(new Response(JSON.stringify(SKIN), {status: 200, headers: {'Content-Type': 'application/json'}}))
+        : real(u, o);
+      const { openGeometryStage } = await import('/static/js/viewer/geometry_stage.js');
+      window.__stage4 = await openGeometryStage('__S__-stall', ASKED, async () => ({message: 'ok'}),
+        {anchorEl: document.getElementById('stage'), fallback: () => {}, stallMs: 400});
+    })()""".replace("__SKIN__", json.dumps(_skin())).replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True)))
+       .replace("__S__", SESSION), timeout=60)
+    live.wait_for(f"window._vdbg && window._vdbg['gstage:{SESSION}-stall']", timeout=90,
+                  what="the geometry stage to initialise")
+    live.wait_for("window.__stage4.isNaming() === false", timeout=30, what="the stall to open the form")
+    opened = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{SESSION}-stall');
+      root.querySelector('tr[data-id="1"] .gc-name').value = 'my_inlet';          // the user fixes one name
+      return {{banner: root.querySelector('.gc-banner').textContent.trim(), warn: root.querySelector('.gc-banner').classList.contains('warn'),
+               allOn: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => !e.disabled)}};
+    }})()""")
+    assert opened["warn"] is True and "longer than usual" in opened["banner"] and opened["allOn"] is True, opened
+    late = live.evaluate(f"""(() => {{
+      window.__stage4.update(__READY__);
+      const root = document.getElementById('gstage-{SESSION}-stall');
+      return {{names: [...root.querySelectorAll('.gc-name')].map(i => i.value), bannerHidden: root.querySelector('.gc-banner').hidden}};
+    }})()""".replace("__READY__", json.dumps(_check("ready"))))
+    assert late["names"] == ["my_inlet", "air_out"] and late["bannerHidden"] is True, late
+    live.evaluate("window.__stage4.release()")
+    assert_clean(live, "the geometry stage after a stalled naming")

@@ -119,7 +119,11 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload.setdefault("named", payload.get("status") == "ready")
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
-    payload["naming_requested"] = naming_requested(str(session_id)) is not None
+    try:
+        payload["naming_requested"] = naming_requested(str(session_id)) is not None
+    except Exception as exc:  # noqa: BLE001 - a marker we cannot read is "not asked yet", never a broken check
+        logger.warning("geometry check: naming marker unreadable (%s) - session_id=%s", exc, session_id)
+        payload["naming_requested"] = False
     if payload.get("status") in ("ready", "scouted"):
         # the stage opens on a scouted check too, with the code's labels; the pictures are for
         # the card, which only shows once the check is ready
