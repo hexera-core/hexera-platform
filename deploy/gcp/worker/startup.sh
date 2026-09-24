@@ -88,6 +88,28 @@ done
 unset value
 set -x
 
+# THE TWO BIND-MOUNT ROOTS, CREATED WITH THE CONTAINER'S OWNERSHIP BEFORE ANYTHING MOUNTS THEM.
+#
+# Both containers below bind-mount a HOST directory over /srv/workspaces and /srv/data. The image
+# creates those two paths and hands them to USER_A, uid 1000 (Dockerfile: `useradd -m -u 1000 USER_A`
+# then `chown -R USER_A:USER_A /srv /data`), and a bind mount REPLACES that directory with the host's
+# - ownership, mode and all. Docker creates a missing mount source itself, as root:root, and both
+# containers run as uid 1000, so on a fresh instance the application could not write to its own
+# workspace root or its data root: every job failed at the first mkdir under /srv/workspaces with
+# EACCES, after the instance had booted, installed docker, pulled a multi-gigabyte image,
+# authenticated and taken the job. Nothing in the template or in this script said a word about it -
+# the fleet reported healthy and every job it accepted failed the same way.
+#
+# NUMERIC uid AND gid, because USER_A exists inside the image and nowhere else: the instance is an
+# Ubuntu VM that has never heard of that account, so `chown USER_A` fails and `install -o USER_A`
+# with it. 1000 is the uid the Dockerfile pins, and it is pinned there precisely so the host side of
+# a mount can name it.
+#
+# `install -d` AND NOT `mkdir -p`, because this also has to repair a directory an earlier boot left
+# root-owned - a mkdir that finds the path already there changes no ownership and leaves the same
+# unwritable root behind, which is the state this exists to end.
+install -d -o 1000 -g 1000 -m 0755 /var/lib/hexera/workspaces /var/lib/hexera/data
+
 # TWO WORKERS, ONE INSTANCE, AND WHY THERE HAS TO BE A SECOND ONE. This ran a single container on
 # `--queues simulation_jobs`, and that one word is the whole reason the Surveyor did nothing on a
 # deployed platform. The platform publishes to FIVE queues (adapters/pipeline_execution/queues.py): a mesh to
