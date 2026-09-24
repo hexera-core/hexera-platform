@@ -559,8 +559,9 @@ def main() -> int:
     ap.add_argument("--take", default="skip", choices=("hold", "raise", "skip"))
     ap.add_argument("--look", default="off", choices=("off", "replay"))
     ap.add_argument("--looks-dir", default="")
-    ap.add_argument("--fluid-side", action="store_true", help="GEOMETRY_AGENT_FLUID_SIDE=on")
-    ap.add_argument("--measured-stops", action="store_true", help="GEOMETRY_AGENT_MEASURED_STOPS=on")
+    # `--fluid-side` AND `--measured-stops` ARE GONE. They set two platform settings which armed two variables
+    # the measurement package no longer reads: both stages run on every measurement, so the flags selected
+    # nothing and a run that passed one was measuring a state this code cannot produce.
     ap.add_argument("--answer-fluid-side", action="store_true",
                     help="the simulated customer answers the fluid-side question as the key would")
     ap.add_argument("--source-prefix", default="", metavar="FROM=TO")
@@ -577,7 +578,7 @@ def main() -> int:
     if args.looks_dir:
         global LOOKS_DIR
         LOOKS_DIR = Path(args.looks_dir)
-    _arm(args.provider, fluid_side=args.fluid_side, measured_stops=args.measured_stops)
+    _arm(args.provider)
 
     # THE PYTHON TRAP, asserted rather than trusted: the venv resolves both packages to the LIVE trees
     # unless my two `src` directories lead PYTHONPATH, and a run that resolved the wrong one measures
@@ -589,9 +590,8 @@ def main() -> int:
     print(f"meshpipeline   {meshpipeline.__file__}")
     from geometry_agent.learn import store as learn_store
     print(f"learn.store    ROOT={learn_store.ROOT}")
-    print(f"switches       FLUID_SIDE={os.environ['GEOMETRY_AGENT_FLUID_SIDE']} "
-          f"MEASURED_STOPS={os.environ['GEOMETRY_AGENT_MEASURED_STOPS']} look={args.look} "
-          f"provider={args.provider}")
+    # The two package stages are not switches any more, so there is nothing to print about them: they run.
+    print(f"switches       look={args.look} provider={args.provider}")
 
     out = Path(args.out).resolve()
     cache = Path(args.cache).resolve() if args.cache else out / ".measured"
