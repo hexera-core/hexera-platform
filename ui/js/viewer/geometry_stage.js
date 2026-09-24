@@ -101,6 +101,9 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     </div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
+      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
+        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
+      </svg>
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
@@ -111,8 +114,27 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     banner.hidden = !text; banner.className = "gc-banner" + (cls ? " " + cls : "");
     banner.querySelector(".gc-banner-text").textContent = text || "";
   }
+  // THE BANNER SAYS WHAT IS REALLY HAPPENING: the model only starts naming once the user has
+  // answered the question in the chat; before that the stage is waiting on them, not on it
+  const bannerFor = (d1) => (d1 && d1.naming_requested
+    ? "Naming the openings… you can turn the part meanwhile"
+    : "Answer the question in the chat and I'll name the openings - you can turn the part meanwhile");
   let naming = d.named === false;
-  if (naming) { showBanner("Naming the openings… you can turn the part meanwhile"); setNaming(form, true); }
+  // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
+  // the form opens with the measuring step's labels so the user can go on. The model's names
+  // still fill any row the user has not touched when they do arrive.
+  const STALL_MS = opts.stallMs || 3 * 60 * 1000;
+  let askedAt = null, stallTimer = null;
+  function noteAsked(d1) {
+    if (!(d1 && d1.naming_requested) || askedAt !== null) return;
+    askedAt = Date.now();
+    stallTimer = setTimeout(() => {
+      if (!naming) return;
+      naming = false; setNaming(form, false);
+      showBanner("The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn");
+    }, STALL_MS);
+  }
+  if (naming) { showBanner(bannerFor(d)); setNaming(form, true); noteAsked(d); }
 
   let scene = null;
   try {
@@ -159,14 +181,25 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
    *  banner goes, the form opens for editing. Positions and sizes are the code's and do not
    *  move; the stickers stay where they are. */
   function update(d2) {
+    if (d2 && d2.status === "scouted") {              // still measuring-step labels: only the banner moves
+      if (naming) showBanner(bannerFor(d2));
+      noteAsked(d2);
+      return;
+    }
+    clearTimeout(stallTimer);
     const p2 = (d2 && d2.proposal) || {};
     const failed = d2 && d2.status === "failed";
     if (!failed) {
       // keep the code's measurements, take the model's words - IN PLACE: the scene holds the
-      // same object, and what the user adds or removes there is what Proceed reads
+      // same object, and what the user adds or removes there is what Proceed reads. A row the
+      // user already changed (after a stall opened the form) keeps the user's words.
       const byId = new Map((p2.openings || []).map((o) => [o.id, o]));
+      const typed = new Map([...form.querySelectorAll(".gc-table tbody tr")].map((tr) => [Number(tr.dataset.id),
+        { name: (tr.querySelector(".gc-name") || {}).value, role: (tr.querySelector(".gc-role") || {}).value }]));
       const merged = (p.openings || []).map((o) => {
-        const m = byId.get(o.id); return m ? { ...o, name: m.name, role: m.role, confidence: m.confidence } : o; });
+        const m = byId.get(o.id), u = typed.get(Number(o.id));
+        if (u && u.name !== undefined && (u.name !== (o.name || "") || u.role !== o.role)) return { ...o, name: u.name, role: u.role };
+        return m ? { ...o, name: m.name, role: m.role, confidence: m.confidence } : o; });
       Object.assign(p, p2, { openings: merged });
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
@@ -181,7 +214,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     scene.refresh();
   }
 
-  return { release: () => { scene.stop(); release(); }, update, isNaming: () => naming };
+  return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update, isNaming: () => naming };
 }
 
 function initScene(sessionId, box, surf, p) {
@@ -492,9 +525,36 @@ function initScene(sessionId, box, surf, p) {
   panel.addEventListener("input", (ev) => { if (ev.target.closest(".gc-ref,.gc-extents")) refreshExternal(); });
   refreshExternal();
 
+  /* THE AXES - bottom right, the X, Y and Z of the part turning with it, so the user always
+     knows which way the part's coordinates run. Drawn as a small overlay from the camera's
+     frame: an axis pointing away from the viewer is dimmed. */
+  const axesEl = box.querySelector(".gc-axes");
+  const axesLines = axesEl ? ["x", "y", "z"].map((k) => [axesEl.querySelector("line.ax-" + k), axesEl.querySelector("text.ax-" + k)]) : [];
+  let axesNow = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+  function drawAxes() {
+    if (!axesEl) return;
+    const dir = cam.getDirectionOfProjection(), up = cam.getViewUp();
+    const right = [dir[1] * up[2] - dir[2] * up[1], dir[2] * up[0] - dir[0] * up[2], dir[0] * up[1] - dir[1] * up[0]];
+    const rl = Math.hypot(right[0], right[1], right[2]) || 1;
+    right[0] /= rl; right[1] /= rl; right[2] /= rl;
+    const upp = [right[1] * dir[2] - right[2] * dir[1], right[2] * dir[0] - right[0] * dir[2], right[0] * dir[1] - right[1] * dir[0]];
+    const C = 42, L = 28;
+    axesNow = {};
+    ["x", "y", "z"].forEach((k, i) => {
+      // the world axis i on the screen: its parts along the camera's right, up and out
+      const sx = right[i], sy = upp[i], sz = -dir[i];
+      axesNow[k] = [sx, sy, sz];
+      const [line, label] = axesLines[i];
+      line.setAttribute("x2", (C + L * sx).toFixed(1)); line.setAttribute("y2", (C - L * sy).toFixed(1));
+      label.setAttribute("x", (C + (L + 9) * sx).toFixed(1)); label.setAttribute("y", (C - (L + 9) * sy).toFixed(1));
+      line.classList.toggle("back", sz < 0); label.classList.toggle("back", sz < 0);
+    });
+  }
+
   let alive = true;
   (function pinLoop() {
     if (!alive || !document.body.contains(host)) return;
+    drawAxes();
     const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
     const cp = cam.getPosition();
     const externalNow = (form.querySelector(".gc-flow") || {}).value === "external";
@@ -522,7 +582,7 @@ function initScene(sessionId, box, surf, p) {
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
-    camera: () => cam.getPosition(), edges: () => edgeCount,
+    camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     render: () => rw.render(),
   };

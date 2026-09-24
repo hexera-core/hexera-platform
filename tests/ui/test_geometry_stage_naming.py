@@ -50,9 +50,9 @@ def _faces() -> list:
              "normal": [0, 0, 1], "area_mm2": 7854.0, "diameter_mm": 100.0}]
 
 
-def _check(status: str) -> dict:
+def _check(status: str, naming_requested: bool = False) -> dict:
     named = status == "ready"
-    return {"status": status, "named": named, "skin": True, "pictures": [], "proposal": {
+    return {"status": status, "named": named, "skin": True, "pictures": [], "naming_requested": naming_requested, "proposal": {
         "part": "test duct" if named else "", "input_kind": "body-surface", "flow": "internal",
         "size_mm": [1000.0, 500.0, 500.0], "seed_point_mm": [500.0, 250.0, 250.0], "notes": [],
         "openings": _openings(named), "faces": _faces()}}
@@ -85,12 +85,46 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
                banner: root.querySelector('.gc-banner').textContent.trim(), bannerHidden: root.querySelector('.gc-banner').hidden,
                greyed: root.querySelector('.gc-form').classList.contains('gc-naming'),
                allOff: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => e.disabled),
-               names: [...root.querySelectorAll('.gc-name')].map(i => i.value)}};
+               names: [...root.querySelectorAll('.gc-name')].map(i => i.value),
+               axes: {{el: !!root.querySelector('.gc-axes'), lines: root.querySelectorAll('.gc-axes line').length,
+                      labels: [...root.querySelectorAll('.gc-axes text')].map(t => t.textContent), now: h.axes()}}}};
     }})()""")
     assert naming["fellBack"] is False and naming["naming"] is True and naming["pins"] == 2, naming
     assert naming["edges"] == 12 and naming["smooth"] is True and naming["bare"] is True, naming
-    assert naming["bannerHidden"] is False and "Naming" in naming["banner"], naming
+    # before the user has answered, the banner says the stage is waiting on the chat
+    assert naming["bannerHidden"] is False and "Answer the question" in naming["banner"], naming
     assert naming["greyed"] is True and naming["allOff"] is True and naming["names"] == ["inlet", "outlet"], naming
+    # the axes overlay: three lines with their letters, and from the opening view Z runs up the screen
+    ax = naming["axes"]
+    assert ax["el"] is True and ax["lines"] == 3 and ax["labels"] == ["X", "Y", "Z"], ax
+    assert ax["now"]["z"][1] > 0.7, ax
+    # turn the camera to look at the front (from -Y, Z up): X runs right, Z up, Y straight away
+    # from the viewer and dimmed; then to look from above: Y runs up the screen, Z at the viewer
+    turned = live.evaluate(f"""(() => {{
+      const h = window._vdbg['gstage:{SESSION}'], root = document.getElementById('gstage-{SESSION}');
+      const cam = h.cam(), fp = cam.getFocalPoint();
+      const dimmed = () => ['x', 'y', 'z'].map(k => root.querySelector('.gc-axes line.ax-' + k).classList.contains('back'));
+      cam.setPosition(fp[0], fp[1] - 3, fp[2]); cam.setViewUp(0, 0, 1);
+      const front = {{axes: h.axes(), dimmed: dimmed()}};
+      cam.setPosition(fp[0], fp[1], fp[2] + 3); cam.setViewUp(0, 1, 0);
+      const top = {{axes: h.axes(), dimmed: dimmed()}};
+      return {{front, top}};
+    }})()""")
+    fr = turned["front"]["axes"]
+    assert abs(fr["x"][0] - 1) < 0.01 and abs(fr["z"][1] - 1) < 0.01 and fr["y"][2] < -0.99, turned
+    assert turned["front"]["dimmed"] == [False, True, False], turned
+    tp = turned["top"]["axes"]
+    assert abs(tp["y"][1] - 1) < 0.01 and tp["z"][2] > 0.99 and turned["top"]["dimmed"] == [False, False, False], turned
+
+    # the user answered: the check says the naming was asked for, and the banner says so, with
+    # the form still greyed out
+    asked = live.evaluate(f"""(() => {{
+      window.__stage.update(__ASKED__);
+      const root = document.getElementById('gstage-{SESSION}');
+      return {{naming: window.__stage.isNaming(), banner: root.querySelector('.gc-banner').textContent.trim(),
+               greyed: root.querySelector('.gc-form').classList.contains('gc-naming')}};
+    }})()""".replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True))))
+    assert asked["naming"] is True and "Naming the openings" in asked["banner"] and asked["greyed"] is True, asked
 
     # READY: the model's labels replace the code's, the form opens, the banner goes; the stickers
     # keep the code's positions
@@ -220,3 +254,35 @@ def test_the_first_opening_added_to_a_part_that_had_none_keeps_the_add_button(li
     assert state["armed"] is True and state["after"] == {"add": True, "rows": 2, "pins": 2}, state
     live.evaluate("window.__stage3.release()")
     assert_clean(live, "the geometry stage after adding to an empty table")
+
+
+def test_a_naming_that_never_comes_opens_the_form_and_a_late_answer_keeps_the_users_edits(live):
+    live.evaluate("""(async () => {
+      const SKIN = __SKIN__, ASKED = __ASKED__;
+      const real = window.fetch.bind(window);
+      window.fetch = (u, o) => String(u).includes('/geometry/__S__-stall/check/skin')
+        ? Promise.resolve(new Response(JSON.stringify(SKIN), {status: 200, headers: {'Content-Type': 'application/json'}}))
+        : real(u, o);
+      const { openGeometryStage } = await import('/static/js/viewer/geometry_stage.js');
+      window.__stage4 = await openGeometryStage('__S__-stall', ASKED, async () => ({message: 'ok'}),
+        {anchorEl: document.getElementById('stage'), fallback: () => {}, stallMs: 400});
+    })()""".replace("__SKIN__", json.dumps(_skin())).replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True)))
+       .replace("__S__", SESSION), timeout=60)
+    live.wait_for(f"window._vdbg && window._vdbg['gstage:{SESSION}-stall']", timeout=90,
+                  what="the geometry stage to initialise")
+    live.wait_for("window.__stage4.isNaming() === false", timeout=30, what="the stall to open the form")
+    opened = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{SESSION}-stall');
+      root.querySelector('tr[data-id="1"] .gc-name').value = 'my_inlet';          // the user fixes one name
+      return {{banner: root.querySelector('.gc-banner').textContent.trim(), warn: root.querySelector('.gc-banner').classList.contains('warn'),
+               allOn: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => !e.disabled)}};
+    }})()""")
+    assert opened["warn"] is True and "longer than usual" in opened["banner"] and opened["allOn"] is True, opened
+    late = live.evaluate(f"""(() => {{
+      window.__stage4.update(__READY__);
+      const root = document.getElementById('gstage-{SESSION}-stall');
+      return {{names: [...root.querySelectorAll('.gc-name')].map(i => i.value), bannerHidden: root.querySelector('.gc-banner').hidden}};
+    }})()""".replace("__READY__", json.dumps(_check("ready"))))
+    assert late["names"] == ["my_inlet", "air_out"] and late["bannerHidden"] is True, late
+    live.evaluate("window.__stage4.release()")
+    assert_clean(live, "the geometry stage after a stalled naming")
