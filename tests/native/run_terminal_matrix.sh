@@ -20,7 +20,9 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 
 MESH_IMAGE="${MESH_IMAGE:-meshpipeline-mesh:native}"
 NET=fm-nt-net; PG=fm-nt-pg; RD=fm-nt-redis; MN=fm-nt-minio
-MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+# MinIO's own images left quay.io (every tag answers "unauthorized"); Bitnami's legacy
+# repository still serves this same release. It runs as uid 1001 and owns /bitnami/minio/data.
+MINIO_IMAGE=docker.io/bitnamilegacy/minio:2025.4.22-debian-12-r1@sha256:d7cd0e172c4cc0870f4bdc3142018e2a37be9acf04d68f386600daad427e0cab
 EVID="${FM_TERMINAL_EVIDENCE_DIR:-/tmp/fm-nt/evidence}"
 
 # `-v` with `-f`: each disposable service declares an anonymous volume, and `docker rm -f`
@@ -43,7 +45,7 @@ docker run -d --name "$PG" --network "$NET" \
   -e POSTGRES_USER=mesh -e POSTGRES_PASSWORD=x -e POSTGRES_DB=mesh postgres:16-alpine >/dev/null
 docker run -d --name "$MN" --network "$NET" \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-  "$MINIO_IMAGE" server /data >/dev/null
+  "$MINIO_IMAGE" minio server /bitnami/minio/data >/dev/null
 
 echo "── health-checking services ──"
 ok=""; for i in $(seq 1 30); do docker exec "$PG" pg_isready -U mesh >/dev/null 2>&1 && ok=1 && break; sleep 1; done

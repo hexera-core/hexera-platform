@@ -717,7 +717,9 @@ else
   # else owns.
   TERMINAL_RUN_ID="$(printf '%s' "${STAMP}" | tr -cd 'a-z0-9')"
   TERMINAL_DB="meshtest_${TERMINAL_RUN_ID}"
-  MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+  # MinIO's own images left quay.io (every tag answers "unauthorized"); Bitnami's legacy
+# repository still serves this same release. It runs as uid 1001 and owns /bitnami/minio/data.
+MINIO_IMAGE=docker.io/bitnamilegacy/minio:2025.4.22-debian-12-r1@sha256:d7cd0e172c4cc0870f4bdc3142018e2a37be9acf04d68f386600daad427e0cab
   docker network create --label "amp-release=${STAMP}" "${NET}" >/dev/null 2>&1
   docker run -d --name "${RD}" --label "amp-release=${STAMP}" --network "${NET}" \
     redis:7-alpine >/dev/null 2>&1
@@ -726,7 +728,7 @@ else
     postgres:16-alpine >/dev/null 2>&1
   docker run -d --name "${MN}" --label "amp-release=${STAMP}" --network "${NET}" \
     -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-    "${MINIO_IMAGE}" server /data >/dev/null 2>&1
+    "${MINIO_IMAGE}" minio server /bitnami/minio/data >/dev/null 2>&1
 
   _wait() {  # _wait <label> <container> <seconds> <probe command...>
     local label="$1" container="$2" limit="$3"; shift 3
