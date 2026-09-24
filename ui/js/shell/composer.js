@@ -177,6 +177,7 @@ async function watchGeometryCheck(sessionId) {
       stage = await deps.geometryCheck(sessionId, d, confirmFn);   // null when the stage cannot draw
       if (stage === null) stageFailed = true;                      // the card comes once the check is ready
     }
+    if (status === "scouted" && stage) stage.update(d);            // the banner: waiting on the chat, or naming
     if (status === "ready" && d.named !== false) {
       if (d.confirmed) { _checkState = "done"; releaseHold(); if (stage) stage.release(); return; }
       _checkState = "ready";

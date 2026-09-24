@@ -50,9 +50,9 @@ def _faces() -> list:
              "normal": [0, 0, 1], "area_mm2": 7854.0, "diameter_mm": 100.0}]
 
 
-def _check(status: str) -> dict:
+def _check(status: str, naming_requested: bool = False) -> dict:
     named = status == "ready"
-    return {"status": status, "named": named, "skin": True, "pictures": [], "proposal": {
+    return {"status": status, "named": named, "skin": True, "pictures": [], "naming_requested": naming_requested, "proposal": {
         "part": "test duct" if named else "", "input_kind": "body-surface", "flow": "internal",
         "size_mm": [1000.0, 500.0, 500.0], "seed_point_mm": [500.0, 250.0, 250.0], "notes": [],
         "openings": _openings(named), "faces": _faces()}}
@@ -85,12 +85,29 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
                banner: root.querySelector('.gc-banner').textContent.trim(), bannerHidden: root.querySelector('.gc-banner').hidden,
                greyed: root.querySelector('.gc-form').classList.contains('gc-naming'),
                allOff: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => e.disabled),
-               names: [...root.querySelectorAll('.gc-name')].map(i => i.value)}};
+               names: [...root.querySelectorAll('.gc-name')].map(i => i.value),
+               axes: {{el: !!root.querySelector('.gc-axes'), lines: root.querySelectorAll('.gc-axes line').length,
+                      labels: [...root.querySelectorAll('.gc-axes text')].map(t => t.textContent), now: h.axes()}}}};
     }})()""")
     assert naming["fellBack"] is False and naming["naming"] is True and naming["pins"] == 2, naming
     assert naming["edges"] == 12 and naming["smooth"] is True and naming["bare"] is True, naming
-    assert naming["bannerHidden"] is False and "Naming" in naming["banner"], naming
+    # before the user has answered, the banner says the stage is waiting on the chat
+    assert naming["bannerHidden"] is False and "Answer the question" in naming["banner"], naming
     assert naming["greyed"] is True and naming["allOff"] is True and naming["names"] == ["inlet", "outlet"], naming
+    # the axes overlay: three lines with their letters, and from the opening view Z runs up the screen
+    ax = naming["axes"]
+    assert ax["el"] is True and ax["lines"] == 3 and ax["labels"] == ["X", "Y", "Z"], ax
+    assert ax["now"]["z"][1] > 0.7, ax
+
+    # the user answered: the check says the naming was asked for, and the banner says so, with
+    # the form still greyed out
+    asked = live.evaluate(f"""(() => {{
+      window.__stage.update(__ASKED__);
+      const root = document.getElementById('gstage-{SESSION}');
+      return {{naming: window.__stage.isNaming(), banner: root.querySelector('.gc-banner').textContent.trim(),
+               greyed: root.querySelector('.gc-form').classList.contains('gc-naming')}};
+    }})()""".replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True))))
+    assert asked["naming"] is True and "Naming the openings" in asked["banner"] and asked["greyed"] is True, asked
 
     # READY: the model's labels replace the code's, the form opens, the banner goes; the stickers
     # keep the code's positions

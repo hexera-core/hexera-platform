@@ -108,7 +108,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     if not gcfg.GEOMETRY_CHECK_ENABLED:
         return {"status": STATUS_OFF}
     await _owned_session(session_id, owner_id, organization_id)
-    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.application.geometry_check import check_object_key, naming_requested
     from meshpipeline.contracts.object_storage import get_object_store
 
     payload = _read_json(check_object_key(str(session_id), "scout.json"))
@@ -117,6 +117,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.geometry_fields import form_spec
     payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
+    # the naming starts with the user's first answer: until then the stage must say it is
+    # waiting for the chat, not that the model is working
+    payload["naming_requested"] = naming_requested(str(session_id)) is not None
     if payload.get("status") in ("ready", "scouted"):
         # the stage opens on a scouted check too, with the code's labels; the pictures are for
         # the card, which only shows once the check is ready
