@@ -89,7 +89,14 @@ def test_a_state_with_geometry_reads_the_row_and_forwards_the_block(monkeypatch)
         return {"status": "ok", "planner_block": STORED}
 
     monkeypatch.setattr("meshpipeline.cad.regions.stored_document_for_source", _read)
-    assert asyncio.run(cad_regions.agent_block_for_state(STATE)) is STORED
+    block = asyncio.run(cad_regions.agent_block_for_state(STATE))
+    # EVERY NUMBER IS THE PACKAGE'S AND IS FORWARDED UNTOUCHED, which is what this module is for. It is no
+    # longer the same object: the document here carries no `passage_ends` key, so nothing measured where this
+    # part's passages stop at a wall with no mouth, and `cad/regions.py` adds the refusal that says so rather
+    # than letting an empty place list read as a measured zero. See
+    # `tests/unit/cad/test_geometry_block_skipped_stage.py`.
+    assert {k: v for k, v in block.items() if k != "places_refused"} == STORED
+    assert [r["kind"] for r in block["places_refused"]] == ["closed_end"]
     assert seen == ["b" * 64]
 
 

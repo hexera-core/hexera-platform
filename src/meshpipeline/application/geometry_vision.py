@@ -134,7 +134,12 @@ def look_at_local_file(path: Path, document: dict, *, timeout_s: float | None = 
         # cannot disagree about why.
         logger.warning("geometry look: nothing looked: %s",
                        polcfg.vision_reader_has_no_key() or "the reader was not configured")
-        return hexera.look_block(None, status="not_attempted", reason=NO_READER.format(
+        # The same word the measurement's own block uses, read from the one module that owns it: a
+        # reader that has to tell "nothing looked" from "the look failed" cannot do it if the two
+        # halves of this platform spell the first one differently.
+        from meshpipeline.application.geometry_measurement import LOOK_NOT_ATTEMPTED
+
+        return hexera.look_block(None, status=LOOK_NOT_ATTEMPTED, reason=NO_READER.format(
             provider=polcfg.GEOMETRY_VISION_PROVIDER, model=polcfg.GEOMETRY_VISION_MODEL))
 
     deadline = float(timeout_s if timeout_s is not None else polcfg.GEOMETRY_VISION_TIMEOUT_SECONDS)

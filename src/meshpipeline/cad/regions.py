@@ -128,7 +128,8 @@ def regions_of(path) -> CadRegions:
 __all__ = ["CadRegions", "MEASURED_NOT_ATTEMPTED", "agent_block_for_state", "components_of",
            "planner_inputs_for_state", "reading_for_source",
            "regions_of", "stored_document_for_source",
-           "surface_analysis_from_document"]
+           "surface_analysis_from_document", "what_the_measurement_said_about",
+           "with_the_stages_that_did_not_run"]
 
 
 # -------------------------------------------------------------------------------------------------
@@ -265,7 +266,8 @@ async def agent_block_for_state(state) -> dict | None:
         block = block_for_document(document)
         if block is None or document is None:
             return None
-        return _checked((await _surveyed_block(ref, document)) or block)
+        return with_the_stages_that_did_not_run(
+            _checked((await _surveyed_block(ref, document)) or block), document)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry agent block: unavailable for this run (%s) - the planner sees "
                        "exactly what it sees with no measurement", exc)
@@ -353,7 +355,13 @@ async def _geometry_step_inputs(state, request_txt: str) -> dict:
     recorded = gst.record_handover(survey, handoff)
     if recorded is not survey:
         await gs.save(str(ref.owner_id), str(ref.source_id), recorded)
-    return {"request_txt": gst.request_with_write_up(handoff, request_txt), "typed": handoff["typed"]}
+    # THE SAME REFUSAL ON THE STEP'S OWN BLOCK. `deliver.builder_handoff` composes the typed block from the
+    # same stored measurement, so a stage the clock took is missing from it in exactly the same way, and this
+    # is the path the builder takes whenever the geometry agent planned the part, which is every job with a
+    # survey to read. Applied after `check_builder_handoff`, which does not read `places_refused`, and after
+    # `platform_drops`, which cannot move because this adds no key the planner's allowlist does not carry.
+    typed = with_the_stages_that_did_not_run(handoff["typed"], document)
+    return {"request_txt": gst.request_with_write_up(handoff, request_txt), "typed": typed}
 
 
 async def _surveyed_block(ref, document: dict) -> dict | None:
@@ -387,6 +395,116 @@ async def _surveyed_block(ref, document: dict) -> dict | None:
         except gs.SurveyError as exc:
             logger.info("geometry agent block: the survey could not take the look in (%s)", exc)
     return gs.builder_block(state)
+
+
+# -------------------------------------------------------------------------------------------------
+# A STAGE OF THE MEASUREMENT THAT DID NOT RUN
+#
+# `facts.measure` runs on a 120-second wall-clock budget and skips its optional stages past it, saying so
+# in `facts.warnings`, which `hexera.report_measured` copies to `document["warnings"]`. None of those lines
+# reached the builder. The composed block carried 18 keys and `status: ok`, exactly as it does for a
+# measurement that finished, and the stage's result was an ABSENT KEY with no refusal beside it.
+#
+# MEASURED, on a real part where the budget actually bites: tests/fixtures/geometry/cht_enclosing_2region.step
+# at a 0.1-second budget against the same file at 120. The short measurement wrote nine warning lines, one of
+# them "time budget of 0s exhausted after 0s: passage_ends skipped", and left `document["passage_ends"]`
+# absent where the complete one left `[]`. Both composed a block with `places_refused` null and the same empty
+# closed-end list, so a part whose closed ends were never measured and a part that has none reached the
+# builder as the same block. That is a fact that lies, and the builder cannot tell it from a missing one.
+# -------------------------------------------------------------------------------------------------
+
+#: The stages a skipped measurement costs a PLACE, and the kind of place each one costs. Only these of the
+#: stages a budget can take away produce places at all, and `passage_ends` is the one whose absence reads as a
+#: measured zero: `hexera.planner_places` places a `closed_end` for every entry of `document["passage_ends"]`
+#: and nothing at all when the key is not there.
+#:
+#: `document["passage_ends"]` IS THE MEASUREMENT'S OWN THREE-VALUED ANSWER, and that is what makes this
+#: sayable honestly: a list when the stage ran and found ends, `[]` when it ran and found none, and ABSENT
+#: when it did not run (`hexera.passage_ends_block`, whose docstring draws the same line). The platform reads
+#: which of the three it is; it does not decide it.
+PLACES_A_SKIPPED_STAGE_COSTS: dict[str, str] = {"passage_ends": "closed_end"}
+
+#: What the block says when a stage did not run, in the platform's own words: a PLACE and a MEASUREMENT, no
+#: builder setting and no claim about how the mesh turns out. `geometry_survey.what_the_surveyor_may_not_say`
+#: is the check, and a test runs it over this constant.
+STAGE_DID_NOT_RUN = ("the measurement's {stage} stage did not run on this part, so its {kind} places were "
+                     "never measured: none is placed here, and an empty list is not a measurement that "
+                     "there are none")
+#: What is said when the measurement wrote nothing about it. A document stored before the stage existed also
+#: carries the key absent, and which of the two it was is not on the record, so neither is claimed.
+STAGE_SAID_NOTHING = ("the measurement did not say why, so whether the clock took it or the row predates the "
+                      "stage is not on the record")
+
+
+def what_the_measurement_said_about(document: Any, stage: str) -> list[str]:
+    """The measurement's own warning lines that NAME this stage, verbatim and whole.
+
+    It matches the stage's own IDENTIFIER and nothing else. `facts.measure` writes `"...: {stage} skipped"`,
+    `"{stage} not measured: ..."` and, in its overrun line, `"the record is missing ... {stage}"`, with
+    `stage` its own name in every one. So the join is on a name both sides own: no sentence is parsed for
+    meaning here and none is rewritten, which is the only way this platform may carry another distribution's
+    words to a builder.
+    """
+    if not isinstance(document, dict):
+        return []
+    return [str(w) for w in (document.get("warnings") or []) if stage in str(w)]
+
+
+def with_the_stages_that_did_not_run(block: dict | None, document: Any) -> dict | None:
+    """The block, with a refusal row for every place a stage of the measurement never measured.
+
+    IT GOES IN `places_refused` AND NOT IN A KEY OF ITS OWN. `engines/snappy/planner.py` holds an allowlist of
+    the keys a block may put in front of a model (`GEOMETRY_AGENT_BLOCK_KEYS`), so a key this module invented
+    would be dropped there in silence, which is the same failure as the one being fixed one boundary further
+    on. `places_refused` is on that list, the planner's own note already tells a model how to read it ("Treat
+    those spots as unknown, not as ordinary"), and a stage that did not run is exactly a place the measurement
+    will not state.
+
+    THE PLATFORM'S SENTENCE IS KEPT WHATEVER HAPPENS TO THE QUOTE. The measurement's own lines ride inside the
+    row so the reason travels, and they are checked against the two rules the Surveyor's own block is checked
+    against before they go; a quote that breaks either one, or a check that cannot run at all because the
+    package is not in this image, leaves the platform's sentence on its own rather than losing the refusal.
+    """
+    if not block or not isinstance(block, dict) or not isinstance(document, dict):
+        # An empty block is not a block: `block_for_document` returns None rather than `{}` and the planner
+        # refuses a dict that does not name itself, so there is nothing here for a refusal to be read beside.
+        return block
+    rows = [r for r in (block.get("places_refused") or []) if isinstance(r, dict)]
+    added = []
+    for stage, kind in PLACES_A_SKIPPED_STAGE_COSTS.items():
+        if document.get(stage) is not None:
+            continue                               # it ran: `[]` is a measured answer and says so
+        if any(str(r.get("kind")) == kind for r in rows):
+            # THE PACKAGE ALREADY REFUSED THIS KIND OF PLACE and its reason is its own. One refusal is what
+            # the builder acts on - treat those spots as unknown - and a second row saying the same thing in
+            # this platform's words adds nothing it can act on. `hexera.planner_places` writes exactly such a
+            # row when the representation forbids placing a closed end, though only where there were measured
+            # ends to place, so today the two cannot both arise; this is what keeps that true.
+            continue
+        added.append({"kind": kind, "why": _why_a_stage_did_not_run(document, stage, kind)})
+    if not added:
+        return block
+    return {**block, "places_refused": [*rows, *added]}
+
+
+def _why_a_stage_did_not_run(document: dict, stage: str, kind: str) -> str:
+    mine = STAGE_DID_NOT_RUN.format(stage=stage.replace("_", " "), kind=kind.replace("_", " "))
+    said = what_the_measurement_said_about(document, stage)
+    if not said:
+        return f"{mine}. {STAGE_SAID_NOTHING}"
+    try:
+        from meshpipeline.application import geometry_survey as gs
+
+        broken = gs.what_the_surveyor_may_not_say(said)
+    except Exception as exc:                       # noqa: BLE001 - the refusal is worth more than the quote
+        logger.info("geometry agent block: the measurement's own words could not be checked (%s); the "
+                    "refusal travels without them", exc)
+        return f"{mine}. {STAGE_SAID_NOTHING}"
+    if broken:
+        logger.warning("geometry agent block: the measurement's own words about %s are not handed over: %s",
+                       stage, broken)
+        return f"{mine}. {STAGE_SAID_NOTHING}"
+    return f"{mine}. The measurement said: " + "; ".join(said)
 
 
 async def _stored_document(ref, digest: str) -> dict | None:

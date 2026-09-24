@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -93,6 +94,76 @@ def test_a_broker_that_will_not_take_the_task_is_a_look_that_does_not_happen():
 def test_no_enqueuer_bound_is_a_logged_no_op():
     contract.set_look_enqueuer(None)
     assert contract.enqueue_look("src", "owner") is False
+
+
+# A LOOK NOBODY TOOK IS NOT A LOOK THAT FAILED
+#
+# `hexera.look_block` has TWO statuses of its own, `ok` and `failed`, and defaults an empty impression to
+# `failed`: inside the agent a run always looks, so every way of not getting words back there IS a failure.
+# `measure_local_file` took that default, so the block it writes at UPLOAD - before the look is queued at
+# all, which the survey does later once the customer has said what the part is for - said the part's reading
+# had FAILED. Every upload. `geometry_survey.look_state` then read `failed` off it and the builder was told
+# a look had broken on a part nothing had looked at yet.
+
+
+def test_the_measurement_says_nothing_looked_and_never_lets_the_package_decide_what_that_means():
+    """The status is PASSED, not defaulted. A stand-in `look_block` that refuses to default is the whole
+    test: it fails if this platform ever stops saying which of the states it means."""
+    seen: list[dict] = []
+
+    class _Hexera:
+        def look_block(self, impression, *, status=None, **kw):
+            assert status, ("the platform let the package decide what a look nobody took means; "
+                            "its default for an empty impression is `failed`")
+            seen.append({"status": status, "impression": impression})
+            return {"status": status, "impression": impression}
+
+        def report_measured(self, _facts, _unit, _brief, **kw):
+            return {"look": kw["look"], "facts": {}}
+
+    hexera = _Hexera()
+    monkey = MagicMock()
+    monkey.measure_isolated.return_value = object()
+    monkey.measure.return_value = object()
+    run = MagicMock()
+    run.file_ceiling_bytes.return_value = 0
+    with patch.object(measurement, "_package", lambda: (hexera, run, monkey)):
+        document = measurement.measure_local_file(_a_file(), timeout_s=1.0)
+    assert document["status"] == "ok", document.get("reason")
+    assert seen == [{"status": measurement.LOOK_NOT_ATTEMPTED, "impression": None}]
+    assert document["look"]["status"] == measurement.LOOK_NOT_ATTEMPTED
+
+
+def test_the_word_the_measurement_writes_is_the_word_look_state_reads():
+    """Two spellings of one fact is the thing that goes out of step, and this fact is read in another
+    module: `geometry_survey.look_state` maps the stored status onto one of four states, and a status it
+    does not recognise falls through to `not_attempted` by luck rather than by agreement."""
+    from meshpipeline.application import geometry_survey as gs
+
+    assert measurement.LOOK_NOT_ATTEMPTED == gs.LOOK_NONE
+    assert measurement.LOOK_NOT_ATTEMPTED in gs.LOOK_STATES
+    assert measurement.LOOK_NOT_ATTEMPTED not in (gs.LOOK_FAILED, gs.LOOK_OK, gs.LOOK_PENDING)
+
+
+def test_the_reader_that_was_never_configured_says_the_same_word(monkeypatch):
+    """The other place this platform writes the block itself. A reader with no key in this environment did
+    not fail to look: nothing looked, and the row has to say which."""
+    monkeypatch.setattr(vision, "reader", lambda: None)
+    monkeypatch.setattr(vision, "_package", lambda: (MagicMock(), MagicMock(), _RecordingHexera()))
+    block = vision.look_at_local_file(_a_file(), DOCUMENT)
+    assert block["status"] == measurement.LOOK_NOT_ATTEMPTED
+    assert "has no key in this environment" in block["reason"]
+
+
+class _RecordingHexera:
+    def look_block(self, impression, *, status=None, reason="", **kw):
+        assert status, "the platform let the package decide what a reader that was never built means"
+        return {"status": status, "impression": impression, "reason": reason}
+
+
+def _a_file():
+    """A path that exists and is small, so `measure_local_file` reaches the report rather than the ceiling."""
+    return Path(__file__)
 
 
 # FAIL OPEN IN BOTH DIRECTIONS

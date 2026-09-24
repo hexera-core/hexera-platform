@@ -48,6 +48,22 @@ SYNCHRONOUS_DEADLINE_CEILING_S = 60.0
 PACKAGE_ABSENT = ("the geometry measurement package is not installed in this image, so nothing was "
                   "opened and nothing was measured")
 
+#: WHAT THE MEASUREMENT'S OWN LOOK BLOCK SAYS, stated here rather than left to the package's default.
+#:
+#: `hexera.look_block` has TWO statuses of its own now, `ok` and `failed`, and its default for an empty
+#: impression is `failed`. That is right inside the agent: there a run always looks, so every way of not
+#: getting words back is a look that failed. It is WRONG here, and this module is the reason. The
+#: measurement runs at upload; the look is queued later, by `application/geometry_survey`, once the
+#: customer has said what the part is for, because a look taken for an assumed purpose reads an external
+#: body as internal flow. So the look block this module writes describes a look that HAS NOT HAPPENED
+#: YET, and taking the package's default reported it to the builder as one that FAILED, on every upload.
+#:
+#: A LOOK THAT FAILED, A LOOK THAT HAS NOT HAPPENED AND A LOOK THAT FOUND A CLEAR PASSAGE ARE THREE
+#: DIFFERENT THINGS. `geometry_survey.look_state` is the reader that tells them apart and
+#: `geometry_survey.LOOK_NONE` is this same word; a test pins the two together rather than trusting that
+#: two spellings stay in step.
+LOOK_NOT_ATTEMPTED = "not_attempted"
+
 
 class _Unavailable(RuntimeError):
     """The measurement package is not here. Distinct from a measurement that ran and failed."""
@@ -134,9 +150,11 @@ def measure_local_file(path: Path, *, purpose: str = DEFAULT_PURPOSE, unit: str 
         try:
             document = hexera.report_measured(
                 facts, unit, None, purpose=purpose, scale_to_metres=scale_to_metres,
-                # Nothing looked. The block is present with `not_attempted` rather than absent, so
-                # a reader never has to tell "no look" from "a look that found nothing".
-                look=hexera.look_block(None),
+                # NOTHING LOOKED, SAID IN SO MANY WORDS. The block is present rather than absent, so a
+                # reader never has to tell "no look" from "a look that found nothing", and the status is
+                # passed rather than defaulted, so what this row says does not change the day the package
+                # changes its own mind about what an empty impression means (`LOOK_NOT_ATTEMPTED`).
+                look=hexera.look_block(None, status=LOOK_NOT_ATTEMPTED),
                 stamp={"agent_git_sha": _agent_git_sha()})
         except Exception as exc:                   # noqa: BLE001 - a measurement that cannot be written down
             logger.warning("geometry measurement: the report could not be composed: %s", exc)

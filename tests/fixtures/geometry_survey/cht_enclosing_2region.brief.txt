@@ -1,0 +1,7 @@
+Internal flow through the fluid region of this two-region enclosure. I want the flow and pressure drop.
+
+Geometry is in millimetres. Engine: snappyHexMesh.
+Body surface: the STEP contains the closed wall - carve the fluid cavity INSIDE it. There is no far-field box.
+Near-wall: Wall-function approach, y+ 30-300. Water at 20 C, inlet velocity 2 m/s. 5 prism layers, expansion ratio 1.2.
+Mesh budget: keep the total cell count under 2 million cells.
+Steady state, incompressible, isothermal.

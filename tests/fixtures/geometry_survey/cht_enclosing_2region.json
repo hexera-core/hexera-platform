@@ -1,0 +1,4631 @@
+{
+ "axes": {
+  "blunt_end_confidence": 0.0,
+  "blunt_end_sign": 0,
+  "principal": [
+   [
+    1.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    -1.0,
+    2.220446049250313e-16
+   ],
+   [
+    0.0,
+    -2.220446049250313e-16,
+    -1.0
+   ]
+  ],
+  "slenderness": 1.0,
+  "variance": [
+   49.76851851851847,
+   49.76851851851846,
+   49.76851851851846
+  ]
+ },
+ "bbox": {
+  "aspect": 1.0,
+  "diagonal_file": 34.64101615137755,
+  "diagonal_m": 0.03464101615137755,
+  "diagonal_mm": 34.641,
+  "extent_file": [
+   20.0,
+   20.0,
+   20.0
+  ],
+  "extent_m": [
+   0.02,
+   0.02,
+   0.02
+  ],
+  "extent_mm": [
+   20.0,
+   20.0,
+   20.0
+  ],
+  "longest_axis": 0,
+  "max_file": [
+   20.0,
+   20.0,
+   20.0
+  ],
+  "max_m": [
+   0.02,
+   0.02,
+   0.02
+  ],
+  "min_file": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "min_m": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "shortest_axis": 0
+ },
+ "bodies": {
+  "count": 2,
+  "debris_components": 0,
+  "faces": 36,
+  "interfaces": [
+   {
+    "area_m2": 0.00015,
+    "faces": 12,
+    "kind": "shared",
+    "region_a": "r1",
+    "region_b": "r2"
+   }
+  ],
+  "regions": 2,
+  "regions_detail": [
+   {
+    "contains": [
+     "r2"
+    ],
+    "faces": 24,
+    "id": "r1",
+    "nested_in": null,
+    "volume_m3": 7.875e-06,
+    "watertight": true
+   },
+   {
+    "contains": [],
+    "faces": 12,
+    "id": "r2",
+    "nested_in": "r1",
+    "volume_m3": 1.2500000000000002e-07,
+    "watertight": true
+   }
+  ],
+  "vertices": 24,
+  "watertight": true
+ },
+ "coordinates": {
+  "basis": "occ_transfer",
+  "candidates": [
+   [
+    "mm",
+    5.0
+   ],
+   [
+    "in",
+    4.0
+   ],
+   [
+    "cm",
+    4.0
+   ],
+   [
+    "m",
+    2.0
+   ],
+   [
+    "ft",
+    2.0
+   ]
+  ],
+  "claimed_unit": "mm",
+  "conflicts": [],
+  "declared_in_file": {
+   "source": "step_header",
+   "value": "mm"
+  },
+  "scale_to_metres": 0.001,
+  "unit": "mm"
+ },
+ "coverage": {
+  "outside": {
+   "status": "refused",
+   "why": "which side of the surface is the fluid is not settled: the file reads the same with the flow through its bores and with the file itself as the flow, and the customer has not said which"
+  },
+  "places": [],
+  "places_refused": "which side of the surface is the fluid is not settled: the file reads the same with the flow through its bores and with the file itself as the flow, and the customer has not said which, so no path through the flow can be placed",
+  "refused": {
+   "local_feature_size": "A local feature size from the medial axis is not given. The medial axis of a triangulated surface is not the medial axis of the solid it stands for at any tessellation density: every convex edge adds a spurious branch, and the filters that prune them have no setting that is right across parts. A size read off it would be a property of the tessellator, reported as a property of the part.",
+   "vertex_curvature": "A per-vertex curvature is not given. Discrete mean curvature provably does not converge on a tessellated cylinder: with every vertex exactly on the surface it oscillates between about -3 and 0 as the mesh refines, from the valence pattern alone, and a CAD export's long thin facets are the condition under which the cheap operators fail worst."
+  },
+  "version": "geometry_agent.coverage.v1",
+  "wall": {
+   "creases_at_included_deg": 132.5,
+   "listed_area_fraction": 1.0,
+   "regions": [
+    {
+     "area_fraction": 0.1481,
+     "borders": [
+      "o2",
+      "o3",
+      "o4",
+      "o5"
+     ],
+     "box_max_m": [
+      0.0,
+      0.02,
+      0.02
+     ],
+     "box_min_m": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "centroid_m": [
+      0.0,
+      0.010000000000000002,
+      0.010000000000000002
+     ],
+     "half_angle_deg": null,
+     "id": "w1",
+     "is_opening": "o1",
+     "neighbours": [
+      "w2",
+      "w3",
+      "w4",
+      "w5"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.1481,
+     "borders": [
+      "o1",
+      "o3",
+      "o4",
+      "o6"
+     ],
+     "box_max_m": [
+      0.02,
+      0.0,
+      0.02
+     ],
+     "box_min_m": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "centroid_m": [
+      0.010000000000000002,
+      0.0,
+      0.010000000000000002
+     ],
+     "half_angle_deg": null,
+     "id": "w2",
+     "is_opening": "o2",
+     "neighbours": [
+      "w1",
+      "w3",
+      "w5",
+      "w6"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.1481,
+     "borders": [
+      "o1",
+      "o2",
+      "o5",
+      "o6"
+     ],
+     "box_max_m": [
+      0.02,
+      0.02,
+      0.02
+     ],
+     "box_min_m": [
+      0.0,
+      0.0,
+      0.02
+     ],
+     "centroid_m": [
+      0.010000000000000002,
+      0.010000000000000002,
+      0.02
+     ],
+     "half_angle_deg": null,
+     "id": "w3",
+     "is_opening": "o4",
+     "neighbours": [
+      "w1",
+      "w2",
+      "w4",
+      "w6"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.1481,
+     "borders": [
+      "o1",
+      "o3",
+      "o4",
+      "o6"
+     ],
+     "box_max_m": [
+      0.02,
+      0.02,
+      0.02
+     ],
+     "box_min_m": [
+      0.0,
+      0.02,
+      0.0
+     ],
+     "centroid_m": [
+      0.010000000000000002,
+      0.02,
+      0.010000000000000002
+     ],
+     "half_angle_deg": null,
+     "id": "w4",
+     "is_opening": "o5",
+     "neighbours": [
+      "w1",
+      "w3",
+      "w5",
+      "w6"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.1481,
+     "borders": [
+      "o1",
+      "o2",
+      "o5",
+      "o6"
+     ],
+     "box_max_m": [
+      0.02,
+      0.02,
+      0.0
+     ],
+     "box_min_m": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "centroid_m": [
+      0.010000000000000002,
+      0.010000000000000002,
+      0.0
+     ],
+     "half_angle_deg": null,
+     "id": "w5",
+     "is_opening": "o3",
+     "neighbours": [
+      "w1",
+      "w2",
+      "w4",
+      "w6"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.1481,
+     "borders": [
+      "o2",
+      "o3",
+      "o4",
+      "o5"
+     ],
+     "box_max_m": [
+      0.02,
+      0.02,
+      0.02
+     ],
+     "box_min_m": [
+      0.02,
+      0.0,
+      0.0
+     ],
+     "centroid_m": [
+      0.02,
+      0.010000000000000002,
+      0.010000000000000002
+     ],
+     "half_angle_deg": null,
+     "id": "w6",
+     "is_opening": "o6",
+     "neighbours": [
+      "w2",
+      "w3",
+      "w4",
+      "w5"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0093,
+     "borders": [
+      "o11",
+      "o13",
+      "o17",
+      "o7"
+     ],
+     "box_max_m": [
+      0.0125,
+      0.0125,
+      0.0125
+     ],
+     "box_min_m": [
+      0.0075,
+      0.0125,
+      0.0075
+     ],
+     "centroid_m": [
+      0.01,
+      0.0125,
+      0.01
+     ],
+     "half_angle_deg": null,
+     "id": "w7",
+     "is_opening": "o15",
+     "neighbours": [
+      "w9",
+      "w10",
+      "w14",
+      "w18"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0093,
+     "borders": [
+      "o11",
+      "o13",
+      "o17",
+      "o7"
+     ],
+     "box_max_m": [
+      0.0125,
+      0.0075,
+      0.0125
+     ],
+     "box_min_m": [
+      0.0075,
+      0.0075,
+      0.0075
+     ],
+     "centroid_m": [
+      0.01,
+      0.0075,
+      0.01
+     ],
+     "half_angle_deg": null,
+     "id": "w8",
+     "is_opening": "o9",
+     "neighbours": [
+      "w9",
+      "w10",
+      "w14",
+      "w18"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0093,
+     "borders": [
+      "o11",
+      "o13",
+      "o15",
+      "o9"
+     ],
+     "box_max_m": [
+      0.0125,
+      0.0125,
+      0.0125
+     ],
+     "box_min_m": [
+      0.0125,
+      0.0075,
+      0.0075
+     ],
+     "centroid_m": [
+      0.0125,
+      0.01,
+      0.01
+     ],
+     "half_angle_deg": null,
+     "id": "w9",
+     "is_opening": "o17",
+     "neighbours": [
+      "w7",
+      "w8",
+      "w14",
+      "w18"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0093,
+     "borders": [
+      "o11",
+      "o13",
+      "o15",
+      "o9"
+     ],
+     "box_max_m": [
+      0.0075,
+      0.0125,
+      0.0125
+     ],
+     "box_min_m": [
+      0.0075,
+      0.0075,
+      0.0075
+     ],
+     "centroid_m": [
+      0.0075,
+      0.01,
+      0.01
+     ],
+     "half_angle_deg": null,
+     "id": "w10",
+     "is_opening": "o7",
+     "neighbours": [
+      "w7",
+      "w8",
+      "w14",
+      "w18"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0093,
+     "borders": [
+      "o11",
+      "o13",
+      "o15",
+      "o9"
+     ],
+     "box_max_m": [
+      0.0125,
+      0.0125,
+      0.0125
+     ],
+     "box_min_m": [
+      0.0125,
+      0.0075,
+      0.0075
+     ],
+     "centroid_m": [
+      0.0125,
+      0.01,
+      0.01
+     ],
+     "half_angle_deg": null,
+     "id": "w11",
+     "is_opening": "o17",
+     "neighbours": [
+      "w12",
+      "w13",
+      "w15",
+      "w17"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    },
+    {
+     "area_fraction": 0.0093,
+     "borders": [
+      "o15",
+      "o17",
+      "o7",
+      "o9"
+     ],
+     "box_max_m": [
+      0.0125,
+      0.0125,
+      0.0125
+     ],
+     "box_min_m": [
+      0.0075,
+      0.0075,
+      0.0125
+     ],
+     "centroid_m": [
+      0.01,
+      0.01,
+      0.0125
+     ],
+     "half_angle_deg": null,
+     "id": "w12",
+     "is_opening": "o13",
+     "neighbours": [
+      "w11",
+      "w13",
+      "w15",
+      "w16"
+     ],
+     "radius_m": null,
+     "surface": "plane"
+    }
+   ],
+   "regions_total": 18,
+   "status": "measured"
+  }
+ },
+ "default_cell": {
+  "source": "facts.cell_estimates",
+  "surface_cell_file": 0.10825317547305484,
+  "surface_cell_m": 0.00010825317547305484,
+  "tier": "standard"
+ },
+ "engine": "snappy",
+ "engine_source": "assumed",
+ "facts": {
+  "axes": {
+   "blunt_end_confidence": 0.0,
+   "blunt_end_sign": 0,
+   "principal": [
+    [
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     -1.0,
+     2.220446049250313e-16
+    ],
+    [
+     0.0,
+     -2.220446049250313e-16,
+     -1.0
+    ]
+   ],
+   "rotational_axis": 0,
+   "rotational_order": 4,
+   "rotational_score": 1.0,
+   "slenderness": 1.0,
+   "symmetry_measured": true,
+   "symmetry_normals": [
+    [
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     -1.0,
+     2.220446049250313e-16
+    ],
+    [
+     0.0,
+     -2.220446049250313e-16,
+     -1.0
+    ],
+    [
+     0.0,
+     -0.7071067811865476,
+     0.7071067811865476
+    ],
+    [
+     0.0,
+     -0.7071067811865475,
+     -0.7071067811865475
+    ]
+   ],
+   "symmetry_planes": [
+    0,
+    1,
+    2,
+    1,
+    2
+   ],
+   "symmetry_scores": [
+    0.9996470172961525,
+    1.0,
+    1.0
+   ],
+   "variance": [
+    49.76851851851847,
+    49.76851851851846,
+    49.76851851851846
+   ]
+  },
+  "bbox": {
+   "aspect": 1.0,
+   "diagonal": 34.64101615137755,
+   "extent": [
+    20.0,
+    20.0,
+    20.0
+   ],
+   "longest_axis": 0,
+   "max": [
+    20.0,
+    20.0,
+    20.0
+   ],
+   "min": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "shortest_axis": 0
+  },
+  "bodies": 2,
+  "cell_estimates": [
+   {
+    "assumptions": [
+     "base cell = bbox diagonal / 40",
+     "1 surface refinement level(s), 3-cell band",
+     "3 prism layers on all surfaces",
+     "domain volume from enclosed volume",
+     "uniform base cell through the domain",
+     "castellation fill 0.7"
+    ],
+    "base_size": 0.8660254037844387,
+    "cells": 95019,
+    "domain_volume": 8000.0,
+    "layer_cells": 43199,
+    "surface_cell": 0.43301270189221935,
+    "surface_cells": 43199,
+    "tier": "draft",
+    "volume_cells": 8621
+   },
+   {
+    "assumptions": [
+     "base cell = bbox diagonal / 80",
+     "2 surface refinement level(s), 3-cell band",
+     "8 prism layers on all surfaces",
+     "domain volume from enclosed volume",
+     "uniform base cell through the domain",
+     "castellation fill 0.7"
+    ],
+    "base_size": 0.43301270189221935,
+    "cells": 2603372,
+    "domain_volume": 8000.0,
+    "layer_cells": 1843199,
+    "surface_cell": 0.10825317547305484,
+    "surface_cells": 691199,
+    "tier": "standard",
+    "volume_cells": 68974
+   },
+   {
+    "assumptions": [
+     "base cell = bbox diagonal / 160",
+     "3 surface refinement level(s), 3-cell band",
+     "15 prism layers on all surfaces",
+     "domain volume from enclosed volume",
+     "uniform base cell through the domain",
+     "castellation fill 0.7"
+    ],
+    "base_size": 0.21650635094610968,
+    "cells": 66906990,
+    "domain_volume": 8000.0,
+    "layer_cells": 55295999,
+    "surface_cell": 0.02706329386826371,
+    "surface_cells": 11059199,
+    "tier": "max",
+    "volume_cells": 551792
+   }
+  ],
+  "chord": {
+   "chords_over_requested": 0,
+   "chords_sampled": 90,
+   "chords_unprojected": 0,
+   "computable": true,
+   "faces_with_surface": 18,
+   "reason": "",
+   "requested_angular_deg": 11.459155902616466,
+   "requested_linear": 0.03464101649778771,
+   "sag_max": 0.0,
+   "sag_median": 0.0,
+   "sag_over_chord_max": 0.0,
+   "sag_p95": 0.0,
+   "surface_available": true
+  },
+  "coverage": {
+   "centrelines": [],
+   "local_feature_size": {
+    "evidence": [
+     "docs/research_computational_geometry.md 1.2: continuity of the medial axis needs C2 closeness (Chazal and Soufflet via Attali et al.), which no tessellation has",
+     "docs/research_computational_geometry.md 3.1 and 3.2, MEASURED on this corpus: an unfiltered shrinking-ball medial size read 0.00005 where the smallest passage is 0.0399 (800x too small), and no separation angle was right on more than 3 of 6 parts",
+     "docs/synthesis.md 2.1: do not emit a single filtered medial minimum",
+     "what IS given instead: the passage's own section, area and hydraulic diameter, at every station of every centreline (`centrelines[].stations`), which is a plane section and converges"
+    ],
+    "status": "refused",
+    "why": "A local feature size from the medial axis is not given. The medial axis of a triangulated surface is not the medial axis of the solid it stands for at any tessellation density: every convex edge adds a spurious branch, and the filters that prune them have no setting that is right across parts. A size read off it would be a property of the tessellator, reported as a property of the part."
+   },
+   "outside": null,
+   "partition": {
+    "area_listed_fraction": 1.0,
+    "band": [
+     90.0,
+     175.0
+    ],
+    "crease_included_deg": 132.5,
+    "patches": [
+     {
+      "area": 400.0,
+      "area_fraction": 0.14814814814814814,
+      "axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       0.0,
+       20.0,
+       20.0
+      ],
+      "bbox_min": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "borders": [
+       "o2",
+       "o3",
+       "o4",
+       "o5"
+      ],
+      "centroid": [
+       0.0,
+       10.000000000000002,
+       10.000000000000002
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w1",
+      "neighbours": [
+       "w2",
+       "w3",
+       "w4",
+       "w5"
+      ],
+      "opening_id": "o1",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 400.0,
+      "area_fraction": 0.14814814814814814,
+      "axis": [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      "bbox_max": [
+       20.0,
+       0.0,
+       20.0
+      ],
+      "bbox_min": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "borders": [
+       "o1",
+       "o3",
+       "o4",
+       "o6"
+      ],
+      "centroid": [
+       10.000000000000002,
+       0.0,
+       10.000000000000002
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w2",
+      "neighbours": [
+       "w1",
+       "w3",
+       "w5",
+       "w6"
+      ],
+      "opening_id": "o2",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 400.0,
+      "area_fraction": 0.14814814814814814,
+      "axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "bbox_max": [
+       20.0,
+       20.0,
+       20.0
+      ],
+      "bbox_min": [
+       0.0,
+       0.0,
+       20.0
+      ],
+      "borders": [
+       "o1",
+       "o2",
+       "o5",
+       "o6"
+      ],
+      "centroid": [
+       10.000000000000002,
+       10.000000000000002,
+       20.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w3",
+      "neighbours": [
+       "w1",
+       "w2",
+       "w4",
+       "w6"
+      ],
+      "opening_id": "o4",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 400.0,
+      "area_fraction": 0.14814814814814814,
+      "axis": [
+       0.0,
+       1.0,
+       0.0
+      ],
+      "bbox_max": [
+       20.0,
+       20.0,
+       20.0
+      ],
+      "bbox_min": [
+       0.0,
+       20.0,
+       0.0
+      ],
+      "borders": [
+       "o1",
+       "o3",
+       "o4",
+       "o6"
+      ],
+      "centroid": [
+       10.000000000000002,
+       20.0,
+       10.000000000000002
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w4",
+      "neighbours": [
+       "w1",
+       "w3",
+       "w5",
+       "w6"
+      ],
+      "opening_id": "o5",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 400.0,
+      "area_fraction": 0.14814814814814814,
+      "axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "bbox_max": [
+       20.0,
+       20.0,
+       0.0
+      ],
+      "bbox_min": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "borders": [
+       "o1",
+       "o2",
+       "o5",
+       "o6"
+      ],
+      "centroid": [
+       10.000000000000002,
+       10.000000000000002,
+       0.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w5",
+      "neighbours": [
+       "w1",
+       "w2",
+       "w4",
+       "w6"
+      ],
+      "opening_id": "o3",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 400.0,
+      "area_fraction": 0.14814814814814814,
+      "axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       20.0,
+       20.0,
+       20.0
+      ],
+      "bbox_min": [
+       20.0,
+       0.0,
+       0.0
+      ],
+      "borders": [
+       "o2",
+       "o3",
+       "o4",
+       "o5"
+      ],
+      "centroid": [
+       20.0,
+       10.000000000000002,
+       10.000000000000002
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w6",
+      "neighbours": [
+       "w2",
+       "w3",
+       "w4",
+       "w5"
+      ],
+      "opening_id": "o6",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       1.0,
+       0.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       12.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o17",
+       "o7"
+      ],
+      "centroid": [
+       10.0,
+       12.5,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w7",
+      "neighbours": [
+       "w9",
+       "w10",
+       "w14",
+       "w18"
+      ],
+      "opening_id": "o15",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      "bbox_max": [
+       12.5,
+       7.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o17",
+       "o7"
+      ],
+      "centroid": [
+       10.0,
+       7.5,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w8",
+      "neighbours": [
+       "w9",
+       "w10",
+       "w14",
+       "w18"
+      ],
+      "opening_id": "o9",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       12.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o15",
+       "o9"
+      ],
+      "centroid": [
+       12.5,
+       10.0,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w9",
+      "neighbours": [
+       "w7",
+       "w8",
+       "w14",
+       "w18"
+      ],
+      "opening_id": "o17",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       7.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o15",
+       "o9"
+      ],
+      "centroid": [
+       7.5,
+       10.0,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w10",
+      "neighbours": [
+       "w7",
+       "w8",
+       "w14",
+       "w18"
+      ],
+      "opening_id": "o7",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       12.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o15",
+       "o9"
+      ],
+      "centroid": [
+       12.5,
+       10.0,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w11",
+      "neighbours": [
+       "w12",
+       "w13",
+       "w15",
+       "w17"
+      ],
+      "opening_id": "o17",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       12.5
+      ],
+      "borders": [
+       "o15",
+       "o17",
+       "o7",
+       "o9"
+      ],
+      "centroid": [
+       10.0,
+       10.0,
+       12.5
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w12",
+      "neighbours": [
+       "w11",
+       "w13",
+       "w15",
+       "w16"
+      ],
+      "opening_id": "o13",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       12.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o17",
+       "o7"
+      ],
+      "centroid": [
+       10.0,
+       12.5,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w13",
+      "neighbours": [
+       "w11",
+       "w12",
+       "w16",
+       "w17"
+      ],
+      "opening_id": "o15",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       7.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o15",
+       "o17",
+       "o7",
+       "o9"
+      ],
+      "centroid": [
+       10.0,
+       10.0,
+       7.5
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w14",
+      "neighbours": [
+       "w7",
+       "w8",
+       "w9",
+       "w10"
+      ],
+      "opening_id": "o11",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       1.0,
+       0.0
+      ],
+      "bbox_max": [
+       12.5,
+       7.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o17",
+       "o7"
+      ],
+      "centroid": [
+       10.0,
+       7.5,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w15",
+      "neighbours": [
+       "w11",
+       "w12",
+       "w16",
+       "w17"
+      ],
+      "opening_id": "o9",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "bbox_max": [
+       7.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o11",
+       "o13",
+       "o15",
+       "o9"
+      ],
+      "centroid": [
+       7.5,
+       10.0,
+       10.0
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w16",
+      "neighbours": [
+       "w12",
+       "w13",
+       "w15",
+       "w17"
+      ],
+      "opening_id": "o7",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       7.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       7.5
+      ],
+      "borders": [
+       "o15",
+       "o17",
+       "o7",
+       "o9"
+      ],
+      "centroid": [
+       10.0,
+       10.0,
+       7.5
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w17",
+      "neighbours": [
+       "w11",
+       "w13",
+       "w15",
+       "w16"
+      ],
+      "opening_id": "o11",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     },
+     {
+      "area": 25.0,
+      "area_fraction": 0.009259259259259259,
+      "axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "bbox_max": [
+       12.5,
+       12.5,
+       12.5
+      ],
+      "bbox_min": [
+       7.5,
+       7.5,
+       12.5
+      ],
+      "borders": [
+       "o15",
+       "o17",
+       "o7",
+       "o9"
+      ],
+      "centroid": [
+       10.0,
+       10.0,
+       12.5
+      ],
+      "faces": 2,
+      "fit_residual": null,
+      "half_angle_deg": null,
+      "id": "w18",
+      "neighbours": [
+       "w7",
+       "w8",
+       "w9",
+       "w10"
+      ],
+      "opening_id": "o13",
+      "radius": null,
+      "region_id": "",
+      "surface": "plane",
+      "why_no_radius": ""
+     }
+    ],
+    "patches_total": 18,
+    "smallest_radius": null,
+    "smallest_radius_patch": null,
+    "status": "measured",
+    "why": ""
+   },
+   "places": [],
+   "skipped_mouths": [],
+   "timings": {},
+   "version": "geometry_agent.coverage.v1",
+   "vertex_curvature": {
+    "evidence": [
+     "docs/research_computational_geometry.md 4.1: Wardetzky, the 4-8 cylinder counterexample",
+     "docs/research_computational_geometry.md 4.2: Gatzke and Grimm, sensitivity to tangential vertex motion",
+     "what IS given instead: a radius fitted over each whole crease patch that is a cylinder or a sphere, with its residual, and refused when the residual is large (`partition.patches[].radius`), and the bend radius of each centreline turn (`centrelines[].bends[].radius`)"
+    ],
+    "status": "refused",
+    "why": "A per-vertex curvature is not given. Discrete mean curvature provably does not converge on a tessellated cylinder: with every vertex exactly on the surface it oscillates between about -3 and 0 as the mesh refines, from the valence pattern alone, and a CAD export's long thin facets are the condition under which the cheap operators fail worst."
+   },
+   "warnings": []
+  },
+  "debris_components": 0,
+  "faces": 36,
+  "feature_edges": {
+   "bins": [
+    {
+     "edges": 0,
+     "included_hi": 30.0,
+     "included_lo": 0.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 60.0,
+     "included_lo": 30.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 90.0,
+     "included_lo": 60.0,
+     "length": 0.0
+    },
+    {
+     "edges": 36,
+     "included_hi": 120.0,
+     "included_lo": 90.0,
+     "length": 360.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 150.0,
+     "included_lo": 120.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 165.0,
+     "included_lo": 150.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 175.0,
+     "included_lo": 165.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 178.0,
+     "included_lo": 175.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 179.0,
+     "included_lo": 178.0,
+     "length": 0.0
+    },
+    {
+     "edges": 0,
+     "included_hi": 179.9,
+     "included_lo": 179.0,
+     "length": 0.0
+    },
+    {
+     "edges": 18,
+     "included_hi": 180.0,
+     "included_lo": 179.9,
+     "length": 254.55844122715712
+    }
+   ],
+   "cumulative": [
+    [
+     20.0,
+     0,
+     0.0
+    ],
+    [
+     30.0,
+     0,
+     0.0
+    ],
+    [
+     45.0,
+     0,
+     0.0
+    ],
+    [
+     60.0,
+     0,
+     0.0
+    ],
+    [
+     90.0,
+     36,
+     360.0
+    ],
+    [
+     120.0,
+     36,
+     360.0
+    ],
+    [
+     150.0,
+     36,
+     360.0
+    ],
+    [
+     165.0,
+     36,
+     360.0
+    ],
+    [
+     175.0,
+     36,
+     360.0
+    ]
+   ],
+   "inconsistent_edges": 0,
+   "manifold_edges": 54,
+   "non_manifold_edges": 0,
+   "open_edges": 0,
+   "widest_empty_band": [
+    90.0,
+    175.0
+   ]
+  },
+  "features": {
+   "closest_regions": [
+    "r1",
+    "r2"
+   ],
+   "edge_length_median": 7.0710678118654755,
+   "edge_length_min": 5.0,
+   "gap_clusters": [],
+   "gap_coverage": {
+    "every_face_tested": true,
+    "faces_cast": 36,
+    "faces_total": 36,
+    "minimum_exhaustive": true,
+    "oblique_fraction": 0.087963,
+    "passage_fraction": 0.023148,
+    "rejected_fraction": 0.0
+   },
+   "knife_edge_count": 0,
+   "knife_edge_length": 0.0,
+   "min_gap": null,
+   "min_gap_between_regions": 0.0,
+   "near_touching_pairs": 0,
+   "non_manifold_edge_count": 0,
+   "sharp_edge_count": 36,
+   "sharp_edge_length": 360.0,
+   "sliver_faces": 0,
+   "sliver_fraction": 0.0,
+   "thickness_coverage": {
+    "every_face_tested": true,
+    "faces_cast": 36,
+    "faces_total": 36,
+    "minimum_exhaustive": true,
+    "oblique_fraction": 0.027778,
+    "passage_fraction": 0.0,
+    "rejected_fraction": 0.888889
+   },
+   "thickness_median": 7.5,
+   "thickness_min": 5.0,
+   "thickness_p05": 5.0,
+   "thin_clusters": [],
+   "winding_consistent": true
+  },
+  "interface_thickness": [
+   {
+    "faces_in_interface": 12,
+    "faces_measured": 12,
+    "reason": "",
+    "region_a": "r1",
+    "region_b": "r2",
+    "thickness_median": 7.5,
+    "thickness_min": 7.5,
+    "thickness_p05": 7.5,
+    "through_region": "r1"
+   },
+   {
+    "faces_in_interface": 12,
+    "faces_measured": 12,
+    "reason": "",
+    "region_a": "r1",
+    "region_b": "r2",
+    "thickness_median": 5.0,
+    "thickness_min": 5.0,
+    "thickness_p05": 5.0,
+    "through_region": "r2"
+   }
+  ],
+  "interfaces": [
+   {
+    "area": 150.0,
+    "faces": 12,
+    "kind": "shared",
+    "region_a": "r1",
+    "region_b": "r2"
+   }
+  ],
+  "measurement_revision": 2,
+  "names": [
+   {
+    "entity": "PRODUCT",
+    "implied_role": null,
+    "name": "Open CASCADE STEP translator 7.9 1"
+   },
+   {
+    "entity": "PRODUCT",
+    "implied_role": null,
+    "name": "Open CASCADE STEP translator 7.9 1.1"
+   },
+   {
+    "entity": "PRODUCT",
+    "implied_role": null,
+    "name": "Open CASCADE STEP translator 7.9 1.2"
+   }
+  ],
+  "opening_gate": {
+   "best_rejected_tubularity": null,
+   "candidates": 18,
+   "rejected_by_tubularity": 0
+  },
+  "openings": [
+   {
+    "area": 400.0,
+    "area_fraction_of_region": 0.1568627450980392,
+    "bbox_side": "x_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     0.0,
+     10.000000000000002,
+     10.000000000000002
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 22.56758334191025,
+    "face_count": 2,
+    "height": 20.0,
+    "hydraulic_diameter": 20.0,
+    "id": "o1",
+    "kind": "cap",
+    "normal": [
+     -1.0,
+     -0.0,
+     -0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 80.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 20.0
+   },
+   {
+    "area": 400.0,
+    "area_fraction_of_region": 0.1568627450980392,
+    "bbox_side": "y_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.000000000000002,
+     0.0,
+     10.000000000000002
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 22.56758334191025,
+    "face_count": 2,
+    "height": 20.0,
+    "hydraulic_diameter": 20.0,
+    "id": "o2",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     -1.0,
+     -0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 80.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 20.0
+   },
+   {
+    "area": 400.0,
+    "area_fraction_of_region": 0.1568627450980392,
+    "bbox_side": "z_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.000000000000002,
+     10.000000000000002,
+     0.0
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 22.56758334191025,
+    "face_count": 2,
+    "height": 20.0,
+    "hydraulic_diameter": 20.0,
+    "id": "o3",
+    "kind": "cap",
+    "normal": [
+     -0.0,
+     0.0,
+     -1.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 80.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 20.0
+   },
+   {
+    "area": 400.0,
+    "area_fraction_of_region": 0.1568627450980392,
+    "bbox_side": "z_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.000000000000002,
+     10.000000000000002,
+     20.0
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 22.56758334191025,
+    "face_count": 2,
+    "height": 20.0,
+    "hydraulic_diameter": 20.0,
+    "id": "o4",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 80.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 20.0
+   },
+   {
+    "area": 400.0,
+    "area_fraction_of_region": 0.1568627450980392,
+    "bbox_side": "y_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.000000000000002,
+     20.0,
+     10.000000000000002
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 22.56758334191025,
+    "face_count": 2,
+    "height": 20.0,
+    "hydraulic_diameter": 20.0,
+    "id": "o5",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 80.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 20.0
+   },
+   {
+    "area": 400.0,
+    "area_fraction_of_region": 0.1568627450980392,
+    "bbox_side": "x_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     20.0,
+     10.000000000000002,
+     10.000000000000002
+    ],
+    "classification": "planar_face",
+    "equivalent_diameter": 22.56758334191025,
+    "face_count": 2,
+    "height": 20.0,
+    "hydraulic_diameter": 20.0,
+    "id": "o6",
+    "kind": "cap",
+    "normal": [
+     1.0,
+     -0.0,
+     0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 80.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 20.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.00980392156862745,
+    "bbox_side": null,
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     7.5,
+     10.0,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o7",
+    "kind": "cap",
+    "normal": [
+     1.0,
+     -0.0,
+     0.0
+    ],
+    "on_bbox_face": false,
+    "perimeter": 20.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.16666666666666666,
+    "bbox_side": "x_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     7.5,
+     10.0,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o8",
+    "kind": "cap",
+    "normal": [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 20.0,
+    "region_id": "r2",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.00980392156862745,
+    "bbox_side": null,
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     7.5,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o9",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "on_bbox_face": false,
+    "perimeter": 20.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.16666666666666666,
+    "bbox_side": "y_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     7.5,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o10",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     -1.0,
+     -0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 20.0,
+    "region_id": "r2",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.00980392156862745,
+    "bbox_side": null,
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     10.0,
+     7.5
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o11",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "on_bbox_face": false,
+    "perimeter": 20.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.16666666666666666,
+    "bbox_side": "z_min",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     10.0,
+     7.5
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o12",
+    "kind": "cap",
+    "normal": [
+     -0.0,
+     0.0,
+     -1.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 20.0,
+    "region_id": "r2",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.00980392156862745,
+    "bbox_side": null,
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     10.0,
+     12.5
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o13",
+    "kind": "cap",
+    "normal": [
+     -0.0,
+     -0.0,
+     -1.0
+    ],
+    "on_bbox_face": false,
+    "perimeter": 20.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.16666666666666666,
+    "bbox_side": "z_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     10.0,
+     12.5
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o14",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 20.0,
+    "region_id": "r2",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.00980392156862745,
+    "bbox_side": null,
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     12.5,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o15",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     -1.0,
+     -0.0
+    ],
+    "on_bbox_face": false,
+    "perimeter": 20.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.16666666666666666,
+    "bbox_side": "y_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     10.0,
+     12.5,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o16",
+    "kind": "cap",
+    "normal": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 20.0,
+    "region_id": "r2",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.00980392156862745,
+    "bbox_side": null,
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     12.5,
+     10.0,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o17",
+    "kind": "cap",
+    "normal": [
+     -1.0,
+     -0.0,
+     -0.0
+    ],
+    "on_bbox_face": false,
+    "perimeter": 20.0,
+    "region_id": "r1",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   },
+   {
+    "area": 25.0,
+    "area_fraction_of_region": 0.16666666666666666,
+    "bbox_side": "x_max",
+    "bore_area": null,
+    "bore_diameter": null,
+    "centroid": [
+     12.5,
+     10.0,
+     10.0
+    ],
+    "classification": "interface",
+    "equivalent_diameter": 5.641895835477563,
+    "face_count": 2,
+    "height": 5.0,
+    "hydraulic_diameter": 5.0,
+    "id": "o18",
+    "kind": "cap",
+    "normal": [
+     1.0,
+     -0.0,
+     0.0
+    ],
+    "on_bbox_face": true,
+    "perimeter": 20.0,
+    "region_id": "r2",
+    "shape": "rectangle",
+    "tubularity": 1.0,
+    "width": 5.0
+   }
+  ],
+  "passage_ends": [],
+  "regions": [
+   {
+    "bbox_extent": [
+     20.0,
+     20.0,
+     20.0
+    ],
+    "bbox_max": [
+     20.0,
+     20.0,
+     20.0
+    ],
+    "bbox_min": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "contains": [
+     "r2"
+    ],
+    "faces": 24,
+    "id": "r1",
+    "nested_in": null,
+    "rotational_axis": 1,
+    "rotational_order": 4,
+    "surface_area": 2550.0,
+    "volume": 7875.0,
+    "watertight": true
+   },
+   {
+    "bbox_extent": [
+     5.0,
+     5.0,
+     5.0
+    ],
+    "bbox_max": [
+     12.5,
+     12.5,
+     12.5
+    ],
+    "bbox_min": [
+     7.5,
+     7.5,
+     7.5
+    ],
+    "contains": [],
+    "faces": 12,
+    "id": "r2",
+    "nested_in": "r1",
+    "rotational_axis": 0,
+    "rotational_order": 4,
+    "surface_area": 150.0,
+    "volume": 125.0,
+    "watertight": true
+   }
+  ],
+  "schema_version": 3,
+  "sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+  "source_format": "step",
+  "source_path": "",
+  "stubs": [
+   {
+    "end_point": [
+     16.666666666666664,
+     10.000000000000002,
+     10.000000000000002
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "length": 16.666666666666664,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o1",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.000000000000002,
+     16.666666666666664,
+     10.000000000000002
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     1.0,
+     0.0
+    ],
+    "length": 16.666666666666664,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o2",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.000000000000002,
+     10.000000000000002,
+     16.666666666666664
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     0.0,
+     -0.0,
+     1.0
+    ],
+    "length": 16.666666666666664,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o3",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.000000000000002,
+     10.000000000000002,
+     3.3333333333333357
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     -0.0,
+     -1.0
+    ],
+    "length": 16.666666666666664,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o4",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.000000000000002,
+     3.3333333333333357,
+     10.000000000000002
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     -1.0,
+     -0.0
+    ],
+    "length": 16.666666666666664,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o5",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     3.3333333333333357,
+     10.000000000000002,
+     10.000000000000002
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -1.0,
+     0.0,
+     -0.0
+    ],
+    "length": 16.666666666666664,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o6",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     11.666666666666666,
+     10.0,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     1.0,
+     -0.0,
+     0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o7",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     11.666666666666666,
+     10.0,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     1.0,
+     -0.0,
+     -0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o8",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     11.666666666666666,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o9",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     11.666666666666666,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     1.0,
+     0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o10",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     10.0,
+     11.666666666666666
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o11",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     10.0,
+     11.666666666666666
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     0.0,
+     -0.0,
+     1.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o12",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     10.0,
+     8.333333333333334
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     -0.0,
+     -1.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o13",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     10.0,
+     8.333333333333334
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     -0.0,
+     -1.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o14",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     8.333333333333334,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     0.0,
+     -1.0,
+     -0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o15",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     10.0,
+     8.333333333333334,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -0.0,
+     -1.0,
+     -0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o16",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     8.333333333333334,
+     10.0,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -1.0,
+     -0.0,
+     -0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o17",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   },
+   {
+    "end_point": [
+     8.333333333333334,
+     10.0,
+     10.0
+    ],
+    "entry_area_ratio": 1.0,
+    "entry_loops": 1,
+    "inward_direction": [
+     -1.0,
+     0.0,
+     -0.0
+    ],
+    "length": 4.166666666666666,
+    "length_over_diameter": 0.8333333333333333,
+    "opening_id": "o18",
+    "stations": 6,
+    "terminated_by": "end_of_body"
+   }
+  ],
+  "timings": {
+   "axes": 1.0,
+   "chord": 0.087,
+   "connectivity": 0.0,
+   "coverage": 0.002,
+   "coverage_centrelines": 0.0,
+   "coverage_partition": 0.002,
+   "coverage_total": 0.002,
+   "feature_edges": 0.0,
+   "features": 0.021,
+   "interface_thickness": 0.001,
+   "interfaces": 0.001,
+   "load": 0.882,
+   "openings": 0.011,
+   "passage_ends": 0.016,
+   "regions": 0.005,
+   "stubs": 0.079,
+   "total": 2.139
+  },
+  "total_surface_area": 2700.0,
+  "total_volume": 8000.0,
+  "units": {
+   "candidates": [
+    [
+     "mm",
+     5.0
+    ],
+    [
+     "in",
+     4.0
+    ],
+    [
+     "cm",
+     4.0
+    ],
+    [
+     "m",
+     2.0
+    ],
+    [
+     "ft",
+     2.0
+    ]
+   ],
+   "declared": "mm",
+   "declared_source": "step_header",
+   "plausible_for_purpose": {
+    "conjugate_heat_transfer": [
+     "mm",
+     "cm",
+     "in"
+    ],
+    "external_cfd": [
+     "m",
+     "cm",
+     "in",
+     "ft"
+    ],
+    "internal_cfd": [
+     "mm",
+     "cm",
+     "in"
+    ],
+    "structural": [
+     "m",
+     "mm",
+     "cm",
+     "in",
+     "ft"
+    ]
+   }
+  },
+  "vertices": 24,
+  "warnings": [],
+  "watertight": true
+ },
+ "fluid_side": {
+  "bores": 0,
+  "default": "is_fluid",
+  "open": true,
+  "readings": {
+   "is_fluid": "fluid_domain",
+   "through": "wall_shell"
+  },
+  "rule": "no_rings",
+  "settled_by": null,
+  "why": "no mouth was measured that says which side of the surface the flow is on"
+ },
+ "forecast": {
+  "basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 3.761 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [9, 9, 9] clamped 8..120, background cell 3.894, deficit 0 (snappy_runner.py:619-634)",
+   "fluid volume = the outer watertight bodies' enclosed volume",
+   "inner bodies' volume subtracted (obstacles in the fluid)",
+   "near band: volume within near_dist 11.28 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for fluid_domain: learn.calibration.cell_correction",
+   "no plan exists: this is the builder emulator over the measurement alone, which is not the same figure as a planned estimate"
+  ],
+  "breakdown": {
+   "background": 131,
+   "feature_edges": 0,
+   "fluid_volume": 7750.0,
+   "layers": 0,
+   "near_band": 0,
+   "near_band_volume": 0.0,
+   "transition": 0,
+   "wall_area": 0.0
+  },
+  "builder": {
+   "base_actual": 3.8938950623637223,
+   "base_cell": 3.761263890318375,
+   "bore": 22.56758334191025,
+   "cells_across": 24,
+   "deficit": 0,
+   "divisions": [
+    9,
+    9,
+    9
+   ],
+   "feature_level": 3,
+   "flevel": 3,
+   "inlet_from_person": false,
+   "inlet_id": "o1",
+   "max_cells": 8000000,
+   "n_layers": 3,
+   "near_cell": 0.4867368827954653,
+   "near_dist": 11.283791670955125,
+   "near_level": 3,
+   "port_level": 1,
+   "smallest_port": {
+    "bore_over_extent": 0.25,
+    "cells_across_builder": 5.317361552716548,
+    "grid_aligned": true,
+    "id": "o7",
+    "kind": "cap",
+    "min_dimension": 5.0,
+    "shape": "rectangle",
+    "tilt_deg": 0.0
+   },
+   "smax": 2,
+   "surface_level": 2,
+   "wall_cell": 0.9403159725795938
+  },
+  "calibration": {
+   "arm": "facts_only",
+   "by_representation": {
+    "carve": 0.69,
+    "external": 0.42,
+    "fluid_domain": 0.34
+   },
+   "max_ratio": 6.46,
+   "median_ratio": 0.52,
+   "n": 263,
+   "of": "cells_high over the cells the job delivered",
+   "p90_ratio": 1.29,
+   "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered",
+   "source": "docs/pipeline.md sections 0 and 3.4 (v7.py), 263 delivered corpus meshes"
+  },
+  "cell_cap": null,
+  "cells_high": 131,
+  "cells_low": 131,
+  "minutes_p90": null,
+  "minutes_typical": null,
+  "over_cap": null,
+  "passes_expected": null,
+  "strategy": null,
+  "tier": "under 0.5M"
+ },
+ "look": {
+  "caveat": "",
+  "impression": null,
+  "is_measurement": false,
+  "label": "VISUAL IMPRESSION (a vision model's words from nine rendered views; not a measurement)",
+  "model": "",
+  "provider": "",
+  "seconds": null,
+  "status": "not_attempted",
+  "views": []
+ },
+ "measured_purpose": "internal_cfd",
+ "names": [],
+ "opening_gate": {
+  "best_rejected_tubularity": null,
+  "candidates": 18,
+  "rejected_by_tubularity": 0
+ },
+ "openings": [
+  {
+   "area_file": 400.0,
+   "area_m2": 0.0004,
+   "area_mm2": 400.0,
+   "bbox_side": "x_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    0.0,
+    10.000000000000002,
+    10.000000000000002
+   ],
+   "centroid_m": [
+    0.0,
+    0.010000000000000002,
+    0.010000000000000002
+   ],
+   "centroid_mm": [
+    0.0,
+    10.0,
+    10.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 20.0,
+   "hydraulic_diameter_m": 0.02,
+   "hydraulic_diameter_mm": 20.0,
+   "id": "o1",
+   "kind": "cap",
+   "min_dimension_file": 20.0,
+   "min_dimension_m": 0.02,
+   "min_dimension_mm": 20.0,
+   "normal": [
+    -1.0,
+    -0.0,
+    -0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 400.0,
+   "area_m2": 0.0004,
+   "area_mm2": 400.0,
+   "bbox_side": "y_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.000000000000002,
+    0.0,
+    10.000000000000002
+   ],
+   "centroid_m": [
+    0.010000000000000002,
+    0.0,
+    0.010000000000000002
+   ],
+   "centroid_mm": [
+    10.0,
+    0.0,
+    10.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 20.0,
+   "hydraulic_diameter_m": 0.02,
+   "hydraulic_diameter_mm": 20.0,
+   "id": "o2",
+   "kind": "cap",
+   "min_dimension_file": 20.0,
+   "min_dimension_m": 0.02,
+   "min_dimension_mm": 20.0,
+   "normal": [
+    0.0,
+    -1.0,
+    -0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 400.0,
+   "area_m2": 0.0004,
+   "area_mm2": 400.0,
+   "bbox_side": "z_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.000000000000002,
+    10.000000000000002,
+    0.0
+   ],
+   "centroid_m": [
+    0.010000000000000002,
+    0.010000000000000002,
+    0.0
+   ],
+   "centroid_mm": [
+    10.0,
+    10.0,
+    0.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 20.0,
+   "hydraulic_diameter_m": 0.02,
+   "hydraulic_diameter_mm": 20.0,
+   "id": "o3",
+   "kind": "cap",
+   "min_dimension_file": 20.0,
+   "min_dimension_m": 0.02,
+   "min_dimension_mm": 20.0,
+   "normal": [
+    -0.0,
+    0.0,
+    -1.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 400.0,
+   "area_m2": 0.0004,
+   "area_mm2": 400.0,
+   "bbox_side": "z_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.000000000000002,
+    10.000000000000002,
+    20.0
+   ],
+   "centroid_m": [
+    0.010000000000000002,
+    0.010000000000000002,
+    0.02
+   ],
+   "centroid_mm": [
+    10.0,
+    10.0,
+    20.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 20.0,
+   "hydraulic_diameter_m": 0.02,
+   "hydraulic_diameter_mm": 20.0,
+   "id": "o4",
+   "kind": "cap",
+   "min_dimension_file": 20.0,
+   "min_dimension_m": 0.02,
+   "min_dimension_mm": 20.0,
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 400.0,
+   "area_m2": 0.0004,
+   "area_mm2": 400.0,
+   "bbox_side": "y_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.000000000000002,
+    20.0,
+    10.000000000000002
+   ],
+   "centroid_m": [
+    0.010000000000000002,
+    0.02,
+    0.010000000000000002
+   ],
+   "centroid_mm": [
+    10.0,
+    20.0,
+    10.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 20.0,
+   "hydraulic_diameter_m": 0.02,
+   "hydraulic_diameter_mm": 20.0,
+   "id": "o5",
+   "kind": "cap",
+   "min_dimension_file": 20.0,
+   "min_dimension_m": 0.02,
+   "min_dimension_mm": 20.0,
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 400.0,
+   "area_m2": 0.0004,
+   "area_mm2": 400.0,
+   "bbox_side": "x_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    20.0,
+    10.000000000000002,
+    10.000000000000002
+   ],
+   "centroid_m": [
+    0.02,
+    0.010000000000000002,
+    0.010000000000000002
+   ],
+   "centroid_mm": [
+    20.0,
+    10.0,
+    10.0
+   ],
+   "classification": "planar_face",
+   "hydraulic_diameter_file": 20.0,
+   "hydraulic_diameter_m": 0.02,
+   "hydraulic_diameter_mm": 20.0,
+   "id": "o6",
+   "kind": "cap",
+   "min_dimension_file": 20.0,
+   "min_dimension_m": 0.02,
+   "min_dimension_mm": 20.0,
+   "normal": [
+    1.0,
+    -0.0,
+    0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": null,
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    7.5,
+    10.0,
+    10.0
+   ],
+   "centroid_m": [
+    0.0075,
+    0.01,
+    0.01
+   ],
+   "centroid_mm": [
+    7.5,
+    10.0,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o7",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    1.0,
+    -0.0,
+    0.0
+   ],
+   "on_bbox_face": false,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": "x_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    7.5,
+    10.0,
+    10.0
+   ],
+   "centroid_m": [
+    0.0075,
+    0.01,
+    0.01
+   ],
+   "centroid_mm": [
+    7.5,
+    10.0,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o8",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    -1.0,
+    0.0,
+    0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r2",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": null,
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    7.5,
+    10.0
+   ],
+   "centroid_m": [
+    0.01,
+    0.0075,
+    0.01
+   ],
+   "centroid_mm": [
+    10.0,
+    7.5,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o9",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "on_bbox_face": false,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": "y_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    7.5,
+    10.0
+   ],
+   "centroid_m": [
+    0.01,
+    0.0075,
+    0.01
+   ],
+   "centroid_mm": [
+    10.0,
+    7.5,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o10",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    0.0,
+    -1.0,
+    -0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r2",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": null,
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    10.0,
+    7.5
+   ],
+   "centroid_m": [
+    0.01,
+    0.01,
+    0.0075
+   ],
+   "centroid_mm": [
+    10.0,
+    10.0,
+    7.5
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o11",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "on_bbox_face": false,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": "z_min",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    10.0,
+    7.5
+   ],
+   "centroid_m": [
+    0.01,
+    0.01,
+    0.0075
+   ],
+   "centroid_mm": [
+    10.0,
+    10.0,
+    7.5
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o12",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    -0.0,
+    0.0,
+    -1.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r2",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": null,
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    10.0,
+    12.5
+   ],
+   "centroid_m": [
+    0.01,
+    0.01,
+    0.0125
+   ],
+   "centroid_mm": [
+    10.0,
+    10.0,
+    12.5
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o13",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    -0.0,
+    -0.0,
+    -1.0
+   ],
+   "on_bbox_face": false,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": "z_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    10.0,
+    12.5
+   ],
+   "centroid_m": [
+    0.01,
+    0.01,
+    0.0125
+   ],
+   "centroid_mm": [
+    10.0,
+    10.0,
+    12.5
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o14",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r2",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": null,
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    12.5,
+    10.0
+   ],
+   "centroid_m": [
+    0.01,
+    0.0125,
+    0.01
+   ],
+   "centroid_mm": [
+    10.0,
+    12.5,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o15",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    0.0,
+    -1.0,
+    -0.0
+   ],
+   "on_bbox_face": false,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": "y_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    10.0,
+    12.5,
+    10.0
+   ],
+   "centroid_m": [
+    0.01,
+    0.0125,
+    0.01
+   ],
+   "centroid_mm": [
+    10.0,
+    12.5,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o16",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r2",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": null,
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    12.5,
+    10.0,
+    10.0
+   ],
+   "centroid_m": [
+    0.0125,
+    0.01,
+    0.01
+   ],
+   "centroid_mm": [
+    12.5,
+    10.0,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o17",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    -1.0,
+    -0.0,
+    -0.0
+   ],
+   "on_bbox_face": false,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r1",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  },
+  {
+   "area_file": 25.0,
+   "area_m2": 2.5e-05,
+   "area_mm2": 25.0,
+   "bbox_side": "x_max",
+   "bore_area_mm2": null,
+   "bore_areas_m2": null,
+   "bore_count": null,
+   "bore_diameter_file": null,
+   "bore_diameter_m": null,
+   "bore_diameter_mm": null,
+   "centroid_file": [
+    12.5,
+    10.0,
+    10.0
+   ],
+   "centroid_m": [
+    0.0125,
+    0.01,
+    0.01
+   ],
+   "centroid_mm": [
+    12.5,
+    10.0,
+    10.0
+   ],
+   "classification": "interface",
+   "hydraulic_diameter_file": 5.0,
+   "hydraulic_diameter_m": 0.005,
+   "hydraulic_diameter_mm": 5.0,
+   "id": "o18",
+   "kind": "cap",
+   "min_dimension_file": 5.0,
+   "min_dimension_m": 0.005,
+   "min_dimension_mm": 5.0,
+   "normal": [
+    1.0,
+    -0.0,
+    0.0
+   ],
+   "on_bbox_face": true,
+   "planar": true,
+   "provenance": {
+    "pass": "global",
+    "tool": "facts.measure.measure"
+   },
+   "region_id": "r2",
+   "shape": "rectangle",
+   "tilt_deg": 0.0
+  }
+ ],
+ "passage_ends": [],
+ "plan": null,
+ "planner_block": {
+  "agent_forecast_basis": [
+   "bore = 2 sqrt(inlet opening area / pi) from the declared inlet (drivers.py:422-438, :498-499)",
+   "base cell = bore / cells_across x 2**surface_level = 3.761 (drivers.py:584)",
+   "pad max(2 base, 0.03 extent), divisions [9, 9, 9] clamped 8..120, background cell 3.894, deficit 0 (snappy_runner.py:619-634)",
+   "fluid volume = the outer watertight bodies' enclosed volume",
+   "inner bodies' volume subtracted (obstacles in the fluid)",
+   "near band: volume within near_dist 11.28 of the wall (min of wall area x near_dist and the fluid volume) at level 3 (snappy_runner.py:637-638, :681)",
+   "beyond the band: 3 cells per level down to the background (nCellsBetweenLevels 3, snappy_runner.py:679), the rest at the background cell",
+   "layers: 3 x wall area / wall cell squared, wall cell = level 3 cell (addLayersControls, snappy_runner.py:685-686)",
+   "port faces at level 1, one below the wall (snappy_runner.py:636, :666): no cells added, the mouth's cap is coarser than its rim",
+   "platform 57684388",
+   "correction x1 for fluid_domain: learn.calibration.cell_correction",
+   "no plan exists: this is the builder emulator over the measurement alone, which is not the same figure as a planned estimate"
+  ],
+  "agent_forecast_cells": 131,
+  "agent_forecast_low": 131,
+  "agent_git_sha": "baa26aab27",
+  "coverage": {
+   "outside": {
+    "status": "refused",
+    "why": "which side of the surface is the fluid is not settled: the file reads the same with the flow through its bores and with the file itself as the flow, and the customer has not said which"
+   },
+   "places_refused": "which side of the surface is the fluid is not settled: the file reads the same with the flow through its bores and with the file itself as the flow, and the customer has not said which, so no path through the flow can be placed",
+   "refused": [
+    "local_feature_size",
+    "vertex_curvature"
+   ],
+   "version": "geometry_agent.coverage.v1",
+   "wall": {
+    "regions": [
+     {
+      "area_fraction": 0.1481,
+      "centroid_m": [
+       0.0,
+       0.010000000000000002,
+       0.010000000000000002
+      ],
+      "half_angle_deg": null,
+      "id": "w1",
+      "is_opening": "o1",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.1481,
+      "centroid_m": [
+       0.010000000000000002,
+       0.0,
+       0.010000000000000002
+      ],
+      "half_angle_deg": null,
+      "id": "w2",
+      "is_opening": "o2",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.1481,
+      "centroid_m": [
+       0.010000000000000002,
+       0.010000000000000002,
+       0.02
+      ],
+      "half_angle_deg": null,
+      "id": "w3",
+      "is_opening": "o4",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.1481,
+      "centroid_m": [
+       0.010000000000000002,
+       0.02,
+       0.010000000000000002
+      ],
+      "half_angle_deg": null,
+      "id": "w4",
+      "is_opening": "o5",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.1481,
+      "centroid_m": [
+       0.010000000000000002,
+       0.010000000000000002,
+       0.0
+      ],
+      "half_angle_deg": null,
+      "id": "w5",
+      "is_opening": "o3",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.1481,
+      "centroid_m": [
+       0.02,
+       0.010000000000000002,
+       0.010000000000000002
+      ],
+      "half_angle_deg": null,
+      "id": "w6",
+      "is_opening": "o6",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0093,
+      "centroid_m": [
+       0.01,
+       0.0125,
+       0.01
+      ],
+      "half_angle_deg": null,
+      "id": "w7",
+      "is_opening": "o15",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0093,
+      "centroid_m": [
+       0.01,
+       0.0075,
+       0.01
+      ],
+      "half_angle_deg": null,
+      "id": "w8",
+      "is_opening": "o9",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0093,
+      "centroid_m": [
+       0.0125,
+       0.01,
+       0.01
+      ],
+      "half_angle_deg": null,
+      "id": "w9",
+      "is_opening": "o17",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0093,
+      "centroid_m": [
+       0.0075,
+       0.01,
+       0.01
+      ],
+      "half_angle_deg": null,
+      "id": "w10",
+      "is_opening": "o7",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0093,
+      "centroid_m": [
+       0.0125,
+       0.01,
+       0.01
+      ],
+      "half_angle_deg": null,
+      "id": "w11",
+      "is_opening": "o17",
+      "radius_m": null,
+      "surface": "plane"
+     },
+     {
+      "area_fraction": 0.0093,
+      "centroid_m": [
+       0.01,
+       0.01,
+       0.0125
+      ],
+      "half_angle_deg": null,
+      "id": "w12",
+      "is_opening": "o13",
+      "radius_m": null,
+      "surface": "plane"
+     }
+    ],
+    "regions_total": 18,
+    "status": "measured"
+   }
+  },
+  "customer_cell_cap": null,
+  "facts_schema_version": 3,
+  "facts_sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+  "forecast_calibration": {
+   "arm": "facts_only",
+   "median_ratio": 0.52,
+   "n": 263,
+   "p90_ratio": 1.29,
+   "read_as": "the upper figure is the one to read: before a plan exists this estimate has come in at 0.52x the cells actually delivered"
+  },
+  "inlet_bore_m": 0.022567583341910252,
+  "inlet_opening_id": "o1",
+  "places": [],
+  "places_refused": [
+   {
+    "kind": "flow_path",
+    "why": "which side of the surface is the fluid is not settled: the file reads the same with the flow through its bores and with the file itself as the flow, and the customer has not said which, so no throat, junction or passage end is placed"
+   }
+  ],
+  "representation": "unknown",
+  "schema": "geometry_agent.planner_block.v1",
+  "smallest_port_min_dim_m": 0.005,
+  "source_sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+  "status": "ok",
+  "survey": {
+   "at_places": [],
+   "confirmed": {},
+   "facts_sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+   "kinds": {
+    "assumed": "a default nobody stated",
+    "confirmed": "a person said it",
+    "measured": "an instrument computed it",
+    "seen": "a model said it from pictures, no numbers, with a trust tier",
+    "stated": "the customer wrote it and nobody checked"
+   },
+   "looked": false,
+   "measured": {
+    "bbox_diagonal_m": {
+     "field": "bbox_diagonal_m",
+     "kind": "measured",
+     "source": "facts.bbox.diagonal",
+     "unit": "m",
+     "value": 0.034641
+    },
+    "forecast.cells_high": {
+     "field": "forecast.cells_high",
+     "kind": "measured",
+     "source": "forecast.cells_high",
+     "value": 131
+    },
+    "inlet_bore_m": {
+     "field": "inlet_bore_m",
+     "kind": "measured",
+     "source": "forecast.builder.bore",
+     "unit": "m",
+     "value": 0.0225676
+    }
+   },
+   "representation": {
+    "field": "representation",
+    "kind": "assumed",
+    "source": "catalog.side_reading: which side of the surface is the fluid is open, and this is today's reading standing as the default",
+    "value": "unknown"
+   },
+   "schema": "geometry_agent.contract.survey_block.v1",
+   "seen": {},
+   "source_sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+   "unit": {
+    "field": "unit",
+    "kind": "measured",
+    "source": "coordinates.basis=occ_transfer",
+    "value": "mm"
+   },
+   "unsettled": [
+    {
+     "about": "representation",
+     "subjects": [],
+     "why": "which side of the surface is the fluid is not in the geometry, so nothing on the flow path is placed until a person says"
+    }
+   ]
+  },
+  "units": "m"
+ },
+ "projection": {
+  "diag": 0.03464101615137755,
+  "region_count": 1,
+  "region_names": [],
+  "region_source": "",
+  "self_intersecting": "unknown",
+  "thin_gap": 0.005,
+  "units": "m"
+ },
+ "purpose": "internal_cfd",
+ "reason": "",
+ "representation": "unknown",
+ "representation_corpus": "fluid_domain",
+ "schema": "geometry_agent.measurement.v1",
+ "source": {
+  "original_filename": "cht_enclosing_2region.step",
+  "owner_id": "",
+  "sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+  "size_bytes": 47961,
+  "source_id": "",
+  "suffix_hint": ".step"
+ },
+ "source_format": "step",
+ "source_sha256": "477a8022de3b47b4954bd7320891080c14464cbb376176dd3a0b60f1a43219d0",
+ "stamp": {
+  "agent_git_sha": "baa26aab27",
+  "facts_schema_version": 3,
+  "measure_seconds": 2.139,
+  "measurement_revision": 2,
+  "occ_unit": "mm",
+  "platform_sha": "57684388c66c5968bed166f4c5121c1c9110dd48"
+ },
+ "status": "ok",
+ "stubs": [
+  {
+   "end_point_file": [
+    16.666666666666664,
+    10.000000000000002,
+    10.000000000000002
+   ],
+   "end_point_m": [
+    0.016666666666666663,
+    0.010000000000000002,
+    0.010000000000000002
+   ],
+   "length_m": 0.016666666666666663,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o1",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.000000000000002,
+    16.666666666666664,
+    10.000000000000002
+   ],
+   "end_point_m": [
+    0.010000000000000002,
+    0.016666666666666663,
+    0.010000000000000002
+   ],
+   "length_m": 0.016666666666666663,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o2",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.000000000000002,
+    10.000000000000002,
+    16.666666666666664
+   ],
+   "end_point_m": [
+    0.010000000000000002,
+    0.010000000000000002,
+    0.016666666666666663
+   ],
+   "length_m": 0.016666666666666663,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o3",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.000000000000002,
+    10.000000000000002,
+    3.3333333333333357
+   ],
+   "end_point_m": [
+    0.010000000000000002,
+    0.010000000000000002,
+    0.0033333333333333357
+   ],
+   "length_m": 0.016666666666666663,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o4",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.000000000000002,
+    3.3333333333333357,
+    10.000000000000002
+   ],
+   "end_point_m": [
+    0.010000000000000002,
+    0.0033333333333333357,
+    0.010000000000000002
+   ],
+   "length_m": 0.016666666666666663,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o5",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    3.3333333333333357,
+    10.000000000000002,
+    10.000000000000002
+   ],
+   "end_point_m": [
+    0.0033333333333333357,
+    0.010000000000000002,
+    0.010000000000000002
+   ],
+   "length_m": 0.016666666666666663,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o6",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    11.666666666666666,
+    10.0,
+    10.0
+   ],
+   "end_point_m": [
+    0.011666666666666665,
+    0.01,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o7",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    11.666666666666666,
+    10.0,
+    10.0
+   ],
+   "end_point_m": [
+    0.011666666666666665,
+    0.01,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o8",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    11.666666666666666,
+    10.0
+   ],
+   "end_point_m": [
+    0.01,
+    0.011666666666666665,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o9",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    11.666666666666666,
+    10.0
+   ],
+   "end_point_m": [
+    0.01,
+    0.011666666666666665,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o10",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    10.0,
+    11.666666666666666
+   ],
+   "end_point_m": [
+    0.01,
+    0.01,
+    0.011666666666666665
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o11",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    10.0,
+    11.666666666666666
+   ],
+   "end_point_m": [
+    0.01,
+    0.01,
+    0.011666666666666665
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o12",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    10.0,
+    8.333333333333334
+   ],
+   "end_point_m": [
+    0.01,
+    0.01,
+    0.008333333333333335
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o13",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    10.0,
+    8.333333333333334
+   ],
+   "end_point_m": [
+    0.01,
+    0.01,
+    0.008333333333333335
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o14",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    8.333333333333334,
+    10.0
+   ],
+   "end_point_m": [
+    0.01,
+    0.008333333333333335,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o15",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    10.0,
+    8.333333333333334,
+    10.0
+   ],
+   "end_point_m": [
+    0.01,
+    0.008333333333333335,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o16",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    8.333333333333334,
+    10.0,
+    10.0
+   ],
+   "end_point_m": [
+    0.008333333333333335,
+    0.01,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o17",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  },
+  {
+   "end_point_file": [
+    8.333333333333334,
+    10.0,
+    10.0
+   ],
+   "end_point_m": [
+    0.008333333333333335,
+    0.01,
+    0.01
+   ],
+   "length_m": 0.004166666666666666,
+   "length_over_diameter": 0.8333333333333333,
+   "opening_id": "o18",
+   "stations": 6,
+   "terminated_by": "end_of_body"
+  }
+ ],
+ "symmetry": {
+  "measured": true,
+  "plane_normals": [
+   [
+    1.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    -1.0,
+    2.220446049250313e-16
+   ],
+   [
+    0.0,
+    -2.220446049250313e-16,
+    -1.0
+   ],
+   [
+    0.0,
+    -0.7071067811865476,
+    0.7071067811865476
+   ],
+   [
+    0.0,
+    -0.7071067811865475,
+    -0.7071067811865475
+   ]
+  ],
+  "planes": [
+   0,
+   1,
+   2,
+   1,
+   2
+  ],
+  "rotational_axis": 0,
+  "rotational_order": 4,
+  "rotational_score": 1.0,
+  "scores": [
+   0.9996470172961525,
+   1.0,
+   1.0
+  ]
+ },
+ "targeted": {
+  "places": [],
+  "reason": "the look-driven targeted pass is not built yet",
+  "status": "skipped"
+ },
+ "thickness": {
+  "closest_regions": [
+   "r1",
+   "r2"
+  ],
+  "gap_clusters": [],
+  "gap_coverage": {
+   "every_face_tested": true,
+   "faces_cast": 36,
+   "faces_total": 36,
+   "minimum_exhaustive": true,
+   "oblique_fraction": 0.087963,
+   "passage_fraction": 0.023148,
+   "rejected_fraction": 0.0
+  },
+  "knife_edge_count": 0,
+  "knife_edge_length_m": 0.0,
+  "median_m": 0.0075,
+  "min_file": 5.0,
+  "min_gap_between_regions_m": 0.0,
+  "min_gap_file": null,
+  "min_gap_m": null,
+  "min_m": 0.005,
+  "min_mm": 5.0,
+  "near_touching_pairs": 0,
+  "non_manifold_edge_count": 0,
+  "p05_m": 0.005,
+  "sharp_edge_count": 36,
+  "sliver_fraction": 0.0,
+  "thickness_coverage": {
+   "every_face_tested": true,
+   "faces_cast": 36,
+   "faces_total": 36,
+   "minimum_exhaustive": true,
+   "oblique_fraction": 0.027778,
+   "passage_fraction": 0.0,
+   "rejected_fraction": 0.888889
+  },
+  "thin_clusters": [],
+  "winding_consistent": true
+ },
+ "triage": {
+  "declared_ports": 0,
+  "enforced": false,
+  "engine": "snappy",
+  "notes": [
+   "no declaration: all 18 planar faces become ports and the widest is taken as the inlet (cad_tessellate.py:614, :631)"
+  ],
+  "planar_openings": 18,
+  "platform_rule_predicted": [],
+  "platform_sha": "57684388c66c5968bed166f4c5121c1c9110dd48",
+  "purpose": "internal_cfd",
+  "reasons": [],
+  "representation": "unknown",
+  "verdict": "buildable"
+ },
+ "unit": {
+  "assumed": "mm",
+  "basis": "occ_transfer",
+  "candidates": [
+   [
+    "mm",
+    5.0
+   ],
+   [
+    "in",
+    4.0
+   ],
+   [
+    "cm",
+    4.0
+   ],
+   [
+    "m",
+    2.0
+   ],
+   [
+    "ft",
+    2.0
+   ]
+  ],
+  "declared": "mm",
+  "declared_source": "step_header",
+  "plausible_for_purpose": [
+   "mm",
+   "cm",
+   "in"
+  ]
+ },
+ "warnings": []
+}
