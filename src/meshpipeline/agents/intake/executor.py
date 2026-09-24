@@ -433,7 +433,8 @@ class IntakeToolExecutor:
             st.geometry_survey = await gs.answer(
                 owner_id=st.owner_id, source_ref=st.survey_source_ref,
                 question_id=str(args.get("question_id") or ""), choice=str(args.get("option") or ""),
-                role=str(args.get("role") or ""), words=str(args.get("customer_words_verbatim") or ""),
+                role=str(args.get("role") or ""), subject=str(args.get("mouth") or ""),
+                words=str(args.get("customer_words_verbatim") or ""),
                 latest_user_message=st.latest_user_msg, skipped=bool(args.get("skipped")),
                 took_default=bool(args.get("took_default")), document=st.geometry_document)
         except gs.SurveyError as exc:

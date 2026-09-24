@@ -138,16 +138,19 @@ def test_step_one_to_step_four_composes_stores_and_hands_intake_the_surveyors_qu
     result = _run(ex, "survey_the_part", purpose="Internal CFD",
                   customer_words_verbatim="Internal flow through a circular elbow duct")
     assert result.accepted is True
-    assert "[role_inlet]" in result.content and "[role_outlet]" in result.content
+    # ONE role question naming both mouths, with the roles as its options and the tool call spelled out
+    assert "[q_port_roles]" in result.content
+    assert "once per mouth with `option` the role and `mouth` its id" in result.content
     # the two bores and not the flange shoulders beside them: a shoulder is wall, not a mouth the builder cuts
-    assert "options: o1, o2\n" in result.content
+    assert "The mouths this asks about are o1, o2:" in result.content
+    assert "options: inlet, outlet, wall, closed for this run\n" in result.content
     (saved,) = store.values()
     assert saved["composed_for"]["purpose"] == "internal_cfd"
-    assert saved["asked"] == ["role_inlet", "role_outlet"]
+    assert saved["asked"] == ["q_port_roles"]
     assert st.geometry_survey is saved
     # the next turn's system prompt carries the same questions and the representation composed for them
     text = gb.render_block(st.geometry_document, survey=saved, armed=True)
-    assert "the file holds: the solid WALL" in text and "[role_inlet]" in text
+    assert "the file holds: the solid WALL" in text and "[q_port_roles]" in text
     assert "\n\n## THE SURVEYOR'S QUESTIONS" in text
 
 
@@ -156,12 +159,13 @@ def test_an_answer_is_recorded_with_who_gave_it_and_the_next_question_follows(ar
     _run(ex, "survey_the_part", purpose="Internal CFD",
          customer_words_verbatim="Internal flow through a circular elbow duct")
     st.latest_user_msg = "o2 is where the water comes in"
-    refused = _run(ex, "answer_survey_question", question_id="role_inlet", option="o2",
+    refused = _run(ex, "answer_survey_question", question_id="q_port_roles", option="inlet", mouth="o2",
                    customer_words_verbatim="o2 is the inlet")
     assert refused.accepted is False and "Not recorded" in refused.content
-    ok = _run(ex, "answer_survey_question", question_id="role_inlet", option="o2",
+    ok = _run(ex, "answer_survey_question", question_id="q_port_roles", option="inlet", mouth="o2",
               customer_words_verbatim="o2 is where the water comes in")
-    assert ok.accepted is True and "o2 is the inlet" in ok.content and "[role_outlet]" in ok.content
+    # the same question comes back, now naming only the mouth still unplaced
+    assert ok.accepted is True and "o2 is the inlet" in ok.content and "[q_port_roles]" in ok.content
     (saved,) = store.values()
     row = saved["answers"][-1]
     assert (row["answered_by"], row["principal"], row["subject"], row["value"]) == (
@@ -178,7 +182,7 @@ def test_the_inlet_the_customer_names_is_the_one_the_builders_block_is_sized_fro
     (saved,) = store.values()
     assert saved["planner_block"]["inlet_opening_id"] == "o2"          # the wider bore, by a hair
     st.latest_user_msg = "o1 is where the water comes in"
-    ok = _run(ex, "answer_survey_question", question_id="role_inlet", option="o1",
+    ok = _run(ex, "answer_survey_question", question_id="q_port_roles", option="inlet", mouth="o1",
               customer_words_verbatim="o1 is where the water comes in")
     assert ok.accepted is True
     (saved,) = store.values()
@@ -196,10 +200,12 @@ def test_submission_is_refused_until_the_customer_has_named_the_mouths(armed, mo
                {"name": "outlet", "type": "outlet", "diameter_mm": 297.94, "near_mm": [790.64, 787.28, 0]},
                {"name": "wall", "type": "wall"}]
     args = {"purpose": "internal_cfd", "patches": patches}
-    assert len(asyncio.run(ex._survey_gate(args))) == 2
+    assert len(asyncio.run(ex._survey_gate(args))) == 1, "one question names both mouths"
     st.latest_user_msg = "o2 in, o1 out"
-    _run(ex, "answer_survey_question", question_id="role_inlet", option="o2", customer_words_verbatim="o2 in")
-    _run(ex, "answer_survey_question", question_id="role_outlet", option="o1", customer_words_verbatim="o1 out")
+    _run(ex, "answer_survey_question", question_id="q_port_roles", option="inlet", mouth="o2",
+         customer_words_verbatim="o2 in")
+    _run(ex, "answer_survey_question", question_id="q_port_roles", option="outlet", mouth="o1",
+         customer_words_verbatim="o1 out")
     assert asyncio.run(ex._survey_gate(args)) == []
 
 
@@ -230,7 +236,8 @@ def test_a_submission_that_never_surveyed_is_surveyed_at_the_gate(armed):
     problems = asyncio.run(ex._survey_gate(args))
     (saved,) = store.values()
     assert saved["composed_for"]["declared"] == []
-    assert len(problems) == 2 and all("has not answered survey question role_" in p for p in problems)
+    # one question names both mouths, so one refusal names both
+    assert len(problems) == 1 and "has not answered survey question q_port_roles" in problems[0]
 
 
 # THE REAL TURN: node_intake, on the state the chat route builds
@@ -292,7 +299,7 @@ def test_armed_with_a_survey_the_turn_puts_the_surveyors_questions(monkeypatch):
 
     state = gs.carry_answers(None, gs.compose(_doc(), purpose="internal_cfd", brief=_brief()))
     system, _tools = _turn(monkeypatch, stored_survey=state)
-    assert "## THE SURVEYOR'S QUESTIONS" in system and "[role_inlet]" in system
+    assert "## THE SURVEYOR'S QUESTIONS" in system and "[q_port_roles]" in system
     assert "the file holds: the solid WALL" in system
 
 

@@ -537,8 +537,15 @@ def survey_lines(state: dict | None) -> list[str]:
         lines.append(f"  [{v['id']}] {v['text']}")
         lines.append(f"      options: {', '.join(v['options'])}")
         if v["about"] == "opening.role":
-            lines.append("      the table above has each mouth's position, size and facing; the options are its ids"
-                         + ("; give the role for each mouth they name" if v["id"] == "role_count" else ""))
+            # THE TWO SHAPES A ROLE QUESTION COMES IN, said in the words the tool takes. The step-4 finder puts
+            # ONE question naming every unplaced mouth whose options are the ROLES, so the model has to say
+            # which mouth as well as which role; the older shape lists the mouths as its options instead.
+            roles = set(v["options"]) & {"inlet", "outlet", "wall", "closed for this run"}
+            lines.append("      the table above has each mouth's position, size and facing. "
+                         + (f"The mouths this asks about are {', '.join(v['subjects'])}: call the tool once per "
+                            "mouth with `option` the role and `mouth` its id, and it is not settled until every "
+                            "one of them has a role" if roles else
+                            "The options are the mouth ids; give the role for each mouth they name"))
     return lines
 
 

@@ -255,6 +255,69 @@ async def test_a_new_look_is_stored_under_the_purpose_the_row_was_measured_for(m
     assert seen["purpose"] == ("external_cfd" if composed else None)
 
 
+async def test_a_look_that_failed_is_composed_into_the_survey_as_well_as_one_that_landed(monkeypatch,
+                                                                                          tmp_path):
+    """A FAILED LOOK IS NOT AN ABSENT ONE (audit item 15). This was gated on `status == "ok"`, so a look that
+    broke never reached the survey row: the row went on saying `not_attempted`, which is what it says when
+    nobody has looked at all, and the builder's block then told the builder nothing had looked at a part whose
+    look had broken. The row records the look's state, so every state has to reach it."""
+    row = MagicMock()
+    row.document = dict(DOCUMENT)
+    row.purpose, row.status, row.reason = "internal_cfd", "ok", ""
+    row.sha256, row.facts_schema_version, row.agent_git_sha = "a" * 64, 3, "deadbeef"
+    row.measure_seconds = 1.0
+    failed = {"status": "failed", "reason": "the provider returned something that was not JSON",
+              "impression": None}
+
+    class _Repo:
+        async def for_source(self, *a, **k):
+            return row
+
+        async def record(self, db, **kw):
+            return None
+
+    source = MagicMock(id="12345678-1234-4234-a234-123456789abc", owner_id="owner", object_key="k",
+                       sha256="a" * 64, size_bytes=10, original_filename="p.step", suffix_hint=".step",
+                       purged_at=None)
+
+    class _Sources:
+        async def get_for_owner(self, *a, **k):
+            return source
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _db():
+        yield AsyncMock()
+
+    async def composed(*_a, **_k):
+        return ("internal_cfd", "wall_shell")
+
+    taken: list[dict] = []
+
+    async def recompose(_source_id, _owner, document):
+        taken.append(document)
+        return "recomposed"
+
+    from meshpipeline.application import geometry_survey
+    monkeypatch.setattr(vision, "_composed_for", composed)
+    monkeypatch.setattr(vision, "look_at_local_file", lambda path, document, **kw: failed)
+    monkeypatch.setattr(vision, "attach_look", lambda document, found: {**document, "look": found})
+    monkeypatch.setattr(geometry_survey, "recompose_after_look", recompose)
+    with patch("meshpipeline.persistence.session.get_db", _db), \
+         patch("meshpipeline.persistence.repositories.geometry_measurement_repository."
+               "GeometryMeasurementRepository", _Repo), \
+         patch("meshpipeline.persistence.repositories.geometry_source_repository."
+               "GeometrySourceRepository", _Sources), \
+         patch("meshpipeline.application.geometry_materializer.fetch_verified_bytes",
+               lambda ref, **k: tmp_path / "p.step"):
+        out = await vision.look_and_store("12345678-1234-4234-a234-123456789abc", "owner")
+    assert out["status"] == "failed"
+    assert len(taken) == 1, "the failed look never reached the survey"
+    assert taken[0]["look"]["status"] == "failed"
+    assert taken[0]["look"]["reason"]
+
+
 async def test_no_measurement_row_is_a_skip_and_never_a_look(monkeypatch):
 
     class _Repo:

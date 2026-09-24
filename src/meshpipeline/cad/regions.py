@@ -265,11 +265,37 @@ async def agent_block_for_state(state) -> dict | None:
         block = block_for_document(document)
         if block is None or document is None:
             return None
-        return (await _surveyed_block(ref, document)) or block
+        return _checked((await _surveyed_block(ref, document)) or block)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry agent block: unavailable for this run (%s) - the planner sees "
                        "exactly what it sees with no measurement", exc)
         return None
+
+
+def _checked(block: dict | None) -> dict | None:
+    """The block, with its `survey` key checked against the whole contract and DROPPED if it breaks it.
+
+    WHICH BLOCK THIS IS. When the geometry step did not run, the planner is handed
+    `hexera.planner_block`'s own survey, and that block has the look's free-text findings added to it after the
+    `SurveyHandoff` validator ran, so two of the six rules never saw them: no builder control, and no claim
+    about how the mesh turns out. `geometry_survey.check_the_survey_block` runs all six.
+
+    DROPPED AND NOT CUT. The planner reading no `survey` key is the state it was in before the survey existed
+    and is this platform's fail-open everywhere else on this path; the block's own numbers are untouched. What
+    must not happen is the builder acting on a setting the Surveyor named or a prediction it made, so the whole
+    key goes and the reason is logged rather than a sentence being edited out of it.
+    """
+    if not isinstance(block, dict) or not isinstance(block.get("survey"), dict):
+        return block
+    from meshpipeline.application import geometry_survey as gs
+
+    try:
+        gs.check_the_survey_block(block["survey"])
+    except gs.SurveyError as exc:
+        logger.warning("geometry agent block: the survey is not handed to the planner (%s) - it reads the "
+                       "measurement's own block, exactly as it does with no survey at all", exc)
+        return {k: v for k, v in block.items() if k != "survey"}
+    return block
 
 
 async def planner_inputs_for_state(state) -> tuple[Any, dict | None, str]:
@@ -316,6 +342,14 @@ async def _geometry_step_inputs(state, request_txt: str) -> dict:
     if survey is None:
         raise gst.StepRefused("no survey was stored for this upload")
     handoff = await asyncio.to_thread(gst.builder_handoff, survey, document, request_txt=request_txt)
+    # THE SAME SIX RULES ON THE STEP'S OWN BLOCK. `contract.deliver.check_builder_handoff` has already run, and
+    # it runs `check_survey_block`, which is the same four rules with the same two missing. A refusal here is a
+    # refused STEP, so `planner_inputs_for_state` falls back to the measurement's own block and writes the
+    # reason to the job's record, which is the path a failed step already takes.
+    try:
+        gs.check_the_survey_block((handoff.get("typed") or {}).get("survey"))
+    except gs.SurveyError as exc:
+        raise gst.StepRefused(str(exc)) from exc
     recorded = gst.record_handover(survey, handoff)
     if recorded is not survey:
         await gs.save(str(ref.owner_id), str(ref.source_id), recorded)
@@ -332,6 +366,12 @@ async def _surveyed_block(ref, document: dict) -> dict | None:
     the representation and their budget is `customer_cell_cap`. If the look landed after the survey
     was last composed and the recomposition on the look worker did not happen, it is composed again
     here, in memory, from the same stored inputs, so the planner never gets the older of the two.
+
+    WHATEVER THE LOOK DID, not only when it landed. This used to recompose on `ok` alone, so a look that
+    FAILED after the survey was last composed never reached the row at all: the row still said
+    `not_attempted`, and the block then told the builder no look had been taken of a part whose look had
+    broken. A failed look is not an absent one and the builder is entitled to know which it was (audit item
+    15), so any change in the look's status is composed in here.
     """
     from meshpipeline.application import geometry_survey as gs
 
@@ -340,7 +380,8 @@ async def _surveyed_block(ref, document: dict) -> dict | None:
         return None
     stored_look = document.get("look")
     look = stored_look if isinstance(stored_look, dict) else {}
-    if look.get("status") == "ok" and (state.get("composed_for") or {}).get("look_status") != "ok":
+    status = str(look.get("status") or "")
+    if status and status != str((state.get("composed_for") or {}).get("look_status") or ""):
         try:
             state = gs.recomposed(state, document)
         except gs.SurveyError as exc:

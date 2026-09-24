@@ -8,6 +8,13 @@
 # sentence won over the measured word and the loop's own consistency check then refused every plan on a part whose
 # side had been answered: answering made the job worse than saying nothing. Nothing pinned it.
 #
+# AND THE SECOND WAY IN, which is why the tests below read the value and not the pairing. `ask.say.fluid_side`
+# words its two options as sentences and keeps the map from a sentence back to a side in the package
+# (`ask.say.fluid_side_of`) rather than in a list paired by position, so the step-4 finder raises this question
+# with no `option_values` at all. Wiring that finder in without reading the map would have stored the sentence
+# again, by a different route. What is pinned here is the VALUE THAT LANDS, whichever way the question was
+# worded, because that is the thing the chain reads.
+#
 # THE PART is `F0_block_sharp` from `eval/hard_real`, a 120 x 80 x 40 mm solid block with a boss and ONE 16 mm
 # through bore. It has no junctions. Read as the fluid it grows four, which is the whole reason for the question.
 from __future__ import annotations
@@ -26,7 +33,10 @@ from meshpipeline.application import geometry_survey as gs  # noqa: E402
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "geometry_survey"
 CASE = "block_boss_sharp"
-THROUGH = "the fluid runs through the bores; the part is the solid around it"
+#: The option that means "the part is the solid and the flow runs through it", in the finder's own words.
+#: `ask.say.FLUID_SIDE_WORDS["through"]`, with one bore on this part. It is the sentence a person reads; the
+#: value it sets is `wall_shell`, and keeping the two apart is what this file is about.
+THROUGH = "the fluid flows through the bore; the part is the solid around it"
 
 
 @pytest.fixture
@@ -51,8 +61,11 @@ def _fresh() -> dict:
     return gs.carry_answers(None, gs.compose(_doc(), purpose="internal_cfd", brief=_brief(), declared=[]))
 
 
+SIDE_Q = "q_fluid_side"
+
+
 def _side_view(state: dict) -> dict:
-    got = [v for v in gs.question_views(state) if v["id"] == "fluid_side"]
+    got = [v for v in gs.question_views(state) if v["about"] == "representation"]
     assert got, f"the side was not asked; questions were {[v['id'] for v in gs.question_views(state)]}"
     return got[0]
 
@@ -64,14 +77,14 @@ def test_the_question_is_put_on_a_part_whose_brief_does_not_say_which_side_is_th
     assert THROUGH in view["options"]
 
 
-def test_each_option_carries_the_representation_it_means_beside_the_words(side_on):
-    """`options` are for a person and `option_values` are for the chain, paired by position. Without the pair a
-    caller has to read a machine value back out of prose, and the one that tried stored the prose."""
+def test_every_option_maps_to_the_representation_it_means_and_no_other(side_on):
+    """`options` are for a person; the representation each one sets is for the chain. The finder keeps that map
+    in the package rather than in a list paired by position, so this reads the map."""
     view = _side_view(_fresh())
-    values = view["option_values"]
-    assert len(values) == len(view["options"]), (view["options"], values)
-    assert set(values) == {"wall_shell", "annular_fluid"}, values
-    assert values[view["options"].index(THROUGH)] == "wall_shell"
+    values = {option: gs._side_answer(view, option) for option in view["options"]}
+    assert set(values.values()) == {"wall_shell", "annular_fluid"}, values
+    assert values[THROUGH] == "wall_shell"
+    assert gs._side_answer(view, "neither of those") is None
 
 
 def test_answering_stores_the_representation_and_never_the_sentence(side_on):
@@ -82,9 +95,9 @@ def test_answering_stores_the_representation_and_never_the_sentence(side_on):
     question is gone and an answer bound to a question that no longer exists is not live. It is still the record of
     what the person said, and `composed_for.confirmed_representation` is what carries it forward.
     """
-    state = gs.answered(_fresh(), _doc(), question_id="fluid_side", choice=THROUGH, words=THROUGH,
+    state = gs.answered(_fresh(), _doc(), question_id=_side_view(_fresh())["id"], choice=THROUGH, words=THROUGH,
                         latest_user_message=THROUGH, principal="owner-test")
-    said = [a for a in (state.get("answers") or []) if a.get("question_id") == "fluid_side"]
+    said = [a for a in (state.get("answers") or []) if a.get("question_id") == SIDE_Q]
     assert said, state.get("answers")
     assert said[-1]["value"] == "wall_shell", said[-1]
     assert said[-1]["value"] != THROUGH, "the sentence is the words, never the value"
@@ -92,9 +105,9 @@ def test_answering_stores_the_representation_and_never_the_sentence(side_on):
 
 def test_the_words_the_customer_read_are_still_kept(side_on):
     """Nothing a person said is lost: the value is the representation and the sentence is still on the record."""
-    state = gs.answered(_fresh(), _doc(), question_id="fluid_side", choice=THROUGH, words=THROUGH,
+    state = gs.answered(_fresh(), _doc(), question_id=_side_view(_fresh())["id"], choice=THROUGH, words=THROUGH,
                         latest_user_message=THROUGH, principal="owner-test")
-    said = [a for a in (state.get("answers") or []) if a.get("question_id") == "fluid_side"][-1]
+    said = [a for a in (state.get("answers") or []) if a.get("question_id") == SIDE_Q][-1]
     assert THROUGH in json.dumps(said), said
 
 
@@ -103,7 +116,7 @@ def test_the_answer_composes_the_survey_again_so_the_row_stops_disagreeing_with_
     anybody answered and the agent's check refused the plan for contradicting a survey nobody had recomposed."""
     before = _fresh()
     assert (before.get("composed_for") or {}).get("representation") == "annular_fluid"
-    after = gs.answered(before, _doc(), question_id="fluid_side", choice=THROUGH, words=THROUGH,
+    after = gs.answered(before, _doc(), question_id=_side_view(_fresh())["id"], choice=THROUGH, words=THROUGH,
                         latest_user_message=THROUGH, principal="owner-test")
     composed = after.get("composed_for") or {}
     assert composed.get("representation") == "wall_shell"
@@ -113,7 +126,7 @@ def test_the_answer_composes_the_survey_again_so_the_row_stops_disagreeing_with_
 def test_a_skipped_side_confirms_nothing_and_places_nothing_on_the_flow_path(side_on):
     """A DEFAULT IS NOT A CONFIRMATION. Skipped, today's reading stands so the job does not change, but it is
     marked as a default nobody stated and no place is put on the flow path behind it."""
-    state = gs.answered(_fresh(), _doc(), question_id="fluid_side", words="I cannot say",
+    state = gs.answered(_fresh(), _doc(), question_id=_side_view(_fresh())["id"], words="I cannot say",
                         latest_user_message="I cannot say", skipped=True, principal="owner-test")
     assert gs.confirmed_representation(state) is None
     block = gs.builder_block(state)
@@ -121,4 +134,7 @@ def test_a_skipped_side_confirms_nothing_and_places_nothing_on_the_flow_path(sid
     assert block["places"] == [], block["places"]
     unsettled = [u for u in block["survey"]["unsettled"] if u["about"] == "representation"]
     assert unsettled, "the builder is owed the reason there is no flow path"
-    assert "until a person says which it is" in unsettled[0]["why"]
+    # the finder's own sentence says what the wrong answer costs rather than what waits on the answer, and the
+    # empty `places` above is the thing that waits. Both halves are here, which is what the builder needs
+    assert "meshes the metal as the flow" in unsettled[0]["why"]
+    assert "the file is the fluid" in unsettled[0]["why"]
