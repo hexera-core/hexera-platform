@@ -1,9 +1,9 @@
 // Responsibility: Show the geometry check as a stage the user can orient in - the part in 3D drawn
 // the way a CAD viewer draws it, a numbered sticker on every opening, and the panel beside it
 // where names and roles are confirmed, stickers added or removed.
-// Owns: its vtk.js scene (the skin, its edges, the lights, the view cube, the sticker balls and
-// the pins that follow them), the naming state of the panel, and the takeover of the workbench
-// while the check is open.
+// Owns: its vtk.js scene (the skin, its edges, the lights, the sticker balls and the pins that
+// follow them), the naming state of the panel, and the takeover of the workbench while the
+// check is open.
 // Boundaries: it decides nothing about the geometry - positions, sizes and proposals arrive from
 // the check - and it starts no run; confirming is the callback it was handed.
 
@@ -33,15 +33,12 @@ function b64f32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
 function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
   for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Uint32Array(u.buffer); }
 
-/* a CAD viewer's palette: a pale studio background, a neutral grey part with soft highlights,
-   dark hairline edges on the sharp corners; stickers in the yellow of the pictures, the selected
-   one in the product's orange, which nothing else on the stage wears */
-const BACKGROUND = [0.955, 0.962, 0.97];
-const BODY = [0.70, 0.74, 0.80], EDGE = [0.22, 0.25, 0.30];
+/* the console's own palette: the mesh viewer's dark background, a light grey part with soft
+   highlights, darker hairlines on the sharp corners; stickers in the yellow of the pictures, the
+   selected one in the product's orange, which nothing else on the stage wears */
+const BACKGROUND = [0.035, 0.055, 0.075];
+const BODY = [0.74, 0.78, 0.84], EDGE = [0.30, 0.34, 0.40];
 const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
-const HINT = "rotate: drag · zoom: wheel or right-drag · pan: shift+drag · click a sticker to select it";
-const VIEWS = { iso: null, front: [0, -1, 0], back: [0, 1, 0], top: [0, 0, 1], bottom: [0, 0, -1],
-                right: [1, 0, 0], left: [-1, 0, 0] };
 
 function spherePd(cx, cy, cz, r) {
   const la = 12, lo = 16, pts = [], polys = [];
@@ -104,11 +101,6 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     </div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
-      <div class="v-hint" id="gs-hint-${sessionId}">${HINT}</div>
-      <div class="gc-views" id="gs-views-${sessionId}">
-        ${["iso", "front", "top", "right"].map((v) => `<button class="v-btn gc-view" data-view="${v}" type="button">${v === "iso" ? "Iso" : v[0].toUpperCase() + v.slice(1)}</button>`).join("")}
-        <button class="v-btn gc-fit" id="gs-fit-${sessionId}" type="button">Fit</button>
-      </div>
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
@@ -207,7 +199,7 @@ function initScene(sessionId, box, surf, p) {
   /* THE LIGHTS: a key from the upper left, a fill from the right and a faint rim from behind,
      all riding with the camera, so a turned part is always lit the way a CAD viewer lights it */
   if (vtk.Rendering.Core.vtkLight) {
-    [[-0.7, 0.9, 1.0, 0.85], [0.9, 0.25, 0.7, 0.45], [0.0, -0.4, -1.0, 0.25]].forEach(([x, y, z, i]) => {
+    [[-0.7, 0.9, 1.0, 0.62], [0.9, 0.25, 0.7, 0.28], [0.0, -0.4, -1.0, 0.14]].forEach(([x, y, z, i]) => {
       const l = vtk.Rendering.Core.vtkLight.newInstance();
       if (l.setLightTypeToCameraLight) l.setLightTypeToCameraLight();
       l.setPosition(x, y, z); l.setFocalPoint(0, 0, 0); l.setIntensity(i); l.setColor(1, 1, 1);
@@ -235,7 +227,7 @@ function initScene(sessionId, box, surf, p) {
     const pr = actor.getProperty();
     pr.setColor(BODY[0], BODY[1], BODY[2]); pr.setEdgeVisibility(false);
     pr.setInterpolationToPhong();
-    pr.setAmbient(0.28); pr.setDiffuse(0.72); pr.setSpecular(0.18); pr.setSpecularPower(28);
+    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
     ren.addActor(actor);
     skins.push({ actor, pd, pts, polys, offsets: null });
   });
@@ -271,40 +263,15 @@ function initScene(sessionId, box, surf, p) {
     const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
     if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
     rw.render(); }
-  /* THE VIEWS - the CAD viewer's snap views; iso is the drawing-office three-quarter view */
-  function view(name) {
-    const dir = VIEWS[name];
-    if (dir === undefined) return;
-    touched = true;
-    if (dir === null) { cam.setPosition(centre[0] - diag, centre[1] - diag, centre[2] + 0.8 * diag); cam.setFocalPoint(...centre); cam.setViewUp(0, 0, 1); }
-    else { cam.setPosition(centre[0] + dir[0] * 2 * diag, centre[1] + dir[1] * 2 * diag, centre[2] + dir[2] * 2 * diag);
-      cam.setFocalPoint(...centre); cam.setViewUp(...(Math.abs(dir[2]) > 0.9 ? [0, 1, 0] : [0, 0, 1])); }
+  /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part */
+  function iso() {
+    cam.setPosition(centre[0] - diag, centre[1] - diag, centre[2] + 0.8 * diag);
+    cam.setFocalPoint(...centre); cam.setViewUp(0, 0, 1);
     fit();
   }
   const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
   ro.observe(host);
   host.addEventListener("pointerdown", () => { touched = true; }, true);
-  box.querySelectorAll(".gc-view").forEach((b) => { b.onclick = () => view(b.dataset.view); });
-  document.getElementById("gs-fit-" + sessionId).onclick = () => { touched = true; fit(); };
-
-  /* THE VIEW CUBE - top right, turning with the part, so the user always knows which way is up */
-  let cube = null;
-  try {
-    const W = vtk.Interaction.Widgets;
-    if (W && W.vtkOrientationMarkerWidget && vtk.Rendering.Core.vtkAnnotatedCubeActor) {
-      const cubeActor = vtk.Rendering.Core.vtkAnnotatedCubeActor.newInstance();
-      cubeActor.setDefaultStyle({ text: "", fontStyle: "bold", fontFamily: "Geist, Arial", fontColor: "#2b3340",
-        fontSizeScale: (res) => res / 4.5, faceColor: "#dfe5ee", edgeThickness: 0.08, edgeColor: "#8b96a7", resolution: 200 });
-      cubeActor.setXPlusFaceProperty({ text: "RIGHT" }); cubeActor.setXMinusFaceProperty({ text: "LEFT" });
-      cubeActor.setYPlusFaceProperty({ text: "BACK" }); cubeActor.setYMinusFaceProperty({ text: "FRONT" });
-      cubeActor.setZPlusFaceProperty({ text: "TOP", faceColor: "#cdd6e3" }); cubeActor.setZMinusFaceProperty({ text: "BOTTOM" });
-      cube = W.vtkOrientationMarkerWidget.newInstance({ actor: cubeActor, interactor: rw.getInteractor() });
-      cube.setEnabled(true);
-      cube.setViewportCorner(W.vtkOrientationMarkerWidget.Corners.TOP_RIGHT);
-      cube.setViewportSize(0.16);
-      if (cube.setMinPixelSize) { cube.setMinPixelSize(90); cube.setMaxPixelSize(180); }
-    }
-  } catch (e) { console.warn("view cube unavailable:", e && e.message); cube = null; }
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -313,7 +280,6 @@ function initScene(sessionId, box, surf, p) {
   let sel = null;
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  const hintEl = document.getElementById("gs-hint-" + sessionId);
   function centreOf(o) {
     return o.centroid_m && o.centroid_m.length === 3 ? o.centroid_m : (o.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
   }
@@ -371,7 +337,8 @@ function initScene(sessionId, box, surf, p) {
     addMode = on;
     const b = form.querySelector(".gc-add"); if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Click the part…" : "Add an opening"; }
     host.style.cursor = on ? "crosshair" : "";
-    if (hintEl) hintEl.textContent = on ? "click the spot on the part where the opening is · drag still rotates" : HINT;
+    const th = form.querySelector(".gc-tools-hint");
+    if (th) th.textContent = on ? "click the spot on the part where the opening is (dragging still turns it)" : "then click the part where it is";
   }
   function cellOffsets(sk) {
     if (!sk.offsets) { const n = sk.polys.length; const off = []; let q = 0; while (q < n) { off.push(q); q += sk.polys[q] + 1; } sk.offsets = off; }
@@ -487,9 +454,6 @@ function initScene(sessionId, box, surf, p) {
     const flowSel = form.querySelector(".gc-flow");
     const external = !!flowSel && flowSel.value === "external";
     pins.forEach((pn) => { pn.actor.setVisibility(!external); if (external) pn.el.style.display = "none"; });
-    if (hintEl && !addMode) hintEl.textContent = external
-      ? "rotate: drag · zoom: wheel or right-drag · the arrow is the flow, the box is the far field"
-      : HINT;
     if (!external) { rw.render(); return; }
     const ex = readExternal(form);
     const axis = ex.flow_axis && ex.flow_axis !== "unknown" ? ex.flow_axis : "+x";
@@ -549,21 +513,21 @@ function initScene(sessionId, box, surf, p) {
     requestAnimationFrame(pinLoop);
   })();
 
-  setRenderScale(); view("iso");
+  setRenderScale(); iso();
 
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
-    pins: () => pins.length, selected: () => sel, select, look, diag, add, remove, view,
+    pins: () => pins.length, selected: () => sel, select, look, diag, add, remove, iso,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
-    camera: () => cam.getPosition(), cube: () => !!cube, edges: () => edgeCount,
+    camera: () => cam.getPosition(), edges: () => edgeCount,
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     render: () => rw.render(),
   };
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); if (cube) { try { cube.setEnabled(false); } catch (e) { /* gone */ } } delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { alive = false; ro.disconnect(); clearDecor(); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal,
   };
 }

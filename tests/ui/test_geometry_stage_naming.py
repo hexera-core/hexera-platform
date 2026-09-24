@@ -1,8 +1,8 @@
 # Responsibility: Verify the stage opens the moment the part is measured - labels greyed out under
 # the naming banner, nothing editable - fills in the model's labels when they arrive, lets the
 # user add a sticker (snapped to a measured face, or free with a size to type) and remove one,
-# and sends exactly those openings when proceeding. Also that the CAD-style skin draws: smooth
-# normals, sharp edges, the view cube.
+# and sends exactly those openings when proceeding. Also that the prepared skin draws - smooth
+# normals, sharp edges - with none of the view cube, snap buttons or hint bar that were removed.
 # Boundaries: the skin is the one the worker stores, built through the same code; only the
 # network is stood in for. Pixel picking is not driven here (the hook adds at a point instead).
 from __future__ import annotations
@@ -80,18 +80,17 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     naming = live.evaluate(f"""(() => {{
       const h = window._vdbg['gstage:{SESSION}'], root = document.getElementById('gstage-{SESSION}');
       return {{fellBack: window.__fellBack, naming: window.__stage.isNaming(), pins: h.pins(),
-               edges: h.edges(), smooth: h.smooth(), cube: h.cube(),
+               edges: h.edges(), smooth: h.smooth(),
+               bare: !root.querySelector('.v-hint') && !root.querySelector('.gc-views'),
                banner: root.querySelector('.gc-banner').textContent.trim(), bannerHidden: root.querySelector('.gc-banner').hidden,
                greyed: root.querySelector('.gc-form').classList.contains('gc-naming'),
                allOff: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => e.disabled),
-               names: [...root.querySelectorAll('.gc-name')].map(i => i.value),
-               views: root.querySelectorAll('.gc-view').length}};
+               names: [...root.querySelectorAll('.gc-name')].map(i => i.value)}};
     }})()""")
     assert naming["fellBack"] is False and naming["naming"] is True and naming["pins"] == 2, naming
-    assert naming["edges"] == 12 and naming["smooth"] is True and naming["cube"] is True, naming
+    assert naming["edges"] == 12 and naming["smooth"] is True and naming["bare"] is True, naming
     assert naming["bannerHidden"] is False and "Naming" in naming["banner"], naming
     assert naming["greyed"] is True and naming["allOff"] is True and naming["names"] == ["inlet", "outlet"], naming
-    assert naming["views"] == 4
 
     # READY: the model's labels replace the code's, the form opens, the banner goes; the stickers
     # keep the code's positions
