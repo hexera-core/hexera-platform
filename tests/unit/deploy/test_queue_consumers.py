@@ -209,6 +209,53 @@ def test_the_gate_reads_queues_across_shell_and_yaml_line_breaks(tmp_path):
     assert gate._workers_in(compose)[0].queues == ("c", "d")
 
 
+# ---------------------------------------------------------------- a fleet that cannot be woken
+
+#: The smallest configuration validate-config.sh will read without falling over on something else.
+#: Every other error it reports is beside the point here; what is asserted is the presence or absence
+#: of one message.
+_MINIMAL_FLEET_ENV = {
+    "DEPLOYMENT_ID": "isolated", "GCP_PROJECT_ID": "p", "GCP_PROJECT_NUMBER": "1",
+    "GCP_REGION": "europe-west2", "ARTIFACT_REGISTRY_REPOSITORY": "r",
+    "CLOUDRUN_MESH_JOB": "m", "MESH_SERVICE_ACCOUNT": "mesh-sa", "GCP_MESH_BUCKET": "bucket-x",
+    "MESH_JOB_DISPOSITION": "created", "MESH_SA_DISPOSITION": "created",
+    "MESH_BUCKET_DISPOSITION": "created", "WORKER_MIG": "workers",
+    "WORKER_MIG_ZONE": "europe-west2-a", "REDIS_URL": "redis://h:6379/0",
+    "QUEUE_DEPTH_SERVICE_ACCOUNT": "queue-depth-sa", "QUEUE_NAME": "simulation_jobs",
+    "WORKER_MIG_MAX_REPLICAS": "5", "WORKER_MIG_COOLDOWN_SECONDS": "180",
+    "WORKER_JOBS_PER_INSTANCE": "1",
+}
+
+
+def _validate_config(tmp_path: Path, floor: str) -> str:
+    import os
+
+    env_file = tmp_path / "generated.env"
+    values = {**_MINIMAL_FLEET_ENV, "WORKER_MIG_MIN_REPLICAS": floor}
+    env_file.write_text("".join(f"{k}={v}\n" for k, v in values.items()), encoding="utf-8")
+    done = subprocess.run(
+        ["bash", str(REPO / "deploy" / "gcp" / "scripts" / "validate-config.sh")],
+        capture_output=True, text=True, timeout=120, check=False,
+        env={**os.environ, "DEPLOY_ENV_FILE": str(env_file), "ASSUME_YES": "1"})
+    return done.stdout + done.stderr
+
+
+def test_a_fleet_the_autoscaler_cannot_wake_is_refused_at_a_floor_of_zero(tmp_path):
+    # The fleet is now the only consumer of four queues and the autoscaler watches one of them, so at
+    # zero instances a queued measurement or look sits in the broker with nothing that will ever start
+    # a worker for it. A queue nobody drains and a queue whose only drainer is asleep are the same
+    # silence to a customer, so the deploy refuses rather than leaving it to be discovered.
+    out = _validate_config(tmp_path, "0")
+    assert "WORKER_MIG_MIN_REPLICAS is 0" in out, out
+    assert "geometry_look" in out, out
+
+
+def test_a_warm_pool_is_accepted(tmp_path):
+    # The prod floor. The rule must name a real condition, not refuse every fleet.
+    out = _validate_config(tmp_path, "1")
+    assert "WORKER_MIG_MIN_REPLICAS is 0" not in out, out
+
+
 # ---------------------------------------------------------------- no worker escapes a target
 
 #: Where a celery worker could be started from. Scanned rather than trusted, so a new deployment
