@@ -698,23 +698,40 @@ def test_no_row_of_the_block_names_more_mouths_than_the_ceiling_has_room_for():
     assert small == len(json.dumps(gs.builder_block(_fresh("bend_elbow_001"))["survey"]))
 
 
-def test_a_block_over_the_ceiling_is_never_handed_over_and_the_other_list_is_still_uncapped():
-    """THE HALF OF ITEM 23 THAT IS NOT CLOSED HERE, with the number, so nobody has to guess at it again.
+def test_a_long_confirmed_list_is_shortened_with_its_remainder_stated_and_never_goes_over_the_ceiling():
+    """THE HALF OF ITEM 23, CLOSED IN THE PACKAGE, and this pins the behaviour that closed it.
 
-    `applies_to` is one entry per mouth ONE answer placed, and capping it would make the block claim fewer
-    confirmed mouths than the customer gave, which is worse than a long list: the builder binds patches from
-    what it is handed. So it is left alone, and what is pinned instead is that an oversized block is never
-    handed over. Measured on bend_elbow_001 with every mouth confirmed as wall: 1,921 characters at 2 mouths,
-    3,399 at 200, 3,799 at 250, and over the 4,000 ceiling by 300. Reaching it takes 251 separate answers from
-    one customer on one part. The fix belongs in `deliver.survey_block`, which should shorten the list and say
-    how many more there are, the way it already caps the number of rows.
+    WHAT THIS TEST USED TO SAY, and why it had to be rewritten rather than deleted. It pinned the cost of the
+    half that was open: `applies_to` was one entry per mouth one answer placed, so a customer who confirmed
+    251 mouths pushed the block past `SURVEY_BLOCK_MAX` and `builder_block` handed over NOTHING - the right
+    outcome of two bad ones, because a block that can be cut can lose what it was carrying. It said the fix
+    belonged in `deliver.survey_block`. The fix is there now, in the wheel this repository vendors, so the old
+    assertion was pinning a behaviour the product no longer has: it FAILED on platform main against the
+    vendored wheel, which is the wheel CI installs, so the unit lane was red on it.
+
+    WHAT THE PACKAGE DOES INSTEAD, measured on bend_elbow_001 with every mouth confirmed as wall, through the
+    wheel in vendor/wheels/:
+
+        mouths confirmed     2      20     21    100    250    300   1000
+        block characters  1750    1868   1976   1977   1978   1978   1978
+        names in applies_to  2      20     20     20     20     20     20
+
+    so the list is shortened at `hexera.SURVEY_SUBJECTS_MAX` and the block is flat from there on. THE
+    SHORTENING IS NOT A SILENT CUT, which is the whole difference and the only reason this is acceptable: the
+    entry's own `why` says "the first 20 are named here and they stand for 280 more, and this answer is about
+    every one of them". A builder that binds patches from what it is handed is told that the customer's answer
+    covers mouths it cannot see, so it cannot read twenty as all of them.
+
+    THE TWO THINGS PINNED HERE are the ones that would hurt if they changed: the block never goes over the
+    ceiling however many mouths are confirmed, and a shortened list always states how many it stands for. A
+    cut with no remainder is the failure the old assertion was protecting against, and it is still refused.
     """
     from geometry_agent.contract.deliver import SURVEY_BLOCK_MAX
 
     base = _fresh("bend_elbow_001")
     (role,) = [v for v in gs.question_views(base) if v["about"] == "opening.role"]
-    sizes = {}
-    for mouths in (2, 250, 300):
+    sizes, named = {}, {}
+    for mouths in (2, 250, 300, 1000):
         state = json.loads(json.dumps(base))
         for u in state["survey"]["uncertainties"]:
             if u["about"] == "opening.role":
@@ -725,14 +742,27 @@ def test_a_block_over_the_ceiling_is_never_handed_over_and_the_other_list_is_sti
              "answered_by": gs.CUSTOMER, "subject": f"o{i}", "value": "wall", "option": "wall", "note": ""}
             for i in range(mouths)]
         block = gs.builder_block(state)
-        sizes[mouths] = None if block is None else len(json.dumps(block["survey"]))
-        if block is not None:
-            # NEVER OVERSIZED. A block that can be cut is a block that can lose what it was carrying, so the
-            # only two outcomes are a block under the ceiling or no survey key at all
-            assert sizes[mouths] <= SURVEY_BLOCK_MAX
-            gs.check_the_survey_block(block["survey"])
-    assert sizes[250] is not None and sizes[250] > sizes[2]
-    assert sizes[300] is None, "the survey is refused rather than truncated, and that is the remaining cost"
+        assert block is not None, (
+            f"{mouths} confirmed mouths cost the builder the whole survey; the package shortens the list "
+            f"instead of overflowing now, so there is nothing left for this to refuse")
+        survey = block["survey"]
+        sizes[mouths] = len(json.dumps(survey))
+        # NEVER OVERSIZED. A block that can be cut is a block that can lose what it was carrying.
+        assert sizes[mouths] <= SURVEY_BLOCK_MAX
+        gs.check_the_survey_block(survey)
+        (entry,) = [v for v in survey["confirmed"].values() if v.get("field") == "opening.role"]
+        named[mouths] = len(entry["applies_to"])
+        if named[mouths] < mouths:
+            # A SHORTENED LIST SAYS SO. Twenty names read as twenty confirmed mouths unless the entry states
+            # what they stand for, and the builder binds patches from what it is handed.
+            assert str(mouths - named[mouths]) in str(entry.get("why") or ""), (
+                f"{named[mouths]} of {mouths} confirmed mouths are named and the entry does not say how many "
+                f"more they stand for: {entry.get('why')!r}. A cut with no remainder is a block that claims "
+                f"fewer confirmed mouths than the customer gave.")
+    assert sizes[250] > sizes[2], "a longer answer produces no larger a block at all, so nothing is carried"
+    assert named[1000] == named[300] == named[250] < 250, (
+        "the names are not being shortened, so the ceiling is reachable again and this test no longer "
+        "measures what it says")
 
 
 # THE LOOK: FOUR STATES, NOT A BOOLEAN
