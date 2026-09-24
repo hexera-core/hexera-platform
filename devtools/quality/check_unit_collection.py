@@ -59,9 +59,14 @@ _TEST_ID = re.compile(r"^(tests/unit/[^\s:]+)::")
 
 def collect() -> tuple[int, list[str], str]:
     """Collect the unit tier and return (exit code, collected test ids, combined output)."""
+    # PYTEST_ADDOPTS IS INHERITED ON PURPOSE. CI sets it to --randomly-seed=<n>, and this has to collect
+    # what the lane is about to run rather than something adjacent to it. That also rules out
+    # `-p no:randomly` here: disabling pytest-randomly removes the very option the inherited addopts
+    # passes, and the collection would then exit on an unrecognised argument instead of collecting.
+    # Collection order is irrelevant to a count, so there is nothing to gain by fixing the order anyway.
     done = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/unit", "-m", DESELECT,
-         "--collect-only", "-q", "-p", "no:cacheprovider", "-p", "no:randomly"],
+         "--collect-only", "-q", "-p", "no:cacheprovider"],
         capture_output=True, text=True, cwd=str(ROOT), timeout=3600, check=False)
     output = done.stdout + done.stderr
     ids = [line.strip() for line in done.stdout.splitlines() if "::" in line and line.startswith("tests/")]

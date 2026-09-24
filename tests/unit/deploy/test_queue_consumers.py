@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "devtools" / "quality"))
 
@@ -47,6 +49,55 @@ def _consumed(name: str) -> frozenset[str]:
     for path in target.files:
         target.workers.extend(gate._workers_in(path))
     return target.consumed
+
+
+# ---------------------------------------------------------------- what the application publishes
+
+def _published() -> list[str]:
+    """The published queues, asked of an interpreter where the Celery app is real."""
+    program = ("from meshpipeline.adapters.pipeline_execution.queues import published_queues;"
+               "print(' '.join(sorted(published_queues())))")
+    done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True,
+                          cwd=str(REPO), timeout=300, check=False)
+    assert done.returncode == 0, f"published_queues() would not run:\n{done.stderr}"
+    return done.stdout.split()
+
+
+def test_the_published_queues_are_read_off_the_live_configuration():
+    published = _published()
+    assert "geometry_look" in published, "the look is published somewhere or the Surveyor has no vision half"
+    assert "geometry_measurement" in published
+    assert "simulation_jobs" in published
+
+
+def test_all_three_places_a_queue_can_be_named_are_read():
+    # The router is not the whole story. `@task(queue=...)` puts the name on the task class, so a task
+    # with a decorator queue and no route would be invisible to a check that read task_routes alone -
+    # and `purge_expired_geometry_sources` is the mirror case, a beat entry with no route. Between them
+    # all three sources are exercised by real tasks rather than by a fixture.
+    program = (
+        "from meshpipeline.adapters.pipeline_execution.celery_app import celery_app;"
+        "celery_app.loader.import_default_modules();"
+        "print(celery_app.tasks['tasks.geometry.look_at_source'].queue,"
+        " 'tasks.cleanup.purge_expired_geometry_sources' in (celery_app.conf.task_routes or {}),"
+        " celery_app.conf.beat_schedule['purge-expired-geometry-sources']['options']['queue'])")
+    done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True,
+                          cwd=str(REPO), timeout=300, check=False)
+    assert done.returncode == 0, done.stderr
+    decorator_queue, routed, beat_queue = done.stdout.split()
+    assert decorator_queue == "geometry_look", "the look's queue is on its decorator"
+    assert routed == "False", "this task has no route, so only the beat schedule names its queue"
+    assert beat_queue == "cleanup_tasks"
+
+
+def test_published_queues_refuses_to_answer_with_an_empty_set():
+    # The blind spot this whole file exists to close: a gate that compared two empty sets would pass on
+    # a deployment that drains nothing. This tier's celery stub is exactly that situation, so asking it
+    # here is the real case and not a contrived one.
+    from meshpipeline.adapters.pipeline_execution.queues import published_queues
+
+    with pytest.raises(RuntimeError, match="not a real Celery configuration"):
+        published_queues()
 
 
 # ---------------------------------------------------------------- the gate, against the real celery

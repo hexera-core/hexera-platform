@@ -21,7 +21,7 @@
 #
 # WHAT THE CHECK IS. Two sets, per deployment target:
 #
-#   PUBLISHED   celery_app.published_queues() - read off the live Celery configuration, with the task
+#   PUBLISHED   queues.published_queues() - read off the live Celery configuration, with the task
 #               modules imported, so it is the set the application actually publishes to and not a
 #               list somebody remembered to update.
 #   CONSUMED    every `--queues` list on every celery worker invocation in that target's own files.
@@ -144,7 +144,7 @@ def published() -> frozenset[str]:
     is and would drift from the router the way the deployment files drifted from the tasks.
     """
     sys.path.insert(0, str(ROOT / "src"))
-    from meshpipeline.adapters.pipeline_execution.celery_app import published_queues
+    from meshpipeline.adapters.pipeline_execution.queues import published_queues
 
     return published_queues()
 

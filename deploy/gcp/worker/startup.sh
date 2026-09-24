@@ -90,7 +90,7 @@ set -x
 
 # TWO WORKERS, ONE INSTANCE, AND WHY THERE HAS TO BE A SECOND ONE. This ran a single container on
 # `--queues simulation_jobs`, and that one word is the whole reason the Surveyor did nothing on a
-# deployed platform. The platform publishes to FIVE queues (celery_app.published_queues): a mesh to
+# deployed platform. The platform publishes to FIVE queues (adapters/pipeline_execution/queues.py): a mesh to
 # simulation_jobs, a measurement to geometry_measurement, a look to geometry_look, the periodic
 # cleanups to cleanup_tasks and a training export to training_export. This fleet is the ONLY worker
 # any deployment target starts, so the four it did not name were queued by the API, accepted by the

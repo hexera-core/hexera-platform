@@ -68,6 +68,11 @@ def _session(tmp_path: Path, *, env_extra: dict[str, str] | None = None) -> subp
 
     env = {**os.environ, "PYTHONPATH": str(REPO) + os.pathsep + str(REPO / "src")}
     env.pop(ABSENT_ENV, None)
+    # PYTEST_ADDOPTS IS THE OUTER RUN'S, NOT THIS ONE'S. CI sets it to --randomly-seed=<n>, and this
+    # session disables pytest-randomly, which is the plugin that defines that option - so an inherited
+    # value makes the inner pytest exit on an unrecognised argument and produce no result at all. That
+    # is how these three assertions failed in a full lane and passed every time I ran them alone.
+    env.pop("PYTEST_ADDOPTS", None)
     env.update(env_extra or {})
     return subprocess.run(
         [sys.executable, "-m", "pytest", str(tmp_path), "-q", "-p", "no:cacheprovider",
