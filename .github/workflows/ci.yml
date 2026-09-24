@@ -183,6 +183,17 @@ jobs:
         run: python devtools/quality/check_dependency_drift.py
       - name: No credential VALUE in any deployment spec
         run: python devtools/quality/check_deploy_secrets.py
+      # A queue nobody drains is silent: the publish succeeds, the broker holds the message, the
+      # caller logs "queued", and the work never runs. That is how the Surveyor's look reached a
+      # deployed fleet that consumed `simulation_jobs` and nothing else, so every look was dropped
+      # and every place it would have named was absent. Nothing raised, so nothing caught it.
+      - name: Every published queue is drained in every deployment target
+        run: python devtools/quality/check_queue_consumers.py
+      # The budgets have to nest: the thing that kills a job must outlive everything inside it. The
+      # measurement's packaged retry budget was 2706 s under a Celery limit of 1500 s, so a job could
+      # be killed part way through a retry.
+      - name: Every inner deadline is shorter than the outer one that kills it
+        run: python devtools/quality/check_timeout_nesting.py
       # The deploy scripts are the release path; a parse error in one is found here or in prod.
       - name: Deploy and release shell parses
         run: |

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Responsibility: Bring one worker instance up - the pipeline container, and nothing else.
-# Owns: docker install, registry auth, and the worker container's run arguments.
+# Responsibility: Bring one worker instance up - the pipeline containers, and nothing else.
+# Owns: docker install, registry auth, and the run arguments of every worker container on the instance.
 # Boundaries: it runs what it is told to run; the image digest and every endpoint arrive as instance metadata.
 #
 # This is the MIG instance startup script. It is deliberately free of configuration: the image
@@ -8,9 +8,10 @@
 # instance template is the single place a deployment's values are written, and rolling the template
 # is what changes them.
 #
-# The container runs the celery worker at concurrency 1 - the fleet's capacity is its instance
+# The MESH container runs the celery worker at concurrency 1 - the fleet's capacity is its instance
 # count, so a job's cost is attributable to a whole instance and one stuck job cannot occupy a slot
-# another job would need.
+# another job would need. A second, short-work container beside it drains the other four queues; the
+# block above the `docker run` lines says why it has to exist and why it is not the same worker.
 set -euxo pipefail
 
 md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
@@ -87,14 +88,48 @@ done
 unset value
 set -x
 
-docker rm -f hexera-worker >/dev/null 2>&1 || true
+# TWO WORKERS, ONE INSTANCE, AND WHY THERE HAS TO BE A SECOND ONE. This ran a single container on
+# `--queues simulation_jobs`, and that one word is the whole reason the Surveyor did nothing on a
+# deployed platform. The platform publishes to FIVE queues (celery_app.published_queues): a mesh to
+# simulation_jobs, a measurement to geometry_measurement, a look to geometry_look, the periodic
+# cleanups to cleanup_tasks and a training export to training_export. This fleet is the ONLY worker
+# any deployment target starts, so the four it did not name were queued by the API, accepted by the
+# broker, logged as "queued", and never run by anybody. An undrained queue raises nothing and alerts
+# nothing, which is why it survived every check: the only consumer of geometry_look in the whole
+# repository was a docker-compose service that exists on a laptop.
+#
+# THE SPLIT IS THE SAME ONE docker-compose.yml MAKES, and it is not cosmetic. The mesh worker holds
+# concurrency 1 because a job's cost has to be attributable to a whole instance, and a mesh runs for
+# hours. Putting the short work on that same worker would mean a measurement somebody IS waiting on
+# sitting behind a multi-hour mesh, which is what the separate queues were created to prevent - the
+# queues would be honoured and the waiting would not be. A second container with its own concurrency
+# keeps the short work moving while the long work runs, on one instance, at no extra machine cost.
+#
+# WHAT IT CANNOT FIX BY ITSELF. The autoscaler is driven by the depth of QUEUE_NAME
+# (simulation_jobs) alone, so a fleet whose floor is 0 is not woken by a queued measurement or look.
+# deploy/gcp/scripts/validate-config.sh refuses that combination rather than leaving it to be
+# discovered the way this was.
+docker rm -f hexera-worker hexera-worker-utility >/dev/null 2>&1 || true
 docker run -d --name hexera-worker --restart always \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \
   "${WORKER_IMAGE}" \
   celery -A meshpipeline.runtime.celery_worker worker \
-    --queues simulation_jobs --concurrency 1 --loglevel info
+    --queues simulation_jobs --concurrency 1 --loglevel info --hostname simulation@%h
+
+# The short work: the two Surveyor queues, the periodic cleanups and the training export. Concurrency
+# 2 is docker-compose.yml's number for the same container. A measurement is seconds of native
+# tessellation and a look is a render plus one provider call, so two of them beside a mesh fit an
+# e2-standard-4 without competing for the core the mesh worker holds.
+docker run -d --name hexera-worker-utility --restart always \
+  --env-file /etc/hexera/worker.env \
+  -v /var/lib/hexera/workspaces:/srv/workspaces \
+  -v /var/lib/hexera/data:/srv/data \
+  "${WORKER_IMAGE}" \
+  celery -A meshpipeline.runtime.celery_worker worker \
+    --queues cleanup_tasks,training_export,geometry_measurement,geometry_look \
+    --concurrency 2 --loglevel info --hostname utility@%h
 
 # NOTHING ELSE RUNS HERE. The queue-depth exporter used to: a systemd unit beside every worker,
 # publishing the group-wide backlog against this instance's own resource. That made the fleet the

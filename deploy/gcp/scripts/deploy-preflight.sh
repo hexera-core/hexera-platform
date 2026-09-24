@@ -195,6 +195,25 @@ if [ -f "${ENV_FILE}" ]; then
       *) skip "credential-value check not run - ${PY} could not run it: $(printf '%s\n' "${gate_out}" | tail -1)" ;;
     esac
   fi
+  # EVERY QUEUE THE APPLICATION PUBLISHES TO HAS A CONSUMER IN THIS DEPLOYMENT. Gate D is the last
+  # place this can be asked before work starts disappearing: an undrained queue accepts the publish,
+  # logs "queued" and runs nothing, so the first evidence is a customer whose upload was never
+  # described. The fleet consumed `simulation_jobs` alone while the platform published to five, and
+  # the four it dropped included both halves of the Surveyor.
+  QUEUE_GATE="${REPO_ROOT}/devtools/quality/check_queue_consumers.py"
+  if [ ! -f "${QUEUE_GATE}" ]; then
+    skip "queue-consumer check not run - ${QUEUE_GATE#"${REPO_ROOT}/"} is absent"
+  else
+    queue_out="$("${PY}" "${QUEUE_GATE}" --quiet 2>&1)"; queue_rc=$?
+    case "${queue_rc}" in
+      0) ok "every queue the application publishes to is drained in every deployment target" ;;
+      1) no "a published queue is drained by no worker - that work is accepted and never runs"
+         printf '%s\n' "${queue_out}" | sed -n 's/^  - /       /p' ;;
+      # An interpreter that cannot import the Celery app cannot tell us which queues are published,
+      # and an unanswered question is not a clean one. Unrun blocks DEPLOYMENT READY.
+      *) skip "queue-consumer check not run - ${PY} could not run it: $(printf '%s\n' "${queue_out}" | tail -1)" ;;
+    esac
+  fi
   # The image variables the manifests render from must be the RECORDED digest references.
   for pair in "MESH_IMAGE:mesh"; do
     var="${pair%%:*}"; comp="${pair##*:}"
