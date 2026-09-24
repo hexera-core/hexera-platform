@@ -273,20 +273,44 @@ services:
       - beat_data:/data/beat
     restart: unless-stopped
 
-  # Worker Utility - Celery cleanup + training-export + geometry-measurement tasks
+  # Worker Utility - Celery cleanup + training-export + geometry-measurement + geometry-look tasks
   # (lightweight, scalable). Beat scheduler is now a separate 'beat' service - do NOT add --beat here.
   #
   # geometry_measurement and geometry_look are listed so a queued measurement or look is CONSUMED
   # rather than sitting in a queue nobody drains. This image DOES carry the geometry-agent
   # distribution: the Dockerfile's `wheel` stage collects vendor/wheels/hexera_geometry_agent-*.whl
-  # into /dist and the api target installs it, which deploy/verify_install.py proves during the
+  # into /dist and both runtime blocks install it, which deploy/verify_install.py proves during the
   # build. Until it did, both tasks recorded a refusal naming the missing package - visible, where
   # an undrained queue is not - and that refusal is now what an image with a broken install would
   # show, not the normal case.
+  #
+  # TARGET `pipeline`, AND IT WAS `api`, WHICH SEGFAULTED. THE LOOK RENDERS. It draws seventeen views
+  # of the part with PyVista before it asks the reader anything, and the `api` target says of itself
+  # "Light: FastAPI + maintenance. No render stack" - EGL, OSMesa and the X libraries are installed in
+  # the `pipeline` stage only. MEASURED on tests/fixtures/geometry/plate_with_hole_2d.step, the same
+  # look through the platform's own geometry_vision.look_at_local_file, in both images built from this
+  # commit:
+  #
+  #   target api        exit 139 (SIGSEGV). "Failed to load EGL", "libOSMesa not found", then the
+  #                     process dies inside VTK. A signal is not an exception, so the look's own
+  #                     try/except never runs: no block is written, nothing is recorded, and the
+  #                     Celery child is killed mid-task.
+  #   target pipeline   exit 0, 13.4 s, look.status=ok, 17 views, impression present, and the stored
+  #                     survey block turns to look_state=ok / looked=true.
+  #
+  # It was invisible because no reader key was configured: `reader()` returned None, the look returned
+  # `not_attempted` before reaching the render, and the wrong image never rendered anything. The moment
+  # a key exists - which is the point of having one - the crash is what happens instead.
+  #
+  # THE DEPLOYED FLEET IS NOT AFFECTED, and that is why this is a compose-only fix.
+  # devtools/release/validate.sh: "app = Dockerfile target `pipeline` - serves BOTH the API service and
+  # the pipeline job. (Gate C used to build a separate `api`-target image and validate that; nothing
+  # ever deployed it.)" deploy/gcp/worker/startup.sh runs hexera-worker-utility from that same
+  # ${WORKER_IMAGE}. So the cloud already renders and only the local stack could not.
   worker-utility:
     build:
       context: .
-      target: api
+      target: pipeline
       args: *app-build-args
     entrypoint: ["/srv/worker_entrypoint.sh"]
     command: >
