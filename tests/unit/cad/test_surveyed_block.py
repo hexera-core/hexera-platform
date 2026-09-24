@@ -48,8 +48,11 @@ def _answered(gs, doc) -> dict:
     brief = (FIXTURES / "bend_elbow_001.brief.txt").read_text(encoding="utf-8")
     state = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=brief))
     said = "o2 in, o1 out"
-    state = gs.record_answer(state, question_id="role_inlet", choice="o2", words="o2 in", latest_user_message=said)
-    return gs.record_answer(state, question_id="role_outlet", choice="o1", words="o1 out", latest_user_message=said)
+    (role,) = [v for v in gs.question_views(state) if v["about"] == "opening.role"]
+    state = gs.record_answer(state, question_id=role["id"], choice="inlet", subject="o2", words="o2 in",
+                             latest_user_message=said)
+    return gs.record_answer(state, question_id=role["id"], choice="outlet", subject="o1", words="o1 out",
+                            latest_user_message=said)
 
 
 def test_the_planner_gets_the_block_composed_for_the_customer(rows):
@@ -96,3 +99,7 @@ def test_a_look_that_failed_reaches_the_builder_as_a_look_that_did_not_happen(ro
     assert block["survey"]["looked"] is False
     assert not (block["survey"].get("seen") or {}), block["survey"].get("seen")
     assert doc["look"]["status"] == "failed" and doc["look"]["reason"]
+    # AND IT SAYS WHICH IT WAS. `looked: False` stands for three different states, so the block names this one
+    # in words: a failed look is not a look that was never taken and is not a clear passage (audit item 15)
+    (row,) = [r for r in block["survey"]["unsettled"] if r["about"] == "look"]
+    assert "FAILED" in row["why"] and "not a clear passage" in row["why"]

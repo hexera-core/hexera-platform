@@ -577,9 +577,13 @@ SURVEY_TOOLS: list[dict] = [
                     "question_id": {"type": "string", "description": "The id in square brackets."},
                     "option": {"type": "string",
                                "description": "The option they chose, exactly as listed. Omit when skipped."},
+                    "mouth": {"type": "string",
+                              "description": ("Only for the role question: WHICH mouth they gave the role in "
+                                              "`option` to, by its id. One call per mouth, and the question is "
+                                              "not settled until every mouth it names has one.")},
                     "role": {"type": "string",
-                             "description": ("Only for the question that asks for a role per mouth: the role "
-                                             "they gave the mouth in `option`.")},
+                             "description": ("Only where the role question lists the mouths as its options: the "
+                                             "role they gave the mouth in `option`.")},
                     "customer_words_verbatim": {
                         "type": "string",
                         "description": "Their words, quoted exactly from their latest message."},

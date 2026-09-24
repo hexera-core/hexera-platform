@@ -242,7 +242,15 @@ def _inputs(state: dict, document: dict, *, fidelity: str, source_path: str = ""
     brief = pkg["brief"].brief_from(kwargs["purpose"], made["brief"],
                                     declared=_brief_rows(made["ports"], facts, kwargs.get("unit")),
                                     engine=kwargs.get("engine"), fidelity=fidelity)
+    # ONE FINDER, AND THE SAME ONE (`geometry_survey.QUESTION_FINDER`). This call exists only to stamp the
+    # brief's sha onto the handoff, and with no `uncertainties=` `survey_from` ran its own fallback finder
+    # instead: `contract.asking.uncertainties_from`, whose ids are not the stored survey's, so the plan was
+    # made against a third question list nobody had put. `contract.intake.binds_to` is what caught it once the
+    # row started carrying the step-4 finder's questions, and the reason it did not catch it before is that
+    # both surveys were then wrong in the same way, which is the audit's own lesson about a check sharing its
+    # subject's blind spot. The list is the composition's, which is the row's, which is what was asked.
     survey = pkg["build"].survey_from(composed, brief=made["brief"] or None, declared=made["ports"] or None,
+                                      uncertainties=list(made["survey"].uncertainties),
                                       brief_sha256=brief.sha256)
     pkg["survey"].bound_to_brief(survey, brief.sha256)
     stored_look = document.get("look")

@@ -44,14 +44,23 @@ def _answered(case: str = "venturi_orifice_001") -> tuple[dict, dict]:
     A different mouth for each role: the same mouth twice is refused, which is a rule of its own
     (`_refuse_conflict`) and not what these tests are about."""
     doc, state = _doc(case), _surveyed(case)
-    for view in list(gs.open_now(state)):
-        if view["route"] != gs.ROUTE_INTAKE:
+    while True:
+        open_intake = [v for v in gs.open_now(state) if v["route"] == gs.ROUTE_INTAKE]
+        if not open_intake:
+            return state, doc
+        view = open_intake[0]
+        if view["about"] == "opening.role":
+            # ONE question names every unplaced mouth and its options are the roles, so a role goes on a
+            # mouth at a time and the question is settled only when every mouth it named has one
+            for mouth, role in zip(view["subjects"], ("inlet", "outlet", "wall", "wall", "wall", "wall")):
+                said = f"{mouth} is the {role}"
+                state = gs.answered(state, doc, question_id=view["id"], choice=role, subject=mouth,
+                                    words=said, latest_user_message=said, principal="owner-7f3a")
             continue
-        pick = view["options"][-1] if view["id"] == "role_outlet" else view["options"][0]
+        pick = view["options"][0]
         said = f"{pick} it is"
         state = gs.answered(state, doc, question_id=view["id"], choice=pick,
                             words=said, latest_user_message=said, principal="owner-7f3a")
-    return state, doc
 
 
 def _planned(case: str = "venturi_orifice_001") -> tuple[dict, dict]:
@@ -215,7 +224,8 @@ def test_the_third_intake_is_the_last_question_and_only_after_the_survey_is_sett
     assert gst.submission_problems(with_trade), "the submission waits until it has been put"
     # and it is not put while a step-4 question is still open
     unsettled = _with_a_raised_trade(_surveyed())
-    assert [v["route"] for v in gs.open_now(unsettled)] == ["intake", "intake"]
+    assert [v["route"] for v in gs.open_now(unsettled)] == ["intake"]
+    assert gs.open_now(unsettled)[0]["about"] == "opening.role"
 
 
 def test_the_third_intake_is_asked_once_and_a_default_is_not_a_confirmation(armed):
@@ -234,7 +244,7 @@ def test_the_third_intake_is_asked_once_and_a_default_is_not_a_confirmation(arme
 
 def test_the_third_intakes_answer_is_the_number_its_own_options_were_written_from(armed):
     """Never parsed back out of the sentence: the two numbers ride in the view's marks, which is
-    where `_trade_numbers` reads them."""
+    where `_trade_envelope` reads them."""
     state = _with_a_raised_trade(_planned()[0])
     said = "raise to about 3,000,000"
     raised = gs.record_answer(state, question_id="budget_after_plan", choice=said, words=said,
@@ -407,23 +417,23 @@ def test_the_builders_own_read_falls_back_to_todays_two_values_and_says_why(arme
 # -------------------------------------------------------------------------------------------------
 
 def test_one_mouth_two_questions_and_one_answer_is_not_confirmed_and_assumed_at_once(armed):
-    """transition_007_fluid has one mouth left to place, so `role_inlet` and `role_outlet` are both
-    about it. The customer named it the outlet and skipped the inlet question. Keying the skipped
-    question's default on the same mouth put `role:o2` under `confirmed` and `assumed` together, and
-    the package refused the whole handoff, so the builder got nothing: 2 of 49 corpus parts.
+    """transition_007_fluid has ONE mouth left to place, and the old finder asked about it twice: `role_inlet`
+    and `role_outlet` both named o2. The customer called it the outlet and skipped the inlet question, the
+    skipped question's default keyed on the same mouth, and `role:o2` went under `confirmed` and `assumed`
+    together; the package refused the whole handoff and the builder got nothing on 2 of 49 corpus parts.
 
-    A question every one of whose subjects another answer has settled has no field left to be about."""
+    THE STEP-4 FINDER CANNOT PRODUCE THAT SHAPE. One question names every unplaced mouth, so one mouth has
+    one question and one answer. This pins both halves: the shape, and the one resolution per field that used
+    to depend on it."""
     doc = _doc("transition_007_fluid")
     state = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd",
                                               brief=_brief("transition_007_fluid"), engine="snappy"))
     state = gs.mark_asked(state, gs.open_now(state))
-    views = {v["id"]: v for v in gs.open_now(state)}
-    assert views["role_inlet"]["subjects"] == views["role_outlet"]["subjects"] == ["o2"]
+    roles = [v for v in gs.question_views(state) if v["about"] == "opening.role"]
+    assert len(roles) == 1 and roles[0]["subjects"] == ["o2"], [v["id"] for v in roles]
     said = "o2 is where it leaves"
-    state = gs.answered(state, doc, question_id="role_outlet", choice="o2", words=said,
+    state = gs.answered(state, doc, question_id=roles[0]["id"], choice="outlet", subject="o2", words=said,
                         latest_user_message=said, principal="owner-7f3a")
-    state = gs.answered(state, doc, question_id="role_inlet", words="I cannot say",
-                        latest_user_message="I cannot say", skipped=True, principal="owner-7f3a")
     fields = [r.field for r in gst._resolutions(state, {})]
     assert [f for f in fields if f.startswith("role:")] == ["role:o2"], fields
     assert len(fields) == len(set(fields)), f"one resolution per field, got {fields}"

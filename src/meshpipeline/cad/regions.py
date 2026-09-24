@@ -332,6 +332,12 @@ async def _surveyed_block(ref, document: dict) -> dict | None:
     the representation and their budget is `customer_cell_cap`. If the look landed after the survey
     was last composed and the recomposition on the look worker did not happen, it is composed again
     here, in memory, from the same stored inputs, so the planner never gets the older of the two.
+
+    WHATEVER THE LOOK DID, not only when it landed. This used to recompose on `ok` alone, so a look that
+    FAILED after the survey was last composed never reached the row at all: the row still said
+    `not_attempted`, and the block then told the builder no look had been taken of a part whose look had
+    broken. A failed look is not an absent one and the builder is entitled to know which it was (audit item
+    15), so any change in the look's status is composed in here.
     """
     from meshpipeline.application import geometry_survey as gs
 
@@ -340,7 +346,8 @@ async def _surveyed_block(ref, document: dict) -> dict | None:
         return None
     stored_look = document.get("look")
     look = stored_look if isinstance(stored_look, dict) else {}
-    if look.get("status") == "ok" and (state.get("composed_for") or {}).get("look_status") != "ok":
+    status = str(look.get("status") or "")
+    if status and status != str((state.get("composed_for") or {}).get("look_status") or ""):
         try:
             state = gs.recomposed(state, document)
         except gs.SurveyError as exc:

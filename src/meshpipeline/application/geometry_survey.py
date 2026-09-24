@@ -102,6 +102,27 @@ LATE_STAGE = "third"
 #: `resolution`: it decides how finely the part is meshed and never which face carries what.
 LATE_TIER = "resolution"
 
+#: WHAT HAPPENED TO THE LOOK, and there are four answers, not two. `survey.looked` is a BOOLEAN, so every
+#: one of these but the first reaches the builder as the same False, and the product rule is that a look that
+#: FAILED is never the same as a look that found a clear passage. It is not the same as one that was never
+#: taken either, and neither is the same as one still running, which is the race: the look is queued as a
+#: worker (`_queue_the_look`) and the planner can reach the survey before the worker writes anything, so the
+#: plan is made with no eyes and, until this, said nothing about it.
+LOOK_OK, LOOK_PENDING, LOOK_FAILED, LOOK_NONE = "ok", "pending", "failed", "not_attempted"
+
+#: What each state means for the `seen` half of the builder's block, in a sentence the builder reads. It is
+#: the same sentence in the row and in the block, because two wordings of one fact drift.
+LOOK_BECAUSE: dict[str, str] = {
+    LOOK_PENDING: ("no look has landed on this part yet: the render worker was queued and has not written "
+                   "its reading, so this survey is the measurement alone and every claim a look would make "
+                   "is absent because nothing has looked yet, not because there was nothing to see"),
+    LOOK_FAILED: ("the look of this part FAILED and no reading came back, so every claim a look would make "
+                  "is absent because the reader did not answer. A failed look is not a clear passage and "
+                  "nothing here may be read as one"),
+    LOOK_NONE: ("no look has been taken of this part, so this survey is the measurement alone. Every claim "
+                "a look would make is absent because nothing looked, not because there was nothing there"),
+}
+
 #: The customer's own words, kept for recomposition. Bounded, because a pasted spec sheet is not a
 #: brief and the budget and the carve sentence are always near the top of one.
 BRIEF_MAX_CHARS = 8000
@@ -147,6 +168,7 @@ class SurveyError(RuntimeError):
 def _package():
     from geometry_agent.agent import catalog, hexera
     from geometry_agent.ask import intake as ask_intake
+    from geometry_agent.ask import say as ask_say
     from geometry_agent.ask import schema as ask_schema
     from geometry_agent.ask import trade as ask_trade
     from geometry_agent.chain import job as ask_job
@@ -155,7 +177,7 @@ def _package():
     return {"hexera": hexera, "asking": asking, "build": build, "deliver": deliver, "given": given,
             "intake": intake, "marks": marks, "survey": survey, "GeometryFacts": GeometryFacts,
             "catalog": catalog, "ask": ask_intake, "ask_schema": ask_schema, "ask_job": ask_job,
-            "ask_trade": ask_trade}
+            "ask_trade": ask_trade, "ask_say": ask_say}
 
 
 def _now() -> str:
@@ -476,7 +498,7 @@ def carry_answers(old: dict | None, fresh: dict) -> dict:
     # THE GEOMETRY AGENT'S HALF RIDES ACROSS a recomposition of the same bytes: its plan says which answers
     # it was made for, so a plan the new composition no longer matches is refused where it is read, and the
     # third intake's question stays, because it is asked once and an answer to it is still an answer
-    fresh = {**fresh, **{k: old[k] for k in ("late", "geometry_step") if k in old}}
+    fresh = {**fresh, **{k: old[k] for k in ("late", "geometry_step", "look_queued") if k in old}}
     ids = {q["id"] for q in question_views(fresh)}
     # NOTHING THE CUSTOMER SAID IS DELETED. An answer to a question the new survey no longer raises is
     # kept in the same append-only list, marked retired, and every reader skips it: it binds nothing
@@ -843,6 +865,18 @@ def _subject_and_value(view: dict, option: str, role: str, subject: str = "") ->
         return "", cap, option
     values = view.get("option_values") or []
     index = view["options"].index(option)
+    if view["about"] == "representation" and not values:
+        # THE SIDE QUESTION FROM THE STEP-4 FINDER CARRIES NO PAIRED VALUES, because `ask.say.fluid_side`
+        # writes its options as two sentences and keeps the map from a sentence back to a side in the package
+        # (`ask.say.fluid_side_of`), where `contract.asking` paired them positionally instead. Read the map,
+        # never a positional guess and never the sentence itself: stored as the sentence, the sentence became
+        # the value of the `representation` fact the whole chain reads, and the geometry agent then refused
+        # every plan on a part whose side was answered.
+        side = _side_answer(view, option)
+        if side is None:
+            raise SurveyError(f"{option!r} names neither reading of this surface, so it settles no "
+                              f"representation; the readings are {_side_readings(view)}")
+        return "", side, option
     if index < len(values) and values[index]:
         # WHAT THE OPTION SETS, not the sentence the person was shown. The fluid-side question's two
         # options are sentences and its two values are the representations they mean, so the answer that
@@ -887,6 +921,46 @@ def _role_answer(view: dict, option: str, role: str, subject: str) -> tuple[str,
     return mouth, wanted
 
 
+def _record_measurements(view: dict) -> list[dict]:
+    """Every `measurement` the finder put on this question's record rows (`ask.record.record_for`).
+
+    It is where the machine values live for a question `ask.say` words as prose: the two side readings, the
+    budget's two numbers. The row is the finder's own and this platform only reads it.
+    """
+    out = []
+    for target in ((view.get("record") or {}).get("targets") or []):
+        measured = target.get("measurement") if isinstance(target, dict) else None
+        if isinstance(measured, dict):
+            out.append(measured)
+    return out
+
+
+def _side_readings(view: dict) -> dict:
+    """`{side: the representation that side gives}` for the fluid-side question, from its own record."""
+    for measured in _record_measurements(view):
+        readings = measured.get("readings")
+        if isinstance(readings, dict) and readings:
+            return {str(k): str(v) for k, v in readings.items()}
+    return {}
+
+
+def _side_answer(view: dict, option: str) -> str | None:
+    """The REPRESENTATION one option of the fluid-side question sets, or None when it names neither side.
+
+    Two steps, both the package's own: `ask.say.fluid_side_of` maps the sentence a person read back to the
+    `catalog.FLUID_SIDES` key it means, and the question's own `readings` map that key to the representation
+    that reading gives. `_side_of` inverts the same table on the way back into a composition, so the row
+    stores a representation and the composition gets the side, with one table behind both.
+    """
+    readings = _side_readings(view)
+    if not readings:
+        return None
+    bores = next((int(m.get("bores") or 0) for m in _record_measurements(view) if m.get("bores")), 1)
+    side = _package()["ask_say"].fluid_side_of(option, bores)
+    reading = readings.get(str(side)) if side else None
+    return str(reading) if reading else None
+
+
 def _trade_envelope(view: dict) -> dict | None:
     """`{"cap": the stated budget, "cells_high": the measured envelope}` for a budget question, or None.
 
@@ -901,10 +975,7 @@ def _trade_envelope(view: dict) -> dict | None:
             cap = mark.get("value")
         elif mark.get("field") == "forecast.cells_high":
             high = mark.get("value")
-    for target in ((view.get("record") or {}).get("targets") or []):
-        measured = target.get("measurement") if isinstance(target, dict) else None
-        if not isinstance(measured, dict):
-            continue
+    for measured in _record_measurements(view):
         cap = measured.get("cell_cap") if cap is None else cap
         high = measured.get("cells_high") if high is None else high
     if isinstance(cap, int) and isinstance(high, int):
@@ -1030,10 +1101,41 @@ def builder_block(state: dict | None) -> dict | None:
     pkg = _package()
     try:
         given = pkg["given"].Given.of(survey_of(state), intake_handoff(state))
-        return pkg["deliver"].attach(dict(state["planner_block"]), given)
+        block = pkg["deliver"].attach(dict(state["planner_block"]), given)
+        return _with_the_look_state(block, state, pkg)
     except Exception as exc:                       # noqa: BLE001 - a plan is never failed for this
         logger.warning("geometry survey: the builder's block could not carry the survey (%s)", exc)
         return None
+
+
+def _with_the_look_state(block: dict | None, state: dict, pkg: dict) -> dict | None:
+    """The block, with the look's state named in the one channel the block has for it.
+
+    WHY IT IS AN `unsettled` ROW. `deliver.survey_block` carries `looked`, a boolean, and three of the four
+    states it can stand for are False: never taken, still running, and FAILED. A builder reading `looked:
+    false` beside `seen: {}` cannot tell "nothing looked" from "the look found nothing", and the product rule
+    is that a failed look is never a clear passage. `unsettled` is the block's own channel for what nobody
+    settled, named, and a look that did not happen is exactly that, so the state goes there in words rather
+    than into a fifth boolean nobody would read.
+
+    IT GOES FIRST and the list keeps its length. `SURVEY_BLOCK_ITEMS` is the package's cap on this list and
+    appending past it would break the package's own policy from outside; the look changes how every other row
+    in the block reads, so it is the row that keeps its place.
+    """
+    if not isinstance(block, dict) or not isinstance(block.get("survey"), dict):
+        return block
+    because = LOOK_BECAUSE.get(look_state(state))
+    if because is None:
+        return block
+    survey = dict(block["survey"])
+    rows = [{"about": "look", "subjects": [], "why": because},
+            *[r for r in (survey.get("unsettled") or []) if r.get("about") != "look"]]
+    survey["unsettled"] = rows[:pkg["deliver"].SURVEY_BLOCK_ITEMS]
+    out = {**block, "survey": survey}
+    # the package's own validator, again, on the block this platform actually hands over. A row that takes it
+    # over its ceiling is refused here rather than cut in the prompt, which is the whole point of the rule
+    pkg["deliver"].check_survey_block(survey)
+    return out
 
 
 # -------------------------------------------------------------------------------------------------
@@ -1183,8 +1285,11 @@ async def survey_the_part(*, owner_id: str, session_id: str, source_ref, documen
         raise SurveyError("the stored measurement describes other bytes than this session's upload")
     state = carry_answers(old, fresh)
     state = mark_asked(state, open_now(state))
+    # STEP 3 IS QUEUED AND ITS ANSWER IS KEPT. The look is a worker and the planner can reach this row before
+    # it lands, so the row records that one is on the way; without it the builder cannot tell a survey waiting
+    # for eyes from one that will never have any (`look_state`, and audit item 15)
+    state = _noted_queue(state, _queue_the_look(source_ref.source_id, owner_id, document))
     await save(owner_id, source_ref.source_id, state, session_id=session_id)
-    _queue_the_look(source_ref.source_id, owner_id, document)
     return state
 
 
@@ -1226,10 +1331,36 @@ async def for_submission(*, owner_id: str, session_id: str, source_ref, document
                     engine=engine if engine in PACKAGE_ENGINES else None, unit=unit,
                     scale_to_metres=scale, unit_basis=basis, cell_cap=confirmed_cell_cap(state))
     out = mark_asked(carry_answers(state, fresh), [])
-    await save(owner_id, source_ref.source_id, out, session_id=session_id)
     # the look has not been taken if intake never surveyed; take it now, for this purpose, so the
-    # builder still gets it when it lands before the planner runs
-    _queue_the_look(source_ref.source_id, owner_id, document)
+    # builder still gets it when it lands before the planner runs, and keep the queue's answer so a plan
+    # made before it lands says which of the four look states it was made in
+    out = _noted_queue(out, _queue_the_look(source_ref.source_id, owner_id, document))
+    await save(owner_id, source_ref.source_id, out, session_id=session_id)
+    return out
+
+
+def look_state(state: dict | None) -> str:
+    """One of `LOOK_OK`, `LOOK_PENDING`, `LOOK_FAILED`, `LOOK_NONE` for the row's own composition.
+
+    THE STORED DOCUMENT CANNOT TELL PENDING FROM NEVER. Before the worker writes anything the document
+    carries no `look` at all, which reads as `not_attempted` whether one was queued a second ago or never
+    queued at all. So the queue's own answer is kept on the row (`look_queued`) and read here: queued and
+    nothing written is PENDING, and pending is the state the race produces.
+    """
+    status = str(((state or {}).get("composed_for") or {}).get("look_status") or LOOK_NONE)
+    if status == LOOK_OK:
+        return LOOK_OK
+    if status in (LOOK_FAILED, "refused", "error"):
+        return LOOK_FAILED
+    if str((state or {}).get("look_queued") or "") in ("queued", "cached") or status == LOOK_PENDING:
+        return LOOK_PENDING
+    return LOOK_NONE
+
+
+def _noted_queue(state: dict, outcome: str) -> dict:
+    """The queue's answer on the row, so `look_state` can tell pending from never attempted."""
+    out = {**state, "look_queued": str(outcome or "")}
+    out["stage"] = stage_of(out)
     return out
 
 
@@ -1317,12 +1448,13 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
 
 
 __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
+           "LOOK_BECAUSE", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_PENDING",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
            "asking_of", "asking_row", "builder_block", "carry_answers", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
-           "live_answers", "load", "mark_asked", "named_inlets", "open_now",
+           "live_answers", "load", "look_state", "mark_asked", "named_inlets", "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",
            "said_by_customer", "save", "stage_of", "survey_the_part"]

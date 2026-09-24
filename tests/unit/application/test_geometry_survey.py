@@ -303,7 +303,8 @@ def test_a_port_row_the_customer_placed_settles_its_mouth_and_one_that_binds_to_
     # and it is not merely unasked: a question SOMEBODY ELSE answered is not an uncertainty any more, so it is
     # off the survey altogether and the builder is never told a role is unsettled that the customer placed
     assert [v for v in gs.question_views(placed) if v["about"] == "opening.role"] == []
-    assert gs.builder_block(placed)["survey"]["unsettled"] == []
+    assert [r for r in gs.builder_block(placed)["survey"]["unsettled"]
+            if r["about"] == "opening.role"] == []
     assert placed["asking"]["put"] == [] and placed["asking"]["held"] == {}
 
     unplaceable = _fresh("bend_elbow_001", declared=[{"name": "in", "type": "inlet"},
@@ -334,7 +335,7 @@ def test_the_builder_gets_the_survey_and_it_passes_the_packages_own_validator():
     assert confirmed["opening.role=inlet"]["value"] == "inlet" and confirmed["opening.role=inlet"]["applies_to"] == ["o2"]
     assert confirmed["opening.role=outlet"]["applies_to"] == ["o1"]
     assert "answered by customer" in confirmed["opening.role=inlet"]["source"]
-    assert block["survey"]["unsettled"] == []
+    assert [r for r in block["survey"]["unsettled"] if r["about"] != "look"] == []
 
 
 def test_who_answered_is_the_customer_and_their_account_never_rides_to_a_provider():
@@ -412,6 +413,75 @@ def test_the_briefs_blanket_settles_the_remaining_mouths_only_once_every_named_p
 def test_an_external_purpose_raises_no_role_gate():
     state = _fresh("ahmed_variant_001", purpose="external_cfd")
     assert gs.role_problems(state, _doc("ahmed_variant_001"), [_WALL, {"name": "far", "type": "farfield"}]) == []
+
+
+# THE LOOK: FOUR STATES, NOT A BOOLEAN
+
+
+def _external(look=None, **row) -> dict:
+    doc = _doc("ahmed_variant_001_external_looked")
+    doc.pop("look", None)
+    if look is not None:
+        doc["look"] = look
+    state = gs.carry_answers(None, gs.compose(doc, purpose="external_cfd",
+                                             brief=_brief("ahmed_variant_001")))
+    return {**state, **row}
+
+
+def _look_row(state) -> dict | None:
+    rows = [r for r in gs.builder_block(state)["survey"]["unsettled"] if r["about"] == "look"]
+    return rows[0] if rows else None
+
+
+def test_a_look_that_landed_says_nothing_about_itself_and_the_seen_half_carries_the_reading():
+    looked = gs.carry_answers(None, gs.compose(_doc("ahmed_variant_001_external_looked"),
+                                               purpose="external_cfd", brief=_brief("ahmed_variant_001")))
+    assert gs.look_state(looked) == gs.LOOK_OK
+    block = gs.builder_block(looked)["survey"]
+    assert block["looked"] is True and block["seen"]
+    assert _look_row(looked) is None, "there is nothing unsettled about a look that landed"
+
+
+def test_the_three_states_that_reach_the_builder_as_looked_false_are_told_apart_in_words():
+    """`survey.looked` is one boolean over four states, so never taken, still running and FAILED all read as
+    False beside an empty `seen`, which is indistinguishable from a look that looked and found nothing. The
+    product rule is that a failed look is never a clear passage, so the block says which it was."""
+    never = _external()
+    pending = _external(look=None, look_queued="queued")
+    failed = _external(look={"status": "failed", "reason": "the reader returned nothing"})
+    assert (gs.look_state(never), gs.look_state(pending), gs.look_state(failed)) == (
+        gs.LOOK_NONE, gs.LOOK_PENDING, gs.LOOK_FAILED)
+    whys = {}
+    for name, state in (("never", never), ("pending", pending), ("failed", failed)):
+        assert gs.builder_block(state)["survey"]["looked"] is False
+        row = _look_row(state)
+        assert row is not None, f"{name} says nothing to the builder"
+        whys[name] = row["why"]
+    assert len(set(whys.values())) == 3, "three states, three sentences"
+    assert "FAILED" in whys["failed"] and "not a clear passage" in whys["failed"]
+    assert "has not written" in whys["pending"]
+
+
+def test_the_look_state_row_never_takes_the_block_over_its_own_ceiling():
+    from geometry_agent.contract.deliver import SURVEY_BLOCK_ITEMS, SURVEY_BLOCK_MAX, check_survey_block
+
+    block = gs.builder_block(_external(look_queued="queued"))["survey"]
+    check_survey_block(block)
+    assert len(json.dumps(block)) <= SURVEY_BLOCK_MAX
+    assert len(block["unsettled"]) <= SURVEY_BLOCK_ITEMS
+    assert block["unsettled"][0]["about"] == "look", "it goes first: it changes how every other row reads"
+
+
+def test_the_queue_answer_survives_a_recomposition_so_a_pending_look_stays_pending():
+    """The row records that a look is on the way, and a recomposition for a new answer must not lose it: the
+    stored document carries no look until the worker writes one, so without the note pending reads as never."""
+    doc = _doc("bend_elbow_001")
+    state = {**_answered_elbow(), "look_queued": "queued"}
+    assert gs.look_state(state) == gs.LOOK_PENDING
+    assert gs.look_state(gs.recomposed(state, doc)) == gs.LOOK_PENDING
+    landed = {**(doc.get("look") or {}), "status": "ok",
+              "impression": {"looks_like": "a pipe elbow", "openings_seen": [], "internal_features": []}}
+    assert gs.look_state(gs.recomposed(state, {**doc, "look": landed})) == gs.LOOK_OK
 
 
 # RECOMPOSITION KEEPS WHAT IS STILL BOUND AND DROPS WHAT IS NOT
