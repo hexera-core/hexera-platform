@@ -320,15 +320,26 @@ _MINIMAL_FLEET_ENV = {
 
 
 def _validate_config(tmp_path: Path, floor: str) -> str:
+    """Run validate-config.sh against a fleet file this test wrote, and nothing else.
+
+    THE FILE IS THE ONLY AUTHORITY HERE. `validate-config.sh` cross-checks the deployment identity in
+    the environment against the one the file describes and refuses the pair when they disagree - which
+    is correct of it, and fatal to a test that inherited the whole environment. On a machine with a
+    real GCP_PROJECT_ID exported - every machine that has run the deploy, including the one this was
+    written on - the run died on "GCP_PROJECT_ID=hexera was requested, but generated.env describes p"
+    long before it reached the floor it was called to check. Every name the file owns is therefore
+    removed from what is passed, so the verdict cannot depend on whose machine it ran on.
+    """
     import os
 
     env_file = tmp_path / "generated.env"
     values = {**_MINIMAL_FLEET_ENV, "WORKER_MIG_MIN_REPLICAS": floor}
     env_file.write_text("".join(f"{k}={v}\n" for k, v in values.items()), encoding="utf-8")
+    ambient = {k: v for k, v in os.environ.items() if k not in values}
     done = subprocess.run(
         ["bash", str(REPO / "deploy" / "gcp" / "scripts" / "validate-config.sh")],
         capture_output=True, text=True, timeout=120, check=False,
-        env={**os.environ, "DEPLOY_ENV_FILE": str(env_file), "ASSUME_YES": "1"})
+        env={**ambient, "DEPLOY_ENV_FILE": str(env_file), "ASSUME_YES": "1"})
     return done.stdout + done.stderr
 
 
@@ -346,6 +357,12 @@ def test_a_warm_pool_is_accepted(tmp_path):
     # The prod floor. The rule must name a real condition, not refuse every fleet.
     out = _validate_config(tmp_path, "1")
     assert "WORKER_MIG_MIN_REPLICAS is 0" not in out, out
+    # AND THE RUN HAS TO HAVE REACHED THE RULE. The assertion above is an ABSENCE, and an absence is
+    # satisfied by a script that fell over before it looked: while the helper inherited the ambient
+    # deployment identity, this test passed on the refusal of its own fixture and reported the floor
+    # rule healthy. A check that cannot fail when the thing it checks never ran has the same blind
+    # spot as the thing it checks, which is what the queue checks above exist to close.
+    assert "WORKER_MIG" in out, out
 
 
 # ---------------------------------------------------------------- no worker escapes a target
