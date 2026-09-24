@@ -271,11 +271,13 @@ async def look_and_store(source_id: str, owner_id: str, *, timeout_s: float | No
     seconds = round(time.perf_counter() - started, 3)
     logger.info("geometry look: %s - source_id=%s sha=%s model=%s seconds=%s",
                 look.get("status"), source_id, sha256[:12], look.get("model"), seconds)
-    if look.get("status") == "ok":
-        # Step 4 has to see what step 3 saw: the questions only the look can raise (a mouth the
-        # measurement did not find) are composed in now, with every answer already given kept.
-        from meshpipeline.application import geometry_survey
-        await geometry_survey.recompose_after_look(str(source_id), owner_id, updated)
+    # WHATEVER THE LOOK DID, and not only when it landed. Step 4 has to see what step 3 saw: the questions only
+    # the look can raise (a mouth the measurement did not find) are composed in now, with every answer already
+    # given kept. And a look that FAILED is composed in for the opposite reason: the survey row records the
+    # look's state, the builder's block says which of the four states it was, and gated on `ok` the row kept
+    # saying `not_attempted` about a part whose look had broken. A failed look is not an absent one.
+    from meshpipeline.application import geometry_survey
+    await geometry_survey.recompose_after_look(str(source_id), owner_id, updated)
     return {"status": str(look.get("status") or "failed"), "source_id": str(source_id),
             "model": str(look.get("model") or ""), "seconds": seconds,
             "look_seconds": look.get("seconds")}
