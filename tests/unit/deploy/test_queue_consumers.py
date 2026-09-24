@@ -327,19 +327,26 @@ def _validate_config(tmp_path: Path, floor: str) -> str:
     is correct of it, and fatal to a test that inherited the whole environment. On a machine with a
     real GCP_PROJECT_ID exported - every machine that has run the deploy, including the one this was
     written on - the run died on "GCP_PROJECT_ID=hexera was requested, but generated.env describes p"
-    long before it reached the floor it was called to check. Every name the file owns is therefore
-    removed from what is passed, so the verdict cannot depend on whose machine it ran on.
+    long before it reached the floor it was called to check.
+
+    SUBTRACTING THE FILE'S OWN NAMES WAS NOT ENOUGH, and the assertion in test_a_warm_pool_is_accepted
+    is what said so: under pytest the conftest loads this repository's .env, so the object-store
+    settings arrived too and the script refused on MINIO_SECRET_KEY_SECRET instead - a second leak
+    wearing the first one's clothes. Nothing of the caller's environment is passed now beyond what
+    bash itself needs to run, so the fleet file is the only input and the verdict cannot depend on
+    whose machine it ran on or on what happened to be loaded before it.
     """
     import os
 
     env_file = tmp_path / "generated.env"
     values = {**_MINIMAL_FLEET_ENV, "WORKER_MIG_MIN_REPLICAS": floor}
     env_file.write_text("".join(f"{k}={v}\n" for k, v in values.items()), encoding="utf-8")
-    ambient = {k: v for k, v in os.environ.items() if k not in values}
+    bare = {k: os.environ[k] for k in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+            if k in os.environ}
     done = subprocess.run(
         ["bash", str(REPO / "deploy" / "gcp" / "scripts" / "validate-config.sh")],
         capture_output=True, text=True, timeout=120, check=False,
-        env={**ambient, "DEPLOY_ENV_FILE": str(env_file), "ASSUME_YES": "1"})
+        env={**bare, "DEPLOY_ENV_FILE": str(env_file), "ASSUME_YES": "1"})
     return done.stdout + done.stderr
 
 
