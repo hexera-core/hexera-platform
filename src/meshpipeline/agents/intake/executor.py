@@ -397,18 +397,32 @@ class IntakeToolExecutor:
                 continue
             if str(patch.get("type") or "").strip().lower() not in ("inlet", "outlet"):
                 continue
-            if patch.get("near_mm") is not None or any(
-                    isinstance(patch.get(k), (int, float)) and not isinstance(patch.get(k), bool)
-                    for k in ("diameter_mm", "area_mm2", "width_mm", "height_mm")):
-                continue        # the customer stated it: theirs wins, untouched
             row = rows.get(str(patch.get("opening_id") or "").strip())
-            centroid = (row or {}).get("centroid_m")
-            if not isinstance(centroid, (list, tuple)) or len(centroid) != 3:
-                continue
-            try:
-                patch["near_mm"] = [float(c) * 1000.0 for c in centroid]
-            except (TypeError, ValueError):
-                continue
+            if not row:
+                continue        # named nothing measured: leave the declaration exactly as it is
+            # THE MEASURED MOUTH'S OWN GEOMETRY WINS, because the model computes it wrong and the
+            # builder matches on it. Measured: o1 is a RECTANGLE of 367,216 mm2. The model was told
+            # "551 mm across", treated that as a circular diameter and submitted 238,528 mm2 -
+            # pi*(551/2)^2 - and `cad_tessellate.select_declared_openings` checks size BEFORE
+            # position, skipping every face outside the band. So a wrong area vetoed the face whose
+            # centroid matched to the millimetre, and five build attempts died on "declared port
+            # 'inlet' matches none of the remaining flat faces".
+            #
+            # Naming the opening is the claim; its size and position are then facts about that
+            # opening, not the model's arithmetic. Only for a port that NAMES one - a port the
+            # customer described themselves is untouched, because nothing here resolves to a row.
+            centroid = row.get("centroid_mm")
+            area = row.get("area_mm2")
+            if isinstance(centroid, (list, tuple)) and len(centroid) == 3:
+                try:
+                    patch["near_mm"] = [float(c) for c in centroid]
+                except (TypeError, ValueError):
+                    pass
+            if isinstance(area, (int, float)) and not isinstance(area, bool) and area > 0:
+                patch["area_mm2"] = float(area)
+                # exactly one size form, or the payload gate refuses the pair
+                for k in ("diameter_mm", "width_mm", "height_mm"):
+                    patch.pop(k, None)
 
 
     async def _do_preview_selected_admission(self, args: dict) -> IntakeToolResult:
