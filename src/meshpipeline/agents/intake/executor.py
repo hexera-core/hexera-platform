@@ -634,6 +634,37 @@ class IntakeToolExecutor:
                         isinstance(st.geometry_document, dict), self._job_id)
             return []
         from meshpipeline.application import geometry_step as gst
+        from meshpipeline.application import geometry_survey as gs
+
+        # THE LOOK LANDS AFTER THE SURVEY IS COMPOSED, AND THE SURVEY HAS TO CATCH UP. The look is
+        # queued once the customer says what the part is for and takes about 25 seconds; the survey
+        # is composed immediately, so the stored one is the survey as it was BEFORE anything was
+        # looked at. `look_state`'s own docstring calls this "the state the race produces".
+        #
+        # Nothing closed the race at submission, and the questioning rewrite made the customer faster
+        # than the renderer: measured on a real run, the plan was built against the pre-look survey
+        # and the builder then threw it away, because `geometry_step._inputs` recomposes and demands
+        # the result match field for field - and by then the look was in the document. The refusal
+        # named exactly this once it was asked to: "fields that differ: looked, marks, uncertainties",
+        # all three of them look-derived.
+        #
+        # `recomposed` is built for this - its own docstring lists "the look landed" first - and it
+        # carries the customer's answers across for every question the new survey still raises. Doing
+        # it here means the plan is made from a survey that HAS been looked at, and that the builder
+        # can reproduce.
+        try:
+            _doc_look = str(((st.geometry_document or {}).get("look") or {}).get("status") or "")
+            _composed = str(((st.geometry_survey or {}).get("composed_for") or {}).get("look_status") or "")
+            if _doc_look and _composed != _doc_look and isinstance(st.geometry_survey, dict):
+                logger.info("Intake: the look landed after the survey was composed (%s -> %s); "
+                            "recomposing so the plan is made from it - job_id=%s",
+                            _composed or "none", _doc_look, self._job_id)
+                st.geometry_survey = gs.recomposed(st.geometry_survey, st.geometry_document)
+                await gs.save(st.owner_id, str(st.survey_source_ref.source_id), st.geometry_survey,
+                              session_id=st.session_id)
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            logger.warning("Intake: could not refresh the survey for the look (%s) - job_id=%s",
+                           exc, self._job_id)
 
         # THE PLAN NEEDS THE ANSWERS, SO THE QUESTIONS HAVE TO HAVE BEEN PUT. `at_submission` returns
         # the state untouched when the Surveyor still has a question nobody has been asked - it will
