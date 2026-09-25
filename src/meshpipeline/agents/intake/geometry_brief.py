@@ -280,6 +280,21 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
                    "this reads as flow AROUND the body rather than through it")
     elif not_ports:
         out.append("  {} of the openings do not look like ports: {}".format(len(not_ports), ", ".join(not_ports)))
+    # HOW BIG THE MESH WILL BE, SAID RATHER THAN ASKED. The measurement forecasts a cell count per
+    # tier, and the customer never saw any of it: the intake is forbidden to ask for a cell count
+    # ("a QUALITATIVE preference, never a cell count"), which is right - a number pulled out of a
+    # customer is not a budget - but the consequence was that mesh size was never discussed at all
+    # and they found out afterwards. Stating the forecast and naming the two words that change it
+    # gives them the decision without the interrogation.
+    tiers = [e for e in ((document.get("facts") or {}).get("cell_estimates") or []) if isinstance(e, dict)]
+    by_tier = {str(e.get("tier")): e.get("cells") for e in tiers if e.get("cells")}
+    if by_tier.get("standard"):
+        line = "  mesh size    about {:,.0f} cells at standard".format(float(by_tier["standard"]))
+        spare = [f"{t} about {float(by_tier[t]):,.0f}" for t in ("draft", "max") if by_tier.get(t)]
+        if spare:
+            line += " ({}) - say draft or max to change it".format("; ".join(spare))
+        out.append(line)
+
     out.append("")
     return chr(10).join(out)
 
