@@ -375,7 +375,10 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # The row is read through `agreement_of`, the one accessor, which knows the agreement rides inside `asking`
     # because the stored survey has a column per top-level state key. The import is local for the reason
     # `geometry_survey.role_problems`' import of this module is: the two modules read each other.
-    if _agreement.get("agreed") and is_flow:
+    # AND ONLY WHERE SUCH A QUESTION IS ACTUALLY PUT: `agreed_and_asked` is the agreed mouths a question this
+    # composition put names. With every role settled by the customer's own port list the finder puts none, and
+    # this line would promise an ask that is not coming.
+    if _agreement.get("agreed_and_asked") and is_flow:
         out.append("  the only thing still open on the mouths we agree about is which way the flow goes "
                    "through them - nothing measures that, so it is the one question I put")
     if not_ports and len(not_ports) == len(rows) and rows:

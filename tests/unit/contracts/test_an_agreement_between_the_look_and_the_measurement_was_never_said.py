@@ -206,7 +206,8 @@ def _survey(row: dict | None, purpose: str = "internal_cfd") -> dict:
 
 AGREED_ROW = {"schema": gs.AGREEMENT_SCHEMA,
               "agreed": {"o1": ["what kind of opening a mouth is"], "o2": ["how a mouth sits in the wall"]},
-              "agreed_total": 2, "disagreed": {}, "disagreed_total": 0,
+              "agreed_total": 2, "agreed_and_asked": ["o1", "o2"], "agreed_and_asked_total": 2,
+              "disagreed": {}, "disagreed_total": 0,
               "nothing_comparable": [], "nothing_comparable_total": 0, "channels_not_read": []}
 
 DISAGREED_ROW = {**AGREED_ROW,
@@ -328,3 +329,26 @@ def test_a_delegation_is_still_not_a_label():
     verdict, by, _why = ip.chose_it_themselves(
         {"answered_by": "customer", "delegated": True, "words": "you decide everything"}, "o1", 2)
     assert verdict == "not_a_label" and by == "delegated"
+
+
+def test_the_line_about_the_one_question_is_not_printed_when_no_question_is_put():
+    """A part whose roles the customer's own port list already settled has no role question, and a panel
+    promising one would be promising an ask that is not coming."""
+    row = {**AGREED_ROW, "agreed_and_asked": [], "agreed_and_asked_total": 0}
+    panel = surveyor_panel(
+        {"status": "ok", "unit": {"declared": "mm"}, "bbox": {"extent_m": [1.0, 0.4, 0.3]},
+         "openings": [{"id": "o1"}, {"id": "o2"}],
+         "look": {"status": "ok", "impression": {"looks_like": "a bend",
+                                                 "openings_seen": [{"id": "o1"}, {"id": "o2"}]}},
+         "facts": {}},
+        _survey(row))
+    assert "agrees with the measurement about o1, o2" in panel
+    assert "it is the one question I put" not in panel
+
+
+def test_the_row_marks_which_agreed_mouths_a_question_names():
+    row = gs.agreement_row(_Joint({"o1": _Place("agreed", ["openings_seen[].mouth"]),
+                                   "o2": _Place("agreed", ["openings_seen[].mouth"])}),
+                           _doc("o1", "o2"), _Asked("o1"))
+    assert row["agreed_and_asked"] == ["o1"]
+    assert row["agreed_and_asked_total"] == 1

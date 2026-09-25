@@ -349,6 +349,7 @@ def agreement_row(joint: Any, document: dict, asked: Any = None) -> dict | None:
     covered = {str(p) for q in list(getattr(asked, "questions", None) or []) for p in (q.places or [])}
     mouths = [str(r.get("id")) for r in (document.get("openings") or []) if isinstance(r, dict) and r.get("id")]
     agreed: dict[str, list[str]] = {}
+    agreed_and_asked: list[str] = []
     disagreed: dict[str, dict] = {}
     nothing: list[str] = []
     for oid in mouths:
@@ -364,6 +365,8 @@ def agreement_row(joint: Any, document: dict, asked: Any = None) -> dict | None:
                               "asked": oid in covered}
         elif at.verdict == rv.AGREED:
             agreed[oid] = [rv.plain(f) for f in at.fields]
+            if oid in covered:
+                agreed_and_asked.append(oid)
         else:
             nothing.append(oid)
     if not agreed and not disagreed:
@@ -380,6 +383,12 @@ def agreement_row(joint: Any, document: dict, asked: Any = None) -> dict | None:
         "schema": AGREEMENT_SCHEMA,
         "agreed": {k: agreed[k] for k in list(agreed)[:AGREEMENT_LIST_MAX]},
         "agreed_total": len(agreed),
+        #: the agreed mouths a question this composition PUT actually names. The panel's SUGGESTS line says
+        #: "the only thing still open on the mouths we agree about is which way the flow goes", and that is
+        #: true only where such a question exists: with every role settled by the customer's own port list
+        #: the finder puts none, and the line would then promise an ask that is not coming.
+        "agreed_and_asked": agreed_and_asked[:AGREEMENT_LIST_MAX],
+        "agreed_and_asked_total": len(agreed_and_asked),
         "disagreed": {k: disagreed[k] for k in list(disagreed)[:AGREEMENT_LIST_MAX]},
         "disagreed_total": len(disagreed),
         "nothing_comparable": nothing[:AGREEMENT_LIST_MAX],
