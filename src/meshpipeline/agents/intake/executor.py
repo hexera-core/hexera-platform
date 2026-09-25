@@ -491,6 +491,19 @@ class IntakeToolExecutor:
           the engine on the row is OURS       `es.chosen_by(...) == CHOSEN_BY_US`, recorded when it was
                                               proposed. "" - a selection from before that field existed -
                                               is not "us" and changes nothing.
+          they never named an engine at all   not the same question as the one above, and MEASURED live
+                                              as a hole in it. A customer said "use snappyHexMesh" and
+                                              then "you decide everything else"; the catalog refused
+                                              snappyHexMesh for their file, the model was told "go" six
+                                              times, and on the seventh it proposed cfMesh on its own
+                                              authority. The row then said "ours" - truthfully - about an
+                                              engine that had displaced one the CUSTOMER had named, and
+                                              swapping on from there helped the model out of a value it
+                                              was never allowed to change. A customer who has named an
+                                              engine has not delegated THAT choice, whatever else they
+                                              delegated, and the engine they named stays on screen with
+                                              the mismatch explained - which is the whole point of the
+                                              terminal below.
           some engine can actually do it      the catalog's answer, not ours.
 
         THE CUSTOMER'S OWN VALUES ARE NOT READ HERE AND CANNOT MOVE. The purpose, the geometry kind, the
@@ -508,6 +521,12 @@ class IntakeToolExecutor:
         if not st.choice_deferred:
             return ""
         if es.chosen_by(st.selection) != es.CHOSEN_BY_US:
+            return ""
+        named = sorted({e for m in st.user_messages for e in _vocab.engines_named_in(str(m))})
+        if named:
+            logger.info("Intake: not changing the engine - the customer named %s themselves, so the "
+                        "choice was never ours however much else they delegated - job_id=%s",
+                        ", ".join(named), self._job_id)
             return ""
         candidates = rec.admissible_engines(
             args.get("purpose", ""), args.get("input_kind", ""),

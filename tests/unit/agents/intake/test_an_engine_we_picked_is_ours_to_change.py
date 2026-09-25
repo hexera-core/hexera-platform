@@ -144,6 +144,20 @@ def test_a_customer_who_never_handed_over_the_choice_is_still_asked():
     assert st.selection["engine"] == "snappy"
 
 
+def test_an_engine_they_named_is_not_ours_even_after_we_replaced_it_ourselves():
+    """MEASURED live on shell_and_tube_7_unshared. The customer said "use snappyHexMesh" and then "you
+    decide everything else"; the catalog refused snappyHexMesh for their file, the model was told "go"
+    six times, and on turn 8 it proposed cfMesh ITSELF. The row then said "ours" about cfMesh - which is
+    true - and swapping on from there moved the customer off an engine they had named. `chosen_by` answers
+    who chose what is on the row; this answers whether the choice was ever ours to make."""
+    st = _state("cfmesh", said=(_NAMED_IT, "you decide everything else", "go"),
+                chosen_by=es.CHOSEN_BY_US)
+    assert es.chosen_by(st.selection) == es.CHOSEN_BY_US, "the row does say the pick was ours"
+    _preview(st, {**_PREVIEW, "selected_engine": "cfmesh"})
+    assert st.admission_block, "the swap helped the model past an engine the customer had named"
+    assert st.selection["engine"] == "cfmesh"
+
+
 def test_a_selection_from_before_the_field_existed_is_not_ours_to_change():
     st = _state("snappy", said=(_DELEGATED, "go"), chosen_by="")
     assert es.chosen_by(st.selection) == ""
