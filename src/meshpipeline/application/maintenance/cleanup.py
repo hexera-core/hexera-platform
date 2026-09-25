@@ -108,13 +108,58 @@ async def _purge_async() -> dict:
     return {"purged": purged}
 
 
+def _stalled(cutoff):
+    """Which jobs count as stalled. Extracted so it can be READ BY A TEST.
+
+    It was inline in the query, which meant the only way to check it was to stand up a database -
+    so the lease clause below could be wrong, or absent, and nothing would say so. A condition that
+    decides whether a customer's jobs are reaped is worth being able to assert about.
+    """
+    from sqlalchemy import or_
+
+    from meshpipeline.persistence.models import JobStatus, SimulationJob
+
+    return or_(
+        # abandoned mid-run (worker crash)
+        (SimulationJob.status == JobStatus.running)
+        & SimulationJob.started_at.isnot(None)
+        & (SimulationJob.started_at < cutoff),
+        # AND THE LEASE ALREADY SAYS SO, HOURS EARLIER. A running job is owned by a worker holding a
+        # lease it heartbeats well inside WORKER_LEASE_SECONDS, so an EXPIRED lease means no worker
+        # is holding it - that is what the lease is for, and it is known within about fifteen
+        # minutes. Waiting STALLED_JOB_TIMEOUT_HOURS on top leaves dead jobs counting against
+        # MAX_JOBS_PER_OWNER for the rest of the afternoon: measured here, five jobs killed by a
+        # redeploy filled the cap and refused every upload for hours, while the reaper reported
+        # "reaped 0 stalled job(s)" throughout.
+        #
+        # Only where a lease was actually taken. A null `lease_expires_at` is a job nothing ever
+        # leased, and reading that as expired would reap the innocent.
+        (SimulationJob.status == JobStatus.running)
+        & SimulationJob.lease_expires_at.isnot(None)
+        & (SimulationJob.lease_expires_at < datetime.now(UTC)),
+        # never picked up (started_at is NULL for these)
+        SimulationJob.status.in_([JobStatus.pending, JobStatus.queued])
+        & (SimulationJob.created_at < cutoff),
+    )
+
+
+
+def _aware_lt(when) -> bool:
+    """Is this timestamp already past? True for a naive one read as UTC, which is what the row holds
+    on a database that was not asked for timezones."""
+    if when is None:
+        return False
+    stamp = when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+    return stamp < datetime.now(UTC)
+
+
 def reap_stalled_jobs() -> dict:
     import asyncio
     return asyncio.run(_reap_stalled_async())
 
 
 async def _reap_stalled_async() -> dict:
-    from sqlalchemy import or_, select, update
+    from sqlalchemy import select, update
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from meshpipeline.persistence.models import FailedReason, JobStatus, SimulationJob
@@ -128,17 +173,7 @@ async def _reap_stalled_async() -> dict:
     try:
         async with _SessionLocal() as db:
             rows = (await db.execute(
-                select(SimulationJob).where(
-                    or_(
-                        # abandoned mid-run (worker crash)
-                        (SimulationJob.status == JobStatus.running)
-                        & SimulationJob.started_at.isnot(None)
-                        & (SimulationJob.started_at < cutoff),
-                        # never picked up (started_at is NULL for these)
-                        SimulationJob.status.in_([JobStatus.pending, JobStatus.queued])
-                        & (SimulationJob.created_at < cutoff),
-                    )
-                )
+                select(SimulationJob).where(_stalled(cutoff))
             )).scalars().all()
             now = datetime.now(UTC)
             for job in rows:
@@ -162,9 +197,10 @@ async def _reap_stalled_async() -> dict:
                     continue
                 reaped.append(str(job.id))
                 logger.warning(
-                    "reap_stalled_jobs: job %s stalled in %s (started=%s created=%s) - "
+                    "reap_stalled_jobs: job %s stalled in %s (started=%s created=%s lease_expired=%s) - "
                     "marked failed(unhandled)",
                     job.id, _was, job.started_at, job.created_at,
+                    job.lease_expires_at is not None and _aware_lt(job.lease_expires_at),
                 )
                 # Publish a TERMINAL log line so any live WebSocket client
                 # streaming this (crash-dropped) job receives a closing message and
