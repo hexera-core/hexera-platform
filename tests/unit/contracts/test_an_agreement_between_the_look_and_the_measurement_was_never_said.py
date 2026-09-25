@@ -130,10 +130,11 @@ class _Q:
 
 
 def test_a_disagreement_records_whether_a_question_actually_names_the_mouth():
-    """WITHOUT THIS THE PANEL LIES. Measured on the 40 stored looks in this deployment, most per-mouth
-    disagreements land on faces the builder never cuts as ports - a wall shell's shoulder rings, a fluid
-    domain's own caps - and no question of ours covers them. A line reading "so I am asking about that one"
-    about a mouth nothing will ask about is the fact-that-lies shape."""
+    """WITHOUT THIS THE PANEL LIES. Measured over the 162 stored looks in this deployment, each composed for
+    internal_cfd: 22 parts carry a mouth the two sources read differently, 79 mouths in all, and ZERO of the 79
+    is a mouth the role question names - the look disagrees about the faces the builder never cuts (a shell's
+    shoulder rings, a domain's own caps) and agrees about the ones it does. A line reading "so I am asking
+    about that one" about a mouth nothing will ask about is the fact-that-lies shape."""
     places = {"o1": _Place("disagreed", ["openings_seen[].mouth"], measured="planar_face, stub L/D=0.0"),
               "o9": _Place("disagreed", ["openings_seen[].mouth"], measured="planar_face, stub L/D=0.0")}
     row = gs.agreement_row(_Joint(places), _doc("o1", "o9"), _Asked("o1"))
@@ -141,7 +142,19 @@ def test_a_disagreement_records_whether_a_question_actually_names_the_mouth():
     assert row["disagreed"]["o9"]["asked"] is False
     said = " ".join(agreement_lines(_survey(row)))
     assert "reads o1 differently" in said and "so I am asking about that one" in said
-    assert "no question of mine covers it" in said
+    assert "no question of mine covers them" in said
+
+
+def test_the_mouths_no_question_covers_are_one_line_and_not_one_line_each():
+    """Six promises of a question with nothing behind any of them is what a line each would have printed on
+    the part measured above. The asked ones get a line; the rest get a count, and still get said."""
+    places = {f"o{n}": _Place("disagreed", ["openings_seen[].looks_like"], measured="cap/planar_face")
+              for n in range(1, 8)}
+    row = gs.agreement_row(_Joint(places), _doc(*[f"o{n}" for n in range(1, 8)]), _Asked())
+    lines = [ln for ln in agreement_lines(_survey(row)) if "differently" in ln]
+    assert len(lines) == 1, lines
+    assert "o1, o2, o3, o4, o5, o6 and 1 more" in lines[0]
+    assert "the mesher does not cut those faces" in lines[0]
 
 
 def test_with_no_finder_answer_no_mouth_is_claimed_to_be_asked():

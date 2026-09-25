@@ -271,18 +271,27 @@ def agreement_lines(survey: dict | None) -> list[str]:
         # IS, and that is what this line may claim.
         out.append("  agrees with the measurement about {} ({}) - so I am not asking what those are".format(
             _ids(sorted(agreed), n_agreed), "; ".join(about[:3]) or "the same reading"))
-    if n_disagreed:
-        for oid in sorted(disagreed)[:AGREEMENT_IDS_SHOWN]:
-            entry = disagreed[oid] if isinstance(disagreed[oid], dict) else {}
-            about = ", ".join(str(a) for a in (entry.get("about") or [])) or "this mouth"
-            measured = str(entry.get("measured") or "").strip()
-            # ONLY SAY IT IS ASKED WHEN IT IS. Most per-mouth disagreements land on faces the builder never
-            # cuts as ports, and no question of ours names them. Claiming otherwise is a fact that lies; what
-            # is true and still useful is that the disagreement is on the record and the customer may settle it.
-            tail = (" - so I am asking about that one" if entry.get("asked")
-                    else " - no question of mine covers it, so say if it matters")
-            out.append("  reads {} differently from the measurement ({}){}{}"
-                       .format(oid, about, f"; measured: {measured}" if measured else "", tail))
+    # ONE LINE EACH FOR THE MOUTHS A QUESTION COVERS, ONE LINE FOR ALL THE REST.
+    #
+    # MEASURED over the 162 stored looks in this deployment, each composed for internal_cfd: 22 parts carry at
+    # least one mouth the two sources read differently, 79 mouths in all, and ZERO of those 79 is a mouth the
+    # role question names. The look disagrees about the faces the builder never cuts - a shell's shoulder
+    # rings, a domain's own caps - and agrees about the ones it does. So a line each would have put up to six
+    # promises of a question on the panel with nothing behind any of them, and saying nothing would have
+    # thrown away the one thing the pair actually found. The asked ones get a line; the rest get a count.
+    asked_ids = [o for o in sorted(disagreed) if (disagreed[o] or {}).get("asked")]
+    quiet_ids = [o for o in sorted(disagreed) if not (disagreed[o] or {}).get("asked")]
+    for oid in asked_ids[:AGREEMENT_IDS_SHOWN]:
+        entry = disagreed[oid] if isinstance(disagreed[oid], dict) else {}
+        about = ", ".join(str(a) for a in (entry.get("about") or [])) or "this mouth"
+        measured = str(entry.get("measured") or "").strip()
+        out.append("  reads {} differently from the measurement ({}){} - so I am asking about that one"
+                   .format(oid, about, f"; measured: {measured}" if measured else ""))
+    if quiet_ids:
+        about = sorted({str(a) for o in quiet_ids for a in ((disagreed[o] or {}).get("about") or [])})
+        out.append("  reads {} differently from the measurement ({}) - the mesher does not cut those faces, "
+                   "so no question of mine covers them; say if one matters".format(
+                       _ids(quiet_ids, len(quiet_ids)), "; ".join(about[:3]) or "this mouth"))
     if not n_agreed and not n_disagreed:
         out.append(f"  nothing of the {n_none} measured mouth(s) could be checked against the measurement, "
                    f"so this is not agreement either way")
