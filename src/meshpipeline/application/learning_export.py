@@ -51,6 +51,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,38 @@ TERMINAL_STATUSES: tuple[str, ...] = ("succeeded", "failed")
 #: only durable place the DELIVERED cell count exists - `simulation_jobs.final_result` carries the verdict and
 #: not a single metric, verified on job 489fa1ab.
 VIEWER_DATA_KEY = "viewer_data"
+
+COUNTERFACTUAL_SCHEMA = "meshpipeline.learning_export.without_the_look.v1"
+
+#: The one look status the counterfactual is a real comparison for. A look that failed or was never attempted
+#: composes the same document either way, and calling that "the look changed nothing" would count a deployment
+#: with no reader as evidence that the reader is not needed. It is a copy of `geometry_survey.LOOK_OK` and
+#: `tests/unit/application/test_learning_export.py` pins the two together, because this module may not import
+#: that one at module scope (the package import is deliberately lazy here).
+LOOK_OK = "ok"
+
+#: THE FIELDS THE TWO COMPOSITIONS ARE COMPARED ON, and the list is closed on purpose.
+#:
+#: A diff over the whole composed document would report the LOOK ITSELF as a difference - `composed["look"]`
+#: and `planner_block["look"]` are the look block copied through, so a blanket comparison says "the look
+#: changed the look" on every job that had one and the number would be 100 percent by construction. These are
+#: the fields that are a PROPOSAL: what the platform would hand the customer and the builder. Each one is
+#: extracted by name in `proposal_of`, so a field added to the composition is not silently added to this
+#: measurement.
+PROPOSAL_FIELDS: tuple[str, ...] = (
+    "representation", "fluid_side",
+    "forecast.cells_low", "forecast.cells_high", "forecast.over_cap", "forecast.tier",
+    "planner_block.representation", "planner_block.inlet_opening_id", "planner_block.inlet_bore_m",
+    "planner_block.smallest_port_min_dim_m", "planner_block.agent_forecast_cells",
+    "planner_block.customer_cell_cap", "planner_block.places",
+    "questions.put", "warnings", "uncertainties",
+)
+
+#: The per-place and per-question fields, which cannot be listed above because their names carry an id.
+#: `openings[<id>].role` is spelled exactly as `ask.record.record_for` spells a target's `field`, and as
+#: `learn.schema.AnswerOutcome.field` therefore spells it, so the ingester can join a delta to the label for
+#: the same field without a translation table.
+PROPOSAL_FIELD_PREFIXES: tuple[str, ...] = ("openings[", "questions[")
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -148,8 +181,231 @@ def quality_from_payload(payload: Any) -> dict[str, Any]:
             "mesh_available": payload.get("mesh_available")}
 
 
+# -------------------------------------------------------------------------------------------------
+# WHAT THE PLATFORM WOULD HAVE PROPOSED WITHOUT THE LOOK
+# -------------------------------------------------------------------------------------------------
+# THE VALUE OF THE LOOK, ON EVERY JOB, FOR NOTHING. The measurement runs at upload whatever happens and the
+# look rides on the same document (`geometry_measurements.document["look"]`), and `geometry_survey.composition`
+# reads that block as an INPUT. So for any finished job the composition can be run again with the look taken
+# out, and the difference between the two compositions is the look's whole contribution to what the customer
+# and the builder were handed. No second arm, no second model call, no corpus run: `composition` measures
+# nothing and calls nothing, it composes the stored facts.
+#
+# BOTH SIDES ARE RECOMPUTED, AND THAT IS THE POINT. The obvious version of this compares the STORED row against
+# a fresh composition with the look removed - and it is wrong, because the stored row was composed by the code
+# that was deployed when the job ran and the fresh one by the code running now. Every difference between two
+# agent builds would be counted as the look's work. So both halves are composed here, in one process, under one
+# build, and the only thing that differs between them is the look.
+#
+# AND THE CHECK IS A DIFFERENT CHECK. `replay_mismatch` compares the WITH-the-look recomposition against the
+# fields the stored row itself carries (`stored_proposal`). That comparison can fail where the diff cannot: a
+# composition whose replay does not reproduce the row is a composition about some other code version, and then
+# the delta list is not about the look and says so instead of being published.
+
+
+def _as_text(value: Any) -> str | None:
+    """One field's value as a comparable string. None stays None, because absent is not a value."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _places(block: Any) -> str | None:
+    """The builder's place list as `kind:id`, sorted. The coordinates are left out: they are the measurement's
+    and cannot move with the look, and a float inside a compared string is noise looking for a difference."""
+    if not isinstance(block, dict) or not isinstance(block.get("places"), list):
+        return None
+    return ",".join(sorted(f"{p.get('kind')}:{p.get('id')}" for p in block["places"] if isinstance(p, dict)))
+
+
+def _roles_proposed(asking: dict) -> dict[str, str | None]:
+    """`{openings[<id>].role: the role this composition would have taken unasked}`.
+
+    Read off `asking["record"][<qid>]["targets"]`, which is `ask.record.record_for`'s row and the ONE place the
+    platform's per-place proposal is written down. The key is the target's own `field`, unchanged, so a delta
+    and the label for the same field are the same string on both sides of the export.
+    """
+    out: dict[str, str | None] = {}
+    for row in (asking.get("record") or {}).values():
+        if not isinstance(row, dict):
+            continue
+        for tgt in row.get("targets") or []:
+            if isinstance(tgt, dict) and tgt.get("field") and tgt.get("place"):
+                out[str(tgt["field"])] = _as_text(tgt.get("proposed"))
+    return out
+
+
+def proposal_of(made: dict) -> dict[str, str | None]:
+    """One composition's PROPOSAL as a flat `{field: value}` map, over `PROPOSAL_FIELDS` and nothing else.
+
+    `made` is `geometry_survey.composition`'s return value. Every field is pulled by name and nothing is
+    walked, so the look block the composition carries as an input cannot leak into the comparison.
+    """
+    composed = made.get("composed") or {}
+    forecast = composed.get("forecast") if isinstance(composed.get("forecast"), dict) else {}
+    planner = composed.get("planner_block") if isinstance(composed.get("planner_block"), dict) else {}
+    asking = made.get("asking") if isinstance(made.get("asking"), dict) else {}
+    uncertainties = getattr(made.get("survey"), "uncertainties", None) or []
+    out: dict[str, str | None] = {
+        "representation": _as_text(composed.get("representation")),
+        "fluid_side": _as_text(composed.get("fluid_side")),
+        "forecast.cells_low": _as_text(forecast.get("cells_low")),
+        "forecast.cells_high": _as_text(forecast.get("cells_high")),
+        "forecast.over_cap": _as_text(forecast.get("over_cap")),
+        "forecast.tier": _as_text(forecast.get("tier")),
+        "planner_block.representation": _as_text(planner.get("representation")),
+        "planner_block.inlet_opening_id": _as_text(planner.get("inlet_opening_id")),
+        "planner_block.inlet_bore_m": _as_text(planner.get("inlet_bore_m")),
+        "planner_block.smallest_port_min_dim_m": _as_text(planner.get("smallest_port_min_dim_m")),
+        "planner_block.agent_forecast_cells": _as_text(planner.get("agent_forecast_cells")),
+        "planner_block.customer_cell_cap": _as_text(planner.get("customer_cell_cap")),
+        "planner_block.places": _places(planner),
+        #: WHICH QUESTIONS THE CUSTOMER WAS PUT, IN THE FINDER'S OWN ORDER. This is the field that caught the
+        #: one real difference in the first batch: on job c17d3523 the look raised `q_look_dispute` and the
+        #: composition without it put `q_port_roles` alone. A per-job boolean would have said "the look changed
+        #: something" and thrown away WHAT.
+        "questions.put": _as_text(list(asking.get("put") or [])),
+        "warnings": _as_text(sorted({str(w.get("kind")) for w in (composed.get("warnings") or [])
+                                     if isinstance(w, dict) and w.get("kind")})),
+        "uncertainties": _as_text(sorted(str(getattr(u, "id", "")) for u in uncertainties)),
+    }
+    out.update(_roles_proposed(asking))
+    for qid in (asking.get("put") or []):
+        row = (asking.get("record") or {}).get(str(qid))
+        out[f"questions[{qid}].default"] = _as_text(row.get("default")) if isinstance(row, dict) else None
+    return out
+
+
+def stored_proposal(survey: Any) -> dict[str, str | None]:
+    """The same map for the fields the STORED row itself carries. The replay's own check.
+
+    Deliberately a SUBSET: the row keeps `composed_for.representation`, its `planner_block` and its `asking`
+    row, and not the whole composed document. Every field it can supply is compared, and a field it cannot is
+    absent here rather than filled with a guess.
+    """
+    comp = dict(getattr(survey, "composed_for", None) or {})
+    planner = getattr(survey, "planner_block", None)
+    planner = planner if isinstance(planner, dict) else {}
+    asking = getattr(survey, "asking", None)
+    asking = dict(asking) if isinstance(asking, dict) else {}
+    out: dict[str, str | None] = {
+        "representation": _as_text(comp.get("representation")),
+        "planner_block.representation": _as_text(planner.get("representation")),
+        "planner_block.inlet_opening_id": _as_text(planner.get("inlet_opening_id")),
+        "planner_block.inlet_bore_m": _as_text(planner.get("inlet_bore_m")),
+        "planner_block.agent_forecast_cells": _as_text(planner.get("agent_forecast_cells")),
+        "planner_block.customer_cell_cap": _as_text(planner.get("customer_cell_cap")),
+        "planner_block.places": _places(planner),
+        #: ONLY WHERE THE ROW HAS AN ASKING BLOCK. `_as_text([])` is `"[]"`, a real value, so a row composed
+        #: before the question finder was wired would claim it put no questions and every replay would be
+        #: reported unfaithful against a claim the row never made.
+        **({"questions.put": _as_text(list(asking.get("put") or []))} if asking else {}),
+    }
+    out.update(_roles_proposed(asking))
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def deltas(with_look: dict[str, str | None], no_look: dict[str, str | None]) -> list[dict[str, Any]]:
+    """One row per field, INCLUDING every field the look left alone.
+
+    A job where the look changed nothing is as informative as one where it changed everything, and a per-job
+    boolean throws that away: it cannot say which field the look earns its cost on, and it cannot say that a
+    field the look never moves is a field the look is not needed for. Every row carries `changed`, so a reader
+    counts it either way round.
+    """
+    rows = []
+    for field in sorted(set(with_look) | set(no_look)):
+        a, b = with_look.get(field), no_look.get(field)
+        rows.append({"field": field, "with_look": a, "without_look": b, "changed": a != b})
+    return rows
+
+
+def _agent_version() -> str:
+    try:
+        import importlib.metadata as md
+        return str(md.version("hexera-geometry-agent"))
+    except Exception:                              # noqa: BLE001 - a missing stamp is recorded, never invented
+        return ""
+
+
+def without_the_look(document: Any, survey: Any) -> dict[str, Any]:
+    """What this job's survey WOULD have proposed from the measurement alone, beside what it did propose.
+
+    Computed, never guessed. `computed` False carries the reason in `why_not` and NO field list, because a
+    comparison that could not be made is a missing comparison and an empty one reads as agreement.
+    """
+    from meshpipeline.application.geometry_survey import composed_inputs, composition
+    started = time.perf_counter()
+    doc = document if isinstance(document, dict) else {}
+    look = doc.get("look") if isinstance(doc.get("look"), dict) else {}
+    stamp = doc.get("stamp") if isinstance(doc.get("stamp"), dict) else {}
+    out: dict[str, Any] = {
+        "schema": COUNTERFACTUAL_SCHEMA,
+        "computed": False,
+        "why_not": "",
+        "look_status": str(look.get("status") or "not_attempted"),
+        #: R2. The counterfactual is composed by the build that EXPORTS, which is not always the build that
+        #: measured the job, and two batches composed under different builds are not one population. Both
+        #: stamps travel, and `same_build_as_the_job` says in one field whether they are the same.
+        "recomposed_under": {"agent_version": _agent_version(),
+                             "platform_sha": str(stamp.get("platform_sha") or "")},
+        "job_measured_under": {"agent_git_sha": str(stamp.get("agent_git_sha") or ""),
+                               "facts_schema_version": stamp.get("facts_schema_version")},
+        "same_build_as_the_job": None,
+        "inputs": {},
+        "replay_faithful": None,
+        #: how many fields the stored row could check the replay on. NONE CHECKED IS NOT FAITHFUL: a row that
+        #: carries no comparable field cannot vouch for the replay, and reporting `replay_faithful: true` there
+        #: would be a check that always passes, which is the one thing a check may not be.
+        "replay_checked": 0,
+        "replay_mismatch": [],
+        "fields": [],
+        "seconds": None,
+    }
+    if survey is None:
+        out["why_not"] = "there is no survey row for this job, so there is no composition to run again"
+        return out
+    if doc.get("status") != "ok" or not isinstance(doc.get("facts"), dict) or not doc.get("facts"):
+        out["why_not"] = "the stored measurement cannot be composed, so neither half can be recomputed"
+        return out
+    if not look or str(look.get("status")) != "ok":
+        out["why_not"] = (f"the look on this job is {look.get('status') or 'absent'}, so the composition with "
+                          f"the look and the composition without it are the same composition")
+        return out
+    inputs = composed_inputs({"composed_for": dict(getattr(survey, "composed_for", None) or {})})
+    out["inputs"] = json.loads(json.dumps(inputs, default=str))
+    try:
+        a = composition(doc, **inputs)
+        b = composition({k: v for k, v in doc.items() if k != "look"}, **inputs)
+    except Exception as exc:                       # noqa: BLE001 - an export never fails on this block
+        out["why_not"] = f"the composition could not be run again ({type(exc).__name__}: {exc})"[:300]
+        return out
+    with_look, no_look = proposal_of(a), proposal_of(b)
+    stored = stored_proposal(survey)
+    checked = sorted(f for f in stored if f in with_look)
+    mismatch = [f for f in checked if with_look[f] != stored[f]]
+    version = out["recomposed_under"]["agent_version"]
+    out.update({
+        "computed": True,
+        "replay_faithful": None if not checked else not mismatch,
+        "replay_checked": len(checked),
+        "replay_mismatch": [{"field": f, "stored": stored[f], "replayed": with_look[f]} for f in mismatch],
+        "fields": deltas(with_look, no_look),
+        "seconds": round(time.perf_counter() - started, 3),
+        "same_build_as_the_job": bool(version) and version in (out["job_measured_under"]["agent_git_sha"] or ""),
+    })
+    return out
+
+
 def envelope(*, job: Any, source: Any, interpretation: Any, measurement: Any, survey: Any,
-             viewer_payload: Any = None, quality_unavailable: str = "") -> dict[str, Any]:
+             viewer_payload: Any = None, quality_unavailable: str = "",
+             counterfactual: dict[str, Any] | None = None) -> dict[str, Any]:
     """One finished job as the learning loop's input document. A pure function of the rows it is handed.
 
     EVERY HALF THAT IS MISSING SAYS SO BY NAME. A job with no survey row, no measurement, no interpretation or
@@ -170,6 +426,15 @@ def envelope(*, job: Any, source: Any, interpretation: Any, measurement: Any, su
         absent.append("the geometry agent's step never ran on this job (geometry_step is null)")
     if viewer_payload is None:
         absent.append(quality_unavailable or f"the {VIEWER_DATA_KEY} payload was not read")
+    # A COUNTERFACTUAL THAT COULD NOT BE COMPUTED ON A JOB THAT HAD A LOOK IS A MISSING HALF, and a replay
+    # that does not reproduce the row is worse than missing, because its delta list would be read as the
+    # look's work. Both are named here so the runbook's "read `absent` first" covers them.
+    cf = counterfactual if isinstance(counterfactual, dict) else {}
+    if cf and not cf.get("computed") and cf.get("look_status") == LOOK_OK:
+        absent.append(f"the without-the-look composition could not be computed: {cf.get('why_not')}")
+    if cf.get("computed") and cf.get("replay_faithful") is False:
+        absent.append("the with-the-look recomposition does not reproduce the stored survey row, so this "
+                      "job's without-the-look deltas are not about the look")
 
     src_sha = str(getattr(source, "sha256", "") or "")
     return {
@@ -239,6 +504,9 @@ def envelope(*, job: Any, source: Any, interpretation: Any, measurement: Any, su
         # learning loop reads off them is already in `plan`, `envelope` and the answers.
         "step": None if step is None else {k: v for k, v in step.items() if k != "ledger"},
         "quality": quality_from_payload(viewer_payload),
+        #: WHAT THE SAME SURVEY WOULD HAVE PROPOSED WITH NO LOOK, computed (see `without_the_look`). None on a
+        #: caller that did not ask for it; the ingester reads `computed` and `why_not` and never an empty list.
+        "look_counterfactual": counterfactual,
     }
 
 
@@ -298,8 +566,14 @@ async def export_job(db: Any, job_id: str, *, store: Any = None) -> dict[str, An
                          f"{list(TERMINAL_STATUSES)}")
     source, interp, measurement, survey = await _rows_for(db, job)
     payload, why = await _viewer_payload(db, job.id, store)
+    # THE ONE PIECE OF COMPUTATION THIS MODULE DOES. Everything else here is a read; this recomposes the survey
+    # twice (with the look and without it) to measure what the look was worth on this job. It is affordable
+    # because `geometry_survey.composition` runs no model and measures no geometry - it composes the stored
+    # facts - and it never raises: `without_the_look` returns `computed: False` with the reason.
+    doc = measurement.document if measurement is not None and isinstance(measurement.document, dict) else {}
     return envelope(job=job, source=source, interpretation=interp, measurement=measurement, survey=survey,
-                    viewer_payload=payload, quality_unavailable=why)
+                    viewer_payload=payload, quality_unavailable=why,
+                    counterfactual=without_the_look(doc, survey))
 
 
 def write_envelope(env: dict[str, Any], out_dir: Path) -> Path:
