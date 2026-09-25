@@ -360,7 +360,10 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # WHAT a mouth is settles everything except the one thing the mesh needs. And it may not be cut: an
     # unconfirmed role is refused at submission by `geometry_survey.role_problems`, and making a role question
     # disappear took a measured run from 3-of-3 submissions to 1-of-4.
-    _agree = (survey or {}).get("agreement") if isinstance((survey or {}).get("agreement"), dict) else {}
+    # read through the one accessor, which knows the agreement rides inside `asking` because the stored row
+    # has a column per top-level state key (`geometry_survey.agreement_of`)
+    from meshpipeline.application.geometry_survey import agreement_of as _agreement_of
+    _agree = _agreement_of(survey)
     if _agree.get("agreed") and is_flow:
         out.append("  the only thing still open on the mouths we agree about is which way the flow goes "
                    "through them - nothing measures that, so it is the one question I put")

@@ -153,7 +153,29 @@ def test_with_no_finder_answer_no_mouth_is_claimed_to_be_asked():
 def test_the_row_is_absent_from_a_survey_that_never_had_one():
     assert gs.agreement_of(None) == {}
     assert gs.agreement_of({}) == {}
-    assert gs.agreement_of({"agreement": {"schema": gs.AGREEMENT_SCHEMA}})["schema"] == gs.AGREEMENT_SCHEMA
+    assert gs.agreement_of({"asking": {"agreement": {"schema": gs.AGREEMENT_SCHEMA}}})["schema"] == (
+        gs.AGREEMENT_SCHEMA)
+
+
+def test_the_agreement_survives_the_row_the_way_the_row_is_actually_stored():
+    """THE ONE THAT WOULD HAVE MADE THIS CHANGE INVISIBLE FROM THE SECOND TURN ON.
+
+    `geometry_surveys` has a COLUMN PER TOP-LEVEL STATE KEY and `state_of` rebuilds the state from those
+    columns, so a new top-level key written by `compose` lives for the turn that composed it and is gone on
+    the next read. The panel would have shown the agreement once, on the turn the survey was composed, and
+    never again - and nothing would have failed. So the agreement rides inside `asking`, which round-trips
+    whole, and this test reads the repository's own reader rather than trusting the arrangement.
+    """
+    from meshpipeline.persistence.models import GeometrySurvey
+    from meshpipeline.persistence.repositories.geometry_survey_repository import state_of
+
+    row = GeometrySurvey(sha256="a" * 64, facts_sha256="b" * 64, stage="surveyed", survey={},
+                         asking={"schema": gs.ASKING_SCHEMA, "put": [], "agreement": AGREED_ROW},
+                         composed_for={}, asked=[], answers=[], agent_git_sha="", look_queued="",
+                         state_schema=gs.SURVEY_STATE_SCHEMA)
+    back = state_of(row)
+    assert gs.agreement_of(back)["agreed"] == AGREED_ROW["agreed"]
+    assert "agreement" not in back, "a top-level key is not what the row stores"
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -161,9 +183,11 @@ def test_the_row_is_absent_from_a_survey_that_never_had_one():
 # ---------------------------------------------------------------------------------------------------------------
 
 def _survey(row: dict | None, purpose: str = "internal_cfd") -> dict:
-    out: dict = {"composed_for": {"purpose": purpose, "representation": "fluid_domain"}}
+    """A survey row the way `compose` writes one: the agreement rides INSIDE `asking`, because the stored row
+    has a column per top-level key and a new one is dropped on the next read (`gs.agreement_of`)."""
+    out: dict = {"composed_for": {"purpose": purpose, "representation": "fluid_domain"}, "asking": {}}
     if row is not None:
-        out["agreement"] = row
+        out["asking"] = {"schema": gs.ASKING_SCHEMA, "put": [], "agreement": row}
     return out
 
 

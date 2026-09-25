@@ -394,8 +394,18 @@ def agreement_row(joint: Any, document: dict, asked: Any = None) -> dict | None:
 
 
 def agreement_of(state: dict | None) -> dict:
-    """The stored per-place agreement, or `{}` for a row composed before it was written."""
-    row = (state or {}).get("agreement")
+    """The stored per-place agreement, or `{}` for a row composed before it was written.
+
+    IT LIVES INSIDE `asking` BECAUSE THE ROW IS COLUMN-WISE. `geometry_surveys` has a column per key and
+    `persistence.repositories.geometry_survey_repository.state_of` rebuilds the state from those columns, so a
+    NEW top-level key is written by `compose`, survives in memory for the turn that composed it, and is gone
+    the next time the row is read - the panel would have shown the agreement on the turn the survey was
+    composed and never again. `asking` is the one JSONB that round-trips whole and belongs to the same
+    composition and the same lifetime, and the pair's per-place verdicts are an input to exactly the decisions
+    `asking` records: which question was put and what its sentence said. One accessor, so no reader has to
+    know where it sits.
+    """
+    row = asking_of(state).get("agreement")
     return dict(row) if isinstance(row, dict) else {}
 
 
@@ -461,12 +471,13 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
         "survey": survey.model_dump(mode="json"),
         #: the finder's own decisions for this composition: which questions it PUT, which it held and why,
         #: each one's tier and `ask.say`'s sentence. `question_views` reads it; nothing else may.
-        "asking": made["asking"],
+        #: WHAT THE LOOK AND THE MEASUREMENT DID AT EACH MEASURED MOUTH rides INSIDE it (`agreement_row`),
+        #: because the stored row has a column per top-level key and a new one would be dropped on the next
+        #: read - see `agreement_of`. Absent when there was no pair to compare, so a row composed before a
+        #: look landed is byte for byte what it was.
+        "asking": {**made["asking"],
+                   **({"agreement": made["agreement"]} if made.get("agreement") else {})},
         "planner_block": composed.get("planner_block"),
-        #: WHAT THE LOOK AND THE MEASUREMENT DID AT EACH MEASURED MOUTH (`agreement_row`). Absent when there
-        #: was no pair to compare, so a row composed before a look landed is byte for byte what it was.
-        #: `agents/intake/geometry_brief.surveyor_panel` is the reader and the only one.
-        **({"agreement": made["agreement"]} if made.get("agreement") else {}),
         "composed_for": {
             "purpose": purpose, "engine": engine or "", "declared": ports,
             "unit": unit or "", "unit_basis": unit_basis or "", "scale_to_metres": scale_to_metres,
@@ -783,6 +794,12 @@ def asking_row(asked: Any, pkg: dict) -> dict:
     `put` is in the finder's RANKED ORDER, which is the order a customer is asked in. `held` is only what
     this pipeline chose to hold (`ask.schema.OUR_CHOICE`): a question somebody else already answered is not
     on the survey's uncertainty list at all, so there is no view of it to hold.
+
+    ONE SIBLING KEY IS ADDED BY `compose` AND NOT BY THIS FUNCTION: `agreement`, what the look and the
+    measurement did at each measured mouth. It is not one of the finder's decisions, so it is not written
+    here; it rides in this dict because the stored row has a column per top-level state key and a new one is
+    dropped on the next read (`agreement_of` carries the argument). `question_views` still reads only the six
+    keys below.
     """
     ours = pkg["ask_schema"].OUR_CHOICE
     held = {q.id: {"settled_by": q.settled_by, "quote": q.settled_quote}
