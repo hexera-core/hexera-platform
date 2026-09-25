@@ -331,11 +331,12 @@ def agreement_row(joint: Any, document: dict, asked: Any = None) -> dict | None:
     lies (`reconcile.joint.Joint.readers` is the same argument about a whole channel).
 
     `asked` is the finder's own answer for this composition (`ask.intake.Asked`), and it is here for one reason:
-    WITHOUT IT THE PANEL LIES. Measured on the 40 stored looks in this deployment, most per-mouth disagreements
-    land on faces the builder never cuts as ports - a wall shell's shoulder rings, a fluid domain's own caps -
-    and no question of ours covers them. A panel line reading "so I am asking about that one" about a mouth
-    nothing will ask about is exactly the shape this codebase is most careful about, so each mouth records
-    whether a question the finder PUT names it, and the panel says only what is true.
+    WITHOUT IT THE PANEL LIES. Composed for internal_cfd over the 162 stored looks in this deployment: 22 parts
+    carry a mouth the two sources read differently, 79 mouths in all, and ZERO of the 79 is a mouth the role
+    question names. The look disagrees about the faces the builder never cuts - a shell's shoulder rings, a
+    domain's own caps - and agrees about the ones it does. A panel line reading "so I am asking about that one"
+    about a mouth nothing will ask about is exactly the shape this codebase is most careful about, so each
+    mouth records whether a question the finder PUT names it, and the panel says only what is true.
     """
     if joint is None:
         return None
