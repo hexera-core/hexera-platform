@@ -153,3 +153,17 @@ def test_only_a_flow_job_is_asked_about_flow():
     assert "could not confirm any of the 4 opening(s)" in structural, (
         "what the openings are is worth saying whatever the job is")
     assert "flow" not in structural, "a structural job has no flow in it"
+
+
+# THE TWO CEILINGS AGREE BY COINCIDENCE. `hexera.budget` does
+# `cap = int(cell_cap) if cell_cap else MAX_CELLS_CAP`, so composing with None never meant unbounded -
+# it meant the package's own constant. Both are 8,000,000 today, in two independently pinned
+# distributions, and only the platform's is env-overridable. Nothing tied them together.
+
+def test_the_package_s_own_ceiling_has_not_drifted_from_the_platform_s():
+    """If this fails, the agent is planning against one number and the driver clamping to another."""
+    from geometry_agent.agent.hexera import MAX_CELLS_CAP
+    assert MAX_CELLS_CAP == CEILING, (
+        f"the geometry agent plans against {MAX_CELLS_CAP:,} and this platform meshes at most "
+        f"{CEILING:,}. Whichever is wrong, the customer is told one and gets the other, and the "
+        f"clamp that resolves it is silent and downstream of their confirmation.")
