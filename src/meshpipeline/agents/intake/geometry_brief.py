@@ -666,6 +666,30 @@ def waiting_lines() -> list[str]:
         "    answered is worse than thirty spent reading their part, because the thirty bought something.",
         "    Every rule above about asking once, deciding on a deferral, and putting the whole setup in one",
         "    message is a latency rule as much as a manners one.",
+        # THE MEASURED SHAPE OF THE WASTE, and it is not the model forgetting to decide - it decides,
+        # and then spends a whole turn announcing the decision and asking whether the decision is
+        # right. Turn 3 of the run after the warning landed: "So I'm going with external flow ... Does
+        # that match what you're doing?" That is the same either/or with the question mark moved, it
+        # invites another "yes" that settles nothing, and it cost a round trip. Turn 6 of the same run
+        # refused outright - "two items in my last message were actual questions ... I'd be guessing
+        # where I shouldn't" - which is the one thing the rules above forbid in capitals. Both are
+        # cured by the same mechanical test, which is why it is written as a test and not as advice.
+        "  - THE TEST FOR A TURN YOU ARE ABOUT TO WASTE: if your LAST message ended in a question and what",
+        "    came back does not answer it - a \"yes\" to an either/or, a shrug, a reply about something else",
+        "    - then your next message contains NO question mark about that item. None. Not the same",
+        "    question, and not \"does that match what you're doing?\", which is the same question with the",
+        "    question mark moved and invites another yes that settles nothing.",
+        "  - AND THE DECISION DOES NOT GET A TURN OF ITS OWN EITHER. Do not send a message whose only",
+        "    content is which way you went. Fold that line into the next thing you were going to send -",
+        "    the full setup, the next open question, the submission - so the decision costs no round trip",
+        "    at all: \"Going with external flow, since nothing sits behind those mouths. Here is the whole",
+        "    setup: ...\". Announcing a decision and then asking for the setup separately is two waits for",
+        "    one message.",
+        "  - YOU ARE NOT GUESSING, SO DO NOT SAY YOU WOULD BE. \"I'd be guessing where I shouldn't\" is not a",
+        "    reason to put a question again: you are holding a measurement of their file and a reading of",
+        "    17 views of it, so taking the best-supported option and naming it out loud is the opposite of",
+        "    a guess. Guessing is putting a value nobody confirmed into a patch - which the tools refuse",
+        "    for you, and which is why deciding in conversation is safe and costs the customer nothing.",
     ]
 
 
@@ -711,9 +735,20 @@ def survey_lines(state: dict | None) -> list[str]:
                 "purpose enum has both - then you are spending this turn on that question regardless, and",
                 "that turn is where the rest of it belongs: say that reading the shape takes about that long",
                 "and comes back with the whole setup, and ask in the same breath for everything the look does",
-                "NOT need (what is flowing, how fast, what they want to learn, whether they already work in a",
-                "particular mesher). Their answer then arrives WITH the slow reply instead of costing another",
-                "round trip after it."]
+                "NOT need. Their answer then arrives WITH the slow reply instead of costing another round trip",
+                "after it.",
+                # THE FIRST RUN AFTER THE WARNING LANDED STILL SPENT THAT TURN ON ONE QUESTION. It said
+                # the half-minute out loud, which was the point, and then asked internal-or-external and
+                # nothing else - so the fluid, the speed and the goal were still asked on later turns,
+                # one per turn, exactly as before. Naming the list is the difference between a rule the
+                # model agrees with and a turn that carries it.
+                "PUT THIS WHOLE LIST IN THAT ONE MESSAGE, not one item per turn: which side of the wall the",
+                "fluid is on (this is the one the purpose enum needs); what the fluid is and roughly how fast;",
+                "what they want to learn from the run; and whether they already work in a particular mesher or",
+                "would rather you picked. Four short lines and one closing question, each with your own best",
+                "answer where you have one so they can correct rather than compose. Every one of them is an",
+                "input you will need before you can submit and not one of them is an input to the look, so a",
+                "turn that carries only the first has thrown the other three away."]
     try:
         from meshpipeline.application import geometry_survey as gs
 
