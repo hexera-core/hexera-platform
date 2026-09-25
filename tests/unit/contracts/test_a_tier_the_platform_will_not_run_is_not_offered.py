@@ -167,3 +167,37 @@ def test_the_package_s_own_ceiling_has_not_drifted_from_the_platform_s():
         f"the geometry agent plans against {MAX_CELLS_CAP:,} and this platform meshes at most "
         f"{CEILING:,}. Whichever is wrong, the customer is told one and gets the other, and the "
         f"clamp that resolves it is silent and downstream of their confirmation.")
+
+
+# AND THE CEILING MUST NOT BE PUT IN THE COMPOSITION'S CAP, which is where I first put it.
+#
+# `compose`'s cap becomes `planner_block.customer_cell_cap`, and `contract.deliver.
+# check_builder_handoff` refuses any handoff whose `customer_cell_cap` is not the RESOLVED BUDGET:
+#
+#     the builder's cap is 8000000 and the resolved budget is None [customer_cell_cap]
+#
+# `given.budget` is None whenever nobody stated a budget, which is most jobs. So a ceiling written
+# there makes `geometry_step.builder_handoff` raise on every one of them, `planner_inputs_for_state`
+# falls back to the no-plan block, and the job runs with no plan at all - the whole of step 5 lost to
+# a change meant to make one number honest. Reverted in 57324d2.
+#
+# A cap the customer never confirmed cannot be recorded as the cap the builder was given. That is the
+# second house law one field along, and it is why `cell_cap_kind` is computed from `cell_cap` and
+# `stated_cap` and never from a ceiling.
+#
+# The drift test above is the guard that survives: an env-overridden CELL_HARD_LIMIT makes it fail
+# rather than letting the agent plan against one number while the driver clamps to another. A failing
+# test is the outcome wanted here - not a value threaded into a contract that checks it for equality
+# against something else.
+
+def test_the_composition_does_not_record_a_ceiling_as_the_customer_s_cap():
+    """Pins the revert. Re-adding the ceiling here costs every unstated-budget job its plan."""
+    import inspect
+
+    from meshpipeline.application import geometry_survey as gs
+
+    src = inspect.getsource(gs.composition)
+    assert "cell_cap_for_composition" not in src, (
+        "the platform ceiling is back in `compose`'s cap. It becomes "
+        "planner_block.customer_cell_cap, check_builder_handoff refuses it against a resolved budget "
+        "of None, and every job with no stated budget silently loses step 5. See 57324d2.")
