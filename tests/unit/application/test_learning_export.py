@@ -464,6 +464,21 @@ def test_the_look_ok_word_is_the_survey_module_s_own():
     assert lx.LOOK_OK == LOOK_OK == "ok"
 
 
+def test_whether_the_two_builds_are_the_same_has_three_answers():
+    """R2 turns on it, so "cannot tell" is not folded into "different". A wheel built outside the vendor script
+    has no `+g<sha>` and a measurement stamped with a bare sha has no version."""
+    assert lx.same_build("0.1.0+ga3a9ce94d2", "0.1.0+ga3a9ce94d2") is True
+    # the short sha is a prefix of the long one, which is the same commit
+    assert lx.same_build("0.1.0+ga3a9ce94d2", "0.1.0+ga3a9ce94d23cdb2bccb3") is True
+    assert lx.same_build("0.1.0+ga3a9ce94d2", "0.1.0+g1fb530cf5e") is False
+    # neither side names a commit, or one side is empty: not a claim either way
+    assert lx.same_build("0.1.0", "0.1.0") is None
+    assert lx.same_build("", "0.1.0+ga3a9ce94d2") is None
+    assert lx.same_build("0.1.0+ga3a9ce94d2", "") is None
+    # a bare git sha on the row against a version that carries it
+    assert lx.same_build("0.1.0+ga3a9ce94d2", "a3a9ce94d2") is True
+
+
 def test_a_value_compared_is_a_string_and_a_missing_one_stays_missing():
     assert lx._as_text(None) is None
     assert lx._as_text(True) == "true" and lx._as_text(False) == "false"

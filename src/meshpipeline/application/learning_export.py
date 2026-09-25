@@ -326,6 +326,29 @@ def deltas(with_look: dict[str, str | None], no_look: dict[str, str | None]) -> 
     return rows
 
 
+_SHORT_SHA = re.compile(r"\+g([0-9a-f]{7,40})")
+
+
+def same_build(version: str, stamped: str) -> bool | None:
+    """Whether the build that recomposed is the build the job was measured under. None when it cannot be said.
+
+    NONE, NOT FALSE, WHEN EITHER SIDE HAS NO COMMIT IN IT. R2 turns on whether two numbers come from one build,
+    and "we cannot tell" is a third answer: a wheel built outside `deploy/vendor_geometry_agent.sh` has no
+    `+g<sha>` segment, and a measurement stamped with a bare git sha has no version. Reporting False there
+    would read as "a different build", which is a claim neither side supports.
+    """
+    a, b = _SHORT_SHA.search(str(version or "")), _SHORT_SHA.search(str(stamped or ""))
+    if a and b:
+        one, two = a.group(1), b.group(1)
+        return one.startswith(two) or two.startswith(one)
+    if not version or not stamped:
+        return None
+    #: a bare sha on one side and a version on the other: comparable only if one contains the other
+    if len(str(stamped)) >= 7 and str(stamped) in str(version):
+        return True
+    return None if not (a or b) else False
+
+
 def _agent_version() -> str:
     try:
         import importlib.metadata as md
@@ -398,7 +421,7 @@ def without_the_look(document: Any, survey: Any) -> dict[str, Any]:
         "replay_mismatch": [{"field": f, "stored": stored[f], "replayed": with_look[f]} for f in mismatch],
         "fields": deltas(with_look, no_look),
         "seconds": round(time.perf_counter() - started, 3),
-        "same_build_as_the_job": bool(version) and version in (out["job_measured_under"]["agent_git_sha"] or ""),
+        "same_build_as_the_job": same_build(version, out["job_measured_under"]["agent_git_sha"]),
     })
     return out
 
