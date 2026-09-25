@@ -373,11 +373,21 @@ def test_deferring_to_an_engine_we_have_already_proposed_accepts_it():
     assert gate["selection"]["id"] == proposed["id"]
 
 
-def test_deferring_with_no_question_on_screen_still_selects_nothing():
-    # The honesty of the rule above is that it needs something to accept. With no standing
-    # proposal there is no named engine, so "you decide" is a request, not a confirmation.
-    assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=False) is False
+def test_deferring_settles_the_engine_the_model_is_proposing():
+    # THIS TEST ONCE ASSERTED THE OPPOSITE, and the change was deliberate. It pinned "a deferral
+    # with no question on screen selects nothing", on the reasoning that a deferral needs something
+    # to accept. But the fresh-proposal case IS the customer's own deferral being acted on: they
+    # said "you decide", the model picked, and showing them "Selected engine: X - do you want X?"
+    # asks them to make the decision they just handed over. That round trip bought nothing.
+    #
+    # What replaced the property is not nothing. The engine is named in the setup block they confirm
+    # before anything is submitted, and the dispatch asks again after that, so it is still theirs to
+    # stop - and everything below still confirms nothing at all.
+    assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=False) is True
     assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=True) is True
+
+    for said in ("what is gmsh?", "no", "not yet", "use cfmesh instead", "Use gmsh."):
+        assert es.answers_the_selection_question("gmsh", "", said, outstanding=False) is False, said
 
 
 def test_the_words_people_actually_use_to_agree_are_read_as_agreement():
