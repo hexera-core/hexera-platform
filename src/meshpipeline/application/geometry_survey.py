@@ -293,6 +293,99 @@ def _reconciled(pkg: dict, facts, representation: str, look: Any, case: str):
         return None
 
 
+#: The agreement row's own name, so a reader of a stored survey can tell one written before this existed
+#: (the key is absent) from one where nothing was comparable (the key is there and every mouth is in
+#: `nothing_comparable`). Absence and "nobody compared" are different facts and the row says which.
+AGREEMENT_SCHEMA = "meshpipeline.geometry_agreement.v1"
+
+#: How many mouths the row names per bucket before it counts the rest. The panel is a prompt block and a part
+#: with 1,231 mouths (`ask.intake`'s own measured example) would otherwise put 1,231 ids in front of the model.
+#: Same argument as `block_list_max`, same shape of answer: name a few and state the remainder.
+AGREEMENT_LIST_MAX = 12
+
+
+def agreement_row(joint: Any, document: dict) -> dict | None:
+    """WHAT THE LOOK AND THE MEASUREMENT DID AT EACH MEASURED MOUTH, for the customer's panel. None when
+    there was no pair to compare at all.
+
+    ONE READING, AND IT IS THE PACKAGE'S. Every word of this comes out of `reconcile.verdict.by_place`, which
+    regroups the verdicts step 4 already decided - the same `DISPUTED` list `reconcile.verdict.question` ranks
+    into the one question. Writing a second comparison here, off `look.impression.openings_seen[]` and the
+    opening table, would be a second opinion about the same pair that can disagree with the first, which is the
+    defect this codebase keeps finding in itself. So this function filters and renames and judges nothing.
+
+    WHY IT IS STORED ON THE ROW AT ALL, and it is the only new key. The panel
+    (`agents/intake/geometry_brief.surveyor_panel`) is given the stored measurement and the stored survey and
+    nothing else; the `Joint` lives for the length of one `composition` call. A key that is written and never
+    read is this project's signature failure, so this one is written because `surveyor_panel` reads it and for
+    no other reason. It is derived, deterministic and outside the survey handoff, so
+    `application/geometry_step._inputs` - which compares the recomposed HANDOFF field for field - cannot see it.
+
+    ONLY MEASURED MOUTHS. `by_place` is keyed by whatever kind of place a claim was about: an opening id, a
+    mark letter A to F, `knife`, `mirror`, an axis letter. The panel names mouths to a customer, so this keeps
+    the subjects that are ids in this document's own opening table and drops the rest. That is a filter on what
+    is SHOWN and never on what was found: the counts below are over the mouths this row names.
+
+    AND `nothing_comparable` IS NOT AGREEMENT. A mouth the look never named, or named with `unsure`, leaves no
+    claim for the measurement to check, and reading the absence as the two sources agreeing is the fact that
+    lies (`reconcile.joint.Joint.readers` is the same argument about a whole channel).
+    """
+    if joint is None:
+        return None
+    try:
+        from geometry_agent.reconcile import verdict as rv
+        places = joint.agreement
+    except Exception as exc:                       # noqa: BLE001 - a panel line is never worth a composition
+        logger.warning("geometry survey: the per-place agreement could not be read (%s: %s); the panel says "
+                       "nothing about it", type(exc).__name__, exc)
+        return None
+    mouths = [str(r.get("id")) for r in (document.get("openings") or []) if isinstance(r, dict) and r.get("id")]
+    agreed: dict[str, list[str]] = {}
+    disagreed: dict[str, dict] = {}
+    nothing: list[str] = []
+    for oid in mouths:
+        at = places.get(oid)
+        if at is None:
+            nothing.append(oid)
+            continue
+        if at.verdict == rv.DISAGREED:
+            disagreed[oid] = {"about": [rv.plain(v.look_field) for v in at.disagreed],
+                              "measured": str(at.measured or "")[:160]}
+        elif at.verdict == rv.AGREED:
+            agreed[oid] = [rv.plain(f) for f in at.fields]
+        else:
+            nothing.append(oid)
+    if not agreed and not disagreed:
+        # nothing was comparable anywhere. The row still exists and still says so, because "no agreement row"
+        # and "no mouth could be compared" are two different things to a reader of this row.
+        return {"schema": AGREEMENT_SCHEMA, "agreed": {}, "disagreed": {}, "nothing_comparable": nothing,
+                "channels_not_read": sorted(k for k, ok in (getattr(joint, "readers", None) or {}).items()
+                                            if not ok),
+                "read_as": "no claim about any measured mouth survived to be checked, so there is nothing here "
+                           "either way. That is not the two sources agreeing."}
+    return {
+        "schema": AGREEMENT_SCHEMA,
+        "agreed": {k: agreed[k] for k in list(agreed)[:AGREEMENT_LIST_MAX]},
+        "agreed_total": len(agreed),
+        "disagreed": {k: disagreed[k] for k in list(disagreed)[:AGREEMENT_LIST_MAX]},
+        "disagreed_total": len(disagreed),
+        "nothing_comparable": nothing[:AGREEMENT_LIST_MAX],
+        "nothing_comparable_total": len(nothing),
+        #: which look-side readers this run HAD, so a nought here is not read as agreement about the channels
+        #: that never ran. On this platform's path the axial profile always refuses: there are no triangles.
+        "channels_not_read": sorted(k for k, ok in (getattr(joint, "readers", None) or {}).items() if not ok),
+        "read_as": "what the look and the measurement did at each measured mouth, from the reconciler's own "
+                   "verdicts. An agreement is a reading of pictures the measurement did not contradict; it is "
+                   "not proof, and a mouth under nothing_comparable was not compared either way.",
+    }
+
+
+def agreement_of(state: dict | None) -> dict:
+    """The stored per-place agreement, or `{}` for a row composed before it was written."""
+    row = (state or {}).get("agreement")
+    return dict(row) if isinstance(row, dict) else {}
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -357,6 +450,10 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
         #: each one's tier and `ask.say`'s sentence. `question_views` reads it; nothing else may.
         "asking": made["asking"],
         "planner_block": composed.get("planner_block"),
+        #: WHAT THE LOOK AND THE MEASUREMENT DID AT EACH MEASURED MOUTH (`agreement_row`). Absent when there
+        #: was no pair to compare, so a row composed before a look landed is byte for byte what it was.
+        #: `agents/intake/geometry_brief.surveyor_panel` is the reader and the only one.
+        **({"agreement": made["agreement"]} if made.get("agreement") else {}),
         "composed_for": {
             "purpose": purpose, "engine": engine or "", "declared": ports,
             "unit": unit or "", "unit_basis": unit_basis or "", "scale_to_metres": scale_to_metres,
@@ -561,7 +658,10 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
             "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side,
             "flow_direction": flow_direction, "not_carried": not_carried,
-            "asked": asked, "asking": asking_row(asked, pkg), "joint": joint}
+            "asked": asked, "asking": asking_row(asked, pkg), "joint": joint,
+            #: step 4's per-place verdicts, filtered to the mouths a customer can be shown. It is built here
+            #: rather than in `compose` because the `Joint` does not outlive this call.
+            "agreement": agreement_row(joint, composed)}
 
 
 def _not_carried(purpose: str, engine: str) -> dict[str, str]:
@@ -2509,14 +2609,15 @@ async def recompose_after_look(source_id: str, owner_id: str, document: dict) ->
         return "skipped"
 
 
-__all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
+__all__ = ["AGREEMENT_LIST_MAX", "AGREEMENT_SCHEMA", "ASKING_SCHEMA", "CHAIN", "CUSTOMER",
+           "DEFAULT_TAKEN", "LATE_STAGE", "LATE_TIER",
            "PACKAGE_LOOK_STATE", "SEND_BACK", "block_list_max", "dispatch_refusals",
            "LOOK_BECAUSE", "LOOK_CACHED", "LOOK_FAILED", "LOOK_NONE", "LOOK_OK", "LOOK_ON_ITS_WAY",
            "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES", "NO_PLAN_NO_REASON",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
            "STAGE_SURVEYED", "STAGE_TRADE", "SUPERSEDED", "SURVEY_STATE_SCHEMA", "SurveyError",
-           "answer", "answered",
+           "agreement_of", "agreement_row", "answer", "answered",
            "asking_of", "asking_row", "builder_block", "carry_answers",
            "check_the_survey_block", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",

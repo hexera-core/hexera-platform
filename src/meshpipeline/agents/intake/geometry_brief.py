@@ -224,6 +224,65 @@ _SURVEYED_ASKS = (
 )
 
 
+#: How many mouth ids one agreement line prints before it counts the rest. The panel is a prompt block; a
+#: part with 1,231 mouths would otherwise put 1,231 ids in one line.
+AGREEMENT_IDS_SHOWN = 6
+
+
+def _ids(names, total: int) -> str:
+    shown = list(names)[:AGREEMENT_IDS_SHOWN]
+    more = total - len(shown)
+    return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
+def agreement_lines(survey: dict | None) -> list[str]:
+    """WHAT THE LOOK AND THE MEASUREMENT AGREE ON, said plainly, plus which mouth they do not.
+
+    THE OWNER'S OWN RULE, verbatim: "the disagreement triggered asking, if there is no disagreement, say that
+    and if there is, do what your doing now". So this is the saying half. It goes under SEEN because that is
+    the section headed as a READING: an agreement between a reading of pictures and a measurement of the same
+    bytes is not a measurement, and the panel keeps MEASURED for arithmetic for exactly that reason.
+
+    IT DOES NOT OVERCLAIM, and the wording is the whole of the care here. `reconcile.verdict.STANDING` says in
+    as many words that on the commoner direction of contradiction the MEASUREMENT was at fault 30 times in 33,
+    so a look claim the measurement did not contradict is a claim nothing was entitled to remove - not a claim
+    shown true. And a mouth nobody could compare is printed as not compared, never folded into the agreement:
+    absence of a disagreement in a channel with no reader is the fact that lies
+    (`reconcile.joint.Joint.readers`).
+
+    EVERY WORD COMES OFF `geometry_survey.agreement_row`, which comes off `reconcile.verdict.by_place`, which is
+    the same verdict list the question finder ranks. No second comparison is made here: a panel that reported
+    the reading with the same blind spot as the reading is the defect this file already carries a paragraph
+    about, thirty lines down.
+    """
+    from meshpipeline.application.geometry_survey import agreement_of
+    row = agreement_of(survey)
+    if not row:
+        return []
+    agreed, disagreed = dict(row.get("agreed") or {}), dict(row.get("disagreed") or {})
+    n_agreed = int(row.get("agreed_total") or len(agreed))
+    n_disagreed = int(row.get("disagreed_total") or len(disagreed))
+    n_none = int(row.get("nothing_comparable_total") or len(row.get("nothing_comparable") or []))
+    out: list[str] = []
+    if n_agreed:
+        about = sorted({w for words in agreed.values() for w in words})
+        out.append("  agrees with the measurement about {} ({}) - nothing to ask there".format(
+            _ids(sorted(agreed), n_agreed), "; ".join(about[:3]) or "the same reading"))
+    if n_disagreed:
+        for oid in sorted(disagreed)[:AGREEMENT_IDS_SHOWN]:
+            entry = disagreed[oid] if isinstance(disagreed[oid], dict) else {}
+            about = ", ".join(str(a) for a in (entry.get("about") or [])) or "this mouth"
+            measured = str(entry.get("measured") or "").strip()
+            out.append("  reads {} differently from the measurement ({}){} - so I am asking about that one"
+                       .format(oid, about, f"; measured: {measured}" if measured else ""))
+    if not n_agreed and not n_disagreed:
+        out.append(f"  nothing of the {n_none} measured mouth(s) could be checked against the measurement, "
+                   f"so this is not agreement either way")
+    elif n_none:
+        out.append(f"  {n_none} of the mouths could not be checked either way - that is not agreement")
+    return out
+
+
 def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     """What the Surveyor saw, found and suggests, for the CUSTOMER, once the look has landed.
 
@@ -269,6 +328,7 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     notes = str(imp.get("notes") or "").strip()
     if notes:
         out.append(f"  notes        {notes[:260]}")
+    out.extend(agreement_lines(survey))
 
     roles = [o for o in (imp.get("openings_seen") or []) if isinstance(o, dict)]
     not_ports = [str(o.get("id")) for o in roles if str(o.get("likely_role") or "") == "not a port"]
@@ -286,6 +346,16 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # not print.
     if rep and rep != "unknown":
         out.append(f"  this is      {rep}")
+    # WHY A QUESTION IS STILL PUT ON A MOUTH THE TWO SOURCES AGREE ABOUT, said rather than left to look like an
+    # interrogation. Nothing in a static geometry says which way flow goes: `reconcile.inventory`'s own role
+    # claim states it ("cannot: INLET against OUTLET ... 100 per cent of the role answers"), so agreement about
+    # WHAT a mouth is settles everything except the one thing the mesh needs. And it may not be cut: an
+    # unconfirmed role is refused at submission by `geometry_survey.role_problems`, and making a role question
+    # disappear took a measured run from 3-of-3 submissions to 1-of-4.
+    _agree = (survey or {}).get("agreement") if isinstance((survey or {}).get("agreement"), dict) else {}
+    if _agree.get("agreed") and is_flow:
+        out.append("  the only thing still open on the mouths we agree about is which way the flow goes "
+                   "through them - nothing measures that, so it is the one question I put")
     if not_ports and len(not_ports) == len(rows) and rows:
         line = f"  the {len(not_ports)} opening(s) above do NOT look like ports - no duct mouth behind them"
         if is_flow:
@@ -1074,8 +1144,9 @@ def _match(patch: dict, rows: list[dict], diagonal: Any) -> str | None:
     return None
 
 
-__all__ = ["LOOK_WAIT_SAID", "MAX_LOOK_PHRASES", "MAX_PLACED_LINES", "MAX_SURVEY_QUESTIONS",
+__all__ = ["AGREEMENT_IDS_SHOWN", "LOOK_WAIT_SAID", "MAX_LOOK_PHRASES", "MAX_PLACED_LINES",
+           "MAX_SURVEY_QUESTIONS",
            "MAX_TABLE_ROWS", "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL",
-           "PLAN_WAIT_SAID", "SIZE_TOLERANCE", "bind_patches", "look_at_it", "look_lines",
+           "PLAN_WAIT_SAID", "SIZE_TOLERANCE", "agreement_lines", "bind_patches", "look_at_it", "look_lines",
            "opening_rows", "placed_lines", "render_block", "survey_lines", "surveyor_panel",
            "waiting_lines"]
