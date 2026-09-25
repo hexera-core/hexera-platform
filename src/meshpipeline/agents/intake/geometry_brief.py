@@ -336,6 +336,8 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     notes = str(imp.get("notes") or "").strip()
     if notes:
         out.append(f"  notes        {notes[:260]}")
+    from meshpipeline.application.geometry_survey import agreement_of
+    _agreement = agreement_of(survey)
     out.extend(agreement_lines(survey))
 
     roles = [o for o in (imp.get("openings_seen") or []) if isinstance(o, dict)]
@@ -360,11 +362,11 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # WHAT a mouth is settles everything except the one thing the mesh needs. And it may not be cut: an
     # unconfirmed role is refused at submission by `geometry_survey.role_problems`, and making a role question
     # disappear took a measured run from 3-of-3 submissions to 1-of-4.
-    # read through the one accessor, which knows the agreement rides inside `asking` because the stored row
-    # has a column per top-level state key (`geometry_survey.agreement_of`)
-    from meshpipeline.application.geometry_survey import agreement_of as _agreement_of
-    _agree = _agreement_of(survey)
-    if _agree.get("agreed") and is_flow:
+    #
+    # The row is read through `agreement_of`, the one accessor, which knows the agreement rides inside `asking`
+    # because the stored survey has a column per top-level state key. The import is local for the reason
+    # `geometry_survey.role_problems`' import of this module is: the two modules read each other.
+    if _agreement.get("agreed") and is_flow:
         out.append("  the only thing still open on the mouths we agree about is which way the flow goes "
                    "through them - nothing measures that, so it is the one question I put")
     if not_ports and len(not_ports) == len(rows) and rows:
