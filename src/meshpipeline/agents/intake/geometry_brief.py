@@ -777,9 +777,10 @@ def survey_lines(state: dict | None) -> list[str]:
     if not isinstance(state, dict) or not state.get("survey"):
         return ["", "## BEFORE YOU ASK ABOUT THE GEOMETRY - the Surveyor",
                 "The measurement above was taken from the bytes before the customer said anything. What it",
-                "MEANS depends on what the part is for, so as soon as the customer has said what the analysis",
-                "is for, call survey_the_part with that purpose, their own words that said it, and any ports",
-                "they named. It returns the questions the measurement and the look could not settle. Until",
+                "MEANS depends on what the part is for, so as soon as the customer has said which ONE of the",
+                "purposes this is for, call survey_the_part with that purpose, their own words that said it,",
+                "and any ports they named. It returns the questions the measurement and the look could not",
+                "settle - and ONE of the purposes is what it takes, not merely a field they named. Until",
                 "then ask nothing about which opening is which: that is the Surveyor's question, not yours.",
                 # THIS CALL IS THE FIRST THING THE CUSTOMER EVER WAITS FOR, and on the two measured
                 # conversations against ahmed_variant_001.step it was 33 seconds of blank screen with
