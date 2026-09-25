@@ -821,6 +821,45 @@ class IntakeToolExecutor:
             logger.warning("Intake: the geometry agent's step could not run (%s) - job_id=%s", exc, self._job_id)
             return []
 
+    def _what_is_being_confirmed(self, args: dict) -> str:
+        """THE REQUIREMENTS THE ASK POINTS AT, composed by the application from the payload it authorised.
+
+        `admission_token.CONFIRM_REQUIREMENTS_ASK` is "Please confirm the requirements above before I mesh
+        anything", and until this function nothing above it was the requirements. The model's own setup was
+        meant to be, and `loop_policy.close_out` keeps it where the model writes one - but it can only write
+        one in the SAME message as the submit_requirements call, because `loop.runner` closes the turn out at
+        the end of that round, and MEASURED on the turn that carries the reading, the setup and the plan at
+        once, the model spent all four rounds on tool calls and wrote no text at all. The customer was shown
+        the Surveyor's receipt, "MESHING WITH snappyHexMesh", and a sentence pointing at nothing.
+
+        So the one thing the ask must not depend on is whether the model wrote prose. This is the payload
+        that was just authorised - the same values `submit_args` carries to the builder - and it is
+        deliberately short: what is being meshed, from what, and which face is which. The roles are the part
+        a customer corrects, and a correction here is what `_corrected` and the re-submit path exist for.
+        """
+        rows: list[tuple[str, str]] = []
+        purpose = _vocab.to_display(_vocab.PURPOSE, args.get("purpose"))
+        kind = _vocab.to_display(_vocab.INPUT_KIND, args.get("input_kind"))
+        dim = str(args.get("dimensionality") or "").strip()
+        made_of = ", ".join(p for p in (kind, dim) if p)
+        if purpose:
+            rows.append(("for", purpose + (f", from a {made_of}" if made_of else "")))
+        elif made_of:
+            rows.append(("from", made_of))
+        named = []
+        for patch in (args.get("patches") or []):
+            if not isinstance(patch, dict):
+                continue
+            role = str(patch.get("type") or "").strip()
+            mouth = str(patch.get("opening_id") or "").strip()
+            named.append(f"{patch.get('name')} ({role}{' on ' + mouth if mouth else ''})")
+        if named:
+            rows.append(("faces", ", ".join(named)))
+        if not rows:
+            return ""
+        width = max(len(k) for k, _ in rows)
+        return (chr(10).join(f"  {k.ljust(width)}  {v}" for k, v in rows)) + (chr(10) * 2)
+
     async def _do_submit_requirements(self, args: dict) -> IntakeToolResult:
         self._locate_named_ports(args)
         st = self.state
@@ -974,7 +1013,8 @@ class IntakeToolExecutor:
             if _fid:
                 _head += f" at {_fid} fidelity"
             _head += chr(10) * 2
-        st.submit_summary = (_head + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
+        st.submit_summary = (_head + self._what_is_being_confirmed(args)
+                             + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
                              + at.CONFIRM_REQUIREMENTS_ASK
                              + (chr(10) * 2) + "Shall I proceed with mesh generation?")
         st.approval = ap.create(
@@ -998,9 +1038,17 @@ class IntakeToolExecutor:
             dimensionality=str(args.get("dimensionality") or ""),
             geometry_checked=bool(_bound.get("checked")))
         _R.intake_submission(self._trace, authorized=True)
+        # THE MODEL'S SETUP RIDES IN THE SAME MESSAGE AS THIS CALL OR NOT AT ALL, and that is a fact about
+        # the loop rather than a preference: `loop.runner` calls `close_out` at the end of the round that
+        # authorised the submission, which returns the terminal and ends the turn, so there is no later
+        # round in which prose could be written. Telling the model to write it "now" would be telling it to
+        # do something in a turn that is already over.
         return IntakeToolResult(tool="submit_requirements", accepted=True, advanced=True, content=(
-            "Authorized. The application will show the user the canonical confirmation summary; "
-            "do not paraphrase it. Await their explicit approval."))
+            "Authorized. The application appends its own summary - which mesher, the setup it is "
+            "submitting, what the geometry agent found and flagged, and the one ask - UNDER whatever you "
+            "wrote in THIS message. There is no further round: anything you meant to say alongside this "
+            "call had to be in the same message as it. Do not paraphrase the summary and do not ask a "
+            "question of your own. Await their explicit approval."))
 
 
 __all__ = ["INTAKE_CATEGORIES", "MAX_SEARCH_CALLS", "MUTATING_TOOLS", "SURVEY_CATEGORIES",

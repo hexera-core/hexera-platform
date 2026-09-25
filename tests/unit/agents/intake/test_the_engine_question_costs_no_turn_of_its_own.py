@@ -179,3 +179,29 @@ def test_an_earlier_refusal_is_never_spent_as_agreement_to_an_engine():
     earlier = ("not that one", "no, something else", "you decide")
     assert not _es_answers("snappy", "what does it cost?", earlier[:2])
     assert _es_answers("snappy", "what does it cost?", earlier)
+
+
+# AND THE ASK HAD TO STOP DEPENDING ON THE MODEL WRITING PROSE AT ALL.
+#
+# `loop.runner` calls `close_out` at the end of the round that authorised the submission, so the model's
+# words can only ride in the SAME message as the submit_requirements call - there is no later round.
+# MEASURED on the turn that carries the reading, the setup and the plan at once: all four rounds were tool
+# calls and the model wrote nothing, so "Please confirm the requirements above" pointed at nothing.
+
+def test_the_summary_names_the_setup_it_is_asking_about():
+    from meshpipeline.agents.intake.executor import IntakeToolExecutor
+    ex = IntakeToolExecutor.__new__(IntakeToolExecutor)
+    said = IntakeToolExecutor._what_is_being_confirmed(ex, {
+        "purpose": "internal_cfd", "input_kind": "body-surface", "dimensionality": "3D",
+        "patches": [{"name": "inlet", "type": "inlet", "opening_id": "o1"},
+                    {"name": "outlet2", "type": "outlet", "opening_id": "o2"},
+                    {"name": "wall", "type": "wall"}]})
+    assert "Internal CFD" in said and "body-surface" in said and "3D" in said
+    assert "inlet (inlet on o1)" in said and "outlet2 (outlet on o2)" in said
+    assert "wall (wall)" in said, "a patch with no mouth still has to be named"
+
+
+def test_an_empty_payload_adds_nothing_rather_than_an_empty_heading():
+    from meshpipeline.agents.intake.executor import IntakeToolExecutor
+    ex = IntakeToolExecutor.__new__(IntakeToolExecutor)
+    assert IntakeToolExecutor._what_is_being_confirmed(ex, {}) == ""
