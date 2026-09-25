@@ -695,8 +695,12 @@ def asking_row(asked: Any, pkg: dict) -> dict:
         #: chose, when a customer accepts the proposal instead of naming the roles themselves - so the platform
         #: is answerable for what it proposed rather than trusting a model to repeat it back. Empty for a
         #: question whose default names no place, and for a row composed before the agent wrote the field.
+        #: The SAME filter `text` and `tier` above carry, and for the size reason they carry it: the finder
+        #: holds one question per settled mouth, so on the 1,231-mouth part `ask.intake` names beside its
+        #: wall-clock ceiling an unfiltered map would store 1,231 role dicts in a row nothing would read.
         "proposal": {q.id: dict(getattr(q, "default_roles", None) or {})
-                     for q in [*asked.questions, *asked.held] if getattr(q, "default_roles", None)},
+                     for q in [*asked.questions, *asked.held]
+                     if (q.id in held or q.asked) and getattr(q, "default_roles", None)},
     }
 
 
