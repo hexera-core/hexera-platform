@@ -49,6 +49,61 @@ class StepFileOut(BaseModel):
 
 
 
+def _measured_summary(document: dict | None) -> str:
+    """What the measurement found, in the customer's words, composed by the server from facts alone.
+
+    NOT A MODEL TURN. Every number here was measured from their bytes a moment ago, so there is
+    nothing to reason about and nothing to get wrong: no claim about what the part IS, no suggestion,
+    no mesh opinion. Those wait for the look, which cannot run until the customer says what the part
+    is for - a look taken for an assumed purpose reads an external body as internal flow.
+
+    THE UNIT IS THE ONE THING THAT CAN BE WRONG BY A FACTOR OF 1,000. A file that declares none is
+    measured in its own coordinates, and printing those as millimetres is wrong exactly as often as
+    it is right, so the shape is given without absolute lengths and the question is asked instead.
+
+    Returns the empty string for anything but a successful measurement, which keeps the old greeting.
+    """
+    if not isinstance(document, dict) or document.get("status") != "ok":
+        return ""
+    unit = document.get("unit") if isinstance(document.get("unit"), dict) else {}
+    declared = str(unit.get("declared") or "").strip()
+    extent = ((document.get("bbox") or {}).get("extent_m")) or []
+    rows = [r for r in (document.get("openings") or []) if isinstance(r, dict)]
+
+    out = ["Measured your file:"]
+    if declared and len(extent) == 3:
+        try:
+            mm = [float(x) * 1000.0 for x in extent]
+            out.append("  size      {:,.0f} x {:,.0f} x {:,.0f} mm".format(*mm))
+        except (TypeError, ValueError):
+            pass
+    elif len(extent) == 3:
+        out.append("  size      this file declares no unit, so every length in it is a ratio "
+                   "until you tell me what one unit means")
+
+    if rows:
+        out.append(f"  openings  {len(rows)} found")
+        for r in sorted(rows, key=lambda x: -float(x.get("area_mm2") or 0))[:6]:
+            oid = str(r.get("id") or "?")
+            side = str(r.get("bbox_side") or "").replace("_", " ")
+            shape = str(r.get("shape") or "")
+            area = r.get("area_mm2")
+            if declared and isinstance(area, (int, float)):
+                size = f"{float(area):,.0f} mm2"
+            else:
+                size = shape or "measured"
+            where = ("on " + side) if side else ""
+            out.append("     {:<4} {:>14}  {}  {}".format(oid, size, shape if declared else "", where).rstrip())
+    else:
+        out.append("  openings  none - this is a closed body with no ports")
+
+    out.append("")
+    out.append("I have not looked at the shape yet. I do that once you tell me what it is for, "
+               "because the same part reads differently as flow THROUGH it than as flow AROUND it.")
+    out.append("")
+    return chr(10).join(out)
+
+
 @router.post("/step-file", response_model=StepFileOut)
 async def upload_step_file(
     file:     UploadFile = File(..., description="Geometry file - a surface (.stl, .vtp) or CAD (.step/.stp, .iges/.igs). The selected engine's staging seam converts it to what that engine meshes."),
@@ -267,6 +322,23 @@ async def upload_step_file(
     # text and no materialised file there is nothing for a model to reason about, and the only
     # thing it could add is a claim about geometry nobody has looked at yet.
     greeting = UPLOAD_ACKNOWLEDGEMENT if icfg.INTAKE_GREETING_ON_UPLOAD else ""
+    # THE MEASUREMENT HAS RUN BY NOW - the await above is not optional and not async - so the
+    # acknowledgement can say what was found. It is still a fixed server-owned turn and not a model
+    # one: every line is a number measured from their bytes, with no claim about what the part is.
+    # The comment above used to read "Nothing has been parsed, measured or checked at this point",
+    # which stopped being true when the measurement moved above it, and is why a customer whose file
+    # had just been measured was told only "Geometry received".
+    if greeting:
+        try:
+            from meshpipeline.cad.regions import stored_document_for_source
+            from meshpipeline.pipeline.geometry_state import GeometryRef
+
+            _summary = _measured_summary(await stored_document_for_source(
+                GeometryRef(source_id=source_id, sha256="")))
+            if _summary:
+                greeting = _summary + greeting
+        except Exception as exc:                   # noqa: BLE001 - an upload never fails on this
+            logger.warning("upload_step_file: could not summarise the measurement (%s)", exc)
     _greeting_trace: list = []   # no node executed on this path, so there is no turn to project
 
     if greeting:
