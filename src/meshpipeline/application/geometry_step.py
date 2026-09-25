@@ -610,6 +610,29 @@ def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, 
     plan_dict = plan.model_dump(mode="json")
     env, trade, late, _resolutions_unused, skipped = cj.third_intake(inp.survey, plan, inp.facts, inp.brief, given,
                                                                      _NotYet(), engine=inp.engine)
+    # THE TRADE IS A QUESTION ABOUT A NUMBER, AND THE NUMBER HAS TO BE THIS JOB'S MESHER'S. `ask.trade` prices
+    # the trade on `planned_envelope(..., engine=inp.engine)`, which goes through
+    # `tools.estimate_builder_cells`: that function has one branch for gmsh (`_estimate_gmsh`, the solid volume
+    # and the bbox diagonal off `engines/gmsh/driver.py`) and one for everything else (`_estimate_internal`, the
+    # snappy emulator, sized off an inlet bore and counting a near band, layers and a FLUID VOLUME). `inp.engine`
+    # is the engine the ROW was composed with, and a structural row composed before the customer confirmed an
+    # engine carries snappy, because `hexera.report_measured` composes `eng = engine or "snappy"` whatever the
+    # purpose. So on a structural job this would put the one question of the third intake to a customer over an
+    # envelope for a mesher this platform will not run their job on: MEASURED on transition_007_fluid composed
+    # for `structural`, the snappy figure is 2,046,473 cells against their 2M and the gmsh figure is 60,891, so
+    # the trade would have asked them to raise a budget that was never exceeded.
+    #
+    # THE ENVELOPE ITSELF IS STILL STORED AND STILL REACHES THE BUILDER, unchanged: `third_intake` computes it
+    # on every job because the builder gets it either way, and this is where a structural job already was (with
+    # no survey it was handed the upload's `internal_cfd` block and its snappy forecast, `cad/regions`). What
+    # changes is that no CUSTOMER is asked to act on it. `engine_can_mesh` is the platform's own compatibility
+    # gate and the same one `geometry_survey` cuts `budget_envelope` with, read from there rather than restated,
+    # so the second intake and the third cannot disagree about whether this job has a forecast.
+    if trade is not None and not gs.engine_can_mesh(str(inp.brief.purpose), str(inp.engine or "")):
+        skipped = (f"the envelope is {inp.engine or 'no engine'}'s and {inp.engine or 'no engine'} cannot "
+                   f"produce the mesh {inp.brief.purpose} needs, so there is no figure to trade against")
+        logger.info("geometry step: the third intake's trade is not raised - %s", skipped)
+        trade, late = None, None
     unit = str(given.value("unit") or plan.unit.assumed)
     write_up = pkg["hexera"].builder_plan_block(plan, inp.facts, engine=inp.engine, cell_cap=given.budget,
                                                 representation=given.representation, unit=unit,
