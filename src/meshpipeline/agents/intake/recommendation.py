@@ -40,6 +40,13 @@ def _norm(text) -> str:
 #: said they did not want it. A real conversation said "you decide", "u decide best case" and "not
 #: sure" and was asked to choose anyway, every time.
 #:
+#: NOR IS IT "CARRY ON". "proceed", "go ahead", "carry on" and "just go" mean CONTINUE, not CHOOSE,
+#: and they are among the commonest things anyone types. Reading them as "pick an engine for me"
+#: makes this gate fail OPEN on ordinary words, which is what
+#: `test_the_intent_gate_recognises_explicit_requests_and_fails_closed` pins with "Proceed." A
+#: customer telling us to get on with what was already agreed is handled where it belongs - in the
+#: questioning rules - not by authorising a comparison nobody asked for.
+#:
 #: DEFERRAL OF A CHOICE, NOT IGNORANCE OF A FACT. "I don't know" and "no idea" are deliberately NOT
 #: here: they are how someone answers "what velocity?", and reading them as "pick an engine for me"
 #: would volunteer alternatives nobody asked for - the false positive this module's own header warns
@@ -56,10 +63,10 @@ _DEFER_PHRASES = (
     # INSTRUCTIONS, NOT QUESTIONS. "use best practice" and "go ahead with what you decided" are a
     # customer telling us to proceed on our own judgement. Read as anything else they become one
     # more question, which is what a customer who wrote them is explicitly trying to avoid.
-    "best practice", "best practices", "standard practice", "usual", "whatever is standard",
-    "go ahead", "just go", "carry on", "proceed", "crack on", "get on with it",
+    "best practice", "best practices", "standard practice", "whatever is standard",
     "what you decided", "what u decided", "what you think is best", "what u think is best",
     "your best call", "ur best call", "your judgement", "your judgment",
+    "go ahead with what", "go with what you", "go with what u",
 )
 
 

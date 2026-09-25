@@ -344,7 +344,7 @@ def test_an_instruction_to_proceed_is_not_another_question():
     import meshpipeline.agents.intake.recommendation as rec
 
     for said in ("use best practice", "best practice", "go ahead with what you decided",
-                 "just go", "proceed", "whatever is standard", "your best call",
+                 "whatever is standard", "your best call", "what you think is best",
                  "intenral cfd and u decide patches"):
         assert rec.choice_deferred(said), said
         assert rec.recommendation_requested(said), said
@@ -352,5 +352,10 @@ def test_an_instruction_to_proceed_is_not_another_question():
     # a real answer is not a deferral - these carry information and must be read as answers
     for said in ("o1 is inlet", "through the bore and o1 is inlet", "others are outlet",
                  "air", "500 mm"):
+        assert not rec.choice_deferred(said), said
+
+    # "carry on" is not "you choose". These are among the commonest things anyone types, and
+    # reading them as a request for alternatives makes the gate fail open on ordinary words.
+    for said in ("proceed", "go ahead", "just go", "carry on"):
         assert not rec.choice_deferred(said), said
 
