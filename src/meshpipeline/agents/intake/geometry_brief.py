@@ -649,6 +649,20 @@ def waiting_lines() -> list[str]:
         "    the confirmation, so that wait is also the most valuable message in the conversation.",
         "  - USE THOSE WORDS FOR THE LENGTHS. Do not invent a figure, do not say \"a moment\" or \"just a",
         "    second\" for something that takes half a minute, and never promise faster than this says.",
+        # THE TENSE IS A FACT AND IT WAS WRONG ON THE FIRST RUN THAT WARNED AT ALL. The model wrote "I've
+        # gone ahead and read your part. It takes about half a minute to finish the look ... While that
+        # runs, here's everything the-". Nothing was running: the look had finished inside the tool call
+        # before a word of that message was written, and nothing the model writes reaches the customer
+        # until the whole turn is over. So the customer read a message telling them to wait while
+        # something happened that had already happened, which is the first house law broken about this
+        # system rather than about their file.
+        "  - A WAIT YOU HAVE ALREADY SERVED IS NEVER DESCRIBED AS RUNNING. Nothing you write reaches the",
+        "    customer until your turn is completely finished, so there is no \"while that runs\", no \"one",
+        "    moment\", no \"I'll come back when it lands\" - by the time they read the sentence, it landed. A",
+        "    wait that is behind you is spoken of in the past and only if it is worth a clause (\"read the",
+        "    shape - here is what it says\"); a wait that is ahead of you, in a LATER turn, is the only kind",
+        "    you announce. Getting that tense wrong tells the customer to sit still for something that is",
+        "    already done.",
         "  - SAY IT IN THE TURN BEFORE. \"Tell me which and I'll read the shape - about half a minute - then",
         "    come back with the whole setup\" costs nothing and turns a blank screen into a wait for",
         "    something. A customer who was told is not waiting; one who was told nothing is wondering",
@@ -729,10 +743,22 @@ def survey_lines(state: dict | None) -> list[str]:
                 # next. That turn is free: it is already being spent, and every question the look
                 # does not need can ride in it.
                 f"CALLING IT IS THE SLOW TURN: it queues the look and waits {LOOK_WAIT_SAID} for it, and that",
-                "is the first thing the customer ever waits for. So if their message ALREADY says which",
-                "analysis this is, call it NOW - never spend a turn warning about a wait you could have",
-                "started instead. If it does not - \"cfd\" alone does not say internal or external and the",
-                "purpose enum has both - then you are spending this turn on that question regardless, and",
+                "is the first thing the customer ever waits for. So if their words PIN ONE purpose - \"stress\"",
+                "pins structural, \"flow through the manifold\" pins internal - call it NOW and do not spend a",
+                "turn warning about a wait you could have started instead.",
+                # WHAT "HAS SAID WHAT IT IS FOR" ACTUALLY MEANS, and a real run needed it spelled out. Told
+                # to survey as soon as the analysis was stated, the model surveyed on the bare word "cfd"
+                # and then wrote the customer this: "'cfd' alone doesn't tell me internal vs external, and
+                # I've gone ahead and read your part." It had composed the whole survey for internal_cfd on
+                # a purpose it said in the same sentence that nobody had chosen. The quote check on
+                # `customer_words_verbatim` cannot catch that - it verifies the words are theirs, never that
+                # the words say THIS purpose - so it is the same blind spot as the thing it checks, and the
+                # only place the distinction can be made is here, before the call.
+                "BUT \"cfd\" ON ITS OWN PINS NOTHING: internal_cfd and external_cfd are different purposes, the",
+                "measurement is composed FOR one of them, and the quote you pass cannot tell the application",
+                "which one their words meant - it only checks that they said them. So never resolve that",
+                "yourself and never survey on a guess. Where their words leave two purposes open, asking which",
+                "is a real question with a real consequence, you are spending this turn on it regardless, and",
                 "that turn is where the rest of it belongs: say that reading the shape takes about that long",
                 "and comes back with the whole setup, and ask in the same breath for everything the look does",
                 "NOT need. Their answer then arrives WITH the slow reply instead of costing another round trip",
