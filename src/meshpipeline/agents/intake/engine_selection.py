@@ -243,7 +243,18 @@ def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,
 
 
 def render_selection_statement(engine: str) -> str:
+    """The one ask that settles the engine, appended to the turn's own words by `close_out`.
+
+    "Selected engine: X" is the deterministic marker and stays: four tests read it and the prompt
+    file names it by that spelling. What went with it did not. The customer read
+
+        Selected engine: Gmsh
+        This is a proposal, not a selection - nothing has been selected yet and nothing will be meshed.
+
+    which announces a selection and denies one in consecutive lines, and spends three clauses
+    defending against a thing nobody had accused it of. The guarantee is worth one clause, and the
+    question it guards is worth being short.
+    """
     shown = engine_label(engine)
-    return (f"Selected engine: {shown}\n\n"
-            "This is a proposal, not a selection - nothing has been selected yet and nothing will "
-            f"be meshed. Do you want to select {shown}?")
+    return (f"Selected engine: {shown}" + (chr(10) * 2)
+            + f"Nothing is meshed until you say so. Go with {shown}?")

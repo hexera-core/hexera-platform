@@ -42,6 +42,9 @@ class IntakeLoopPolicy:
     output_tokens: int = 0
     _last_signature: str = ""
     _round_advanced: bool = False
+    #: which of TERMINAL_PRIORITY `resolve_terminal` last chose, "" if none. `close_out` needs it and
+    #: the return value is the text alone, which three callers already depend on.
+    _terminal_name: str = ""
 
     # LoopDriver: the runner
     def limits(self) -> LoopLimits:
@@ -92,6 +95,26 @@ class IntakeLoopPolicy:
         terminal = self.resolve_terminal()
         if terminal is None:
             return None
+        # THE ENGINE QUESTION IS ADDED TO THE TURN, NOT SUBSTITUTED FOR IT.
+        #
+        # A terminal replacing the payload is right for the other two: an admission block voids the
+        # authorization it is reporting on, and the submit summary is composed with the agent's words
+        # already. The selection prompt is a single question, and replacing the turn with it cost a
+        # whole turn every conversation.
+        #
+        # MEASURED on a structural run: turn 2 said "here's what I'm going with... Anything to change,
+        # or shall I go?" and the customer said "go". That reply could not also carry the engine,
+        # because whichever round called `propose_engine_selection` had its words thrown away - so the
+        # model composed the proposal in one turn and proposed the engine in the next, and turn 3 was
+        # "Selected engine: Gmsh. Do you want to select Gmsh?" on its own, after the customer had
+        # already said go. The rule is to ask that once and then mesh.
+        #
+        # Appended, one reply carries the proposal and the engine, and one "go" settles both. The
+        # prompt file is what stops the model composing its own version of the question next to this
+        # one; nothing here can prevent that, so nothing here pretends to.
+        if self._terminal_name == "selection_prompt" and self.plaintext_text:
+            joined = self.plaintext_text.rstrip() + (chr(10) * 2) + terminal
+            return ToolOutcome(content=terminal, accepted=True, terminal=True, payload=joined)
         return ToolOutcome(content=terminal, accepted=True, terminal=True, payload=terminal)
 
     def note_round(self, round_result: Any) -> None:
@@ -103,9 +126,11 @@ class IntakeLoopPolicy:
     # post-batch resolution
     def resolve_terminal(self) -> str | None:
         st = self.exec_state
+        self._terminal_name = ""
         for name in TERMINAL_PRIORITY:
             text = getattr(st, name)
             if text:
+                self._terminal_name = name
                 if name != "submit_summary":
                     # Nothing below this priority survives: a submission the batch superseded is
                     # not delivered, and its arguments are not returned to the caller.

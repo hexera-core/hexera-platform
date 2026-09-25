@@ -142,9 +142,9 @@ INTAKE_TOOLS: list[dict] = [
             "description": (
                 "Record that the user NAMED or CHANGED the engine they want, in their own latest "
                 "message (e.g. 'use Gmsh', 'switch to cfMesh'). This is a PROPOSAL, not a selection: "
-                "the application then shows its own deterministic 'Selected engine: X' statement and "
-                "asks the user to confirm, and the turn ENDS there - you will not be asked to compose "
-                "that reply, so do not try to. NEVER call this because an engine was recommended, "
+                "the application APPENDS its own deterministic 'Selected engine: X' question to whatever "
+                "you wrote this turn, so write your proposal and let that question land under it. Do "
+                "not write your own version of it. NEVER call this because an engine was recommended, "
                 "because it is the only compatible one, because it looks best to you, or because you "
                 "think the user meant it. Only their explicit naming counts."
             ),

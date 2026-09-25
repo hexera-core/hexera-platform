@@ -1,0 +1,73 @@
+"""The engine question replaced the turn, so it needed a turn of its own.
+
+MEASURED on a structural run of ahmed_variant_001: turn 2 said "here's what I'm going with... Anything
+to change, or shall I go?" and the customer said "go". Turn 3 was then
+
+    Selected engine: Gmsh
+    This is a proposal, not a selection - nothing has been selected yet and nothing will be meshed.
+    Do you want to select Gmsh?
+
+on its own, after they had already said go. The cause is structural, not a prompt failing: whichever
+round called `propose_engine_selection` had its composed words thrown away, because `close_out` made
+the terminal text the whole payload. So the model could not put the proposal and the engine in one
+reply, and split them across two.
+
+The rule this breaks is a stated one: ask "anything to change, or shall I go?" once, and the next word
+meshes.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from meshpipeline.agents.intake.engine_selection import render_selection_statement
+from meshpipeline.agents.intake.executor import IntakeExecutionState
+from meshpipeline.agents.intake.loop_policy import TERMINAL_PRIORITY, IntakeLoopPolicy
+
+
+def _resolve(said: str, **terminals) -> str:
+    st = IntakeExecutionState(owner_id="o", session_id="s")
+    for k, v in terminals.items():
+        setattr(st, k, v)
+    pol = IntakeLoopPolicy(exec_state=st, executor=None)
+    pol.plaintext_text = said
+    out = asyncio.run(pol.close_out(tally=None))
+    return "" if out is None else str(out.payload)
+
+
+PROPOSAL = ("Here's what I'm going with:\n- Load face -> the x max lip\n"
+            "- Elements -> second-order tets")
+
+
+def test_the_proposal_and_the_engine_question_arrive_in_one_reply():
+    out = _resolve(PROPOSAL, selection_prompt=render_selection_statement("gmsh"))
+    assert "Load face" in out, "the turn's own words were thrown away, which is what cost the turn"
+    assert "Selected engine: Gmsh" in out
+    assert out.index("Load face") < out.index("Selected engine"), "the ask goes last"
+
+
+def test_the_question_still_stands_alone_when_the_model_wrote_nothing():
+    out = _resolve("", selection_prompt=render_selection_statement("gmsh"))
+    assert out.strip().startswith("Selected engine: Gmsh")
+
+
+def test_an_admission_block_still_replaces_the_turn():
+    """It voids the authorization it reports on, so the model's words must not survive beside it."""
+    out = _resolve(PROPOSAL, admission_block="Cannot mesh: the part declares no unit.")
+    assert "Load face" not in out
+    assert out == "Cannot mesh: the part declares no unit."
+
+
+def test_an_admission_block_outranks_the_engine_question_as_before():
+    out = _resolve(PROPOSAL, admission_block="Cannot mesh: no unit.",
+                   selection_prompt=render_selection_statement("gmsh"))
+    assert out == "Cannot mesh: no unit."
+    assert TERMINAL_PRIORITY.index("admission_block") < TERMINAL_PRIORITY.index("selection_prompt")
+
+
+def test_the_statement_no_longer_announces_and_denies_a_selection_at_once():
+    said = render_selection_statement("snappy")
+    assert "Selected engine:" in said, "the deterministic marker is read by four tests and the prompt"
+    assert "nothing has been selected yet" not in said, (
+        "it announced a selection and denied one in consecutive lines")
+    assert "Nothing is meshed until you say so." in said, "the guarantee is worth one clause"
+    assert said.count("?") == 1, "one ask"

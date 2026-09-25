@@ -106,7 +106,12 @@ def test_naming_an_engine_only_proposes_it_and_renders_the_canonical_statement()
     reply = out["messages"][-1]["content"]
     # the statement shows the name a user reads; `gmsh` is the internal key
     assert "Selected engine: Gmsh" in reply
-    assert "not a selection" in reply and "nothing will be meshed" in reply
+    # The GUARANTEE is what this pins, not the sentence that carried it. The old wording said
+    # "Selected engine: Gmsh" and then "this is a proposal, not a selection - nothing has been
+    # selected yet", announcing a selection and denying one two lines apart. What has to survive
+    # is the promise that nothing is meshed until the customer says so.
+    assert "Nothing is meshed until you say so." in reply
+    assert reply.rstrip().endswith("?"), "and it must still be asking, not telling"
     gate = out["intake_gate"]
     assert gate["selection"]["state"] == es.PROPOSED and gate["selection"]["engine"] == "gmsh"
     assert gate["admission"] is None
