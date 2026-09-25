@@ -675,6 +675,14 @@ def placed_lines(seen: dict | None) -> list[str]:
 LOOK_WAIT_SAID = "about half a minute"
 PLAN_WAIT_SAID = "up to a minute and a half"
 
+#: THE TWO WAITS IN ONE TURN, which is now the ordinary shape of a delegated conversation: the survey
+#: call queues and waits for the look, and where the customer has already handed over the decisions the
+#: same turn settles every question, submits, and plans. MEASURED on ahmed_variant_001 across the two
+#: turns it used to take: 29.9s + 81.4s and 34.5s + 74.3s, so 111.3s and 108.8s of the same work with a
+#: round trip taken out of the middle. Rounded up to the worst of those, and phrased rather than printed
+#: for the reason above.
+BOTH_WAITS_SAID = "about two minutes"
+
 
 def waiting_lines() -> list[str]:
     """The two slow turns and when to mention them, as lines for the system prompt.
@@ -695,6 +703,13 @@ def waiting_lines() -> list[str]:
         f"  - PLANNING IT: the turn you call submit_requirements on takes {PLAN_WAIT_SAID}, because the",
         "    geometry agent plans the whole part before any compute is spent. Its findings come back with",
         "    the confirmation, so that wait is also the most valuable message in the conversation.",
+        f"  - THOSE ARE ONE TURN WHENEVER THEY HAVE HANDED YOU THE DECISIONS, and then it is "
+        f"{BOTH_WAITS_SAID}: you",
+        "    survey, settle every Surveyor question with accepted_proposal, preview and submit, all in the",
+        "    turn their delegation arrives in. That is the shape to aim for - the customer gets the reading,",
+        "    the setup, what the geometry agent found and what it flagged, and one ask, in one message. Two",
+        "    turns of the same work cost the same seconds plus a round trip, and put the plan's warnings a",
+        "    message after the reading they are about.",
         "  - USE THOSE WORDS FOR THE LENGTHS. Do not invent a figure, do not say \"a moment\" or \"just a",
         "    second\" for something that takes half a minute, and never promise faster than this says.",
         # THE TENSE IS A FACT AND IT WAS WRONG ON THE FIRST RUN THAT WARNED AT ALL. The model wrote "I've
@@ -721,9 +736,9 @@ def waiting_lines() -> list[str]:
         "    what is flowing, how fast, what they want to learn, their budget, and whether they already",
         "    work in a particular mesher are ALL free to ask before it. Asked before, their answer arrives",
         "    with the slow reply; asked after, each one costs another round trip.",
-        "  - THE \"SHALL I GO?\" MESSAGE MUST SAY WHAT GO DOES: it runs the plan above, so the confirmation",
-        f"    takes {PLAN_WAIT_SAID} to come back and carries what the plan found. Tell them that when you",
-        "    ask, not while they are sitting through it.",
+        "  - WHERE YOU DO STILL HAVE TO ASK BEFORE SUBMITTING - something only they can give - SAY WHAT GO",
+        f"    DOES: it runs the plan, so the next message takes {PLAN_WAIT_SAID} to come back and carries",
+        "    what the plan found. Tell them that when you ask, not while they are sitting through it.",
         "  - A WASTED TURN COSTS MORE THAN A SLOW ONE. Three seconds spent re-asking something already",
         "    answered is worse than thirty spent reading their part, because the thirty bought something.",
         "    Every rule above about asking once, deciding on a deferral, and putting the whole setup in one",
@@ -795,6 +810,11 @@ def survey_lines(state: dict | None) -> list[str]:
                 "is the first thing the customer ever waits for. So if their words PIN ONE purpose - \"stress\"",
                 "pins structural, \"flow through the manifold\" pins internal - call it NOW and do not spend a",
                 "turn warning about a wait you could have started instead.",
+                f"AND IF THEY HAVE ALSO HANDED YOU THE DECISIONS, THAT TURN GOES ALL THE WAY: {BOTH_WAITS_SAID},",
+                "because you survey, settle every question the Surveyor raises, and submit in it, so the",
+                "geometry agent plans the part there too and the customer gets the reading, the setup, what it",
+                f"found and what it flagged, and one ask, in one message. Say \"{BOTH_WAITS_SAID}\" in the turn",
+                "BEFORE that one, and quote that length rather than the half-minute.",
                 # WHAT "HAS SAID WHAT IT IS FOR" ACTUALLY MEANS, and a real run needed it spelled out. Told
                 # to survey as soon as the analysis was stated, the model surveyed on the bare word "cfd"
                 # and then wrote the customer this: "'cfd' alone doesn't tell me internal vs external, and
@@ -870,7 +890,13 @@ def survey_lines(state: dict | None) -> list[str]:
         "  STATE the `proposes` line below as your decision, in your own setup, and record it with",
         "  accepted_proposal: the application then records ITS OWN proposal as their answer and the question",
         "  is SETTLED - one call for the whole question, no option and no mouth. Never took_default on a role:",
-        "  a default that stood is nobody answering, and the submission refuses a role nobody confirmed.",
+        "  a default that stood is nobody answering, and the submission refuses a role nobody confirmed. A",
+        "  question with no `proposes` line naming a place takes the option you read instead, as usual.",
+        "  AND THEN FINISH THE JOB IN THIS SAME TURN: propose_engine_selection (a delegation accepts it, so",
+        "  there is no engine question), preview_selected_admission, submit_requirements. Everything the plan",
+        "  needs is now on the row, so the geometry agent plans HERE and its findings and warnings land beside",
+        "  the reading they are about, under the setup you just wrote, with the one ask at the bottom. Stopping",
+        "  to ask \"anything to change, or shall I go?\" first costs a round trip and then asks again.",
         ""])
     for v in now[:MAX_SURVEY_QUESTIONS]:
         lines.append(f"  [{v['id']}] {v['text']}")
