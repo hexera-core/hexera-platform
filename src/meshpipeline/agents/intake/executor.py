@@ -504,6 +504,35 @@ class IntakeToolExecutor:
         from meshpipeline.agents.intake.geometry_brief import survey_lines
         return "\n".join(survey_lines(self.state.geometry_survey)).strip()
 
+    async def _current_document(self) -> dict:
+        """The stored measurement AS IT IS NOW, not as it was when this turn began.
+
+        `st.geometry_document` is read once in `node_intake`, before the model has said anything, and
+        the LOOK lands about twenty-five seconds after the customer says what the part is for - so
+        for the whole turn in which it arrives, the copy in memory says `not_attempted` while the row
+        says `ok`. Every survey composed from that copy is a survey of a part nobody has looked at.
+
+        That is not a stale display, it is a wrong plan: `geometry_step._inputs` recomposes the survey
+        from the CURRENT row and refuses when the result does not match field for field, so a survey
+        composed from the stale copy is one the builder cannot reproduce. Measured across driven runs,
+        the guard named `looked, marks, openings, uncertainties` - all of them look-derived - and the
+        job silently lost its plan.
+
+        Cheap: a row read by primary key. Falls back to the snapshot on any failure, because a
+        conversation never fails on this.
+        """
+        try:
+            from meshpipeline.cad.regions import stored_document_for_source
+
+            if self.state.survey_source_ref is not None:
+                fresh = await stored_document_for_source(self.state.survey_source_ref)
+                if isinstance(fresh, dict) and fresh.get("status") == "ok":
+                    self.state.geometry_document = fresh
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            logger.debug("Intake: could not re-read the measurement (%s)", exc)
+        doc = self.state.geometry_document
+        return doc if isinstance(doc, dict) else {}
+
     async def _do_survey_the_part(self, args: dict) -> IntakeToolResult:
         """Step 1 to step 4: the customer has said what the part is for; compose and return the questions."""
         refused = self._survey_refusal("survey_the_part")
@@ -512,8 +541,10 @@ class IntakeToolExecutor:
         from meshpipeline.application import geometry_survey as gs
 
         st = self.state
-        # _survey_refusal returned None, so this is the stored document; the else is for the type checker
-        document = st.geometry_document if isinstance(st.geometry_document, dict) else {}
+        # THE CURRENT ROW, not the snapshot this turn began with - see `_current_document`. Composing
+        # from the stale copy is what let a look-aware survey be overwritten by a pre-look one when
+        # the model surveyed again mid-conversation, and the builder then refused the plan.
+        document = await self._current_document()
         quote = str(args.get("customer_words_verbatim") or "")
         if not any(gs.said_by_customer(quote, said) for said in st.customer_messages):
             return IntakeToolResult(tool="survey_the_part", accepted=False, content=(
@@ -658,12 +689,7 @@ class IntakeToolExecutor:
             # look lands it still says `not_attempted`, the comparison below finds nothing to do, and
             # the survey is never refreshed. That is why this fix did nothing the first time: the row
             # said "ok" and the copy in memory said "not_attempted".
-            from meshpipeline.cad.regions import stored_document_for_source
-
-            _now = await stored_document_for_source(st.survey_source_ref)
-            if isinstance(_now, dict) and _now.get("status") == "ok":
-                st.geometry_document = _now
-            _doc_look = str(((st.geometry_document or {}).get("look") or {}).get("status") or "")
+            _doc_look = str(((await self._current_document()).get("look") or {}).get("status") or "")
             _composed = str(((st.geometry_survey or {}).get("composed_for") or {}).get("look_status") or "")
             if _doc_look and _composed != _doc_look and isinstance(st.geometry_survey, dict):
                 logger.info("Intake: the look landed after the survey was composed (%s -> %s); "
