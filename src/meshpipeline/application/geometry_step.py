@@ -113,13 +113,20 @@ def plan_key(state: dict, fidelity: str) -> str:
     while leaving out a value the composition takes is a key that lies when anything ever composes with
     an explicit cap. It costs two fields to be true instead of true-for-now.
 
+    THE FLOW DIRECTION IS IN IT FOR THE SAME REASON, and by the same argument rather than by a second one.
+    The composition is made with it (`geometry_survey.composition` hands it to `report_measured`, where it
+    decides whether an external body's downstream face is its `blunt_base`), and while the ANSWER that set it
+    is in `answers` below, `geometry_survey.confirmed_inputs` also reads it back off the ROW when that answer
+    has been retired - which is how a confirmed side survives a recomposition. A key that identifies a
+    composition and leaves out a value only the row carries is the same lie one paragraph up, one field along.
+
     Not in it: the third intake's answer, which comes after the plan by construction and must not
     invalidate it. That answer is never composed back into the survey, so it moves nothing here."""
     stored = state.get("composed_for")
     cf: dict[str, Any] = stored if isinstance(stored, dict) else {}
     inputs = {k: cf.get(k) for k in ("purpose", "engine", "declared", "unit", "unit_basis", "scale_to_metres",
                                      "brief_sha", "representation", "inlet_ids", "look_status",
-                                     "cell_cap", "cell_cap_kind")}
+                                     "cell_cap", "cell_cap_kind", "flow_direction")}
     late_id = _late_id(state)
     answers = [[a.get("question_id"), a.get("subject"), a.get("value"), a.get("answered_by"), bool(a.get("skipped"))]
                for a in gs.live_answers(state)
@@ -174,6 +181,11 @@ class _Inputs:
     #: context reads the part through it, and a context that read it without the answer disagreed with the
     #: survey the answer had already changed, which is a refusal and not a plan.
     fluid_side: str | None = None
+    #: WHICH WAY THE CUSTOMER SAID THE FLOW COMES AT THE BODY, as `+x` and the rest, or None. It is the value
+    #: THIS composition was made with (`gs.composed_inputs`), and not a second reading of the answers, because
+    #: `contract.given.check_plan` says which one the plan may be checked against: "the value the plan is
+    #: checked against has to be the one the builder's block was built from". One value, one reading.
+    flow_direction: str | None = None
 
 
 def _brief_rows(ports: list[dict], facts: Any, unit: str | None) -> list[dict]:
@@ -267,7 +279,7 @@ def _inputs(state: dict, document: dict, *, fidelity: str, source_path: str = ""
     return _Inputs(facts=facts, composed=composed, brief=brief, survey=survey, intake=gs.intake_handoff(state),
                    stated=_stated_roles(document, made["ports"]), look=look,
                    engine=str(composed.get("engine") or "snappy"), ports=made["ports"],
-                   fluid_side=made["fluid_side"])
+                   fluid_side=made["fluid_side"], flow_direction=made["flow_direction"])
 
 
 def late_handoff(state: dict) -> Any:
@@ -544,8 +556,18 @@ def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, 
     for stage in ("brief", "survey", "look", "uncertainty", "intake"):
         ledger.put(stage, recs[stage])
     config = pkg["LoopConfig"](wall_budget_s=float(polcfg.GEOMETRY_AGENT_STEP_TIMEOUT_SECONDS) or None)
+    # THE DIRECTION THE CUSTOMER GAVE REACHED THE CHECKER THAT VETOES THE PLAN AND NEVER THE INSTRUCTION.
+    # `cj.plan` passes `flow_direction` to two things: `given_text`, which is the one line that tells the model
+    # which way the flow runs, and `plan_check`. This call left it out, so the model was never told - while
+    # `contract.given.check_plan` read the same answer off the confirmed mark anyway
+    # (`said_flow = flow_direction or customer_flow_direction(given)`) and sent back every plan whose
+    # `flow.axis` times `flow.direction_sign` disagreed with it. So the loop was asked to guess a value it was
+    # being marked against: each guess costs a round of `LoopConfig.wall_budget_s`, and a loop that runs out of
+    # rounds returns `result.plan is None`, which this module stores as a FAILED step and the job is then
+    # dispatched with no plan at all. The agent's half of the pair was already wired
+    # (`chain.job.given_text`'s `flow_direction` block); this was the platform's missing half.
     result = cj.plan(inp.facts, inp.brief, given, inp.composed, client, look_block=inp.look, config=config,
-                     fluid_side=inp.fluid_side)
+                     fluid_side=inp.fluid_side, flow_direction=inp.flow_direction)
     sent_back = sum(1 for t in result.trace if t.get("rejection_kind") == "given")
     step: dict[str, Any] = {"schema": STEP_SCHEMA, "for": key, "at": _now(), "fidelity": fidelity,
                             "engine": inp.engine,

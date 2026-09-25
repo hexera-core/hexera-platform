@@ -150,6 +150,63 @@ def test_a_plan_is_bound_to_the_answers_it_was_made_for(armed):
         gst.builder_handoff(moved, doc, request_txt="mesh it")
 
 
+def _answered_external() -> tuple[dict, dict]:
+    """An external body whose customer has answered which way the flow comes at it, and its document.
+
+    The stored fixture's own brief says "Flow is along +X." and `ask.settle`'s first cut settles the question
+    from that sentence, so there would be no question to answer; the brief here states everything the purpose
+    needs and not the axis, which is what makes the direction an abstention the customer settles.
+    """
+    doc = _doc("ahmed_variant_001_external_looked")
+    brief = ("External aero on this body. Body surface - a solid body to mesh AROUND, not a fluid domain. "
+             "Geometry is in millimetres.")
+    state = gs.carry_answers(None, gs.compose(doc, purpose="external_cfd", brief=brief, engine="snappy"))
+    (flow,) = [v for v in gs.open_now(state) if v["about"] == "flow_direction"]
+    said = "along +x"
+    state = gs.answered(state, doc, question_id=flow["id"], choice=said, words=said,
+                        latest_user_message=said, principal="owner-7f3a")
+    return gs.mark_asked(state, gs.open_now(state)), doc
+
+
+def test_the_answered_flow_direction_reaches_the_models_instruction_and_not_only_its_checker(armed, monkeypatch):
+    """DEGRADES SILENTLY, and it degrades by spending the model's budget. `cj.plan` hands `flow_direction` to
+    two things: `given_text`, the one line that tells the model which way the flow runs, and `plan_check`. This
+    module called it with `look_block` and `fluid_side` and no `flow_direction`, so the model was never told -
+    while `contract.given.check_plan` read the same answer off the confirmed mark anyway
+    (`said_flow = flow_direction or customer_flow_direction(given)`) and sent back every plan whose
+    `flow.axis` times `flow.direction_sign` disagreed with it. The loop was marked against a value it was
+    asked to guess: each guess costs a round, and a loop out of rounds returns no plan at all, which this
+    module stores as a failed step and the job is dispatched with none.
+
+    THE ASSERTION IS THE INSTRUCTION AND NOT THE KEYWORD. A test that only checked the call was made with
+    `flow_direction="+x"` would pass on a value the package does nothing with, so the package's own
+    `given_text` is composed from the captured arguments and asked whether it names the direction - and asked
+    again with None, because a line that is there either way proves nothing.
+    """
+    state, doc = _answered_external()
+    assert gs.confirmed_flow_direction(state) == "+x"
+    cj = gst._package()["job"]
+    real, seen = cj.plan, {}
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        seen["given"] = args[2]
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cj, "plan", spy)
+    got = gst.plan_the_part(state, doc, fidelity="standard", job_id="job-1",
+                            client=gst.planner_client("reference"))
+    assert got["geometry_step"]["status"] == gst.PLANNED, got["geometry_step"].get("reason")
+    assert seen["flow_direction"] == "+x", "the plan was made without the one answer the external path has"
+    told = cj.given_text(seen["given"], seen.get("look_block"), seen["flow_direction"])
+    assert "flow direction: along +x, given by the customer" in told
+    assert "flow direction:" not in cj.given_text(seen["given"], seen.get("look_block"), None), (
+        "the instruction names the direction whatever this platform passes, so this test proves nothing")
+    # the checker's half was already working off the confirmed mark, which is why the pair was a refusal loop
+    from geometry_agent.contract.given import customer_flow_direction
+    assert customer_flow_direction(seen["given"]) == "+x"
+
+
 # -------------------------------------------------------------------------------------------------
 # THE ORDER: STEP 5 IS AFTER STEP 4, INCLUDING THE SURVEY'S OWN TRADE
 # -------------------------------------------------------------------------------------------------
