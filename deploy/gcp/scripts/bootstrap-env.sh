@@ -235,6 +235,17 @@ MINIO_SECRET_KEY_SECRET=${MINIO_SECRET_KEY_SECRET:-}
 # API SERVICE and WORKER FLEET identities (scripts/create-api-service.sh, create-worker-fleet.sh).
 # EMPTY CLOUDRUN_API_SERVICE means this deployment serves no API and that stage is skipped.
 CLOUDRUN_API_SERVICE=${CLOUDRUN_API_SERVICE:-}
+# WHICH ENVIRONMENT THIS IS. The API receives it as ENV, and settings/policy.py classifies the whole
+# deployment by it: every value except dev/development/local/test/testing/ci requires MESH_API_KEY,
+# USER_TOKEN_SECRET, an explicit CORS_ORIGINS list and a database credential.
+#
+# EMPTY, AND IT IS EMPTY ON PURPOSE - this is the one key here that discovery cannot answer. Nothing
+# in a Google Cloud project says whether it is somebody's sandbox or the thing customers use, so a
+# default here would be a guess about exactly the question this value exists to settle. It used to be
+# guessed one script later: create-api-service.sh read `${APP_ENV:-dev}` and, because this file never
+# emitted the key, that dev was what every hosted deployment shipped with - the live prod API served
+# self-asserted identities with wildcard CORS because of it. Empty is refused there by name.
+APP_ENV=${APP_ENV:-}
 API_SERVICE_ACCOUNT=${API_SERVICE_ACCOUNT:-}
 API_MIN_INSTANCES=${API_MIN_INSTANCES:-0}
 API_MAX_INSTANCES=${API_MAX_INSTANCES:-5}

@@ -625,6 +625,74 @@ def test_a_question_the_brief_already_answered_is_not_put_and_is_not_on_the_surv
     assert gs.open_now(state) == []
 
 
+#: A brief for the external body that does NOT name the flow axis, so `q_flow_direction` is a real
+#: abstention the customer answers rather than a question cut 1 settles from their own sentence. The stored
+#: fixture's own brief says "Flow is along +X.", which is what
+#: `test_a_question_the_brief_already_answered_is_not_put_and_is_not_on_the_survey` above pins.
+_AERO_WITH_NO_AXIS = ("External aero on this body. Body surface - a solid body to mesh AROUND, not a fluid "
+                      "domain. Geometry is in millimetres.")
+
+
+def _place_kinds(state: dict) -> list[str]:
+    """What the builder's own block calls each place it names (`planner_block.places`)."""
+    return [str(p.get("kind")) for p in ((state.get("planner_block") or {}).get("places") or [])]
+
+
+def test_the_answered_flow_direction_names_the_downstream_flat_end_the_bodys_base():
+    """DEGRADES SILENTLY. `report_measured` takes `flow_direction` and it decides exactly one thing: whether an
+    external body's flat downstream face is named its `blunt_base` or an anonymous `flat_end`
+    (`facts/coverage.py:444-450`). `compose` and `composition` had no parameter for it, so every composition
+    this platform ever made called `report_measured(flow_direction=None)` and the customer's answer to
+    `q_flow_direction` - the only question the external path has - changed nothing in the block the builder
+    reads.
+
+    MEASURED on the stored ahmed_variant_001_external_looked, whose partition has the body's flat rear face as
+    patch w3: with no direction the block's one place is `flat_end`, and with the `+x` the customer answered it
+    is `blunt_base` on the same patch. The builder spends its budget in the block's list order and
+    `coverage.KIND_ORDER` ranks `blunt_base` above `flat_end`, so the wake behind the body was refined as an
+    unnamed flat face on every external job while the answer sat on the row.
+    """
+    doc = _doc("ahmed_variant_001_external_looked")
+    state = gs.carry_answers(None, gs.compose(doc, purpose="external_cfd", brief=_AERO_WITH_NO_AXIS))
+    (flow,) = [v for v in gs.open_now(state) if v["about"] == "flow_direction"]
+    assert _place_kinds(state) == ["flat_end"], "the fixture's rear face is not the one place this pins"
+    assert "flow_direction" not in state["composed_for"], "nobody has answered, so the row claims nothing"
+
+    said = "along +x"
+    answered = gs.answered(state, doc, question_id=flow["id"], choice=said, words=said,
+                           latest_user_message=said, principal="owner-1")
+    assert gs.confirmed_flow_direction(answered) == "+x"
+    assert answered["composed_for"]["flow_direction"] == "+x"
+    assert _place_kinds(answered) == ["blunt_base"], (
+        "the customer said which way the flow runs and the builder is still told this face is an anonymous "
+        "flat end")
+    # and the composition is replayable, which is what `geometry_step._inputs` refuses a plan over
+    assert gs.composed_inputs(answered)["flow_direction"] == "+x"
+    assert _place_kinds(gs.recomposed(answered, doc)) == ["blunt_base"]
+
+
+def test_the_direction_the_customer_said_does_not_matter_settles_none():
+    """A REFUSAL IS NEVER A VALUE. `ask.say.flow_direction`'s last option is "it does not matter for this
+    run", which names no direction; read through `contract.given.FLOW_DIRECTION_RE` it is None, and the
+    composition is the one made before anybody answered rather than a guess at `+x`. The row says nothing
+    about the direction rather than saying the default."""
+    doc = _doc("ahmed_variant_001_external_looked")
+    state = gs.carry_answers(None, gs.compose(doc, purpose="external_cfd", brief=_AERO_WITH_NO_AXIS))
+    (flow,) = [v for v in gs.open_now(state) if v["about"] == "flow_direction"]
+    said = "it does not matter for this run"
+    assert said in flow["options"]
+    answered = gs.answered(state, doc, question_id=flow["id"], choice=said, words=said,
+                           latest_user_message=said, principal="owner-1")
+    assert gs.confirmed_flow_direction(answered) is None
+    assert "flow_direction" not in answered["composed_for"]
+    assert _place_kinds(answered) == ["flat_end"]
+    # and a default that stood is not an answer either, which is the same law from the other side
+    left = gs.answered(state, doc, question_id=flow["id"], words="you decide",
+                       latest_user_message="you decide", took_default=True)
+    assert gs.confirmed_flow_direction(left) is None
+    assert _place_kinds(left) == ["flat_end"]
+
+
 def test_the_sentence_a_customer_reads_is_the_finders_own_and_the_record_that_labels_it_is_there():
     """`ask.say` writes the question and `ask.record` writes the row that turns the answer into a label.
     Neither ran on this path before: the questions were rendered by `contract.asking.questions_from`, whose

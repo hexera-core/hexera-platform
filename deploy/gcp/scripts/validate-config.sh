@@ -102,6 +102,53 @@ if [ -n "${CLOUDRUN_API_SERVICE:-}" ]; then
   # A service reaching a private Cloud SQL and Memorystore needs the network it egresses into.
   [ -n "${VPC_NETWORK:-}" ] && [ -n "${VPC_SUBNET:-}" ] \
     || add "CLOUDRUN_API_SERVICE is set but VPC_NETWORK/VPC_SUBNET are not - the service could not reach the private data tier"
+
+  # WHICH ENVIRONMENT THIS IS, AND WHAT THAT ENVIRONMENT THEN REQUIRES.
+  #
+  # APP_ENV reaches the service as ENV, and settings/policy.py classifies the deployment by it and
+  # nothing else. It was never emitted and never set, so create-api-service.sh's `${APP_ENV:-dev}`
+  # was what every hosted deployment shipped: the live prod API accepted self-asserted identities
+  # from anyone, served every origin, and was public. An unstated environment is refused here, where
+  # the fix is one line in a file, rather than assumed to be the most permissive one.
+  [ -n "${APP_ENV:-}" ] \
+    || add "APP_ENV is not set - this deployment cannot say which environment it is. It becomes ENV
+   on the API service, and every name except dev/development/local/test/testing/ci makes the runtime
+   demand MESH_API_KEY, USER_TOKEN_SECRET, an explicit CORS_ORIGINS list and a database credential.
+   Set APP_ENV=production for a hosted deployment, or APP_ENV=dev for a genuinely local one"
+
+  # THE DEV NAMES, RESTATED FROM settings/policy.py's _AUTH_OPTIONAL_ENVS. A restatement is a fact
+  # that can drift, so the direction it drifts in matters: a name added there and not here becomes a
+  # REFUSAL of a configuration the application would have accepted - loud, and fixed by editing this
+  # line - whereas the reverse would let a hosted deployment through unchecked. The pair is pinned by
+  # tests/unit/deploy/test_deployment_environment_is_stated.py so the drift is caught before either.
+  #
+  # WHY THE REQUIREMENTS ARE CHECKED HERE AS WELL AS IN THE RUNTIME. The application refuses to start
+  # without them, so the deploy's own verdict would be a Cloud Run revision that never becomes ready
+  # - after the identity, the seven secret bindings and the rollout, with the reason buried in
+  # container logs. These three are knowable from the file, offline, before anything is created.
+  #
+  # LOWERCASED AND NOT TRIMMED, which is exactly what policy.py does to ENV before it classifies it
+  # (`optional_env("ENV", "dev").lower()`, no strip). So APP_ENV=Production is the hosted environment
+  # here for the same reason it is there, and APP_ENV=" dev " is hardened in both places rather than
+  # in one.
+  if [ -n "${APP_ENV:-}" ]; then
+  case " dev development local test testing ci " in
+    *" ${APP_ENV,,} "*) ;;
+    *)
+      [ -n "${MESH_API_KEY_SECRET:-}" ] \
+        || add "APP_ENV=${APP_ENV:-} is a hosted environment but MESH_API_KEY_SECRET names no Secret
+   Manager container. The runtime refuses to start without MESH_API_KEY, because with it unset every
+   route is unauthenticated - the revision would roll out and never become ready"
+      [ -n "${USER_TOKEN_SECRET_SECRET:-}" ] \
+        || add "APP_ENV=${APP_ENV:-} is a hosted environment but USER_TOKEN_SECRET_SECRET names no
+   Secret Manager container. Without USER_TOKEN_SECRET an X-User-Id is self-asserted, so any caller
+   can act as any customer; the runtime refuses to start and the revision would never become ready"
+      [ "${API_CORS_ORIGINS:-*}" != "*" ] \
+        || add "APP_ENV=${APP_ENV:-} is a hosted environment but API_CORS_ORIGINS is the wildcard
+   (it defaults to one). The runtime refuses a wildcard outside dev, so set API_CORS_ORIGINS to the
+   explicit comma-separated origin list this deployment serves" ;;
+  esac
+  fi
 fi
 
 # THE OBJECT STORE. The access key is the PUBLIC half; its secret is a container name. Both or

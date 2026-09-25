@@ -72,7 +72,29 @@ API_MIN_INSTANCES="${API_MIN_INSTANCES:-0}"
 # The ceiling is the COST CEILING: every instance can spend money at DeepInfra and DeepSeek.
 API_MAX_INSTANCES="${API_MAX_INSTANCES:-5}"
 API_INGRESS="${API_INGRESS:-all}"
-APP_ENV="${APP_ENV:-dev}"
+# THE ENVIRONMENT IS STATED OR THE DEPLOY REFUSES, and this line used to read `${APP_ENV:-dev}`.
+#
+# WHAT THAT DEFAULT BOUGHT. ENV is the single input settings/policy.py classifies a deployment by:
+# `requires_hardened_runtime()` is true for every value except dev, development, local, test, testing
+# and ci, and it is what enforces a non-empty MESH_API_KEY, a non-empty USER_TOKEN_SECRET, a
+# non-wildcard CORS_ORIGINS, a real database credential and a durable checkpointer. NOTHING IN THIS
+# REPOSITORY EVER SET APP_ENV - bootstrap-env.sh did not emit the key and no generated env carried it
+# - so `:-dev` was not a default for local use, it was the value every hosted deployment got. The
+# live prod service therefore ran with ENV=dev: self-asserted X-User-Id accepted from anyone, CORS
+# open to every origin, and `API_ALLOW_UNAUTHENTICATED=1` in front of it. Each of those relaxations
+# has a refusal written for it in the application, and all of them were exempted by one word.
+#
+# A DEFAULT IS NOT A CONFIRMATION, and this is the worst place in the deployment for one: the
+# permissive answer is the one nobody has to type. Refused here, before any identity, binding or
+# revision is created, rather than rolled out as the most relaxed environment available.
+APP_ENV="${APP_ENV:-}"
+[ -n "${APP_ENV}" ] || die "APP_ENV is not set, so this deployment cannot say which environment it
+   is. It is the value the service receives as ENV, and settings/policy.py hardens on it: every name
+   except dev/development/local/test/testing/ci requires MESH_API_KEY, USER_TOKEN_SECRET, an
+   explicit CORS_ORIGINS list and a database credential. Assuming one would mean assuming the most
+   permissive one, which is how the live prod API came to run with ENV=dev. State it:
+     APP_ENV=production   in $(basename "${DEPLOY_ENV_FILE:-generated.env}") for a hosted deployment
+     APP_ENV=dev          for a genuinely local, single-tenant one"
 API_CORS_ORIGINS="${API_CORS_ORIGINS:-*}"
 VPC_NETWORK="${VPC_NETWORK:-default}"
 VPC_SUBNET="${VPC_SUBNET:-default}"

@@ -304,6 +304,7 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             unit_basis: str | None = None, cell_cap: int | None = None,
             inlet_ids: list[str] | None = None,
             confirmed_representation: str | None = None,
+            flow_direction: str | None = None,
             asked_before: dict[str, int] | None = None) -> dict:
     """Step 2: the stored measurement composed for this purpose, these words and these ports.
 
@@ -327,11 +328,14 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
     `confirmed_representation` is the representation a person CONFIRMED by answering the fluid-side
     question. None while nobody has, which is every composition until one is answered, and the whole path
     is dead unless the package's own `GEOMETRY_AGENT_FLUID_SIDE` raises that question at all.
+
+    `flow_direction` is which way the customer said the flow comes at the body, as `+x` and the rest
+    (`confirmed_flow_direction` reads it off their answer). None while nobody has answered.
     """
     made = composition(document, purpose=purpose, brief=brief, declared=declared, engine=engine, unit=unit,
                        scale_to_metres=scale_to_metres, unit_basis=unit_basis, cell_cap=cell_cap,
                        inlet_ids=inlet_ids, confirmed_representation=confirmed_representation,
-                       asked_before=asked_before)
+                       flow_direction=flow_direction, asked_before=asked_before)
     composed, survey = made["composed"], made["survey"]
     brief_text, ports, cap, stated_cap = made["brief"], made["ports"], made["cap"], made["stated_cap"]
     inlet_ids = made["inlet_ids"]
@@ -360,6 +364,14 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             #: nobody answered, which keeps the row byte for byte what it was.
             **({"confirmed_representation": str(confirmed_representation),
                 "fluid_side": str(made["fluid_side"])} if made["fluid_side"] else {}),
+            #: WHICH WAY THE CUSTOMER SAID THE FLOW COMES AT THE BODY, so `composed_inputs` replays the
+            #: composition this row is and `geometry_step` hands the same one answer to the model that its
+            #: checker already vetoes the plan against. The answer to `q_flow_direction` can outlive the
+            #: question on the row and be retired with it, and the row is then the only place it is left:
+            #: that is what happened to `confirmed_representation` above, measured on block_boss_sharp,
+            #: where a second composition read the answer back as None and inverted the meshed domain.
+            #: Absent where nobody answered, which keeps the row byte for byte what it was.
+            **({"flow_direction": str(flow_direction)} if flow_direction else {}),
             #: THE TIE-BREAK COUNTS THIS COMPOSITION WAS MADE WITH, so the recomposition
             #: `application/geometry_step._inputs` makes reproduces this survey exactly. `asked_before`
             #: breaks ties inside a tier, so it moves the ORDER of the ranked list and with it the order of
@@ -380,6 +392,7 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
                 unit_basis: str | None = None, cell_cap: int | None = None,
                 inlet_ids: list[str] | None = None,
                 confirmed_representation: str | None = None,
+                flow_direction: str | None = None,
                 asked_before: dict[str, int] | None = None) -> dict:
     """The package's own composition of the stored measurement, and the survey built from it.
 
@@ -416,10 +429,22 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     the_unit, the_basis = unit, unit_basis
 
     def measured(for_cap: int | None) -> dict:
+        # THE CUSTOMER'S ANSWERED FLOW DIRECTION DECIDES ONE THING HERE AND IT IS NOT A SMALL ONE.
+        # `report_measured` passes it to `coverage_block`, which passes it to `facts.coverage.flow_places`,
+        # which is the only thing that can name an external body's downstream flat face its `blunt_base`
+        # rather than a `flat_end` (coverage.py:444-450, `outward @ flow >= BASE_COS`). Until this argument
+        # was threaded through, `composition` had no way to pass it and every composition this platform made
+        # called `report_measured` with `flow_direction=None`. MEASURED on the stored
+        # ahmed_variant_001_external_looked: with no direction the block's one place is
+        # `{"kind": "flat_end", "what": "the body ends in a flat face here, across its long axis"}`, and with
+        # the `+x` the customer answered it is `{"kind": "blunt_base", "... facing downstream"}` on the same
+        # patch w3. The builder spends its budget in the block's own list order (`coverage.KIND_ORDER` ranks
+        # blunt_base above flat_end), so the wake behind the body was refined as an anonymous flat face on
+        # every external job, with the answer sitting on the row unread.
         return pkg["hexera"].report_measured(
             facts, the_unit, brief_text or None, purpose=purpose, engine=engine or None,
             declared=ports or None, cell_cap=for_cap, look=document.get("look"), fluid_side=side,
-            scale_to_metres=scale_to_metres, unit_basis=the_basis,
+            scale_to_metres=scale_to_metres, unit_basis=the_basis, flow_direction=flow_direction,
             stamp={k: v for k, v in (document.get("stamp") or {}).items()
                    if k in ("agent_git_sha", "platform_sha")},
             inlet_ids=list(inlet_ids) or None)
@@ -497,6 +522,7 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
     return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
             "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side,
+            "flow_direction": flow_direction,
             "asked": asked, "asking": asking_row(asked, pkg), "joint": joint}
 
 
@@ -575,6 +601,32 @@ def confirmed_representation(state: dict | None) -> str | None:
     return str(said[-1]["value"]) if said else None
 
 
+def confirmed_flow_direction(state: dict | None) -> str | None:
+    """Which way the CUSTOMER answered the flow comes at the body, as `+x` and the rest, or None.
+
+    A default that stood is not one, for the reason `_status` gives: `ask.say.flow_direction` offers "unless
+    you say otherwise the flow runs along +x", and a customer who let that stand has said nothing about the
+    direction. `ask.intake` ranks the question at `domain` because the answer moves the domain box
+    (`ask.consequence.FLOOR_FIELD["flow_direction"]`), so reading a default as an answer would hand the
+    builder a box nobody chose.
+
+    IT IS READ HERE AND NOT OFF A `Given`. `contract.given.customer_flow_direction` is the package's own
+    reading of the same answer, and it needs a `Given`, which needs a survey - and the two callers of this
+    are the composition that BUILDS the survey and a row that has not been planned yet. So the answer is read
+    off the row with `contract.given.FLOW_DIRECTION_RE`, the package's one spelling of a direction in a
+    person's words, and turned into the sign-and-letter form by the same two lines
+    `chain.job.flow_axis_of` uses on the same regex. A phrase that names no direction - the question's own
+    "it does not matter for this run" - is None rather than a guess, which is what that option means.
+    """
+    said = [a for a in live_answers(state)
+            if a.get("about") == "flow_direction" and a.get("answered_by") == CUSTOMER
+            and not a.get("skipped") and a.get("value")]
+    if not said:
+        return None
+    hit = _package()["given"].FLOW_DIRECTION_RE.search(str(said[-1]["value"]))
+    return f"{hit.group(1)}{hit.group(2).lower()}" if hit else None
+
+
 def composed_inputs(state: dict) -> dict:
     """The arguments `compose` was called with for this row, read back off `composed_for`.
 
@@ -589,6 +641,7 @@ def composed_inputs(state: dict) -> dict:
             "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
             "inlet_ids": list(before.get("inlet_ids") or []),
             "confirmed_representation": before.get("confirmed_representation") or None,
+            "flow_direction": before.get("flow_direction") or None,
             "asked_before": dict(before.get("asked_before") or {}) or None}
 
 
@@ -623,6 +676,9 @@ def recomposed(state: dict, document: dict, **changes: Any) -> dict:
               # and so does the side they answered, over the one composed before they had
               "confirmed_representation": (confirmed_representation(state)
                                            or before.get("confirmed_representation") or None),
+              # and the direction they answered the flow comes at the body, on the same terms
+              "flow_direction": (confirmed_flow_direction(state)
+                                 or before.get("flow_direction") or None),
               # the same tie-break counts, so a recomposition ranks the questions the way this row's did
               "asked_before": dict(before.get("asked_before") or {}) or None}
     kwargs.update(changes)
@@ -1843,7 +1899,14 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
     # not reasoned about.
     said_side = confirmed_representation(state)
     new_side = bool(said_side) and before.get("confirmed_representation") != said_side
-    if (new_cap or new_inlet or new_side) and isinstance(document, dict):
+    # AND SO IS A CONFIRMED FLOW DIRECTION, for the same reason one line up. The answer decides whether an
+    # external body's downstream flat face is named its base in the block the builder reads
+    # (`composition`'s `measured`), so an answer that is not composed back in is an answer that changes
+    # nothing: on ahmed_variant_001_external_looked the block's one place stayed `flat_end` after the
+    # customer had said the flow runs along +x, and the wake was refined as an anonymous flat end.
+    said_flow = confirmed_flow_direction(state)
+    new_flow = bool(said_flow) and before.get("flow_direction") != said_flow
+    if (new_cap or new_inlet or new_side or new_flow) and isinstance(document, dict):
         try:
             state = recomposed(state, document, **({"cell_cap": cap} if cap is not None else {}))
         except SurveyError as exc:
@@ -1880,7 +1943,8 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
            "asking_of", "asking_row", "builder_block", "carry_answers",
            "check_the_survey_block", "compose",
-           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_representation",
+           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",
+           "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "look_state", "look_state_of_document", "mark_asked", "named_inlets",
            "open_now",
