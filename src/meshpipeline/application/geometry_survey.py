@@ -92,6 +92,12 @@ CUSTOMER = "customer"
 #: a budget the package refuses it outright, which leaves the question open. That is the point.
 DEFAULT_TAKEN = "default_taken"
 
+#: WHAT THE ANSWER'S `note` SAYS when the customer accepted the platform's proposal rather than naming the
+#: option themselves. It is the CUSTOMER's answer - they said go to a proposal that was shown to them - and
+#: not a `DEFAULT_TAKEN`, which is nobody answering; the note is what lets a reader of the row tell the two
+#: apart afterwards without changing what either one means to a consumer.
+ACCEPTED_THE_PROPOSAL = "accepted the setup the application proposed"
+
 #: How a question is routed. `intake` is step 4. `trade` is step 6. `application` is a question this
 #: platform already asks in its own words and owns the answer to: the unit, through
 #: `agents/intake/unit_clarification.py` and the interpretation it records. `advisory` is reported
@@ -683,6 +689,14 @@ def asking_row(asked: Any, pkg: dict) -> dict:
         #: WHAT MAKES THE ANSWER A LABEL (`ask.record`). Stored for the questions that are PUT, because an
         #: answer only comes back for one of those, and it is the row the ledger keys the answer on.
         "record": {q.id: q.record for q in asked.questions if q.record},
+        #: THE PLATFORM'S OWN PROPOSAL, STRUCTURED (`ask.schema.Question.default_roles`). `text` above carries
+        #: the sentence the customer reads, and the sentence is the whole of the proposal for every question
+        #: but the role one, where it names a mouth. `record_answer` records THIS map, never a mouth the model
+        #: chose, when a customer accepts the proposal instead of naming the roles themselves - so the platform
+        #: is answerable for what it proposed rather than trusting a model to repeat it back. Empty for a
+        #: question whose default names no place, and for a row composed before the agent wrote the field.
+        "proposal": {q.id: dict(getattr(q, "default_roles", None) or {})
+                     for q in [*asked.questions, *asked.held] if getattr(q, "default_roles", None)},
     }
 
 
@@ -945,6 +959,7 @@ def question_views(state: dict) -> list[dict]:
     tiers = dict(asking.get("tier") or {})
     said = dict(asking.get("text") or {})
     records = dict(asking.get("record") or {})
+    proposals = dict(asking.get("proposal") or {})
     tier_why = dict(pkg["ask_schema"].TIER_WHY)
     answers = live_answers(state)
     out = []
@@ -955,6 +970,11 @@ def question_views(state: dict) -> list[dict]:
         view = {"id": q.id, "about": q.about, "text": str(said.get(q.id) or q.text),
                 "options": list(q.options),
                 "subjects": subjects, "effect": q.effect, "default": q.default,
+                #: THE SAME DEFAULT AS A MAP, `{mouth: role}`, written by `ask.say.port_roles` from the same
+                #: reading the sentence in `default` is written from. It is what `record_answer` records when a
+                #: customer accepts the proposal rather than naming the roles, and it is `{}` on every question
+                #: whose default names no place.
+                "proposal": dict(proposals.get(q.id) or {}),
                 "evidence": list(q.evidence), "route": _route(q),
                 "why": q.of.why, "options_from": q.of.options_from,
                 #: THE CAP AND THE RANKING, from the finder that made them. `put` False is a question the
@@ -1011,6 +1031,8 @@ def late_view(state: dict | None) -> dict | None:
             "effect": "changes_mesh", "default": late.get("default"),
             "evidence": [f"the plan's envelope {env.get('cells_high')} cells ({env.get('source')})",
                          f"your stated budget {env.get('cap')} cells"],
+            #: the third intake is a budget question: its default names a number, never a mouth
+            "proposal": {},
             "route": ROUTE_LATE, "why": str(late.get("because") or ""),
             "options_from": "the stated budget and the builder emulator's envelope for this plan",
             #: the same keys every other view carries, so a reader never has to know which kind of view it
@@ -1174,6 +1196,88 @@ def said_by_customer(words: str, latest_user_message: str, earlier: Any = None) 
     return any(quote in _norm(str(m)) for m in (earlier or ()))
 
 
+def accepts_a_proposal(latest_user_message: str, earlier: Any = None) -> bool:
+    """Has the customer accepted a proposal that is on screen, or handed us the decision and not taken it back?
+
+    TWO SHAPES, AND BOTH ARE READ OFF THEIR OWN MESSAGE rather than relayed by a model, which is the whole
+    point: `record_answer`'s other paths let a model NAME the option, so a model quoting the bare word "go"
+    could record any role it liked and satisfy the gate. This reads what they wrote.
+
+      an acceptance   `engine_selection.affirms`, which is the reader already used for the one question the
+                      application puts on screen itself. It refuses any message carrying a denial or a
+                      hesitation anywhere in it, so "go, but o2 is the inlet" is not an acceptance of anything.
+      a delegation    `recommendation.choice_deferred`, in their latest message or in an earlier one. A
+                      delegation does not expire - that is `said_by_customer`'s own argument, measured - so
+                      "everything else you decide" three turns ago still stands.
+
+    IT IS NOT AN ANSWER TO THE QUESTION and it is not read as one. It is permission to record the PLATFORM'S
+    proposal, which is why the value recorded is never the model's: see `_the_proposal_recorded`.
+    """
+    from meshpipeline.agents.intake.engine_selection import affirms
+    from meshpipeline.agents.intake.recommendation import choice_deferred
+
+    if affirms(latest_user_message):
+        return True
+    if choice_deferred(latest_user_message):
+        return True
+    return any(choice_deferred(str(m)) for m in (earlier or ()))
+
+
+def _the_proposal_recorded(state: dict, view: dict, row: dict, *, latest_user_message: str,
+                           earlier: Any, principal: str) -> dict:
+    """The PLATFORM'S OWN proposal recorded as the customer's answer, one row per place it names.
+
+    WHY THE PLATFORM'S AND NOT THE MODEL'S. The owner's design, in his words: "why even have the confidence
+    score be an issue? like we anyway confirm it with the user so only what passes there is used to make the
+    plan". The platform proposes, the customer's one "go" confirms the whole block, and the plan runs on that.
+    The proposal is `ask.say.port_roles`' `default_roles` - the same reading its sentence is written from,
+    which is what the mesher does when nobody answers - so what is recorded is what the customer was shown.
+
+    AND IT IS STRICTLY SAFER THAN THE PATH IT REPLACES. Before this, a customer's "go" was recorded by the
+    model calling `answer_survey_question` once per mouth with an option of its own choosing and their word
+    "go" as the quote: the gate checked that the quote was theirs and that the option was one of the
+    question's, and nothing checked that the option was the one they had been shown. Here the value comes
+    from the platform, and the only thing the model contributes is the claim that they accepted - which
+    `accepts_a_proposal` checks against their own message, and which can therefore fail on its own.
+
+    IT IS THE SAME MOVE `engine_selection.answers_the_selection_question` ALREADY MAKES FOR THE ENGINE:
+    "deferring to a choice we have already made and shown is accepting it", and there too the value taken is
+    the one the application proposed and not a name the model wrote. A customer who disagrees corrects it -
+    `_corrected` supersedes a confirmed role on their own later words - and the roles are named in the
+    requirements block they confirm before anything is dispatched.
+    """
+    proposal = dict(view.get("proposal") or {})
+    if not proposal:
+        raise SurveyError(
+            f"{view['id']!r} carries no proposal for the application to record, so an acceptance cannot "
+            f"settle it: its default is {view.get('default')!r}, which names no place. Record what they "
+            f"said with an option, or took_default if they left it to you")
+    if not accepts_a_proposal(latest_user_message, earlier):
+        raise SurveyError(
+            "their latest message does not accept the proposal and they have not handed you the decision "
+            "either, so the application may not record its own reading as their answer. Record the option "
+            "they named, or put the question")
+    for place in view["subjects"]:
+        if place not in proposal:
+            raise SurveyError(
+                f"the proposal for {view['id']!r} does not place {place}, and a proposal that covers some of "
+                f"the mouths it names is not one the application may record; it places "
+                f"{sorted(proposal)}. Put the question")
+    for place, role in sorted(proposal.items()):
+        if place not in view["subjects"]:
+            continue
+        # the same option words and the same vocabulary as an answer the customer named, read through the one
+        # function that knows both role shapes, so an accepted proposal and a stated role land identically
+        at, value = _role_answer(view, place, role, "")
+        option = _canonical_option(role, view["options"]) or role
+        state = _corrected(state, view, at, value, principal)
+        answer = {**row, "answered_by": CUSTOMER, "subject": at, "value": value, "option": option,
+                  "note": ACCEPTED_THE_PROPOSAL}
+        _check_with_the_package(answer)
+        state = _append(state, answer)
+    return state
+
+
 def _canonical_option(choice: str, options: list[str]) -> str | None:
     wanted = _norm(choice)
     for option in options:
@@ -1185,7 +1289,7 @@ def _canonical_option(choice: str, options: list[str]) -> str | None:
 def record_answer(state: dict, *, question_id: str, choice: str = "", role: str = "",
                   words: str = "", latest_user_message: str = "", principal: str = "",
                   skipped: bool = False, took_default: bool = False, subject: str = "",
-                  earlier_customer_messages: Any = None) -> dict:
+                  earlier_customer_messages: Any = None, accepted_proposal: bool = False) -> dict:
     """One answer, checked, appended. Raises `SurveyError` with a sentence for the model.
 
     WHAT MAKES IT THE CUSTOMER'S. The quote has to be in their latest message, and the choice has to
@@ -1253,6 +1357,13 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
         # builder is told the question is still open.
         return _append(state, {**row, "answered_by": DEFAULT_TAKEN, "subject": "",
                                "value": view.get("default")})
+    if accepted_proposal:
+        # THEY ACCEPTED WHAT THE APPLICATION PROPOSED, so what is recorded is the application's own proposal
+        # and not an option the model named. This is not `took_default`: a default that stood is nobody
+        # answering, and on a role question `role_problems` treats it as a veto, so recommending it here would
+        # make submission impossible. See `_the_proposal_recorded`.
+        return _the_proposal_recorded(state, view, row, latest_user_message=latest_user_message,
+                                      earlier=earlier_customer_messages, principal=principal)
     option = _canonical_option(choice, view["options"])
     if option is None:
         raise SurveyError(f"{choice!r} is not one of the options for {question_id!r}: "
@@ -1856,13 +1967,20 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
         return []
     problems: list[str] = []
     for v in role_views:
+        # NAME THE WAY OUT THAT EXISTS, and there are two. A customer who named the roles is recorded with the
+        # option they named; a customer who accepted the setup, or handed you the decision, is recorded with
+        # the application's OWN proposal (`accepted_proposal`). The refusal used to name only the first, so on
+        # every job where the customer said "go" the model's only lever was to ask the roles again - after it
+        # had already asked "shall I go?" - which is the round trip this refusal caused most often.
+        settle = (f"record it with answer_survey_question: the option they named, or accepted_proposal when "
+                  f"they accepted the setup you showed them or left the decision to you (the application then "
+                  f"records its own reading, {v.get('default')!r})")
         if v["status"] == "open":
             problems.append(f"the customer has not answered survey question {v['id']} (which of "
-                            f"{', '.join(v['subjects'])} is which): put it, and record their answer with "
-                            f"answer_survey_question, before submitting")
+                            f"{', '.join(v['subjects'])} is which): {settle}")
         elif v["status"] in ("skipped", "defaulted"):
             problems.append(f"the customer did not confirm survey question {v['id']}, so no port may carry "
-                            f"that role. Tell them the mesh needs it, or leave the port out")
+                            f"that role: {settle}, or leave the port out")
     if problems:
         return problems
     confirmed = confirmed_roles(state)
@@ -2258,7 +2376,7 @@ def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
 async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "", role: str = "",
                  words: str = "", latest_user_message: str = "", skipped: bool = False,
                  took_default: bool = False, document: dict | None = None, subject: str = "",
-                 earlier_customer_messages: Any = None) -> dict:
+                 earlier_customer_messages: Any = None, accepted_proposal: bool = False) -> dict:
     """Record one answer and store it. When it confirms a budget, the planner block is composed again
     for that budget, so `customer_cell_cap` is the number the customer chose; when it names the inlet,
     it is composed again from that inlet, so the block's bore and the budget trade that follows are the
@@ -2269,7 +2387,8 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
     state = answered(state, document, question_id=question_id, choice=choice, role=role, words=words,
                      latest_user_message=latest_user_message, principal=owner_id,
                      skipped=skipped, took_default=took_default, subject=subject,
-                     earlier_customer_messages=earlier_customer_messages)
+                     earlier_customer_messages=earlier_customer_messages,
+                     accepted_proposal=accepted_proposal)
     await save(owner_id, source_ref.source_id, state)
     return state
 
@@ -2277,7 +2396,7 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
 def answered(state: dict, document: dict | None = None, *, question_id: str, choice: str = "",
              role: str = "", words: str = "", latest_user_message: str = "", principal: str = "",
              skipped: bool = False, took_default: bool = False, subject: str = "",
-             earlier_customer_messages: Any = None) -> dict:
+             earlier_customer_messages: Any = None, accepted_proposal: bool = False) -> dict:
     """One answer recorded into the row, with everything that follows from it. No database.
 
     `answer` is this plus the load and the store. It is a function of its own so that a caller which
@@ -2287,7 +2406,8 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
     state = record_answer(state, question_id=question_id, choice=choice, role=role, words=words,
                           latest_user_message=latest_user_message, principal=principal,
                           skipped=skipped, took_default=took_default, subject=subject,
-                          earlier_customer_messages=earlier_customer_messages)
+                          earlier_customer_messages=earlier_customer_messages,
+                          accepted_proposal=accepted_proposal)
     late = late_view(state)
     if late is not None and late["id"] == question_id:
         # the third intake's answer goes to the job ledger as the `trade` stage, the way the chain writes it

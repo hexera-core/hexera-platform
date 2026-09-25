@@ -860,10 +860,26 @@ def survey_lines(state: dict | None) -> list[str]:
         "  When the customer answers, call answer_survey_question with the id, the option EXACTLY as listed,",
         "  and their own words quoted exactly. If they decline, record it with skipped. If they tell you to",
         "  take the default, record took_default: that is NOT an answer, and the question stays open.",
+        # THE PROPOSAL IS THE APPLICATION'S AND IT IS ALREADY WRITTEN, so a customer who has handed you the
+        # decision does not have to be asked. This is the owner's own design for the whole chain: "we anyway
+        # confirm it with the user so only what passes there is used to make the plan". What went wrong without
+        # it: the model proposed the setup, asked "anything to change, or shall I go?", the customer said "good
+        # to go", and THEN the port roles were asked - because `role_problems` refuses any role the customer
+        # did not confirm and a "go" was not something the model could record as one.
+        "  IF THEY HAVE HANDED YOU THE DECISION, OR AGREE TO THE SETUP YOU LISTED, do not ask any of these.",
+        "  STATE the `proposes` line below as your decision, in your own setup, and record it with",
+        "  accepted_proposal: the application then records ITS OWN proposal as their answer and the question",
+        "  is SETTLED - one call for the whole question, no option and no mouth. Never took_default on a role:",
+        "  a default that stood is nobody answering, and the submission refuses a role nobody confirmed.",
         ""])
     for v in now[:MAX_SURVEY_QUESTIONS]:
         lines.append(f"  [{v['id']}] {v['text']}")
         lines.append(f"      options: {', '.join(v['options'])}")
+        # WHAT THE APPLICATION WOULD DO UNASKED, which the model could not see at all. It was inventing its
+        # own reading of the mouths for the setup it proposed, so the sentence the customer read and the value
+        # `accepted_proposal` records had no reason to agree. Shown, they are the same proposal.
+        if v.get("default"):
+            lines.append(f"      proposes: {v['default']}")
         if v["about"] == "opening.role":
             # THE TWO SHAPES A ROLE QUESTION COMES IN, said in the words the tool takes. The step-4 finder puts
             # ONE question naming every unplaced mouth whose options are the ROLES, so the model has to say
@@ -873,7 +889,9 @@ def survey_lines(state: dict | None) -> list[str]:
                          + (f"The mouths this asks about are {', '.join(v['subjects'])}: call the tool once per "
                             "mouth with `option` the role and `mouth` its id, and it is not settled until every "
                             "one of them has a role" if roles else
-                            "The options are the mouth ids; give the role for each mouth they name"))
+                            "The options are the mouth ids; give the role for each mouth they name")
+                         + (" - or once with accepted_proposal and no option at all, which places every one of "
+                            "them the way `proposes` says" if v.get("proposal") else ""))
     return lines
 
 

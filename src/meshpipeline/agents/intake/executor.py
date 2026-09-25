@@ -305,7 +305,8 @@ class IntakeToolExecutor:
         # a fresh proposal replaced the pending one, so the user's answer was spent on re-asking and
         # the same question returned however many times they said yes.
         if same_engine and prior_state == es.PROPOSED:
-            if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=True):
+            if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=True,
+                                                 earlier_user_messages=st.customer_messages):
                 st.selection = {**prior, "state": es.CONFIRMED,
                                 "confirmed_revision": st.revision,
                                 "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
@@ -335,7 +336,8 @@ class IntakeToolExecutor:
         # The confirmation question exists to prove the USER chose this engine. If their own latest
         # message already names it, that proof is in hand and asking again is a question with one
         # answer - so the selection is confirmed here instead of costing the user a round-trip.
-        if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=False):
+        if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=False,
+                                             earlier_user_messages=st.customer_messages):
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
                             "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
@@ -360,7 +362,7 @@ class IntakeToolExecutor:
         new_sel, reason = es.confirm(
             st.selection, session_id=st.session_id, owner_id=st.owner_id, revision=st.revision,
             quote=quote, latest_user_message=st.latest_user_msg,
-            user_msg_count=st.user_msg_count)
+            user_msg_count=st.user_msg_count, earlier_user_messages=st.customer_messages)
         if new_sel is None:
             logger.warning("Intake: engine selection confirm rejected - %s - job_id=%s",
                            reason, self._job_id)
@@ -646,6 +648,10 @@ class IntakeToolExecutor:
                 words=str(args.get("customer_words_verbatim") or ""),
                 latest_user_message=st.latest_user_msg, skipped=bool(args.get("skipped")),
                 took_default=bool(args.get("took_default")), document=st.geometry_document,
+                # THE CUSTOMER ACCEPTED WHAT THE APPLICATION PROPOSED. The value recorded is then the
+                # application's own proposal and never the model's option: see
+                # `geometry_survey._the_proposal_recorded`.
+                accepted_proposal=bool(args.get("accepted_proposal")),
                 # their OWN earlier messages, so a delegation given two turns ago is still quotable.
                 # Only a deferral may be quoted from these; see `said_by_customer`.
                 earlier_customer_messages=st.customer_messages)

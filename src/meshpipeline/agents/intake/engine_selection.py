@@ -137,7 +137,7 @@ def names_engine(engine: str, latest_user_message) -> bool:
 
 
 def answers_the_selection_question(engine: str, quote: str, latest_user_message,
-                                   *, outstanding: bool) -> bool:
+                                   *, outstanding: bool, earlier_user_messages=()) -> bool:
     """Has the user chosen this engine, by any proof this application accepts?
 
     THE PROOF IS ALWAYS THE USER'S OWN WORDS. Three shapes of it:
@@ -188,13 +188,24 @@ def answers_the_selection_question(engine: str, quote: str, latest_user_message,
         # confirm before anything is submitted, and the dispatch asks again after that. What is
         # removed is a question with one answer, not a place to say no.
         return True
-    return False
+    # A DELEGATION DOES NOT EXPIRE, and reading it as a one-turn utterance cost a whole round trip on
+    # every conversation. MEASURED on ahmed_variant_001 with the script "cfd" / "the fluid is air,
+    # everything else you decide" / "go": the delegation was two messages back by the time the engine
+    # was proposed, the latest message was the bare "go", so nothing above fired, and turn 4 of six was
+    # "Selected engine: snappyHexMesh. Nothing is meshed until you say so. Go with snappyHexMesh?" on
+    # its own - a question with one answer, put after the customer had already said go to the setup.
+    #
+    # This is `geometry_survey.said_by_customer`'s own argument, one field along: a deferral says do not
+    # ask me again, and it is still true three turns later. Narrow in the same way - only a DEFERRAL may
+    # be read from an earlier message, never an affirmation and never a refusal - so "no, not that one"
+    # from two turns ago can never be spent as agreement to an engine.
+    return any(choice_deferred(str(m)) for m in (earlier_user_messages or ()))
 
 
 
 def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
             quote: str, latest_user_message: str,
-            user_msg_count: int | None = None) -> tuple[dict | None, str]:
+            user_msg_count: int | None = None, earlier_user_messages=()) -> tuple[dict | None, str]:
     st = state_of(sel)
     if st == CONFIRMED:
         return None, "that engine selection is already confirmed"
@@ -217,7 +228,8 @@ def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
     # selecting an engine. The proof required is unchanged, and is still never a default and never
     # the model's prose: it is the user's own words, read here rather than relayed.
     if not answers_the_selection_question(str(sel.get("engine") or ""), quote,
-                                          latest_user_message, outstanding=True):
+                                          latest_user_message, outstanding=True,
+                                          earlier_user_messages=earlier_user_messages):
         return None, ("the words you quoted are not in the user's latest message, and that message "
                       "does not confirm the engine either - they have not confirmed it; ask them")
     return {**sel, "state": CONFIRMED, "confirmed_revision": revision,

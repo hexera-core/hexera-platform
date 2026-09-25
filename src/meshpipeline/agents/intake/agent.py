@@ -594,7 +594,10 @@ SURVEY_TOOLS: list[dict] = [
                 "application checks the quote against their latest message and the option against the "
                 "question's own options, and refuses anything else. Never record an answer they did not "
                 "give. If they decline, set skipped. If they tell you to take the default, set "
-                "took_default: that is recorded as NOT an answer and the question stays open."),
+                "took_default: that is recorded as NOT an answer and the question stays open. If they "
+                "accepted the setup you showed them, or handed you the decision, set accepted_proposal "
+                "instead: the application records ITS OWN reading as their answer, which settles the "
+                "question - one call for the whole question, no option and no mouth."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -614,6 +617,15 @@ SURVEY_TOOLS: list[dict] = [
                     "skipped": {"type": "boolean", "description": "They declined to answer."},
                     "took_default": {"type": "boolean",
                                      "description": "They told you to go with the default."},
+                    "accepted_proposal": {
+                        "type": "boolean",
+                        "description": (
+                            "They accepted the setup you listed, or told you to decide ('go', 'looks "
+                            "good', 'you decide', 'everything else you decide'). The application records "
+                            "its OWN proposal - the one in the question's default - as their answer, for "
+                            "every mouth at once, and the question is then SETTLED. Use this instead of "
+                            "took_default whenever they agreed: took_default is nobody answering, and on "
+                            "the port-role question it makes the submission impossible.")},
                 },
                 "required": ["question_id", "customer_words_verbatim"],
             },

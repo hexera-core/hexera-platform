@@ -404,6 +404,10 @@ def test_a_survey_for_other_bytes_does_not_reach_the_builder():
 _INLET = {"name": "inlet", "type": "inlet", "diameter_mm": 297.94, "near_mm": [0, 0, 0]}
 _OUTLET = {"name": "outlet", "type": "outlet", "diameter_mm": 297.94, "near_mm": [790.64, 787.28, 0]}
 _WALL = {"name": "wall", "type": "wall"}
+#: Where each of bend_elbow_001's two mouths is, so a patch can be declared ON the mouth the proposal placed
+#: rather than on whichever one the fixtures above happen to name.
+_AT = {"o2": {"diameter_mm": 297.94, "near_mm": [0, 0, 0]},
+       "o1": {"diameter_mm": 297.94, "near_mm": [790.64, 787.28, 0]}}
 
 
 def test_a_role_question_nobody_answered_refuses_the_submission():
@@ -431,6 +435,90 @@ def test_twin_bores_with_no_position_are_undecidable_and_refused_rather_than_gue
                {"name": "outlet", "type": "outlet", "diameter_mm": 297.94}, _WALL]
     problems = gs.role_problems(_answered_elbow(), _doc("bend_elbow_001"), by_size)
     assert len(problems) == 2 and all("does not bind to a measured mouth" in p for p in problems)
+
+
+# ONE "GO" SETTLES THE WHOLE BLOCK: the platform proposes, the customer accepts, the plan runs on that
+
+
+def test_the_role_question_carries_the_platforms_own_proposal_as_a_map():
+    """The proposal reaches the platform STRUCTURED and not as prose. `ask.say.port_roles` writes both out of
+    the same reading, so the sentence a customer is shown and the map the platform records are one answer."""
+    view = _role_question(_fresh("bend_elbow_001"))
+    assert sorted(view["proposal"]) == view["subjects"] == ["o1", "o2"] or sorted(view["proposal"]) == ["o1", "o2"]
+    assert sorted(view["proposal"].values()) == ["inlet", "outlet"]
+    inlet = next(m for m, r in view["proposal"].items() if r == "inlet")
+    assert view["default"] == f"treat {inlet} as the inlet and the other unplaced mouths as outlets"
+
+
+def test_a_delegation_settles_the_whole_role_question_with_the_platforms_own_proposal():
+    """THE DEFECT. The model proposed the whole setup and asked "anything to change, or shall I go?", the
+    customer said "good to go", and the port roles were then asked AGAIN - because `role_problems` refuses
+    every role the customer did not confirm and there was nothing a "go" could be recorded as.
+
+    A delegation settles it, and what is recorded is the PLATFORM's proposal for every mouth at once. Both
+    mouths get a role from ONE call, the status is `answered`, and the submission passes."""
+    state = _fresh("bend_elbow_001")
+    view = _role_question(state)
+    state = gs.record_answer(state, question_id=view["id"], words="good to go",
+                             latest_user_message="good to go", accepted_proposal=True, principal="owner-7f3a")
+    assert gs.confirmed_roles(state) == view["proposal"]
+    assert {v["id"]: v["status"] for v in gs.question_views(state)}[view["id"]] == "answered"
+    assert view["id"] not in _ids(gs.open_now(state))
+    assert all(a["note"] == gs.ACCEPTED_THE_PROPOSAL for a in gs.live_answers(state))
+    # it is the CUSTOMER's answer, not a default that stood: the handoff carries it and the builder is not
+    # told the question is open
+    assert [a.question_id for a in gs.intake_handoff(state).answers] == [view["id"], view["id"]]
+    assert gs.intake_handoff(state).unanswered == []
+    inlet = next(m for m, r in view["proposal"].items() if r == "inlet")
+    outlet = next(m for m, r in view["proposal"].items() if r == "outlet")
+    patches = [{"name": "inlet", "type": "inlet", **_AT[inlet]},
+               {"name": "outlet", "type": "outlet", **_AT[outlet]}, _WALL]
+    assert gs.role_problems(state, _doc("bend_elbow_001"), patches) == []
+
+
+def test_a_standing_delegation_settles_it_turns_later_and_a_bare_refusal_never_does():
+    """`accepts_a_proposal` reads THEIR message, which is what makes this safer than the path it replaces: a
+    model quoting the bare word "go" used to be able to record any option it liked. A delegation two turns
+    back still stands - it says do not ask me again - and a message carrying a refusal accepts nothing, even
+    when it also carries the word "go"."""
+    earlier = ["internal cfd, air through it", "everything else you decide"]
+    state = _fresh("bend_elbow_001")
+    view = _role_question(state)
+    ok = gs.record_answer(state, question_id=view["id"], words="everything else you decide",
+                          latest_user_message="how long will it take?", accepted_proposal=True,
+                          earlier_customer_messages=earlier)
+    assert gs.confirmed_roles(ok) == view["proposal"]
+    with pytest.raises(gs.SurveyError, match="does not accept the proposal"):
+        gs.record_answer(state, question_id=view["id"], words="no, go with o1 as the inlet",
+                         latest_user_message="no, go with o1 as the inlet", accepted_proposal=True)
+
+
+def test_the_customers_own_role_supersedes_a_proposal_they_accepted():
+    """THEY ARE THE AUTHORITY. A proposal the platform recorded on a "go" is their answer, and their own later
+    words correct it exactly as they correct a role they named themselves - it is not locked in."""
+    state = _fresh("bend_elbow_001")
+    view = _role_question(state)
+    state = gs.record_answer(state, question_id=view["id"], words="go", latest_user_message="go",
+                            accepted_proposal=True, principal="owner-7f3a")
+    proposed_inlet = next(m for m, r in view["proposal"].items() if r == "inlet")
+    other = next(m for m in view["subjects"] if m != proposed_inlet)
+    said = f"actually {other} is the inlet"
+    state = _say_role(state, other, "inlet", words=said, said=said, principal="owner-7f3a")
+    assert gs.confirmed_roles(state)[other] == "inlet"
+    assert any(a.get("retired") and a.get("subject") == other for a in state["answers"])
+
+
+def test_a_question_whose_default_names_no_place_cannot_be_settled_by_accepting_it():
+    """Only a proposal the application can ACT on may be recorded as an answer. The side question's default is
+    a sentence about what the mesher does and names no mouth, so accepting it records nothing and the refusal
+    says which tool argument does settle it."""
+    state = _fresh("bend_elbow_001")
+    side = [v for v in gs.question_views(state) if v["about"] != "opening.role" and v["route"] == "intake"]
+    if not side:
+        pytest.skip("bend_elbow_001 raises only the role question for this purpose")
+    with pytest.raises(gs.SurveyError, match="carries no proposal"):
+        gs.record_answer(state, question_id=side[0]["id"], words="go", latest_user_message="go",
+                         accepted_proposal=True)
 
 
 def test_a_default_role_refuses_the_submission_it_would_otherwise_have_guessed():

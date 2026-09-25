@@ -95,14 +95,30 @@ class IntakeLoopPolicy:
         terminal = self.resolve_terminal()
         if terminal is None:
             return None
-        # THE ENGINE QUESTION IS ADDED TO THE TURN, NOT SUBSTITUTED FOR IT.
+        # THE ENGINE QUESTION AND THE SUBMISSION SUMMARY ARE ADDED TO THE TURN, NOT SUBSTITUTED FOR IT.
         #
-        # A terminal replacing the payload is right for the other two: an admission block voids the
-        # authorization it is reporting on, and the submit summary is composed with the agent's words
-        # already. The selection prompt is a single question, and replacing the turn with it cost a
-        # whole turn every conversation.
+        # A terminal replacing the payload is right for the admission block: it voids the authorization
+        # it is reporting on, so the model's words about that payload are about a payload that is gone.
+        # The other two are not like that, and the selection prompt stopped being replaced first because
+        # it is a single question and replacing the turn with it cost a whole turn every conversation.
         #
-        # MEASURED on a structural run: turn 2 said "here's what I'm going with... Anything to change,
+        # THE SUMMARY IS THE SAME CASE AND IT BROKE TWO WRITTEN GUARANTEES. Its own last words are
+        # `admission_token.CONFIRM_REQUIREMENTS_ASK`, "Please confirm the requirements above before I
+        # mesh anything" - and with the model's words thrown away there were no requirements above it.
+        # MEASURED on ahmed_variant_001, the whole of what the customer was shown on that turn: "MESHING
+        # WITH snappyHexMesh", the geometry agent's findings, five risks, and then that sentence
+        # pointing back at the risks. The setup they were being asked to confirm - the ports, the fluid,
+        # the y+ treatment, the engine's reason - was in the reply and was deleted. The prompt file's
+        # own SOFT LIMITATIONS rule is the second one: it requires a "Heads-up:" line written AFTER
+        # submit_requirements and BEFORE asking to proceed, and every one of those reached nobody.
+        #
+        # So the model's words go first and the application's summary under them, which is also what
+        # makes one turn able to carry the whole setup, the geometry agent's warnings and the one ask.
+        # The prompt is what stops the model paraphrasing the summary next to it; nothing here can.
+        if self._terminal_name == "submit_summary" and self.plaintext_text:
+            joined = self.plaintext_text.rstrip() + (chr(10) * 2) + terminal
+            return ToolOutcome(content=terminal, accepted=True, terminal=True, payload=joined)
+        # THE ENGINE QUESTION, MEASURED on a structural run: turn 2 said "here's what I'm going with... Anything to change,
         # or shall I go?" and the customer said "go". That reply could not also carry the engine,
         # because whichever round called `propose_engine_selection` had its words thrown away - so the
         # model composed the proposal in one turn and proposed the engine in the next, and turn 3 was
