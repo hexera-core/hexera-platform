@@ -757,6 +757,32 @@ async def _survey_for(ref, document) -> tuple[bool, dict | None]:
         return False, None
 
 
+#: The panel's own header, as `geometry_brief.surveyor_panel` writes it. Only ever used to ask
+#: "has this customer been shown one of these yet", never parsed.
+_MARK = "- - - THE SURVEYOR - - -"
+
+
+def reply_with_the_receipt(panel: str, assistant_text: str, said_before: list[str]) -> str:
+    """The turn's reply with the Surveyor's receipt above it, or without it when it is a repeat.
+
+    A FUNCTION RATHER THAN FOUR LINES IN `node_intake`, so that the thing under test is the thing
+    that ships. What went wrong here is a question about the conversation so far and nothing else -
+    has this customer already been shown this panel - and it does not need a turn to ask.
+
+    Containment is exact: the panel is prepended verbatim and never reflowed, so if it is already
+    somewhere in what the customer has been told, it is a repeat. If it differs by so much as the
+    cell forecast then the measurement or the reading has changed, and that is shown and said,
+    because an unlabelled second copy is indistinguishable from the bug.
+    """
+    body = panel.strip()
+    if not body:
+        return assistant_text
+    if any(body in prior for prior in said_before):
+        return assistant_text
+    if any(_MARK in prior for prior in said_before):
+        panel = chr(10) + "(the measurement or the reading changed - here it is again)" + panel
+    return panel + chr(10) + assistant_text
+
 def _build_llm_messages(system: str, state_messages: list) -> list[dict]:
     messages: list[dict] = [{"role": "system", "content": system}]
     for m in state_messages:
@@ -1016,8 +1042,30 @@ async def node_intake(state: PipelineState) -> dict:
     # and read seventeen rendered views of it before this turn, and until now the customer saw none
     # of that - only questions, which read as an interrogation rather than as what is left over
     # after most of the work was already done. Shown once, on the turn the look lands.
+    #
+    # AND ONCE MEANS ACROSS TURNS, WHICH IT DID NOT. `_exec_state` is rebuilt every turn, so
+    # `surveyor_panel` starts empty every turn and the guard on it only ever stopped a second copy
+    # WITHIN one turn. The customer answered something that moved the purpose, intake called
+    # `survey_the_part` again, and the whole 900-character receipt was reprinted verbatim above the
+    # next question. MEASURED on ahmed_variant_001: turns 2 and 3 carried identical panels, and turn
+    # 3's own content was one sentence.
+    #
+    # Containment is the test and it is exact, because the panel is prepended verbatim and never
+    # reflowed: if this panel is already somewhere in what the customer has been told, it is a
+    # repeat. If it differs by so much as the cell forecast then the measurement or the reading has
+    # CHANGED, which is worth showing - so it is shown, and labelled, because an unlabelled second
+    # copy is what this comment is about.
     if _exec_state.surveyor_panel and assistant_text:
-        assistant_text = _exec_state.surveyor_panel + chr(10) + assistant_text
+        # THE UNTRIMMED HISTORY, not `state_messages`. `apply_budget_nudge` may rebind that name to a
+        # shortened list, and a panel trimmed out of the model's context is still a panel the customer
+        # has on their screen. Reading the trimmed list would have reprinted it and called it a change.
+        _said_before = [str(m.get("content") or "") for m in (state.get("messages") or [])
+                        if isinstance(m, dict) and m.get("role") == "assistant"]
+        _with = reply_with_the_receipt(_exec_state.surveyor_panel, assistant_text, _said_before)
+        if _with == assistant_text:
+            logger.info("Intake: the Surveyor's receipt was already shown unchanged, not repeating "
+                        "it - job_id=%s", job_id)
+        assistant_text = _with
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",

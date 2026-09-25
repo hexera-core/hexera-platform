@@ -280,7 +280,11 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # enum has both. What the openings ARE is worth saying either way; what a fluid does is not.
     is_flow = purpose in ("internal_cfd", "external_cfd", "conjugate_heat_transfer")
     rep = str(((survey or {}).get("composed_for") or {}).get("representation") or "").replace("_", " ")
-    if rep:
+    # "this is      unknown" is what the customer actually read on a real upload. It is the absence of
+    # a reading printed as though it were one, in the section headed "my reading", under a panel whose
+    # whole claim is that the Surveyor had already done the work. A row we cannot fill is a row we do
+    # not print.
+    if rep and rep != "unknown":
         out.append(f"  this is      {rep}")
     if not_ports and len(not_ports) == len(rows) and rows:
         line = f"  the {len(not_ports)} opening(s) above do NOT look like ports - no duct mouth behind them"
