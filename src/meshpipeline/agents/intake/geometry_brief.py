@@ -823,10 +823,22 @@ def survey_lines(state: dict | None) -> list[str]:
                 # `customer_words_verbatim` cannot catch that - it verifies the words are theirs, never that
                 # the words say THIS purpose - so it is the same blind spot as the thing it checks, and the
                 # only place the distinction can be made is here, before the call.
+                # THE OTHER HALF OF THIS RULE, WITHOUT WHICH IT IS A TRAP. "never survey on a guess" with no
+                # limit on it turns a delegation into a loop: MEASURED on ahmed_variant_001 with the script
+                # "cfd" / "the fluid is air, everything else you decide" / "go", the model asked internal or
+                # external on turns 1, 3, 4 and 5 - "I've asked twice now and 'go' doesn't name a flow type
+                # - and I won't guess this one" - and reached a mesh in seven customer messages where the
+                # same code and script reached one in three. The customer had answered: they said decide.
+                # The owner's rule is "asked once, take the best reading and move on", and his reason is that
+                # a reading he can correct costs him one word, while being asked a fifth time costs him the
+                # conversation. So the protection is on the FIRST ask, not on every one after it.
                 "BUT \"cfd\" ON ITS OWN PINS NOTHING: internal_cfd and external_cfd are different purposes, the",
                 "measurement is composed FOR one of them, and the quote you pass cannot tell the application",
-                "which one their words meant - it only checks that they said them. So never resolve that",
-                "yourself and never survey on a guess. Where their words leave two purposes open, asking which",
+                "which one their words meant - it only checks that they said them. So ASK WHICH, ONCE. If their",
+                "reply does not name one and they have handed you the decisions, that IS their answer: take the",
+                "reading the measurement supports, say in one line which you took and that they can say",
+                "otherwise, and survey on it. A purpose they correct is one recomposition; a fourth asking is a",
+                "conversation that never reaches a mesh. Where their words leave two purposes open, asking which",
                 "is a real question with a real consequence, you are spending this turn on it regardless, and",
                 "that turn is where the rest of it belongs: say that reading the shape takes about that long",
                 "and comes back with the whole setup, and ask in the same breath for everything the look does",

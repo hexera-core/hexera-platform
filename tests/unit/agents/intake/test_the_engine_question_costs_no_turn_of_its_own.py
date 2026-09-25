@@ -96,7 +96,10 @@ def test_the_engine_is_read_off_the_confirmed_selection_not_the_model_s_argument
     from meshpipeline.agents.intake import executor as ex
 
     src = inspect.getsource(ex.IntakeToolExecutor)
-    i = src.index("MESHING WITH")
+    # THE ASSIGNMENT, not the first mention: "MESHING WITH" also appears in prose explaining what the
+    # customer was shown, and anchoring on that read a window with no engine in it and passed for the
+    # wrong reason.
+    i = src.index('_head = "MESHING WITH ')
     window = src[i - 400:i + 400]
     assert 'st.selection or {}).get("engine")' in window, (
         "the engine on this screen must be the confirmed selection, not args")
@@ -196,7 +199,9 @@ def test_the_summary_names_the_setup_it_is_asking_about():
         "patches": [{"name": "inlet", "type": "inlet", "opening_id": "o1"},
                     {"name": "outlet2", "type": "outlet", "opening_id": "o2"},
                     {"name": "wall", "type": "wall"}]})
-    assert "Internal CFD" in said and "body-surface" in said and "3D" in said
+    # the DISPLAY words, which is what a customer reads: `vocabulary.to_display` turns the routing key
+    # `body-surface` into "Body surface"
+    assert "Internal CFD" in said and "Body surface" in said and "3D" in said
     assert "inlet (inlet on o1)" in said and "outlet2 (outlet on o2)" in said
     assert "wall (wall)" in said, "a patch with no mouth still has to be named"
 
