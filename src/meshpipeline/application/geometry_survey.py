@@ -304,7 +304,7 @@ AGREEMENT_SCHEMA = "meshpipeline.geometry_agreement.v1"
 AGREEMENT_LIST_MAX = 12
 
 
-def agreement_row(joint: Any, document: dict) -> dict | None:
+def agreement_row(joint: Any, document: dict, asked: Any = None) -> dict | None:
     """WHAT THE LOOK AND THE MEASUREMENT DID AT EACH MEASURED MOUTH, for the customer's panel. None when
     there was no pair to compare at all.
 
@@ -329,6 +329,13 @@ def agreement_row(joint: Any, document: dict) -> dict | None:
     AND `nothing_comparable` IS NOT AGREEMENT. A mouth the look never named, or named with `unsure`, leaves no
     claim for the measurement to check, and reading the absence as the two sources agreeing is the fact that
     lies (`reconcile.joint.Joint.readers` is the same argument about a whole channel).
+
+    `asked` is the finder's own answer for this composition (`ask.intake.Asked`), and it is here for one reason:
+    WITHOUT IT THE PANEL LIES. Measured on the 40 stored looks in this deployment, most per-mouth disagreements
+    land on faces the builder never cuts as ports - a wall shell's shoulder rings, a fluid domain's own caps -
+    and no question of ours covers them. A panel line reading "so I am asking about that one" about a mouth
+    nothing will ask about is exactly the shape this codebase is most careful about, so each mouth records
+    whether a question the finder PUT names it, and the panel says only what is true.
     """
     if joint is None:
         return None
@@ -339,6 +346,7 @@ def agreement_row(joint: Any, document: dict) -> dict | None:
         logger.warning("geometry survey: the per-place agreement could not be read (%s: %s); the panel says "
                        "nothing about it", type(exc).__name__, exc)
         return None
+    covered = {str(p) for q in list(getattr(asked, "questions", None) or []) for p in (q.places or [])}
     mouths = [str(r.get("id")) for r in (document.get("openings") or []) if isinstance(r, dict) and r.get("id")]
     agreed: dict[str, list[str]] = {}
     disagreed: dict[str, dict] = {}
@@ -350,7 +358,10 @@ def agreement_row(joint: Any, document: dict) -> dict | None:
             continue
         if at.verdict == rv.DISAGREED:
             disagreed[oid] = {"about": [rv.plain(v.look_field) for v in at.disagreed],
-                              "measured": str(at.measured or "")[:160]}
+                              "measured": str(at.measured or "")[:160],
+                              #: whether a question this composition PUT names this mouth. False is a real
+                              #: disagreement nobody will be asked about, and the panel says that instead.
+                              "asked": oid in covered}
         elif at.verdict == rv.AGREED:
             agreed[oid] = [rv.plain(f) for f in at.fields]
         else:
@@ -358,7 +369,9 @@ def agreement_row(joint: Any, document: dict) -> dict | None:
     if not agreed and not disagreed:
         # nothing was comparable anywhere. The row still exists and still says so, because "no agreement row"
         # and "no mouth could be compared" are two different things to a reader of this row.
-        return {"schema": AGREEMENT_SCHEMA, "agreed": {}, "disagreed": {}, "nothing_comparable": nothing,
+        return {"schema": AGREEMENT_SCHEMA, "agreed": {}, "agreed_total": 0, "disagreed": {},
+                "disagreed_total": 0,
+                "nothing_comparable": nothing[:AGREEMENT_LIST_MAX], "nothing_comparable_total": len(nothing),
                 "channels_not_read": sorted(k for k, ok in (getattr(joint, "readers", None) or {}).items()
                                             if not ok),
                 "read_as": "no claim about any measured mouth survived to be checked, so there is nothing here "
@@ -659,9 +672,10 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
             "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side,
             "flow_direction": flow_direction, "not_carried": not_carried,
             "asked": asked, "asking": asking_row(asked, pkg), "joint": joint,
-            #: step 4's per-place verdicts, filtered to the mouths a customer can be shown. It is built here
-            #: rather than in `compose` because the `Joint` does not outlive this call.
-            "agreement": agreement_row(joint, composed)}
+            #: step 4's per-place verdicts, filtered to the mouths a customer can be shown, with the finder's
+            #: own answer so the row knows which of them a question actually names. It is built here rather
+            #: than in `compose` because neither the `Joint` nor `asked` outlives this call.
+            "agreement": agreement_row(joint, composed, asked)}
 
 
 def _not_carried(purpose: str, engine: str) -> dict[str, str]:

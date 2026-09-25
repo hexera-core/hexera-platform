@@ -19,6 +19,8 @@ that the agreement is stated. `test_the_role_gate_is_untouched` and
 """
 from __future__ import annotations
 
+from tests._surveyor_package import require
+
 from meshpipeline.agents.intake.geometry_brief import agreement_lines, surveyor_panel
 from meshpipeline.application import geometry_survey as gs
 
@@ -117,6 +119,37 @@ def test_a_broken_joint_costs_the_row_and_never_the_composition():
     assert gs.agreement_row(_Raises(), _doc("o1")) is None
 
 
+class _Asked:
+    def __init__(self, *places: str) -> None:
+        self.questions = [_Q(list(places))] if places else []
+
+
+class _Q:
+    def __init__(self, places: list[str]) -> None:
+        self.places = places
+
+
+def test_a_disagreement_records_whether_a_question_actually_names_the_mouth():
+    """WITHOUT THIS THE PANEL LIES. Measured on the 40 stored looks in this deployment, most per-mouth
+    disagreements land on faces the builder never cuts as ports - a wall shell's shoulder rings, a fluid
+    domain's own caps - and no question of ours covers them. A line reading "so I am asking about that one"
+    about a mouth nothing will ask about is the fact-that-lies shape."""
+    places = {"o1": _Place("disagreed", ["openings_seen[].mouth"], measured="planar_face, stub L/D=0.0"),
+              "o9": _Place("disagreed", ["openings_seen[].mouth"], measured="planar_face, stub L/D=0.0")}
+    row = gs.agreement_row(_Joint(places), _doc("o1", "o9"), _Asked("o1"))
+    assert row["disagreed"]["o1"]["asked"] is True
+    assert row["disagreed"]["o9"]["asked"] is False
+    said = " ".join(agreement_lines(_survey(row)))
+    assert "reads o1 differently" in said and "so I am asking about that one" in said
+    assert "no question of mine covers it" in said
+
+
+def test_with_no_finder_answer_no_mouth_is_claimed_to_be_asked():
+    """A row built without the finder's answer must not guess. Absence of a question is not a question."""
+    row = gs.agreement_row(_Joint({"o1": _Place("disagreed", ["openings_seen[].mouth"])}), _doc("o1"))
+    assert row["disagreed"]["o1"]["asked"] is False
+
+
 def test_the_row_is_absent_from_a_survey_that_never_had_one():
     assert gs.agreement_of(None) == {}
     assert gs.agreement_of({}) == {}
@@ -141,14 +174,15 @@ AGREED_ROW = {"schema": gs.AGREEMENT_SCHEMA,
 
 DISAGREED_ROW = {**AGREED_ROW,
                  "disagreed": {"o4": {"about": ["how a mouth sits in the wall"],
-                                      "measured": "planar_face, stub L/D=0.0, area_fraction=0.12"}},
+                                      "measured": "planar_face, stub L/D=0.0, area_fraction=0.12",
+                                      "asked": True}},
                  "disagreed_total": 1}
 
 
 def test_the_agreement_is_stated_as_a_positive_line():
     lines = agreement_lines(_survey(AGREED_ROW))
     assert any("agrees with the measurement about o1, o2" in ln for ln in lines)
-    assert any("nothing to ask there" in ln for ln in lines)
+    assert any("not asking what those are" in ln for ln in lines)
 
 
 def test_a_disagreement_names_the_mouth_the_measurement_and_the_fact_it_is_asked_about():
@@ -252,7 +286,8 @@ def test_a_delegation_is_still_not_a_label():
     """`learn.ingest_platform.chose_it_themselves` is the one judge of that and this change does not touch it.
     Pinned here because the whole point of asking where the answer is worth having is to make real answers
     arrive, and it would be self-defeating to widen what counts as one."""
-    from geometry_agent.learn import ingest_platform as ip
+    ip = require("geometry_agent.learn.ingest_platform",
+                 needs="the one judge of whether an answer is a label at all")
     verdict, by, _why = ip.chose_it_themselves(
         {"answered_by": "customer", "delegated": True, "words": "you decide everything"}, "o1", 2)
     assert verdict == "not_a_label" and by == "delegated"

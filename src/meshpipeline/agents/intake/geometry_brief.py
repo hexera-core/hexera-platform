@@ -266,15 +266,23 @@ def agreement_lines(survey: dict | None) -> list[str]:
     out: list[str] = []
     if n_agreed:
         about = sorted({w for words in agreed.values() for w in words})
-        out.append("  agrees with the measurement about {} ({}) - nothing to ask there".format(
+        # "NOTHING TO ASK THERE" WAS TOO STRONG AND THE NEXT LINE CONTRADICTED IT. The role question still names
+        # these mouths, because a role is not a measured field. What the agreement settles is what each mouth
+        # IS, and that is what this line may claim.
+        out.append("  agrees with the measurement about {} ({}) - so I am not asking what those are".format(
             _ids(sorted(agreed), n_agreed), "; ".join(about[:3]) or "the same reading"))
     if n_disagreed:
         for oid in sorted(disagreed)[:AGREEMENT_IDS_SHOWN]:
             entry = disagreed[oid] if isinstance(disagreed[oid], dict) else {}
             about = ", ".join(str(a) for a in (entry.get("about") or [])) or "this mouth"
             measured = str(entry.get("measured") or "").strip()
-            out.append("  reads {} differently from the measurement ({}){} - so I am asking about that one"
-                       .format(oid, about, f"; measured: {measured}" if measured else ""))
+            # ONLY SAY IT IS ASKED WHEN IT IS. Most per-mouth disagreements land on faces the builder never
+            # cuts as ports, and no question of ours names them. Claiming otherwise is a fact that lies; what
+            # is true and still useful is that the disagreement is on the record and the customer may settle it.
+            tail = (" - so I am asking about that one" if entry.get("asked")
+                    else " - no question of mine covers it, so say if it matters")
+            out.append("  reads {} differently from the measurement ({}){}{}"
+                       .format(oid, about, f"; measured: {measured}" if measured else "", tail))
     if not n_agreed and not n_disagreed:
         out.append(f"  nothing of the {n_none} measured mouth(s) could be checked against the measurement, "
                    f"so this is not agreement either way")
