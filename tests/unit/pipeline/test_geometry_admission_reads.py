@@ -17,7 +17,9 @@ from meshpipeline.pipeline import geometry_admission as ga
 # `require_no_self_intersection=True` on an implemented engine.
 
 STATE = {"job_id": "j", "engine": "vmtk", "purpose": "internal_cfd", "input_kind": "body-surface",
-         "dimensionality": "3D", "intake_patches": [], "engine_params": {"wall_layers": "on"},
+         # vmtk declares no intake param (its layer switch was one nothing honoured), so an
+         # engine_params entry here would be an unknown-param declared rejection, not a fixture.
+         "dimensionality": "3D", "intake_patches": [], "engine_params": {},
          "geometry": {"ref": {"source_id": "11111111-1111-4111-8111-111111111111",
                               "owner_id": "o", "object_key": "sources/x", "sha256": "b" * 64,
                               "size_bytes": 10, "original_filename": "p.stl",

@@ -29,7 +29,9 @@ _VMTK_STATE = {
     "input_kind": "body-surface", "dimensionality": "3D",
     "intake_patches": [{"name": "wall", "type": "wall"}, {"name": "inlet", "type": "inlet"},
                        {"name": "outlet", "type": "outlet"}],
-    "engine_params": {"wall_layers": "on"},
+    # vmtk declares no intake param (its layer switch was a question the mesher never read), so any
+    # entry here is an unknown param and would be the spurious declared rejection this avoids.
+    "engine_params": {},
 }
 
 
@@ -74,7 +76,7 @@ def test_a_declared_rejection_from_post_intake_drift_blocks_the_builder(tmp_path
     monkeypatch.setattr("meshpipeline.cad.analysis.analyze_surface", lambda *_a, **_k: dict(_SCALES))
     monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", lambda *_a, **_k: False)  # geometry FINE
     drifted = {**_VMTK_STATE, "geometry": geometry_state(tmp_path, filename="lumen.vtp"),
-               "engine_params": {"wall_layers": "on", "topology": "internal"}}  # unknown param injected
+               "engine_params": {"topology": "internal"}}  # the one unknown param, injected
     out = _run(drifted)
     assert out["executor_success"] is False
     assert "topology" in out["geometry_unsuitable_reason"]   # the injected unknown param blocked it

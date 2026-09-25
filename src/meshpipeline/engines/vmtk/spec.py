@@ -13,7 +13,6 @@ from meshpipeline.engines.base import (
     EngineSpec,
     InputContract,
     MeshCapability,
-    ParamSpec,
     RunPolicy,
 )
 from meshpipeline.engines.base import (
@@ -94,7 +93,6 @@ def _review_renderer():
 def _target_obligations(manifest, engine_params, purpose):
     from meshpipeline.contracts.evidence_ledger import TargetObligation
     m = manifest or {}
-    ep = engine_params or {}
     n_open = m.get("n_open_profiles")
     if not isinstance(n_open, int):
         geom = m.get("geometry")
@@ -103,12 +101,17 @@ def _target_obligations(manifest, engine_params, purpose):
         kind=TargetKind.OPENING,
         min_count=(n_open if isinstance(n_open, int) and n_open > 0 else 1),
         provenance="inlet/outlet caps of the lumen")]
-    try:
-        if int(ep.get("boundary_layers", 0) or 0) > 0:
-            obs.append(TargetObligation(kind=TargetKind.LAYER_REGION, min_count=1,
-                                        provenance="boundary layers requested"))
-    except (TypeError, ValueError):
-        pass
+    # A LAYER OBLIGATION USED TO BE RAISED HERE FROM `ep["boundary_layers"]`, AND IT COULD NOT FIRE
+    # ON ANY JOB. `engine_params` reaching this resolver is `registry.resolve_engine_params` output,
+    # which keeps only the keys this spec DECLARES in `intake_params`; vmtk declared `wall_layers`
+    # and never `boundary_layers`, so the `.get` returned the default on every call and the branch
+    # was a check with the same blind spot as the thing it checked - it read the one key the data it
+    # was handed could not contain. vmtk now declares no intake params at all (see the note on
+    # `intake_params` below), so there is no engine_params key left that could carry a layer request:
+    # the count is the BUILDER's, authored into vmtk_spec.json from the brief and moved again by the
+    # repair ladder, and it is not in the manifest this resolver is given. An obligation must come
+    # from trusted job data or not exist, so it does not exist here rather than being reconstructed
+    # from a guess about what the builder chose.
     if (m.get("mesh_paths") or {}).get("centerlines"):
         obs.append(TargetObligation(kind=TargetKind.BRANCH, min_count=1,
                                     provenance="centerlines produced"))
@@ -167,14 +170,34 @@ SPEC = EngineSpec(
             "stenoses, where a sparse surface triangle count may also need subdivision "
             "before meshing - so layer coverage may fall short where the lumen is narrowest.",
         ),
-        intake_params=(
-            ParamSpec(
-                key="wall_layers", values=("on", "off"), default="on",
-                ask="Should the mesh inflate NEAR-WALL boundary layers inside the lumen wall "
-                    "(needed whenever wall shear stress or the near-wall gradient matters), or "
-                    "is a plain tetrahedral fill enough?",
-            ),
-        ),
+        # NO DECLARED PARAM, AND THE LAYER QUESTION IS IN `intake_guidance` ABOVE INSTEAD.
+        #
+        # Until this change vmtk declared `wall_layers` with values ("on", "off") and asked "should
+        # the mesh inflate NEAR-WALL boundary layers inside the lumen wall". NOTHING IN THE ENGINE
+        # EVER READ THE ANSWER. The builder's strategy knob is `boundary_layers` (an integer, 0 for
+        # none) and `vmtk_runner.resolve_strategy` defaults it to 3, so a `configure_mesh` call that
+        # does not name the key inflates three prism layers - which is what an "off" answer got. The
+        # answer was not merely unenforced: `admission_token.canonical_payload` sorts engine_params
+        # into the canonical payload and fingerprints it, so the customer's approval was bound to a
+        # setting the mesher never consulted. A question whose answer is thrown away is worse than
+        # no question, and an approval that attests to a discarded value is worse again.
+        #
+        # THE ENGINE'S REAL CAPABILITY IS WHY THIS IS THE DIRECTION OF THE FIX. vmtk meshes
+        # perfectly well with no layers (`build_pype` emits `-boundarylayer 0`), so "off" is a real
+        # answer - but it is a COUNT the builder authors from the brief, and it is also the first
+        # thing the repair ladder drops on inverted tets (`validation_notes` above, and
+        # `vmtk_runner.py:367`), so no binary switch here could promise either state. Wiring a
+        # two-valued param into an integer the builder and the repair ladder both move would put a
+        # second authority on the same number. The question belongs where "and how many" already
+        # lives: `intake_guidance` asks it in the engine's own vocabulary and the answer travels as
+        # a requirement in the customer's words, into request.txt, which the builder is told to read
+        # first. That is one channel for one decision, and it is the channel the review judges
+        # against ("evidence=('layer_report', 'brief')" in criteria.py).
+        #
+        # This matches the catalog's own rule for the field - a param is declared "only for a
+        # genuine either/or its capability cannot already imply" - and the flow engines declare
+        # none for the same reason.
+        intake_params=(),
         # fills the INSIDE of a supplied closed surface -> a fluid volume mesh. Same physical
         # capability as the wrap-and-fill flow engines; the technique + output format differ.
         # INTERNAL only: vmtk tetrahedralizes the lumen ENCLOSED by the surface,

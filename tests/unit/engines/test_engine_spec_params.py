@@ -44,9 +44,13 @@ def test_topology_of_derives_the_flow_regime_from_the_purpose():
 
 
 def test_topology_never_enters_vmtk_engine_params():
-    resolved = ec.resolve_engine_params("vmtk", {"wall_layers": "on"})
-    assert "topology" not in resolved
-    assert resolved == {"wall_layers": "on"}
+    # vmtk now declares no param at all - its `wall_layers` switch was a question the mesher never
+    # read, and the count it pretended to set is the builder's `boundary_layers` - so the resolver's
+    # output is empty for every input, and `topology` is not smuggled in by that emptiness either.
+    for given in (None, {}, {"topology": "internal"}, {"wall_layers": "on"}):
+        resolved = ec.resolve_engine_params("vmtk", given)
+        assert "topology" not in resolved
+        assert resolved == {}
 
 
 def test_engines_producing_topology_reads_capabilities_not_params():

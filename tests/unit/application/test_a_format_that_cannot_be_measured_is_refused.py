@@ -157,7 +157,9 @@ def test_the_advice_never_points_at_a_format_that_cannot_be_measured_either():
 # ---------------------------------------------------------------- at admission
 
 STATE = {"job_id": "j", "engine": "vmtk", "purpose": "internal_cfd", "input_kind": "body-surface",
-         "dimensionality": "3D", "intake_patches": [], "engine_params": {"wall_layers": "on"},
+         # vmtk declares no intake param (its layer switch was one nothing honoured), so an entry
+         # here would be an unknown-param declared rejection rather than a clean context.
+         "dimensionality": "3D", "intake_patches": [], "engine_params": {},
          "geometry": {"ref": {"source_id": "11111111-1111-4111-8111-111111111111",
                               "owner_id": "o", "object_key": "sources/x", "sha256": "b" * 64,
                               "size_bytes": 10, "original_filename": "lumen.vtp",

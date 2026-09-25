@@ -38,7 +38,9 @@ _VMTK = {
     "input_kind": "body-surface", "dimensionality": "3D",
     "intake_patches": [{"name": "wall", "type": "wall"}, {"name": "inlet", "type": "inlet"},
                        {"name": "outlet", "type": "outlet"}],
-    "engine_params": {"wall_layers": "on"},
+    # vmtk declares no intake param (its layer switch was a question the mesher never read), so any
+    # entry here is an unknown param and would be a spurious declared rejection.
+    "engine_params": {},
 }
 
 
