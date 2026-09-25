@@ -1054,8 +1054,23 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
     if view["route"] not in (ROUTE_INTAKE, ROUTE_TRADE, ROUTE_LATE):
         raise SurveyError(f"{question_id!r} is not put through this tool" + (
             ": the application asks for the unit itself" if view["route"] == ROUTE_APPLICATION else ""))
+    # ONLY A QUESTION THAT WAS PUT CAN HOLD THE TRADE OPEN, exactly as `open_now` and `stage_of` already read
+    # it. This gate read every view, held ones included, and its two siblings filter on `put` - so a question
+    # the finder HELD was invisible to the two functions that decide whether to ask the trade and visible to
+    # the one that accepts the answer. The platform therefore PUT the trade and then refused the customer's
+    # reply to it, every time, for good: `record_answer` is the only way an answer reaches the row, the held
+    # question is never put to anybody (that is what `ask.intake.MAX_ASKED` means), so nothing could ever
+    # settle it and nothing could ever settle the trade either.
+    #
+    # REACHABLE ON THE THIRD INTAKE TODAY, and measured there. The survey's own trade sits at the `resolution`
+    # tier, which is the lowest `ask.schema.TIERS` puts, so the cap holds it before it holds any
+    # intake-routed question and the two states cannot meet on it. The third intake's question is `put` by
+    # construction (`late_view`), so on a part where the cap held one step-4 question - block_boss_sharp has
+    # six questions - `open_now` returned the plan's budget question, `stage_of` said `third_intake`, and this
+    # line refused the answer. Two siblings agreeing and one disagreeing about the same row.
     if view["route"] in (ROUTE_TRADE, ROUTE_LATE) and any(
-            v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED for v in views.values()):
+            v["put"] and v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED
+            for v in views.values()):
         raise SurveyError("the budget trade is only put once every other survey question is settled")
     if view["route"] == ROUTE_LATE and view["status"] in TRADE_PUT:
         # ASKED ONCE. A late question that was answered, skipped or let default is not put again, and an

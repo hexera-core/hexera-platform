@@ -547,6 +547,102 @@ def test_volunteering_an_answer_to_the_held_budget_trade_is_refused_by_the_trade
         gs.record_answer(state, question_id=held, choice=said, words=said, latest_user_message=said)
 
 
+@pytest.fixture
+def cap_of_four(monkeypatch):
+    """The finder's cap lowered to four, so one of the crowded part's step-4 questions falls below it.
+
+    `ask.intake.ask_intake` binds `max_asked=MAX_ASKED` as a DEFAULT ARGUMENT, so the constant cannot be
+    lowered by setting it; the finder is wrapped instead, which runs the real cap over the real ranking through
+    the package's own parameter. The product's own cap of five cannot hold an intake-routed question on any
+    stored fixture, because the survey's own budget trade sits at `resolution`, the lowest tier
+    `ask.schema.TIERS` puts, and the cap therefore always reaches it first: six questions and a cap of four is
+    how a step-4 question gets below it here.
+    """
+    from geometry_agent.ask import intake as ask_intake
+
+    real = ask_intake.ask_intake
+    monkeypatch.setattr(ask_intake, "ask_intake", lambda doc, **kw: real(doc, max_asked=4, **kw))
+
+
+def _with_the_plans_budget_question(state: dict) -> dict:
+    """A row whose plan raised the third intake, written the way `geometry_step._with_late` writes it.
+
+    Composed here rather than planned, because what this pins is what the platform does with the question once
+    it has been raised, and the raising needs a plan and a model."""
+    from meshpipeline.application.geometry_step import LATE_SCHEMA
+
+    return {**state, "late": {
+        "schema": LATE_SCHEMA, "id": "budget_after_plan", "kind": "budget_trade",
+        "text": "Resolving the places this plan names costs about 3,000,000 cells against the 2,000,000 you "
+                "stated. Hold the budget, or raise it?",
+        "options": ["hold at 2,000,000", "raise to about 3,000,000"],
+        "default": "hold at 2,000,000", "default_is": "the customer's own stated budget",
+        "because": "the planned envelope is over the stated budget",
+        "envelope": {"cap": 2_000_000, "cells_high": 3_000_000, "source": "tools.estimate_builder_cells"},
+        "raised": {"id": "budget_after_plan", "about": "cell_budget", "why": "over budget",
+                   "options": ["hold at 2,000,000", "raise to about 3,000,000"],
+                   "options_from": "the stated budget and the builder emulator's envelope for this plan",
+                   "default": "hold at 2,000,000", "effect": "changes_mesh", "evidence": []},
+        "depends_on": "plan 0123456789abcdef", "raised_at": "2026-09-22T00:00:00+00:00"}}
+
+
+def test_a_question_the_finder_held_does_not_refuse_the_budget_answer_the_platform_asked_for(side_on,
+                                                                                            cap_of_four):
+    """LIES TO THE CUSTOMER. The platform PUT the budget trade and then refused their answer to it, for good.
+
+    `open_now` and `stage_of` both filter on `put` before they decide whether anything is still outstanding, and
+    this gate read every view, held ones included. So a question the finder HELD was invisible to the two
+    functions that decide whether to ask the budget and visible to the one that accepts the reply: the question
+    is put, the customer answers, and `record_answer` refuses - and since a held question is never put to
+    anybody, nothing could ever settle it and nothing could ever settle the budget either.
+
+    THE THIRD INTAKE IS WHERE THIS IS REACHABLE. The survey's own trade is at `resolution`, the lowest tier the
+    finder puts, so the cap always holds it before any step-4 question and the two states cannot meet on it. The
+    plan's question is `put` by construction (`late_view`), so a part with one step-4 question below the cap
+    reproduces it exactly: `open_now` returns the plan's question, `stage_of` says `third_intake`, and the
+    answer to it is refused for a question the customer will never be asked.
+    """
+    state = _crowded()
+    views = {v["id"]: v for v in gs.question_views(state)}
+    held = sorted(q for q, v in views.items() if v["route"] == gs.ROUTE_INTAKE and not v["put"])
+    assert held == ["q_unlabelled_mouth"], "no step-4 question is below the cap, so this pins nothing"
+    assert views["q_unlabelled_mouth"]["held_because"] == "below_the_cap"
+    assert views["q_unlabelled_mouth"]["status"] == "open"
+
+    said = "try it anyway"
+    state = gs.record_answer(state, question_id="q_dispatch", choice=said, words=said,
+                             latest_user_message=said, principal="owner-7f3a")
+    side = views["q_fluid_side"]["options"][0]
+    state = gs.record_answer(state, question_id="q_fluid_side", choice=side, words=side,
+                             latest_user_message=side, principal="owner-7f3a")
+    for mouth in _role_question(state)["subjects"]:
+        state = _say_role(state, mouth, "wall", principal="owner-7f3a")
+    assert gs.open_now(state) == [], "the only step-4 question left is the one nobody will be asked"
+
+    planned = _with_the_plans_budget_question(state)
+    (put,) = gs.open_now(planned)
+    assert put["id"] == "budget_after_plan" and put["route"] == gs.ROUTE_LATE
+    assert gs.stage_of(planned) == gs.STAGE_LATE
+    raise_it = "raise to about 3,000,000"
+    answered = gs.record_answer(planned, question_id="budget_after_plan", choice=raise_it, words=raise_it,
+                                latest_user_message=raise_it, principal="owner-7f3a")
+    (row,) = [a for a in gs.live_answers(answered) if a["question_id"] == "budget_after_plan"]
+    assert row["value"] == 3_000_000, "the platform asked the question and then refused the answer to it"
+    assert gs.stage_of(answered) == gs.STAGE_SETTLED
+
+
+def test_a_question_that_was_put_and_is_open_still_refuses_the_budget_answer(side_on, cap_of_four):
+    """The other half of the same gate, and the half that has to keep working: a budget answered before the
+    roles and the unit is a budget priced against a part nobody has finished describing. A question the finder
+    PUT and the customer has not settled refuses it exactly as before."""
+    planned = _with_the_plans_budget_question(_crowded())
+    assert [v["id"] for v in gs.open_now(planned)] == ["q_dispatch", "q_port_roles", "q_fluid_side"]
+    raise_it = "raise to about 3,000,000"
+    with pytest.raises(gs.SurveyError, match="only put once every other survey question is settled"):
+        gs.record_answer(planned, question_id="budget_after_plan", choice=raise_it, words=raise_it,
+                         latest_user_message=raise_it, principal="owner-7f3a")
+
+
 def test_the_tie_break_inside_a_tier_decides_the_order_a_customer_is_asked_in(side_on):
     """`asked_before` breaks ties INSIDE a tier, lowest count first, and never moves a question across one.
 
