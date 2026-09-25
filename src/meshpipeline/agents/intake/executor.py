@@ -561,6 +561,14 @@ class IntakeToolExecutor:
         step unarmed or failing, this is empty and the submission is judged as it always was."""
         st = self.state
         if not st.survey_armed or st.survey_source_ref is None or not isinstance(st.geometry_document, dict):
+            # SAID, NOT SILENT. This is the one step that plans the part, and skipping it used to
+            # leave no trace at all - so a job that never planned and a job whose plan raised nothing
+            # were the same empty list and the same silent log. That is the collapse the look's three
+            # states exist to prevent, in the step that matters most, and it made "did the geometry
+            # agent run?" unanswerable after the fact.
+            logger.info("Intake: step 5 NOT RUN - armed=%s source_ref=%s document=%s - job_id=%s",
+                        st.survey_armed, st.survey_source_ref is not None,
+                        isinstance(st.geometry_document, dict), self._job_id)
             return []
         from meshpipeline.application import geometry_step as gst
 
@@ -570,8 +578,12 @@ class IntakeToolExecutor:
                 state=st.geometry_survey, document=st.geometry_document,
                 fidelity=str(args.get("mesh_fidelity") or "standard").strip().lower())
             if state is None:
+                logger.info("Intake: step 5 armed but the geometry agent produced no state - "
+                            "job_id=%s", self._job_id)
                 return []
             st.geometry_survey = state
+            logger.info("Intake: step 5 RAN - the geometry agent planned the part - job_id=%s",
+                        self._job_id)
             # inside the try as well: reading the question back is as much a place to fall over as
             # making it, and a submission that dies here is a turn lost to a step that is off by default
             return gst.submission_problems(state)
