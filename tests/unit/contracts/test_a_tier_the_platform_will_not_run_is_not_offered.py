@@ -1,0 +1,105 @@
+"""The customer was offered a mesh size this platform refuses, and the refusal was silent.
+
+The measurement forecasts a cell count per tier and sizes it from the part, so on a part with fine
+features `max` comes out well past `CELL_HARD_LIMIT`. Two readers quoted that forecast without
+knowing the ceiling existed: the intake panel, which offered the tier by name, and the geometry
+agent, which composed against `cell_cap=None` whenever the customer had confirmed no budget. The
+clamp that actually holds the mesh down lives in the snappy driver - downstream of both, and
+downstream of the customer saying yes. A confirmation that will not be honoured is the same defect
+as a default that passes for a confirmation, entered from the other side.
+"""
+from __future__ import annotations
+
+import meshpipeline.settings.policy as polcfg
+from meshpipeline.agents.intake.geometry_brief import surveyor_panel
+from meshpipeline.contracts.geometry_agent_block import (
+    cell_cap_for_composition,
+    platform_cell_ceiling,
+    runnable_cell_estimates,
+)
+
+CEILING = polcfg.CELL_HARD_LIMIT
+
+
+def _document(*tiers: tuple[str, int]) -> dict:
+    """The least a document needs for the panel to render: a good measurement and a landed look."""
+    return {"status": "ok",
+            "look": {"status": "ok", "seconds": 31.0,
+                     "impression": {"looks_like": "a bracket", "confidence": 0.7}},
+            "bbox": {"extent_m": [0.12, 0.08, 0.04]},
+            "unit": {"declared": "mm"},
+            "openings": [],
+            "facts": {"cell_estimates": [{"tier": t, "cells": c} for t, c in tiers]}}
+
+
+def test_the_ceiling_is_the_policy_number_and_not_a_second_copy_of_it():
+    assert platform_cell_ceiling() == CEILING
+
+
+def test_a_tier_over_the_ceiling_is_not_offered_as_a_choice():
+    runnable, beyond = runnable_cell_estimates(
+        [{"tier": "draft", "cells": 400_000},
+         {"tier": "standard", "cells": 1_500_000},
+         {"tier": "max", "cells": 34_000_000}])
+    assert [r["tier"] for r in runnable] == ["draft", "standard"]
+    assert [r["tier"] for r in beyond] == ["max"], "a tier the clamp would cut is not a choice"
+
+
+def test_the_dropped_tier_is_returned_rather_than_discarded():
+    """A tier dropped in silence is one the customer may still ask for by name."""
+    _runnable, beyond = runnable_cell_estimates([{"tier": "max", "cells": CEILING + 1}])
+    assert beyond and beyond[0]["tier"] == "max", (
+        "the reader that drops a tier needs something to answer with when it is asked for")
+
+
+def test_a_tier_with_no_forecast_is_runnable_because_absence_is_not_evidence():
+    """A fact that lies is worse than a missing one: no number is not a large number."""
+    for missing in (None, 0, -1, "lots", True):
+        runnable, beyond = runnable_cell_estimates([{"tier": "standard", "cells": missing}])
+        assert not beyond, f"cells={missing!r} was read as over the ceiling"
+        assert len(runnable) == 1
+
+
+def test_a_row_that_is_not_a_tier_is_in_neither_half():
+    runnable, beyond = runnable_cell_estimates(["max", None, 7, {"tier": "draft", "cells": 10}])
+    assert [r["tier"] for r in runnable] == ["draft"]
+    assert beyond == []
+
+
+def test_the_panel_offers_only_what_it_will_run():
+    panel = surveyor_panel(_document(("draft", 400_000), ("standard", 1_500_000), ("max", 34_000_000)), None)
+    assert "1,500,000 cells at standard" in panel
+    assert "draft about 400,000" in panel
+    assert "34,000,000" not in panel, "the panel offered a tier the driver would clamp away"
+    assert "say draft to change it" in panel, "it must not offer the word `max` either"
+
+
+def test_when_every_tier_is_over_the_ceiling_the_panel_says_so_rather_than_nothing():
+    panel = surveyor_panel(_document(("draft", CEILING * 2), ("standard", CEILING * 9)), None)
+    assert "mesh size" in panel, (
+        "with no runnable tier the panel used to fall silent, leaving the customer to learn the "
+        "size of their mesh from the result")
+    assert f"{CEILING:,}" in panel
+    assert f"{CEILING * 9:,}" not in panel
+
+
+# THE COMPOSITION CAP. `cell_cap=None` read as "no limit" to the geometry agent's catalog rule, whose
+# tier filter is `[tier for tier where cells <= cell_cap]` - so with nothing confirmed it filtered
+# against nothing and could plan a fidelity the builder then clamped.
+
+def test_composing_with_no_confirmed_budget_uses_the_ceiling_not_nothing():
+    assert cell_cap_for_composition(None) == CEILING
+
+
+def test_a_confirmed_budget_under_the_ceiling_is_the_customer_s_own_number():
+    assert cell_cap_for_composition(750_000) == 750_000
+
+
+def test_a_confirmed_budget_over_the_ceiling_is_held_to_the_ceiling():
+    assert cell_cap_for_composition(CEILING * 4) == CEILING, (
+        "a budget the platform will not honour must not be composed against")
+
+
+def test_a_nonsense_budget_falls_back_to_the_ceiling_rather_than_through_it():
+    for junk in (0, -1, True, False, "big", 1.5, None):
+        assert cell_cap_for_composition(junk) == CEILING, f"{junk!r} did not fall back"

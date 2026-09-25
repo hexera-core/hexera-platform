@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from meshpipeline.contracts.geometry_agent_block import platform_cell_ceiling, runnable_cell_estimates
+
 logger = logging.getLogger(__name__)
 
 # WHY THIS IS A PROMPT BLOCK AND NOT A TOOL.
@@ -293,14 +295,31 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # customer is not a budget - but the consequence was that mesh size was never discussed at all
     # and they found out afterwards. Stating the forecast and naming the two words that change it
     # gives them the decision without the interrogation.
-    tiers = [e for e in ((document.get("facts") or {}).get("cell_estimates") or []) if isinstance(e, dict)]
+    #
+    # AND ONLY THE TIERS THIS PLATFORM WILL ACTUALLY RUN. The forecast is the measurement's, sized from
+    # the part, and it knows nothing of the compute ceiling: on a part with fine features `max` came out
+    # at eight figures against a CELL_HARD_LIMIT of 8,000,000. Offering it read as a choice, and it was
+    # not one - the clamp in the snappy driver cuts the budget down silently, downstream of the customer
+    # saying yes. So a tier over the ceiling is not offered, and when the tier we would otherwise quote
+    # is itself over it, the ceiling is what gets quoted, named as a ceiling.
+    all_tiers = [e for e in ((document.get("facts") or {}).get("cell_estimates") or []) if isinstance(e, dict)]
+    tiers, beyond = runnable_cell_estimates(all_tiers)
     by_tier = {str(e.get("tier")): e.get("cells") for e in tiers if e.get("cells")}
     if by_tier.get("standard"):
         line = "  mesh size    about {:,.0f} cells at standard".format(float(by_tier["standard"]))
         spare = [f"{t} about {float(by_tier[t]):,.0f}" for t in ("draft", "max") if by_tier.get(t)]
         if spare:
-            line += " ({}) - say draft or max to change it".format("; ".join(spare))
+            line += " ({}) - say {} to change it".format(
+                "; ".join(spare), " or ".join(t for t in ("draft", "max") if by_tier.get(t)))
         out.append(line)
+    elif beyond:
+        # Every tier is over the ceiling, `standard` among them. Saying nothing here would leave the
+        # customer to discover the size of their mesh from the result, which is the thing this block
+        # exists to stop.
+        out.append("  mesh size    this part forecasts about {:,.0f} cells at its coarsest, over the "
+                   "{:,.0f} I can mesh - I will hold it at {:,.0f} and resolve the largest features "
+                   "first".format(min(float(e["cells"]) for e in beyond if e.get("cells")),
+                                  float(platform_cell_ceiling()), float(platform_cell_ceiling())))
 
     out.append("")
     return chr(10).join(out)
