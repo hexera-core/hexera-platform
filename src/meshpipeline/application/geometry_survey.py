@@ -1136,11 +1136,42 @@ def _norm(text: str) -> str:
     return _SPACE.sub(" ", str(text or "").strip().lower())
 
 
-def said_by_customer(words: str, latest_user_message: str) -> bool:
-    """The quote is in what the customer just wrote. The same proof engine selection already asks for:
-    a model that cannot quote the customer did not hear them say it."""
+def said_by_customer(words: str, latest_user_message: str, earlier: Any = None) -> bool:
+    """The quote is in what the customer just wrote, or is a standing delegation they wrote earlier.
+
+    The first shape is the one engine selection already asks for and is unchanged: a model that cannot
+    quote the customer did not hear them say it.
+
+    THE SECOND SHAPE EXISTS BECAUSE THE FIRST MADE A DELEGATION EXPIRE, and a submission depend on
+    whether the model used it in time. MEASURED on ahmed_variant_001, four flow conversations with the
+    same script ("internal cfd, air through it", "you decide everything", then "go"):
+
+      - two recorded the port roles on the turn "you decide everything" WAS the latest message, and
+        submitted in five and six turns;
+      - two did not, and could never submit. `role_problems` refuses every port role a customer has
+        not confirmed, the delegation was no longer quotable, and the runs ended with "submit rejected
+        - port roles the customer has not confirmed" twice over and the turn cap. The customer was
+        told "the system will not accept the port roles unless you write them yourself".
+
+    Same script, same part, opposite outcome, decided by which turn the model chose to record on. So a
+    standing instruction was being read as a one-turn utterance.
+
+    NARROW ON PURPOSE. Only a DEFERRAL may be quoted from an earlier message - "you decide", "your
+    call", "whatever's best" - because a deferral is the one kind of thing that does not expire: it
+    says do not ask me again, and it is still true three turns later. Everything else must still be in
+    their latest message, so "no, not that one" from two turns ago can never be spent as agreement to
+    something else. This is the same argument `engine_selection.choice_deferred` already makes for the
+    engine, where a delegation likewise survives the turn it was given on.
+    """
     quote = _norm(words)
-    return bool(quote) and quote in _norm(latest_user_message)
+    if not quote:
+        return False
+    if quote in _norm(latest_user_message):
+        return True
+    from meshpipeline.agents.intake.recommendation import choice_deferred
+    if not choice_deferred(words):
+        return False
+    return any(quote in _norm(str(m)) for m in (earlier or ()))
 
 
 def _canonical_option(choice: str, options: list[str]) -> str | None:
@@ -1153,7 +1184,8 @@ def _canonical_option(choice: str, options: list[str]) -> str | None:
 
 def record_answer(state: dict, *, question_id: str, choice: str = "", role: str = "",
                   words: str = "", latest_user_message: str = "", principal: str = "",
-                  skipped: bool = False, took_default: bool = False, subject: str = "") -> dict:
+                  skipped: bool = False, took_default: bool = False, subject: str = "",
+                  earlier_customer_messages: Any = None) -> dict:
     """One answer, checked, appended. Raises `SurveyError` with a sentence for the model.
 
     WHAT MAKES IT THE CUSTOMER'S. The quote has to be in their latest message, and the choice has to
@@ -1204,7 +1236,7 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
         # ASKED ONCE. A late question that was answered, skipped or let default is not put again, and an
         # answer to it is not replaced by a second one
         raise SurveyError(f"{question_id!r} was already put and settled as {view['status']}; it is asked once")
-    if not said_by_customer(words, latest_user_message):
+    if not said_by_customer(words, latest_user_message, earlier_customer_messages):
         raise SurveyError("that quote is not in the customer's latest message. Quote their own words "
                           "exactly; if they did not answer, do not record an answer")
     row: dict[str, Any] = {"question_id": question_id, "about": view["about"], "at": _now(),
@@ -2225,7 +2257,8 @@ def _queue_the_look(source_id: str, owner_id: str, document: dict) -> str:
 
 async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "", role: str = "",
                  words: str = "", latest_user_message: str = "", skipped: bool = False,
-                 took_default: bool = False, document: dict | None = None, subject: str = "") -> dict:
+                 took_default: bool = False, document: dict | None = None, subject: str = "",
+                 earlier_customer_messages: Any = None) -> dict:
     """Record one answer and store it. When it confirms a budget, the planner block is composed again
     for that budget, so `customer_cell_cap` is the number the customer chose; when it names the inlet,
     it is composed again from that inlet, so the block's bore and the budget trade that follows are the
@@ -2235,14 +2268,16 @@ async def answer(*, owner_id: str, source_ref, question_id: str, choice: str = "
         raise SurveyError("there is no survey for this upload yet: call survey_the_part first")
     state = answered(state, document, question_id=question_id, choice=choice, role=role, words=words,
                      latest_user_message=latest_user_message, principal=owner_id,
-                     skipped=skipped, took_default=took_default, subject=subject)
+                     skipped=skipped, took_default=took_default, subject=subject,
+                     earlier_customer_messages=earlier_customer_messages)
     await save(owner_id, source_ref.source_id, state)
     return state
 
 
 def answered(state: dict, document: dict | None = None, *, question_id: str, choice: str = "",
              role: str = "", words: str = "", latest_user_message: str = "", principal: str = "",
-             skipped: bool = False, took_default: bool = False, subject: str = "") -> dict:
+             skipped: bool = False, took_default: bool = False, subject: str = "",
+             earlier_customer_messages: Any = None) -> dict:
     """One answer recorded into the row, with everything that follows from it. No database.
 
     `answer` is this plus the load and the store. It is a function of its own so that a caller which
@@ -2251,7 +2286,8 @@ def answered(state: dict, document: dict | None = None, *, question_id: str, cho
     one. Raises `SurveyError`."""
     state = record_answer(state, question_id=question_id, choice=choice, role=role, words=words,
                           latest_user_message=latest_user_message, principal=principal,
-                          skipped=skipped, took_default=took_default, subject=subject)
+                          skipped=skipped, took_default=took_default, subject=subject,
+                          earlier_customer_messages=earlier_customer_messages)
     late = late_view(state)
     if late is not None and late["id"] == question_id:
         # the third intake's answer goes to the job ledger as the `trade` stage, the way the chain writes it

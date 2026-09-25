@@ -645,7 +645,10 @@ class IntakeToolExecutor:
                 role=str(args.get("role") or ""), subject=str(args.get("mouth") or ""),
                 words=str(args.get("customer_words_verbatim") or ""),
                 latest_user_message=st.latest_user_msg, skipped=bool(args.get("skipped")),
-                took_default=bool(args.get("took_default")), document=st.geometry_document)
+                took_default=bool(args.get("took_default")), document=st.geometry_document,
+                # their OWN earlier messages, so a delegation given two turns ago is still quotable.
+                # Only a deferral may be quoted from these; see `said_by_customer`.
+                earlier_customer_messages=st.customer_messages)
         except gs.SurveyError as exc:
             return IntakeToolResult(tool="answer_survey_question", accepted=False,
                                     content=f"Not recorded: {exc}.")
