@@ -940,7 +940,12 @@ class IntakeToolExecutor:
                         _loud.append("  - " + _text + (" -> " + _fix if _fix else ""))
             if _loud:
                 _agent_words += (chr(10) * 2) + "WORTH KNOWING BEFORE I RUN THIS" + chr(10) + chr(10).join(_loud[:5])
-        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + _agent_words
+        # WHAT IS NEW GOES ABOVE THE ASK, not between the ask and the question. The customer was
+        # told "confirm the requirements above", then handed findings they had not read yet, then
+        # asked to proceed - so the one line telling them to check something pointed backwards,
+        # past the very thing worth checking.
+        st.submit_summary = (_agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
+                             + at.CONFIRM_REQUIREMENTS_ASK
                              + (chr(10) * 2) + "Shall I proceed with mesh generation?")
         st.approval = ap.create(
             owner_id=st.owner_id, session_id=st.session_id,
