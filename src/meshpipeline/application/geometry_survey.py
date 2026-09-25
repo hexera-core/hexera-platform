@@ -1073,16 +1073,17 @@ SETTLED = ("answered", "skipped")
 def open_now(state: dict) -> list[dict]:
     """The questions to put NOW, in the chain's order.
 
-    Step 4 first: every intake-routed question not yet settled. Only when none is left does the budget
-    trade appear, and it appears once: a trade that was put and answered or skipped is never put
-    again. A default that stood leaves a question open, so it is put again rather than read as a yes.
+    Step 4 first: every intake-routed question not yet PUT. Only when none is left does the budget
+    trade appear, and every route here is put once - answered, skipped or defaulted, it is not asked a
+    second time. A default that stood is still not a yes and still rides to the builder as unsettled;
+    see `PUT_ONCE` for what that distinction costs when it is spent on re-asking.
 
     A QUESTION THE FINDER HELD IS NEVER HERE. `put` False is the cap and the two other cuts this pipeline
     makes for itself; a held question is reported to the builder as unsettled and is not put to a person.
     That is what makes `ask.intake.MAX_ASKED` a fact of the product rather than of a test.
     """
     views = [v for v in question_views(state) if v["put"]]
-    step4 = [v for v in views if v["route"] == ROUTE_INTAKE and v["status"] not in SETTLED]
+    step4 = [v for v in views if v["route"] == ROUTE_INTAKE and v["status"] not in PUT_ONCE]
     if step4:
         return step4
     trade = [v for v in views if v["route"] == ROUTE_TRADE and v["status"] not in TRADE_PUT]
@@ -1093,9 +1094,29 @@ def open_now(state: dict) -> list[dict]:
     return [v for v in views if v["route"] == ROUTE_LATE and v["status"] not in TRADE_PUT]
 
 
-#: The budget trade is put ONCE. A customer who let its default stand has not confirmed a budget, so the
-#: question stays unsettled and rides to the builder as such, but it is not put to them a second time.
-TRADE_PUT = (*SETTLED, "defaulted")
+#: PUT ONCE. A customer who let a default stand has confirmed nothing, so the question stays unsettled
+#: and rides to the builder as such - but it is not put to them a second time.
+#:
+#: THIS USED TO BE THE TRADE'S RULE ALONE, and step 4 had the opposite one written into `open_now`: "a
+#: default that stood leaves a question open, so it is put again rather than read as a yes". Both halves
+#: of that sentence are true and the conclusion does not follow. Not settled is a fact the builder needs.
+#: Worth asking again is a decision about the conversation, and after one default it is false - which is
+#: why the trade already worked this way and said so here.
+#:
+#: MEASURED on ahmed_variant_001, "internal cfd, air through it" then "you decide everything" then "go":
+#: the fluid-side question was put at turn 5 and again at turn 6, the port-role question at turn 3 and
+#: again at turn 4, and the customer was told "'go' doesn't tell me which opening carries the incoming
+#: flow, and that's a fact only you know" and then handed a sentence to type back verbatim. Nine turns
+#: for a part that takes four. `stage_of` was the other half: a defaulted step-4 question held the row
+#: at `asking` for ever, so the budget trade could never be reached either.
+#:
+#: What does NOT change: `SETTLED` is untouched, `_status` still reports `defaulted` as its own status,
+#: `intake_handoff` still lists it unanswered, and the builder is still told nobody confirmed it. A
+#: DEFAULT IS NOT A CONFIRMATION - it is just not a reason to ask a third time.
+PUT_ONCE = (*SETTLED, "defaulted")
+
+#: The name two callers in `geometry_step` already read it by.
+TRADE_PUT = PUT_ONCE
 
 
 def stage_of(state: dict) -> str:
@@ -1104,7 +1125,10 @@ def stage_of(state: dict) -> str:
     views = [v for v in question_views(state) if v["put"]]
     step4 = [v for v in views if v["route"] == ROUTE_INTAKE]
     trade = [v for v in views if v["route"] == ROUTE_TRADE]
-    if any(v["status"] not in SETTLED for v in step4):
+    # PUT_ONCE, not SETTLED: a defaulted step-4 question held this row at `asking` for the life of the
+    # job, so the budget trade after it was unreachable and every later turn was spent on a question
+    # nobody would answer.
+    if any(v["status"] not in PUT_ONCE for v in step4):
         return STAGE_ASKING if any(v["id"] in (state.get("asked") or []) for v in step4) else STAGE_SURVEYED
     if any(v["status"] not in TRADE_PUT for v in trade):
         return STAGE_TRADE
@@ -1205,8 +1229,17 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
         # answer to it is not replaced by a second one
         raise SurveyError(f"{question_id!r} was already put and settled as {view['status']}; it is asked once")
     if not said_by_customer(words, latest_user_message):
+        # AND IT NAMES THE WAY FORWARD, because without one this sentence contradicted the standing
+        # instruction. The prompt says to ask any one question once and, on a reply it cannot use,
+        # "take the best-supported reading, record it (took_default ...) and MOVE ON". This refusal
+        # answered "do not record an answer", which is the more specific and more recent signal, and
+        # the model obeyed it: on a real conversation the same question was put twice and the customer
+        # was handed a sentence to type back word for word.
         raise SurveyError("that quote is not in the customer's latest message. Quote their own words "
-                          "exactly; if they did not answer, do not record an answer")
+                          "exactly. If their latest message defers or just agrees - \"go\", \"you "
+                          "decide\", \"sure\" - that is not an answer to this question, so do not "
+                          "record one: call this again with took_default true, quoting that word, and "
+                          "the question is put once and not again.")
     row: dict[str, Any] = {"question_id": question_id, "about": view["about"], "at": _now(),
                            "words": str(words)[:500], "principal": str(principal or "")[:256],
                            "via": "intake_conversation"}
@@ -2313,7 +2346,7 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "answer", "answered",
            "asking_of", "asking_row", "builder_block", "carry_answers",
            "check_the_survey_block", "compose",
-           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",
+           "PUT_ONCE", "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",
            "confirmed_inputs", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "look_state", "look_state_of_document", "mark_asked", "named_inlets",

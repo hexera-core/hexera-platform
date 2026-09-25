@@ -593,8 +593,10 @@ SURVEY_TOOLS: list[dict] = [
                 "Record the customer's answer to ONE Surveyor question, in their own words. The "
                 "application checks the quote against their latest message and the option against the "
                 "question's own options, and refuses anything else. Never record an answer they did not "
-                "give. If they decline, set skipped. If they tell you to take the default, set "
-                "took_default: that is recorded as NOT an answer and the question stays open."),
+                "If they decline, set skipped. If they defer or merely agree - \"go\", \"you decide\", "
+                "\"sure\" - set took_default and quote that word: it is recorded as NOT an answer, the "
+                "builder is told nobody confirmed it, and the question is PUT ONCE and never asked again. "
+                "Do not keep asking it, and never hand the customer a sentence to type back."),
             "parameters": {
                 "type": "object",
                 "properties": {
