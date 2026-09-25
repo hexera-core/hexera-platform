@@ -1083,7 +1083,10 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
         raise SurveyError(f"{choice!r} is not one of the options for {question_id!r}: "
                           f"{view['options']}")
     at, value, note = _subject_and_value(view, option, role, subject)
-    _refuse_conflict(state, view, at, value)
+    # A CORRECTION SUPERSEDES THEIR OWN EARLIER WORDS, it is not refused. See `_corrected`: this used to raise
+    # on any conflicting role, which locked a customer who named the wrong opening as the inlet into it for the
+    # life of the job and told the model to do something the code then refused.
+    state = _corrected(state, view, at, value, principal)
     answer = {**row, "answered_by": CUSTOMER, "subject": at, "value": value, "option": option,
               "note": note}
     _check_with_the_package(answer)
@@ -1239,14 +1242,62 @@ def _trade_cap(view: dict, option: str) -> int | None:
     return trade.value_of(option)
 
 
-def _refuse_conflict(state: dict, view: dict, subject: str, value: Any) -> None:
+#: Why an answer was retired when the CUSTOMER changed it, rather than when the question it was bound to
+#: stopped existing. Both are retirements - the row is the record and no reader takes either as input - and
+#: they are different facts, so a reader of the row can tell "we stopped asking this" from "they said
+#: something else". `carry_answers` writes the first and `_corrected` below writes this one.
+SUPERSEDED = "the customer corrected it"
+
+
+def _corrected(state: dict, view: dict, subject: str, value: Any, principal: str) -> dict:
+    """The row with the customer's earlier role for this mouth retired, when this answer corrects it.
+
+    A CONFIRMED ROLE COULD NEVER BE CORRECTED, and that is what this replaces. `_refuse_conflict` raised on
+    every conflicting role for a mouth, so a customer who named the wrong opening as the inlet was locked into
+    it for the life of the job: `role_problems` then refuses any patch declared the other way, and the only way
+    out was a new upload. Worse, the sentence it returned - "Ask them which it is before recording it as the
+    outlet" - named a path that DOES NOT EXIST: ask them, hear the correction, try to record it, and the same
+    refusal fires again on the answer that was the correction. An instruction the code cannot carry out is
+    worse than no instruction, because the model spends the customer's turns following it.
+
+    A CORRECTION IS NOT A DEFAULT AND IT IS NOT THE MODEL'S PROSE, which is the only reason this is allowed to
+    supersede a confirmation. `record_answer` has already proved two things about it before this runs: the
+    quote is in the customer's LATEST message (`said_by_customer`) and the choice is one of the question's own
+    options (`_canonical_option`). So it is the customer's own words superseding their own earlier words, which
+    is what a person changing their mind looks like, and house law 2 is about a value nobody confirmed.
+
+    WHAT IS STILL REFUSED is an answer that would rewrite a confirmation recorded for a DIFFERENT account.
+    The row keeps `principal` beside every answer and this is the only place two of them can meet on one mouth;
+    one customer's confirmed boundary condition is not overwritten by another's session. Where either principal
+    is unrecorded there is nothing to compare and the correction stands, which is every row written before the
+    field was stored and every caller that passes none.
+
+    NOTHING IS DELETED. The earlier answer stays in the append-only list marked retired, with `SUPERSEDED` and
+    the value that replaced it, so the record still says what they were asked and what they said first. Every
+    reader goes through `live_answers`, which skips a retired row, so `confirmed_roles`, `named_inlets`,
+    `_status`, `intake_handoff` and the submission gate all see the correction and only the correction - one
+    retirement, read by everything, rather than a second rule in each of them.
+    """
     if view["about"] != "opening.role":
-        return
-    for a in live_answers(state):
-        if (a.get("about") == "opening.role" and a.get("answered_by") == CUSTOMER
-                and not a.get("skipped") and a.get("subject") == subject and a.get("value") != value):
-            raise SurveyError(f"the customer already said {subject} is the {a.get('value')}. Ask them "
-                              f"which it is before recording it as the {value}")
+        return state
+    mine, answers, corrected = str(principal or ""), [], False
+    for a in state.get("answers") or []:
+        if (isinstance(a, dict) and not a.get("retired") and a.get("about") == "opening.role"
+                and a.get("answered_by") == CUSTOMER and not a.get("skipped")
+                and a.get("subject") == subject and a.get("value") != value):
+            said_by = str(a.get("principal") or "")
+            if said_by and mine and said_by != mine:
+                raise SurveyError(
+                    f"{subject} is recorded as the {a.get('value')} on this job for another account "
+                    f"({said_by}), and this answer is {mine}'s, so recording it would overwrite somebody "
+                    f"else's confirmation. It is not recorded. Tell the customer that {subject} is down as "
+                    f"the {a.get('value')} and that the account which set it has to be the one to change it")
+            answers.append({**a, "retired": True, "retired_at": _now(),
+                            "retired_because": SUPERSEDED, "superseded_by": str(value)})
+            corrected = True
+        else:
+            answers.append(a)
+    return {**state, "answers": answers} if corrected else state
 
 
 def _check_with_the_package(answer: dict) -> None:
@@ -1989,7 +2040,8 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "LOOK_PENDING", "LOOK_QUEUED", "LOOK_SKIPPED", "LOOK_STATES", "NO_PLAN_NO_REASON",
            "QUESTION_FINDER", "ROUTE_ADVISORY", "ROUTE_APPLICATION",
            "ROUTE_INTAKE", "ROUTE_LATE", "ROUTE_TRADE", "STAGE_ASKING", "STAGE_LATE", "STAGE_SETTLED",
-           "STAGE_SURVEYED", "STAGE_TRADE", "SURVEY_STATE_SCHEMA", "SurveyError", "answer", "answered",
+           "STAGE_SURVEYED", "STAGE_TRADE", "SUPERSEDED", "SURVEY_STATE_SCHEMA", "SurveyError",
+           "answer", "answered",
            "asking_of", "asking_row", "builder_block", "carry_answers",
            "check_the_survey_block", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",

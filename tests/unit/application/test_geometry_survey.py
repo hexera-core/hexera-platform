@@ -244,11 +244,49 @@ def test_a_choice_that_is_not_one_of_the_questions_options_is_refused():
                          latest_user_message="the big one")
 
 
-def test_one_mouth_cannot_be_given_two_roles_without_asking_again():
-    said = "o2 is the inlet"
-    state = _say_role(_fresh("bend_elbow_001"), "o2", "inlet", said=said)
-    with pytest.raises(gs.SurveyError, match="already said o2 is the inlet"):
-        _say_role(state, "o2", "outlet", words=said, said=said)
+def test_the_customer_can_correct_a_role_they_confirmed_and_the_first_answer_stays_on_the_record():
+    """LIES TO THE BUILDER. A confirmed role could NEVER be corrected: `_refuse_conflict` raised on every
+    conflicting role for a mouth, so a customer who named the wrong opening as the inlet was locked into it for
+    the life of the job - `role_problems` then refuses any patch declared the other way, and the only way out
+    was a new upload. The sentence it returned made it worse: "Ask them which it is before recording it as the
+    outlet" named a path that DOES NOT EXIST, because the answer that IS the correction hit the same refusal.
+
+    A correction is the customer's own words superseding their own earlier words, which is neither a default nor
+    the model's prose: `record_answer` has already proved the quote is in their LATEST message and the choice is
+    one of the question's own options before this is reached. Nothing is deleted - the first answer stays in the
+    append-only list, retired, saying what replaced it.
+    """
+    first = "o2 is the inlet"
+    state = _say_role(_fresh("bend_elbow_001"), "o2", "inlet", said=first, principal="owner-7f3a")
+    assert gs.confirmed_roles(state) == {"o2": "inlet"}
+    assert gs.named_inlets(state) == ["o2"]
+
+    fixed = "sorry, I had that backwards - o2 is the outlet"
+    state = _say_role(state, "o2", "outlet", words="o2 is the outlet", said=fixed, principal="owner-7f3a")
+    assert gs.confirmed_roles(state) == {"o2": "outlet"}, "the customer's correction never reached the roles"
+    assert gs.named_inlets(state) == [], "the mouth they took back is still the inlet the builder sizes from"
+    # ONE retirement, read by everything: every reader of a role goes through `live_answers`
+    assert [a["value"] for a in gs.live_answers(state) if a.get("subject") == "o2"] == ["outlet"]
+    assert [a.value for a in gs.intake_handoff(state).answers if a.subject == "o2"] == ["outlet"]
+    # and the first answer is the record, marked with what replaced it and why
+    (retired,) = [a for a in state["answers"] if a.get("retired")]
+    assert retired["value"] == "inlet" and retired["words"] == first
+    assert retired["retired_because"] == gs.SUPERSEDED and retired["superseded_by"] == "outlet"
+
+
+def test_a_role_another_account_confirmed_is_not_overwritten_and_the_refusal_names_what_is_real():
+    """The one conflict still refused, and it is not the customer changing their mind. An answer recorded for a
+    DIFFERENT account would rewrite somebody else's confirmed boundary condition, and the refusal names only
+    things that exist - the mouth, the two accounts, the role on the row - and asks for the one thing the model
+    can actually do about it."""
+    state = _say_role(_fresh("bend_elbow_001"), "o2", "inlet", principal="owner-7f3a")
+    with pytest.raises(gs.SurveyError) as refused:
+        _say_role(state, "o2", "outlet", principal="owner-beef")
+    said = str(refused.value)
+    assert "for another account (owner-7f3a)" in said and "It is not recorded" in said
+    assert gs.confirmed_roles(state) == {"o2": "inlet"}, "the refusal did not leave the row alone"
+    # and the account that set it correcting its own answer is not this case
+    assert gs.confirmed_roles(_say_role(state, "o2", "outlet", principal="owner-7f3a")) == {"o2": "outlet"}
 
 
 def test_a_default_that_stood_is_not_a_confirmation_anywhere():

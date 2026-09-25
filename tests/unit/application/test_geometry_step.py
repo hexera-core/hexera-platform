@@ -41,8 +41,8 @@ def _surveyed(case: str = "venturi_orifice_001") -> dict:
 def _answered(case: str = "venturi_orifice_001") -> tuple[dict, dict]:
     """The row with every step-4 question settled by the customer, and its document.
 
-    A different mouth for each role: the same mouth twice is refused, which is a rule of its own
-    (`_refuse_conflict`) and not what these tests are about."""
+    A different mouth for each role: the same mouth answered twice is a CORRECTION, which retires the first
+    answer and is a rule of its own (`geometry_survey._corrected`), not what these tests are about."""
     doc, state = _doc(case), _surveyed(case)
     while True:
         open_intake = [v for v in gs.open_now(state) if v["route"] == gs.ROUTE_INTAKE]
