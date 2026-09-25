@@ -47,12 +47,42 @@ function stack() {
   return host;
 }
 
+/** Is the caveat card completely inside the viewport right now?
+ *
+ *  Conservative in the direction that keeps the warning loud: anything this cannot measure - no
+ *  anchor, no getBoundingClientRect, a zero-height element that has not laid out yet - is NOT on
+ *  screen, so the popup is raised. A missed popup on a visible card is a cosmetic repeat; a
+ *  suppressed popup on a card nobody can see is a warning nobody reads.
+ */
+function isFullyOnScreen(el) {
+  if (!el || typeof el.getBoundingClientRect !== "function") return false;
+  const r = el.getBoundingClientRect();
+  if (!r || !r.height) return false;
+  const h = window.innerHeight || document.documentElement.clientHeight || 0;
+  const w = window.innerWidth || document.documentElement.clientWidth || 0;
+  return r.top >= 0 && r.left >= 0 && r.bottom <= h && r.right <= w;
+}
+
 /** Raise the popup for a caveat already mounted at `anchor`.
  *
  *  It does not auto-dismiss. Everything else in this page that pops up is transient status -
  *  offline, a retry - and goes away on a timer; a caveat about the mesh that is about to be
  *  built is the one thing that must wait to be read. */
 export function popCaveat(text, anchor) {
+  // AND IT DOES NOT INTERRUPT WHAT IS ALREADY BEING READ.
+  //
+  // The popup exists so a warning cannot be scrolled past. When the card is ALREADY fully on
+  // screen there is nothing to scroll past, and the popup then shows the same words a second time
+  // in the same instant - which is exactly the thing the owner complained about on the
+  // confirmation turn ("whys 2 messages sending at the same time"). Same text, twice, at once,
+  // reads as the product talking over itself whatever the two pieces are called.
+  //
+  // MEASURED in the browser on the bend_elbow_003 confirmation turn: the caveat card sat fully
+  // visible in the turn and the popup carried a flattened copy of its first 220 characters.
+  //
+  // The guarantee is unchanged - a warning off screen still interrupts - because that is the only
+  // case the popup was ever for.
+  if (isFullyOnScreen(anchor)) return null;
   const pop = document.createElement("div");
   pop.className = "pop pop-warn";
   // The preview is one flattened line and is NOT rendered as markdown - a two-line popup with a
