@@ -917,6 +917,29 @@ class IntakeToolExecutor:
             _said = str(_plan.get("summary_for_user") or "").strip()
             if _said:
                 _agent_words = (chr(10) * 2) + "WHAT THE GEOMETRY AGENT FOUND" + chr(10) + _said
+            # AND WHAT IT FLAGGED, which was going nowhere at all. On one real job the agent raised
+            # FOUR risks at severity high, effect changes_bc - "your port list names 'outlet_o1',
+            # and no opening in this file is that size or in that place" - correctly catching a
+            # declared port that matched no measured mouth, which is a boundary condition landing
+            # on the wrong face. Nobody was ever shown one of them. A warning nobody reads is not a
+            # warning, and this is the turn before compute is spent.
+            #
+            # Only what CHANGES something: high severity, or an effect that moves a boundary
+            # condition or the mesh. An advisory at info is real but it is not worth a line here,
+            # and a wall of them would be read as furniture.
+            _loud = []
+            for _r in (_plan.get("risks") or []):
+                if not isinstance(_r, dict):
+                    continue
+                _sev = str(_r.get("severity") or "").lower()
+                _eff = str(_r.get("effect") or "").lower()
+                if _sev == "high" or _eff in ("changes_bc", "changes_mesh"):
+                    _text = str(_r.get("consequence") or "").strip()
+                    _fix = str(_r.get("recommendation") or "").strip()
+                    if _text:
+                        _loud.append("  - " + _text + (" -> " + _fix if _fix else ""))
+            if _loud:
+                _agent_words += (chr(10) * 2) + "WORTH KNOWING BEFORE I RUN THIS" + chr(10) + chr(10).join(_loud[:5])
         st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + _agent_words
                              + (chr(10) * 2) + "Shall I proceed with mesh generation?")
         st.approval = ap.create(
