@@ -379,3 +379,17 @@ def test_deferring_with_no_question_on_screen_still_selects_nothing():
     assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=False) is False
     assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=True) is True
 
+
+def test_the_words_people_actually_use_to_agree_are_read_as_agreement():
+    # "go" was missing, and "go" is the commonest way this product's owner accepts a proposal: a
+    # driven conversation answered the engine question with "go" five times running and was told
+    # each time to say yes or no. A word list without the customer's words is a wall, not a reader.
+    for said in ("go", "go ahead", "yes", "yep", "ok", "okayyyyyyyyy", "yees", "sure",
+                 "looks good", "send it", "lock it in", "fine", "perfect"):
+        assert es.affirms(said), said
+
+    # and the half that has to keep working, or it is not a check
+    for said in ("no", "nope", "don't go", "not yet", "wait", "use cfmesh instead",
+                 "what is it?", "yes but a different one"):
+        assert not es.affirms(said), said
+

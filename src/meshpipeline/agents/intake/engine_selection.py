@@ -85,6 +85,13 @@ def user_named_engine(engine: str, quote: str, latest_user_message: str) -> bool
 _AFFIRM = frozenset({
     "yes", "yeah", "yep", "yup", "ya", "yea", "aye", "ok", "okay", "sure", "correct", "right",
     "confirm", "confirmed", "confirming", "proceed", "affirmative", "definitely", "absolutely",
+    # HOW PEOPLE ACTUALLY AGREE TO A THING ON SCREEN. "go" was missing, and "go" is the single
+    # commonest way this product's owner accepts a proposal - a driven conversation answered the
+    # engine question with "go" five times running and was told each time to say yes or no. A word
+    # list that does not contain the words the customer uses is not a reader, it is a wall.
+    "go", "goahead", "send", "submit", "ship", "run", "start", "continue", "carry", "lock",
+    "locked", "agreed", "agree", "approve", "approved", "fine", "good", "great", "perfect",
+    "please", "do",
 })
 
 #: Refusals and hesitations. Any one of these ANYWHERE in the message stops it counting as an answer,
@@ -97,6 +104,8 @@ _DENY = frozenset({
 #: "yees", "yesss". A real user typed the first one at a question that would not take yes for an
 #: answer, which is the whole reason this reader exists.
 _YES_TYPO = re.compile(r"^y+e+s+$")
+#: "okayyyyyyyyy", typed by a customer on his sixth attempt to accept the same proposal.
+_OK_TYPO = re.compile(r"^o+k+(a*y+)?$")
 
 
 def _words(text) -> list[str]:
@@ -116,7 +125,7 @@ def affirms(latest_user_message) -> bool:
     ws = _words(msg)
     if any(w in _DENY for w in ws):
         return False
-    said_yes = any(w in _AFFIRM or _YES_TYPO.match(w) for w in ws)
+    said_yes = any(w in _AFFIRM or _YES_TYPO.match(w) or _OK_TYPO.match(w) for w in ws)
     return bool(said_yes)
 
 
