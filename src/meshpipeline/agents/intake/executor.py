@@ -653,6 +653,16 @@ class IntakeToolExecutor:
         # it here means the plan is made from a survey that HAS been looked at, and that the builder
         # can reproduce.
         try:
+            # AND THE DOCUMENT HAS TO BE RE-READ FIRST. `st.geometry_document` is the snapshot taken
+            # once at the top of the turn, before the model said anything - so on the very turn the
+            # look lands it still says `not_attempted`, the comparison below finds nothing to do, and
+            # the survey is never refreshed. That is why this fix did nothing the first time: the row
+            # said "ok" and the copy in memory said "not_attempted".
+            from meshpipeline.cad.regions import stored_document_for_source
+
+            _now = await stored_document_for_source(st.survey_source_ref)
+            if isinstance(_now, dict) and _now.get("status") == "ok":
+                st.geometry_document = _now
             _doc_look = str(((st.geometry_document or {}).get("look") or {}).get("status") or "")
             _composed = str(((st.geometry_survey or {}).get("composed_for") or {}).get("look_status") or "")
             if _doc_look and _composed != _doc_look and isinstance(st.geometry_survey, dict):
