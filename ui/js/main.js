@@ -17,11 +17,13 @@ import { getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, set as setState } from "./core/state.js";
 import { Notice } from "./render/notice.js";
-import { Stage, closeLightbox, openLightbox, setResultHandler } from "./render/stage.js";
+import { segments } from "./render/segments.js";
+import { Stage, closeLightbox, openLightbox, setResultHandler, setSayHandler }
+  from "./render/stage.js";
 import { configure as configureStream, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
-import { configureComposer, disableInput, enableInput, mountComposer, setPlaceholder }
-  from "./shell/composer.js";
+import { configureComposer, disableInput, enableInput, mountComposer, setPlaceholder,
+  suggestReply } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { openViewer } from "./viewer/viewer.js";
@@ -35,6 +37,30 @@ setNotifier({
     "This deployment rejected the request as unauthorized.", "error"),
   authorized: () => Notice.release("auth"),
 });
+
+/* WHAT AN ASSISTANT TURN IS MADE OF, and therefore how it is rendered.
+ *
+ * The server does not send one kind of thing. It prepends the Surveyor's receipt - what it
+ * measured, what a vision model saw, and what the two suggest - to the model's words, and on the
+ * confirmation turn it splices the geometry agent's caveat into the middle of them. All of it
+ * used to land as one grey paragraph in one chat bubble, which is where the difference between
+ * an arithmetic fact, a reading of a picture, and a warning went to die.
+ *
+ * `segments` decides where each block begins and ends; this decides what each one becomes. The
+ * user's own turns have no blocks in them and go straight through.
+ */
+function say(role, text) {
+  if (role !== "assistant") { Stage.chat(role, text); return; }
+  for (const part of segments(text)) {
+    if (part.kind === "surveyor") Stage.surveyor(part.text);
+    else if (part.kind === "caveat") Stage.caveat(part.text);
+    else Stage.chat("assistant", part.text);
+  }
+}
+
+/* A word the Surveyor offered to be corrected with, made clickable. It is typed into the
+   composer, never sent: a default nobody pressed send on is not a confirmation. */
+setSayHandler((word) => suggestReply(word));
 
 /* one event interpretation path, live and replayed alike */
 function onEvent(ev) {
@@ -75,7 +101,7 @@ setResultHandler((data, anchor) => {
 
 /* what "start a new run" means: one definition, used by three callers */
 function attachJob(id, { replayHistory = false, message = "" } = {}) {
-  if (message) Stage.chat("assistant", message);
+  if (message) say("assistant", message);
   Stage.mount();
   beginRun(id);
   try { history.replaceState(null, "", location.pathname + "?job=" + id); } catch { /* ignore */ }
@@ -85,10 +111,13 @@ function attachJob(id, { replayHistory = false, message = "" } = {}) {
 
 configureComposer({
   notice: Notice,
-  chat: (role, text) => Stage.chat(role, text),
+  chat: (role, text) => say(role, text),
   brief: (b) => Stage.brief(b),
   supportedCopy: (t) => Stage.setSupportedCopy(t),
   onJobStarted: (id) => attachJob(id),
+  working: (opts) => Stage.working(opts),
+  worked: (trace) => Stage.worked(trace),
+  workFailed: () => Stage.workFailed(),
 });
 
 configureDispute({

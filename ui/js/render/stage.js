@@ -16,6 +16,15 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
+import { Activity } from "./activity.js";
+import { buildCaveat, popCaveat } from "./caveat.js";
+import { buildSurveyor } from "./surveyor.js";
+
+/* Installed by the entrypoint. A chip in the Surveyor's SUGGESTS section is the server's own
+   offer of a word to reply with; what "reply with it" MEANS belongs to the composer, which the
+   stage does not import. */
+let onSay = () => {};
+export function setSayHandler(fn) { onSay = fn || (() => {}); }
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -38,7 +47,12 @@ export const Stage = {
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
   mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><span id="empty-lead">Upload geometry to begin.</span><br><span id="empty-formats"></span>Hexera will guide you through the simulation setup.</div></div></div>';
-    this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';},
+    this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    // Per-run panel state, cleared with the column the panels live in. The Surveyor's receipt
+    // is re-sent on every turn until the survey settles, so it is ONE panel updated in place;
+    // caveats accumulate, so they are deduplicated by their own text instead.
+    this._svEl=null;this._svSig='';this._cavSeen=new Set();
+    Activity.reset();},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -54,7 +68,41 @@ export const Stage = {
   chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(text)}</div>`;
-    this.col().appendChild(g);this.scrollBottom();},
+    this.col().appendChild(g);this.scrollBottom();return g;},
+  // Anything that is its own surface rather than a turn of the conversation: the Surveyor's
+  // receipt, a caveat card, the live activity strip. The stage owns the column; what goes in it
+  // is built by the module that knows what it means.
+  attach(el){this.clearEmpty();this.col().appendChild(el);this.scrollBottom();return el;},
+
+  // THE SURVEYOR'S RECEIPT. The server prepends the same block to every turn until the survey
+  // settles - it arrived twice in a three-turn conversation - so this is one panel updated in
+  // place, exactly as the brief is. A conversation that accumulated three copies of one
+  // measurement would be saying the part was measured three times.
+  surveyor(block){
+    if(!block)return;
+    if(this._svSig===block)return;
+    this._svSig=block;
+    const el=buildSurveyor(block,{onSay:(w)=>onSay(w)});
+    if(this._svEl&&this._svEl.parentNode){
+      // keep the reader's own collapse state across an update - re-opening a panel somebody
+      // deliberately folded away is the page arguing with them
+      if(!this._svEl.classList.contains('open'))el.classList.remove('open');
+      this._svEl.replaceWith(el);this._svEl=el;this.scrollBottom();return;}
+    this._svEl=this.attach(el);},
+
+  // A WARNING, ON BOTH SURFACES. The card stays in the transcript; the popup interrupts. See
+  // render/caveat.js for why dismissing one must not be able to destroy the other.
+  caveat(text){
+    if(!text)return;
+    if(this._cavSeen.has(text))return;
+    this._cavSeen.add(text);
+    popCaveat(text,this.attach(buildCaveat(text)));},
+
+  // THE LIVE STRIP while a request is in flight, and the receipt it becomes when the reply
+  // lands. Mounted through `attach` so it is a normal member of the column and scrolls with it.
+  working(opts){Activity.start((el)=>this.attach(el),opts||{});},
+  worked(trace){Activity.finish(trace);},
+  workFailed(){Activity.fail();},
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.

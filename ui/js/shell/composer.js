@@ -28,8 +28,27 @@ let deps = {
   onJobStarted() {},
   // advisory: the empty state's format line, filled from the server's capability description
   supportedCopy() {},
+  // A request is in flight / it landed / it died. The composer knows WHEN, which is all the
+  // browser honestly knows during a turn; what to draw for it belongs to the renderer.
+  working() {},
+  worked() {},
+  workFailed() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
+
+/** Put a word in the composer and hand the customer the caret - never send it.
+ *
+ *  The Surveyor offers words to reply with ("say draft or max to change it") and the panel makes
+ *  them clickable. Clicking must not SPEAK for them: a click that submitted "draft" would be a
+ *  mesh size nobody confirmed, recorded as confirmed. They see it in the box and press send. */
+export function suggestReply(text) {
+  const input = $("chat-input");
+  if (!input || input.disabled) return;
+  input.value = String(text || "");
+  autoResize(input);
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
 
 export function enableInput() {
   const i = $("chat-input");
@@ -74,8 +93,14 @@ async function upload(file) {
   }
   const btn = $("upload-btn"), lbl = $("file-label");
   btn.disabled = true; btn.textContent = "Uploading…"; lbl.textContent = file.name;
+  // The upload is the longest unexplained wait in the product: the file goes up and the
+  // geometry is measured inline before a single word comes back. The label says what the
+  // BROWSER is doing, which is the only half of it the browser can honestly report.
+  deps.working({ label: "Uploading " + file.name, done: "Upload finished in", counts: false });
   try {
     const d = await uploadGeometry(file);
+    deps.worked(d.trace);
+
     setState.sessionId(d.session_id);
     lbl.textContent = d.step_filename; lbl.className = "ready";
     // The geometry a session was opened on is FINAL: the intake conversation, the admission
@@ -87,6 +112,7 @@ async function upload(file) {
     enableInput();
     if (d.intake_greeting) deps.chat("assistant", d.intake_greeting);
   } catch (e) {
+    deps.workFailed();
     btn.disabled = false; btn.textContent = "Upload geometry";
     lbl.textContent = "No geometry file selected"; lbl.className = "";
     if (e.status !== 401) deps.notice.show("Upload failed: " + e.message, "error");
@@ -100,13 +126,21 @@ async function send() {
   inp.value = ""; autoResize(inp);
   deps.chat("user", txt);
   disableInput();
+  deps.working({ label: "Hexera is working" });
   try {
     const d = await sendMessage(sessionId, txt);
+    // THE TURN'S OWN TRACE, which this page used to discard. ChatResponse has carried `trace`
+    // since the pre-job window got one - the reasoning rounds, the tool lifecycle and the
+    // application's rationale for work that happens before any job (and therefore before any
+    // Redis channel) exists. It was the only record of what the 27 seconds were spent on, and
+    // the browser read `reply` and `brief` and dropped it on the floor.
+    deps.worked(d.trace);
     deps.chat("assistant", d.reply);
     deps.brief(d.brief);
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
     else enableInput();
   } catch (e) {
+    deps.workFailed();
     if (e.status !== 401) {
       deps.chat("assistant", "Something went wrong sending that: " + e.message + ". Please try again.");
     }
