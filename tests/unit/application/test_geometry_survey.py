@@ -291,39 +291,15 @@ def test_a_role_another_account_confirmed_is_not_overwritten_and_the_refusal_nam
 
 def test_a_default_that_stood_is_not_a_confirmation_anywhere():
     """The ledger rule, end to end on the platform. A customer who lets the default stand has confirmed
-    nothing: the row says `default_taken`, no role is confirmed, the IntakeHandoff lists it unanswered,
-    and the builder is told it is unsettled.
-
-    IT IS NOT PUT AGAIN, and that assertion is the one thing here that changed. This test used to
-    require `q_port_roles in open_now(state)` as well, reading "not a confirmation" to mean "ask it
-    again". Both halves of that are defensible and the second does not follow from the first: not
-    settled is a fact the BUILDER needs, and worth asking again is a decision about the CONVERSATION.
-
-    Two things in this same file already said so. The trade route excludes a defaulted question from
-    `open_now` and explains why where `PUT_ONCE` is defined. And `test_a_skip_is_recorded_as_asked_and_
-    not_answered` asserts exactly `"q_port_roles" not in open_now` for a SKIP - which is also not an
-    answer, also rides to the builder unanswered, and was nonetheless put once. A default was the only
-    one of the three asked twice, for no reason anybody had written down.
-
-    What it cost, measured on ahmed_variant_001 ("internal cfd, air through it", "you decide
-    everything", "go"): the fluid-side question put at turns 5 AND 6, the port-role question at 3 AND
-    4, the customer told "'go' doesn't tell me which opening carries the incoming flow, and that's a
-    fact only you know" and then handed a sentence to type back word for word. Nine turns for a part
-    that takes four.
-
-    Every other assertion below is unchanged, because the law itself is unchanged: A DEFAULT IS NOT A
-    CONFIRMATION. It is just not a reason to ask a third time.
-    """
+    nothing: the row says `default_taken`, the question stays open, no role is confirmed, the
+    IntakeHandoff lists it unanswered, and the builder is told it is unsettled."""
     said = "whatever you think is best"
     state = gs.record_answer(_fresh("bend_elbow_001"), question_id="q_port_roles", words=said,
                              latest_user_message=said, took_default=True)
     assert state["answers"][-1]["answered_by"] == gs.DEFAULT_TAKEN
     views = {v["id"]: v for v in gs.question_views(state)}
     assert views["q_port_roles"]["status"] == "defaulted"
-    assert "q_port_roles" not in _ids(gs.open_now(state)), "asked once"
-    assert gs.stage_of(state) != "asking", (
-        "a defaulted step-4 question used to hold the row at `asking` for the life of the job, so the "
-        "budget trade after it was unreachable too")
+    assert "q_port_roles" in _ids(gs.open_now(state))
     assert gs.confirmed_roles(state) == {}
     handoff = gs.intake_handoff(state)
     assert handoff.answers == [] and "q_port_roles" in handoff.unanswered
