@@ -334,11 +334,17 @@ async def upload_step_file(
 
             from meshpipeline.cad.regions import stored_document_for_source
 
-            # `_stored_document` reads `source_id` and `owner_id` off whatever it is given, so the
-            # reference is made here rather than imported: there is no ref type at this point in the
-            # request, and inventing an import for one is how the first attempt at this failed.
+            # `_stored_document` reads `source_id`, `owner_id` and `sha256` off whatever it is given,
+            # so the reference is made here rather than imported: there is no ref type at this point
+            # in the request, and inventing an import for one is how the first attempt failed.
+            #
+            # THE DIGEST IS NOT OPTIONAL. `document_for` refuses a measurement that does not describe
+            # the bytes in hand, and an empty sha256 does not skip that check - it fails it, with
+            # "the stored geometry measurement describes different bytes than the geometry in hand".
+            # `digest` is the one taken from the staged file a few lines above, so it is exactly the
+            # bytes this measurement was made from.
             _summary = _measured_summary(await stored_document_for_source(
-                SimpleNamespace(source_id=str(source_id), owner_id=str(owner_id), sha256="")))
+                SimpleNamespace(source_id=str(source_id), owner_id=str(owner_id), sha256=digest)))
             if _summary:
                 greeting = _summary + greeting
         except Exception as exc:                   # noqa: BLE001 - an upload never fails on this
