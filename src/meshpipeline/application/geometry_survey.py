@@ -440,9 +440,6 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     # computed from `cell_cap` and `stated_cap`, never from this, so a ceiling stays what it is and
     # does not become a confirmation.
     cap = cell_cap if cell_cap is not None else stated_cap
-    if cap is None:
-        from meshpipeline.contracts.geometry_agent_block import cell_cap_for_composition
-        cap = cell_cap_for_composition(None)
     ports = [dict(p) for p in (declared or []) if isinstance(p, dict)]
     if inlet_ids is None:
         inlet_ids = _declared_inlets(document, ports)
