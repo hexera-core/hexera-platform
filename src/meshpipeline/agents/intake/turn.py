@@ -109,9 +109,37 @@ def hydrate(state, state_messages) -> TurnContext:
         pending=_sub("admission"),
         selection=_sub("selection"),
         approval=_sub("approval"),
-        rec_authorized=rec.recommendation_requested(latest),
-        choice_deferred=rec.choice_deferred(latest),
+        # A DELEGATION DOES NOT EXPIRE, AND READING IT OFF THE LATEST MESSAGE ONLY TRAPPED A WHOLE RUN.
+        #
+        # MEASURED on ahmed_variant_001, the script "internal cfd, air, you decide the rest" / "no, o2 is the
+        # inlet" / "go": the deferral was in message 1, so from message 2 on `rec_authorized` was False and
+        # `choice_deferred` was False, the model could not name an engine at all, and it spent turns 2 to 8
+        # asking whether the customer would like a recommendation - "I keep misreading 'go' as a request for
+        # a recommendation. It isn't, and the system is right to stop me each time." It was not right. The
+        # customer had handed over the decision and then corrected a port role, which is not taking it back.
+        # Eight messages, no mesh.
+        #
+        # NARROW IN THE SAME WAY `geometry_survey.said_by_customer` AND
+        # `engine_selection.answers_the_selection_question` ARE, and for the same reason: only a DEFERRAL is
+        # read from an earlier message. A REQUEST for a recommendation still has to be in the latest one, so
+        # "which engines can do this?" three turns ago does not authorise a comparison now, and nothing else
+        # a customer ever said becomes standing permission.
+        rec_authorized=rec.recommendation_requested(latest) or _standing_deferral(user_msgs),
+        choice_deferred=rec.choice_deferred(latest) or _standing_deferral(user_msgs),
     )
+
+
+def _standing_deferral(user_msgs) -> bool:
+    """The customer has handed the decision over in ANY message so far and not taken it back.
+
+    "Not taken it back" is what a later deferral-free message is NOT: a correction ("no, o2 is the inlet")
+    changes one item, it does not reclaim a decision they delegated. The only thing that reclaims it is
+    naming the choice themselves, which every reader of this flag already honours ahead of it - a customer
+    who names an engine is `user_direct` and nothing here is consulted.
+    """
+    from meshpipeline.agents.intake import recommendation as rec
+
+    return any(rec.choice_deferred(str(m.get("content", ""))) for m in user_msgs)
 
 
 def serialise_transcript(llm_messages, assistant_text: str) -> list:

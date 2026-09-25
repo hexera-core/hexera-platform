@@ -210,3 +210,34 @@ def test_an_empty_payload_adds_nothing_rather_than_an_empty_heading():
     from meshpipeline.agents.intake.executor import IntakeToolExecutor
     ex = IntakeToolExecutor.__new__(IntakeToolExecutor)
     assert IntakeToolExecutor._what_is_being_confirmed(ex, {}) == ""
+
+
+# AND THE SAME DELEGATION WAS UNREADABLE TO THE RECOMMENDATION GATE, WHICH TRAPPED A WHOLE RUN.
+
+
+def _hydrated(said: list[str]):
+    from meshpipeline.agents.intake.turn import hydrate
+    msgs = [{"role": "user", "content": s} for s in said]
+    return hydrate({"job_id": "j", "session_id": "s", "user_id": "o"}, msgs)
+
+
+def test_a_delegation_from_an_earlier_message_still_authorises_the_pick():
+    """MEASURED on ahmed_variant_001, "internal cfd, air, you decide the rest" / "no, o2 is the inlet" /
+    "go": the deferral was in message 1, both flags were read off the latest message, and from message 2 the
+    model could not name an engine - so it spent turns 2 to 8 asking whether the customer would like a
+    recommendation and never reached a mesh. A correction to a port role is not taking the decision back."""
+    ctx = _hydrated(["internal cfd, air, you decide the rest", "no, o2 is the inlet"])
+    assert ctx.choice_deferred and ctx.rec_authorized
+
+
+def test_a_conversation_that_never_delegated_authorises_nothing():
+    ctx = _hydrated(["internal cfd, air through it", "o1 is the inlet"])
+    assert not ctx.choice_deferred and not ctx.rec_authorized
+
+
+def test_asking_which_engine_is_still_only_read_from_the_latest_message():
+    """A request for a comparison is not standing permission: it is answered and done with. Only the
+    deferral persists."""
+    ctx = _hydrated(["which engines can do this?", "o1 is the inlet"])
+    assert not ctx.rec_authorized and not ctx.choice_deferred
+    assert _hydrated(["o1 is the inlet", "which engines can do this?"]).rec_authorized
