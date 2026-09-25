@@ -176,11 +176,18 @@ def answers_the_selection_question(engine: str, quote: str, latest_user_message,
     #
     # Only against an OUTSTANDING proposal, which is what keeps it honest: "you decide" with no
     # question on screen still selects nothing, because there is nothing it could be accepting.
-    if outstanding:
-        from meshpipeline.agents.intake.recommendation import choice_deferred
+    from meshpipeline.agents.intake.recommendation import choice_deferred
 
-        if choice_deferred(latest_user_message):
-            return True
+    if choice_deferred(latest_user_message):
+        # AND ON A FRESH PROPOSAL TOO. A customer who says "you decide" and is then shown
+        # "Selected engine: X - do you want to select X?" has been asked to make the decision they
+        # just handed over. That round trip bought nothing: the answer was already given, one
+        # message earlier, in the words that caused us to pick X at all.
+        #
+        # They still see it and can still change it - the engine is named in the setup block they
+        # confirm before anything is submitted, and the dispatch asks again after that. What is
+        # removed is a question with one answer, not a place to say no.
+        return True
     return False
 
 
