@@ -247,9 +247,21 @@ def _inputs(state: dict, document: dict, *, fidelity: str, source_path: str = ""
     except gs.SurveyError as exc:
         raise StepRefused(f"the survey could not be composed again: {exc}") from exc
     stored = gs.survey_of(state)
-    if made["survey"].model_dump(mode="json") != stored.model_dump(mode="json"):
+    _made, _stored = made["survey"].model_dump(mode="json"), stored.model_dump(mode="json")
+    if _made != _stored:
+        # NAME WHAT MOVED. This refusal is correct - a plan built against a survey other than the one
+        # the answers were bound to is an answer about another file - but it said only THAT they
+        # differ, so the job silently lost its plan and there was no way to find out why afterwards:
+        # the row is saved in a state that reproduces, and the mismatch only ever exists during the
+        # submission. Naming the fields costs nothing and is the difference between a guard that can
+        # be fixed and one that can only be observed.
+        _moved = [k for k in sorted(set(_made) | set(_stored)) if _made.get(k) != _stored.get(k)]
+        logger.warning("geometry step: the survey does not reproduce; fields that differ: %s", _moved)
+        for _k in _moved[:4]:
+            logger.warning("  %s: composed=%.200s | stored=%.200s", _k, _made.get(_k), _stored.get(_k))
         raise StepRefused("the survey on the row is not what its own inputs compose to, so the customer's answers "
-                          "are bound to a survey this platform cannot reproduce; no plan is made against it")
+                          "are bound to a survey this platform cannot reproduce; no plan is made against it "
+                          f"(fields that differ: {', '.join(_moved) or 'none named'})")
     facts, composed = made["facts"], made["composed"]
     brief = pkg["brief"].brief_from(kwargs["purpose"], made["brief"],
                                     declared=_brief_rows(made["ports"], facts, kwargs.get("unit")),
