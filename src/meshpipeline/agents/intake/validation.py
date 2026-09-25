@@ -301,9 +301,17 @@ def _validate_internal_ports(patches: list) -> list[str]:
         area = _declared_area_mm2(p)
         if area is None and not has_near:
             errors.append(
-                f"port {nm!r} has no stated size and no location - ask the user for its "
-                "approximate diameter (or area, or width x height), or roughly where it is "
-                "on the part, so the mesh can bind the name to the right opening")
+                # WHAT TO DO, NOT WHO TO ASK. This said "ask the user for its approximate
+                # diameter", so a model holding the measured table did exactly that - asked - and
+                # then resubmitted the same payload without the number. One conversation confirmed
+                # the same four port sizes four times in a row because every refusal told the model
+                # to ask again rather than to WRITE what it had already been given. Confirming a
+                # number in chat is not submitting it.
+                f"port {nm!r} has no size or location IN THE PAYLOAD. If the customer has already "
+                "confirmed this port's measured size or position, put that number in the patch now "
+                "(diameter_mm, or area_mm2, or width_mm+height_mm, or near_mm) and resubmit - "
+                "confirming it in conversation does not submit it. Ask them only if it is not "
+                "measured and they have not stated it")
             continue
         if area is not None:
             sized.append((nm, (p.get("type") or "").strip(), area, has_near))

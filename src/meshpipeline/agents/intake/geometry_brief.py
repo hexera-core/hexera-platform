@@ -314,6 +314,11 @@ def _render(document: dict, *, surveyed: bool = False) -> str:
         "    dimension, location or interchangeability the customer did not state. A measured number is",
         "    not invented and it is not theirs either - so you may SAY it and ask them to confirm it, and",
         "    you may put it in a patch only once they have confirmed it in their own words.",
+        "  - AND THEN ACTUALLY PUT IT THERE. Confirming a size in conversation does not submit it. The",
+        "    moment the customer confirms a port's measured size or position, WRITE it into that patch",
+        "    (diameter_mm, or area_mm2, or width_mm+height_mm, or near_mm) in the payload you submit.",
+        "    A submission refused for a port with \"no size or location\" after they have confirmed one",
+        "    is you failing to carry the number across - not them failing to answer. Do not ask again.",
     ])
     lines.extend(look_lines(document))
     return "\n".join(lines)
