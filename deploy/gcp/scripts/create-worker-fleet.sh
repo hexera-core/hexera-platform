@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that sizes it.
-# Owns: template naming, the rolling update that moves an existing group onto a new digest, and the warm-pool floor.
+# Responsibility: Provision the worker fleet - one instance template per digest, the managed group, the policy that sizes it, and the single scheduler instance beside it.
+# Owns: template naming, the rolling update that moves an existing group onto a new digest, the warm-pool floor, and the fact that there is exactly ONE celery beat.
 # Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted.
 
 # Provision the WORKER FLEET: a digest-pinned instance template, the managed instance group that
@@ -30,7 +30,9 @@
 #
 # INPUTS   the deployment env (APP_IMAGE, WORKER_*, VPC_*, REDIS_URL, MIGRATE_DB_*, the *_SECRET names)
 # MUTATES  the worker identity, one accessor binding per declared secret, one instance template per
-#          distinct worker specification, the managed instance group, and its autoscaling policy.
+#          distinct worker specification, the managed instance group, its autoscaling policy, and the
+#          one scheduler instance - which is the only resource here that is DELETED, because there
+#          must never be two of it.
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -213,13 +215,30 @@ done
 
 # 3) the metadata the instance reads. Names in the clear, credentials never - the values were
 #    checked above, before anything was created.
+#
+#    worker-role IS THE ONE THING THE TWO KINDS OF INSTANCE DISAGREE ABOUT. Every member of the group
+#    is a `pipeline` instance; the single scheduler instance created in step 7 is a `scheduler`, and
+#    that is what makes it run celery beat. startup.sh refuses to start on any other value and on no
+#    value, so this key is not optional and neither end of it has a default.
 WORKER_METADATA=(
   "worker-image=${APP_IMAGE}"
   "redis-url=${REDIS_URL}"
   "database-url=${WORKER_DATABASE_URL}"
   "env-uri=${WORKER_ENV_URI}"
+  "worker-role=pipeline"
 )
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
+
+# The scheduler instance's metadata is THIS LIST WITH ONE ENTRY CHANGED, derived rather than written
+# out again: a second literal list would be a second place a renamed secret container or a moved
+# broker has to be edited, and the one that was forgotten would be the instance nobody watches.
+BEAT_METADATA=()
+for entry in "${WORKER_METADATA[@]}"; do
+  case "${entry}" in
+    worker-role=*) BEAT_METADATA+=("worker-role=scheduler") ;;
+    *) BEAT_METADATA+=("${entry}") ;;
+  esac
+done
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious
 # separators works: a comma is legal inside a URL, and '@' is in every image digest - passing this
@@ -371,6 +390,70 @@ gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
   --stackdriver-metric-filter "${FILTER}" \
   --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}"
 
+# 7) THE SCHEDULER. One instance, outside the group, running the same image and the same startup
+#    script with worker-role=scheduler - which is what makes it start celery beat beside the two
+#    workers. deploy/gcp/worker/startup.sh says what beat is, what the four periodic tasks are, and
+#    why a deployment that never ran it never purged, never reaped and never reconciled anything.
+#
+#    WHY IT IS NOT IN THE GROUP. A managed instance group holds between MIN and MAX instances and the
+#    autoscaler moves that number on queue depth, so a scheduler started by a group MEMBER would be
+#    one scheduler at the floor and five under a backlog. "Exactly one" is not something a group can
+#    express, and two beats is worse than the bug: every periodic task would run once per instance.
+#
+#    WHY THE NAME CARRIES THE TEMPLATE'S OWN IDENTITY. An instance created from a template does not
+#    track it, so an instance left over from an older digest would keep running old code while every
+#    log line here named the new one - the same failure the template's own name exists to prevent.
+#    The name therefore carries the digest and the specification hash, so a new digest or an edit to
+#    startup.sh yields a new name and the instance is genuinely replaced.
+#
+#    AND THE OLD ONE IS DELETED FIRST, which is the exact inverse of the group's
+#    maxSurge=1/maxUnavailable=0 warm-pool policy, because the two failures are not symmetric: a
+#    couple of minutes with no scheduler delays an idempotent sweep by one interval, while a couple of
+#    minutes with two runs every periodic task twice - two reapers racing the same stalled job.
+#
+#    THE METADATA IS PASSED IN FULL rather than as an override on the template's. `gcloud compute
+#    instances create --source-instance-template` takes the template's whole instance specification,
+#    and whether a partial --metadata merges with the template's or replaces it is not a thing to be
+#    approximately sure about: a replace that dropped `startup-script` would boot an instance that
+#    does nothing at all, quietly, and this deployment would again have no scheduler. Stating every
+#    key - the same list the template got, with worker-role changed - is correct under either
+#    behaviour.
+BEAT_INSTANCE="${WORKER_MIG}-beat-${DIGEST:0:8}-${SPEC_HASH}"
+[ ${#BEAT_INSTANCE} -le 63 ] \
+  || die "scheduler instance name '${BEAT_INSTANCE}' is ${#BEAT_INSTANCE} characters; Compute Engine
+   allows 63. Shorten WORKER_MIG or set WORKER_TEMPLATE_PREFIX."
+
+# Every scheduler instance this deployment has ever created, past and present. Listed by prefix
+# rather than assumed to be the one name computed above, because a leftover from an older digest is
+# exactly what has to be found and removed.
+EXISTING_BEATS="$(gc compute instances list --zones "${WORKER_MIG_ZONE}" \
+  --filter="name ~ ^${WORKER_MIG}-beat-" --format='value(name)' 2>/dev/null || true)"
+BEAT_REPLACED=0
+while read -r stale_beat; do
+  [ -n "${stale_beat}" ] || continue
+  [ "${stale_beat}" != "${BEAT_INSTANCE}" ] || continue
+  info "Deleting the superseded scheduler ${stale_beat} BEFORE creating ${BEAT_INSTANCE}"
+  gc compute instances delete "${stale_beat}" --zone "${WORKER_MIG_ZONE}" --quiet \
+    || die "could not delete the superseded scheduler ${stale_beat}. Refusing to create a second
+   one beside it: two beats publish every periodic task twice, which is worse than the gap between
+   deleting this one and creating its replacement. Delete it and rerun:
+     gcloud compute instances delete ${stale_beat} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}"
+  BEAT_REPLACED=1
+done <<<"${EXISTING_BEATS}"
+
+if printf '%s\n' "${EXISTING_BEATS}" | grep -qx -- "${BEAT_INSTANCE}"; then
+  BEAT_DISPOSITION=reused
+else
+  info "Creating the scheduler instance ${BEAT_INSTANCE}"
+  gc compute instances create "${BEAT_INSTANCE}" \
+    --zone "${WORKER_MIG_ZONE}" \
+    --source-instance-template "${TEMPLATE}" \
+    --labels "app=hexera,component=beat,version=0-0-1,deployment-id=${DEPLOYMENT_ID},managed-by=deploy" \
+    --metadata-from-file "startup-script=${STARTUP}" \
+    --metadata "^|^$(IFS='|'; printf '%s' "${BEAT_METADATA[*]}")"
+  if [ "${BEAT_REPLACED}" -eq 1 ]; then BEAT_DISPOSITION=replaced; else BEAT_DISPOSITION=created; fi
+fi
+
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
   FLOOR_STATE="0 - scales to zero (Decision 4: dev pays for nothing while idle)"
 else
@@ -384,4 +467,5 @@ log "  image         ${APP_IMAGE}"
 log "  floor         ${FLOOR_STATE}"
 log "  ceiling       ${WORKER_MIG_MAX_REPLICAS} instances, one per ${WORKER_JOBS_PER_INSTANCE} queued job(s), cooldown ${WORKER_MIG_COOLDOWN_SECONDS}s"
 log "  credentials   ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata - the values are fetched per instance"
+log "  scheduler     ${BEAT_INSTANCE}  (${BEAT_DISPOSITION}) - the one celery beat, outside the group"
 log "done"

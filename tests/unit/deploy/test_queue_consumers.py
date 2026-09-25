@@ -218,13 +218,19 @@ def test_the_gate_reads_queues_across_shell_and_yaml_line_breaks(tmp_path):
 # that fake. Reading the file says what it should do; running it says what it does.
 
 _FAKE_CURL = """#!/bin/bash
-# The metadata server, answering the four instance attributes startup.sh reads and nothing else. An
+# The metadata server, answering the instance attributes startup.sh reads and nothing else. An
 # unknown attribute exits non-zero, which is how the script learns a credential is not used here.
+#
+# worker-role is `pipeline`, a member of the managed instance group, because that is the role whose
+# QUEUES this file is about. The script refuses to start on an absent or unknown role - a scheduler
+# instance that came up as a worker would leave the deployment with no celery beat, in silence - and
+# tests/unit/deploy/test_worker_instance_startup.py is where both roles are exercised.
 for a in "$@"; do case "$a" in
   *"attributes/worker-image") echo "reg/app@sha256:abc"; exit 0;;
   *"attributes/redis-url") echo "redis://10.0.0.2:6379/0"; exit 0;;
   *"attributes/database-url") echo ""; exit 0;;
   *"attributes/env-uri") echo "gs://bucket/worker.env"; exit 0;;
+  *"attributes/worker-role") echo "pipeline"; exit 0;;
   *"project/project-id") echo "fake-project"; exit 0;;
   *"attributes/"*) exit 1;;
 esac; done
@@ -243,6 +249,16 @@ printf '%s\\n' "$*" >> "${DOCKER_LOG}"
 exit 0
 """
 
+# `install` IS FAKED. startup.sh creates the two bind-mount roots with `install -d -o 1000 -g 1000`,
+# because Docker would otherwise create them root-owned and the containers run as uid 1000. The real
+# `install` would try that against /var/lib/hexera on whatever machine runs the tests and would need
+# root to do it, so letting it run would fail this file everywhere except as root - for a reason that
+# has nothing to do with queues. What the script asks of it is asserted in
+# tests/unit/deploy/test_worker_instance_startup.py, which is that line's own test.
+_FAKE_INSTALL = """#!/bin/bash
+exit 0
+"""
+
 
 def _run_fleet_startup(tmp_path: Path, script_text: str) -> list[str]:
     """Execute a fleet startup script with fake tools and return the docker commands it issued."""
@@ -255,7 +271,7 @@ def _run_fleet_startup(tmp_path: Path, script_text: str) -> list[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, text in (("curl", _FAKE_CURL), ("gcloud", _FAKE_GCLOUD), ("docker", _FAKE_DOCKER),
-                       ("systemctl", "#!/bin/bash\nexit 0\n")):
+                       ("install", _FAKE_INSTALL), ("systemctl", "#!/bin/bash\nexit 0\n")):
         path = bin_dir / name
         path.write_text(text, encoding="utf-8", newline="\n")
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

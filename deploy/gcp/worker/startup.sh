@@ -1,17 +1,20 @@
 #!/bin/bash
-# Responsibility: Bring one worker instance up - the pipeline containers, and nothing else.
-# Owns: docker install, registry auth, and the run arguments of every worker container on the instance.
+# Responsibility: Bring one worker instance up - its containers, and nothing else.
+# Owns: docker install, registry auth, and the run arguments of every container on the instance.
+# Owns: the two instance ROLES, and the refusal to run at all without being told which one this is.
 # Boundaries: it runs what it is told to run; the image digest and every endpoint arrive as instance metadata.
 #
-# This is the MIG instance startup script. It is deliberately free of configuration: the image
-# DIGEST, the database, the broker and the object store all arrive as instance metadata, so the
-# instance template is the single place a deployment's values are written, and rolling the template
-# is what changes them.
+# This is the worker instance startup script - the managed instance group's, and the one scheduler
+# instance's. It is deliberately free of configuration: the image DIGEST, the database, the broker
+# and the object store all arrive as instance metadata, so the instance template is the single place
+# a deployment's values are written, and rolling the template is what changes them.
 #
 # The MESH container runs the celery worker at concurrency 1 - the fleet's capacity is its instance
 # count, so a job's cost is attributable to a whole instance and one stuck job cannot occupy a slot
 # another job would need. A second, short-work container beside it drains the other four queues; the
-# block above the `docker run` lines says why it has to exist and why it is not the same worker.
+# block above the `docker run` lines says why it has to exist and why it is not the same worker. A
+# THIRD container, celery beat, runs on the scheduler instance only, and the block above it says why
+# running it on a group member instead would be between one and five schedulers.
 set -euxo pipefail
 
 md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
@@ -23,6 +26,31 @@ WORKER_IMAGE="$(md worker-image)"
 REDIS_URL="$(md redis-url)"
 DATABASE_URL="$(md database-url)"
 ENV_URI="$(md env-uri)"
+
+# WHICH ROLE THIS INSTANCE IS, asked and never assumed. `pipeline` is a member of the managed
+# instance group; `scheduler` is the single instance beside it that also runs celery beat. The two
+# differ in one thing and it is the thing at the bottom of this file.
+#
+# NEITHER VALUE IS A DEFAULT, and that is the whole reason this is three lines instead of one. If
+# absence meant `pipeline`, a scheduler instance whose metadata was written wrong would come up as an
+# ordinary worker and the deployment would have no scheduler at all - silently, because a missing
+# beat raises nothing anywhere: the periodic tasks stay registered, their queue stays drained, and
+# nobody publishes to it. If absence meant `scheduler`, every group member would run beat and every
+# periodic task would run once per instance. An unreadable or unknown role is refused instead, before
+# a single container starts, which is the only answer that cannot be wrong in silence.
+WORKER_ROLE="$(md worker-role || true)"
+case "${WORKER_ROLE}" in
+  pipeline|scheduler) ;;
+  "") echo "FATAL: instance metadata carries no worker-role, so this instance cannot tell whether it
+   is a group member (pipeline) or the one instance that runs celery beat (scheduler). Refusing to
+   guess: guessing pipeline leaves the deployment with no scheduler and no periodic task ever firing,
+   and guessing scheduler runs every periodic task once per instance in the group.
+   deploy/gcp/scripts/create-worker-fleet.sh writes this key on both the template and the scheduler
+   instance." >&2; exit 1 ;;
+  *) echo "FATAL: worker-role='${WORKER_ROLE}' is not a role this script knows. It is 'pipeline' for
+   a member of the managed instance group or 'scheduler' for the single instance that also runs
+   celery beat." >&2; exit 1 ;;
+esac
 
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v docker >/dev/null 2>&1; then
@@ -153,7 +181,55 @@ docker run -d --name hexera-worker-utility --restart always \
     --queues cleanup_tasks,training_export,geometry_measurement,geometry_look \
     --concurrency 2 --loglevel info --hostname utility@%h
 
-# NOTHING ELSE RUNS HERE. The queue-depth exporter used to: a systemd unit beside every worker,
+# THE SCHEDULER, ON THIS INSTANCE ONLY, AND WHY IT IS NOT ON EVERY INSTANCE.
+#
+# celery_app.conf.beat_schedule declares four periodic tasks - purge-expired-workspaces,
+# reap-stalled-jobs, purge-expired-geometry-sources and reconcile-orphan-artifacts - and a periodic
+# task only happens because something runs `celery beat` to publish it. docker-compose.yml has a beat
+# service; the GCP deployment had NOTHING, so on the deployed platform not one of the four had ever
+# fired. Expired workspaces were never purged, uploaded geometry bytes outlived
+# UPLOAD_RETENTION_DAYS for ever, orphaned artifacts were never reconciled, and a job whose worker
+# died stayed RUNNING until somebody looked instead of being failed after STALLED_JOB_TIMEOUT_HOURS -
+# so the one mechanism that turns a dead worker into a customer-visible failure was itself absent.
+#
+# NOTHING RAISED, which is why it outlived the fleet's own audit. This is the undrained-queue failure
+# with the ends swapped: there the publisher had no consumer, here the consumer had no publisher. The
+# tasks are registered, cleanup_tasks is drained by the utility worker above, and the worker sits
+# there ready - and no message ever arrives. There is no exception, no metric and no failing
+# assertion in that story.
+#
+# EXACTLY ONE, WHICH IS WHY THE ROLE EXISTS. Two beats means every periodic task runs twice: two
+# reapers racing the same stalled job, two purges deleting the same workspace, and the reconciliation
+# sweep burning two of the five RECONCILE_MAX_RETRIES attempts per interval instead of one. The group
+# holds between WORKER_MIG_MIN_REPLICAS and WORKER_MIG_MAX_REPLICAS instances and the autoscaler
+# moves that number on queue depth, so a beat container run unconditionally here would be one
+# scheduler at the floor and five under a backlog - a number that varies with the load. The group's
+# template therefore carries worker-role=pipeline and create-worker-fleet.sh creates ONE instance
+# beside it with worker-role=scheduler, deleting the previous one before creating its replacement so
+# even a rotation cannot briefly have two.
+#
+# THE SCHEDULER INSTANCE IS ALSO A WORKER - the two `docker run` lines above are not conditional -
+# because it is an ordinary instance that happens to schedule, and an e2-standard-4 kept alive for
+# one tiny python process would be capacity thrown away. It is outside the group only because a group
+# member is not something there is exactly one of.
+#
+# NO MOUNTS AND NO QUEUES: beat publishes and consumes nothing, so it needs neither the workspace
+# root nor the data root. Its schedule file stays in the container (the image creates /data/beat), so
+# replacing the instance starts a fresh schedule and each task's first tick comes up to one interval
+# early. That is harmless for four idempotent sweeps on a 10- or 60-minute period, and the
+# alternative - a fifth host directory whose ownership could be wrong - is the defect above.
+if [ "${WORKER_ROLE}" = "scheduler" ]; then
+  docker rm -f hexera-beat >/dev/null 2>&1 || true
+  docker run -d --name hexera-beat --restart always \
+    --env-file /etc/hexera/worker.env \
+    "${WORKER_IMAGE}" \
+    celery -A meshpipeline.runtime.celery_worker beat \
+      --loglevel info \
+      --scheduler celery.beat:PersistentScheduler \
+      --schedule /data/beat/celerybeat-schedule
+fi
+
+# AND NOTHING ELSE RUNS HERE. The queue-depth exporter used to: a systemd unit beside every worker,
 # publishing the group-wide backlog against this instance's own resource. That made the fleet the
 # only writer of the number that wakes the fleet, so a group at zero instances could never come
 # back - the reason its minimum is 1. Publication moved to a scheduled Cloud Run job

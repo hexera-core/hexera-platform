@@ -83,12 +83,21 @@ if [ -n "${WORKER_MIG:-}" ] || [ -n "${WORKER_MIG_ZONE:-}" ]; then
   # autoscaler at the queues the fleet is the only consumer of. Only the first is buildable today
   # (single-instance-assignment is defined against exactly one time series), so it is the one this
   # refusal names.
+  #
+  # WHAT THE SCHEDULER INSTANCE CHANGES ABOUT THIS, stated because the paragraph above would otherwise
+  # now be slightly untrue. create-worker-fleet.sh creates one instance outside the group for celery
+  # beat, and it runs the two worker containers as well - so at a group floor of 0 the short queues
+  # are not drained by nobody, they are drained by exactly one instance that the autoscaler cannot
+  # add to. A backlog of measurements and looks then waits behind one container at concurrency 2 with
+  # nothing that will ever start a second, which is the same shape of problem one degree quieter. It
+  # is still not a state to arrive at by leaving a floor unstated.
   if [ "${WORKER_MIG_MIN_REPLICAS:-0}" = "0" ] && [ "${QUEUE_NAME:-simulation_jobs}" = "simulation_jobs" ]; then
     add "WORKER_MIG_MIN_REPLICAS is 0 while the autoscaler watches ${QUEUE_NAME:-simulation_jobs} only.
-   The fleet is the sole consumer of geometry_measurement, geometry_look, cleanup_tasks and
-   training_export, so at zero instances a queued measurement or look is never picked up and nothing
-   wakes the group. Set WORKER_MIG_MIN_REPLICAS=1 (the prod floor) or give the autoscaler a signal
-   that covers those queues."
+   The fleet is the only scalable consumer of geometry_measurement, geometry_look, cleanup_tasks and
+   training_export, so at zero instances a queued measurement or look waits on the single scheduler
+   instance alone and no depth of those queues will ever start another worker. Set
+   WORKER_MIG_MIN_REPLICAS=1 (the prod floor) or give the autoscaler a signal that covers those
+   queues."
   fi
 fi
 

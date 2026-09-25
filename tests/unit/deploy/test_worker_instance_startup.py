@@ -27,14 +27,17 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 STARTUP = REPO / "deploy" / "gcp" / "worker" / "startup.sh"
 
+# The metadata server, answering the instance attributes startup.sh reads and nothing else. An unknown
+# attribute exits non-zero, which is how the script learns a credential is not used here - and how the
+# role tests below present an instance whose role was never written: `${ROLE}` empty makes
+# `attributes/worker-role` fall through to that same refusal.
 _FAKE_CURL = """#!/bin/bash
-# The metadata server, answering the instance attributes startup.sh reads and nothing else. An
-# unknown attribute exits non-zero, which is how the script learns a credential is not used here.
 for a in "$@"; do case "$a" in
   *"attributes/worker-image") echo "reg/app@sha256:abc"; exit 0;;
   *"attributes/redis-url") echo "redis://10.0.0.2:6379/0"; exit 0;;
   *"attributes/database-url") echo ""; exit 0;;
   *"attributes/env-uri") echo "gs://bucket/worker.env"; exit 0;;
+  *"attributes/worker-role") [ -n "${ROLE}" ] || exit 1; echo "${ROLE}"; exit 0;;
   *"project/project-id") echo "fake-project"; exit 0;;
   *"attributes/"*) exit 1;;
 esac; done
@@ -67,13 +70,26 @@ exit 0
 class Run:
     """What one execution of the startup script asked its tools to do, in order."""
 
-    def __init__(self, docker: list[str], install: list[str]) -> None:
+    def __init__(self, docker: list[str], install: list[str],
+                 done: subprocess.CompletedProcess[str]) -> None:
         self.docker_runs = [line for line in docker if line.startswith("run ")]
         self.docker_all = docker
         self.installs = install
+        self.done = done
+        self.output = done.stdout + done.stderr
+
+    def containers(self) -> list[str]:
+        """The --name of every container the script started, in order."""
+        names = []
+        for line in self.docker_runs:
+            parts = line.split()
+            if "--name" in parts:
+                names.append(parts[parts.index("--name") + 1])
+        return names
 
 
-def run_startup(tmp_path: Path, script_text: str | None = None) -> Run:
+def run_startup(tmp_path: Path, script_text: str | None = None, *, role: str = "pipeline",
+                expect_success: bool = True) -> Run:
     if shutil.which("bash") is None:
         pytest.skip("no bash on this machine, and this script is bash")
     bin_dir = tmp_path / "bin"
@@ -97,11 +113,12 @@ def run_startup(tmp_path: Path, script_text: str | None = None) -> Run:
     done = subprocess.run(
         ["bash", str(script)], capture_output=True, text=True, timeout=300, check=False,
         env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-             "DOCKER_LOG": str(docker_log), "INSTALL_LOG": str(install_log)})
-    assert done.returncode == 0, (
-        f"the startup script failed:\n{done.stdout[-3000:]}{done.stderr[-3000:]}")
+             "DOCKER_LOG": str(docker_log), "INSTALL_LOG": str(install_log), "ROLE": role})
+    if expect_success:
+        assert done.returncode == 0, (
+            f"the startup script failed:\n{done.stdout[-3000:]}{done.stderr[-3000:]}")
     return Run(docker_log.read_text(encoding="utf-8").splitlines(),
-               install_log.read_text(encoding="utf-8").splitlines())
+               install_log.read_text(encoding="utf-8").splitlines(), done)
 
 
 # ------------------------------------------------------- the mount roots the containers must own
@@ -136,3 +153,51 @@ def test_the_mount_roots_are_owned_before_the_first_container_is_started(tmp_pat
     assert [line for line in run.installs if "/var/lib/hexera" in line], (
         "the mount roots are created AFTER the first container is started, so docker has already "
         "created them root-owned by the time the ownership is set")
+
+
+# ------------------------------------------------------------- the scheduler, and exactly one of it
+
+# THE SECOND DEFECT THIS FILE COVERS. celery_app.conf.beat_schedule declares four periodic tasks and a
+# periodic task only happens because something runs `celery beat`. docker-compose.yml had a beat
+# service and the GCP deployment had nothing, so on the deployed platform none of the four had ever
+# fired - workspaces never purged, orphaned artifacts never reconciled, and a job whose worker died
+# left RUNNING because the reaper that fails it is itself one of the four. And two beats is worse than
+# none, so both directions are asserted here.
+
+def test_a_pipeline_instance_starts_the_two_workers_and_no_scheduler(tmp_path):
+    run = run_startup(tmp_path, role="pipeline")
+    assert run.containers() == ["hexera-worker", "hexera-worker-utility"], run.docker_runs
+    assert not any("beat" in line for line in run.docker_runs), (
+        "a member of the managed instance group started a scheduler. The group holds between its floor "
+        "and its ceiling, so that is one beat per instance and every periodic task runs that many "
+        f"times: {run.docker_runs}")
+
+
+def test_the_scheduler_instance_starts_exactly_one_beat_beside_the_workers(tmp_path):
+    run = run_startup(tmp_path, role="scheduler")
+    beats = [line for line in run.docker_runs if " beat " in f" {line} "]
+    assert len(beats) == 1, f"expected exactly one celery beat, got {beats}"
+    assert "celery -A meshpipeline.runtime.celery_worker beat" in beats[0], beats[0]
+    assert "--name hexera-beat" in beats[0], beats[0]
+    # It is an ordinary instance that also schedules: the capacity is not thrown away on one tiny
+    # python process, and that is why the two worker containers are not conditional.
+    assert run.containers() == ["hexera-worker", "hexera-worker-utility", "hexera-beat"], run.docker_runs
+
+
+def test_an_instance_whose_role_was_never_written_refuses_to_start_anything(tmp_path):
+    # THE REFUSAL IS THE FIX, not a nicety. If an unreadable role defaulted to `pipeline`, a scheduler
+    # instance whose metadata was written wrong would come up as an ordinary worker and the deployment
+    # would have no scheduler at all - in silence, because a missing beat raises nothing: the tasks
+    # stay registered, their queue stays drained, and nobody publishes. If it defaulted to
+    # `scheduler`, every group member would run one.
+    run = run_startup(tmp_path, role="", expect_success=False)
+    assert run.done.returncode != 0, f"it started anyway:\n{run.output[-2000:]}"
+    assert "carries no worker-role" in run.output, run.output[-2000:]
+    assert run.docker_runs == [], f"containers were started before the role was settled: {run.docker_runs}"
+
+
+def test_an_unknown_role_refuses_rather_than_choosing_one(tmp_path):
+    run = run_startup(tmp_path, role="worker", expect_success=False)
+    assert run.done.returncode != 0, f"it started anyway:\n{run.output[-2000:]}"
+    assert "is not a role this script knows" in run.output, run.output[-2000:]
+    assert run.docker_runs == []

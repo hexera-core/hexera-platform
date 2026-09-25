@@ -189,6 +189,13 @@ jobs:
       # and every place it would have named was absent. Nothing raised, so nothing caught it.
       - name: Every published queue is drained in every deployment target
         run: python devtools/quality/check_queue_consumers.py
+      # The same silence with the ends swapped: a periodic task with no scheduler. The GCP deployment
+      # ran no celery beat at all, so none of the four maintenance tasks had ever fired there -
+      # workspaces never purged, orphaned artifacts never reconciled, and a job whose worker died left
+      # RUNNING because the reaper that fails it is itself a periodic task. And two schedulers is
+      # worse than none, so this fails in both directions.
+      - name: Every periodic task has exactly one scheduler in every deployment target
+        run: python devtools/quality/check_scheduled_tasks.py
       # The budgets have to nest: the thing that kills a job must outlive everything inside it. The
       # measurement's packaged retry budget was 2706 s under a Celery limit of 1500 s, so a job could
       # be killed part way through a retry.
