@@ -904,8 +904,21 @@ class IntakeToolExecutor:
             flow_axis=args.get("flow_axis"),
             requirements_strict=bool(args.get("requirements_strict") or False),
             request_txt=args.get("request_txt"), source_ref=st.source_ref)
-        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK
-                             + "\n\nShall I proceed with mesh generation?")
+        # THE GEOMETRY AGENT'S OWN WORDS TO THE CUSTOMER, AT THE ONE MOMENT THEY ARE WORTH READING.
+        # `plan.summary_for_user` says what it concluded, what it assumed, and what it still needs -
+        # and on a real job that last part was "the outlet o6 has only 1.2 D of run - extend it or
+        # accept the mesh and not quote the o6 pressure drop". Sound engineering, written for the
+        # customer, stored on the row, and shown to nobody. This is the last turn before compute is
+        # spent, so it is the only turn where a caveat is still worth something.
+        _agent_words = ""
+        _step = (st.geometry_survey or {}).get("geometry_step") if isinstance(st.geometry_survey, dict) else None
+        _plan = _step.get("plan") if isinstance(_step, dict) else None
+        if isinstance(_plan, dict):
+            _said = str(_plan.get("summary_for_user") or "").strip()
+            if _said:
+                _agent_words = (chr(10) * 2) + "WHAT THE GEOMETRY AGENT FOUND" + chr(10) + _said
+        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + _agent_words
+                             + (chr(10) * 2) + "Shall I proceed with mesh generation?")
         st.approval = ap.create(
             owner_id=st.owner_id, session_id=st.session_id,
             selection_id=str((st.selection or {}).get("id") or ""),
