@@ -675,8 +675,18 @@ def not_yet(state: dict | None) -> list[str]:
     PUT and skipped or left to its default is not one of them: the customer has had it, and a default
     that stood rides to the builder as the open question it is.
     """
+    # A DEFAULT THAT STOOD HAS BEEN PUT, and this function's own paragraph above says so - but the
+    # code did not, because `open_now` filters on gs.SETTLED, which is ("answered", "skipped") and
+    # deliberately excludes "defaulted": a default that stood leaves the question OPEN for the
+    # builder, which is right, and rides to it as the open question it is.
+    #
+    # For step 5 that is a different question. The customer has HAD it; taking the default is what
+    # they chose by not choosing, and the plan can be made from it. Once the submission started
+    # waiting on this list, the mismatch became a loop: the model recorded took_default, the question
+    # stayed in `open_now`, the gate held, and it went back to the customer demanding "a real answer"
+    # for a question they had already declined - four times in a driven run.
     return [f"{v['route']}:{v['id']}" for v in gs.open_now(state or {})
-            if v["route"] in (gs.ROUTE_INTAKE, gs.ROUTE_TRADE)]
+            if v["route"] in (gs.ROUTE_INTAKE, gs.ROUTE_TRADE) and v.get("status") != "defaulted"]
 
 
 def submission_problems(state: dict | None) -> list[str]:
