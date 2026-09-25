@@ -380,6 +380,10 @@ def compose(document: dict, *, purpose: str, brief: str | None = None,
             #: any, which is every composition today, and the row is then byte for byte what it was.
             **({"asked_before": {str(k): int(v) for k, v in dict(asked_before).items()}}
                if asked_before else {}),
+            #: WHICH QUESTIONS THIS COMPOSITION DOES NOT CARRY AND WHY (`_not_carried`), so a non-flow survey
+            #: with nothing left on it cannot be read as a part with nothing left to settle. Absent for a flow
+            #: purpose, and the row is then byte for byte what it was.
+            **({"not_carried": dict(made["not_carried"])} if made["not_carried"] else {}),
             "composed_at": _now(),
         },
         "agent_git_sha": str((document.get("stamp") or {}).get("agent_git_sha") or ""),
@@ -511,6 +515,14 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
                 asked = pkg["ask"].ask_intake(asking_doc, declared=ports or None, brief=brief_text or None,
                                               asked_before=dict(asked_before or {}) or None,
                                               alerts=r_alerts, reconciliation=r_found)
+        # THE FLOW QUESTIONS COME OFF A NON-FLOW SURVEY HERE, AND NOWHERE ELSE. It is one cut in one place, and
+        # it has to be one place: `asking_row` and `contract_uncertainties` below both read this object, and the
+        # survey's uncertainty list and the question list are the same list by construction or they are nothing
+        # (`QUESTION_FINDER`). It is after the unit re-find above deliberately - `brief_stated_facts` reads
+        # every question the finder found, including the ones this cut removes, and a unit the brief settled is
+        # a unit whatever the purpose.
+        not_carried = _not_carried(purpose, str(composed.get("engine") or ""))
+        asked = _without_the_flow_questions(pkg, asked, purpose, str(composed.get("engine") or ""))
         # the package admits an engine nobody named as `assumed` (work/z-chain, `contract.marks.OWNERS`), so the
         # composed document goes to the survey as it is; the shim that stripped the engine is gone
         survey = pkg["build"].survey_from(
@@ -522,8 +534,100 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         raise SurveyError(f"the survey could not be composed: {type(exc).__name__}: {exc}") from exc
     return {"composed": composed, "survey": survey, "facts": facts, "brief": brief_text, "ports": ports,
             "cap": cap, "stated_cap": stated_cap, "inlet_ids": list(inlet_ids), "fluid_side": side,
-            "flow_direction": flow_direction,
+            "flow_direction": flow_direction, "not_carried": not_carried,
             "asked": asked, "asking": asking_row(asked, pkg), "joint": joint}
+
+
+def _not_carried(purpose: str, engine: str) -> dict[str, str]:
+    """`{question kind: why this composition does not carry it}`, empty for a flow purpose.
+
+    WITHOUT THIS A SETTLED SURVEY AND A CUT ONE ARE THE SAME ROW. `_without_the_flow_questions` removes the
+    flow-shaped questions from a structural survey, and on five of the seven stored fixtures that leaves the
+    uncertainty list EMPTY - which is the same row a part with nothing left to settle would have. Worse, the
+    package's own reason for an empty list is a fixed sentence written for the flow case
+    (`contract.build.survey_from`: "the unit is confirmed, no mouth needs a role for this purpose, and the
+    forecast fits the stated budget"). MEASURED on transition_007_fluid composed for `structural` with no
+    engine named: the list is empty, that sentence is written, and `forecast.over_cap` is True at 2,046,473
+    cells against the customer's 2M - so the handoff says the forecast fits while the only forecast it has
+    says it does not, and neither claim is about the mesher a structural job runs on. The sentence is the
+    package's field, written by a file this platform may not edit and read by nothing on either side; this is
+    the platform's own record of the same fact, in the one place the platform owns, and it is the difference
+    between "nothing was left unsettled" and "these were not asked, and here is why".
+
+    Absent from the row where nothing was cut, so a flow job's `composed_for` is byte for byte what it was.
+    """
+    if purpose in FLOW_PURPOSES:
+        return {}
+    out = {k: f"{purpose} is not a flow purpose" for k in sorted(FLOW_ONLY_QUESTION_KINDS)}
+    if not engine_can_mesh(purpose, engine):
+        out.update({k: (f"the forecast and the triage this survey carries are {engine or 'no engine'}'s, and "
+                        f"{engine or 'no engine'} cannot produce the mesh {purpose} needs")
+                    for k in sorted(ENGINE_DEPENDENT_QUESTION_KINDS)})
+    return out
+
+
+def _without_the_flow_questions(pkg: dict, asked: Any, purpose: str, engine: str) -> Any:
+    """The finder's answer with every question this purpose and this engine cannot honestly answer removed.
+    The finder's own answer untouched for a flow purpose. Raises `SurveyError`.
+
+    THE ONE CUT THAT LETS A STRUCTURAL JOB HAVE A SURVEY AT ALL. `SURVEYED_PURPOSES` says why the purpose is
+    surveyed now, `FLOW_ONLY_QUESTION_KINDS` and `ENGINE_DEPENDENT_QUESTION_KINDS` say why each kind goes;
+    this is the mechanics. MEASURED on the six stored fixtures composed for `structural` with no engine
+    named: the finder puts `q_port_roles` on all six and `q_budget` on transition_007_fluid as well, and
+    after this cut it puts neither on any of them.
+
+    `engine` is the engine the composition was MADE with (`composed["engine"]`), not the one the caller
+    asked for. They differ on every job nobody has named an engine on: `hexera.report_measured` composes
+    `eng = engine or "snappy"` whatever the purpose, so a structural composition carries snappy, and reading
+    the caller's `None` here would have left the two engine-dependent questions in place on exactly the
+    compositions whose numbers are another mesher's.
+
+    ALL THREE LISTS, NOT JUST THE QUESTIONS, and that is the whole defect this function could have had.
+    `chain.job.contract_uncertainties` walks `questions` and `held` first and then walks `uncertainties`
+    again, adding every one no question covered as an `advisory` row. So cutting the question alone would
+    have taken the role question off the customer's screen and put the same abstention in front of the
+    builder as an advisory uncertainty about which mouth is the inlet - the flow-shaped thing carried after
+    all, one list along, with the customer-facing half looking fixed.
+
+    IT REFUSES ON A NAME THE PACKAGE NO LONGER HAS. Every kind cut is matched against `ask.schema.KINDS`,
+    because the failure mode of a frozenset of strings is that the package renames one and the cut silently
+    stops cutting it: a structural customer would then be asked which mouth is the inlet again, with this
+    function sitting in the path looking like it was handled. A refusal costs a non-flow job its survey,
+    which is exactly what it had before this change, and it costs a flow job nothing because the cut does
+    not run for one.
+
+    THE FINDER'S RANKING IS NOT RE-RUN over what is left, and that is deliberate. `ask.intake.ask_intake`
+    ranks by consequence and puts at most `MAX_ASKED` (5); a question it HELD `below_the_cap` could in
+    principle have been put in the slot a cut question vacated. Re-running the finder over a filtered
+    candidate list would be a second finder with a second ranking, which is the one thing this path may not
+    have. It costs nothing measurable here: over the six fixtures composed for `structural` the finder puts
+    at most two questions of any kind and holds none `below_the_cap`, so the cap is never the binding
+    constraint - and a question not put still rides to the builder as unsettled, which is a question
+    missing rather than a wrong one answered.
+    """
+    if purpose in FLOW_PURPOSES:
+        return asked
+    drop = set(FLOW_ONLY_QUESTION_KINDS)
+    if not engine_can_mesh(purpose, engine):
+        drop |= set(ENGINE_DEPENDENT_QUESTION_KINDS)
+    known = set(pkg["ask_schema"].KINDS)
+    unknown = sorted(drop - known)
+    if unknown:
+        raise SurveyError(f"the Surveyor cannot compose for {purpose!r}: it must cut the question kind(s) "
+                          f"{', '.join(unknown)} and the package no longer has them, so it cannot tell "
+                          f"whether it is cutting them")
+    import dataclasses
+
+    cut = [f"{q.id} ({q.kind})" for q in asked.questions if q.kind in drop]
+    out = dataclasses.replace(
+        asked,
+        uncertainties=[u for u in asked.uncertainties if u.kind not in drop],
+        questions=[q for q in asked.questions if q.kind not in drop],
+        held=[q for q in asked.held if q.kind not in drop])
+    if cut:
+        logger.info("geometry survey: %s on %s does not carry %s", purpose, engine or "no engine",
+                    ", ".join(cut))
+    return out
 
 
 def asking_row(asked: Any, pkg: dict) -> dict:
@@ -1827,10 +1931,129 @@ async def survey_the_part(*, owner_id: str, session_id: str, source_ref, documen
     return state
 
 
-#: The purposes the Surveyor composes for. The measurement package reasons about flow: a structural
-#: purpose would be asked which mouth is the inlet (`contract.asking.ROLES_NEEDED` defaults to inlet
-#: and outlet for any purpose it does not name), which is a wrong question on a part that has none.
-SURVEYED_PURPOSES = ("internal_cfd", "external_cfd", "conjugate_heat_transfer")
+#: The purposes whose survey is ABOUT FLOW. Every question about a mouth's role, the way the flow comes at
+#: the body and which side of the surface is the fluid means something for these three and nothing for a
+#: bracket under load, so the distinction is a tuple rather than a comment: `_without_the_flow_questions`
+#: reads it, and the day a fifth purpose is added it lands in one of these two lists by hand and not by
+#: default.
+FLOW_PURPOSES: tuple[str, ...] = ("internal_cfd", "external_cfd", "conjugate_heat_transfer")
+
+#: The purposes the Surveyor composes for, which is now EVERY purpose this platform has
+#: (`engines/purposes.PURPOSES`) and every purpose the package's own vocabulary has
+#: (`facts.schema.Purpose`). There is no separate thermal purpose: thermal IS
+#: `conjugate_heat_transfer`, which was surveyed already, so `structural` is the whole of what was
+#: missing.
+#:
+#: IT USED TO BE THE THREE FLOW PURPOSES AND THE REASON WRITTEN HERE WAS STALE. It said a structural
+#: purpose "would be asked which mouth is the inlet (`contract.asking.ROLES_NEEDED` defaults to inlet and
+#: outlet for any purpose it does not name)". `ROLES_NEEDED.get(purpose, ())` returns the EMPTY tuple for a
+#: purpose it does not name and `contract.asking._role_uncertainties` then raises nothing - and in any case
+#: `contract.asking.uncertainties_from` is not the finder on this path and must not be (`QUESTION_FINDER`).
+#: The live finder is `ask.intake.ask_intake`, and the role question it puts comes from
+#: `ask.uncertainty.port_role_uncertainties`, which gates on the mouths THE BUILDER WOULD CUT
+#: (`ask.uncertainty.builder_ports`) and not on the purpose at all. So the gate's conclusion was right and
+#: its citation named a module that cannot cause it: MEASURED over the six stored fixtures composed for
+#: `structural`, `ask_intake` puts `q_port_roles` on every one of them, in the words "Which of these
+#: carries the incoming flow, and which are outlets?", on bend_elbow_001 and on a solid block alike.
+#:
+#: WHAT GENERALISES AND WHAT DOES NOT, measured on those six fixtures rather than argued. What a structural
+#: job gets from this change: the look runs at all (nothing queued one for a purpose the Surveyor did not
+#: compose for, so a structural part was never seen); the openings and their sizes, the thin clusters, the
+#: sharp and knife edges, the symmetry planes and the thickness, which are fields of `GeometryFacts` and
+#: carry no flow in them; the unit question, which is the 1,000x error and belongs to no purpose; and the
+#: survey block the builder reads, composed for the purpose the customer actually said instead of the
+#: `internal_cfd` the upload assumed (`geometry_measurement.DEFAULT_PURPOSE`).
+#:
+#: What does NOT generalise, and is cut rather than carried: `FLOW_ONLY_QUESTION_KINDS`. And what this
+#: module cannot fix from here, stated so it is not mistaken for something that works: `report_measured`
+#: composes `eng = engine or "snappy"` (`hexera.py:3154`) whatever the purpose, although
+#: `catalog.default_engine` answers `gmsh` for `structural`, so a structural composition nobody named an
+#: engine for carries `engine: snappy`, `engine_source: assumed`, and a `representation` out of a table
+#: with no structural reading in it. Passing `gmsh` from here would be worse, not better: the document
+#: records a caller's engine as `engine_source: "declared"`, and a default nobody confirmed recorded as a
+#: declaration is the second house law. So the forecast and the triage stay a CFD engine's, and the two
+#: questions that rest on them are the two this module refuses to put for a structural job.
+SURVEYED_PURPOSES: tuple[str, ...] = (*FLOW_PURPOSES, "structural")
+
+#: The question kinds that mean nothing outside `FLOW_PURPOSES` WHATEVER ELSE IS TRUE, in `ask.schema.KINDS`'
+#: own words, with the reason each one goes. `_without_the_flow_questions` drops them from the finder's
+#: questions AND from the survey's uncertainty list, so a structural job is neither asked them nor handed
+#: them as unsettled.
+#:
+#:   `port_role`         its branches are inlet, outlet, wall and closed-for-this-run, and a structural
+#:                       contract's roles are fixed, load, contact and free (`hexera.PURPOSE_ROLES`). The
+#:                       measurement measures no restraint and the look reads none, so there is no honest
+#:                       question here to re-word - only a wrong one to stop putting. MEASURED: this is the
+#:                       one the finder puts on all six stored fixtures composed for `structural`, in the
+#:                       words "Which of these carries the incoming flow, and which are outlets?".
+#:   `flow_direction`    `ask.uncertainty.flow_direction_uncertainty` returns nothing unless the
+#:                       representation is `external`, which only `external_cfd` produces
+#:                       (`catalog._read_representation`), so this cannot fire today. It is named anyway:
+#:                       the list says which questions MAY NOT be put for a non-flow purpose, and a rule
+#:                       that only lists what currently happens to fire is a rule that stops being true.
+#:   `fluid_side`        same: `catalog.side_reading` returns empty `readings` for any purpose outside
+#:                       `INTERNAL_PURPOSES`, so `fluid_side.open` is False and the question cannot fire.
+#:                       Which side of a surface is the fluid is not a question about a solid body.
+FLOW_ONLY_QUESTION_KINDS: frozenset[str] = frozenset({"port_role", "flow_direction", "fluid_side"})
+
+#: The question kinds whose SUBJECT generalises to any purpose and whose EVIDENCE is one particular mesher's.
+#: They are cut when the composition's engine cannot produce the mesh this purpose needs (`engine_can_mesh`),
+#: and kept when it can - so the cut is about the ENGINE and not about the purpose, because that is the true
+#: reason and a rule stated as "structural has no budget question" would be false the moment the customer
+#: confirms the engine their structural job actually runs on.
+#:
+#:   `budget_envelope`   a cell budget is a cell budget for any mesher; the number it is compared against is
+#:                       not. `hexera.forecast` calls `tools.estimate_builder_cells`, which branches on the
+#:                       engine: `_estimate_gmsh` reads the solid volume and the bbox diagonal off
+#:                       `engines/gmsh/driver.py`'s own sizing, and everything else is `_estimate_internal`,
+#:                       the snappy emulator that sizes off an inlet bore and counts a near band, layers and
+#:                       a FLUID VOLUME (`engines/snappy/snappy_runner.py`). MEASURED on
+#:                       transition_007_fluid composed for `structural`: with the engine nobody named
+#:                       (snappy) the forecast is 2,046,473 cells and `over_cap` is True against the
+#:                       customer's 2M, and with `gmsh` - the only engine this platform will run a
+#:                       structural job on - it is 60,891 and fits. That trade would have asked a customer
+#:                       to raise their budget over a figure 34x too big for the mesher that will run.
+#:   `dispatch_refusal`  `hexera.triage` predicts named platform raises for a (purpose, engine) PAIR. A
+#:                       refusal predicted for a pair this platform will not dispatch at all is not a
+#:                       prediction about this job - and its answer is the one that decides whether there is
+#:                       a job (`dispatch_refusals`, `ask.schema.TIERS`' top tier), so getting it from the
+#:                       wrong engine is the most expensive place to be wrong.
+ENGINE_DEPENDENT_QUESTION_KINDS: frozenset[str] = frozenset({"budget_envelope", "dispatch_refusal"})
+
+#: NOT CUT for any purpose, and each for its own reason: `unit`, which belongs to no purpose and is the
+#: 1,000x error; `unlabelled_mouth`, which is the look reporting an OPENING the measurement did not find and
+#: says nothing about what flows through it; `look_dispute`, which is two readings of one place disagreeing
+#: and is about the place, not the flow; `opening_unseen` and `identity`, which are recorded and advisory and
+#: were never asked for any purpose. Written down because the cut is defined by what it removes, and the list
+#: of what it must NOT remove is the half a reader cannot check from the code.
+KEPT_QUESTION_KINDS: frozenset[str] = frozenset({
+    "unit", "unlabelled_mouth", "look_dispute", "opening_unseen", "identity"})
+
+
+def engine_can_mesh(purpose: str, engine: str) -> bool:
+    """Can this engine produce the mesh this purpose needs, by THIS PLATFORM's own compatibility gate?
+
+    `engines/purposes.is_compatible` over `engines/registry.get_spec`, which is the same pair
+    `agents/intake/validation.py` refuses a submission with, so the Surveyor and the submission gate cannot
+    disagree about which engine a job runs on. It is here rather than restated because the answer decides
+    whether two of the survey's questions rest on the right mesher's numbers
+    (`ENGINE_DEPENDENT_QUESTION_KINDS`) and whether the third intake has a trade to price
+    (`geometry_step._trade_is_priced_on_this_job`).
+
+    FALSE ON ANYTHING IT CANNOT READ, which is the careful direction: an unknown engine name or a registry
+    that will not answer means this platform cannot say the forecast is the right mesher's, and a question
+    not put is worth more than a question priced on another engine's mesh. Never raises.
+    """
+    try:
+        from meshpipeline.engines import registry, purposes as engine_purposes
+
+        if purpose not in engine_purposes.PURPOSES or not engine:
+            return False
+        return bool(engine_purposes.is_compatible(registry.get_spec(str(engine)), str(purpose)))
+    except Exception as exc:                       # noqa: BLE001 - see the docstring
+        logger.info("geometry survey: cannot tell whether %r meshes %r (%s), so the questions that rest on "
+                    "the forecast are not put", engine, purpose, exc)
+        return False
 
 #: The engines the package's forecast knows by these names. Any other confirmed engine is left out of
 #: the composition rather than passed as a word the forecast would read as its default.
