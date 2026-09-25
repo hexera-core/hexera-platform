@@ -21,6 +21,23 @@ CONFIRMED = "confirmed_selection"
 VIA_CONVERSATION = "conversation"
 VIA_STRUCTURED_INPUT = "structured_input"
 
+# WHO CHOSE THIS ENGINE. `propose` recorded the id, the engine, the state, the via, the session, the
+# owner and the two revisions - and nothing at all about whether the CUSTOMER named the engine or we
+# picked it for them on a delegation. That is the one question the impossible-admission path has to
+# answer, and the row had no answer to give it, so every impossibility was treated as the customer's
+# to revise. MEASURED on three parts (shell_and_tube_7_unshared, cht_enclosing_2region,
+# duct_bspline_inlet_shallow): the customer said "internal cfd, air through it" and "you decide
+# everything", the model picked snappyHexMesh, the catalog refused it, and turn 8 asked them to revise
+# "the geometry type or the purpose" - neither of which they had chosen either. Zero of six attempts
+# reached a mesh.
+#
+# "" IS A THIRD VALUE AND IT IS NOT "us". A selection stored before this field existed, or by a caller
+# that did not say, records nothing; nothing is never grounds to change a value on the customer's
+# behalf, so only an explicit CHOSEN_BY_US ever unlocks anything.
+CHOSEN_BY_CUSTOMER = "customer"
+CHOSEN_BY_US = "us"
+_CHOSEN_BY = (CHOSEN_BY_CUSTOMER, CHOSEN_BY_US)
+
 
 def _norm(text) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
@@ -35,12 +52,13 @@ def state_of(sel: dict | None) -> str:
 
 
 def propose(engine: str, *, session_id: str, owner_id: str, revision: str,
-            user_msg_count: int) -> dict:
+            user_msg_count: int, chosen_by: str = "") -> dict:
     return {
         "id": uuid.uuid4().hex,
         "engine": (engine or "").strip().lower(),
         "state": PROPOSED,
         "via": VIA_CONVERSATION,
+        "chosen_by": chosen_by if chosen_by in _CHOSEN_BY else "",
         "session": session_id,
         "owner": owner_id,
         "proposed_revision": revision,
@@ -57,12 +75,22 @@ def select_from_structured_input(engine: str, *, session_id: str, owner_id: str,
         "engine": (engine or "").strip().lower(),
         "state": CONFIRMED,
         "via": VIA_STRUCTURED_INPUT,
+        # The customer submitted the typed engine field themselves, which is them naming it.
+        "chosen_by": CHOSEN_BY_CUSTOMER,
         "session": session_id,
         "owner": owner_id,
         "proposed_revision": revision,
         "confirmed_revision": revision,
         "expires_at": time.time() + CONFIRMED_TTL_S,
     }
+
+
+def chosen_by(sel: dict | None) -> str:
+    """Who chose the engine on this selection: CHOSEN_BY_CUSTOMER, CHOSEN_BY_US, or "" when unrecorded."""
+    if not isinstance(sel, dict):
+        return ""
+    value = str(sel.get("chosen_by") or "")
+    return value if value in _CHOSEN_BY else ""
 
 
 def quote_is_from_user(quote: str, latest_user_message: str) -> bool:
@@ -134,6 +162,28 @@ def names_engine(engine: str, latest_user_message) -> bool:
     msg = _norm(latest_user_message)
     names = {_norm(engine), _norm(engine_label(engine))}
     return any(n and n in msg for n in names)
+
+
+def who_chose(engine: str, *, quote: str, latest_user_message, user_messages=()) -> str:
+    """CHOSEN_BY_CUSTOMER when the CUSTOMER'S OWN WORDS name this engine, CHOSEN_BY_US otherwise.
+
+    Only the customer's messages are read - never the model's prose, and never a quote the model
+    supplied that is not in what they wrote, which is `user_named_engine`'s existing rule. A name in
+    ANY of their messages counts, because naming an engine does not expire any more than a delegation
+    does.
+
+    IT FAILS TOWARDS THE CUSTOMER, deliberately. A mention in any shape reads as theirs - including
+    "not snappyHexMesh", which names it while refusing it - because a wrong CHOSEN_BY_CUSTOMER changes
+    nothing about how this application behaves today, and a wrong CHOSEN_BY_US would let us swap an
+    engine the customer had actually asked for.
+    """
+    if user_named_engine(engine, quote, latest_user_message):
+        return CHOSEN_BY_CUSTOMER
+    if names_engine(engine, latest_user_message):
+        return CHOSEN_BY_CUSTOMER
+    if any(names_engine(engine, str(m)) for m in (user_messages or ())):
+        return CHOSEN_BY_CUSTOMER
+    return CHOSEN_BY_US
 
 
 def answers_the_selection_question(engine: str, quote: str, latest_user_message,

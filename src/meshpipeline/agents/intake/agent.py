@@ -985,7 +985,13 @@ async def node_intake(state: PipelineState) -> dict:
         survey_source_ref=_geometry.source_ref,
         customer_messages=tuple(str(m.get("content") or "") for m in state_messages
                                 if isinstance(m, dict) and m.get("role") == "user")
-        if _geometry.armed else ())
+        if _geometry.armed else (),
+        # THE UNTRIMMED HISTORY, and not survey-gated. `apply_budget_nudge` may rebind
+        # `state_messages` to a shortened list, and an engine the customer named in a message trimmed
+        # out of the model's context is still an engine the customer named - reading the trimmed list
+        # would record their choice as ours and make it ours to change.
+        user_messages=tuple(str(m.get("content") or "") for m in (state.get("messages") or [])
+                            if isinstance(m, dict) and m.get("role") == "user"))
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)

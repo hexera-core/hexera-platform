@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import re
 
-from meshpipeline.agents.intake.validation import ADMIT_IMPOSSIBLE, ADMIT_SUPPORTED, preview_admission
+from meshpipeline.agents.intake.validation import (
+    ADMIT_IMPOSSIBLE,
+    ADMIT_INCOMPLETE,
+    ADMIT_SUPPORTED,
+    preview_admission,
+)
 
 # Explicit ways a user asks which engine to use. Deliberately phrase-level (never a bare word like
 # "engine" or "which"), and deliberately incomplete - a false negative asks a clarifying question,
@@ -85,6 +90,46 @@ def choice_deferred(latest_user_message: str) -> bool:
 def recommendation_requested(latest_user_message: str) -> bool:
     t = _norm(latest_user_message)
     return any(p in t for p in _REQUEST_PHRASES) or choice_deferred(latest_user_message)
+
+
+def admissible_engines(purpose: str, input_kind: str, *, dimensionality: str | None = None,
+                       patches=None, engine_params=None, geometry_facts=None,
+                       exclude=()) -> list[str]:
+    """The registered engines the CATALOG does not refuse for exactly this declared setup.
+
+    Registry keys, in the order a caller should try them: the ones the catalog already admits, then the
+    ones it will admit once the remaining values are gathered. Empty means no engine can do this, and
+    that is a real dead end rather than a choice we made badly.
+
+    NOT `compatible_engines` FROM `recommend_compatible_engines`, WHICH IS A NARROWER SET and would have
+    answered "none" on the exact case this exists for. MEASURED over the catalog for Internal CFD from a
+    Fluid domain geometry: cfMesh, snappyHexMesh, snappyHexMesh multi-region and VMTK are all
+    `impossible`, and Gmsh is `incomplete` - it wants `element_order`, which is a value to gather and not
+    a refusal. Gmsh is the ONLY engine that can mesh those parts at all, and a set built from
+    ADMIT_SUPPORTED alone does not contain it. A caller that used that set would have concluded the job
+    was impossible while a working engine sat one field short.
+
+    THE CATALOG DECIDES, HERE AS EVERYWHERE. This asks `preview_admission` the same question about every
+    other engine that it was just asked about the failing one; it holds no opinion of its own about which
+    engine suits a case, and it never reorders by anything but the catalog's verdict and the registry's
+    own order.
+    """
+    from meshpipeline.engines.registry import engine_names
+
+    skip = {str(e).strip().lower() for e in (exclude or ())}
+    ready: list[str] = []
+    gatherable: list[str] = []
+    for name in engine_names():
+        if name in skip:
+            continue
+        verdict = preview_admission(name, purpose, input_kind, dimensionality=dimensionality,
+                                    patches=patches, engine_params=engine_params,
+                                    geometry_facts=geometry_facts)["verdict"]
+        if verdict == ADMIT_SUPPORTED:
+            ready.append(name)
+        elif verdict == ADMIT_INCOMPLETE:
+            gatherable.append(name)
+    return ready + gatherable
 
 
 UNAUTHORIZED_GUIDANCE = (

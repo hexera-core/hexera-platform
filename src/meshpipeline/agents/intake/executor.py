@@ -110,6 +110,16 @@ class IntakeExecutionState:
     #: and never from intake's write-up of them.
     customer_messages: tuple[str, ...] = ()
 
+    #: EVERY user message this session, oldest first, ARMED OR NOT. `customer_messages` above is the
+    #: Surveyor's and is empty on every upload the survey is off for; who chose the engine, and whether
+    #: they handed us the choice, are questions about the conversation and have nothing to do with the
+    #: survey gate. Reading the survey's copy for them read an engine the customer named two turns ago
+    #: as one we picked ourselves, and made a standing delegation invisible to the engine question - on
+    #: exactly the uploads the Surveyor cannot compose for. `turn.py` already reads every user message
+    #: for both facts (`_standing_deferral`), so this is the same history one field along, and what may
+    #: be read from an earlier message is unchanged: a DEFERRAL only, never an affirmation or a refusal.
+    user_messages: tuple[str, ...] = ()
+
     # TURN-SCOPED, never round-scoped. Once a recommendation happens in this invocation, nothing
     # may escalate to selection or submission for the REST of the invocation - not merely for the
     # rest of the round. A comparison the user asked for can never become a choice they did not
@@ -306,7 +316,7 @@ class IntakeToolExecutor:
         # the same question returned however many times they said yes.
         if same_engine and prior_state == es.PROPOSED:
             if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=True,
-                                                 earlier_user_messages=st.customer_messages):
+                                                 earlier_user_messages=st.user_messages):
                 st.selection = {**prior, "state": es.CONFIRMED,
                                 "confirmed_revision": st.revision,
                                 "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
@@ -330,14 +340,21 @@ class IntakeToolExecutor:
         # canonical confirmation that the old selection authorized - including one obtained
         # EARLIER IN THIS SAME provider response.
         st.selection = es.propose(eng, session_id=st.session_id, owner_id=st.owner_id,
-                                  revision=st.revision, user_msg_count=st.user_msg_count)
+                                  revision=st.revision, user_msg_count=st.user_msg_count,
+                                  # WHOSE CHOICE THIS IS, recorded at the one moment it is knowable.
+                                  # Nothing on the row said, so `_do_preview_selected_admission` could
+                                  # not tell an engine the customer insisted on from one we picked for
+                                  # them - and treated both as theirs to revise.
+                                  chosen_by=es.who_chose(eng, quote=quote,
+                                                         latest_user_message=st.latest_user_msg,
+                                                         user_messages=st.user_messages))
         st.pending = None
         st.invalidate_approval("engine selection replaced")
         # The confirmation question exists to prove the USER chose this engine. If their own latest
         # message already names it, that proof is in hand and asking again is a question with one
         # answer - so the selection is confirmed here instead of costing the user a round-trip.
         if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=False,
-                                             earlier_user_messages=st.customer_messages):
+                                             earlier_user_messages=st.user_messages):
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
                             "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
@@ -362,7 +379,7 @@ class IntakeToolExecutor:
         new_sel, reason = es.confirm(
             st.selection, session_id=st.session_id, owner_id=st.owner_id, revision=st.revision,
             quote=quote, latest_user_message=st.latest_user_msg,
-            user_msg_count=st.user_msg_count, earlier_user_messages=st.customer_messages)
+            user_msg_count=st.user_msg_count, earlier_user_messages=st.user_messages)
         if new_sel is None:
             logger.warning("Intake: engine selection confirm rejected - %s - job_id=%s",
                            reason, self._job_id)
@@ -439,6 +456,71 @@ class IntakeToolExecutor:
                     patch.pop(k, None)
 
 
+    def _admission_of(self, engine: str, args: dict) -> dict:
+        """The catalog's verdict on ONE engine for this payload, logged and traced. Changes no state.
+
+        Lifted out of `_do_preview_selected_admission` so a turn that asks the catalog about a second
+        engine records it the same way as the first. A second verdict that was neither logged nor traced
+        would make the trace say the run was refused on an engine it did not use.
+        """
+        prev = preview_admission(engine, args.get("purpose", ""), args.get("input_kind", ""),
+                                 dimensionality=args.get("dimensionality"),
+                                 patches=args.get("patches"),
+                                 engine_params=args.get("engine_params"),
+                                 geometry_facts=self._geometry_facts())
+        logger.info("Intake: preview_selected_admission(%s,%s,%s,patches=%d) -> %s(%s) - job_id=%s",
+                    engine, args.get("purpose"), args.get("input_kind"),
+                    len(args.get("patches") or []), prev["verdict"],
+                    prev.get("blocking_rule_code", ""), self._job_id)
+        _R.intake_compatibility(
+            self._trace, engine=str(engine), purpose=str(args.get("purpose") or ""),
+            input_kind=str(args.get("input_kind") or ""),
+            supported=prev["verdict"] == "supported",
+            explanation=str(prev.get("safe_user_message") or ""))
+        return prev
+
+    def _an_engine_that_can(self, failed: str, args: dict) -> str:
+        """An engine the catalog admits for what was declared, when OUR OWN pick could not. "" otherwise.
+
+        THREE THINGS HAVE TO BE TRUE and each of them alone makes this "", which is the turn ending
+        exactly where it ended before:
+
+          the customer handed us the choice   `st.choice_deferred`, which is their delegation in the
+                                              latest message OR any earlier one (`turn._standing_deferral`)
+                                              - a delegation does not expire.
+          the engine on the row is OURS       `es.chosen_by(...) == CHOSEN_BY_US`, recorded when it was
+                                              proposed. "" - a selection from before that field existed -
+                                              is not "us" and changes nothing.
+          some engine can actually do it      the catalog's answer, not ours.
+
+        THE CUSTOMER'S OWN VALUES ARE NOT READ HERE AND CANNOT MOVE. The purpose, the geometry kind, the
+        dimensionality and every patch go to `admissible_engines` exactly as declared and are what the
+        candidate engines are judged against; the engine is the only field this can change, and it is
+        the only one nobody chose.
+
+        AND A SECOND OPINION IS NOT A SECOND SOURCE. This asks the catalog, which is what refused the
+        first engine - the same authority the prompt file names as the only one that decides
+        compatibility. It can still fail differently from the thing it checks, and does: the failing
+        engine is excluded, so this returns "" precisely when nothing else can do the job either, and
+        the dead end is then real rather than one we made.
+        """
+        st = self.state
+        if not st.choice_deferred:
+            return ""
+        if es.chosen_by(st.selection) != es.CHOSEN_BY_US:
+            return ""
+        candidates = rec.admissible_engines(
+            args.get("purpose", ""), args.get("input_kind", ""),
+            dimensionality=args.get("dimensionality"), patches=args.get("patches"),
+            engine_params=args.get("engine_params"), geometry_facts=self._geometry_facts(),
+            exclude=(failed,))
+        candidates = [c for c in candidates if c in self._engines]
+        if not candidates:
+            logger.info("Intake: our own pick %s cannot do this and NO registered engine can either - "
+                        "the impossibility is real, handing it back - job_id=%s", failed, self._job_id)
+            return ""
+        return candidates[0]
+
     async def _do_preview_selected_admission(self, args: dict) -> IntakeToolResult:
         self._locate_named_ports(args)
         st = self.state
@@ -455,20 +537,55 @@ class IntakeToolExecutor:
                 "Not allowed in this turn: the engine was confirmed during a turn in which you "
                 "also compared engines. Ask the user to confirm their choice in their next "
                 "message."))
-        prev = preview_admission(eng, args.get("purpose", ""), args.get("input_kind", ""),
-                                 dimensionality=args.get("dimensionality"),
-                                 patches=args.get("patches"),
-                                 engine_params=args.get("engine_params"),
-                                 geometry_facts=self._geometry_facts())
-        logger.info("Intake: preview_selected_admission(%s,%s,%s,patches=%d) -> %s(%s) - job_id=%s",
-                    eng, args.get("purpose"), args.get("input_kind"),
-                    len(args.get("patches") or []), prev["verdict"],
-                    prev.get("blocking_rule_code", ""), self._job_id)
-        _R.intake_compatibility(
-            self._trace, engine=str(eng), purpose=str(args.get("purpose") or ""),
-            input_kind=str(args.get("input_kind") or ""),
-            supported=prev["verdict"] == "supported",
-            explanation=str(prev.get("safe_user_message") or ""))
+        prev = self._admission_of(eng, args)
+        # AN IMPOSSIBILITY WE CREATED, UNDER A DELEGATION, IS OURS TO UNDO. Below this line the turn
+        # ends in the application's own text and the model may not compose a reply or name a
+        # replacement engine, which is right when the customer chose the engine and wrong when we did:
+        # it asks them to revise a decision they never made and had explicitly handed over. MEASURED
+        # over 23 driven conversations, shell_and_tube_7_unshared (0 of 3), cht_enclosing_2region
+        # (0 of 2) and duct_bspline_inlet_shallow (0 of 1) died here, and turn 9 of one of them read
+        # "snappyHexMesh still cannot do that. Nothing has changed, so nothing can run. Please change
+        # the geometry type or the purpose" - to a customer who had said "you decide everything" and
+        # then "go" eight times. `tee_fluid_filleted`, the same kind of file, submitted in four
+        # messages because the model happened to pick the one engine that can.
+        swap: dict = {}
+        instead = (self._an_engine_that_can(eng, args)
+                   if prev["verdict"] == "impossible" and not st.recommended_this_turn else "")
+        if instead:
+            swapped_from, refused_because = eng, str(prev.get("capability_reason") or "").strip()
+            logger.info("Intake: our OWN engine pick cannot do this and the customer delegated the "
+                        "choice - selecting %s instead of %s, nothing they declared is touched - "
+                        "job_id=%s", instead, eng, self._job_id)
+            # THE SAME CONSENT RULE AS EVERY OTHER PICK WE MAKE ON A DELEGATION, not a new one:
+            # `propose_engine_selection` already confirms an engine straight off a standing deferral
+            # (`answers_the_selection_question`), and `st.choice_deferred` is that same standing
+            # deferral. So this is recorded exactly as if the model had proposed this engine instead
+            # of the other one - ours, on their instruction - and it is still ours, so a SECOND
+            # impossibility on it would be swapped again rather than handed back.
+            st.selection = es.propose(instead, session_id=st.session_id, owner_id=st.owner_id,
+                                      revision=st.revision, user_msg_count=st.user_msg_count,
+                                      chosen_by=es.CHOSEN_BY_US)
+            st.selection = {**st.selection, "state": es.CONFIRMED,
+                            "confirmed_revision": st.revision,
+                            "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
+            st.pending = None
+            st.invalidate_approval("the engine we picked could not do the job")
+            eng, prev = instead, self._admission_of(instead, args)
+            swap = {
+                "engine_changed_from": _vocab.to_display(_vocab.ENGINE, swapped_from),
+                "engine_changed_to": _vocab.to_display(_vocab.ENGINE, instead),
+                "why_it_changed": refused_because,
+                "guidance": (
+                    f"{_vocab.to_display(_vocab.ENGINE, swapped_from)} cannot do this, and YOU picked "
+                    f"it - the customer handed you the choice and never named an engine, so it is "
+                    f"yours to change and nothing of theirs has been touched. "
+                    f"{_vocab.to_display(_vocab.ENGINE, instead)} is now SELECTED: the catalog admits "
+                    "it for exactly the purpose, geometry and patches they declared. Do NOT ask them "
+                    "to confirm it and do NOT ask them to revise anything. Say in ONE line which "
+                    "mesher you changed to and why, carry on in this same turn, and use "
+                    f"{_vocab.to_display(_vocab.ENGINE, instead)} as the engine in every call from "
+                    "here - including mesh_engine on submit_requirements."),
+            }
         if prev["verdict"] == "impossible" and not st.recommended_this_turn:
             # TERMINAL: the application's message is the final reply for this turn; the model does
             # not compose it. It also invalidates any standing authorization.
@@ -494,17 +611,18 @@ class IntakeToolExecutor:
                                   selection_id=str((st.selection or {}).get("id") or ""))
             return IntakeToolResult(
                 tool="preview_selected_admission", accepted=True,
-                advanced=st.authorization_signature() != _before,
+                advanced=st.authorization_signature() != _before or bool(swap),
                 content=json.dumps({"verdict": "supported", "preview_token": st.pending["token"],
-                                    "canonical_summary": at.CONFIRM_REQUIREMENTS_ASK}))
+                                    "selected_engine": eng,
+                                    "canonical_summary": at.CONFIRM_REQUIREMENTS_ASK, **swap}))
         # incomplete / malformed (or impossible inside a comparison turn): READ-ONLY - no
         # authorizing token, standing state untouched.
         return IntakeToolResult(
-            tool="preview_selected_admission", accepted=True,
+            tool="preview_selected_admission", accepted=True, advanced=bool(swap),
             content=json.dumps({**{k: prev[k] for k in
                                    ("verdict", "selected_engine", "missing_fields",
                                     "safe_user_message") if k in prev},
-                                "authorizes_submission": False}))
+                                "authorizes_submission": False, **swap}))
 
     # the Surveyor's two tools
     def _survey_refusal(self, tool: str) -> IntakeToolResult | None:
