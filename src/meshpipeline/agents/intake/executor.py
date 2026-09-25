@@ -363,7 +363,56 @@ class IntakeToolExecutor:
                                          "You may now gather the remaining requirements and call "
                                          "preview_selected_admission."))
 
+    def _locate_named_ports(self, args: dict) -> None:
+        """Give every port that NAMES a measured opening that opening's position, in place.
+
+        WHY THIS EXISTS. `opening_id` lets a port say which mouth it is, which is what stopped this
+        product interrogating a customer about two identical 439 mm outlets. But the BUILDER does not
+        read it: `cad_tessellate.select_declared_openings` matches a declared port by size or by
+        location and raises when it has neither - so accepting an id at intake without carrying its
+        geometry downstream moved the failure from a question in chat to five failed build attempts.
+        Measured: a submission that passed every gate died with "declared port 'inlet' matches none
+        of the remaining flat faces".
+
+        So the id is resolved to the measurement's own centroid here, and the port arrives at the
+        builder locatable. Nothing is invented: the number comes from the measured opening the model
+        named, and a port that already states a size or a position is left exactly as declared.
+
+        RUN IN BOTH THE PREVIEW AND THE SUBMIT, and identical in each, because the admission token is
+        canonicalised from these patches on both sides - enriching one and not the other would fail
+        every submission on a token mismatch.
+        """
+        patches = args.get("patches")
+        document = self.state.geometry_document
+        if not isinstance(patches, list) or not isinstance(document, dict):
+            return
+        if document.get("status") != "ok":
+            return
+        rows = {str(r.get("id") or "").strip(): r
+                for r in (document.get("openings") or []) if isinstance(r, dict) and r.get("id")}
+        if not rows:
+            return
+        for patch in patches:
+            if not isinstance(patch, dict):
+                continue
+            if str(patch.get("type") or "").strip().lower() not in ("inlet", "outlet"):
+                continue
+            if patch.get("near_mm") is not None or any(
+                    isinstance(patch.get(k), (int, float)) and not isinstance(patch.get(k), bool)
+                    for k in ("diameter_mm", "area_mm2", "width_mm", "height_mm")):
+                continue        # the customer stated it: theirs wins, untouched
+            row = rows.get(str(patch.get("opening_id") or "").strip())
+            centroid = (row or {}).get("centroid_m")
+            if not isinstance(centroid, (list, tuple)) or len(centroid) != 3:
+                continue
+            try:
+                patch["near_mm"] = [float(c) * 1000.0 for c in centroid]
+            except (TypeError, ValueError):
+                continue
+
+
     async def _do_preview_selected_admission(self, args: dict) -> IntakeToolResult:
+        self._locate_named_ports(args)
         st = self.state
         eng = str(args.get("selected_engine") or "").strip().lower()
         sel_ok, reason = es.verify_confirmed(st.selection, eng, session_id=st.session_id,
@@ -592,6 +641,7 @@ class IntakeToolExecutor:
             return []
 
     async def _do_submit_requirements(self, args: dict) -> IntakeToolResult:
+        self._locate_named_ports(args)
         st = self.state
         st.submit_attempts += 1
         if st.recommended_this_turn:
