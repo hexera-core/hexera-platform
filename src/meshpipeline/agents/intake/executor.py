@@ -635,6 +635,27 @@ class IntakeToolExecutor:
             return []
         from meshpipeline.application import geometry_step as gst
 
+        # THE PLAN NEEDS THE ANSWERS, SO THE QUESTIONS HAVE TO HAVE BEEN PUT. `at_submission` returns
+        # the state untouched when the Surveyor still has a question nobody has been asked - it will
+        # not plan against answers it does not have - and it stores nothing, so the builder is handed
+        # no plan and runs on its own. That is silent, and it became the NORMAL case when intake got
+        # fast enough to propose everything and submit on one "go": measured on a real run, step 5
+        # returned unplanned and the worker logged "the geometry agent did not plan this job".
+        #
+        # Refusing here costs no round trip in the ordinary case. A question that was PUT and then
+        # skipped, or left to its default, is already settled - `open_now` excludes it - so the model
+        # satisfies this by recording the answers it has just proposed, in the same turn, which is
+        # what the questioning rules already tell it to do.
+        _unput = gst.not_yet(st.geometry_survey)
+        if _unput:
+            logger.info("Intake: submit held - the Surveyor has %d question(s) never put, so the "
+                        "geometry agent cannot plan - job_id=%s", len(_unput), self._job_id)
+            return ["the Surveyor still has question(s) nobody has been asked, and the geometry agent "
+                    "plans from their answers - without them the builder gets no plan at all. Put them "
+                    "now, or record what you have already proposed for them with answer_survey_question "
+                    "(quoting the customer's own agreement, or took_default/skipped if they left it to "
+                    "you), then submit again: " + "; ".join(_unput)]
+
         try:
             state = await gst.at_submission(
                 owner_id=st.owner_id, session_id=st.session_id, source_ref=st.survey_source_ref,
@@ -645,8 +666,13 @@ class IntakeToolExecutor:
                             "job_id=%s", self._job_id)
                 return []
             st.geometry_survey = state
-            logger.info("Intake: step 5 RAN - the geometry agent planned the part - job_id=%s",
-                        self._job_id)
+            # SAY WHICH, because `at_submission` returns the state unchanged on several paths that
+            # plan nothing, and this line used to call every one of them "planned". It sent me
+            # looking for a missing plan in the builder when the agent had never run.
+            _step = state.get("geometry_step") if isinstance(state, dict) else None
+            _status = _step.get("status") if isinstance(_step, dict) else None
+            logger.info("Intake: step 5 returned - plan status=%s - job_id=%s",
+                        _status or "NO PLAN MADE", self._job_id)
             # inside the try as well: reading the question back is as much a place to fall over as
             # making it, and a submission that dies here is a turn lost to a step that is off by default
             return gst.submission_problems(state)
