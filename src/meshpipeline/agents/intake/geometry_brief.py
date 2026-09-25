@@ -1,5 +1,5 @@
 # Responsibility: Turn a stored geometry measurement into what intake may say and what it no longer has to ask.
-# Owns: the opening table shown to the model, the Surveyor's questions as intake reads them, and the binding of a declared patch to a measured opening.
+# Owns: the opening table shown to the model, the Surveyor's questions as intake reads them, how long the chain's two slow turns are said to take, and the binding of a declared patch to a measured opening.
 # Boundaries: it renders and it binds; it writes no question of its own, blocks nothing and changes no tool schema.
 # Collaborates with: cad/regions.py for the document and contracts/rationale.py for what the customer is told.
 from __future__ import annotations
@@ -314,9 +314,10 @@ def render_block(document: dict | None, *, survey: dict | None = None, armed: bo
 
     `armed` is the survey switched on for this conversation, and `survey` the stored survey state when
     one has been composed. Unarmed, this is byte for byte the block it was before the survey existed.
-    Armed, three things change and nothing else: the representation line says what the measurement
+    Armed, four things change and nothing else: the representation line says what the measurement
     composed FOR THE CUSTOMER'S PURPOSE, and is left out until they have said one; intake is told the
-    port question belongs to the Surveyor rather than to it; and the Surveyor's own questions follow.
+    port question belongs to the Surveyor rather than to it; the Surveyor's own questions follow; and
+    `waiting_lines` names the chain's two slow turns, which exist only when it is armed.
     """
     if not isinstance(document, dict) or document.get("status") != "ok":
         return ""
@@ -327,7 +328,11 @@ def render_block(document: dict | None, *, survey: dict | None = None, armed: bo
         shown = {k: v for k, v in document.items() if k != "representation"}
         if composed.get("representation"):
             shown["representation"] = composed["representation"]
-        surveyor = survey_lines(survey)
+        # `waiting_lines` is added, never substituted: `survey_lines` returns [] when the stored
+        # survey cannot be read, and the two waits are still real on that turn - the look still
+        # takes half a minute whether or not its questions could be rendered. So it is appended
+        # outside the survey's own success, which is the same fail-open shape as everything here.
+        surveyor = survey_lines(survey) + waiting_lines()
         return _render(shown, surveyed=True) + ("\n" + "\n".join(surveyor) if surveyor else "")
     except Exception as exc:                       # noqa: BLE001 - a table is never worth a turn
         logger.warning("intake geometry brief: the table could not be rendered (%s)", exc)
@@ -594,6 +599,77 @@ def placed_lines(seen: dict | None) -> list[str]:
 
 
 # -------------------------------------------------------------------------------------------------
+# WHAT THE CUSTOMER IS WAITING FOR
+#
+# Two turns of an armed conversation are slow, both of them deliberately, and until this block
+# existed neither was ever mentioned to the customer - not before, not while, not after. Driving the
+# real stack twice against ahmed_variant_001.step: the turn that calls `survey_the_part` took 33s
+# both times (`the look landed after 35s`, and 28s on the second run), and the turn that calls
+# `submit_requirements` took 82s and 90s (`geometry_agent run.end seconds=78.1`, and 61.9s).
+#
+# NEITHER WAIT IS A BUG AND THIS BLOCK DOES NOT SHORTEN EITHER. The look is queued BY the survey
+# call, so it cannot start earlier, and waiting for it is what stops a survey being composed from a
+# part nobody has looked at - the defect that threw the plan away run after run. The geometry agent
+# plans the whole part before compute is spent, which is the point. What this block changes is the
+# only thing left that can change: whether the customer knows the wait is coming, and whether the
+# turns AROUND it were worth spending. On the measured run eleven customer messages reached one
+# mesh in three minutes, and three of those turns only re-asked a question that had already been
+# put once - 24 seconds of round trips that bought nothing, which is the part that actually feels
+# slow. A wait you were told about and that comes back with the whole setup does not.
+# -------------------------------------------------------------------------------------------------
+
+#: How long the two waits are SAID to be. Rounded up to the measured worst case, and phrased rather
+#: than printed as a number, because a prompt figure is a claim about this system and the first house
+#: law covers it exactly as it covers a bore: a figure that lies is worse than no figure. The look
+#: measured 26s, 28s and 35s; the plan 61.9s and 78.1s inside turns of 82s and 90s. They live here,
+#: in one place, beside what measured them, and the model is told to quote them and never to invent
+#: one of its own - a model promising "just a second" for half a minute is the lie this prevents.
+LOOK_WAIT_SAID = "about half a minute"
+PLAN_WAIT_SAID = "up to a minute and a half"
+
+
+def waiting_lines() -> list[str]:
+    """The two slow turns and when to mention them, as lines for the system prompt.
+
+    Armed conversations only, and that is not a hedge: both waits belong to the survey chain and
+    exist only when it is on. With the survey off `survey_the_part` is not offered, nothing queues a
+    look, `geometry_step` is off and the submit turn is the submit turn it always was - so a prompt
+    that named these waits there would be naming waits that never happen, which is the first house
+    law with the sign flipped.
+    """
+    return [
+        "",
+        "## WHAT THE CUSTOMER IS WAITING FOR - say it BEFORE it happens, never after",
+        "Two turns here are slow on purpose and neither can be made faster from where you sit. What you",
+        "control is whether the wait was announced and whether the turns around it were worth spending.",
+        f"  - READING THE PART: the turn you call survey_the_part on waits {LOOK_WAIT_SAID} while 17 rendered",
+        "    views are read. It is queued by that call, so it cannot start any earlier.",
+        f"  - PLANNING IT: the turn you call submit_requirements on takes {PLAN_WAIT_SAID}, because the",
+        "    geometry agent plans the whole part before any compute is spent. Its findings come back with",
+        "    the confirmation, so that wait is also the most valuable message in the conversation.",
+        "  - USE THOSE WORDS FOR THE LENGTHS. Do not invent a figure, do not say \"a moment\" or \"just a",
+        "    second\" for something that takes half a minute, and never promise faster than this says.",
+        "  - SAY IT IN THE TURN BEFORE. \"Tell me which and I'll read the shape - about half a minute - then",
+        "    come back with the whole setup\" costs nothing and turns a blank screen into a wait for",
+        "    something. A customer who was told is not waiting; one who was told nothing is wondering",
+        "    whether it broke.",
+        "  - NEVER SPEND A TURN ONLY TO WARN. Put it inside a turn you were already spending on a question",
+        "    you actually need. A round trip added to announce a round trip is worse than the silence.",
+        "  - ASK EARLY WHATEVER THE SLOW STEP DOES NOT NEED. The look needs the purpose and nothing else:",
+        "    what is flowing, how fast, what they want to learn, their budget, and whether they already",
+        "    work in a particular mesher are ALL free to ask before it. Asked before, their answer arrives",
+        "    with the slow reply; asked after, each one costs another round trip.",
+        "  - THE \"SHALL I GO?\" MESSAGE MUST SAY WHAT GO DOES: it runs the plan above, so the confirmation",
+        f"    takes {PLAN_WAIT_SAID} to come back and carries what the plan found. Tell them that when you",
+        "    ask, not while they are sitting through it.",
+        "  - A WASTED TURN COSTS MORE THAN A SLOW ONE. Three seconds spent re-asking something already",
+        "    answered is worse than thirty spent reading their part, because the thirty bought something.",
+        "    Every rule above about asking once, deciding on a deferral, and putting the whole setup in one",
+        "    message is a latency rule as much as a manners one.",
+    ]
+
+
+# -------------------------------------------------------------------------------------------------
 # THE SURVEYOR'S QUESTIONS
 #
 # With the survey on, the port question is not intake's to compose. The measurement and the look
@@ -618,7 +694,26 @@ def survey_lines(state: dict | None) -> list[str]:
                 "MEANS depends on what the part is for, so as soon as the customer has said what the analysis",
                 "is for, call survey_the_part with that purpose, their own words that said it, and any ports",
                 "they named. It returns the questions the measurement and the look could not settle. Until",
-                "then ask nothing about which opening is which: that is the Surveyor's question, not yours."]
+                "then ask nothing about which opening is which: that is the Surveyor's question, not yours.",
+                # THIS CALL IS THE FIRST THING THE CUSTOMER EVER WAITS FOR, and on the two measured
+                # conversations against ahmed_variant_001.step it was 33 seconds of blank screen with
+                # nothing said about it either before or after. The wait itself is correct and stays:
+                # the call QUEUES the look, so it cannot have started sooner, and a survey composed
+                # before the look is a survey of a part nobody has seen. What was wrong is that the
+                # turn immediately before it - "cfd" does not say internal or external, so there IS
+                # one - was spent on a single question and told the customer nothing about what came
+                # next. That turn is free: it is already being spent, and every question the look
+                # does not need can ride in it.
+                f"CALLING IT IS THE SLOW TURN: it queues the look and waits {LOOK_WAIT_SAID} for it, and that",
+                "is the first thing the customer ever waits for. So if their message ALREADY says which",
+                "analysis this is, call it NOW - never spend a turn warning about a wait you could have",
+                "started instead. If it does not - \"cfd\" alone does not say internal or external and the",
+                "purpose enum has both - then you are spending this turn on that question regardless, and",
+                "that turn is where the rest of it belongs: say that reading the shape takes about that long",
+                "and comes back with the whole setup, and ask in the same breath for everything the look does",
+                "NOT need (what is flowing, how fast, what they want to learn, whether they already work in a",
+                "particular mesher). Their answer then arrives WITH the slow reply instead of costing another",
+                "round trip after it."]
     try:
         from meshpipeline.application import geometry_survey as gs
 
@@ -807,7 +902,8 @@ def _match(patch: dict, rows: list[dict], diagonal: Any) -> str | None:
     return None
 
 
-__all__ = ["MAX_LOOK_PHRASES", "MAX_PLACED_LINES", "MAX_SURVEY_QUESTIONS", "MAX_TABLE_ROWS",
-           "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL", "SIZE_TOLERANCE", "bind_patches",
-           "look_at_it", "look_lines", "opening_rows", "placed_lines", "render_block", "survey_lines",
-           "surveyor_panel"]
+__all__ = ["LOOK_WAIT_SAID", "MAX_LOOK_PHRASES", "MAX_PLACED_LINES", "MAX_SURVEY_QUESTIONS",
+           "MAX_TABLE_ROWS", "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL",
+           "PLAN_WAIT_SAID", "SIZE_TOLERANCE", "bind_patches", "look_at_it", "look_lines",
+           "opening_rows", "placed_lines", "render_block", "survey_lines", "surveyor_panel",
+           "waiting_lines"]
