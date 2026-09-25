@@ -207,6 +207,21 @@ def _admission_message(rejection, engine: str, purpose: str, dim: str) -> str:
         msg += (" To proceed, change the engine, the purpose, or the input geometry - or ask me to "
                 "recommend an engine for this and I will."
                 if any_server else f" No implemented engine can mesh {_vocab.to_display(_vocab.PURPOSE, purpose)} yet.")
+    elif rejection.code == "input_kind_incompatible":
+        # THE ONE REFUSAL THAT HAD NO WAY FORWARD ATTACHED. Every other code here appends what to do
+        # next; this one said only that the pair was incompatible, so the model's whole reply was
+        # "which part would you like to revise?" - and, given no better idea, it eventually told the
+        # customer to re-export a file that was never wrong. Naming the kinds THIS engine takes turns
+        # the refusal into something actionable in the same turn.
+        spec = get_spec(engine)
+        kinds = sorted({c.input_kind for c in (getattr(spec, "capabilities", None) or ())
+                        if getattr(c, "input_kind", None)})
+        if kinds:
+            msg += (f" {_vocab.to_display(_vocab.ENGINE, engine)} takes "
+                    f"{' or '.join(repr(k) for k in kinds)} for this. If the file is the METAL AROUND a "
+                    "passage and the customer wants the flow THROUGH it, the kind is 'body-surface' - "
+                    "'solid-body' means meshing the metal itself, which is a structural job. Correct the "
+                    "declared input_kind and preview again; do not ask the customer to change their file.")
     elif rejection.code == "dimensionality_unsupported":
         any_supporter = any(
             (get_spec(n).input_contract and dim in get_spec(n).input_contract.dimensionalities)
