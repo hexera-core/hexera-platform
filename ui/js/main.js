@@ -17,7 +17,6 @@ import { getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, set as setState } from "./core/state.js";
 import { Notice } from "./render/notice.js";
-import { segments } from "./render/segments.js";
 import { Stage, closeLightbox, openLightbox, setResultHandler, setSayHandler }
   from "./render/stage.js";
 import { configure as configureStream, replay, start as startStream, terminalResult }
@@ -46,16 +45,15 @@ setNotifier({
  * used to land as one grey paragraph in one chat bubble, which is where the difference between
  * an arithmetic fact, a reading of a picture, and a warning went to die.
  *
- * `segments` decides where each block begins and ends; this decides what each one becomes. The
- * user's own turns have no blocks in them and go straight through.
+ * `render/segments.js` decides where each block begins and ends and `Stage.turn` decides what
+ * each one becomes - and mounts all of them in ONE turn container, because they are one turn. A
+ * turn that renders as two named messages arriving in the same instant is a product sending two
+ * messages at once, whatever the transport did. The user's own turns carry no blocks and go
+ * straight through as a single bubble.
  */
 function say(role, text) {
   if (role !== "assistant") { Stage.chat(role, text); return; }
-  for (const part of segments(text)) {
-    if (part.kind === "surveyor") Stage.surveyor(part.text);
-    else if (part.kind === "caveat") Stage.caveat(part.text);
-    else Stage.chat("assistant", part.text);
-  }
+  Stage.turn(text);
 }
 
 /* A word the Surveyor offered to be corrected with, made clickable. It is typed into the

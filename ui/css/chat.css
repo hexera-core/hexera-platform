@@ -9,3 +9,15 @@
 .im.user .bub{background:#16171b;color:#fafafa;border-radius:16px 16px 4px 16px;padding:10px 15px;font-size:13.5px;line-height:1.6;max-width:78%}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
+/* ONE TURN, ONE MESSAGE.
+   An assistant turn can carry several pieces - the model's words, the Surveyor's receipt, a
+   caveat card, the question it ends on. They used to be appended to the conversation column as
+   siblings, each prose piece carrying its own "HEXERA" name, so the confirmation turn rendered
+   as two named messages in the same instant. They are now nested in one turn container under one
+   name. The cards keep their own borders and colour - a measurement receipt and a warning must
+   still be told apart at a glance - and the rail is what says they are one message. It appears
+   only when there is more than one piece to bind, so an ordinary reply is untouched. */
+.im.assistant .turn-parts{align-self:stretch;min-width:0;display:flex;flex-direction:column;
+  gap:13px}
+.im.assistant .turn-parts.multi{border-left:2px solid var(--border);padding-left:14px}
+

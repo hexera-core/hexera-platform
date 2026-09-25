@@ -18,6 +18,7 @@ import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
 import { Activity } from "./activity.js";
 import { buildCaveat, popCaveat } from "./caveat.js";
+import { segments } from "./segments.js";
 import { buildSurveyor } from "./surveyor.js";
 
 /* Installed by the entrypoint. A chip in the Surveyor's SUGGESTS section is the server's own
@@ -74,11 +75,52 @@ export const Stage = {
   // is built by the module that knows what it means.
   attach(el){this.clearEmpty();this.col().appendChild(el);this.scrollBottom();return el;},
 
+  /* ONE ASSISTANT TURN IS ONE MESSAGE.
+   *
+   * The server sends a turn as ONE string. `segments` splits it into the pieces this product
+   * renders differently - the Surveyor's receipt as its own card, the geometry agent's caveat as
+   * its own warning - and each piece used to be appended to the column on its own. So the
+   * confirmation turn landed as `.im` "Hexera / MESHING WITH snappyHexMesh", then a `.cav` card,
+   * then a SECOND `.im` with a SECOND "Hexera" carrying "Shall I proceed with mesh generation?":
+   * three siblings and two names, in one instant. The customer read that as the product sending
+   * him two messages at once, and he was reading the DOM correctly.
+   *
+   * The pieces are unchanged - the receipt and the warning still have to be told apart at a
+   * glance, and are. They are mounted INSIDE one turn container, in the order the server wrote
+   * them, under one name, with the question it ends on as the last line in the same container.
+   *
+   * The container is created by the first piece that actually renders, never up front: the
+   * Surveyor's panel is re-sent on every turn until the survey settles and is deduplicated
+   * below, so a turn carrying only a panel already on screen must add no empty named bubble.
+   */
+  turn(text){
+    let host=null,parts=null;
+    const into=(el)=>{
+      if(!host){
+        this.clearEmpty();
+        host=document.createElement('div');host.className='im assistant turn';
+        host.innerHTML=`<div class="who">${esc('Hexera')}</div><div class="turn-parts"></div>`;
+        parts=host.querySelector('.turn-parts');
+        this.col().appendChild(host);}
+      parts.appendChild(el);
+      // The rail that binds the pieces into one message is only meaningful once there is more
+      // than one piece to bind; an ordinary reply stays an ordinary reply.
+      parts.classList.toggle('multi',parts.children.length>1);
+      this.scrollBottom();return el;};
+    for(const part of segments(text)){
+      if(part.kind==='surveyor')this.surveyor(part.text,into);
+      else if(part.kind==='caveat')this.caveat(part.text,into);
+      else{const t=document.createElement('div');t.className='txt';t.innerHTML=mdBlock(part.text);
+        into(t);}}
+    return host;},
+
   // THE SURVEYOR'S RECEIPT. The server prepends the same block to every turn until the survey
   // settles - it arrived twice in a three-turn conversation - so this is one panel updated in
   // place, exactly as the brief is. A conversation that accumulated three copies of one
-  // measurement would be saying the part was measured three times.
-  surveyor(block){
+  // measurement would be saying the part was measured three times. `into` mounts it in the turn
+  // being rendered; an UPDATE replaces the panel where it already sits rather than moving it
+  // into the current turn, because moving it would pull the page out from under a reader.
+  surveyor(block,into){
     if(!block)return;
     if(this._svSig===block)return;
     this._svSig=block;
@@ -88,15 +130,16 @@ export const Stage = {
       // deliberately folded away is the page arguing with them
       if(!this._svEl.classList.contains('open'))el.classList.remove('open');
       this._svEl.replaceWith(el);this._svEl=el;this.scrollBottom();return;}
-    this._svEl=this.attach(el);},
+    this._svEl=into(el);},
 
-  // A WARNING, ON BOTH SURFACES. The card stays in the transcript; the popup interrupts. See
-  // render/caveat.js for why dismissing one must not be able to destroy the other.
-  caveat(text){
+  // A WARNING, ON BOTH SURFACES. The card stays in the transcript - inside the turn that raised
+  // it - and the popup interrupts. See render/caveat.js for why dismissing one must not be able
+  // to destroy the other.
+  caveat(text,into){
     if(!text)return;
     if(this._cavSeen.has(text))return;
     this._cavSeen.add(text);
-    popCaveat(text,this.attach(buildCaveat(text)));},
+    popCaveat(text,into(buildCaveat(text)));},
 
   // THE LIVE STRIP while a request is in flight, and the receipt it becomes when the reply
   // lands. Mounted through `attach` so it is a normal member of the column and scrolls with it.
