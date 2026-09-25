@@ -103,3 +103,53 @@ def test_a_confirmed_budget_over_the_ceiling_is_held_to_the_ceiling():
 def test_a_nonsense_budget_falls_back_to_the_ceiling_rather_than_through_it():
     for junk in (0, -1, True, False, "big", 1.5, None):
         assert cell_cap_for_composition(junk) == CEILING, f"{junk!r} did not fall back"
+
+
+# THE READING THAT DISAGREED WITH ITSELF. On ahmed_variant_001 the look's prose said "solid material
+# throughout, with no visible internal flow passage" and "the labelled openings do not resolve as
+# visible mouths"; its `openings_seen` came back empty. The panel read only the structured field, so
+# it said nothing, and the customer's next question was which of the four mouths is the inlet.
+
+def _looked_at(openings: list[dict], seen: list[dict] | None, purpose: str = "internal_cfd") -> str:
+    return surveyor_panel(
+        {"status": "ok", "unit": {"declared": "mm"}, "bbox": {"extent_m": [1.0, 0.4, 0.3]},
+         "openings": openings,
+         "look": {"status": "ok", "seconds": 18.0,
+                  "impression": {"looks_like": "a solid chamfered rectangular block",
+                                 "openings_seen": seen if seen is not None else []}},
+         "facts": {"cell_estimates": [{"tier": "standard", "cells": 1_324_507}]}},
+        {"composed_for": {"purpose": purpose}})
+
+
+_FOUR = [{"id": f"o{n}"} for n in (1, 2, 3, 4)]
+
+
+def test_an_empty_reading_of_the_openings_is_said_rather_than_passed_over():
+    panel = _looked_at(_FOUR, [])
+    assert "could not confirm any of the 4 opening(s)" in panel, (
+        "the panel said nothing at all, and four ports were then proposed on a solid block")
+
+
+def test_it_says_unconfirmed_and_never_not_a_port():
+    """An empty field is not a denial. Spending it as one would be a fact that lies."""
+    panel = _looked_at(_FOUR, [])
+    assert "do NOT look like ports" not in panel
+    assert "could not confirm" in panel
+
+
+def test_a_reading_that_did_come_back_is_still_the_one_that_speaks():
+    panel = _looked_at(_FOUR, [{"id": f"o{n}", "likely_role": "not a port"} for n in (1, 2, 3, 4)])
+    assert "do NOT look like ports" in panel
+    assert "could not confirm" not in panel, "the weaker sentence must not displace the real reading"
+
+
+def test_a_part_with_no_openings_is_not_told_its_openings_are_unconfirmed():
+    assert "could not confirm" not in _looked_at([], [])
+
+
+def test_only_a_flow_job_is_asked_about_flow():
+    assert "the flow really does go through" in _looked_at(_FOUR, [])
+    structural = _looked_at(_FOUR, [], purpose="structural")
+    assert "could not confirm any of the 4 opening(s)" in structural, (
+        "what the openings are is worth saying whatever the job is")
+    assert "flow" not in structural, "a structural job has no flow in it"

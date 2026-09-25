@@ -293,6 +293,31 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
         out.append(line)
     elif not_ports:
         out.append("  {} of the openings do not look like ports: {}".format(len(not_ports), ", ".join(not_ports)))
+    elif rows and not roles:
+        # THE READING DISAGREED WITH ITSELF AND ONLY THE HALF NOBODY CHECKED WAS BELIEVED.
+        #
+        # MEASURED on ahmed_variant_001, an external-flow bluff body. The look's own prose said "solid
+        # material throughout, with no visible internal flow passage, cavity, or obstruction. The
+        # labelled openings do not resolve as visible mouths in these views and may be topology or
+        # open-face detections." Its `openings_seen` came back empty. The gate below reads
+        # `likely_role == "not a port"` and nothing else, so neither line printed, that sentence went
+        # past as a `notes` row, and the next thing the customer was asked was which of the four
+        # mouths is the inlet - with o4 proposed as inlet and o1..o3 as outlets, on a solid block.
+        #
+        # The panel reporting the reading had the same blind spot as the reading. That is the shape
+        # that keeps recurring here, and the check has to be able to fail differently from the thing
+        # it checks - so this one asks the measurement, not the look: there are openings and the look
+        # returned no role for any of them.
+        #
+        # AND IT SAYS "COULD NOT CONFIRM", NEVER "NOT A PORT". An empty field is not a denial, and
+        # spending it as one would be a fact that lies - the thing this codebase is most careful about.
+        # Unconfirmed is true, it is the customer's to correct, and it is the sentence that would have
+        # stopped four ports being proposed on a solid block.
+        line = (f"  the look could not confirm any of the {len(rows)} opening(s) above as a duct mouth"
+                )
+        if is_flow:
+            line += " - say if the flow really does go through one of them"
+        out.append(line)
     # HOW BIG THE MESH WILL BE, SAID RATHER THAN ASKED. The measurement forecasts a cell count per
     # tier, and the customer never saw any of it: the intake is forbidden to ask for a cell count
     # ("a QUALITATIVE preference, never a cell count"), which is right - a number pulled out of a
