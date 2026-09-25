@@ -997,6 +997,103 @@ def test_a_look_that_landed_saying_nobody_looked_stops_being_reported_as_still_o
 # RECOMPOSITION KEEPS WHAT IS STILL BOUND AND DROPS WHAT IS NOT
 
 
+def _confirmed_side(doc: dict, brief: str) -> tuple[dict, str]:
+    """A row whose customer has answered which side of the surface is the fluid, and the option they chose.
+
+    block_boss_sharp is a solid block with one bore, so the geometry reads the same both ways and the side is
+    a real question: the first option means the part is the solid around the bore, which composes as
+    `wall_shell` - the builder carves the passage out of the material.
+    """
+    state = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=brief))
+    (side,) = [v for v in gs.question_views(state) if v["about"] == "representation"]
+    said = side["options"][0]
+    assert "the solid around it" in said, said
+    return gs.answered(state, doc, question_id=side["id"], choice=said, words=said,
+                       latest_user_message=said, principal="owner-7f3a"), said
+
+
+def test_a_second_survey_of_the_same_part_keeps_the_side_the_customer_confirmed(monkeypatch):
+    """LIES TO THE BUILDER, and the worst kind: THE MESHED DOMAIN INVERTED. Intake calls `survey_the_part`
+    again whenever the customer says something that moves the purpose or names a port, and that call composed
+    with the confirmed BUDGET and nothing else - not the side they had confirmed, not the inlet they had named.
+    So a customer who answered "the part is the solid around the bore" (`wall_shell`, carve the passage out of
+    the material) had their next sentence take the composition back to `annular_fluid`, the file itself read as
+    the flow, for the life of the job.
+
+    AND IT COULD NOT BE READ BACK, which is why this is a permanent inversion and not a stale label. Once the
+    side is confirmed the composition settles it, the fluid-side question is no longer raised, and
+    `carry_answers` retires the answer with the question it was bound to. From that moment `composed_for` is
+    the only place the customer's answer exists, so a caller that reads the answers alone has nothing to find.
+    """
+    doc, brief = _doc("block_boss_sharp"), _brief("block_boss_sharp")
+    confirmed, said = _confirmed_side(doc, brief)
+    assert confirmed["composed_for"]["representation"] == "wall_shell"
+    assert confirmed["composed_for"]["confirmed_representation"] == "wall_shell"
+    assert gs.confirmed_representation(confirmed) is None, (
+        "the answer is still live, so this fixture no longer reproduces the defect it was built for")
+    assert gs.confirmed_inputs(confirmed)["confirmed_representation"] == "wall_shell"
+
+    stored = {"row": confirmed}
+
+    async def _load(*_a, **_k):
+        return stored["row"]
+
+    async def _save(_owner, _source, row, **_k):
+        stored["row"] = row
+        return True
+
+    async def _no_interpretation(*_a, **_k):
+        return None, None, None
+
+    monkeypatch.setattr(gs, "load", _load)
+    monkeypatch.setattr(gs, "save", _save)
+    monkeypatch.setattr(gs, "_interpretation", _no_interpretation)
+    monkeypatch.setattr(gs, "_queue_the_look", lambda *_a, **_k: gs.LOOK_SKIPPED)
+
+    class _Ref:
+        source_id = "src-1"
+        sha256 = confirmed["sha256"]
+
+    def survey_again() -> dict:
+        return asyncio.run(gs.survey_the_part(
+            owner_id="owner-7f3a", session_id="", source_ref=_Ref(), document=doc, purpose="internal_cfd",
+            messages=[{"role": "user", "content": brief}]))
+
+    again = survey_again()
+    assert again["composed_for"]["representation"] == "wall_shell", (
+        "the customer confirmed the part is the solid around the bore and a second survey reads the file "
+        "itself as the flow again: the meshed domain is inverted and nothing on the row says so")
+    assert again["composed_for"]["confirmed_representation"] == "wall_shell"
+    # the step's replay composes these arguments again and refuses to plan on a survey it cannot reproduce
+    assert gs.composed_inputs(again)["confirmed_representation"] == "wall_shell"
+    # and it survives every further call, not only the next one: the row is saved with it
+    assert survey_again()["composed_for"]["representation"] == "wall_shell"
+    # nothing the customer said is deleted by any of this
+    assert [a["words"] for a in stored["row"]["answers"]] == [said]
+
+
+def test_a_second_survey_keeps_the_inlet_and_the_direction_the_customer_named_too():
+    """THE SAME OMISSION, the other three inputs. `confirmed_inputs` is one reading of everything a person
+    settled, so a caller cannot carry half of it: `survey_the_part` carried the budget alone and
+    `for_submission` carried the budget and the inlet, and each of them was one answer short of the next.
+
+    The inlet is the answers alone and not the row, because `composed_for["inlet_ids"]` may have been derived
+    from the customer's declared port rows rather than answered, and a derived mouth is not a confirmation.
+    """
+    doc = _doc("bend_elbow_001")
+    state = _answered_elbow()
+    assert gs.named_inlets(state) == ["o2"]
+    assert gs.confirmed_inputs(state)["inlet_ids"] == ["o2"]
+    # a row whose inlet was only DERIVED from a declared port reports no confirmed inlet
+    derived = gs.carry_answers(None, gs.compose(doc, purpose="internal_cfd", brief=_brief("bend_elbow_001"),
+                                                declared=[_DECLARED_IN, _DECLARED_OUT]))
+    assert derived["composed_for"]["inlet_ids"], "the declared inlet did bind to a mouth"
+    assert gs.confirmed_inputs(derived)["inlet_ids"] is None, (
+        "a mouth nobody answered is reported as a confirmation")
+    # and a recomposition still keeps it, because that one is composing the same composition again
+    assert gs.recomposed(derived, doc)["composed_for"]["inlet_ids"] == derived["composed_for"]["inlet_ids"]
+
+
 def test_the_look_landing_keeps_every_answer():
     doc = _doc("bend_elbow_001")
     state = _answered_elbow()

@@ -627,11 +627,54 @@ def confirmed_flow_direction(state: dict | None) -> str | None:
     return f"{hit.group(1)}{hit.group(2).lower()}" if hit else None
 
 
+def confirmed_inputs(state: dict | None) -> dict[str, Any]:
+    """Every composition input a PERSON settled, spelled as the keyword arguments `compose` takes for them.
+
+    THE ONE PLACE THAT KNOWS WHAT A RECOMPOSITION HAS TO CARRY, and it exists because three callers used to
+    know it separately and each of them knew a different half. `recomposed` carried the budget, the inlet and
+    the side; `for_submission` carried the budget and the inlet; `survey_the_part` carried the budget alone. So
+    the SECOND call of `survey_the_part` - which intake makes the moment the customer says anything that moves
+    the purpose or names a port - composed without the side the customer had confirmed, and the composition it
+    stored was the one made before they answered.
+
+    MEASURED on block_boss_sharp, a solid block with one bore, composed for internal_cfd. `q_fluid_side` is
+    raised, the customer answers "the fluid flows through the bore; the part is the solid around it", the row
+    is recomposed and its representation becomes `wall_shell`: the builder carves the passage out of the solid.
+    Call `survey_the_part` again and the representation goes back to `annular_fluid` - the file itself read as
+    the flow - and stays there. That is not a lost label, it is THE MESHED DOMAIN INVERTED: an internal passage
+    becomes an external body, or the reverse, with nothing on the row that says so.
+
+    AND THE ANSWER CANNOT BE READ BACK, which is why every one of these reads the ROW as well as the answers.
+    Once the side is confirmed the composition settles it, `q_fluid_side` is no longer raised, and
+    `carry_answers` retires the answer with the question it was bound to - correctly: the answer binds nothing
+    now. From that moment `confirmed_representation(state)` is None and `composed_for` is the only place the
+    customer's answer still exists. A reader that trusts the answers alone loses it on the first recomposition
+    after the one that settled it.
+
+    `inlet_ids` is the exception and is the answers alone: the mouths in `composed_for["inlet_ids"]` may have
+    been derived from the customer's declared port rows (`_declared_inlets`) rather than answered, so they are
+    not a confirmation and this function does not report them as one. `recomposed` falls back to them itself,
+    because it is composing THIS composition again and may not drop a value it was made with.
+    """
+    before = dict((state or {}).get("composed_for") or {})
+    row_cap = before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None
+    return {"cell_cap": confirmed_cell_cap(state) or row_cap,
+            "inlet_ids": named_inlets(state) or None,
+            "confirmed_representation": (confirmed_representation(state)
+                                         or before.get("confirmed_representation") or None),
+            "flow_direction": confirmed_flow_direction(state) or before.get("flow_direction") or None}
+
+
 def composed_inputs(state: dict) -> dict:
     """The arguments `compose` was called with for this row, read back off `composed_for`.
 
     `cell_cap` is the one the composition used: the customer's confirmed budget when there is one, and
     otherwise None, so the budget is read out of their words again exactly as it was the first time.
+
+    IT IS NOT `confirmed_inputs` AND MUST NOT BECOME IT. This is the REPLAY: `geometry_step._inputs` composes
+    these arguments again and refuses to plan unless the survey they give is the stored one field for field, so
+    every value here has to be the one the stored composition was made with and never a fresher reading of the
+    answers. `confirmed_inputs` is the other direction - what a new composition has to carry forward.
     """
     before = dict(state.get("composed_for") or {})
     return {"purpose": before.get("purpose") or "internal_cfd", "brief": before.get("brief") or "",
@@ -666,21 +709,21 @@ def recomposed(state: dict, document: dict, **changes: Any) -> dict:
     across for every question id the new survey still raises, and dropped for the rest, because an
     answer is bound to a question and a question that no longer exists binds nothing."""
     before = dict(state.get("composed_for") or {})
-    kwargs: dict[str, Any] = {"purpose": before.get("purpose") or "internal_cfd", "brief": before.get("brief") or "",
-              "declared": before.get("declared") or None, "engine": before.get("engine") or None,
-              "unit": before.get("unit") or None, "scale_to_metres": before.get("scale_to_metres"),
-              "unit_basis": before.get("unit_basis") or None,
-              "cell_cap": before.get("cell_cap") if before.get("cell_cap_kind") == "confirmed" else None,
-              # the inlet the customer answered wins over the one their declared ports bind to
-              "inlet_ids": named_inlets(state) or before.get("inlet_ids"),
-              # and so does the side they answered, over the one composed before they had
-              "confirmed_representation": (confirmed_representation(state)
-                                           or before.get("confirmed_representation") or None),
-              # and the direction they answered the flow comes at the body, on the same terms
-              "flow_direction": (confirmed_flow_direction(state)
-                                 or before.get("flow_direction") or None),
-              # the same tie-break counts, so a recomposition ranks the questions the way this row's did
-              "asked_before": dict(before.get("asked_before") or {}) or None}
+    kwargs: dict[str, Any] = {
+        "purpose": before.get("purpose") or "internal_cfd", "brief": before.get("brief") or "",
+        "declared": before.get("declared") or None, "engine": before.get("engine") or None,
+        "unit": before.get("unit") or None, "scale_to_metres": before.get("scale_to_metres"),
+        "unit_basis": before.get("unit_basis") or None,
+        # the same tie-break counts, so a recomposition ranks the questions the way this row's did
+        "asked_before": dict(before.get("asked_before") or {}) or None,
+        # and everything a PERSON settled, read in the one place that knows the whole list
+        # (`confirmed_inputs`), so this recomposition and the one `survey_the_part` makes cannot carry
+        # different halves of the same customer's answers
+        **confirmed_inputs(state)}
+    # the mouths the customer's declared ports bind to, where they have answered no inlet themselves. It is
+    # here and not in `confirmed_inputs` because a derived mouth is not a confirmation, and this is the one
+    # caller composing THIS composition again, which may not drop a value it was made with
+    kwargs["inlet_ids"] = kwargs["inlet_ids"] or before.get("inlet_ids")
     kwargs.update(changes)
     fresh = compose(document, **kwargs)
     return carry_answers(state, fresh)
@@ -1696,9 +1739,16 @@ async def survey_the_part(*, owner_id: str, session_id: str, source_ref, documen
                           f"for this one carry on as usual")
     unit, scale, basis = await _interpretation(owner_id, source_ref.source_id)
     old = await load(owner_id, source_ref.source_id, sha256=source_ref.sha256)
+    # EVERYTHING THE CUSTOMER HAS ALREADY SETTLED, and it used to be the budget alone. Intake calls this
+    # function again whenever the customer says something that moves the purpose or names a port, and the
+    # composition it made was the one from before they had answered anything but the trade: the side they
+    # confirmed was dropped and could not be read back, because the answer is retired with the question it
+    # settled and `composed_for` is then the only place it exists (`confirmed_inputs`). On block_boss_sharp
+    # that took a confirmed `wall_shell` - carve the passage out of the solid - back to `annular_fluid`, the
+    # file itself read as the flow, permanently. The meshed domain, inverted, by a second call.
     fresh = compose(document, purpose=purpose, brief=_brief_of(messages), declared=declared,
                     engine=engine if engine in PACKAGE_ENGINES else None, unit=unit,
-                    scale_to_metres=scale, unit_basis=basis, cell_cap=confirmed_cell_cap(old))
+                    scale_to_metres=scale, unit_basis=basis, **confirmed_inputs(old))
     if fresh["sha256"] != str(source_ref.sha256):
         raise SurveyError("the stored measurement describes other bytes than this session's upload")
     state = carry_answers(old, fresh)
@@ -1745,9 +1795,8 @@ async def for_submission(*, owner_id: str, session_id: str, source_ref, document
     unit, scale, basis = await _interpretation(owner_id, source_ref.source_id)
     fresh = compose(document, purpose=purpose, brief=_brief_of(messages),
                     declared=[dict(p) for p in _roled(before.get("declared"))] or None,
-                    inlet_ids=named_inlets(state) or None,
                     engine=engine if engine in PACKAGE_ENGINES else None, unit=unit,
-                    scale_to_metres=scale, unit_basis=basis, cell_cap=confirmed_cell_cap(state))
+                    scale_to_metres=scale, unit_basis=basis, **confirmed_inputs(state))
     out = mark_asked(carry_answers(state, fresh), [])
     # the look has not been taken if intake never surveyed; take it now, for this purpose, so the
     # builder still gets it when it lands before the planner runs, and keep the queue's answer so a plan
@@ -1944,7 +1993,7 @@ __all__ = ["ASKING_SCHEMA", "CHAIN", "CUSTOMER", "DEFAULT_TAKEN", "LATE_STAGE", 
            "asking_of", "asking_row", "builder_block", "carry_answers",
            "check_the_survey_block", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",
-           "confirmed_representation",
+           "confirmed_inputs", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view",
            "live_answers", "load", "look_state", "look_state_of_document", "mark_asked", "named_inlets",
            "open_now",
