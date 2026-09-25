@@ -584,11 +584,9 @@ def _not_carried(purpose: str, engine: str) -> dict[str, str]:
     """
     if purpose in FLOW_PURPOSES:
         return {}
-    out = {k: f"{purpose} is not a flow purpose" for k in sorted(FLOW_ONLY_QUESTION_KINDS)}
+    out = dict.fromkeys(sorted(FLOW_ONLY_QUESTION_KINDS), f"{purpose} is not a flow purpose")
     if not engine_can_mesh(purpose, engine):
-        out.update({k: (f"the forecast and the triage this survey carries are {engine or 'no engine'}'s, and "
-                        f"{engine or 'no engine'} cannot produce the mesh {purpose} needs")
-                    for k in sorted(ENGINE_DEPENDENT_QUESTION_KINDS)})
+        out.update(dict.fromkeys(sorted(ENGINE_DEPENDENT_QUESTION_KINDS), f"the forecast and the triage this survey carries are {engine or 'no engine'}'s, and " f"{engine or 'no engine'} cannot produce the mesh {purpose} needs"))
     return out
 
 
@@ -1228,13 +1226,31 @@ def accepts_a_proposal(latest_user_message: str, earlier: Any = None) -> bool:
     IT IS NOT AN ANSWER TO THE QUESTION and it is not read as one. It is permission to record the PLATFORM'S
     proposal, which is why the value recorded is never the model's: see `_the_proposal_recorded`.
     """
-    from meshpipeline.agents.intake.engine_selection import affirms
+    from meshpipeline.agents.intake.engine_selection import _DENY, _words, affirms
+    from meshpipeline.agents.intake.engine_selection import _norm as _es_norm
     from meshpipeline.agents.intake.recommendation import choice_deferred
 
     if affirms(latest_user_message):
         return True
     if choice_deferred(latest_user_message):
         return True
+    # A STANDING DELEGATION STANDS ONLY UNTIL IT IS TAKEN BACK, and the branch below used to read the
+    # earlier messages without consulting the latest one at all.
+    #
+    # MEASURED on the committed tree, earlier=["internal cfd, air, you decide the rest"]:
+    #     accepts_a_proposal("no, swap them")            -> True
+    #     accepts_a_proposal("actually o3 is the inlet") -> True
+    #     accepts_a_proposal("no")                       -> True
+    # A customer's refusal was read as permission to record OUR proposal, which puts a boundary
+    # condition on a mouth they had just rejected. The docstring above says `affirms` "refuses any
+    # message carrying a denial ... so 'no, not that one' accepts nothing" - true of the first branch,
+    # and the third went round it. A guard that the path beside it does not consult is this codebase's
+    # signature defect, and here it decides where the inlet goes.
+    #
+    # The denial reader is the SAME ONE `affirms` uses, deliberately: a second opinion about what "no"
+    # means is a second thing to keep in step, and the first divergence would be silent and in a mesh.
+    if any(w in _DENY for w in _words(_es_norm(latest_user_message))):
+        return False
     return any(choice_deferred(str(m)) for m in (earlier or ()))
 
 
@@ -2259,7 +2275,8 @@ def engine_can_mesh(purpose: str, engine: str) -> bool:
     not put is worth more than a question priced on another engine's mesh. Never raises.
     """
     try:
-        from meshpipeline.engines import registry, purposes as engine_purposes
+        from meshpipeline.engines import purposes as engine_purposes
+        from meshpipeline.engines import registry
 
         if purpose not in engine_purposes.PURPOSES or not engine:
             return False
