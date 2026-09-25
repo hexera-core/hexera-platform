@@ -663,6 +663,13 @@ def _match(patch: dict, rows: list[dict], diagonal: Any) -> str | None:
     Size is the answer only for a patch that states no position at all, and then only when exactly
     one opening fits: two identical ports are the case no measurement can settle.
     """
+    # NAMED BEATS INFERRED. When the patch says which measured opening it is, that IS the answer and
+    # nothing is matched by bore or by distance. Everything below exists because this field did not:
+    # size-matching cannot separate two 439 mm mouths, so the product interrogated the customer about
+    # which was which and then refused the submission when neither could be told apart.
+    named = str(patch.get("opening_id") or "").strip()
+    if named:
+        return named if any(str(r.get("id") or "").strip() == named for r in rows) else None
     point = _stated_point(patch)
     if point is not None:
         # A tolerance needs a body to be a fraction OF. Without one there is no check to make, and

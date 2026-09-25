@@ -281,13 +281,19 @@ def _validate_internal_ports(patches: list) -> list[str]:
                 f"port {nm!r} states more than one size form - keep exactly one of "
                 "diameter_mm, area_mm2, or width_mm+height_mm")
             continue
+        # AN OPENING ID IS A LOCATION, and a better one than a coordinate: it names the measured
+        # mouth itself, so nothing has to be matched by bore and two same-size mouths never need
+        # telling apart. Without it this gate could only be satisfied by a size or a point, which is
+        # why a customer with two identical 439 mm outlets was interrogated about which was which
+        # and then told to re-export a file that was never wrong.
+        opening_id = str(p.get("opening_id") or "").strip()
         near = p.get("near_mm")
-        has_near = near is not None
-        if has_near and (not isinstance(near, (list, tuple)) or len(near) != 3
+        has_near = near is not None or bool(opening_id)
+        if near is not None and (not isinstance(near, (list, tuple)) or len(near) != 3
                          or any(isinstance(c, bool) or not isinstance(c, (int, float))
                                 or not math.isfinite(float(c)) for c in near)):
             errors.append(f"port {nm!r}: near_mm must be [x, y, z] in millimetres")
-            has_near = False
+            has_near = bool(opening_id)
         for other in (p.get("interchangeable_with") or []):
             if str(other).strip() not in all_names:
                 errors.append(
