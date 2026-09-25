@@ -1011,6 +1011,13 @@ async def node_intake(state: PipelineState) -> dict:
         _out_tokens += _refusal.output_tokens
         logger.info("Intake: refusal delivered %s (+%d/%d tokens) - job_id=%s",
                     _refusal.source, _refusal.input_tokens, _refusal.output_tokens, job_id)
+
+    # THE SURVEYOR'S RECEIPT, ABOVE THE MODEL'S WORDS AND NOT INSTEAD OF THEM. It measured the file
+    # and read seventeen rendered views of it before this turn, and until now the customer saw none
+    # of that - only questions, which read as an interrogation rather than as what is left over
+    # after most of the work was already done. Shown once, on the turn the look lands.
+    if _exec_state.surveyor_panel and assistant_text:
+        assistant_text = _exec_state.surveyor_panel + chr(10) + assistant_text
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",

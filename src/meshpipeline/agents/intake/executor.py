@@ -122,6 +122,10 @@ class IntakeExecutionState:
     #: after the loop. The rendered text alone cannot be checked against what was declared.
     admission_facts: dict | None = None
     selection_prompt: str | None = None
+    #: The Surveyor's receipt for the customer, composed once the look has landed. Shown ABOVE the
+    #: model's own reply rather than instead of it: the questions still belong to the conversation,
+    #: and what was measured and seen belongs to the application.
+    surveyor_panel: str = ""
     submit_summary: str | None = None
     submit_args: dict | None = None
 
@@ -617,6 +621,10 @@ class IntakeToolExecutor:
         # Bounded, and never fatal: past the wait the conversation carries on with what it has, which
         # is exactly what it did before this existed.
         st.geometry_survey = await self._survey_with_the_look(st.geometry_survey)
+        if not st.surveyor_panel:
+            from meshpipeline.agents.intake.geometry_brief import surveyor_panel
+
+            st.surveyor_panel = surveyor_panel(await self._current_document(), st.geometry_survey)
 
         logger.info("Intake: survey composed for %s, stage=%s - job_id=%s", args.get("purpose"),
                     st.geometry_survey.get("stage"), self._job_id)

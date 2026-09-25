@@ -222,6 +222,68 @@ _SURVEYED_ASKS = (
 )
 
 
+def surveyor_panel(document: dict | None, survey: dict | None) -> str:
+    """What the Surveyor saw, found and suggests, for the CUSTOMER, once the look has landed.
+
+    THE SURVEYOR WAS INVISIBLE. It measured every upload and read seventeen rendered views of it,
+    and the customer saw none of that - only questions, which read as an interrogation rather than
+    as the output of something that had already done most of the work. This is the receipt.
+
+    Three sections, and the separation is the point. MEASURED is arithmetic on their bytes and is
+    simply true. SEEN is a vision model's words about pictures: it is labelled as a reading, never
+    as a measurement, because that is exactly what the confidence cap in the plan checker is about.
+    SUGGESTS is what the two together imply, offered for correction rather than stated as fact.
+
+    Empty until there is a look worth showing, so a conversation where nothing was looked at reads
+    exactly as it did before this existed.
+    """
+    if not isinstance(document, dict) or document.get("status") != "ok":
+        return ""
+    look = document.get("look") if isinstance(document.get("look"), dict) else {}
+    if str(look.get("status") or "") != "ok":
+        return ""
+    imp = look.get("impression") if isinstance(look.get("impression"), dict) else {}
+    rows = [r for r in (document.get("openings") or []) if isinstance(r, dict)]
+    out = ["", "- - - THE SURVEYOR - - -", ""]
+
+    out.append("MEASURED (arithmetic on your file, not an opinion)")
+    ext = ((document.get("bbox") or {}).get("extent_m")) or []
+    declared = str((document.get("unit") or {}).get("declared") or "").strip()
+    if declared and len(ext) == 3:
+        out.append("  {:,.0f} x {:,.0f} x {:,.0f} mm".format(*[float(x) * 1000.0 for x in ext]))
+    out.append("  {} opening(s): {}".format(len(rows), ", ".join(str(r.get("id")) for r in rows) or "none"))
+
+    seconds = look.get("seconds")
+    head = "SEEN (a reading of 17 rendered views - words, never numbers"
+    head += f", {float(seconds):.0f}s)" if isinstance(seconds, (int, float)) else ")"
+    out.append("")
+    out.append(head)
+    if imp.get("looks_like"):
+        out.append("  looks like   {}".format(imp["looks_like"]))
+    if imp.get("confidence"):
+        out.append("  its own confidence  {}".format(imp["confidence"]))
+    for edge in (imp.get("sharp_edges") or [])[:3]:
+        out.append(f"  sharp        {edge}")
+    notes = str(imp.get("notes") or "").strip()
+    if notes:
+        out.append(f"  notes        {notes[:260]}")
+
+    roles = [o for o in (imp.get("openings_seen") or []) if isinstance(o, dict)]
+    not_ports = [str(o.get("id")) for o in roles if str(o.get("likely_role") or "") == "not a port"]
+    out.append("")
+    out.append("SUGGESTS (my reading - correct any of it and I will use yours)")
+    rep = str(((survey or {}).get("composed_for") or {}).get("representation") or "").replace("_", " ")
+    if rep:
+        out.append(f"  this is      {rep}")
+    if not_ports and len(not_ports) == len(rows) and rows:
+        out.append(f"  the {len(not_ports)} opening(s) above do NOT look like ports - no duct mouth behind them, so "
+                   "this reads as flow AROUND the body rather than through it")
+    elif not_ports:
+        out.append("  {} of the openings do not look like ports: {}".format(len(not_ports), ", ".join(not_ports)))
+    out.append("")
+    return chr(10).join(out)
+
+
 def render_block(document: dict | None, *, survey: dict | None = None, armed: bool = False) -> str:
     """The measurement, as the model's own knowledge of the part. Empty string when there is none.
 
@@ -725,4 +787,5 @@ def _match(patch: dict, rows: list[dict], diagonal: Any) -> str | None:
 
 __all__ = ["MAX_LOOK_PHRASES", "MAX_PLACED_LINES", "MAX_SURVEY_QUESTIONS", "MAX_TABLE_ROWS",
            "MINOR_OPENING_FRACTION", "NEAR_TOLERANCE_OF_DIAGONAL", "SIZE_TOLERANCE", "bind_patches",
-           "look_at_it", "look_lines", "opening_rows", "placed_lines", "render_block", "survey_lines"]
+           "look_at_it", "look_lines", "opening_rows", "placed_lines", "render_block", "survey_lines",
+           "surveyor_panel"]
