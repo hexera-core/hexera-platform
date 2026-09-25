@@ -336,3 +336,21 @@ def test_the_turn_carries_whether_the_customer_handed_over_the_choice():
                         [{"role": "user", "content": "use gmsh"}])
     assert ctx2.choice_deferred is False
 
+
+def test_an_instruction_to_proceed_is_not_another_question():
+    # "use best practice" and "go ahead with what you decided" are a customer telling us to get on
+    # with it. Read as anything else they become one more question, which is precisely what a
+    # customer who wrote them is trying to avoid.
+    import meshpipeline.agents.intake.recommendation as rec
+
+    for said in ("use best practice", "best practice", "go ahead with what you decided",
+                 "just go", "proceed", "whatever is standard", "your best call",
+                 "intenral cfd and u decide patches"):
+        assert rec.choice_deferred(said), said
+        assert rec.recommendation_requested(said), said
+
+    # a real answer is not a deferral - these carry information and must be read as answers
+    for said in ("o1 is inlet", "through the bore and o1 is inlet", "others are outlet",
+                 "air", "500 mm"):
+        assert not rec.choice_deferred(said), said
+

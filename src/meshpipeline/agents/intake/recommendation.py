@@ -53,6 +53,13 @@ _DEFER_PHRASES = (
     "you know best", "u know best", "doesn t matter", "does not matter", "no preference",
     "i don t mind", "dont mind", "surprise me", "your choice", "ur choice",
     "pick for me", "choose for me", "decide for me", "you suggest", "u suggest",
+    # INSTRUCTIONS, NOT QUESTIONS. "use best practice" and "go ahead with what you decided" are a
+    # customer telling us to proceed on our own judgement. Read as anything else they become one
+    # more question, which is what a customer who wrote them is explicitly trying to avoid.
+    "best practice", "best practices", "standard practice", "usual", "whatever is standard",
+    "go ahead", "just go", "carry on", "proceed", "crack on", "get on with it",
+    "what you decided", "what u decided", "what you think is best", "what u think is best",
+    "your best call", "ur best call", "your judgement", "your judgment",
 )
 
 
