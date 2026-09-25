@@ -1,0 +1,99 @@
+/* Responsibility: Style the wait, the receipt it becomes, and a warning on its two surfaces. */
+/* Boundaries: presentation only; what counts as a warning and what a turn spent its seconds on is decided elsewhere. */
+
+/* /
+   THE WAIT. A live strip carrying the working mark this app already uses, an elapsed clock, and
+   a bar against the MEDIAN of the replies this session has actually measured. The bar exists
+   only when there is a real reference; past it, it holds full and the clock keeps counting,
+   because a run can legitimately take longer than usual and racing to a fake 100% is the lie
+   the mesh bar was written to avoid.
+
+   THE RECEIPT. When the reply lands the same strip becomes a collapsed line - "Worked for 27.4s
+   · 6 steps" - that opens onto the turn's own trace. The rows inside reuse the timeline's entry
+   classes (.e-tool, .e-think, .e-rat), because a tool call should not look like two different
+   things in two places in one product.
+
+   THE WARNING, ON BOTH SURFACES. The card stays in the transcript and the popup interrupts, and
+   dismissing the popup removes the popup only. A warning that one stray click can destroy is
+   worse than one that was never raised.
+/ */
+
+/* --- the wait --- */
+.act{border:1px solid var(--border);background:var(--surface-1);border-radius:3px;
+  padding:10px 14px;animation:rise .3s ease}
+.act-top{display:flex;align-items:center;gap:10px}
+.act-orb{display:block;flex:none;width:14px;height:14px;overflow:visible;
+  animation:spin 1.5s linear infinite}
+.act-lbl{font-size:12px;color:var(--text);letter-spacing:.01em}
+.act-clock{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--text-faint);
+  font-variant-numeric:tabular-nums}
+.act-track{height:3px;margin-top:10px;background:var(--canvas);border:1px solid var(--border);
+  border-radius:1px;overflow:hidden}
+.act-fill{height:100%;width:0;background:var(--accent);transition:width .2s linear}
+.act-fill.over{background:var(--warn)}
+.act-sub{margin-top:7px;font-size:10.5px;line-height:1.5;color:var(--text-faint);
+  letter-spacing:.01em}
+
+/* --- the receipt --- */
+.act.done{padding:0;border-color:transparent;background:transparent}
+.act.done.bare{display:flex;align-items:center;gap:8px;padding:2px 2px}
+.act.done.bare .act-lbl{font-size:11px;color:var(--text-faint)}
+.act-tick{flex:none;font-size:11px;color:var(--ok)}
+.act.fail .act-tick{color:var(--danger)}
+.act-head{display:flex;align-items:center;gap:10px;width:100%;text-align:left;cursor:pointer;
+  font:inherit;color:inherit;background:transparent;border:1px solid var(--border);
+  border-radius:3px;padding:7px 12px}
+.act-head:hover{border-color:var(--border-strong);background:var(--surface-1)}
+.act.done .act-lbl{font-size:11.5px;color:var(--text-muted)}
+.act-ct{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--text-faint)}
+.act-chev{flex:none;color:var(--text-faint);font-size:9px;transition:transform .2s}
+.act.open .act-chev{transform:rotate(180deg)}
+.act.open .act-head{border-radius:3px 3px 0 0;border-bottom-color:transparent}
+.act-body{display:none;max-height:340px;overflow:auto;padding:9px 13px 11px;
+  border:1px solid var(--border);border-top:0;border-radius:0 0 3px 3px;
+  background:var(--surface-1)}
+.act.open .act-body{display:block}
+
+/* --- a warning, in the transcript --- */
+.cav{border:1px solid var(--warn);border-left-width:3px;background:var(--warn-soft);
+  border-radius:3px;overflow:hidden;animation:rise .35s ease}
+.cav-h{display:flex;align-items:center;gap:9px;padding:9px 14px;
+  border-bottom:1px solid rgba(241,189,99,.28)}
+.cav-mark,.pop-mark{flex:none;width:16px;height:16px;border-radius:2px;background:var(--warn);
+  color:var(--canvas);font-size:11px;font-weight:800;line-height:16px;text-align:center}
+.cav-t{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--warn)}
+.cav-when{margin-left:auto;font-size:10px;letter-spacing:.06em;color:var(--text-muted)}
+/* Full text colour, not the muted body tone the rest of the conversation uses. The tinted panel
+   already drops the apparent contrast, and this is the one paragraph in the product that is
+   there to stop somebody spending an hour of compute on the wrong mesh. */
+.cav-b{padding:12px 14px;font-size:13.5px;line-height:1.7;color:var(--text)}
+.cav-b strong{color:#fff}
+.cav-flash{animation:cav-flash 1.4s ease}
+@keyframes cav-flash{0%,100%{box-shadow:none}
+  20%,70%{box-shadow:0 0 0 1px var(--warn),0 0 0 6px var(--warn-soft)}}
+
+/* --- a warning, as a popup --- */
+#pop-stack{position:fixed;right:18px;bottom:88px;z-index:900;display:flex;
+  flex-direction:column;gap:10px;max-width:min(360px,calc(100vw - 36px))}
+.pop{border:1px solid var(--border);background:var(--surface-1);border-radius:3px;
+  box-shadow:var(--shadow-2);animation:pop-in .3s cubic-bezier(.22,.61,.36,1)}
+.pop-warn{border-color:var(--warn)}
+@keyframes pop-in{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+.pop-h{display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid var(--border)}
+.pop-t{flex:1;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--warn)}
+.pop-x{flex:none;border:0;background:transparent;color:var(--text-faint);font-size:17px;
+  line-height:1;cursor:pointer;padding:0 2px}
+.pop-x:hover{color:var(--text)}
+.pop-b{padding:10px 12px;font-size:12.5px;line-height:1.6;color:var(--text-bright)}
+.pop-f{display:flex;align-items:center;gap:10px;padding:0 12px 11px}
+.pop-go{font:inherit;font-size:12px;padding:5px 12px;border-radius:3px;cursor:pointer;
+  border:1px solid var(--warn);background:transparent;color:var(--warn)}
+.pop-go:hover{background:var(--warn-soft)}
+.pop-keep{font-size:10px;color:var(--text-faint)}
+
+@media (max-width:640px){
+  #pop-stack{right:12px;left:12px;bottom:80px;max-width:none}
+}

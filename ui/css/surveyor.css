@@ -1,0 +1,108 @@
+/* Responsibility: Style the Surveyor's receipt so its three sections cannot be mistaken for each other. */
+/* Boundaries: presentation only; which sections exist and what they say is decided on the server. */
+
+/* /
+   MEASURED, SEEN, SUGGESTS - and the difference between them IS the design.
+
+   MEASURED is arithmetic on the customer's own bytes. It is set as data: a solid steel rule,
+   monospace, tabular figures, full-contrast text. It looks like an instrument reading because
+   that is what it is.
+
+   SEEN is a vision model's words about rendered pictures. The plan checker caps its identity
+   claims at 0.6 confidence for reasons measured over a 322-part corpus, and this section must
+   carry that cap visually: a DASHED rule, a faint hatch across the panel, prose type rather
+   than monospace, muted ink, and the reading's own confidence word shown as a three-step meter.
+   Nothing in it is allowed to look like a figure.
+
+   SUGGESTS is an offer to be corrected, so it takes the accent - the colour this product
+   reserves for the thing you act on - and the server's own "say draft or max to change it"
+   becomes buttons.
+
+   The three are told apart by RULE STYLE and TYPE as well as by colour, so the distinction
+   survives greyscale and a colour-blind reader, which is the same rule the status tokens follow.
+/ */
+
+.sv{border:1px solid var(--border);background:var(--surface-1);border-radius:3px;
+  overflow:hidden;animation:rise .35s ease}
+.sv-head{display:flex;align-items:center;gap:12px;width:100%;text-align:left;cursor:pointer;
+  background:var(--background);border:0;border-bottom:1px solid var(--border);
+  padding:11px 16px;font:inherit;color:inherit}
+.sv-head:hover{background:var(--surface-2)}
+.sv-eyebrow{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--accent)}
+.sv-sum{flex:1;min-width:0;font-size:11.5px;color:var(--text-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv-chev{flex:none;color:var(--text-faint);font-size:9px;transition:transform .2s}
+.sv.open .sv-chev{transform:rotate(180deg)}
+.sv-body{display:none}
+.sv.open .sv-body{display:block}
+.sv-raw{padding:12px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.6;
+  color:var(--text-muted);white-space:pre-wrap;word-break:break-word}
+
+/* a section */
+.sv-sec{padding:12px 16px 14px;border-top:1px solid var(--border);border-left:3px solid transparent}
+.sv-sec:first-child{border-top:0}
+.sv-sec-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.sv-tag{flex:none;font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  padding:2px 7px;border-radius:2px}
+.sv-note{font-size:11px;line-height:1.5;color:var(--text-faint)}
+.sv-rows{display:block}
+.sv-row{display:grid;grid-template-columns:128px minmax(0,1fr);gap:12px;padding:3px 0}
+.sv-row-line{display:block}
+.sv-k{font-size:11px;letter-spacing:.02em;color:var(--text-faint)}
+.sv-vs{display:flex;flex-direction:column;gap:3px;min-width:0}
+.sv-v{min-width:0;font-size:12.5px;line-height:1.6;color:var(--text-bright);
+  overflow-wrap:anywhere}
+
+/* MEASURED - arithmetic, set as an instrument reading */
+.sv-measured{border-left-color:var(--steel)}
+.sv-measured .sv-tag{background:var(--steel-bright);color:var(--canvas)}
+.sv-measured .sv-v{font-family:var(--mono);font-size:12.5px;letter-spacing:-.01em;
+  color:var(--text);font-variant-numeric:tabular-nums}
+
+/* SEEN - a reading. Dashed rule, hatched panel, prose type, muted ink: it must not be able to
+   pass for the section above it at a glance. */
+.sv-seen{border-left:3px dashed var(--steel-muted);
+  background-image:repeating-linear-gradient(135deg,
+    rgba(143,179,202,.045) 0 5px, transparent 5px 11px)}
+.sv-seen .sv-tag{background:transparent;color:var(--steel);border:1px dashed var(--steel-muted)}
+.sv-seen .sv-k{color:var(--steel-muted)}
+.sv-seen .sv-v{font-family:var(--sans);color:var(--text-muted)}
+
+/* how many views were read, how long it took, and how sure it says it is */
+.sv-reading{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 10px}
+/* ABSTRACT frames, never thumbnails: the rendered views are in nothing the browser is sent, and
+   grey rectangles pretending to be pictures of the customer's part would be a lie in a panel
+   whose whole subject is what is known and what is only read. */
+.sv-strip{display:inline-flex;gap:2px;align-items:center}
+.sv-strip i{display:block;width:3px;height:13px;border-radius:1px;background:var(--steel-muted)}
+.sv-count{font-size:10.5px;font-family:var(--mono);color:var(--text-faint)}
+.sv-conf{display:inline-flex;align-items:center;gap:7px;font-size:10.5px;color:var(--text-faint)}
+.sv-conf-l{font-size:9px;letter-spacing:.1em;text-transform:uppercase}
+.sv-conf-m{display:inline-flex;gap:2px}
+.sv-conf-m i{display:block;width:11px;height:4px;border-radius:1px;
+  background:var(--steel-muted);opacity:.32}
+.sv-conf-m i.on{opacity:1;background:var(--steel)}
+.sv-conf b{color:var(--steel-bright);font-weight:600}
+.sv-cap{margin-top:10px;padding-left:9px;border-left:2px solid var(--steel-muted);
+  font-size:11px;line-height:1.6;color:var(--text-faint)}
+
+/* SUGGESTS - the offer to correct it */
+.sv-suggests{border-left-color:var(--accent)}
+.sv-suggests .sv-tag{background:var(--accent);color:var(--accent-ink)}
+.sv-offers{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px}
+.sv-offers-l{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--text-faint)}
+.sv-chip{font:inherit;font-size:12px;padding:5px 13px;border-radius:3px;cursor:pointer;
+  border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);
+  transition:.12s}
+.sv-chip:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+
+/* a section this build has no name for still renders, under its own heading */
+.sv-other{border-left-color:var(--border-strong)}
+.sv-other .sv-tag{background:var(--surface-2);color:var(--text-muted);
+  border:1px solid var(--border)}
+
+@media (max-width:640px){
+  .sv-row{display:block}
+  .sv-k{display:block;margin-bottom:1px}
+}
