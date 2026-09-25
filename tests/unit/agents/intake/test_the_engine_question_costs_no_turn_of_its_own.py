@@ -176,6 +176,6 @@ def test_an_earlier_refusal_is_never_spent_as_agreement_to_an_engine():
     """Only a deferral may be read from an earlier message, so two turns of "no" settle nothing - and the
     third message, which IS a deferral, settles it, which is what makes the first assertion about the
     refusals rather than about the reader being switched off."""
-    earlier = ("not that one", "no, something else", "whatever's best")
+    earlier = ("not that one", "no, something else", "you decide")
     assert not _es_answers("snappy", "what does it cost?", earlier[:2])
     assert _es_answers("snappy", "what does it cost?", earlier)
