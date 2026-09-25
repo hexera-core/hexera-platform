@@ -2,6 +2,7 @@
 # Boundaries: intake tools read and propose; none of them starts a run.
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -58,6 +59,13 @@ class IntakeToolResult:
     malformed: bool = False         # arguments did not parse - nothing was dispatched
     advanced: bool = False          # application state genuinely improved
     signature: str = ""             # stable identity of the state this call produced
+
+
+#: How long the conversation waits for the look before carrying on without it. The look takes about
+#: 25 seconds on this reader; the budget is generous so a slow one is still caught, and a slower one
+#: is left to land on the row by itself rather than holding a customer.
+LOOK_WAIT_SECONDS = 75.0
+LOOK_POLL_SECONDS = 2.5
 
 
 @dataclass
@@ -533,6 +541,40 @@ class IntakeToolExecutor:
         doc = self.state.geometry_document
         return doc if isinstance(doc, dict) else {}
 
+    async def _survey_with_the_look(self, survey: dict | None) -> dict | None:
+        """The survey recomposed once the look has landed, or the one given if it does not.
+
+        The look is queued by the composition itself and written by a worker, so this polls the row.
+        `LOOK_WAIT_SECONDS` is the whole budget: a look that takes longer than this is one the
+        conversation stops waiting for, not one that fails - it lands later and the row keeps it.
+        """
+        from meshpipeline.application import geometry_survey as gs
+
+        if not isinstance(survey, dict) or self.state.survey_source_ref is None:
+            return survey
+        if gs.look_state(survey) != gs.LOOK_PENDING:
+            return survey
+        waited = 0.0
+        while waited < LOOK_WAIT_SECONDS:
+            await asyncio.sleep(LOOK_POLL_SECONDS)
+            waited += LOOK_POLL_SECONDS
+            document = await self._current_document()
+            if str((document.get("look") or {}).get("status") or "") in ("ok", "failed"):
+                logger.info("Intake: the look landed after %.0fs; recomposing the survey from it - "
+                            "job_id=%s", waited, self._job_id)
+                try:
+                    fresh = gs.recomposed(survey, document)
+                    await gs.save(self.state.owner_id, str(self.state.survey_source_ref.source_id),
+                                  fresh, session_id=self.state.session_id)
+                    return fresh
+                except Exception as exc:           # noqa: BLE001 - never a turn
+                    logger.warning("Intake: could not recompose for the look (%s) - job_id=%s",
+                                   exc, self._job_id)
+                    return survey
+        logger.info("Intake: the look has not landed in %.0fs; carrying on without it - job_id=%s",
+                    LOOK_WAIT_SECONDS, self._job_id)
+        return survey
+
     async def _do_survey_the_part(self, args: dict) -> IntakeToolResult:
         """Step 1 to step 4: the customer has said what the part is for; compose and return the questions."""
         refused = self._survey_refusal("survey_the_part")
@@ -561,6 +603,21 @@ class IntakeToolExecutor:
             logger.info("Intake: survey_the_part declined (%s) - job_id=%s", exc, self._job_id)
             return IntakeToolResult(tool="survey_the_part", accepted=True, content=(
                 f"No survey for this upload: {exc}. Carry on as usual."))
+        # WAIT FOR THE LOOK, RATHER THAN COMPOSING AROUND IT. Composing queues the look, which takes
+        # about 25 seconds. Everything downstream - the questions the customer is asked, the plan the
+        # geometry agent makes, the survey the builder recomposes - is built from the survey, so a
+        # survey composed before the look is a survey of a part nobody has seen, and every later
+        # reader disagrees with it. Re-reading the row at each writer made that survivable; waiting
+        # here makes it impossible, and it is one place instead of a rule every caller must keep.
+        #
+        # It also makes the questions better. On a real part the look said all four openings were
+        # "not a port" - which is the difference between asking which one is the inlet and saying
+        # this is an external body with no ports.
+        #
+        # Bounded, and never fatal: past the wait the conversation carries on with what it has, which
+        # is exactly what it did before this existed.
+        st.geometry_survey = await self._survey_with_the_look(st.geometry_survey)
+
         logger.info("Intake: survey composed for %s, stage=%s - job_id=%s", args.get("purpose"),
                     st.geometry_survey.get("stage"), self._job_id)
         return IntakeToolResult(tool="survey_the_part", accepted=True, content=self._survey_text())
