@@ -330,11 +330,15 @@ async def upload_step_file(
     # had just been measured was told only "Geometry received".
     if greeting:
         try:
-            from meshpipeline.cad.regions import stored_document_for_source
-            from meshpipeline.pipeline.geometry_state import GeometryRef
+            from types import SimpleNamespace
 
+            from meshpipeline.cad.regions import stored_document_for_source
+
+            # `_stored_document` reads `source_id` and `owner_id` off whatever it is given, so the
+            # reference is made here rather than imported: there is no ref type at this point in the
+            # request, and inventing an import for one is how the first attempt at this failed.
             _summary = _measured_summary(await stored_document_for_source(
-                GeometryRef(source_id=source_id, sha256="")))
+                SimpleNamespace(source_id=str(source_id), owner_id=str(owner_id), sha256="")))
             if _summary:
                 greeting = _summary + greeting
         except Exception as exc:                   # noqa: BLE001 - an upload never fails on this
