@@ -359,3 +359,23 @@ def test_an_instruction_to_proceed_is_not_another_question():
     for said in ("proceed", "go ahead", "just go", "carry on"):
         assert not rec.choice_deferred(said), said
 
+
+def test_deferring_to_an_engine_we_have_already_proposed_accepts_it():
+    # Driving a real conversation, "you decide" was answered "I can't answer this one for you"
+    # SEVEN times in a row and the run never reached a mesh. The question on screen names ONE
+    # engine, and a customer answering it with "you decide" has delegated that decision twice.
+    proposed = es.propose("gmsh", session_id="s", owner_id="u", revision="r", user_msg_count=0)
+    state = _state("you decide", gate={"selection": proposed, "admission": None})
+    out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
+                       _resp(content="Gmsh it is - what are the flow conditions?")])
+    gate = out["intake_gate"]
+    assert gate["selection"]["state"] == es.CONFIRMED
+    assert gate["selection"]["id"] == proposed["id"]
+
+
+def test_deferring_with_no_question_on_screen_still_selects_nothing():
+    # The honesty of the rule above is that it needs something to accept. With no standing
+    # proposal there is no named engine, so "you decide" is a request, not a confirmation.
+    assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=False) is False
+    assert es.answers_the_selection_question("gmsh", "", "you decide", outstanding=True) is True
+

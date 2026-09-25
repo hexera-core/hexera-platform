@@ -155,6 +155,23 @@ def answers_the_selection_question(engine: str, quote: str, latest_user_message,
         return True
     if outstanding and (said_yes or (named and "?" not in _norm(latest_user_message))):
         return True
+    # DEFERRING TO A CHOICE WE HAVE ALREADY MADE AND SHOWN IS ACCEPTING IT. The question on screen
+    # names ONE engine. A customer who answers it with "you decide" has handed us that decision for
+    # the second time - the first time is why we proposed this engine at all - and there is nothing
+    # left for them to decide that they have not already delegated.
+    #
+    # Without this the commonest thing this owner types could not answer the commonest question this
+    # product asks: driving a real conversation, "you decide" was answered SEVEN times with "I can't
+    # answer this one for you", and the run never reached a mesh. The model was right to refuse -
+    # it must not invent consent - so the fix belongs here, where what counts as consent is decided.
+    #
+    # Only against an OUTSTANDING proposal, which is what keeps it honest: "you decide" with no
+    # question on screen still selects nothing, because there is nothing it could be accepting.
+    if outstanding:
+        from meshpipeline.agents.intake.recommendation import choice_deferred
+
+        if choice_deferred(latest_user_message):
+            return True
     return False
 
 
