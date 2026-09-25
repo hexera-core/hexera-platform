@@ -272,12 +272,19 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     not_ports = [str(o.get("id")) for o in roles if str(o.get("likely_role") or "") == "not a port"]
     out.append("")
     out.append("SUGGESTS (my reading - correct any of it and I will use yours)")
+    purpose = str(((survey or {}).get("composed_for") or {}).get("purpose") or "")
+    # ONLY A FLOW CASE HAS FLOW IN IT. "no duct mouth, so this reads as flow AROUND the body" is a
+    # useful sentence for CFD and a nonsense one for a structural or thermal job, and the purpose
+    # enum has both. What the openings ARE is worth saying either way; what a fluid does is not.
+    is_flow = purpose in ("internal_cfd", "external_cfd", "conjugate_heat_transfer")
     rep = str(((survey or {}).get("composed_for") or {}).get("representation") or "").replace("_", " ")
     if rep:
         out.append(f"  this is      {rep}")
     if not_ports and len(not_ports) == len(rows) and rows:
-        out.append(f"  the {len(not_ports)} opening(s) above do NOT look like ports - no duct mouth behind them, so "
-                   "this reads as flow AROUND the body rather than through it")
+        line = f"  the {len(not_ports)} opening(s) above do NOT look like ports - no duct mouth behind them"
+        if is_flow:
+            line += ", so this reads as flow AROUND the body rather than through it"
+        out.append(line)
     elif not_ports:
         out.append("  {} of the openings do not look like ports: {}".format(len(not_ports), ", ".join(not_ports)))
     # HOW BIG THE MESH WILL BE, SAID RATHER THAN ASKED. The measurement forecasts a cell count per

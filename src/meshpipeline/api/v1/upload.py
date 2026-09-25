@@ -98,8 +98,14 @@ def _measured_summary(document: dict | None) -> str:
         out.append("  openings  none - this is a closed body with no ports")
 
     out.append("")
-    out.append("I have not looked at the shape yet. I do that once you tell me what it is for, "
-               "because the same part reads differently as flow THROUGH it than as flow AROUND it.")
+    # WITHOUT PRESUMING IT IS FLOW AT ALL. The first draft of this line said "the same part reads
+    # differently as flow THROUGH it than as flow AROUND it", which quietly decides the customer is
+    # doing CFD before they have said a word - and the purpose enum has structural and thermal in it
+    # too. The reason the look waits is the same whatever the analysis is: what matters in a part
+    # depends on what you are going to do with it.
+    out.append("I have not looked at the shape yet. I do that once you tell me what the analysis is, "
+               "because what matters in a part depends on what you are doing with it - stress, heat "
+               "and flow each need different things resolved.")
     out.append("")
     return chr(10).join(out)
 
