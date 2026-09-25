@@ -1196,6 +1196,14 @@ def said_by_customer(words: str, latest_user_message: str, earlier: Any = None) 
     return any(quote in _norm(str(m)) for m in (earlier or ()))
 
 
+def _mentions(text: str, place: str) -> bool:
+    """The message names this mouth, as a word rather than as a run of characters inside another one."""
+    said = str(place or "").strip()
+    if not said:
+        return False
+    return re.search(rf"(?<![0-9a-z]){re.escape(said.lower())}(?![0-9a-z])", _norm(text)) is not None
+
+
 def accepts_a_proposal(latest_user_message: str, earlier: Any = None) -> bool:
     """Has the customer accepted a proposal that is on screen, or handed us the decision and not taken it back?
 
@@ -1205,7 +1213,10 @@ def accepts_a_proposal(latest_user_message: str, earlier: Any = None) -> bool:
 
       an acceptance   `engine_selection.affirms`, which is the reader already used for the one question the
                       application puts on screen itself. It refuses any message carrying a denial or a
-                      hesitation anywhere in it, so "go, but o2 is the inlet" is not an acceptance of anything.
+                      hesitation anywhere in it, so "no, not that one" accepts nothing. It does NOT refuse
+                      "go, but o2 is the inlet" - "but" is neither - and that is what
+                      `_the_proposal_recorded`'s second check is for: a message naming one of the mouths is
+                      handed back rather than answered on their behalf.
       a delegation    `recommendation.choice_deferred`, in their latest message or in an earlier one. A
                       delegation does not expire - that is `said_by_customer`'s own argument, measured - so
                       "everything else you decide" three turns ago still stands.
@@ -1257,6 +1268,24 @@ def _the_proposal_recorded(state: dict, view: dict, row: dict, *, latest_user_me
             "their latest message does not accept the proposal and they have not handed you the decision "
             "either, so the application may not record its own reading as their answer. Record the option "
             "they named, or put the question")
+    # AND A MESSAGE THAT NAMES ONE OF THESE MOUTHS IS NOT AN ACCEPTANCE OF A READING OF ALL OF THEM.
+    #
+    # `accepts_a_proposal` reads "go, but o2 is the inlet" as an acceptance: `engine_selection.affirms`
+    # refuses a denial or a hesitation and "but" is neither. Recording the proposal there would overwrite
+    # the one thing they took the trouble to say, silently, on a boundary condition - the worst kind of
+    # wrong answer this chain can produce. So a message that mentions any mouth this question names is
+    # handed back to the model to record properly.
+    #
+    # IT IS NOT A PARSE AND IT MUST NOT BECOME ONE. It does not read WHICH role they gave WHICH mouth - this
+    # codebase maps no free text onto an option - it only observes that the message is about the mouths, and
+    # then declines to speak for them. A false positive costs one refusal the model answers with the option;
+    # a false negative is a confirmed role nobody confirmed.
+    named = [p for p in view["subjects"] if _mentions(latest_user_message, p)]
+    if named:
+        raise SurveyError(
+            f"their latest message names {', '.join(named)}, so they are placing mouths themselves rather "
+            f"than accepting a reading of all of them. Record the role they gave each one with `option` and "
+            f"`mouth`; accepted_proposal is for a message that leaves the placing to you")
     for place in view["subjects"]:
         if place not in proposal:
             raise SurveyError(

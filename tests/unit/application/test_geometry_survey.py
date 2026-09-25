@@ -493,6 +493,27 @@ def test_a_standing_delegation_settles_it_turns_later_and_a_bare_refusal_never_d
                          latest_user_message="no, go with o1 as the inlet", accepted_proposal=True)
 
 
+def test_a_message_that_names_a_mouth_is_never_read_as_accepting_a_reading_of_all_of_them():
+    """`accepts_a_proposal` reads "go, but o2 is the inlet" as an acceptance - `engine_selection.affirms`
+    refuses a denial or a hesitation and "but" is neither - and recording the proposal there would overwrite
+    the one thing they took the trouble to say, silently, on a boundary condition.
+
+    The check observes that the message is ABOUT the mouths and declines to speak for them. It never reads
+    which role went to which mouth: that is the mapping of free text onto an option this codebase refuses."""
+    state = _fresh("bend_elbow_001")
+    view = _role_question(state)
+    other = next(m for m, r in view["proposal"].items() if r == "outlet")
+    said = f"go, but {other} is the inlet"
+    with pytest.raises(gs.SurveyError, match=f"names {other}"):
+        gs.record_answer(state, question_id=view["id"], words=said, latest_user_message=said,
+                         accepted_proposal=True)
+    # the mouth id has to be a WORD, not a run of characters inside a number or another word
+    assert gs.accepts_a_proposal("go", ())
+    for harmless in ("go", "go ahead, 1044 mm is right", "looks good"):
+        assert not any(gs._mentions(harmless, p) for p in view["subjects"]), harmless
+    assert gs._mentions("what about O1?", "o1"), "case does not matter"
+
+
 def test_the_customers_own_role_supersedes_a_proposal_they_accepted():
     """THEY ARE THE AUTHORITY. A proposal the platform recorded on a "go" is their answer, and their own later
     words correct it exactly as they correct a role they named themselves - it is not locked in."""
