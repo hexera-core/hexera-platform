@@ -4,6 +4,7 @@
 # Collaborates with: application/geometry_measurement.py for the row it reads, agents/intake for the conversation, cad/regions.py for the builder's block.
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import re
@@ -425,7 +426,23 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
     except Exception as exc:                       # noqa: BLE001 - a foreign dump is not a measurement
         raise SurveyError(f"the stored facts do not validate: {type(exc).__name__}") from exc
     stated_cap, _line = pkg["survey"].budget_from_brief(brief_text)
+    # AND WITH NEITHER, THE PLATFORM'S CEILING RATHER THAN THE PACKAGE'S COPY OF IT.
+    #
+    # `hexera.budget` does `cap = int(cell_cap) if cell_cap else MAX_CELLS_CAP`, so None was never
+    # unbounded - it fell through to the package's own constant, 8,000,000. The platform's
+    # CELL_HARD_LIMIT is also 8,000,000, so today they agree. They agree BY COINCIDENCE: two numbers
+    # in two independently pinned distributions, and only one of them is env-overridable
+    # (`optional_env("CELL_HARD_LIMIT", ...)`). Set CELL_HARD_LIMIT=4000000 in a deployment and the
+    # agent keeps planning against eight million while the snappy driver clamps to four, with nothing
+    # anywhere that notices.
+    #
+    # Passing it explicitly makes the platform's number the only one in play. `cell_cap_kind` below is
+    # computed from `cell_cap` and `stated_cap`, never from this, so a ceiling stays what it is and
+    # does not become a confirmation.
     cap = cell_cap if cell_cap is not None else stated_cap
+    if cap is None:
+        from meshpipeline.contracts.geometry_agent_block import cell_cap_for_composition
+        cap = cell_cap_for_composition(None)
     ports = [dict(p) for p in (declared or []) if isinstance(p, dict)]
     if inlet_ids is None:
         inlet_ids = _declared_inlets(document, ports)
@@ -528,6 +545,12 @@ def composition(document: dict, *, purpose: str, brief: str | None = None,
         survey = pkg["build"].survey_from(
             composed, brief=brief_text or None, declared=ports or None,
             uncertainties=pkg["ask_job"].contract_uncertainties(asked, asking_doc))
+    except SurveyError:
+        # ALREADY THE SENTENCE THE CALLER SHOWS. `_without_the_flow_questions` raises one from inside this
+        # block, and the `except Exception` below would wrap it as "the survey could not be composed:
+        # SurveyError: <the whole sentence>" - a refusal that reads as an internal fault instead of as the
+        # reason it is. Re-raised before the two handlers below rather than after, because both would match.
+        raise
     except pkg["marks"].ContractError as exc:
         raise SurveyError(f"the survey refused its own handoff: {exc}") from exc
     except Exception as exc:                       # noqa: BLE001 - never a turn, never a mesh
@@ -589,12 +612,14 @@ def _without_the_flow_questions(pkg: dict, asked: Any, purpose: str, engine: str
     builder as an advisory uncertainty about which mouth is the inlet - the flow-shaped thing carried after
     all, one list along, with the customer-facing half looking fixed.
 
-    IT REFUSES ON A NAME THE PACKAGE NO LONGER HAS. Every kind cut is matched against `ask.schema.KINDS`,
-    because the failure mode of a frozenset of strings is that the package renames one and the cut silently
-    stops cutting it: a structural customer would then be asked which mouth is the inlet again, with this
-    function sitting in the path looking like it was handled. A refusal costs a non-flow job its survey,
-    which is exactly what it had before this change, and it costs a flow job nothing because the cut does
-    not run for one.
+    IT REFUSES ON ANY KIND THIS PLATFORM HAS NOT CLASSIFIED, in either direction. The three sets must cover
+    `ask.schema.KINDS` exactly: a kind this module names and the package no longer has is a cut that silently
+    stops cutting (rename `port_role` and a structural customer is asked which mouth is the inlet again, with
+    this function in the path looking like it handled it), and a kind the package has added and this module
+    has not classified is carried onto a non-flow survey because nobody decided it should be. Both are the
+    same defect - a check whose blind spot is its subject's - and both refuse. A refusal costs a non-flow job
+    its survey, which is exactly what it had before this change, and it costs a flow job nothing because the
+    cut does not run for one.
 
     THE FINDER'S RANKING IS NOT RE-RUN over what is left, and that is deliberate. `ask.intake.ask_intake`
     ranks by consequence and puts at most `MAX_ASKED` (5); a question it HELD `below_the_cap` could in
@@ -607,17 +632,19 @@ def _without_the_flow_questions(pkg: dict, asked: Any, purpose: str, engine: str
     """
     if purpose in FLOW_PURPOSES:
         return asked
+    classified = FLOW_ONLY_QUESTION_KINDS | ENGINE_DEPENDENT_QUESTION_KINDS | KEPT_QUESTION_KINDS
+    known = frozenset(pkg["ask_schema"].KINDS)
+    gone, new = sorted(classified - known), sorted(known - classified)
+    if gone or new:
+        raise SurveyError(
+            f"the Surveyor cannot compose for {purpose!r}: it may only carry a question kind somebody has "
+            f"judged honest for a purpose that is not about flow, and this platform and "
+            f"`ask.schema.KINDS` do not agree on the list"
+            + (f" - it names {', '.join(gone)}, which the package no longer has" if gone else "")
+            + (f" - the package has {', '.join(new)}, which nobody has classified" if new else ""))
     drop = set(FLOW_ONLY_QUESTION_KINDS)
     if not engine_can_mesh(purpose, engine):
         drop |= set(ENGINE_DEPENDENT_QUESTION_KINDS)
-    known = set(pkg["ask_schema"].KINDS)
-    unknown = sorted(drop - known)
-    if unknown:
-        raise SurveyError(f"the Surveyor cannot compose for {purpose!r}: it must cut the question kind(s) "
-                          f"{', '.join(unknown)} and the package no longer has them, so it cannot tell "
-                          f"whether it is cutting them")
-    import dataclasses
-
     cut = [f"{q.id} ({q.kind})" for q in asked.questions if q.kind in drop]
     out = dataclasses.replace(
         asked,
@@ -2024,8 +2051,15 @@ ENGINE_DEPENDENT_QUESTION_KINDS: frozenset[str] = frozenset({"budget_envelope", 
 #: 1,000x error; `unlabelled_mouth`, which is the look reporting an OPENING the measurement did not find and
 #: says nothing about what flows through it; `look_dispute`, which is two readings of one place disagreeing
 #: and is about the place, not the flow; `opening_unseen` and `identity`, which are recorded and advisory and
-#: were never asked for any purpose. Written down because the cut is defined by what it removes, and the list
-#: of what it must NOT remove is the half a reader cannot check from the code.
+#: were never asked for any purpose.
+#:
+#: IT IS NOT A COMMENT, IT IS THE HALF OF THE CUT A READER CANNOT CHECK. These three sets must cover
+#: `ask.schema.KINDS` exactly, and `_without_the_flow_questions` checks that they do before it cuts anything.
+#: The failure mode of a cut written as "drop these five kinds" is the day the package adds a SIXTH: it is
+#: carried onto a structural survey by default, nobody decided that it should be, and the cut sitting in the
+#: path makes it look decided. A kind nobody has classified is a kind this platform cannot say is honest for
+#: a purpose that is not about flow, so a non-flow job gets no survey until somebody puts it in one of these
+#: two lists - which is exactly where that job was before any of this existed.
 KEPT_QUESTION_KINDS: frozenset[str] = frozenset({
     "unit", "unlabelled_mouth", "look_dispute", "opening_unseen", "identity"})
 
