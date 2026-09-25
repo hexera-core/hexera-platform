@@ -71,3 +71,33 @@ def test_the_statement_no_longer_announces_and_denies_a_selection_at_once():
         "it announced a selection and denied one in consecutive lines")
     assert "Nothing is meshed until you say so." in said, "the guarantee is worth one clause"
     assert said.count("?") == 1, "one ask"
+
+
+# AND THE LAST SCREEN BEFORE COMPUTE NAMES THE MESHER, which it never did.
+#
+# `answers_the_selection_question` accepts "you decide" against a FRESH proposal - re-asking a
+# decision the customer just handed over is a question with one answer - and it justifies that in
+# writing: "the engine is named in the setup block they confirm before anything is submitted".
+#
+# MEASURED on a structural run: the engine was confirmed from "you decide", the application's own
+# "Selected engine: X" was never shown, the only place "Gmsh" appeared was a sentence the MODEL wrote,
+# and the pre-dispatch confirmation named no mesher at all. The guarantee that justifies skipping the
+# question was being kept by nothing.
+
+def test_the_confirmation_names_the_engine_the_platform_will_actually_run():
+    from meshpipeline.agents.intake import engine_selection as es
+    assert es.engine_label("gmsh") == "Gmsh", "the label the customer reads"
+
+
+def test_the_engine_is_read_off_the_confirmed_selection_not_the_model_s_arguments():
+    """A model that wrote a different name upstream must be contradicted here, not agreed with."""
+    import inspect
+
+    from meshpipeline.agents.intake import executor as ex
+
+    src = inspect.getsource(ex.IntakeToolExecutor)
+    i = src.index("MESHING WITH")
+    window = src[i - 400:i + 400]
+    assert 'st.selection or {}).get("engine")' in window, (
+        "the engine on this screen must be the confirmed selection, not args")
+    assert 'args.get("engine")' not in window

@@ -944,7 +944,28 @@ class IntakeToolExecutor:
         # told "confirm the requirements above", then handed findings they had not read yet, then
         # asked to proceed - so the one line telling them to check something pointed backwards,
         # past the very thing worth checking.
-        st.submit_summary = (_agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
+        # AND WHICH MESHER, WHICH THIS SCREEN NEVER SAID. `engine_selection.answers_the_selection_
+        # question` accepts "you decide" against a FRESH proposal, deliberately - re-asking a
+        # decision the customer just handed over is a question with one answer - and it justifies
+        # itself in writing: "the engine is named in the setup block they confirm before anything is
+        # submitted". It was not. MEASURED on a structural run: the engine was confirmed from "you
+        # decide" with the application's own "Selected engine: X" never shown, the only place Gmsh
+        # appeared was a sentence the MODEL wrote, and this screen - the last one before compute is
+        # spent - named no mesher at all. So the guarantee that justifies skipping the question was
+        # not being kept by anything.
+        #
+        # Read off the confirmed selection, not the arguments: this is the engine the platform will
+        # actually run, so a model that wrote a different name upstream is contradicted here rather
+        # than agreed with.
+        _eng = str((st.selection or {}).get("engine") or "").strip()
+        _head = ""
+        if _eng:
+            _head = "MESHING WITH " + es.engine_label(_eng)
+            _fid = str(args.get("mesh_fidelity") or "").strip()
+            if _fid:
+                _head += f" at {_fid} fidelity"
+            _head += chr(10) * 2
+        st.submit_summary = (_head + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
                              + at.CONFIRM_REQUIREMENTS_ASK
                              + (chr(10) * 2) + "Shall I proceed with mesh generation?")
         st.approval = ap.create(
