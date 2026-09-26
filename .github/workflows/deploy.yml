@@ -1324,6 +1324,19 @@ jobs:
       MINIO_PUBLIC_ENDPOINT: ${{ needs.target.outputs.minio_endpoint }}
       MINIO_REGION: ${{ needs.target.outputs.minio_region }}
       MINIO_SECURE: ${{ needs.target.outputs.minio_secure }}
+      # BILLING, from this job's GitHub ENVIRONMENT variables rather than from the picker: whether
+      # an environment charges, and which Stripe account's objects it names, is set per environment
+      # by whoever owns that Stripe account, and changing it must not need a diff to this file.
+      # Every one is empty until set, and empty is "this deployment does not charge" all the way
+      # down (bootstrap-env.sh). Container NAMES and price ids only - no value here is a secret.
+      STRIPE_API_KEY_SECRET: ${{ vars.STRIPE_API_KEY_SECRET }}
+      STRIPE_WEBHOOK_SECRET_SECRET: ${{ vars.STRIPE_WEBHOOK_SECRET_SECRET }}
+      ADMIN_API_KEY_SECRET: ${{ vars.ADMIN_API_KEY_SECRET }}
+      STRIPE_PRICE_STARTER: ${{ vars.STRIPE_PRICE_STARTER }}
+      STRIPE_PRICE_STARTER_OVERAGE: ${{ vars.STRIPE_PRICE_STARTER_OVERAGE }}
+      STRIPE_PRICE_TEAM: ${{ vars.STRIPE_PRICE_TEAM }}
+      STRIPE_PRICE_TEAM_OVERAGE: ${{ vars.STRIPE_PRICE_TEAM_OVERAGE }}
+      CONSOLE_BASE_URL: ${{ vars.CONSOLE_BASE_URL }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

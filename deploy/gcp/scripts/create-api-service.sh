@@ -195,6 +195,23 @@ API_ENV_PAIRS=(
   # spends worker time and a vision-model call per upload.
   "GEOMETRY_CHECK_ENABLED=${GEOMETRY_CHECK_ENABLED:-false}"
 )
+# BILLING'S NON-SECRET HALF, only where this deployment charges (the two Stripe credentials are
+# bound above as references). CONSOLE_BASE_URL is where Stripe returns the browser; left unset it
+# is the console's custom hostname, because the default is a localhost address that would strand a
+# customer who has just paid. The price ids are written only when stated - an absent one is a tier
+# this deployment does not sell, which /billing/plans reports as not purchasable.
+if [ -n "${STRIPE_API_KEY_SECRET:-}" ]; then
+  _console_base="${CONSOLE_BASE_URL:-}"
+  [ -n "${_console_base}" ] || [ -z "${CONSOLE_DOMAIN:-}" ] || _console_base="https://${CONSOLE_DOMAIN}"
+  [ -n "${_console_base}" ] || die "billing is configured (STRIPE_API_KEY_SECRET) but this deployment
+   states neither CONSOLE_BASE_URL nor CONSOLE_DOMAIN, so Stripe would return a customer who has
+   just paid to http://localhost:3000. Set CONSOLE_BASE_URL to the console's public origin."
+  API_ENV_PAIRS+=("CONSOLE_BASE_URL=${_console_base}")
+  for _price in STRIPE_PRICE_STARTER STRIPE_PRICE_STARTER_OVERAGE \
+                STRIPE_PRICE_TEAM STRIPE_PRICE_TEAM_OVERAGE; do
+    [ -z "${!_price:-}" ] || API_ENV_PAIRS+=("${_price}=${!_price}")
+  done
+fi
 # The mesh executor, if this deployment has one. The application reads the job as CLOUDRUN_JOB.
 if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then
   API_ENV_PAIRS+=("CLOUDRUN_JOB=${CLOUDRUN_MESH_JOB}")
