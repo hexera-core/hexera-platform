@@ -53,6 +53,47 @@ def category_of(tool: str) -> str:
     return INTAKE_CATEGORIES.get(tool) or SURVEY_CATEGORIES.get(tool, "unknown")
 
 
+#: The heading over the roles WE proposed and the geometry agent then changed. Absent entirely when
+#: nothing changed - an empty heading on the last screen before compute is furniture, and the owner's
+#: standing complaint about this product is walls of text.
+ROLES_I_CHANGED_HEAD = "WHAT I CHANGED FROM MY OWN PROPOSAL"
+
+#: At most this many changed roles are named, and at most this much of the agent's reason for one. Its
+#: `evidence` is prose written for an engineer, and this screen already carries the mesher, the setup,
+#: the agent's findings and the risks. The same shape as the risks block's own `[:5]`.
+ROLES_I_CHANGED_MAX = 5
+REASON_MAX = 200
+
+
+def role_words(role: str) -> str:
+    """A patch role as a customer reads it. The stored word with its underscore opened up, and nothing else.
+
+    NOT a translation table. `chain.job.ROLE_WORD` maps the customer's phrase ONTO the vocabulary and the
+    agent package owns it; inverting it here would be a second spelling of a role to keep in step, which is
+    the failure `contract.given` refuses plans over. `closed_end` reads "closed end", which is what it is.
+    """
+    return str(role or "").strip().replace("_", " ")
+
+
+def one_line_reason(evidence: Any) -> str:
+    """The agent's own first reason for a patch, cut to one line, or "" when it gave none.
+
+    NEVER PADDED WITH A REASON WE INVENTED. `st.engine_swap` may fall back to "it could not mesh this
+    setup" because the application knows that much is true of any swap it makes; nothing here knows why
+    the agent re-read a mouth, so a change with no reason is stated with no reason. A fact that lies is
+    worse than a missing one, and the change itself is the half that must not go missing.
+    """
+    for item in (evidence or []) if isinstance(evidence, (list, tuple)) else []:
+        said = " ".join(str(item).split())
+        if not said:
+            continue
+        if len(said) <= REASON_MAX:
+            return said
+        cut = said[:REASON_MAX].rsplit(" ", 1)[0]
+        return (cut or said[:REASON_MAX]).rstrip(" ,;:-") + "..."
+    return ""
+
+
 @dataclass(frozen=True)
 class IntakeToolResult:
 
@@ -972,6 +1013,109 @@ class IntakeToolExecutor:
             logger.warning("Intake: the geometry agent's step could not run (%s) - job_id=%s", exc, self._job_id)
             return []
 
+    def _roles_i_changed_from_my_own_proposal(self) -> str:
+        """The block naming every role WE proposed that the geometry agent's plan then changed, or "".
+
+        THE DEFECT. The intake default proposes every unplaced mouth as an outlet, the customer says "you
+        decide everything", and `geometry_survey._the_proposal_recorded` stores OUR reading under THEIR
+        name with the note "accepted the setup the application proposed". MEASURED over 24 driven
+        conversations: all 24 reached a mesh and the geometry agent planned on only 19, every one of the
+        five refusals was `grounding_rejected`, and all five were the same family of part - a solid block
+        with channels through it. Two of the five were ours: `contract.given.check_plan` refused the
+        agent's own correct reading of a mouth,
+
+            "the plan calls o12 'wall' and the customer confirmed 'outlet': the agent decides what to do
+             with a role, never which role a mouth has once a person has said"
+
+        against a row whose three role answers all read `accepted the setup the application proposed`. On a
+        sibling part the agent says exactly what those mouths are - "the end face of an inner body (a centre
+        body) inside the wall shell; it is an obstacle face, not a port". The agent was right, and it was
+        overruled by a sentence the customer never said.
+
+        A SIBLING CHANGE MAKES A ROLE OF OURS CORRECTABLE, AND THAT IS ONLY HALF RIGHT ON ITS OWN. The
+        owner's standing rule is "whatever the human says is final if he says smth wrong u can correct
+        him". Correcting him is allowed; correcting him silently is not, and without this block the
+        customer finds out from the mesh. So it goes on the application-composed confirmation and not in a
+        prompt asking the model to mention it, for the reason `st.engine_swap` is on that line: an
+        instruction to a model is a request, and anything required must be enforced where we control it.
+
+        ONLY A ROLE WE PROPOSED CAN APPEAR HERE, AND THAT IS STRUCTURAL RATHER THAN CHECKED. The only
+        source of a mouth in `rows` is a live answer whose `note` is `gs.ACCEPTED_THE_PROPOSAL`, and
+        `_the_proposal_recorded` is the only writer of that note: a role the customer TYPED lands through
+        `_subject_and_value`, whose note on either role shape is the empty string. There is no branch here
+        that can reach a role they named, so this cannot report one as changed.
+
+        AND A ROLE THEY TYPE LATER LEAVES BY ITSELF. When the customer places a mouth themselves,
+        `gs._corrected` retires our proposal for it and `gs.record_answer` appends theirs, so the mouth's
+        last answer is theirs and the note filter drops it - a correction stops being reported the moment it
+        stops being ours to make. `gs.live_answers` is the reader for the separate reason `_corrected`
+        states: "Every reader goes through `live_answers`", because a retired row is the record of what they
+        were asked and not an input, and no ordering of the append-only list may resurrect one. It is NOT
+        what keeps a typed role out; the last-answer-wins rule above is, which is why that rule reads the
+        note off the answer that stands rather than off any answer carrying it.
+
+        THIS IS DERIVED AT COMPOSITION AND NOT CACHED. That is the one place this departs from
+        `st.engine_swap`, deliberately: the swap leaves no
+        other durable trace, so a copy of it IS the record, while both halves of this one are already on
+        the survey row. A cached copy could outlive the answer it was about and report a change to a role
+        the customer had since typed - the one thing this must never say. It survives the turn because the
+        row does: `agent._survey_for` reads the row back with `gs.load` on every turn, and
+        `_geometry_step_gate` has already refreshed it with this plan a few lines above the caller.
+        """
+        st = self.state
+        if not isinstance(st.geometry_survey, dict):
+            return ""
+        try:
+            from meshpipeline.application import geometry_survey as gs
+
+            _step = st.geometry_survey.get("geometry_step")
+            _plan = _step.get("plan") if isinstance(_step, dict) else None
+            if not isinstance(_plan, dict):
+                return ""
+            # THE MOUTH'S LAST LIVE ANSWER WINS, AND ONLY THEN IS IT ASKED WHOSE IT WAS. Reading "any live
+            # row carrying the note" would find a proposal row underneath a role the customer typed over
+            # it on a row where the retire had not landed, and report their own word back as a change of
+            # ours. Whose the role is has to be decided by the answer that stands, not by any answer.
+            said: dict[str, tuple[str, bool]] = {}
+            for a in gs.live_answers(st.geometry_survey):
+                if (a.get("about") != "opening.role" or a.get("skipped")
+                        or a.get("answered_by") != gs.CUSTOMER or not a.get("subject")):
+                    continue
+                said[str(a["subject"])] = (str(a.get("value") or ""),
+                                           str(a.get("note") or "") == gs.ACCEPTED_THE_PROPOSAL)
+            rows: list[str] = []
+            for patch in (_plan.get("patches") or []):
+                if not isinstance(patch, dict):
+                    continue
+                mouth = str(patch.get("id") or "")
+                mine = said.get(mouth)
+                if mine is None or not mine[1]:
+                    continue
+                # `role` is the plan's word for it and `type` is the submission's; both are read here for
+                # the same reason `deliver.flow_patches` reads both - the two halves of the chain spell one
+                # field two ways and this is not the file that gets to fix that.
+                planned = str(patch.get("role") or patch.get("type") or "")
+                if not planned or planned == mine[0]:
+                    continue
+                because = one_line_reason(patch.get("evidence"))
+                rows.append(f"  - {mouth}: I proposed {role_words(mine[0])}, and it is "
+                            f"{role_words(planned)}" + (f" - {because}" if because else ""))
+            if not rows:
+                return ""
+            shown, more = rows[:ROLES_I_CHANGED_MAX], len(rows) - ROLES_I_CHANGED_MAX
+            if more > 0:
+                shown.append(f"  - and {more} more the same way, every one of them mine and none of yours")
+            logger.info("Intake: the confirmation names %d role(s) I proposed and the geometry agent "
+                        "changed - job_id=%s", len(rows), self._job_id)
+            return ROLES_I_CHANGED_HEAD + chr(10) + chr(10).join(shown)
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            # SAID, because the silence is the defect. A customer who is not told reads a corrected role
+            # off the mesh, and that is exactly what this block exists to prevent - so a failure here is
+            # logged as one rather than passed off as "nothing changed".
+            logger.warning("Intake: could not say which roles the geometry agent changed, so the customer "
+                           "was not told (%s) - job_id=%s", exc, self._job_id)
+            return ""
+
     def _what_is_being_confirmed(self, args: dict) -> str:
         """THE REQUIREMENTS THE ASK POINTS AT, composed by the application from the payload it authorised.
 
@@ -1180,7 +1324,13 @@ class IntakeToolExecutor:
                     st.engine_swap.get("from") or "the engine I first picked",
                     st.engine_swap.get("because") or "it could not mesh this setup")
             _head += chr(10) * 2
+        # AND WHICH OF THOSE ROLES WE CHANGED OUT FROM UNDER OUR OWN PROPOSAL. Directly under the setup,
+        # because it is a correction TO the setup: the faces line above names the role each mouth is being
+        # submitted with, and this says which of those the agent moved and why. Empty on every job where
+        # nothing changed, and the summary is then byte for byte what it is today.
+        _mine = self._roles_i_changed_from_my_own_proposal()
         st.submit_summary = (_head + self._what_is_being_confirmed(args)
+                             + (_mine + (chr(10) * 2) if _mine else "")
                              + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
                              + at.CONFIRM_REQUIREMENTS_ASK
                              + (chr(10) * 2) + "Shall I proceed with mesh generation?")
@@ -1212,7 +1362,8 @@ class IntakeToolExecutor:
         # do something in a turn that is already over.
         return IntakeToolResult(tool="submit_requirements", accepted=True, advanced=True, content=(
             "Authorized. The application appends its own summary - which mesher, the setup it is "
-            "submitting, what the geometry agent found and flagged, and the one ask - UNDER whatever you "
+            "submitting, any role IT proposed that the geometry agent then changed, what the geometry "
+            "agent found and flagged, and the one ask - UNDER whatever you "
             "wrote in THIS message. There is no further round: anything you meant to say alongside this "
             "call had to be in the same message as it. Do not paraphrase the summary and do not ask a "
             "question of your own. Await their explicit approval."))
