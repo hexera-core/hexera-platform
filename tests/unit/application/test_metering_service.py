@@ -42,6 +42,10 @@ class _Tenant:
 def tenant(monkeypatch):
     t = _Tenant()
     monkeypatch.setattr(metering_service, "organization_repo", t)
+    # Both sold tiers carry a metered price unless a test says otherwise.
+    import meshpipeline.settings.billing as billcfg
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_STARTER_OVERAGE", "price_so")
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_TEAM_OVERAGE", "price_to")
 
     async def _balance(db, *, organization_id):
         return t.balance
@@ -158,6 +162,27 @@ async def test_an_invoiced_tier_with_no_billing_customer_accrues_no_overage(
     # Nobody to report it to: the operator reads the negative balance when raising the invoice, and
     # paying it back here would erase the one record of it.
     tenant.plan, tenant.status, tenant.customer, tenant.balance = "enterprise", "", None, 0
+    await metering_service.charge_for_job(None, job=_Job())
+    assert [d.get("overage") for d in debits] == [0]
+
+
+@pytest.mark.asyncio
+async def test_an_invoiced_tier_that_gained_a_customer_still_accrues_no_overage(
+        debits, prices, tenant):
+    # Raising an enterprise invoice creates a billing customer. The tier still has no metered
+    # price, so a meter event would be priced by nothing - and paying it back would erase the
+    # negative balance the operator invoices from.
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "enterprise", "", "cus_1", 0
+    await metering_service.charge_for_job(None, job=_Job())
+    assert [d.get("overage") for d in debits] == [0]
+
+
+@pytest.mark.asyncio
+async def test_a_tier_sold_without_a_metered_price_accrues_no_overage(
+        debits, prices, tenant, monkeypatch):
+    import meshpipeline.settings.billing as billcfg
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_STARTER_OVERAGE", "")
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "starter", "active", "cus_1", 0
     await metering_service.charge_for_job(None, job=_Job())
     assert [d.get("overage") for d in debits] == [0]
 
