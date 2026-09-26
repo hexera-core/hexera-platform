@@ -15,10 +15,13 @@ BILLING = ("STRIPE_API_KEY_SECRET", "STRIPE_WEBHOOK_SECRET_SECRET", "ADMIN_API_K
            "STRIPE_PRICE_TEAM_OVERAGE", "CONSOLE_BASE_URL")
 
 
-def test_each_billing_setting_reaches_the_deploy_from_its_environment_variable():
+def test_each_billing_setting_reaches_shared_dev_and_prod_but_never_a_personal_environment():
+    # A slug run shares the `dev` GitHub environment, but the webhook, console and secrets these
+    # values name are shared dev's; a personal environment wearing them takes money it never hears
+    # about.
     text = WORKFLOW.read_text(encoding="utf-8")
     for name in BILLING:
-        assert f"{name}: ${{{{ vars.{name} }}}}" in text, name
+        assert f"{name}: ${{{{ github.event.inputs.slug == '' && vars.{name} || '' }}}}" in text, name
 
 
 def test_each_billing_setting_survives_regeneration_and_defaults_to_not_charging():

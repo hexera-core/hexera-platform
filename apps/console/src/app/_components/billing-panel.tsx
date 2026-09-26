@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import {
   type Plan,
   SALES_CONTACT,
   checkoutFailureMessage,
   isStripeUrl,
+  planChangeFailureMessage,
   planLabel,
   planTerms,
   portalFailureMessage,
@@ -80,12 +82,42 @@ export function PlanPicker({
   billingEnabled,
 }: {
   plans: Plan[];
-  /** the tier this organisation pays for, or "" - a subscriber changes tier in the portal */
+  /** the tier this organisation pays for, or "" - a subscriber switches in place, never checks out */
   currentPlan: string;
   billingEnabled: boolean;
 }) {
+  const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // A SUBSCRIBER'S SWITCH, in place and prorated. Stripe's portal cannot switch a subscription with
+  // a flat and a metered item, and a checkout would open a second subscription; so this asks the
+  // API to change the one that exists. The tier shown here moves when the webhook lands.
+  async function switchTo(plan: string) {
+    setBusy(plan);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/v1/billing/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
+      if (!response.ok) {
+        setError(planChangeFailureMessage(response.status));
+        return;
+      }
+      setNotice(
+        `Switching to ${planLabel(plan)}. The difference is prorated on your next invoice, and this page shows the new plan once Stripe confirms it.`,
+      );
+      router.refresh();
+    } catch {
+      setError("Could not reach the API. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function choose(plan: string) {
     setBusy(plan);
@@ -109,6 +141,11 @@ export function PlanPicker({
           {error}
         </div>
       ) : null}
+      {notice ? (
+        <div className="card" role="status">
+          {notice}
+        </div>
+      ) : null}
       <div style={{ display: "grid", gap: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))" }}>
         {plans.map((plan) => {
           const current = plan.name === currentPlan;
@@ -121,10 +158,17 @@ export function PlanPicker({
               <p className="page__sub">{planTerms(plan)}</p>
               {current ? (
                 <span className="status status--ok">Current plan</span>
-              ) : currentPlan && plan.purchasable ? (
-                // A SUBSCRIBER CHANGES TIER IN THE PORTAL. A checkout here would open a second
+              ) : currentPlan && plan.purchasable && billingEnabled ? (
+                // A SUBSCRIBER SWITCHES IN PLACE. A checkout here would open a second
                 // subscription beside the first - two flat fees - and the API refuses one.
-                <span className="page__sub">Switch under Manage billing</span>
+                <button
+                  className="btn"
+                  disabled={busy !== null}
+                  onClick={() => switchTo(plan.name)}
+                  type="button"
+                >
+                  {busy === plan.name ? "Switching…" : `Switch to ${planLabel(plan.name)}`}
+                </button>
               ) : plan.purchasable && billingEnabled ? (
                 <button
                   className="btn btn--gold"

@@ -65,9 +65,9 @@ async def start_checkout(db: AsyncSession, *, organization_id: uuid.UUID, plan: 
     if _has_live_subscription(organization):
         # A SECOND CHECKOUT IS A SECOND SUBSCRIPTION. Checkout in subscription mode always creates
         # a new one, so an "upgrade" through here would leave the customer paying two flat fees.
-        # Changing tier is a change to the subscription they have, which the provider's portal does.
-        raise AlreadySubscribed("this organisation already has a subscription; change plans "
-                                "under Manage billing")
+        # Changing tier is a change to the subscription they have - change_plan, below.
+        raise AlreadySubscribed("this organisation already has a subscription; switch plans "
+                                "from the Billing page")
 
     customer_id = organization.stripe_customer_id
     if not customer_id:
@@ -83,6 +83,33 @@ async def start_checkout(db: AsyncSession, *, organization_id: uuid.UUID, plan: 
     return gateway.start_checkout(
         customer_id=customer_id, price_id=price_id, overage_price_id=overage_price_id,
         organization_id=str(organization_id), plan=plan.strip().lower())
+
+
+class NotSubscribed(ValueError):
+    """A plan change was asked of an organisation with no live subscription to change."""
+
+
+async def change_plan(db: AsyncSession, *, organization_id: uuid.UUID, plan: str) -> str:
+    """Move a live subscription to `plan` in place. Returns the plan asked for."""
+    wanted = plan.strip().lower()
+    price_id, overage_price_id = billcfg.price_for(wanted)
+    if not price_id:
+        # The same refusal checkout gives: enterprise is invoiced, and an unpriced tier is unsold.
+        raise ValueError(f"plan {plan!r} is not purchasable in this deployment")
+    organization = await organization_repo.get_by_id(db, organization_id)
+    if organization is None or not _has_live_subscription(organization):
+        # NOTHING TO CHANGE. A first purchase is a checkout, which collects a card; this route
+        # never does, so it must not quietly create a subscription with no way to pay for it.
+        raise NotSubscribed("this organisation has no subscription to change; choose a plan")
+    if (organization.plan or "").strip().lower() == wanted:
+        return wanted
+    get_billing_gateway().change_plan(
+        subscription_id=str(organization.stripe_subscription_id), price_id=price_id,
+        overage_price_id=overage_price_id, plan=wanted)
+    # THE TIER ITSELF MOVES WHEN THE WEBHOOK SAYS SO (`customer.subscription.updated` carries the
+    # new metadata). Writing it here as well would make two writers of one column, and the one
+    # that is not the provider's record could be the one left standing after a failure.
+    return wanted
 
 
 class AlreadySubscribed(ValueError):

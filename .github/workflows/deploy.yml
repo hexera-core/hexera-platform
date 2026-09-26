@@ -1329,14 +1329,20 @@ jobs:
       # by whoever owns that Stripe account, and changing it must not need a diff to this file.
       # Every one is empty until set, and empty is "this deployment does not charge" all the way
       # down (bootstrap-env.sh). Container NAMES and price ids only - no value here is a secret.
-      STRIPE_API_KEY_SECRET: ${{ vars.STRIPE_API_KEY_SECRET }}
-      STRIPE_WEBHOOK_SECRET_SECRET: ${{ vars.STRIPE_WEBHOOK_SECRET_SECRET }}
-      ADMIN_API_KEY_SECRET: ${{ vars.ADMIN_API_KEY_SECRET }}
-      STRIPE_PRICE_STARTER: ${{ vars.STRIPE_PRICE_STARTER }}
-      STRIPE_PRICE_STARTER_OVERAGE: ${{ vars.STRIPE_PRICE_STARTER_OVERAGE }}
-      STRIPE_PRICE_TEAM: ${{ vars.STRIPE_PRICE_TEAM }}
-      STRIPE_PRICE_TEAM_OVERAGE: ${{ vars.STRIPE_PRICE_TEAM_OVERAGE }}
-      CONSOLE_BASE_URL: ${{ vars.CONSOLE_BASE_URL }}
+      #
+      # NOT FOR A PERSONAL ENVIRONMENT. A slug run shares the `dev` GitHub environment with shared
+      # dev, but the webhook endpoint, the console Stripe returns to and the secret containers these
+      # values name all belong to shared dev - a personal environment wearing them would take a
+      # customer's money and never receive the webhook that records it. A tag push and a merge
+      # carry no slug input, so both still read them.
+      STRIPE_API_KEY_SECRET: ${{ github.event.inputs.slug == '' && vars.STRIPE_API_KEY_SECRET || '' }}
+      STRIPE_WEBHOOK_SECRET_SECRET: ${{ github.event.inputs.slug == '' && vars.STRIPE_WEBHOOK_SECRET_SECRET || '' }}
+      ADMIN_API_KEY_SECRET: ${{ github.event.inputs.slug == '' && vars.ADMIN_API_KEY_SECRET || '' }}
+      STRIPE_PRICE_STARTER: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_STARTER || '' }}
+      STRIPE_PRICE_STARTER_OVERAGE: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_STARTER_OVERAGE || '' }}
+      STRIPE_PRICE_TEAM: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_TEAM || '' }}
+      STRIPE_PRICE_TEAM_OVERAGE: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_TEAM_OVERAGE || '' }}
+      CONSOLE_BASE_URL: ${{ github.event.inputs.slug == '' && vars.CONSOLE_BASE_URL || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

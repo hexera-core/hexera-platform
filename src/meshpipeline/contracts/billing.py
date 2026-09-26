@@ -77,6 +77,13 @@ class BillingGateway(Protocol):
     #: The URL where a person manages the card, invoices and cancellation they already have.
     def billing_portal(self, *, customer_id: str) -> str: ...
 
+    #: Move an existing subscription to another tier IN PLACE: its flat price becomes `price_id` and
+    #: its metered price `overage_price_id` (blank removes the metered component), prorated. Never a
+    #: second subscription. The provider's portal cannot do this for a subscription carrying both a
+    #: flat and a metered item, which is every subscription this product sells.
+    def change_plan(self, *, subscription_id: str, price_id: str, overage_price_id: str,
+                    plan: str) -> None: ...
+
     #: Report metered consumption for the current period. Must AGGREGATE rather than overwrite, so
     #: two reports in one window add up instead of the later one discarding the earlier.
     def report_usage(self, *, customer_id: str, quantity: int,

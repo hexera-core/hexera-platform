@@ -350,3 +350,67 @@ async def test_a_former_subscriber_may_check_out_again(orgs, checkout_gateway):
         _DbDouble(), organization_id=uuid.uuid4(), plan="team", email="a@example.com")
     assert url.startswith("https://checkout.stripe.com/")
     assert checkout_gateway.sessions[0]["customer_id"] == "cus_1"
+
+
+# CHANGING TIER IN PLACE
+
+class _PlanGateway:
+    def __init__(self):
+        self.changes: list[dict] = []
+
+    def change_plan(self, **kwargs):
+        self.changes.append(kwargs)
+
+
+@pytest.fixture
+def plan_gateway(monkeypatch):
+    from meshpipeline.contracts import billing as billing_contract
+    gateway = _PlanGateway()
+    billing_contract.set_billing_gateway(gateway)
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_TEAM", "price_team")
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_TEAM_OVERAGE", "price_team_over")
+    yield gateway
+    billing_contract.set_billing_gateway(None)
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_changes_tier_on_the_subscription_it_already_has(orgs, plan_gateway):
+    # The provider's portal refuses to switch a subscription with a flat AND a metered item, and a
+    # second checkout would be a second subscription; this is the one route a tier changes by.
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="starter", stripe_customer_id="cus_1",
+                             stripe_subscription_id="sub_1", subscription_status="active")
+    assert await billing_service.change_plan(
+        _DbDouble(), organization_id=uuid.uuid4(), plan="Team") == "team"
+    assert plan_gateway.changes == [{"subscription_id": "sub_1", "price_id": "price_team",
+                                     "overage_price_id": "price_team_over", "plan": "team"}]
+    # The tier itself moves when the webhook says so, never here.
+    assert orgs.subscriptions == []
+
+
+@pytest.mark.asyncio
+async def test_an_organisation_with_nothing_to_change_is_sent_to_checkout(orgs, plan_gateway):
+    # This route collects no card, so it must never create a subscription.
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="", stripe_customer_id="cus_1",
+                             stripe_subscription_id="", subscription_status="canceled")
+    with pytest.raises(billing_service.NotSubscribed):
+        await billing_service.change_plan(_DbDouble(), organization_id=uuid.uuid4(), plan="team")
+    assert plan_gateway.changes == []
+
+
+@pytest.mark.asyncio
+async def test_an_unsold_tier_cannot_be_switched_to(orgs, plan_gateway):
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="starter", stripe_customer_id="cus_1",
+                             stripe_subscription_id="sub_1", subscription_status="active")
+    with pytest.raises(ValueError):
+        await billing_service.change_plan(_DbDouble(), organization_id=uuid.uuid4(),
+                                          plan="enterprise")
+    assert plan_gateway.changes == []
+
+
+@pytest.mark.asyncio
+async def test_switching_to_the_current_tier_calls_nothing(orgs, plan_gateway):
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="team", stripe_customer_id="cus_1",
+                             stripe_subscription_id="sub_1", subscription_status="active")
+    assert await billing_service.change_plan(
+        _DbDouble(), organization_id=uuid.uuid4(), plan="team") == "team"
+    assert plan_gateway.changes == []
