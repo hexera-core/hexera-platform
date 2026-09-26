@@ -49,7 +49,8 @@ export default async function UsagePage({
           {credits ? `${credits.balance} ${credits.unit}` : "unavailable"}
         </p>
         <p className="page__sub">
-          What a credit buys is not decided yet, and nothing spends them in this release.
+          Each successful run spends credits: a flat charge plus its meshing minutes. A failed run
+          costs nothing. <Link href="/settings/billing">Plans and billing</Link>
         </p>
       </div>
 
