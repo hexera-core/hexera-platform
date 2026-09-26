@@ -39,8 +39,11 @@ is the last run's minutes, and the credit gate then refuses its next run until i
 4. **A restricted key** (`rk_…`) with write access to Customers, Subscriptions, Checkout Sessions,
    Invoices, Invoice Items, Billing Portal and Meter Events. Never use a secret key (`sk_…`): it can
    also move money out.
-5. **Customer portal** enabled (Settings → Billing → Customer portal), with cancellation and payment
-   method updates allowed.
+5. **Customer portal** enabled (Settings → Billing → Customer portal) with cancellation, payment
+   method updates and **subscription updates across the Starter and Team products**. The console
+   sends a subscriber to the portal to change tier, and the API refuses a second checkout, because
+   checkout would create a second subscription rather than change the first. Without subscription
+   updates in the portal, a customer cannot upgrade at all.
 
 ## 3. In Secret Manager, per GCP project
 
