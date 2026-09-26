@@ -8,6 +8,7 @@ import {
   checkoutFailureMessage,
   isStripeUrl,
   planLabel,
+  planTerms,
   portalFailureMessage,
 } from "@/app/_components/billing";
 
@@ -15,14 +16,22 @@ import {
 // browser there; nothing about a card or an invoice is ever handled here. What a plan BECOMES is
 // decided by the webhook, not by this page coming back - see billing.ts checkoutBanner.
 
-async function redirectTo(path: string, body: unknown, failure: (status: number) => string) {
+async function redirectTo(
+  path: string,
+  body: unknown,
+  failure: (status: number, detail: string) => string,
+) {
   const response = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
   if (!response.ok) {
-    return failure(response.status);
+    const detail = await response
+      .json()
+      .then((payload: { detail?: unknown }) => (typeof payload.detail === "string" ? payload.detail : ""))
+      .catch(() => "");
+    return failure(response.status, detail);
   }
   const { url } = (await response.json()) as { url?: string };
   if (!url || !isStripeUrl(url)) {
@@ -71,6 +80,7 @@ export function PlanPicker({
   billingEnabled,
 }: {
   plans: Plan[];
+  /** the tier this organisation pays for, or "" - a subscriber changes tier in the portal */
   currentPlan: string;
   billingEnabled: boolean;
 }) {
@@ -108,13 +118,13 @@ export function PlanPicker({
               <p style={{ fontSize: "1.4rem", fontFamily: "var(--mono)" }}>
                 {plan.included_credits.toLocaleString()} credits / month
               </p>
-              <p className="page__sub">
-                Up to {plan.max_jobs_per_owner} active runs, {plan.rate_limit_per_minute} API
-                requests a minute. Usage beyond the included credits is billed at the end of the
-                month.
-              </p>
+              <p className="page__sub">{planTerms(plan)}</p>
               {current ? (
                 <span className="status status--ok">Current plan</span>
+              ) : currentPlan && plan.purchasable ? (
+                // A SUBSCRIBER CHANGES TIER IN THE PORTAL. A checkout here would open a second
+                // subscription beside the first - two flat fees - and the API refuses one.
+                <span className="page__sub">Switch under Manage billing</span>
               ) : plan.purchasable && billingEnabled ? (
                 <button
                   className="btn btn--gold"

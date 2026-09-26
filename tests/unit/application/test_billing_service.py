@@ -272,3 +272,50 @@ async def test_a_mid_cycle_subscription_invoice_grants_nothing(orgs, grants, rea
         _DbDouble(),
         _event("invoice.paid", {"id": "in_1", "customer": "cus_1", "billing_reason": reason}))
     assert grants == []
+
+
+# A SECOND CHECKOUT
+
+class _CheckoutGateway:
+    def __init__(self):
+        self.sessions: list[dict] = []
+
+    def ensure_customer(self, *, organization_id, email, name):
+        return "cus_new"
+
+    def start_checkout(self, **kwargs):
+        self.sessions.append(kwargs)
+        return "https://checkout.stripe.com/c/pay/cs_test"
+
+
+@pytest.fixture
+def checkout_gateway(monkeypatch):
+    from meshpipeline.contracts import billing as billing_contract
+    gateway = _CheckoutGateway()
+    billing_contract.set_billing_gateway(gateway)
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_TEAM", "price_team")
+    yield gateway
+    billing_contract.set_billing_gateway(None)
+
+
+@pytest.mark.parametrize("status", ["active", "trialing", "past_due", "unpaid", "incomplete"])
+@pytest.mark.asyncio
+async def test_a_live_subscriber_cannot_open_a_second_subscription(orgs, checkout_gateway, status):
+    # Checkout in subscription mode always creates a NEW subscription: an "upgrade" through it
+    # would leave the customer paying two flat fees. Changing tier is the portal's.
+    orgs.organization = _Obj(id=uuid.uuid4(), name="Acme", stripe_customer_id="cus_1",
+                             stripe_subscription_id="sub_1", subscription_status=status)
+    with pytest.raises(billing_service.AlreadySubscribed):
+        await billing_service.start_checkout(
+            _DbDouble(), organization_id=uuid.uuid4(), plan="team", email="a@example.com")
+    assert checkout_gateway.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_a_former_subscriber_may_check_out_again(orgs, checkout_gateway):
+    orgs.organization = _Obj(id=uuid.uuid4(), name="Acme", stripe_customer_id="cus_1",
+                             stripe_subscription_id="", subscription_status="canceled")
+    url = await billing_service.start_checkout(
+        _DbDouble(), organization_id=uuid.uuid4(), plan="team", email="a@example.com")
+    assert url.startswith("https://checkout.stripe.com/")
+    assert checkout_gateway.sessions[0]["customer_id"] == "cus_1"
