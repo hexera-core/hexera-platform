@@ -16,8 +16,10 @@
 # silenced by the absence of the thing it is about.
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
+import posixpath
 import re
 import zipfile
 from pathlib import Path
@@ -258,19 +260,137 @@ def test_the_build_time_subpackage_gate_covers_what_the_application_actually_imp
         f"image missing {'them' if len(uncovered) > 1 else 'it'} would still build")
 
 
-@pytest.mark.parametrize("rel", ["geometry_agent/agent/thresholds.json",
-                                 "geometry_agent/agent/identity_tests.json",
-                                 "geometry_agent/learn/rules.json"])
-def test_the_vendored_wheel_carries_the_data_the_package_reads(rel):
+#: A `Path(__file__)`-rooted expression that ends in a data file's NAME: `with_name("x.json")`, `.parent / "x"`,
+#: `.parents[1] / "learn" / "x"`. Every table the agent reads out of its own installed tree is written this way,
+#: and that is not a coincidence - it is the only shape that works from inside a wheel, which is the point
+#: `learn/calibration.py` makes at length about `store.CALIB_DIR` not existing in the container.
+_FILE_ROOTED = re.compile(
+    r"Path\(\s*__file__\s*\)((?:\s*\.\s*resolve\(\s*\)|\s*\.\s*parent\b|\s*\.\s*parents\s*\[\s*\d+\s*\])*)"
+    r"(?:\s*\.\s*with_name\(\s*[\"']([^\"']+)[\"']\s*\)|((?:\s*/\s*[\"'][^\"']+[\"'])+))")
+_SEGMENT = re.compile(r"/\s*[\"']([^\"']+)[\"']")
+_UPWARDS = re.compile(r"\.\s*parents\s*\[\s*(\d+)\s*\]|\.\s*(parent)\b")
+
+
+def _data_files_the_wheels_own_modules_read() -> dict[str, list[str]]:
+    """Every non-.py file the wheel's OWN modules resolve against `__file__`, and which module reads each.
+
+    WHY THIS IS NOT THE DECLARATION AGAIN. The declaration says what was MEANT to ship; this says what the
+    shipped code will open. They come from different places - a pyproject table recorded at vendoring time
+    against the .py files actually in the zip - so a file that is declared and not packaged, or packaged under
+    the wrong path, shows up as a difference rather than as agreement with itself.
+
+    THE FAILURE IT GUARDS is silent in the worst way. `learn/engine_cell_correction.json` was declared in the
+    agent's pyproject and named in neither this file's list nor the vendoring script's, so nothing checked it:
+    with the table absent, `hexera.correction_info` finds no row, falls through to the older per-representation
+    table which is unfitted inside the container, and the forecast reverts to raw with no error anywhere.
+    """
+    out: dict[str, list[str]] = {}
+    with zipfile.ZipFile(_the_wheel()) as z:
+        for name in sorted(z.namelist()):
+            if not (name.startswith("geometry_agent/") and name.endswith(".py")):
+                continue
+            text = z.read(name).decode("utf-8")
+            for m in _FILE_ROOTED.finditer(text):
+                base = name
+                for up in _UPWARDS.finditer(m.group(1) or ""):
+                    # `Path(__file__).parent` is the module's directory; `parents[k]` is k+1 levels up from
+                    # the file itself, which is why these two count differently.
+                    for _ in range(int(up.group(1)) + 1 if up.group(1) else 1):
+                        base = posixpath.dirname(base)
+                if m.group(2):
+                    base, segments = posixpath.dirname(base), [m.group(2)]
+                else:
+                    segments = _SEGMENT.findall(m.group(3) or "")
+                if not segments or segments[-1].endswith(".py") or "." not in segments[-1]:
+                    continue
+                out.setdefault(posixpath.normpath(posixpath.join(base, *segments)), []).append(name)
+    assert out, "no data file read was found in the wheel's own modules at all - this test is checking nothing"
+    return out
+
+
+def _declared_package_data() -> set[str]:
+    """The agent's own `[tool.setuptools.package-data]` declaration, as `deploy/vendor_geometry_agent.sh`
+    recorded it, resolved to wheel paths.
+
+    NOT A LIST KEPT HERE. It used to be three names in this file and the same three in the vendoring script, one
+    hand-kept list in two places with a subset test between them: the day the agent declared a fourth
+    (`learn/engine_cell_correction.json`) both said the wheel was complete, and `PROVENANCE.json` still records
+    `package_data` as three while its own `data_files` shows four. Entries may be globs, so a glob is expanded
+    against the wheel rather than compared to it.
+    """
+    doc = json.loads(PROVENANCE.read_text(encoding="utf-8"))
+    declared = [str(g).strip() for g in (doc.get("package_data") or []) if str(g).strip()]
+    assert declared, (
+        "PROVENANCE.json records no package-data declaration, so nothing here knows what the agent meant to "
+        "ship. Re-vendor with deploy/vendor_geometry_agent.sh.")
+    names = set(zipfile.ZipFile(_the_wheel()).namelist())
+    out: set[str] = set()
+    for glob in declared:
+        rel = f"geometry_agent/{glob.lstrip('/')}"
+        if any(c in glob for c in "*?["):
+            out |= {n for n in names if fnmatch.fnmatch(n, rel)} or {rel}
+        else:
+            out.add(rel)
+    return out
+
+
+def test_the_vendored_wheel_carries_the_data_the_package_reads():
     # A wheel built without a package-data declaration ships .py files only. identity_tests.json is read
     # with .read_text(), so its absence is a FileNotFoundError the first time a plan is built - at a
-    # customer's upload, not at build. The agent's own pyproject now declares these three;
-    # deploy/vendor_geometry_agent.sh adds them when an older agent checkout does not. This test asks the
-    # only question that matters either way, which is whether they are IN the wheel.
+    # customer's upload, not at build.
+    #
+    # THE LIST IS DERIVED, from two independent places: what the agent DECLARED (its pyproject, recorded in
+    # PROVENANCE.json at vendoring time) and what the shipped modules will actually OPEN. A hand-kept list was
+    # the same blind spot this file's header is about, one layer down - it said the wheel was complete on the
+    # day a fourth table was added to the declaration and to nothing else.
+    #
+    # NOT PARAMETRISED over the derived list, deliberately. Deriving it needs the wheel, and a parameter list
+    # computed at collection turns a missing wheel into a collection error for this whole module - which is
+    # exactly the "it cannot be silenced by the absence of the thing it is about" property at the head of this
+    # file, lost. Every check here happens inside the test, and every missing file is reported at once.
+    readers = _data_files_the_wheels_own_modules_read()
+    required = sorted(_declared_package_data() | set(readers))
     names = set(zipfile.ZipFile(_the_wheel()).namelist())
-    assert rel in names, (
-        f"the vendored wheel does not carry {rel}. It was built without the package-data declaration "
-        f"deploy/vendor_geometry_agent.sh adds - the installed package cannot read its own tables.")
+    missing = [rel for rel in required if rel not in names]
+    why = {rel: ("read by " + ", ".join(readers[rel])) if readers.get(rel)
+           else "declared as package data by the agent" for rel in missing}
+    assert not missing, (
+        "the vendored wheel does not carry "
+        + "; ".join(f"{rel} ({why[rel]})" for rel in missing)
+        + ". The installed package cannot read its own table: rebuild with deploy/vendor_geometry_agent.sh "
+          "from an agent checkout that declares and contains it.")
+
+
+def test_the_shipped_correction_table_is_one_the_reader_will_actually_apply():
+    """The basis gate, checked against the table BESIDE the reader that gates on it, both out of the wheel.
+
+    `learn/calibration.ENGINE_BASIS` names the estimator the table was fitted against, and
+    `hexera.EMULATOR_BASIS_WORDS` is what `hexera._engine_correction` checks it for before multiplying anything.
+    Refit the table against a different estimator without changing that sentence and the check cannot fire;
+    change the sentence so that no admitted word survives and the whole table is applied as 1.0 while every
+    field still reports a multiplier, an n and an interval as though they were in force. Neither of those is
+    visible from inside the container, so it is asserted here, where both files are in one zip.
+    """
+    rel = "geometry_agent/learn/engine_cell_correction.json"
+    with zipfile.ZipFile(_the_wheel()) as z:
+        names = set(z.namelist())
+        assert rel in names, f"the vendored wheel carries no {rel}"
+        table = json.loads(z.read(rel).decode("utf-8"))
+        hexera = z.read("geometry_agent/agent/hexera.py").decode("utf-8")
+    block = re.search(r"EMULATOR_BASIS_WORDS\s*=\s*\(([^)]*)\)", hexera)
+    assert block, "EMULATOR_BASIS_WORDS is not a tuple literal in the wheel's geometry_agent/agent/hexera.py"
+    admitted = set(re.findall(r'"([^"]+)"', block.group(1)))
+    assert admitted, "EMULATOR_BASIS_WORDS is empty in the wheel, so the basis gate admits nothing"
+    basis = str(table.get("basis") or "")
+    assert any(word in basis for word in admitted), (
+        f"the shipped table's basis {basis[:90]!r} contains none of {sorted(admitted)}, so "
+        f"hexera._engine_correction will report its multiplier and apply 1.0. Either the table was refit "
+        f"against a different estimator, or the gate's words changed - fix whichever is wrong, but the "
+        f"forecast must not quietly revert to raw while the block still prints a factor.")
+    for key, row in (table.get("by_engine") or {}).items():
+        assert row.get("why"), f"{key} in the shipped table says nothing about its verdict"
+        if not row.get("applied"):
+            assert row.get("multiplier") == 1.0, f"{key} is not applied and still carries {row.get('multiplier')}"
 
 
 def test_the_wheel_ships_no_test_or_eval_tree():
