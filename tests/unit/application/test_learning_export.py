@@ -139,6 +139,66 @@ def test_the_flag_comes_from_the_platform_predicate_that_accepted_the_quote():
         assert lx.answer_rows([{"words": words}])[0]["delegated"] is False
 
 
+def test_the_reading_of_a_quote_is_the_application_s_own_and_covers_denial_and_the_mouth_it_names():
+    """THE TWO READINGS THE LEARNING LOOP USED TO GUESS AT, taken from the readers that already decide them.
+
+    `geometry_survey.accepts_a_proposal` reads a denial with `engine_selection._DENY` and takes a standing
+    delegation back when it finds one; `_the_proposal_recorded` uses `geometry_survey._mentions` to hand a
+    message back when it names one of the mouths the question named. Both questions are decided at the moment
+    the answer is taken, and the loop is handed the answer instead of forming a second opinion - which is what
+    that file's own comment forbids: "a second opinion about what 'no' means is a second thing to keep in
+    step, and the first divergence would be silent and in a mesh".
+    """
+    from meshpipeline.agents.intake.engine_selection import _DENY, _words
+    from meshpipeline.agents.intake.engine_selection import _norm as _es_norm
+    from meshpipeline.agents.intake.recommendation import choice_deferred
+    from meshpipeline.application.geometry_survey import _mentions
+
+    # A REFUSAL NAMES THE THING IT REFUSES. The loop's own gate asked whether the words contain the option, and
+    # they do, so "o4 is not the inlet" recorded as `inlet` passed it.
+    row = lx.answer_rows([{"words": "o4 is not the inlet", "subject": "o4", "value": "inlet",
+                           "option": "inlet"}])[0]
+    assert row["quote"]["refuses"] is True and row["quote"]["names_its_subject"] is True
+    assert row["quote"]["delegated"] is False
+    assert any(w in _DENY for w in _words(_es_norm("o4 is not the inlet")))    # the same reader, not a copy
+
+    # A DELEGATION THAT PLACES A MOUTH ITSELF IS NOT A BLANKET ONE. The words hand us the REST.
+    words = "o5 is the inlet and o6 the outlet, the rest you decide"
+    named = lx.answer_rows([{"words": words, "subject": "o5", "value": "inlet"}])[0]["quote"]
+    unnamed = lx.answer_rows([{"words": words, "subject": "o7", "value": "outlet"}])[0]["quote"]
+    assert choice_deferred(words) and _mentions(words, "o5") and not _mentions(words, "o7")
+    assert named == {"reader": lx.QUOTE_READER, "delegated": True, "refuses": False,
+                     "names_its_subject": True}
+    assert unnamed["delegated"] is True and unnamed["names_its_subject"] is False
+
+    # AND A DEFER PHRASE INSIDE A SENTENCE THAT PLACES A MOUTH. "best fit" is in `_DEFER_PHRASES`, so the
+    # whole message read as a delegation and the mouth it named was vetoed with the rest.
+    best = "o4 is the inlet, thats the best fit for the flow"
+    assert choice_deferred(best)
+    r = lx.answer_rows([{"words": best, "subject": "o4", "value": "inlet"}])[0]["quote"]
+    assert r["delegated"] is True and r["names_its_subject"] is True and r["refuses"] is False
+
+
+def test_a_row_that_places_no_mouth_has_no_reading_of_one_rather_than_a_false_one():
+    """None, not False: the representation question names no place, so "does it name its subject" has no
+    answer. A False there would read as "the customer did not name it" on a row that has nothing to name."""
+    row = lx.answer_rows([{"words": "wall shell", "value": "wall_shell"}])[0]
+    assert row["quote"]["names_its_subject"] is None
+    assert lx.answer_rows([{"words": "wall shell", "subject": "", "value": "wall_shell"}])[0]["quote"][
+        "names_its_subject"] is None
+
+
+def test_the_flag_and_the_reading_are_one_call_so_they_cannot_disagree():
+    """`delegated` is at the top level, where `learn.schema.AnswerOutcome` reads it, and inside `quote`, where
+    the whole reading lives. Two fields about one truth is a fact that lies unless they are the same call:
+    the ingester checks they agree and refuses the row when they do not, and this is what makes that check
+    about a broken exporter rather than about ordinary rows."""
+    for words in ("you decide everything", "o5 inlet o6 outlet", "", "your call"):
+        row = lx.answer_rows([{"words": words, "subject": "o5"}])[0]
+        assert row["delegated"] == row["quote"]["delegated"]
+        assert row["quote"]["reader"] == lx.QUOTE_READER
+
+
 def test_a_retired_answer_travels_too():
     """The record still has to say what the customer said FIRST and what replaced it."""
     rows = lx.answer_rows([{"words": "o1 is the outlet", "retired": True, "retired_because": "superseded",
@@ -147,6 +207,7 @@ def test_a_retired_answer_travels_too():
     assert len(rows) == 2
     assert rows[0]["retired"] is True and rows[0]["superseded_by"] == "inlet"
     assert rows[0]["delegated"] is False
+    assert [a["quote"]["reader"] for a in rows] == [lx.QUOTE_READER] * 2
 
 
 # -------------------------------------------------------------------------------------------------

@@ -45,6 +45,21 @@ whether a stored answer rests on a choice or on "you decide". The value stored f
 platform's own pick wearing the customer's authority; counting it as a confirmation would report agreement on
 exactly the jobs where the customer said nothing about the substance. The flag is written here, beside the
 answer, and the ingester refuses to score a row that does not carry it.
+
+AND TWO MORE READINGS OF THE SAME WORDS, for the same reason and by the same readers (`quote_reading`): whether
+the quote carries a DENIAL, and whether it NAMES the mouth the row placed. Both were missing and the loop was
+guessing at them with substring tests of its own:
+
+  - a quote the customer used to REFUSE an option contains that option's word, so "o4 is not the inlet" passed
+    the loop's own "the words name the answer" gate and was published as the customer choosing `inlet`. Ground
+    truth asserting the customer chose what they refused teaches the opposite of what happened.
+  - a delegation that places one mouth and leaves the rest ("o5 is the inlet and o6 the outlet, the rest you
+    decide") read as a BLANKET delegation, and the two mouths they had named were vetoed along with the rest.
+
+`geometry_survey.accepts_a_proposal` and `_the_proposal_recorded` already decide both of those questions, with
+`engine_selection._DENY` and `geometry_survey._mentions`, and they decide them for the same words at the moment
+the answer is taken. So the loop is handed their reading instead of forming a second one. A second opinion about
+what a message means is the defect this chain keeps producing, and here it decides where an inlet goes.
 """
 from __future__ import annotations
 
@@ -142,8 +157,71 @@ def _delegated(words: str) -> bool:
     return bool(choice_deferred(str(words or "")))
 
 
+#: The name of the reading below, written on every row that carries it, so a record says WHO decided what the
+#: customer's words meant. Nothing downstream may hold a second opinion about it.
+QUOTE_READER = "meshpipeline.application.geometry_survey"
+
+
+def _refuses(words: str) -> bool:
+    """Does this quote carry a denial, by the SAME reader `accepts_a_proposal` consults?
+
+    `geometry_survey.accepts_a_proposal` reads a denial with `engine_selection._DENY` over
+    `engine_selection._words`, and takes a standing delegation back when it finds one, for the reason its own
+    comment gives: "a customer's refusal was read as permission to record OUR proposal". The learning loop
+    needs the same reading for the same words and it must not be a second one - `_norm(words)` there and a
+    substring test here would diverge silently and the first divergence would be a fabricated label.
+    """
+    from meshpipeline.agents.intake.engine_selection import _DENY, _norm, _words
+    return any(w in _DENY for w in _words(_norm(str(words or ""))))
+
+
+def _names_its_subject(words: str, subject: Any) -> bool | None:
+    """Do the customer's words NAME the mouth this row placed? None when the row places no mouth.
+
+    `geometry_survey._mentions` is the reader `_the_proposal_recorded` already uses to hand a message back when
+    it names one of the mouths the question named: "a message that names one of these mouths is not an
+    acceptance of a reading of all of them". A delegation that names a mouth is the same shape - the customer
+    left the REST to us and placed that one themselves - and the loop may not veto the place they named.
+    """
+    place = str(subject or "").strip()
+    if not place:
+        return None
+    from meshpipeline.application.geometry_survey import _mentions
+    return bool(_mentions(str(words or ""), place))
+
+
+def quote_reading(answer: dict[str, Any]) -> dict[str, Any]:
+    """What the customer's words MEAN, decided here because only this side holds the readers that decide it.
+
+    THREE READINGS, ALL OF THEM THE APPLICATION'S OWN, none of them re-derived anywhere else:
+
+      `delegated`          `recommendation.choice_deferred`, the predicate `said_by_customer` used to accept
+                           the quote in the first place. A delegation's stored value is this platform's pick.
+      `refuses`            the denial reader `accepts_a_proposal` consults. "o4 is not the inlet" contains the
+                           word "inlet" and is not a choice of it; a loop that reads it as one publishes the
+                           customer choosing what they refused.
+      `names_its_subject`  `geometry_survey._mentions`, the reader that hands a message back when it names a
+                           mouth. It is what tells a BLANKET delegation ("everything else you decide") from a
+                           delegation that placed this mouth itself ("o5 is the inlet, the rest you decide").
+
+    WHY IT IS WRITTEN HERE AND NOT READ THERE. The learning loop is a separate package and cannot import these
+    readers; a copy of them beside it would be a third opinion about what a message means, which is the defect
+    this chain keeps producing (`geometry_survey.accepts_a_proposal`'s own comment: "a second opinion about
+    what 'no' means is a second thing to keep in step, and the first divergence would be silent and in a
+    mesh"). So the reading rides on the row, named, and the ingester consumes it and decides nothing.
+    """
+    words = str(answer.get("words") or "")
+    return {"reader": QUOTE_READER, "delegated": _delegated(words), "refuses": _refuses(words),
+            "names_its_subject": _names_its_subject(words, answer.get("subject"))}
+
+
 def answer_rows(answers: Any) -> list[dict[str, Any]]:
-    """The survey's stored answers with one field added: whether each rests on a standing delegation.
+    """The survey's stored answers with the application's own reading of each quote added.
+
+    `delegated` stays at the top level, where it has always been and where `learn.schema.AnswerOutcome` reads
+    it, and `quote` carries the whole reading including that same flag - ONE call, written twice, so the
+    ingester can check the two agree and refuse a row where they do not. Two fields that could disagree about
+    one truth is a fact that lies; two copies of one call cannot.
 
     Nothing else is changed, nothing is dropped and no row is reordered - a retired row travels too, because
     the record still has to say what the customer said FIRST and what replaced it.
@@ -152,7 +230,8 @@ def answer_rows(answers: Any) -> list[dict[str, Any]]:
     for a in answers if isinstance(answers, list) else []:
         if not isinstance(a, dict):
             continue
-        out.append({**a, "delegated": _delegated(a.get("words") or "")})
+        reading = quote_reading(a)
+        out.append({**a, "delegated": reading["delegated"], "quote": reading})
     return out
 
 
