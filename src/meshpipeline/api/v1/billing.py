@@ -107,6 +107,28 @@ async def start_checkout(body: CheckoutRequest,
     return {"url": url}
 
 
+@router.post("/plan")
+async def switch_plan(body: CheckoutRequest,
+                      organization_id: Annotated[str, Depends(org_dep)] = "",
+                      # Present so the mutating-route fitness test sees a proven actor, as above.
+                      owner_id: str = Depends(owner_dep)) -> dict:
+    # A SUBSCRIBER'S UPGRADE OR DOWNGRADE, in place. The provider's portal cannot switch a
+    # subscription that carries both a flat and a metered item, and a second checkout would be a
+    # second subscription - so this is the only way a tier changes after the first purchase.
+    organization = _organization(organization_id)
+    async with get_db() as db:
+        try:
+            plan = await billing_service.change_plan(
+                db, organization_id=organization, plan=body.plan)
+        except BillingUnavailable:
+            raise HTTPException(status_code=503, detail="billing is not configured")
+        except billing_service.NotSubscribed as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return {"plan": plan}
+
+
 @router.post("/portal")
 async def open_portal(organization_id: Annotated[str, Depends(org_dep)] = "",
                       # Present for the same reason as above: this route acts for a caller who is

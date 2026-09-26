@@ -6,6 +6,7 @@ import {
   checkoutFailureMessage,
   isPaying,
   isStripeUrl,
+  planChangeFailureMessage,
   planLabel,
   planTerms,
   portalFailureMessage,
@@ -86,8 +87,8 @@ test("plan names are shown capitalised, and none reads as 'No plan'", () => {
 
 test("a second checkout refused as already-subscribed points to the portal", () => {
   assert.match(
-    checkoutFailureMessage(409, "this organisation already has a subscription; change plans under Manage billing"),
-    /Manage billing/,
+    checkoutFailureMessage(409, "this organisation already has a subscription; switch plans from the Billing page"),
+    /Switch/,
   );
   assert.match(checkoutFailureMessage(409, "this caller has no organisation to bill"), /no organisation/);
 });
@@ -100,4 +101,10 @@ test("overage billing is promised only on a tier with a metered price", () => {
   assert.match(planTerms({ ...plan, overage_billed: true }), /billed at the end of the month/);
   assert.doesNotMatch(planTerms({ ...plan, overage_billed: false }), /billed/);
   assert.match(planTerms({ ...plan, purchasable: false }), /Invoiced/);
+});
+
+test("each plan-change refusal the API documents has its own message", () => {
+  const messages = [503, 409, 400, 500].map((status) => planChangeFailureMessage(status));
+  assert.equal(new Set(messages).size, messages.length);
+  assert.match(planChangeFailureMessage(409), /Choose a plan/);
 });

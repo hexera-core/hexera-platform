@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     # importable with `stripe` absent - the contract's tests exercise every handler without it - and
     # a module-level runtime import would take that away. mypy reads this branch; the interpreter
     # never does.
+    from stripe.params import SubscriptionUpdateParams, SubscriptionUpdateParamsItem
     from stripe.params.checkout import (
         SessionCreateParams,
         SessionCreateParamsLineItem,
@@ -120,6 +121,43 @@ class StripeBillingGateway:
             {"customer": customer_id,
              "return_url": f"{self._console_base_url}/settings/billing"})
         return str(session.url)
+
+    def change_plan(self, *, subscription_id: str, price_id: str, overage_price_id: str,
+                    plan: str) -> None:
+        # EACH ITEM IS SWAPPED BY ITS ID, never appended. Naming a new price without the item id
+        # ADDS a line, and the customer would be billed both tiers' flat fees from then on. Which
+        # existing item is which is read off the price itself - metered or not - rather than off
+        # its position, which Stripe does not promise.
+        subscription = self._client.subscriptions.retrieve(subscription_id)
+        flat_item = metered_item = None
+        for item in subscription["items"]["data"]:
+            usage = ((item["price"].get("recurring") or {}).get("usage_type") or "licensed")
+            if usage == "metered":
+                metered_item = item["id"]
+            else:
+                flat_item = item["id"]
+        items: list[SubscriptionUpdateParamsItem] = [
+            {"id": flat_item, "price": price_id} if flat_item else {"price": price_id,
+                                                                    "quantity": 1}]
+        if overage_price_id:
+            items.append({"id": metered_item, "price": overage_price_id} if metered_item
+                         else {"price": overage_price_id})
+        elif metered_item:
+            items.append({"id": metered_item, "deleted": True})
+        params: SubscriptionUpdateParams = {
+                "items": items,
+                # PRORATED NOW, so an upgrade is charged for the rest of this period and a downgrade
+                # credited - the ordinary expectation, and what the next invoice will show.
+                "proration_behavior": "create_prorations",
+                # THE PLAN RIDES THE SUBSCRIPTION'S METADATA, which is what the
+                # `customer.subscription.updated` webhook reads to move the organisation's tier.
+                # Nothing here writes the tier directly: the webhook stays the one writer of it.
+                "metadata": {"plan": plan},
+        }
+        self._client.subscriptions.update(
+            subscription_id, params,
+            **self._idempotency("plan", f"{subscription_id}:{plan}:{uuid.uuid4()}"),
+        )
 
     def report_usage(self, *, customer_id: str, quantity: int, idempotency_scope: str) -> None:
         # ADDRESSED TO THE CUSTOMER, not to a subscription item. A meter event names who consumed,

@@ -39,11 +39,12 @@ is the last run's minutes, and the credit gate then refuses its next run until i
 4. **A restricted key** (`rk_…`) with write access to Customers, Subscriptions, Checkout Sessions,
    Invoices, Invoice Items, Billing Portal and Meter Events. Never use a secret key (`sk_…`): it can
    also move money out.
-5. **Customer portal** enabled (Settings → Billing → Customer portal) with cancellation, payment
-   method updates and **subscription updates across the Starter and Team products**. The console
-   sends a subscriber to the portal to change tier, and the API refuses a second checkout, because
-   checkout would create a second subscription rather than change the first. Without subscription
-   updates in the portal, a customer cannot upgrade at all.
+5. **Customer portal** enabled with cancellation (at period end), payment method updates, invoice
+   history and customer details, and **plan switching turned off**. The portal refuses to switch a
+   subscription that has more than one item, and every Hexera subscription has two (the flat fee
+   and the metered overage). Stripe answers "cannot update subscription ... because it has multiple
+   `items`". Tier changes go through the console's **Switch to …** button (`POST /billing/plan`),
+   which swaps both items in place with proration. The API refuses a second checkout.
 
 ## 3. In Secret Manager, per GCP project
 
@@ -69,7 +70,10 @@ cross-tenant billing credential, and nothing else presents it.
 | `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_STARTER_OVERAGE`, `STRIPE_PRICE_TEAM`, `STRIPE_PRICE_TEAM_OVERAGE` | the `price_…` ids from §2 |
 | `CONSOLE_BASE_URL` | the console's public origin, e.g. `https://console.hexera.ai`. Optional when the environment has a `CONSOLE_DOMAIN`, which it defaults to. Required otherwise, and the API stage refuses rather than send a paying customer back to `localhost` |
 
-These are container **names** and price ids. No value here is a secret. Then deploy `app=true`.
+These are container **names** and price ids. No value here is a secret. They apply to **shared dev
+and to production only**. A personal environment (`-f slug=…`) runs in the same `dev` GitHub
+environment but ignores them, because its webhook, console and secrets are not the ones these
+values name. Then deploy `app=true`.
 The API stage binds the credentials and price ids, and the new **Meter sweep** stage provisions
 `<deployment>-meter-sweep`, a Cloud Run job on the application image running as the API's identity
 every 15 minutes.

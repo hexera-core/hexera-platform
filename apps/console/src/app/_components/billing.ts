@@ -84,7 +84,7 @@ export function checkoutFailureMessage(status: number, detail = ""): string {
   }
   if (status === 409 && /already has a subscription/.test(detail)) {
     // The API refuses a second checkout: it would be a second subscription, not a plan change.
-    return "You already have a plan. Change it under Manage billing.";
+    return "You already have a plan. Use Switch on the plan you want instead.";
   }
   if (status === 409) {
     return "Your account has no organisation to bill yet. Sign out and back in, then try again.";
@@ -103,6 +103,20 @@ export function planTerms(plan: Plan): string {
   return plan.overage_billed
     ? `${limits} Usage beyond the included credits is billed at the end of the month.`
     : limits;
+}
+
+/** POST /billing/plan failed with `status`. */
+export function planChangeFailureMessage(status: number): string {
+  if (status === 503) {
+    return "Billing is not switched on for this deployment yet.";
+  }
+  if (status === 409) {
+    return "There is no subscription to change yet. Choose a plan to start one.";
+  }
+  if (status === 400) {
+    return "That plan cannot be switched to here. Contact us to change to it.";
+  }
+  return "Could not switch plans just now. Nothing was changed - try again.";
 }
 
 /** POST /billing/portal failed with `status`. */
