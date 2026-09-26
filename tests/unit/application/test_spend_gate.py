@@ -27,11 +27,13 @@ def tenant(monkeypatch):
     async def _balance(db, *, organization_id):
         return state["balance"]
 
-    async def _running(db, owner_id):
+    async def _running(db, organization_id):
+        # PER ORGANISATION: every member spends the same balance.
+        assert organization_id == ORG
         return state["running"]
 
     monkeypatch.setattr(spend_gate.organization_repo, "get_by_id", _get_by_id)
-    monkeypatch.setattr(spend_gate.job_repo, "count_active_for_owner", _running)
+    monkeypatch.setattr(spend_gate.job_repo, "count_active_for_organization", _running)
     monkeypatch.setattr(credit_service, "balance", _balance)
     monkeypatch.setattr(polcfg, "JOB_BASE_CREDITS", 10)
     monkeypatch.setattr(polcfg, "CREDIT_GATE_ENABLED", True)
@@ -67,7 +69,8 @@ async def test_a_negative_balance_is_refused(tenant):
 @pytest.mark.asyncio
 async def test_a_running_job_holds_back_its_base_charge(tenant):
     # Charged at the END, so without the reservation a balance that covers one run would admit as
-    # many as the per-owner quota allows.
+    # many as the quota allows - and the count is the organisation's, because a teammate's run
+    # spends the same balance.
     tenant["balance"], tenant["running"] = 15, 1
     with pytest.raises(spend_gate.OutOfCredits, match="already in progress"):
         await _admit()
@@ -125,3 +128,13 @@ async def test_a_caller_with_no_billable_organisation_is_admitted(tenant, organi
     # tenant - so refusing here protects nothing and breaks the owner-only posture.
     tenant["balance"] = -1_000
     assert await _admit(organization_id) == ""
+
+
+def test_admissions_for_one_tenant_are_serialised_before_anything_is_read():
+    # Without the lock two approvals read the same balance and running count before either has
+    # created its job. Order matters: the lock must come before both reads.
+    import inspect
+    source = inspect.getsource(spend_gate.admit)
+    lock = source.index("_serialise_admissions")
+    assert lock < source.index("count_active_for_organization")
+    assert lock < source.index("credit_service.balance")

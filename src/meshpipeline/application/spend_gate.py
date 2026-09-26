@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import meshpipeline.settings.policy as polcfg
@@ -67,13 +68,20 @@ async def admit(db: AsyncSession, *, owner_id: str, organization_id: str) -> str
     if not polcfg.CREDIT_GATE_ENABLED:
         return ""
 
-    # RESERVE FOR WHAT IS ALREADY RUNNING. A job is charged when it ENDS, so a balance read alone
-    # would admit as many concurrent jobs as the per-owner quota allows against a balance that
-    # covers one. Each running job holds back at least the base charge; the minutes it will add are
-    # unknowable here, which is why the ledger can still go a little negative and the next job is
-    # refused until it is topped up.
+    # ONE ADMISSION AT A TIME PER TENANT. Two approvals - two sessions, or two members - would
+    # otherwise both read the same balance and the same running count before either had created
+    # its job, and a balance covering one run would admit both. The lock is transaction-scoped and
+    # every caller creates its job in the SAME transaction, so the second admission waits until
+    # the first job exists and is counted below.
+    await _serialise_admissions(db, organization.id)
+
+    # RESERVE FOR WHAT IS ALREADY RUNNING, across the whole organisation. A job is charged when it
+    # ENDS, so a balance read alone would admit as many concurrent jobs as the quota allows against
+    # a balance that covers one - and every member draws on the same balance. Each running job
+    # holds back at least the base charge; the minutes it will add are unknowable here, which is why
+    # the ledger can still go a little negative and the next job is refused until it is topped up.
     per_job = max(polcfg.JOB_BASE_CREDITS, 1)
-    running = await job_repo.count_active_for_owner(db, owner_id)
+    running = await job_repo.count_active_for_organization(db, organization.id)
     balance = await credit_service.balance(db, organization_id=organization.id)
     if balance - running * per_job >= per_job:
         return ""
@@ -87,6 +95,16 @@ async def admit(db: AsyncSession, *, owner_id: str, organization_id: str) -> str
     raise OutOfCredits(
         "You are out of credits, so I did not start this run. Choose a plan under Billing to "
         "keep running meshes.")
+
+
+async def _serialise_admissions(db: AsyncSession, organization_id) -> None:
+    # The same transaction-scoped advisory lock JobService.check_quotas takes per owner, keyed on
+    # the tenant instead. A no-op off Postgres, where the unit tier runs.
+    bind = getattr(db, "bind", None)
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                     {"k": f"credit-admission:{organization_id}"})
 
 
 async def _organization(db: AsyncSession, organization_id: str):
