@@ -85,8 +85,9 @@ def _planned(doc: dict) -> dict:
 def _failed(doc: dict, reason: str) -> dict:
     """The same row with step 5 recorded as FAILED, which is what `plan_the_part` stores on any fault."""
     state = _planned(doc)
-    step = {k: v for k, v in state["geometry_step"].items()
-            if k not in ("plan", "envelope", "flow_patches", "unconfirmed_roles")}
+    # READ, NEVER RESTATED. This list used to be a copy of the module's, which agrees with it until the day a
+    # key is added to one of the two.
+    step = {k: v for k, v in state["geometry_step"].items() if k not in gst.STALE_ON_A_FAILED_PLAN}
     return {**state, "geometry_step": {**step, "status": gst.FAILED, "reason": reason}}
 
 

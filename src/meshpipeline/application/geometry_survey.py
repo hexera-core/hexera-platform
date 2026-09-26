@@ -1821,12 +1821,48 @@ def confirmed_cell_cap(state: dict | None) -> int | None:
 # handoff 2 and handoff 3, in the package's own types
 # -------------------------------------------------------------------------------------------------
 
+def whose_value(answer: dict) -> dict[str, str]:
+    """`{"value_from": ...}` in the PACKAGE'S OWN WORDS for one stored row, or `{}` when the installed package
+    has no field for it.
+
+    WHAT IT DECIDES. `answered_by` says the CUSTOMER answered rather than a default standing, and it does not say
+    whether the value they settled on is one they NAMED or one this application proposed and they waved through.
+    On a port role the second is ours: `_the_proposal_recorded` writes the platform's own `default_roles` under
+    their name once `accepts_a_proposal` sees "you decide everything", and the geometry agent - which can see
+    that a mouth is the end face of a solid body - was then refused by `contract.given.check_plan` for
+    correcting it. MEASURED on row 30660c74 (2026-09-26 06:12): three such mouths, three rejections, and a step
+    that ended `failed` with no plan at all.
+
+    THE NOTE IS THE RECORD AND IT IS READ HERE, on the side that writes it. `ACCEPTED_THE_PROPOSAL` is this
+    module's constant, set in one place, and every stored row already carries it - including the rows written
+    before this function existed, which is why the reading is taken off the note rather than off a new column
+    nothing has. The package owns the vocabulary and this owns the sentence, so neither has a copy of the
+    other's.
+
+    WHY IT MAY RETURN NOTHING. The stack installs a VENDORED WHEEL of the package and it is vendored once, at
+    the end of a round. Passing a keyword the installed `Answer` does not have would be a validation error on
+    every job (`extra="forbid"`), and the geometry step would fail for every customer until the wheel caught up.
+    With no field, the handoff is exactly what it is today and the note still rides in `note`.
+    """
+    fields = getattr(_package()["intake"].Answer, "model_fields", {}) or {}
+    if "value_from" not in fields:
+        return {}
+    intake = _package()["intake"]
+    proposed = str(answer.get("note") or "") == ACCEPTED_THE_PROPOSAL
+    return {"value_from": intake.VALUE_PROPOSED if proposed else intake.VALUE_TYPED}
+
+
 def intake_handoff(state: dict):
     """What intake carries to the geometry agent: `contract.intake.IntakeHandoff`, built from the rows.
 
     Only the customer's own answers become `Answer`s. A default that stood and a skip are listed
     `unanswered`, because a question that was asked and not settled is a different thing from one
     never asked, and the package refuses a handoff that cannot tell them apart.
+
+    AND EVERY ANSWER SAYS WHOSE VALUE IT CARRIES (`whose_value`). An answer that accepted the setup this
+    application proposed is still the customer answering, and the value in it is still ours; the package's
+    `Given.role_source` reads the difference and lets the geometry agent correct a role of ours, which is the
+    standing a default has always had. A role the customer TYPED is untouched by this and stays untouchable.
     """
     pkg = _package()
     # THE THIRD INTAKE IS NOT IN THIS HANDOFF. Its question is not one of the survey's, so an answer to it
@@ -1844,7 +1880,7 @@ def intake_handoff(state: dict):
         answers.append(pkg["intake"].Answer(question_id=a["question_id"], about=a["about"],
                                             subject=str(a.get("subject") or ""), value=a.get("value"),
                                             answered_by=CUSTOMER, at=str(a.get("at") or _now()),
-                                            note=str(a.get("note") or "")))
+                                            note=str(a.get("note") or ""), **whose_value(a)))
         answered_ids.add(a["question_id"])
     for q in answered_ids:
         if q not in asked:
@@ -2663,7 +2699,7 @@ __all__ = ["AGREEMENT_LIST_MAX", "AGREEMENT_SCHEMA", "ASKING_SCHEMA", "CHAIN", "
            "check_the_survey_block", "compose",
            "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",
            "confirmed_inputs", "confirmed_representation",
-           "confirmed_roles", "intake_handoff", "late_view",
+           "confirmed_roles", "intake_handoff", "late_view", "whose_value",
            "live_answers", "load", "look_state", "look_state_of_document", "mark_asked", "named_inlets",
            "open_now",
            "question_views", "recompose_after_look", "recomposed", "record_answer", "role_problems",

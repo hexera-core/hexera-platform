@@ -518,6 +518,33 @@ class _NotYet:
         return None
 
 
+#: The keys of an EARLIER plan that a failed step must not keep. The failure path rebuilds the step row from
+#: whatever the row already had, so each of these would otherwise describe a plan this row no longer carries.
+#: One list, read by the code and by its test, because a hand-kept copy in the test is a list that agrees with
+#: the code until the day a key is added to one of them.
+STALE_ON_A_FAILED_PLAN: tuple[str, ...] = ("plan", "envelope", "flow_patches", "unconfirmed_roles",
+                                           "sent_back_because")
+
+
+def survey_disagreement(trace: Any) -> list[str]:
+    """What the survey boundary said, in its own words, the last time it sent this run's plan back. [] when it
+    never did.
+
+    WHY THE ROW NEEDS IT. A step that ends with no plan stores `sent_back_by_the_survey: 3` and a reason that
+    reads "3 submissions rejected", and NOTHING that says which mouths the disagreement was about. Measured on
+    row 30660c74 (2026-09-26 06:12): three mouths out of twenty took the whole plan with them - the refinement,
+    the risks and every other mouth - and the only durable record of what the disagreement WAS is the prose tail
+    of one reason string. These are the boundary's own sentences, carried across whole and never parsed: each
+    one already names the mouth, the role the plan gave it and the role the row holds.
+
+    It is the LAST rejection because that is the one the run ended on; the earlier ones are in the ledger's
+    trace, which the row keeps in full.
+    """
+    said: list[list[str]] = [list(t.get("errors") or []) for t in (trace or ())
+                             if isinstance(t, dict) and t.get("rejection_kind") == "given"]
+    return [str(e)[:300] for e in (said[-1] if said else [])][:12]
+
+
 def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", job_id: str = "",
                   client: Any = None, source_path: str = "") -> dict:
     """Step 5, and the question step 6 puts. Returns the row with `geometry_step` and, when the plan
@@ -550,7 +577,7 @@ def plan_the_part(state: dict, document: dict, *, fidelity: str = "standard", jo
         state = _with_late(state, None, None)
         step = {**(state.get("geometry_step") or {}), "schema": STEP_SCHEMA, "status": FAILED, "for": key,
                 "fidelity": fid, "reason": reason[:1000], "at": _now()}
-        for stale in ("plan", "envelope", "flow_patches", "unconfirmed_roles"):
+        for stale in STALE_ON_A_FAILED_PLAN:
             step.pop(stale, None)
         return {**state, "geometry_step": step}
 
@@ -586,7 +613,10 @@ def _plan(state: dict, document: dict, *, key: str, fidelity: str, job_id: str, 
                             "provider": "reference" if _is_reference(client) else str(
                                 polcfg.GEOMETRY_AGENT_STEP_PROVIDER or ""),
                             "model": _model_of(client), "exit": result.exit, "rounds": result.rounds,
-                            "sent_back_by_the_survey": sent_back, "representation": given.representation,
+                            "sent_back_by_the_survey": sent_back,
+                            #: AND WHAT IT SAID, not only how often. See `survey_disagreement`.
+                            "sent_back_because": survey_disagreement(result.trace),
+                            "representation": given.representation,
                             "brief_sha256": inp.brief.sha256,
                             # A NEW PLAN STARTS A NEW RECORD ON THE ROW. The events of a plan this row no
                             # longer carries describe a job that no longer exists, and keeping them grew
@@ -984,7 +1014,8 @@ def record_handover(state: dict, handoff: dict) -> dict:
         return state
 
 
-__all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STEP_SCHEMA", "StepRefused", "at_submission",
+__all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STALE_ON_A_FAILED_PLAN",
+           "STEP_SCHEMA", "StepRefused", "at_submission",
            "builder_handoff", "late_handoff", "not_yet", "note_late_answer", "plan_key", "plan_the_part",
            "planner_client", "record_handover", "request_with_write_up", "submission_problems",
-           "the_bytes_again"]
+           "survey_disagreement", "the_bytes_again"]
