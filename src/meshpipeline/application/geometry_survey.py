@@ -97,6 +97,10 @@ DEFAULT_TAKEN = "default_taken"
 #: not a `DEFAULT_TAKEN`, which is nobody answering; the note is what lets a reader of the row tell the two
 #: apart afterwards without changing what either one means to a consumer.
 ACCEPTED_THE_PROPOSAL = "accepted the setup the application proposed"
+#: Why a proposal row is retired when the customer later states the SAME role in their own words. Not
+#: SUPERSEDED: nothing about the mesh changed. What changed is who owns the answer, and that decides
+#: whether the geometry agent may correct it.
+SAID_IT_THEMSELVES = "the customer stated this role in their own words"
 
 #: How a question is routed. `intake` is step 4. `trade` is step 6. `application` is a question this
 #: platform already asks in its own words and owns the answer to: the unit, through
@@ -1562,7 +1566,7 @@ def record_answer(state: dict, *, question_id: str, choice: str = "", role: str 
     # A CORRECTION SUPERSEDES THEIR OWN EARLIER WORDS, it is not refused. See `_corrected`: this used to raise
     # on any conflicting role, which locked a customer who named the wrong opening as the inlet into it for the
     # life of the job and told the model to do something the code then refused.
-    state = _corrected(state, view, at, value, principal)
+    state = _corrected(state, view, at, value, principal, their_own_words=True)
     answer = {**row, "answered_by": CUSTOMER, "subject": at, "value": value, "option": option,
               "note": note}
     _check_with_the_package(answer)
@@ -1725,7 +1729,8 @@ def _trade_cap(view: dict, option: str) -> int | None:
 SUPERSEDED = "the customer corrected it"
 
 
-def _corrected(state: dict, view: dict, subject: str, value: Any, principal: str) -> dict:
+def _corrected(state: dict, view: dict, subject: str, value: Any, principal: str,
+               *, their_own_words: bool = False) -> dict:
     """The row with the customer's earlier role for this mouth retired, when this answer corrects it.
 
     A CONFIRMED ROLE COULD NEVER BE CORRECTED, and that is what this replaces. `_refuse_conflict` raised on
@@ -1758,9 +1763,25 @@ def _corrected(state: dict, view: dict, subject: str, value: Any, principal: str
         return state
     mine, answers, corrected = str(principal or ""), [], False
     for a in state.get("answers") or []:
+        # AND A RESTATEMENT RETIRES A PROPOSAL EVEN WHEN THE VALUE IS THE SAME, because what changes is
+        # not the role, it is who owns it.
+        #
+        # REPRODUCED on bend_elbow_001 with the proposal {o1: outlet, o2: inlet}: the customer says "good to
+        # go", o1 is written as outlet with the note ACCEPTED_THE_PROPOSAL; they then say "just to be sure,
+        # o1 is the outlet" and that lands as a second row. The guard below was `value != value`, which is
+        # false, so nothing retired and o1 held two live rows:
+        #     [('outlet', 'accepted the setup the application proposed'), ('outlet', '')]
+        # `intake_handoff.answer_for` returns the FIRST match, so the geometry agent was licensed off the
+        # proposal row and could rename a role the customer had typed in their own words.
+        #
+        # Two readers disagreeing about which of two live rows wins is the same defect as one reader
+        # reading the wrong field, and here it decides whether a boundary condition is the customer's.
+        _was_our_proposal = str(a.get("note") or "") == ACCEPTED_THE_PROPOSAL
+        _authority_moved = their_own_words and _was_our_proposal
         if (isinstance(a, dict) and not a.get("retired") and a.get("about") == "opening.role"
                 and a.get("answered_by") == CUSTOMER and not a.get("skipped")
-                and a.get("subject") == subject and a.get("value") != value):
+                and a.get("subject") == subject
+                and (a.get("value") != value or _authority_moved)):
             said_by = str(a.get("principal") or "")
             if said_by and mine and said_by != mine:
                 raise SurveyError(
@@ -1769,7 +1790,9 @@ def _corrected(state: dict, view: dict, subject: str, value: Any, principal: str
                     f"else's confirmation. It is not recorded. Tell the customer that {subject} is down as "
                     f"the {a.get('value')} and that the account which set it has to be the one to change it")
             answers.append({**a, "retired": True, "retired_at": _now(),
-                            "retired_because": SUPERSEDED, "superseded_by": str(value)})
+                            "retired_because": (SAID_IT_THEMSELVES if a.get("value") == value
+                                                else SUPERSEDED),
+                            "superseded_by": str(value)})
             corrected = True
         else:
             answers.append(a)

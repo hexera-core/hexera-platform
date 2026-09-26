@@ -326,9 +326,19 @@ def test_a_delegation_is_still_not_a_label():
     arrive, and it would be self-defeating to widen what counts as one."""
     ip = require("geometry_agent.learn.ingest_platform",
                  needs="the one judge of whether an answer is a label at all")
-    verdict, by, _why = ip.chose_it_themselves(
-        {"answered_by": "customer", "delegated": True, "words": "you decide everything"}, "o1", 2)
+    # THE ROW SHAPE, not the law, is what moved. `chose_it_themselves` now reads the application's own
+    # reading of the quote (`quote`: delegated, refuses, names_its_subject) BESIDE the flag, and returns
+    # `unknown_authority` when it is absent, so that the two can fail differently from each other. A row
+    # carrying only the flag is no longer scoreable, which is the law being stricter rather than looser:
+    # absence of the reading is not evidence of a choice.
+    delegated = {"answered_by": "customer", "delegated": True, "words": "you decide everything",
+                 "quote": {"delegated": True, "refuses": False, "names_its_subject": False}}
+    verdict, by, _why = ip.chose_it_themselves(delegated, "o1", 2)
     assert verdict == "not_a_label" and by == "delegated"
+    # and the flag alone still scores nothing, rather than quietly scoring as a label
+    verdict, _by, _why = ip.chose_it_themselves(
+        {"answered_by": "customer", "delegated": True, "words": "you decide everything"}, "o1", 2)
+    assert verdict == "unknown_authority"
 
 
 def test_the_line_about_the_one_question_is_not_printed_when_no_question_is_put():
