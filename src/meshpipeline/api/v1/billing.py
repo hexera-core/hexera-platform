@@ -50,6 +50,9 @@ async def read_plans() -> dict:
                 "rate_limit_per_minute": limits.rate_limit_per_minute,
                 "included_credits": limits.included_credits,
                 "purchasable": bool(billcfg.price_for(name)[0]),
+                # WHETHER USE BEYOND THE ALLOWANCE IS BILLED, so the console promises overage only
+                # for a tier that has a metered price to bill it with.
+                "overage_billed": bool(billcfg.price_for(name)[1]),
             }
             for name, limits in ((plan, plancfg.limits_for(plan)) for plan in plancfg.PLANS)
         ],
@@ -97,6 +100,8 @@ async def start_checkout(body: CheckoutRequest,
                 db, organization_id=organization, plan=body.plan, email=owner_id)
         except BillingUnavailable:
             raise HTTPException(status_code=503, detail="billing is not configured")
+        except billing_service.AlreadySubscribed as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     return {"url": url}
