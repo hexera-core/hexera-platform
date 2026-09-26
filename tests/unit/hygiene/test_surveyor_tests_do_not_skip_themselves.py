@@ -13,6 +13,7 @@
 # absent". This is that rule, applied to the Surveyor.
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -29,6 +30,53 @@ ABSENT_MODULE = "geometry_agent.__no_such_module_for_this_test__"
 
 def _test_files() -> list[Path]:
     return list(TESTS.rglob("test_*.py"))
+
+
+def _imports_the_agent(text: str) -> bool:
+    """True when this file really imports a geometry_agent module - decided by its SYNTAX.
+
+    A line-by-line pattern cannot tell an import from an import QUOTED INSIDE A STRING, and it read one
+    wrong: tests/unit/hygiene/test_publication_context_resolver.py holds synthetic module bodies as string
+    constants, and one of them contains an import of the agent's contract package. That file imports no
+    agent module - it never executes that text, it only parses it - and the guard named it anyway. A guard
+    that reports a file which cannot fail the way the guard is about is a guard nobody can act on, and the
+    scan below is worth its failure message only while this distinction holds.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:                       # pragma: no cover - a test file that will not parse
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[0] == "geometry_agent" for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            if (node.module or "").split(".")[0] == "geometry_agent":
+                return True
+    return False
+
+
+#: What the detector must and must not call an import of the agent. The multi-line cases are written out
+#: rather than escaped, so this file reads as the source it is about.
+_A_MODULE_IMPORT = "import geometry_agent"
+_A_FROM_IMPORT = "from geometry_agent.agent import hexera"
+#: THE SHAPE THE GUARD IS REALLY FOR: a bare import inside a test body. Where the agent is absent it raises
+#: ImportError mid-test, which reads as a broken test rather than as a missing Surveyor.
+_AN_IMPORT_INSIDE_A_TEST = '''
+def t():
+    from geometry_agent.agent.hexera import MAX_CELLS_CAP
+    return MAX_CELLS_CAP
+'''
+#: The false positive that cost this guard its credibility: source held as data.
+_AN_IMPORT_QUOTED_AS_DATA = """
+SOURCE = '''
+from geometry_agent.contract import given
+'''
+"""
+_A_COMMENTED_OUT_IMPORT = "# from geometry_agent.agent import hexera"
+_A_PLATFORM_MODULE_NAMED_AFTER_THE_AGENT = (
+    "from meshpipeline.contracts.geometry_agent_block import platform_cell_ceiling")
+_THE_ONE_DOOR = 'hexera = require("geometry_agent.agent.hexera")'
 
 
 # ---------------------------------------------------------------- the regression guard
@@ -58,7 +106,7 @@ def test_every_surveyor_test_that_needs_the_agent_asks_for_it_loudly():
     silent = []
     for path in _test_files():
         text = path.read_text(encoding="utf-8")
-        if not re.search(r"^\s*(?:from|import)\s+geometry_agent", text, re.M):
+        if not _imports_the_agent(text):
             continue
         if "_surveyor_package import require" not in text and "require(" not in text:
             silent.append(path.relative_to(REPO).as_posix())
@@ -66,6 +114,21 @@ def test_every_surveyor_test_that_needs_the_agent_asks_for_it_loudly():
         f"these tests import the geometry agent directly without going through "
         f"tests/_surveyor_package.require, so its absence is a collection error or a silence rather than a "
         f"stated failure: {silent}")
+
+
+@pytest.mark.parametrize("source,detected", [
+    (_A_MODULE_IMPORT, True),
+    (_A_FROM_IMPORT, True),
+    (_AN_IMPORT_INSIDE_A_TEST, True),
+    (_AN_IMPORT_QUOTED_AS_DATA, False),
+    (_A_COMMENTED_OUT_IMPORT, False),
+    (_A_PLATFORM_MODULE_NAMED_AFTER_THE_AGENT, False),
+    (_THE_ONE_DOOR, False),
+])
+def test_the_import_detector_answers_on_syntax_and_not_on_text(source, detected):
+    # Measured, not inferred from the scan above coming back empty: an empty scan is also what a detector
+    # that answers False to everything produces.
+    assert _imports_the_agent(source) is detected
 
 
 # ---------------------------------------------------------------- where the line is drawn

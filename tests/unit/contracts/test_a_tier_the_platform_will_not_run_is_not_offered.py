@@ -10,6 +10,8 @@ as a default that passes for a confirmation, entered from the other side.
 """
 from __future__ import annotations
 
+from tests._surveyor_package import require
+
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake.geometry_brief import surveyor_panel
 from meshpipeline.contracts.geometry_agent_block import (
@@ -161,8 +163,14 @@ def test_only_a_flow_job_is_asked_about_flow():
 # distributions, and only the platform's is env-overridable. Nothing tied them together.
 
 def test_the_package_s_own_ceiling_has_not_drifted_from_the_platform_s():
-    """If this fails, the agent is planning against one number and the driver clamping to another."""
-    from geometry_agent.agent.hexera import MAX_CELLS_CAP
+    """If this fails, the agent is planning against one number and the driver clamping to another.
+
+    The import goes through `require` rather than being written bare: a bare one raises ImportError
+    where the package is absent, and an ERROR inside a test is read as a broken test rather than as
+    the stated absence of the Surveyor. `require` is the one door, and it never skips silently.
+    """
+    MAX_CELLS_CAP = require("geometry_agent.agent.hexera",
+                            needs="the agent's own cell ceiling").MAX_CELLS_CAP
     assert MAX_CELLS_CAP == CEILING, (
         f"the geometry agent plans against {MAX_CELLS_CAP:,} and this platform meshes at most "
         f"{CEILING:,}. Whichever is wrong, the customer is told one and gets the other, and the "
