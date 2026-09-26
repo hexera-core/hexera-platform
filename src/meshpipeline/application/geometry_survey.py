@@ -101,6 +101,10 @@ ACCEPTED_THE_PROPOSAL = "accepted the setup the application proposed"
 #: SUPERSEDED: nothing about the mesh changed. What changed is who owns the answer, and that decides
 #: whether the geometry agent may correct it.
 SAID_IT_THEMSELVES = "the customer stated this role in their own words"
+#: Why a role on the row changed without the customer saying anything: the geometry agent read the shape
+#: and corrected a proposal of OURS, and the payload that was dispatched carries its reading. Still ours -
+#: `roles_we_proposed` counts it, and it is never written over a role the customer typed.
+AGENT_CORRECTED_THE_PROPOSAL = "the geometry agent corrected the setup we proposed"
 
 #: How a question is routed. `intake` is step 4. `trade` is step 6. `application` is a question this
 #: platform already asks in its own words and owns the answer to: the unit, through
@@ -1843,6 +1847,58 @@ def confirmed_roles(state: dict | None) -> dict[str, str]:
     return out
 
 
+def the_agent_corrected(state: dict, *, subject: str, value: str, principal: str = "") -> dict:
+    """Record on the row that the geometry agent re-read a role WE proposed, and the payload carries its reading.
+
+    WHY THE ROW HAS TO MOVE AND NOT ONLY THE PAYLOAD. `_apply_the_corrections` rewrites the submitted patches
+    and the confirmation announces the change, and the row was left alone. `role_problems` compares every
+    patch's role against `confirmed_roles`, which reads the row - so the corrected payload was in conflict
+    with it from the moment it was dispatched.
+
+    MEASURED by the adversarial reviewer on live row bff327ee and the dispatched payload of job a429c5fb:
+    `confirmed_roles` {o1: inlet, o4: outlet, o6: outlet}; `role_problems` on the UNCORRECTED payload []; on
+    the corrected payload the customer was shown, three refusals. So the customer reads a confirmation
+    naming three corrected roles, says anything at all that needs a re-submit, and the submission carrying
+    the roles they were just shown is refused before the correction code runs again.
+
+    A SECOND READING OF OUR OWN GUESS IS STILL OUR GUESS. The row keeps its own note, `roles_we_proposed`
+    counts it, and `whose_value` hands the agent `proposed` for it, so nothing downstream mistakes it for
+    the customer's word and the agent may re-read it again. What changes is only which of our readings the
+    row holds.
+
+    REFUSED on a role the customer TYPED. The agent may not correct one and this may not record one: two
+    defects of exactly that shape were found and fixed today, and this is the third door into the same room.
+    """
+    now = str(value or "").strip()
+    if not now or not subject:
+        return state
+    live = [a for a in live_answers(state)
+            if isinstance(a, dict) and a.get("about") == "opening.role"
+            and a.get("subject") == subject and not a.get("skipped")]
+    theirs = [a for a in live
+              if str(a.get("note") or "") not in (ACCEPTED_THE_PROPOSAL, AGENT_CORRECTED_THE_PROPOSAL)]
+    if theirs:
+        raise SurveyError(
+            f"{subject} carries the customer's own word for its role, so the agent's re-reading is not "
+            f"recorded over it. A role they named is theirs alone")
+    if not live:
+        return state
+    answers, row = [], None
+    for a in state.get("answers") or []:
+        if a in live:
+            answers.append({**a, "retired": True, "retired_at": _now(),
+                            "retired_because": AGENT_CORRECTED_THE_PROPOSAL, "superseded_by": now})
+            row = a
+        else:
+            answers.append(a)
+    if row is None:
+        return state
+    answers.append({**row, "value": now, "option": now, "at": _now(), "retired": False,
+                    "retired_at": None, "retired_because": None, "superseded_by": None,
+                    "note": AGENT_CORRECTED_THE_PROPOSAL,
+                    "principal": str(principal or row.get("principal") or "")[:256]})
+    return {**state, "answers": answers}
+
 def roles_we_proposed(state: dict | None) -> set[str]:
     """The mouths whose live role is the APPLICATION'S OWN reading, waved through rather than named.
 
@@ -1853,7 +1909,7 @@ def roles_we_proposed(state: dict | None) -> set[str]:
     return {str(a["subject"]) for a in live_answers(state)
             if isinstance(a, dict) and a.get("about") == "opening.role" and a.get("answered_by") == CUSTOMER
             and not a.get("skipped") and a.get("subject")
-            and str(a.get("note") or "") == ACCEPTED_THE_PROPOSAL}
+            and str(a.get("note") or "") in (ACCEPTED_THE_PROPOSAL, AGENT_CORRECTED_THE_PROPOSAL)}
 
 
 def confirmed_cell_cap(state: dict | None) -> int | None:
@@ -2758,7 +2814,7 @@ __all__ = ["AGREEMENT_LIST_MAX", "AGREEMENT_SCHEMA", "ASKING_SCHEMA", "CHAIN", "
            "agreement_of", "agreement_row", "answer", "answered",
            "asking_of", "asking_row", "builder_block", "carry_answers",
            "check_the_survey_block", "compose",
-           "composed_inputs", "composition", "confirmed_cell_cap", "confirmed_flow_direction",
+           "composed_inputs", "composition", "confirmed_cell_cap", "the_agent_corrected", "confirmed_flow_direction",
            "confirmed_inputs", "confirmed_representation",
            "confirmed_roles", "intake_handoff", "late_view", "whose_value",
            "live_answers", "load", "look_state", "look_state_of_document", "mark_asked", "named_inlets",

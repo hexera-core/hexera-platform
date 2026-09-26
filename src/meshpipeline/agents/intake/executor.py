@@ -1269,6 +1269,35 @@ class IntakeToolExecutor:
             from meshpipeline.application import geometry_survey as gs
 
             st.geometry_survey = gst.with_role_corrections(st.geometry_survey, records)
+            # AND THE ROLE ITSELF MOVES WITH THE PAYLOAD, not just the record of what happened.
+            #
+            # `with_role_corrections` writes what was DONE, for the learning loop. `role_problems` reads
+            # something else: `confirmed_roles`, off the answer rows. Leaving those at our original
+            # proposal put the dispatched payload in conflict with the row the moment it was sent.
+            #
+            # MEASURED by the reviewer on live row bff327ee against the payload of job a429c5fb:
+            # role_problems(uncorrected) == [], role_problems(the corrected payload the customer was
+            # SHOWN) == 3 refusals. So the customer reads a confirmation naming three corrected roles,
+            # asks for anything that needs a re-submit, and the submission carrying the roles they were
+            # just shown is refused before the correction code runs again.
+            #
+            # `the_agent_corrected` refuses outright on a role the customer TYPED, which is the third
+            # door into the room the other two were found in today.
+            for _r in records:
+                # Both actions that REWROTE the payload, not only the retype: a mouth the payload no
+                # longer declares as a port is one the plan read as wall, and a row still saying outlet
+                # is the same disagreement one field over.
+                if _r.get("action") not in gst.CORRECTION_REWROTE:
+                    continue
+                _mouth, _role = str(_r.get("mouth") or ""), str(_r.get("planned") or "")
+                if not _mouth or not _role:
+                    continue
+                try:
+                    st.geometry_survey = gs.the_agent_corrected(
+                        st.geometry_survey, subject=_mouth, value=_role, principal=st.owner_id)
+                except gs.SurveyError as _exc:
+                    logger.warning("Intake: the agent's re-reading of %s was NOT recorded on the row "
+                                   "(%s) - job_id=%s", _mouth, _exc, self._job_id)
             if st.survey_source_ref is None:
                 return
             await gs.save(st.owner_id, str(st.survey_source_ref.source_id), st.geometry_survey,
