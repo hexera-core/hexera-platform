@@ -245,14 +245,15 @@ def quality_from_payload(payload: Any) -> dict[str, Any]:
     """
     if not isinstance(payload, dict):
         return {}
-    q = payload.get("quality")
-    q = q if isinstance(q, dict) else {}
+    _q = payload.get("quality")
+    q: dict = _q if isinstance(_q, dict) else {}
     criteria: dict[str, Any] = {}
     for c in q.get("criteria") or []:
         if isinstance(c, dict) and c.get("key"):
             criteria[str(c["key"])] = {"measured": c.get("measured"), "ok_when": c.get("ok_when"),
                                        "passed": c.get("passed"), "gating": c.get("gating")}
-    review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
+    _review = payload.get("review")
+    review: dict = _review if isinstance(_review, dict) else {}
     return {"cell_count": q.get("cell_count"), "engine": q.get("engine"), "mesh_units": q.get("mesh_units"),
             "production_grade": q.get("production_grade"), "criteria": criteria,
             "review_verdict": review.get("verdict"), "attempt_reviewed": review.get("attempt_reviewed"),
@@ -327,9 +328,16 @@ def proposal_of(made: dict) -> dict[str, str | None]:
     walked, so the look block the composition carries as an input cannot leak into the comparison.
     """
     composed = made.get("composed") or {}
-    forecast = composed.get("forecast") if isinstance(composed.get("forecast"), dict) else {}
-    planner = composed.get("planner_block") if isinstance(composed.get("planner_block"), dict) else {}
-    asking = made.get("asking") if isinstance(made.get("asking"), dict) else {}
+    _forecast = composed.get("forecast")
+    forecast: dict = _forecast if isinstance(_forecast, dict) else {}
+    _planner = composed.get("planner_block")
+    planner: dict = _planner if isinstance(_planner, dict) else {}
+    # Bound once and annotated so the narrowing is PROVABLE. Written as
+    # `made.get("asking") if isinstance(made.get("asking"), dict) else {}` it is correct at runtime
+    # and unprovable to a reader: two calls, and nothing says they return the same object. The mypy
+    # ratchet caught it as `Any | dict | None` reaching `_roles_proposed(asking: dict)`.
+    _asking = made.get("asking")
+    asking: dict = _asking if isinstance(_asking, dict) else {}
     uncertainties = getattr(made.get("survey"), "uncertainties", None) or []
     out: dict[str, str | None] = {
         "representation": _as_text(composed.get("representation")),
@@ -369,10 +377,10 @@ def stored_proposal(survey: Any) -> dict[str, str | None]:
     absent here rather than filled with a guess.
     """
     comp = dict(getattr(survey, "composed_for", None) or {})
-    planner = getattr(survey, "planner_block", None)
-    planner = planner if isinstance(planner, dict) else {}
-    asking = getattr(survey, "asking", None)
-    asking = dict(asking) if isinstance(asking, dict) else {}
+    _planner = getattr(survey, "planner_block", None)
+    planner: dict = _planner if isinstance(_planner, dict) else {}
+    _asking = getattr(survey, "asking", None)
+    asking: dict = dict(_asking) if isinstance(_asking, dict) else {}
     out: dict[str, str | None] = {
         "representation": _as_text(comp.get("representation")),
         "planner_block.representation": _as_text(planner.get("representation")),
@@ -445,8 +453,10 @@ def without_the_look(document: Any, survey: Any) -> dict[str, Any]:
     from meshpipeline.application.geometry_survey import composed_inputs, composition
     started = time.perf_counter()
     doc = document if isinstance(document, dict) else {}
-    look = doc.get("look") if isinstance(doc.get("look"), dict) else {}
-    stamp = doc.get("stamp") if isinstance(doc.get("stamp"), dict) else {}
+    _look = doc.get("look")
+    look: dict = _look if isinstance(_look, dict) else {}
+    _stamp = doc.get("stamp")
+    stamp: dict = _stamp if isinstance(_stamp, dict) else {}
     out: dict[str, Any] = {
         "schema": COUNTERFACTUAL_SCHEMA,
         "computed": False,
@@ -517,7 +527,8 @@ def envelope(*, job: Any, source: Any, interpretation: Any, measurement: Any, su
     """
     fr = job.final_result if isinstance(getattr(job, "final_result", None), dict) else {}
     doc = measurement.document if measurement is not None and isinstance(measurement.document, dict) else {}
-    stamp = doc.get("stamp") if isinstance(doc.get("stamp"), dict) else {}
+    _stamp = doc.get("stamp")
+    stamp: dict = _stamp if isinstance(_stamp, dict) else {}
     step = survey.geometry_step if survey is not None and isinstance(survey.geometry_step, dict) else None
     absent: list[str] = []
     for name, row in (("geometry_source", source), ("interpretation", interpretation),
