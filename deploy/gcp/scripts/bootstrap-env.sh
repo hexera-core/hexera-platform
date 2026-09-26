@@ -498,6 +498,21 @@ OPENAI_API_KEY_SECRET=${OPENAI_API_KEY_SECRET:-openai-api-key}
 MESH_API_KEY_SECRET=${MESH_API_KEY_SECRET:-mesh-api-key}
 USER_TOKEN_SECRET_SECRET=${USER_TOKEN_SECRET_SECRET:-user-token-secret}
 
+# BILLING, OPT-IN PER DEPLOYMENT. Empty is "this deployment does not charge": the API answers its
+# billing routes 503, the admin console's Billing page reports itself unconfigured, and the meter
+# sweep is a stated skip. Set by GitHub ENVIRONMENT variables of the same names (deploy.yml), and
+# only once the containers hold a version - a reference to an empty container is a revision that
+# never becomes ready. The price ids name objects in ONE Stripe account, so each environment
+# carries its own. See docs/deployment/billing.md.
+STRIPE_API_KEY_SECRET=${STRIPE_API_KEY_SECRET:-}
+STRIPE_WEBHOOK_SECRET_SECRET=${STRIPE_WEBHOOK_SECRET_SECRET:-}
+ADMIN_API_KEY_SECRET=${ADMIN_API_KEY_SECRET:-}
+STRIPE_PRICE_STARTER=${STRIPE_PRICE_STARTER:-}
+STRIPE_PRICE_STARTER_OVERAGE=${STRIPE_PRICE_STARTER_OVERAGE:-}
+STRIPE_PRICE_TEAM=${STRIPE_PRICE_TEAM:-}
+STRIPE_PRICE_TEAM_OVERAGE=${STRIPE_PRICE_TEAM_OVERAGE:-}
+CONSOLE_BASE_URL=${CONSOLE_BASE_URL:-}
+
 # WORKLOAD IDENTITY FEDERATION (scripts/create-workload-identity.sh). Owner-run bootstrap, not a
 # deploy stage: creating service accounts and setting project IAM is outside the deployer's roles.
 WIF_POOL=${WIF_POOL:-github-actions}

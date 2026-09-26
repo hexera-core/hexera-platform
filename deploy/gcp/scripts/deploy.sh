@@ -256,6 +256,16 @@ else
   skipped images "the API service keeps serving whichever digest it already has"
 fi
 
+stage "Meter sweep (the scheduled job that bills overage the ledger recorded)"
+# AFTER the API, and in the same component: it runs the same application digest under the API's
+# identity, and it is the API stage that grants that identity the Stripe secrets it reads. A
+# deployment with no billing configured states its own skip.
+if want images; then
+  bash "${S}/create-meter-sweep.sh"
+else
+  skipped images "the meter sweep keeps whichever digest and schedule it already has"
+fi
+
 stage "Console service (the promoted console digest, in front of the API)"
 # AFTER the API: the console's every page load reaches it, so a console that rolls out first
 # serves errors until the API catches up. It is its own component rather than part of `images`
