@@ -13,6 +13,7 @@ from meshpipeline.api import pagination
 from meshpipeline.api.schemas import listing
 from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, JobStatus_
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
+from meshpipeline.application import spend_gate
 from meshpipeline.application.job_service import JobService
 from meshpipeline.persistence.models import ArtifactType
 from meshpipeline.persistence.session import get_db
@@ -327,7 +328,14 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
             return DisputeOut(job_id=_replay.job_id, dispute_of=job_id, flags=len(body.flags))
 
         try:
-            await svc.check_quotas(db, owner_id, plan=plan)
+            # A DISPUTE IS A NEW RUN and is charged like one, so it passes the same credit gate as
+            # a first approval. A key credential's own plan still wins when it names one; a console
+            # caller's is the organisation's.
+            _billed_plan = await spend_gate.admit(db, owner_id=owner_id,
+                                                  organization_id=organization_id)
+            await svc.check_quotas(db, owner_id, plan=plan or _billed_plan)
+        except spend_gate.OutOfCredits as exc:
+            raise HTTPException(402, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(429, str(exc)) from exc
 

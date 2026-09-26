@@ -107,7 +107,7 @@ def _run_real_confirmation(session):
             captured["launch_failed"] = error
 
     class _Svc:
-        async def check_quotas(self, _db, _owner):
+        async def check_quotas(self, _db, _owner, *, plan=""):
             return None
 
     @asynccontextmanager

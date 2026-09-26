@@ -286,7 +286,14 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
 
     snapshot: dict = dict(snapshot_in or {})          # verified live above
     try:
-        await job_service.check_quotas(db, owner_id)
+        # WHAT THE TENANT CAN PAY FOR, then how many it may run. The gate answers with the plan the
+        # organisation is billed on, and that plan is what the quota counts against - a console
+        # caller's credential names no plan of its own, so without this a subscriber was held to
+        # the free limits they paid to leave. An OutOfCredits is a ValueError and lands in the
+        # same `quota_exceeded` answer, in the conversation, before anything is created.
+        from meshpipeline.application import spend_gate
+        plan = await spend_gate.admit(db, owner_id=owner_id, organization_id=organization_id)
+        await job_service.check_quotas(db, owner_id, plan=plan)
     except ValueError as exc:
         raise ApprovalTransactionError(ConfirmOutcome(
             ConfirmStatus.quota_exceeded, str(exc))) from exc

@@ -54,6 +54,9 @@ class _Rec:
         self.request_txt_writes = 0; self.launch_failures = 0
         #: every (owner_id, organization_id) pair a job was created with
         self.stamps: list[dict] = []
+        #: the plan every quota check was held to, and what the credit gate is set to answer
+        self.quota_plans: list[str] = []
+        self.admitted_plan = ""; self.out_of_credits = False
 
 
 class _SessionRepo:
@@ -75,8 +78,9 @@ class _JobRepo:
 
 
 class _JobService:
-    def __init__(self, quota_error=None): self.quota_error = quota_error
-    async def check_quotas(self, db, owner_id):
+    def __init__(self, rec, quota_error=None): self.rec = rec; self.quota_error = quota_error
+    async def check_quotas(self, db, owner_id, *, plan=""):
+        self.rec.quota_plans.append(plan)
         if self.quota_error:
             raise ValueError(self.quota_error)
 
@@ -117,6 +121,14 @@ def wired(monkeypatch):
     monkeypatch.setattr(ap, "_build_dispatch_payload", lambda **k: {"job_id": str(k["job_id"])})
     rec.dispatch = _dispatch
     rec.source_id = src_id
+
+    from meshpipeline.application import spend_gate
+
+    async def _admit(db, *, owner_id, organization_id):
+        if rec.out_of_credits:
+            raise spend_gate.OutOfCredits("You are out of credits")
+        return rec.admitted_plan
+    monkeypatch.setattr(spend_gate, "admit", _admit)
     return rec
 
 
@@ -128,7 +140,7 @@ async def _confirm(rec, *, session=None, locked=None, purged=False, missing_sour
     return await ap.confirm_pending_approval(
         session, _SessionRepo(rec, locked), OWNER, SESSION_ID, logger=logger or _Log(),
         organization_id=organization_id,
-        sessions=lambda: _Db(rec), job_service=_JobService(quota_error),
+        sessions=lambda: _Db(rec), job_service=_JobService(rec, quota_error),
         job_repo=_JobRepo(rec),
         source_repo=_SourceRepo(rec, purged=purged, missing=missing_source),
         dispatch=dispatch or rec.dispatch)
@@ -268,6 +280,29 @@ async def test_a_quota_refusal_creates_no_job(wired, monkeypatch):
     assert wired.dispatches == 0
 
 
+async def test_an_exhausted_balance_is_refused_in_the_conversation_and_creates_no_job(
+        wired, monkeypatch):
+    # A signup grant is a budget. Once it cannot cover a run the person hears why, in the chat,
+    # and nothing is created that would later be charged to a balance already at zero.
+    monkeypatch.setattr(ap, "verify", lambda *a, **k: (True, ""))
+    wired.out_of_credits = True
+    with pytest.raises(ap.ApprovalTransactionError) as ei:
+        await _confirm(wired, organization_id=str(uuid.uuid4()))
+    assert ei.value.outcome.status is ap.ConfirmStatus.quota_exceeded
+    assert "out of credits" in ei.value.outcome.message
+    assert wired.jobs == 0 and wired.dispatches == 0
+
+
+async def test_the_quota_is_counted_against_the_plan_the_organisation_pays_for(
+        wired, monkeypatch):
+    # A console caller's credential names no plan; without this a subscriber was held to the
+    # free limits they paid to leave.
+    monkeypatch.setattr(ap, "verify", lambda *a, **k: (True, ""))
+    wired.admitted_plan = "team"
+    await _confirm(wired, organization_id=str(uuid.uuid4()))
+    assert wired.quota_plans == ["team"]
+
+
 async def test_a_dispatch_failure_is_recorded_and_never_reported_as_success(wired, monkeypatch):
     monkeypatch.setattr(ap, "verify", lambda *a, **k: (True, ""))
 
@@ -291,7 +326,7 @@ async def test_a_transaction_failure_before_job_creation_leaves_nothing_half_app
             _Session(source_id=wired.source_id), _SessionRepo(wired, _Session(
                 gate={"approval": _snapshot(), "selection": {}}, source_id=wired.source_id)),
             OWNER, SESSION_ID, logger=_Log(), sessions=lambda: _Db(wired),
-            job_service=_JobService(), job_repo=_Failing(wired),
+            job_service=_JobService(wired), job_repo=_Failing(wired),
             source_repo=_SourceRepo(wired), dispatch=wired.dispatch)
     assert ei.value.outcome.status is ap.ConfirmStatus.dispatch_failed
     assert wired.dispatches == 0
