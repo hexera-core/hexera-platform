@@ -271,7 +271,14 @@ async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> N
     # THE AMOUNT COMES FROM THE PLAN CATALOGUE, not from the invoice. What the customer PAID and
     # what the tier INCLUDES are different numbers - an invoice also carries the overage of the
     # period that just closed - and reading the invoice would conflate them.
-    included = plancfg.limits_for(organization.plan).included_credits
+    #
+    # THE PLAN MAY NOT HAVE LANDED YET. The provider does not order its deliveries, and the first
+    # period's `invoice.paid` can arrive before the `customer.subscription.created` that sets the
+    # organisation's tier - which read as "no plan, 0 credits", and the event id, now claimed, is
+    # never retried. The invoice carries its own snapshot of the subscription's metadata, which is
+    # where checkout wrote the plan, so it is read from there when the row has none.
+    plan = organization.plan or _plan_of_invoice(invoice)
+    included = plancfg.limits_for(plan).included_credits
     if included <= 0:
         return
     await credit_service.grant(db, organization_id=organization.id, amount=included,
@@ -291,6 +298,20 @@ async def _apply_payment_failed(db: AsyncSession, invoice: Mapping[str, Any]) ->
         return
     log.warning("payment failed for organisation %s (customer %s); the provider will retry",
                 organization.id, customer_id)
+
+
+def _plan_of_invoice(invoice: Mapping[str, Any]) -> str:
+    # TWO SPELLINGS OF ONE FACT. Current API versions put the subscription snapshot under
+    # `parent.subscription_details`; older ones put it at the top level. A tier this catalogue does
+    # not declare resolves to nothing rather than to a guess.
+    parent = invoice.get("parent") or {}
+    for details in ((parent.get("subscription_details") if isinstance(parent, Mapping) else None),
+                    invoice.get("subscription_details")):
+        if isinstance(details, Mapping):
+            plan = str((details.get("metadata") or {}).get("plan", "")).strip().lower()
+            if plan in plancfg.PLANS:
+                return plan
+    return ""
 
 
 def _organization_of(obj: Mapping[str, Any]) -> uuid.UUID | None:

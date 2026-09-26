@@ -232,9 +232,16 @@ export default async function BillingPage() {
                         <td>{entry.entry_type}</td>
                         <td>{credits(entry.amount)}</td>
                         <td>{entry.reason || "—"}</td>
-                        {/* NULL ON A GRANT FOREVER, and on a debit until the sweep reports it.
+                        {/* ONLY OVERAGE IS METERED. A debit the balance covered is never
+                            reported; one with overage is pending until the sweep stamps it.
                             This is the single most useful column when a bill looks too small. */}
-                        <td>{entry.entry_type === "debit" ? when(entry.metered_at) : "n/a"}</td>
+                        <td>
+                          {entry.entry_type !== "debit"
+                            ? "n/a"
+                            : entry.overage > 0
+                              ? `${credits(entry.overage)} overage · ${entry.metered_at ? when(entry.metered_at) : "pending"}`
+                              : "covered by credits"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

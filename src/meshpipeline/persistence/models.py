@@ -703,8 +703,8 @@ class CreditLedgerEntry(Base):
     # this pipeline has several (FailedReason, artifact_reconciliations). A row per movement also
     # answers "why is my balance this?", which a counter never can.
     #
-    # Nothing in this cycle writes anything but a grant. debit and refund exist so that when
-    # spending lands it is a new caller, not a new migration.
+    # Grants come from signup and from a paid period; debits from a succeeded job; refunds from a
+    # debit that should not stand - including the part of one billed as overage instead.
 
     __tablename__ = "credit_ledger"
 
@@ -727,6 +727,10 @@ class CreditLedgerEntry(Base):
     #: debit is ever metered - a grant and a refund stay NULL forever. See 0007_usage_metering for
     #: why reporting cannot happen in the transaction that writes the row.
     metered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: HOW MUCH OF THIS DEBIT the tenant had not already paid for, in credits - the quantity the
+    #: provider's metered price is billed on. 0 for everything else. See 0008_overage_metering.
+    overage: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0",
+                                         default=0)
 
     __table_args__: tuple = (
         # THE BALANCE QUERY, and the ledger view's ordering. Both read this index.
@@ -737,9 +741,10 @@ class CreditLedgerEntry(Base):
         # test_migrated_schema_matches_the_orm_model refuses. The predicate must match the
         # migration's exactly, or the comparison sees two different indexes rather than one.
         Index("ix_credit_ledger_unmetered", "created_at",
-              postgresql_where=text("metered_at IS NULL AND entry_type = 'debit'")),
+              postgresql_where=text("metered_at IS NULL AND overage > 0")),
         # A zero-amount entry is a row that changes nothing and explains nothing.
         CheckConstraint("amount <> 0", name="ck_credit_ledger_amount_nonzero"),
+        CheckConstraint("overage >= 0", name="ck_credit_ledger_overage_nonnegative"),
     )
 
 

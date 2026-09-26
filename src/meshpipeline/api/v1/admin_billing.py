@@ -125,6 +125,9 @@ async def read_ledger(organization_id: str, limit: int = 50) -> dict:
                 # debit until the sweep reports it - which is the single most useful field here when
                 # a customer's bill looks too small.
                 "metered_at": row.metered_at.isoformat() if row.metered_at else None,
+                # HOW MUCH OF A DEBIT THE METER BILLS. 0 means the balance covered it and it is
+                # never reported, so a null `metered_at` beside it is final, not pending.
+                "overage": int(getattr(row, "overage", 0) or 0),
             }
             for row in rows
         ],
