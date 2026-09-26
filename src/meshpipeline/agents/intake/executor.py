@@ -136,6 +136,10 @@ class IntakeExecutionState:
     #: model's own reply rather than instead of it: the questions still belong to the conversation,
     #: and what was measured and seen belongs to the application.
     surveyor_panel: str = ""
+    #: The engine WE swapped out from under our own pick, and why, once per session. Durable
+    #: because the confirmation that must tell the customer about it is composed on a LATER
+    #: turn, and the swap was a local variable that died with the turn that made it.
+    engine_swap: dict = field(default_factory=dict)
     submit_summary: str | None = None
     submit_args: dict | None = None
 
@@ -590,6 +594,9 @@ class IntakeToolExecutor:
             st.pending = None
             st.invalidate_approval("the engine we picked could not do the job")
             eng, prev = instead, self._admission_of(instead, args)
+            st.engine_swap = {"from": _vocab.to_display(_vocab.ENGINE, swapped_from),
+                              "to": _vocab.to_display(_vocab.ENGINE, instead),
+                              "because": refused_because}
             swap = {
                 "engine_changed_from": _vocab.to_display(_vocab.ENGINE, swapped_from),
                 "engine_changed_to": _vocab.to_display(_vocab.ENGINE, instead),
@@ -1149,6 +1156,22 @@ class IntakeToolExecutor:
             _fid = str(args.get("mesh_fidelity") or "").strip()
             if _fid:
                 _head += f" at {_fid} fidelity"
+            # AND IF WE CHANGED IT OUT FROM UNDER OUR OWN PICK, THE CUSTOMER IS TOLD SO HERE.
+            #
+            # `_do_preview_selected_admission` may replace an engine that cannot do the job when the
+            # engine was ours and they had delegated the choice. That is right - it is what stops
+            # three of twelve parts dead-ending on an impossibility we created - but it was announced
+            # only in a `swap` dict handed to the MODEL as guidance, and "an instruction to a model is
+            # a request; anything required must be enforced where we control it". A customer who read
+            # "Go with cfMesh?" and said go would otherwise meet "MESHING WITH Gmsh" with nothing
+            # anywhere saying it had changed, or why.
+            #
+            # It is on THIS line because this is the sentence that cannot be skipped: the last screen
+            # before compute, composed by the application and not by the model.
+            if st.engine_swap:
+                _head += " (I changed this from {}: {})".format(
+                    st.engine_swap.get("from") or "the engine I first picked",
+                    st.engine_swap.get("because") or "it could not mesh this setup")
             _head += chr(10) * 2
         st.submit_summary = (_head + self._what_is_being_confirmed(args)
                              + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
