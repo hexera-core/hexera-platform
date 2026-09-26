@@ -156,7 +156,8 @@ async def test_a_foreign_owner_cannot_read_a_session_that_exists(api, alphas_ses
             "a foreign session answers differently from an unknown one, which discloses existence")
 
 
-async def _provisioned_owner(db, *, org_name: str = "", organization_id=None):
+async def _provisioned_owner(db, *, org_name: str = "", organization_id=None,
+                             credits: int | None = None):
     # A REAL account, unlike _A/_B above: tenant-alpha and tenant-bravo are self-asserted header
     # identities with no `users` row, so `_organization_for` resolves them to "" and every
     # assertion above exercises tenant_scope's OWNER fallback, never its organisation branch. This
@@ -180,6 +181,15 @@ async def _provisioned_owner(db, *, org_name: str = "", organization_id=None):
         org = await OrganizationRepository().create(db, name=org_name or "org",
                                                      slug=f"org-{suffix}")
         organization_id = org.id
+        # THE SIGNUP GRANT, as account_service provisions it - a new organisation that starts at
+        # zero is not one a real signup produces, and the credit gate refuses its first run.
+        # `credits` states a different starting balance; 0 is an exhausted account.
+        from meshpipeline.application import credit_service
+        if credits is None:
+            await credit_service.grant_signup_credits(db, organization_id=organization_id)
+        else:
+            await credit_service.grant(db, organization_id=organization_id, amount=credits,
+                                       reason="seeded by the isolation matrix")
     user = await UserRepository().create(db, email=email, name="", firebase_uid=f"uid-{suffix}")
     await MembershipRepository().create(db, user_id=user.id, organization_id=organization_id,
                                         role=MembershipRole.owner)
@@ -438,6 +448,26 @@ async def test_a_job_approved_in_chat_is_readable_by_the_owner_who_approved_it(a
         "the owner who approved this run cannot read the job it created "
         f"({status.status_code}) - the approval transaction did not stamp organization_id, so "
         "the org-scoped read matches nothing")
+
+
+async def test_an_organisation_out_of_credits_is_refused_in_chat_and_no_job_is_created(api, db):
+    # THE CREDIT GATE, through the real route, the real principal resolution and a real ledger:
+    # a signup grant is a budget, and an organisation with no paid plan and nothing left is told
+    # so in the conversation rather than handed a run it cannot pay for.
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    base, _ = api
+    owner, org_id = await _provisioned_owner(db, org_name="out-of-credits", credits=0)
+    session_id = await _approvable_session(base, db, owner, org_id)
+
+    async with await _client(base) as c:
+        refused = await c.post("/api/v1/chat/message", headers=_headers(owner),
+                               json={"session_id": str(session_id), "content": "yes, proceed"})
+
+    assert "out of credits" in refused.text, (refused.status_code, refused.text)
+    db.expire_all()
+    linked = await SessionRepository().get_internal(db, session_id)
+    assert linked.job_id is None, "an organisation with no credits was handed a run anyway"
 
 
 async def test_a_job_approved_in_chat_carries_its_organisation(api, db):

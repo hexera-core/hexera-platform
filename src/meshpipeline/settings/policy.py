@@ -86,6 +86,12 @@ SIGNUP_GRANT_CREDITS: int = int(optional_env("SIGNUP_GRANT_CREDITS", "100"))
 # See application/metering_service.py, which is the only caller.
 JOB_BASE_CREDITS: int = int(optional_env("JOB_BASE_CREDITS", "10"))
 CREDITS_PER_MESH_MINUTE: int = int(optional_env("CREDITS_PER_MESH_MINUTE", "1"))
+# WHETHER A TENANT WITHOUT A PAID PLAN IS REFUSED A JOB ITS BALANCE CANNOT COVER. On by default,
+# because the alternative is that a signup grant is an unlimited free tier: nothing else stops a
+# new account running meshes after its credits are gone. Turn it off only where nobody can buy a
+# plan and everybody is trusted - a personal dev environment - never on a public deployment. See
+# application/spend_gate.py.
+CREDIT_GATE_ENABLED: bool = optional_env("CREDIT_GATE_ENABLED", "true").lower() == "true"
 # WHETHER an unrecognised Identity Platform account may provision itself one. This is the REAL
 # gate and it lives on the API, not the console: anyone can create an Identity Platform account
 # directly against the project's public web API key, so a console that merely hides the sign-up

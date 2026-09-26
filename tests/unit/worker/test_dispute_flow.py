@@ -459,3 +459,21 @@ def _execution_fence(monkeypatch):
     # production resolves; ownership checks, claim transitions and the transaction stay real.
     from tests.execution_fence_double import install
     return install(monkeypatch)
+
+
+def test_dispute_endpoint_refuses_a_tenant_out_of_credits_with_402(monkeypatch):
+    # A dispute is a new, charged run, so it passes the same credit gate as a first approval - and
+    # says "pay" (402) rather than "slow down" (429), because waiting will not change the answer.
+    from meshpipeline.application import spend_gate
+
+    async def _refuse(db, *, owner_id, organization_id):
+        raise spend_gate.OutOfCredits("You are out of credits")
+    monkeypatch.setattr(spend_gate, "admit", _refuse)
+    parent = _succeeded_job()
+    client, dispatched, _ = _client(monkeypatch, parent)
+    r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
+                    headers={"X-User-Id": "user-1"},
+                    json={"flags": [{"x": 0, "y": 0, "z": 0}]})
+    assert r.status_code == 402
+    assert "out of credits" in r.json()["detail"]
+    assert not dispatched

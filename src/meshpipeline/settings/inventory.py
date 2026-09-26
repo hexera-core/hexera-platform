@@ -374,6 +374,9 @@ INVENTORY: list[Group] = [
         EnvVar("CREDITS_PER_MESH_MINUTE", "1", kind="int",
                help="credits per wall-clock minute between a job's started_at and ended_at, "
                     "rounded up; 0 prices jobs at the base charge alone"),
+        EnvVar("CREDIT_GATE_ENABLED", "true", kind="bool",
+               help="refuse a new job from a tenant with no paid plan once its balance cannot "
+                    "cover one; off only where nobody can buy a plan, never on a public deployment"),
         EnvVar("CONSOLE_SIGNUP_ENABLED", "true", kind="bool",
                help="whether an unknown Identity Platform account may provision itself an "
                     "organisation on first sign-in"),

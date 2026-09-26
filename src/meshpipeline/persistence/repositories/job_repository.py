@@ -186,6 +186,19 @@ class JobRepository:
         )
         return result.scalar() or 0
 
+    async def count_active_for_organization(self, db: AsyncSession,
+                                            organization_id: uuid.UUID) -> int:
+        # THE CREDIT RESERVATION'S COUNT, and deliberately NOT the quota's. Every member of an
+        # organisation spends the same balance, so what a balance must cover is every run the
+        # TENANT has in flight - whereas what one person may run at once stays per owner, above.
+        result = await db.execute(
+            select(func.count()).select_from(SimulationJob).where(
+                SimulationJob.organization_id == organization_id,
+                SimulationJob.status.in_(self._ACTIVE_STATUSES),
+            )
+        )
+        return result.scalar() or 0
+
     async def count_total_active(self, db: AsyncSession) -> int:
         result = await db.execute(
             select(func.count()).select_from(SimulationJob).where(

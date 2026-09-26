@@ -359,7 +359,7 @@ def _dispatch_once(session_gate, session_overrides=None, msgs=None):
             return j
 
     class _Svc:
-        async def check_quotas(self, _db, _owner):
+        async def check_quotas(self, _db, _owner, *, plan=""):
             return None
 
     sent = {}

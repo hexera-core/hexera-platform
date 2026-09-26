@@ -320,6 +320,7 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 | `MAX_JOBS_PER_OWNER` | `5` | concurrent jobs one owner may hold |
 | `MAX_CONCURRENT_JOBS` | `20` | across the deployment |
 | `SIGNUP_GRANT_CREDITS` | `100` | credits a newly provisioned organisation is granted once; `0` disables the grant |
+| `CREDIT_GATE_ENABLED` | `true` | refuse a new job from an organisation with no paid plan once its balance cannot cover one (its running jobs each hold back `JOB_BASE_CREDITS`). A subscriber is never refused - its overage is metered. Turn off only on a personal dev environment, never on a public deployment |
 | `CONSOLE_SIGNUP_ENABLED` | `true` | whether an unknown Identity Platform account may provision itself an organisation on first sign-in; an API setting, not a console one - see [identity-platform.md](../deployment/identity-platform.md#5-opening-and-closing-signup-console_signup_enabled) |
 | `CELERY_WORKER_CONCURRENCY` | `2` | pipeline runs per worker process |
 
@@ -445,7 +446,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (228 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (229 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -515,6 +516,7 @@ Every supported setting (228 entries). `template` settings are the ones `.env.ex
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |
+| `CREDIT_GATE_ENABLED` | template | app |  |
 | `JOB_BASE_CREDITS` | template | app |  |
 | `MAX_CONCURRENT_JOBS` | template | app |  |
 | `MAX_JOBS_PER_OWNER` | template | app |  |
