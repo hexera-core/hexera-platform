@@ -63,12 +63,18 @@ class CreditLedgerRepository:
         # GRANTS AND DEBITS ARE SUMMED SEPARATELY rather than netted. A month where 10,000 credits
         # were granted and 10,000 spent is not the same month as one where nothing happened, and a
         # single net figure cannot tell them apart.
+        #
+        # BY ENTRY TYPE, not by sign. A refund is positive but is not a grant - most are the part of
+        # a run billed as overage, paid back to the balance - and counting it as "granted" would
+        # report credits nobody issued. Refunds are in neither column; `spent` is gross consumption.
         bucket = func.date_trunc("month", CreditLedgerEntry.created_at).label("period")
         res = await db.execute(
             select(bucket,
-                   func.coalesce(func.sum(case((CreditLedgerEntry.amount > 0,
+                   func.coalesce(func.sum(case((CreditLedgerEntry.entry_type
+                                                == CreditEntryType.grant,
                                                 CreditLedgerEntry.amount), else_=0)), 0),
-                   func.coalesce(func.sum(case((CreditLedgerEntry.amount < 0,
+                   func.coalesce(func.sum(case((CreditLedgerEntry.entry_type
+                                                == CreditEntryType.debit,
                                                 -CreditLedgerEntry.amount), else_=0)), 0),
                    func.count())
             .group_by(bucket)

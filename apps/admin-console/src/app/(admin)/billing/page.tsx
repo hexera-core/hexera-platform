@@ -232,15 +232,17 @@ export default async function BillingPage() {
                         <td>{entry.entry_type}</td>
                         <td>{credits(entry.amount)}</td>
                         <td>{entry.reason || "—"}</td>
-                        {/* ONLY OVERAGE IS METERED. A debit the balance covered is never
-                            reported; one with overage is pending until the sweep stamps it.
+                        {/* ONLY OVERAGE IS METERED. A debit with none is never reported - it was
+                            paid from credits, or (no paid plan) it took the balance negative;
+                            the Amount and the balance say which. Overage is pending until the
+                            sweep stamps it.
                             This is the single most useful column when a bill looks too small. */}
                         <td>
                           {entry.entry_type !== "debit"
                             ? "n/a"
                             : entry.overage > 0
                               ? `${credits(entry.overage)} overage · ${entry.metered_at ? when(entry.metered_at) : "pending"}`
-                              : "covered by credits"}
+                              : "not metered"}
                         </td>
                       </tr>
                     ))}

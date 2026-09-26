@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import meshpipeline.settings.billing as billcfg
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.application import credit_service, spend_gate
 from meshpipeline.contracts.billing import BillingUnavailable, get_billing_gateway
@@ -96,12 +97,15 @@ async def charge_for_job(db: AsyncSession, *, job) -> int:
 async def _overage_of(db: AsyncSession, *, organization_id, amount: int) -> int:
     """How much of a charge of `amount` the tenant's balance does not cover and its plan bills."""
     organization = await organization_repo.get_by_id(db, organization_id)
-    # ONLY A TENANT THE METER CAN BILL has overage. Without a paid plan there is no metered price -
-    # the balance simply goes negative and the credit gate refuses the next run. Without a billing
-    # customer (an invoiced enterprise account) there is nobody to report to, and the operator reads
-    # the negative balance off the ledger when raising the invoice.
-    if (organization is None or not getattr(organization, "stripe_customer_id", None)
-            or not spend_gate.paying_plan(organization)):
+    # ONLY A TENANT THE METER CAN BILL has overage, which takes all three of: a customer to report
+    # against, a paid plan, and a metered price ON THAT PLAN. Without a paid plan the balance simply
+    # goes negative and the credit gate refuses the next run. Without a metered price - an invoiced
+    # enterprise account, which gains a customer the first time the operator raises an invoice, or
+    # a tier sold without an overage price - a meter event would be priced by nothing, and paying it
+    # back here would erase the negative balance the operator invoices from.
+    plan = spend_gate.paying_plan(organization) if organization is not None else ""
+    if (not plan or not getattr(organization, "stripe_customer_id", None)
+            or not billcfg.price_for(plan)[1]):
         return 0
     await _serialise_charges(db, organization_id)
     covered = min(max(await credit_service.balance(db, organization_id=organization_id), 0),
