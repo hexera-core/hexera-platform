@@ -1013,16 +1013,21 @@ class IntakeToolExecutor:
             logger.warning("Intake: the geometry agent's step could not run (%s) - job_id=%s", exc, self._job_id)
             return []
 
-    def _roles_i_changed_from_my_own_proposal(self) -> str:
-        """The block naming every role WE proposed that the geometry agent's plan then changed, or "".
+    def _corrections_the_plan_makes(self, args: dict) -> list[dict]:
+        """Every role WE proposed that the geometry agent's plan re-read, and what can be DONE about each.
 
-        THE DEFECT. The intake default proposes every unplaced mouth as an outlet, the customer says "you
-        decide everything", and `geometry_survey._the_proposal_recorded` stores OUR reading under THEIR
-        name with the note "accepted the setup the application proposed". MEASURED over 24 driven
-        conversations: all 24 reached a mesh and the geometry agent planned on only 19, every one of the
-        five refusals was `grounding_rejected`, and all five were the same family of part - a solid block
-        with channels through it. Two of the five were ours: `contract.given.check_plan` refused the
-        agent's own correct reading of a mouth,
+        Returns one record per re-read mouth - `mouth`, `proposed`, `planned`, the agent's `because`, the
+        `patch` in the submitted payload it is about, and the `action` - or [] when there is nothing to say.
+        It DECIDES and stores nothing; `_apply_the_corrections` does the rewriting and the announcement is
+        rendered from what that returns, so this is the only place the two halves can come from.
+
+        THE FIRST DEFECT, AND WHY THIS BLOCK EXISTS AT ALL. The intake default proposes every unplaced mouth
+        as an outlet, the customer says "you decide everything", and `geometry_survey._the_proposal_recorded`
+        stores OUR reading under THEIR name with the note "accepted the setup the application proposed".
+        MEASURED over 24 driven conversations: all 24 reached a mesh and the geometry agent planned on only
+        19, every one of the five refusals was `grounding_rejected`, and all five were the same family of part
+        - a solid block with channels through it. Two of the five were ours: `contract.given.check_plan`
+        refused the agent's own correct reading of a mouth,
 
             "the plan calls o12 'wall' and the customer confirmed 'outlet': the agent decides what to do
              with a role, never which role a mouth has once a person has said"
@@ -1030,52 +1035,68 @@ class IntakeToolExecutor:
         against a row whose three role answers all read `accepted the setup the application proposed`. On a
         sibling part the agent says exactly what those mouths are - "the end face of an inner body (a centre
         body) inside the wall shell; it is an obstacle face, not a port". The agent was right, and it was
-        overruled by a sentence the customer never said.
+        overruled by a sentence the customer never said. The owner's standing rule is "whatever the human says
+        is final if he says smth wrong u can correct him": correcting him is allowed, correcting him silently
+        is not, and without the confirmation block the customer finds out from the mesh.
 
-        A SIBLING CHANGE MAKES A ROLE OF OURS CORRECTABLE, AND THAT IS ONLY HALF RIGHT ON ITS OWN. The
-        owner's standing rule is "whatever the human says is final if he says smth wrong u can correct
-        him". Correcting him is allowed; correcting him silently is not, and without this block the
-        customer finds out from the mesh. So it goes on the application-composed confirmation and not in a
-        prompt asking the model to mention it, for the reason `st.engine_swap` is on that line: an
-        instruction to a model is a request, and anything required must be enforced where we control it.
+        THE SECOND DEFECT, WHICH IS THIS FUNCTION'S SHAPE. `ac08697` put the correction on the screen and
+        NOTHING carried it into the payload. `engines/port_binding.bind_ports` binds every role from
+        `DeclaredPatch.from_intake(p)` - the submitted patches - and `engines/gmsh/gates` measures the same
+        list; the plan's own roles reach neither. So the last screen before compute said "it is the end face
+        of a solid part inside the shell, so I have set it to wall" and the job meshed that mouth as an
+        outlet. A screen that disagrees with the mesh is worse than no correction at all, and this is the one
+        turn where a caveat is still worth something. The correction therefore rewrites the payload, and a
+        re-reading that CANNOT be carried into a payload is withdrawn - the customer is told nothing and the
+        row records that nothing was said. Announced is now the same set as applied, by construction rather
+        than by a check: `_apply_the_corrections` returns the applied records and the block is rendered from
+        them, so there is no path that can announce one that did not land.
 
-        ONLY A ROLE WE PROPOSED CAN APPEAR HERE, AND THAT IS STRUCTURAL RATHER THAN CHECKED. The only
-        source of a mouth in `rows` is a live answer whose `note` is `gs.ACCEPTED_THE_PROPOSAL`, and
-        `_the_proposal_recorded` is the only writer of that note: a role the customer TYPED lands through
-        `_subject_and_value`, whose note on either role shape is the empty string. There is no branch here
-        that can reach a role they named, so this cannot report one as changed.
+        WHICH PATCH A MOUTH IS, IS NOT THIS FUNCTION'S OPINION. `geometry_brief.bind_patches` is the
+        platform's own answer to "which measured mouth is this declared port", it is what `role_problems`
+        settled the roles with two gates above, and its `checked` is true only when a measurement existed and
+        EVERY declared port bound. Below that bar nothing here knows what the payload does with a mouth, so
+        nothing is announced and nothing is rewritten: a partial reading is not a reading.
+
+        ONLY A ROLE WE PROPOSED CAN APPEAR HERE, AND THAT IS STRUCTURAL RATHER THAN CHECKED. The only source
+        of a mouth is a live answer whose `note` is `gs.ACCEPTED_THE_PROPOSAL`, and `_the_proposal_recorded`
+        is the only writer of that note: a role the customer TYPED lands through `_subject_and_value`, whose
+        note on either role shape is the empty string. There is no branch here that can reach a role they
+        named, so this can neither report one as changed nor rewrite one.
 
         AND A ROLE THEY TYPE LATER LEAVES BY ITSELF. When the customer places a mouth themselves,
-        `gs._corrected` retires our proposal for it and `gs.record_answer` appends theirs, so the mouth's
-        last answer is theirs and the note filter drops it - a correction stops being reported the moment it
-        stops being ours to make. `gs.live_answers` is the reader for the separate reason `_corrected`
-        states: "Every reader goes through `live_answers`", because a retired row is the record of what they
-        were asked and not an input, and no ordering of the append-only list may resurrect one. It is NOT
-        what keeps a typed role out; the last-answer-wins rule above is, which is why that rule reads the
-        note off the answer that stands rather than off any answer carrying it.
+        `gs._corrected` retires our proposal for it and `gs.record_answer` appends theirs, so the mouth's last
+        answer is theirs and the note filter drops it - a correction stops being made the moment it stops
+        being ours to make. `gs.live_answers` is the reader for the separate reason `_corrected` states:
+        "Every reader goes through `live_answers`", because a retired row is the record of what they were
+        asked and not an input. It is NOT what keeps a typed role out; the last-answer-wins rule below is,
+        which is why that rule reads the note off the answer that STANDS rather than off any answer carrying
+        it.
 
-        THIS IS DERIVED AT COMPOSITION AND NOT CACHED. That is the one place this departs from
-        `st.engine_swap`, deliberately: the swap leaves no
-        other durable trace, so a copy of it IS the record, while both halves of this one are already on
-        the survey row. A cached copy could outlive the answer it was about and report a change to a role
-        the customer had since typed - the one thing this must never say. It survives the turn because the
-        row does: `agent._survey_for` reads the row back with `gs.load` on every turn, and
-        `_geometry_step_gate` has already refreshed it with this plan a few lines above the caller.
+        THIS IS DERIVED AT SUBMISSION AND NOT CACHED, deliberately, which is the one place it departs from
+        `st.engine_swap`: the swap leaves no other durable trace, so a copy of it IS the record, while both
+        halves of this one are already on the survey row that `gs.load` reads back every turn and that
+        `_geometry_step_gate` refreshed with this plan a few lines above the caller. A cached copy could
+        outlive the answer it was about and report a change to a role the customer had since typed - the one
+        thing this must never say. What IS stored is what was DONE, by `gst.with_role_corrections`, which is a
+        different fact and not a copy of this one.
         """
         st = self.state
         if not isinstance(st.geometry_survey, dict):
-            return ""
+            return []
         try:
+            from meshpipeline.agents.intake.geometry_brief import bind_patches
+            from meshpipeline.application import geometry_step as gst
             from meshpipeline.application import geometry_survey as gs
 
             _step = st.geometry_survey.get("geometry_step")
             _plan = _step.get("plan") if isinstance(_step, dict) else None
             if not isinstance(_plan, dict):
-                return ""
+                return []
             # THE MOUTH'S LAST LIVE ANSWER WINS, AND ONLY THEN IS IT ASKED WHOSE IT WAS. Reading "any live
             # row carrying the note" would find a proposal row underneath a role the customer typed over
             # it on a row where the retire had not landed, and report their own word back as a change of
-            # ours. Whose the role is has to be decided by the answer that stands, not by any answer.
+            # ours - or, now, rewrite their own word out of the payload. Whose the role is has to be
+            # decided by the answer that stands, not by any answer.
             said: dict[str, tuple[str, bool]] = {}
             for a in gs.live_answers(st.geometry_survey):
                 if (a.get("about") != "opening.role" or a.get("skipped")
@@ -1083,7 +1104,15 @@ class IntakeToolExecutor:
                     continue
                 said[str(a["subject"])] = (str(a.get("value") or ""),
                                            str(a.get("note") or "") == gs.ACCEPTED_THE_PROPOSAL)
-            rows: list[str] = []
+            if not said:
+                return []
+            bound = bind_patches(st.geometry_document, args.get("patches"))
+            ports_at: dict[str, list[str]] = {}
+            for row in (bound.get("bound") or []):
+                if isinstance(row, dict) and row.get("opening_id"):
+                    ports_at.setdefault(str(row["opening_id"]), []).append(str(row.get("name") or ""))
+            read_the_payload = bool(bound.get("checked"))
+            out: list[dict] = []
             for patch in (_plan.get("patches") or []):
                 if not isinstance(patch, dict):
                     continue
@@ -1097,24 +1126,179 @@ class IntakeToolExecutor:
                 planned = str(patch.get("role") or patch.get("type") or "")
                 if not planned or planned == mine[0]:
                     continue
-                because = one_line_reason(patch.get("evidence"))
-                rows.append(f"  - {mouth}: I proposed {role_words(mine[0])}, and it is "
-                            f"{role_words(planned)}" + (f" - {because}" if because else ""))
-            if not rows:
-                return ""
-            shown, more = rows[:ROLES_I_CHANGED_MAX], len(rows) - ROLES_I_CHANGED_MAX
-            if more > 0:
-                shown.append(f"  - and {more} more the same way, every one of them mine and none of yours")
-            logger.info("Intake: the confirmation names %d role(s) I proposed and the geometry agent "
-                        "changed - job_id=%s", len(rows), self._job_id)
-            return ROLES_I_CHANGED_HEAD + chr(10) + chr(10).join(shown)
+                here = ports_at.get(mouth) or []
+                rec = {"mouth": mouth, "proposed": mine[0], "planned": planned,
+                       "because": one_line_reason(patch.get("evidence")), "patch": here[0] if here else ""}
+                if not read_the_payload:
+                    out.append({**rec, "action": gst.CORRECTION_WITHDRAWN, "patch": "",
+                                "withheld_because": "not every declared port bound to a measured mouth, so "
+                                                    "which mouth this payload meshes as what is not known"})
+                elif len(here) > 1:
+                    out.append({**rec, "action": gst.CORRECTION_WITHDRAWN, "patch": "",
+                                "withheld_because": f"{len(here)} declared ports bind to this one mouth"})
+                elif not here and planned in ("wall", "closed_end"):
+                    # Nothing in the payload binds this mouth, so nothing gives it a boundary condition
+                    # and the binder folds it into the wall on its own. The announcement is already true;
+                    # there is nothing to rewrite, and saying so is not the same event as rewriting.
+                    out.append({**rec, "action": gst.CORRECTION_ALREADY})
+                elif not here:
+                    # A PORT WE WERE NEVER GIVEN IS NOT A PORT WE INVENT. The plan reads this mouth as a
+                    # flow boundary and the payload declares none there; conjuring one would be the
+                    # platform declaring a port on its own authority, which is a larger thing than
+                    # correcting a role it proposed, and the reason is stated as what it is.
+                    out.append({**rec, "action": gst.CORRECTION_WITHDRAWN,
+                                "withheld_because": f"no declared port binds this mouth, so there is no "
+                                                    f"port to give the role {planned!r} to"})
+                elif planned in ("inlet", "outlet"):
+                    # THE SAME PORT, THE OTHER WAY ROUND. The patch keeps its name, its size and its
+                    # location, so it binds to the same opening it bound to before and only the boundary
+                    # condition moves - which is the whole of what the plan re-read.
+                    out.append({**rec, "action": gst.CORRECTION_RETYPED})
+                elif planned in ("wall", "closed_end"):
+                    # A MOUTH THAT IS NOT A PORT IS NOT A PORT NAMED "wall". `bind_ports` refuses any
+                    # declaration carrying more than one wall patch ("the declaration must carry exactly
+                    # one wall patch"), so retyping this one to wall would kill the job pre-mesh rather
+                    # than mesh it as a wall. Withdrawing the DECLARATION is what the binder already has a
+                    # word for: an opening no declared port claims is folded into the wall surface
+                    # (`folded_into_wall`, "blind plugs and machining faces"), which is the announcement
+                    # honoured exactly.
+                    out.append({**rec, "action": gst.CORRECTION_UNPORTED})
+                else:
+                    # `symmetry` and `farfield` are roles `bind_ports` refuses outright ("unknown roles for
+                    # patches"), and a role this platform cannot express in a payload is a correction it
+                    # cannot make. It is not announced, for the reason the whole block exists.
+                    out.append({**rec, "action": gst.CORRECTION_WITHDRAWN,
+                                "withheld_because": f"a submitted payload cannot carry the role {planned!r}"})
+            return out
         except Exception as exc:                   # noqa: BLE001 - never a turn
             # SAID, because the silence is the defect. A customer who is not told reads a corrected role
-            # off the mesh, and that is exactly what this block exists to prevent - so a failure here is
-            # logged as one rather than passed off as "nothing changed".
-            logger.warning("Intake: could not say which roles the geometry agent changed, so the customer "
-                           "was not told (%s) - job_id=%s", exc, self._job_id)
+            # off the mesh, and that is exactly what this exists to prevent - so a failure here is logged
+            # as one rather than passed off as "nothing changed".
+            logger.warning("Intake: could not work out which roles the geometry agent changed, so the "
+                           "customer was not told and the payload was left alone (%s) - job_id=%s",
+                           exc, self._job_id)
+            return []
+
+    def _apply_the_corrections(self, args: dict, records: list[dict]) -> tuple[list[dict], bool]:
+        """Carry the corrections into the submitted payload. Returns (the ones to announce, payload rewritten).
+
+        THE ANNOUNCEMENT'S INPUT IS THIS FUNCTION'S OUTPUT, which is what makes "announced" and "honoured by
+        the mesh" one set instead of two that can drift. A record this cannot carry is turned into a
+        withdrawal IN PLACE, so the row `_record_the_corrections` writes says the customer was told nothing
+        about it, and it is not returned.
+
+        ALL OR NOTHING, and only when the corrected payload still passes the gate that let the original
+        through. `validate_submission` is the platform's own authority on payload shape and it is the one that
+        catches the case this must never create - dropping the last outlet, which leaves "patches must include
+        either both 'inlet'+'outlet' or a single 'farfield'". It can fail differently from everything above it:
+        nothing here reads a patch structure, and nothing there reads a plan. A partial application is refused
+        rather than salvaged because the screen would then be honoured for some mouths and not others, with no
+        line anywhere saying which.
+
+        THE BINDING OF EVERY OTHER PORT IS UNTOUCHED, and that is a property of `bind_patches.checked` rather
+        than an argument about `bind_ports`. Every declared port bound, so each one either names its mouth or
+        is the only declaration of its bore; removing one declaration removes its size class entirely and
+        leaves its opening to fold, and retyping one moves no size, name or location at all. The surplus
+        refusal `bind_ports` raises for a same-size opening it cannot fold needs a port that stayed behind in
+        that size class, and `checked` is exactly the condition under which none did.
+        """
+        from meshpipeline.application import geometry_step as gst
+
+        doing = [r for r in records if r.get("action") in gst.CORRECTION_REWROTE]
+        if not doing:
+            return [r for r in records if r.get("action") in gst.CORRECTION_ANNOUNCED], False
+        was = list(args.get("patches") or [])
+        drop = {r["patch"] for r in doing if r["action"] == gst.CORRECTION_UNPORTED}
+        retype = {r["patch"]: r["planned"] for r in doing if r["action"] == gst.CORRECTION_RETYPED}
+        try:
+            now = []
+            for p in was:
+                if not isinstance(p, dict):
+                    now.append(p)
+                    continue
+                name = str(p.get("name") or "")
+                if name in drop:
+                    continue
+                now.append({**p, "type": retype[name]} if name in retype else p)
+            # EVERY CORRECTION LANDED, OR NONE IS ANNOUNCED. The patch names come from `bind_patches`
+            # reading this same list, so a name that matches nothing here should be impossible - and a
+            # rewrite that silently matched nothing is the original defect wearing this function's
+            # clothes, with the block on screen and the payload untouched. It is cheaper to read the
+            # result back than to argue that it cannot happen.
+            args["patches"] = now
+            before = {str(p.get("name") or "") for p in was if isinstance(p, dict)}
+            landed = {str(p.get("name") or ""): str(p.get("type") or "")
+                      for p in (args.get("patches") or []) if isinstance(p, dict)}
+            missed = sorted({n for n in drop if n not in before or n in landed}
+                            | {n for n, role in retype.items() if landed.get(n) != role})
+            errors = ([f"the correction did not land on patch(es) {missed}"] if missed
+                      else validate_submission(args))
+        except Exception as exc:                   # noqa: BLE001 - never a turn, and never a half-rewrite
+            errors = [f"the correction could not be applied: {type(exc).__name__}: {exc}"]
+        if errors:
+            args["patches"] = was
+            for r in doing:
+                r["action"] = gst.CORRECTION_WITHDRAWN
+                r["withheld_because"] = ("the corrected payload would not be a valid submission: "
+                                         + "; ".join(str(e) for e in errors))[:300]
+            logger.warning("Intake: the geometry agent's re-reading of %d role(s) was NOT applied and NOT "
+                           "announced - the corrected payload is not submittable: %s - job_id=%s",
+                           len(doing), errors, self._job_id)
+            return [r for r in records if r.get("action") in gst.CORRECTION_ANNOUNCED], False
+        logger.info("Intake: the submitted payload now carries the geometry agent's role for %d mouth(s) "
+                    "(%d retyped, %d no longer declared a port) - job_id=%s", len(doing),
+                    len(retype), len(drop), self._job_id)
+        return [r for r in records if r.get("action") in gst.CORRECTION_ANNOUNCED], True
+
+    async def _record_the_corrections(self, records: list[dict]) -> None:
+        """Put what was DONE on the survey row, so the learning loop can tell the two outcomes apart.
+
+        A correction that changed the mesh and one that was withdrawn are different events and used to be the
+        same absence of a row. Never a turn: the customer's screen and the payload already agree by the time
+        this runs, and a row that cannot be written is worth less than the submission it would cost.
+
+        THE ROW ON THE STATE IS WRITTEN WHETHER OR NOT IT CAN BE PERSISTED, and the two are separate steps on
+        purpose. `st.geometry_survey` is what the rest of this turn reads - `_agent_words` a few lines below
+        reads the same field - so a store that is unreachable must not also take the in-turn record with it.
+        """
+        st = self.state
+        if not isinstance(st.geometry_survey, dict) or not records:
+            return
+        try:
+            from meshpipeline.application import geometry_step as gst
+            from meshpipeline.application import geometry_survey as gs
+
+            st.geometry_survey = gst.with_role_corrections(st.geometry_survey, records)
+            if st.survey_source_ref is None:
+                return
+            await gs.save(st.owner_id, str(st.survey_source_ref.source_id), st.geometry_survey,
+                          session_id=st.session_id)
+        except Exception as exc:                   # noqa: BLE001 - never a turn
+            logger.warning("Intake: what the geometry agent's role corrections did was not recorded on the "
+                           "row (%s) - job_id=%s", exc, self._job_id)
+
+    def _roles_i_changed_from_my_own_proposal(self, announced: list[dict]) -> str:
+        """The block naming every role WE proposed that the plan changed AND the payload now carries, or "".
+
+        It renders `_apply_the_corrections`'s own return value and reads nothing else, which is the whole
+        guarantee: a correction the payload does not carry never reaches this function, so the screen cannot
+        say a mouth is a wall while the job meshes it as an outlet.
+
+        It is on the application-composed confirmation and not in a prompt asking the model to mention it, for
+        the reason `st.engine_swap` is on that line: an instruction to a model is a request, and anything
+        required must be enforced where we control it.
+        """
+        rows = [f"  - {r['mouth']}: I proposed {role_words(r['proposed'])}, and it is "
+                f"{role_words(r['planned'])}" + (f" - {r['because']}" if r.get("because") else "")
+                for r in announced]
+        if not rows:
             return ""
+        shown, more = rows[:ROLES_I_CHANGED_MAX], len(rows) - ROLES_I_CHANGED_MAX
+        if more > 0:
+            shown.append(f"  - and {more} more the same way, every one of them mine and none of yours")
+        logger.info("Intake: the confirmation names %d role(s) I proposed and the geometry agent changed, "
+                    "and the payload carries every one of them - job_id=%s", len(rows), self._job_id)
+        return ROLES_I_CHANGED_HEAD + chr(10) + chr(10).join(shown)
 
     def _what_is_being_confirmed(self, args: dict) -> str:
         """THE REQUIREMENTS THE ASK POINTS AT, composed by the application from the payload it authorised.
@@ -1232,10 +1416,36 @@ class IntakeToolExecutor:
             return IntakeToolResult(tool="submit_requirements", accepted=False, content=(
                 "Submission held - " + "; ".join(_late) + ". Nothing was saved."))
 
+        # THE CORRECTION WE ANNOUNCE REACHES THE MESH, OR IT IS NOT ANNOUNCED. This is the last point at
+        # which the payload is still ours to change: below it the payload IS the approval, and the approval
+        # is what `engines/port_binding.bind_ports` binds every boundary condition from. `ac08697` named the
+        # roles the geometry agent re-read on the confirmation and carried none of them into these patches,
+        # so the screen said "it is the end face of a solid part inside the shell, so I have set it to wall"
+        # and the job meshed that mouth as an outlet. A fact that lies on the last screen before compute is
+        # spent is worse than no correction at all.
+        #
+        # It runs AFTER the token check on purpose. The token authorises the payload the MODEL submitted,
+        # and that is what it was verified against; what changes here is the platform's own correction to a
+        # role the platform itself proposed, applied once, after every gate that judges the model's work.
+        # `canon_stored` is then recomputed from the corrected patches, which is what keeps the durable
+        # approval record self-consistent at `approval.assert_payload_matches_approval`.
+        _corrections = self._corrections_the_plan_makes(args)
+        _announce, _rewrote = self._apply_the_corrections(args, _corrections)
+        if _corrections:
+            await self._record_the_corrections(_corrections)
+
         st.submit_args = args
         logger.info("Intake: submit_requirements AUTHORIZED - domain=%r - job_id=%s",
                     args.get("domain", "")[:60], self._job_id)
-        canon_stored = (st.pending or {}).get("canonical", {})
+        # UNCHANGED PAYLOAD, UNCHANGED RECORD: with nothing corrected this is the previewed canonical
+        # itself, byte for byte what it has always been. When the roles moved, the approval has to be
+        # fingerprinted over the patches that will actually run, or `assert_payload_matches_approval`
+        # recomputes the builder's canonical from the corrected patches, finds the previewed fingerprint
+        # and refuses to dispatch at all.
+        canon_stored = (at.canonical_payload(args.get("mesh_engine"), args.get("purpose"),
+                                             args.get("input_kind"), args.get("dimensionality"),
+                                             args.get("patches"), args.get("engine_params"))
+                        if _rewrote else (st.pending or {}).get("canonical", {}))
         payload = {k: v for k, v in args.items() if k != "preview_token"}
         intent_canon = at.approved_intent_canonical(
             engine=args.get("mesh_engine"), purpose=args.get("purpose"),
@@ -1326,9 +1536,10 @@ class IntakeToolExecutor:
             _head += chr(10) * 2
         # AND WHICH OF THOSE ROLES WE CHANGED OUT FROM UNDER OUR OWN PROPOSAL. Directly under the setup,
         # because it is a correction TO the setup: the faces line above names the role each mouth is being
-        # submitted with, and this says which of those the agent moved and why. Empty on every job where
-        # nothing changed, and the summary is then byte for byte what it is today.
-        _mine = self._roles_i_changed_from_my_own_proposal()
+        # submitted with - the CORRECTED payload, since the rewrite above happened first - and this says
+        # which of those the agent moved and why. Empty on every job where nothing changed, and the summary
+        # is then byte for byte what it is today.
+        _mine = self._roles_i_changed_from_my_own_proposal(_announce)
         st.submit_summary = (_head + self._what_is_being_confirmed(args)
                              + (_mine + (chr(10) * 2) if _mine else "")
                              + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")

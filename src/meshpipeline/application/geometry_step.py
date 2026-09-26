@@ -523,7 +523,64 @@ class _NotYet:
 #: One list, read by the code and by its test, because a hand-kept copy in the test is a list that agrees with
 #: the code until the day a key is added to one of them.
 STALE_ON_A_FAILED_PLAN: tuple[str, ...] = ("plan", "envelope", "flow_patches", "unconfirmed_roles",
-                                           "sent_back_because")
+                                           "sent_back_because", "role_corrections")
+
+
+#: The row's record of what the plan's re-reading of a role we proposed actually DID, written by
+#: `with_role_corrections` and read by nobody in the request path. It exists because the two outcomes are
+#: different facts and used to be one silence: a correction that reached the mesh is not the same event as
+#: one that was announced and dropped, and a learning loop that cannot tell them apart cannot tell whether
+#: the agent's re-readings are worth anything.
+ROLE_CORRECTIONS_SCHEMA = "meshpipeline.geometry_step.role_corrections.v1"
+
+#: What was DONE to the submitted payload for one mouth. The first three are honoured on the mesh and are
+#: the only ones the confirmation may name; `CORRECTION_WITHDRAWN` is a re-reading this platform could not
+#: carry into the payload, so the customer is told nothing and the row says why.
+CORRECTION_RETYPED = "retyped_the_submitted_port"        # inlet <-> outlet on the port bound to that mouth
+CORRECTION_UNPORTED = "removed_the_submitted_port"       # the mouth is not a port: it folds into the wall
+CORRECTION_ALREADY = "no_port_was_submitted_there"       # nothing bound that mouth, so nothing meshes it
+CORRECTION_WITHDRAWN = "withdrawn"                       # not announced, because it could not be honoured
+
+#: The actions the confirmation may name, which is exactly the actions the mesh honours. One tuple, read by
+#: the composition and by its tests, because a hand-kept second copy is a list that agrees until it does not.
+CORRECTION_ANNOUNCED: tuple[str, ...] = (CORRECTION_RETYPED, CORRECTION_UNPORTED, CORRECTION_ALREADY)
+#: The subset that rewrote the payload, which is what makes the approval's canonical differ from the preview's.
+CORRECTION_REWROTE: tuple[str, ...] = (CORRECTION_RETYPED, CORRECTION_UNPORTED)
+
+#: The fields of one recorded correction. Anything else an upstream record carries is dropped: the row is
+#: not a place to spill an intake structure into.
+CORRECTION_ROW_KEYS: tuple[str, ...] = ("mouth", "proposed", "planned", "action", "patch", "because",
+                                        "withheld_because")
+
+
+def with_role_corrections(state: dict, records: Any) -> dict:
+    """The row's record of every role the plan re-read on a proposal of OURS, and what was DONE about it.
+
+    WHY THE ROW NEEDS IT. `ac08697` put the re-reading on the confirmation the customer reads, and nothing
+    carried it into the submitted payload - so the screen said a mouth was a wall while `engines/port_binding`
+    bound the mouth's stored role and meshed it as an outlet. The correction now rewrites the payload, and the
+    two outcomes that follow are different facts: one of these mouths was meshed the way the customer was
+    told, and another was a re-reading this platform could not express in a payload, which is why they were
+    told nothing about it. Both used to be the same absence of a row.
+
+    ONLY ONTO A PLANNED STEP, and never onto one whose plan failed: a correction describes a plan, so a row
+    with no plan on it has nothing for one to be about. `role_corrections` is in `STALE_ON_A_FAILED_PLAN` for
+    the same reason - a later failure drops it with the plan it described rather than leaving it to describe
+    a plan the row no longer carries.
+    """
+    step = state.get("geometry_step")
+    if not isinstance(step, dict) or step.get("status") != PLANNED:
+        return state
+    rows = [{k: r.get(k, "") for k in CORRECTION_ROW_KEYS}
+            for r in (records or []) if isinstance(r, dict)]
+    if not rows:
+        return state
+    return {**state, "geometry_step": {**step, "role_corrections": {
+        "schema": ROLE_CORRECTIONS_SCHEMA, "at": _now(), "for": str(step.get("for") or ""),
+        "announced": sum(1 for r in rows if r["action"] in CORRECTION_ANNOUNCED),
+        "rewrote_the_payload": sum(1 for r in rows if r["action"] in CORRECTION_REWROTE),
+        "withdrawn": sum(1 for r in rows if r["action"] == CORRECTION_WITHDRAWN),
+        "rows": rows}}}
 
 
 def survey_disagreement(trace: Any) -> list[str]:
@@ -1014,8 +1071,11 @@ def record_handover(state: dict, handoff: dict) -> dict:
         return state
 
 
-__all__ = ["FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS", "STALE_ON_A_FAILED_PLAN",
+__all__ = ["CORRECTION_ALREADY", "CORRECTION_ANNOUNCED", "CORRECTION_REWROTE", "CORRECTION_RETYPED",
+           "CORRECTION_ROW_KEYS", "CORRECTION_UNPORTED", "CORRECTION_WITHDRAWN",
+           "FAILED", "FIDELITIES", "LATE_SCHEMA", "PLANNED", "PROVIDERS",
+           "ROLE_CORRECTIONS_SCHEMA", "STALE_ON_A_FAILED_PLAN",
            "STEP_SCHEMA", "StepRefused", "at_submission",
            "builder_handoff", "late_handoff", "not_yet", "note_late_answer", "plan_key", "plan_the_part",
            "planner_client", "record_handover", "request_with_write_up", "submission_problems",
-           "survey_disagreement", "the_bytes_again"]
+           "survey_disagreement", "the_bytes_again", "with_role_corrections"]

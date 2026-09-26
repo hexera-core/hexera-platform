@@ -20,6 +20,10 @@ The harness leaves `survey_armed` False, so the three submission gates no-op exa
 measurement, and `st.geometry_survey` is the field they would otherwise have refreshed - it is the same
 field, set to the same shape, that `_geometry_step_gate` assigns a few lines above the composition and that
 `_agent_words` already reads for the agent's findings.
+
+IT DOES CARRY A MEASUREMENT (`_DOC`), because the composition now has to know which submitted port each
+mouth is before it will say anything about one: the announcement is rendered from the corrections that were
+carried into the payload, and a mouth whose port cannot be identified is not corrected and not announced.
 """
 from __future__ import annotations
 
@@ -36,6 +40,18 @@ _REV = at.revision_of(_MSGS)
 _PATCHES = [{"name": "in", "type": "inlet", "diameter_mm": 40},
             {"name": "out", "type": "outlet", "diameter_mm": 60},
             {"name": "w", "type": "wall"}]
+#: A measurement the two declared ports bind to and the corrected mouths do NOT. `bind_patches` is how the
+#: composition learns which mouth each submitted port is, and it binds a port that states no position by its
+#: bore and only when exactly one opening fits - so the two rows with a `bore_diameter_m` are "in" and "out",
+#: and every other mouth here carries no bore and can therefore be claimed by no declared port. That is the
+#: real shape of the measured defect: the mouths the agent re-reads as solid faces are mouths intake proposed
+#: a role for and submitted no port for, so the announcement is honoured with nothing to rewrite. The payload
+#: rewrite itself is driven end to end in
+#: test_a_role_correction_we_announce_is_the_role_the_mesh_gets.py.
+_DOC = {"status": "ok", "bbox": {"diagonal_m": 1.0},
+        "openings": [{"id": "oin", "bore_diameter_m": 0.040}, {"id": "oout", "bore_diameter_m": 0.060},
+                     *({"id": f"o{n}"} for n in (1, 2, 3, 4, 5, 6, 7, 12, 14, 16,
+                                                 21, 22, 23, 24, 25, 26, 27))]}
 _PARAMS = {"element_order": "2"}
 _CANON = at.canonical_payload("gmsh", "internal_cfd", "fluid-domain", "3D", _PATCHES, _PARAMS)
 _SUBMIT = {"domain": "a block with channels through it", "request_txt": "x" * 120,
@@ -79,7 +95,8 @@ def _summary(survey: dict | None) -> tuple[str, dict]:
     tok = at.issue(session_id="s", owner_id="u", revision=_REV, canonical=_CANON,
                    verdict="supported", mode=at.SELECTED, selection_id=sel["id"])
     st = ex.IntakeExecutionState(owner_id="u", session_id="s", revision=_REV, user_msg_count=1,
-                                 selection=sel, pending=tok, geometry_survey=survey)
+                                 selection=sel, pending=tok, geometry_survey=survey,
+                                 geometry_document=_DOC)
     exe = ex.IntakeToolExecutor(state=st, job_id="j", implemented_engines=["gmsh"], search_tool=None)
     out = asyncio.run(exe._do_submit_requirements({**_SUBMIT, "preview_token": tok["token"]}))
     assert out.accepted, out.content
@@ -136,7 +153,7 @@ def test_a_change_the_agent_gave_no_reason_for_is_still_named():
 
 
 def test_more_changes_than_the_screen_carries_are_counted_rather_than_listed():
-    mouths = [f"o{n}" for n in range(1, 8)]
+    mouths = [f"o{n}" for n in range(21, 28)]
     said, _ = _summary(_survey([_answer(m, "outlet", ours=True) for m in mouths],
                                [_patch(m, "wall", f"{m} is solid") for m in mouths]))
     block = said.split(ex.ROLES_I_CHANGED_HEAD)[1].split(chr(10) * 2)[0]
