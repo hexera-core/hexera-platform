@@ -196,11 +196,23 @@ async def _reap_stalled_async() -> dict:
                     logger.info("reap_stalled_jobs: job %s reached terminal before reaping - left as-is", job.id)
                     continue
                 reaped.append(str(job.id))
+                # THE LOG READS THE LEASE DEFENSIVELY, AND THE ORDER OF THESE TWO LINES IS WHY.
+                #
+                # The row is already marked failed by the time this runs, so anything that raises here
+                # aborts the loop AFTER a write and every remaining stalled job goes unreaped for
+                # another cycle. I added `lease_expires_at` to this line with the lease-aware reaper
+                # and read it as a plain attribute: `tests/unit/infra/test_failure_handling_wiring.py`
+                # drives the reaper with a stand-in job object, which does not carry it, and the
+                # reaper died in its own logging with an AttributeError. It passes at 33ef6be^ and
+                # fails at 33ef6be, so this is mine and not pre-existing.
+                #
+                # A logging line may not be the thing that decides whether a job gets reaped.
+                _lease = getattr(job, "lease_expires_at", None)
                 logger.warning(
                     "reap_stalled_jobs: job %s stalled in %s (started=%s created=%s lease_expired=%s) - "
                     "marked failed(unhandled)",
                     job.id, _was, job.started_at, job.created_at,
-                    job.lease_expires_at is not None and _aware_lt(job.lease_expires_at),
+                    _lease is not None and _aware_lt(_lease),
                 )
                 # Publish a TERMINAL log line so any live WebSocket client
                 # streaming this (crash-dropped) job receives a closing message and
