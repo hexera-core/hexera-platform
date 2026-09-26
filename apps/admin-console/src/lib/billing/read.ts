@@ -49,6 +49,8 @@ export type LedgerEntry = {
   entry_type: string;
   id: string;
   metered_at: string | null;
+  /** credits of a debit billed as overage; 0 when the balance covered it */
+  overage: number;
   reason: string;
 };
 

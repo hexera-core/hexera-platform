@@ -17,9 +17,12 @@ class _LedgerDouble:
     def __init__(self):
         self.entries: list[dict] = []
 
-    async def append(self, db, *, organization_id, entry_type, amount, reason=""):
-        self.entries.append({"organization_id": organization_id, "entry_type": entry_type,
-                             "amount": amount, "reason": reason})
+    async def append(self, db, *, organization_id, entry_type, amount, reason="", overage=0):
+        entry = {"organization_id": organization_id, "entry_type": entry_type,
+                 "amount": amount, "reason": reason}
+        if overage:
+            entry["overage"] = overage
+        self.entries.append(entry)
         return None
 
     async def balance(self, db, *, organization_id):
@@ -106,6 +109,18 @@ async def test_a_debit_is_stored_negated(ledger):
     await credit_service.debit(None, organization_id=org, amount=40, reason="mesh job")
     assert ledger.entries == [{"organization_id": org, "entry_type": CreditEntryType.debit,
                                "amount": -40, "reason": "mesh job"}]
+
+
+@pytest.mark.asyncio
+async def test_a_debits_overage_is_recorded_and_bounded_by_the_debit(ledger):
+    # The overage is what the metered price bills. More than the debit, or negative, would bill
+    # consumption that never happened.
+    org = uuid.uuid4()
+    await credit_service.debit(None, organization_id=org, amount=40, overage=15)
+    assert ledger.entries[-1]["overage"] == 15
+    for bad in (-1, 41):
+        with pytest.raises(ValueError):
+            await credit_service.debit(None, organization_id=org, amount=40, overage=bad)
 
 
 @pytest.mark.asyncio

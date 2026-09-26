@@ -17,9 +17,9 @@ class CreditLedgerRepository:
 
     async def append(self, db: AsyncSession, *, organization_id: uuid.UUID,
                      entry_type: CreditEntryType, amount: int,
-                     reason: str = "") -> CreditLedgerEntry:
+                     reason: str = "", overage: int = 0) -> CreditLedgerEntry:
         row = CreditLedgerEntry(organization_id=organization_id, entry_type=entry_type,
-                                amount=int(amount), reason=reason[:128])
+                                amount=int(amount), reason=reason[:128], overage=int(overage))
         db.add(row)
         await db.flush()
         return row
@@ -84,10 +84,13 @@ class CreditLedgerRepository:
         # THE SWEEP'S BACKLOG, which is what an operator actually needs to see: a number that keeps
         # climbing means usage is being recorded and never billed, and nothing else in the product
         # would say so.
+        #
+        # OVERAGE ONLY, since 0008: a debit the balance covered is never reported, so counting it
+        # here would show a backlog that can never drain.
         res = await db.execute(
             select(func.count(),
-                   func.coalesce(func.sum(-CreditLedgerEntry.amount), 0))
+                   func.coalesce(func.sum(CreditLedgerEntry.overage), 0))
             .where(CreditLedgerEntry.metered_at.is_(None),
-                   CreditLedgerEntry.entry_type == CreditEntryType.debit))
+                   CreditLedgerEntry.overage > 0))
         row = res.one()
         return {"entries": int(row[0] or 0), "credits": int(row[1] or 0)}
