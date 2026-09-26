@@ -20,6 +20,8 @@ ARGS="$*"; printf '%s\n' "${ARGS}" >> "${STATE}/calls.log"
 has(){ case "$ARGS" in *"$1"*) return 0;; *) return 1;; esac; }
 if has "run jobs describe"; then exit "${FAKE_JOB_RC:-1}"; fi
 if has "scheduler jobs describe"; then exit "${FAKE_SCHED_RC:-1}"; fi
+if has "run jobs add-iam-policy-binding"; then exit "${FAKE_ADD_IAM_RC:-0}"; fi
+if has "run jobs get-iam-policy"; then printf '%s\n' ${FAKE_INVOKERS:-}; exit 0; fi
 exit 0
 """
 
@@ -70,7 +72,9 @@ def test_a_deployment_that_does_not_charge_is_a_stated_skip(run, holder):
     done, calls = run({holder: ""})
     assert done.returncode == 0, done.stderr
     assert "skipping" in done.stdout.lower()
-    assert "run jobs" not in calls and "scheduler" not in calls
+    for mutation in ("run jobs create", "run jobs update", "scheduler jobs create",
+                     "scheduler jobs update", "pause"):
+        assert mutation not in calls
 
 
 def test_billing_without_a_database_is_refused_rather_than_provisioned(run):
@@ -129,3 +133,37 @@ def test_the_deploy_runs_the_sweep_stage_after_the_api_it_depends_on():
     # reference secrets its identity cannot yet read.
     text = DEPLOY.read_text(encoding="utf-8")
     assert text.index('"${S}/create-api-service.sh"') < text.index('"${S}/create-meter-sweep.sh"')
+
+
+def test_turning_billing_off_pauses_an_existing_schedule(run):
+    # The job keeps its own Stripe secret references; left scheduled it would go on reporting to the
+    # meter after the API stopped charging.
+    done, calls = run({"STRIPE_API_KEY_SECRET": ""}, fake={"FAKE_SCHED_RC": "0"})
+    assert done.returncode == 0, done.stderr
+    assert "scheduler jobs pause t-meter-sweep-tick" in calls
+    assert "run jobs create" not in calls and "run jobs update" not in calls
+
+
+def test_a_deployment_that_never_charged_pauses_nothing(run):
+    done, calls = run({"STRIPE_API_KEY_SECRET": ""})
+    assert done.returncode == 0, done.stderr
+    assert "pause" not in calls
+
+
+def test_turning_billing_back_on_resumes_the_schedule(run):
+    done, calls = run(fake={"FAKE_JOB_RC": "0", "FAKE_SCHED_RC": "0"})
+    assert done.returncode == 0, done.stderr
+    assert "scheduler jobs resume t-meter-sweep-tick" in calls
+
+
+def test_a_scheduler_that_cannot_invoke_the_job_fails_the_deploy(run):
+    # Every tick would get 403 and overage would go unbilled behind a green deploy.
+    done, _ = run(fake={"FAKE_ADD_IAM_RC": "1"})
+    assert done.returncode != 0
+    assert "unbilled" in done.stderr
+
+
+def test_a_grant_this_identity_cannot_set_but_already_exists_passes(run):
+    done, _ = run(fake={"FAKE_ADD_IAM_RC": "1",
+                        "FAKE_INVOKERS": "serviceAccount:t-api@fake-proj.iam.gserviceaccount.com"})
+    assert done.returncode == 0, done.stderr

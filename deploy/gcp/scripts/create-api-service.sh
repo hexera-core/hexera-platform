@@ -212,6 +212,15 @@ if [ -n "${STRIPE_API_KEY_SECRET:-}" ]; then
     [ -z "${!_price:-}" ] || API_ENV_PAIRS+=("${_price}=${!_price}")
   done
 fi
+# TURNING BILLING OFF IS A REDEPLOY, not a prune. With the holder cleared these names are no longer
+# declared, and the undeclared-setting refusal below would otherwise stop the rollout and leave the
+# old revision serving - still charging. They are named here so that refusal knows dropping them is
+# the stated intent, and nothing else it guards is loosened.
+BILLING_OFF_DROPPABLE=()
+if [ -z "${STRIPE_API_KEY_SECRET:-}" ]; then
+  BILLING_OFF_DROPPABLE=(STRIPE_API_KEY STRIPE_WEBHOOK_SECRET CONSOLE_BASE_URL STRIPE_PRICE_STARTER
+                         STRIPE_PRICE_STARTER_OVERAGE STRIPE_PRICE_TEAM STRIPE_PRICE_TEAM_OVERAGE)
+fi
 # The mesh executor, if this deployment has one. The application reads the job as CLOUDRUN_JOB.
 if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then
   API_ENV_PAIRS+=("CLOUDRUN_JOB=${CLOUDRUN_MESH_JOB}")
@@ -326,7 +335,7 @@ if run_svc_exists "${API_SERVICE}"; then
   while read -r live_name; do
     [ -n "${live_name}" ] || continue
     declared=0
-    for declared_name in "${DECLARED_ENV_NAMES[@]}"; do
+    for declared_name in "${DECLARED_ENV_NAMES[@]}" ${BILLING_OFF_DROPPABLE[@]+"${BILLING_OFF_DROPPABLE[@]}"}; do
       [ "${live_name}" != "${declared_name}" ] || { declared=1; break; }
     done
     [ "${declared}" = "1" ] || undeclared+=("${live_name}")

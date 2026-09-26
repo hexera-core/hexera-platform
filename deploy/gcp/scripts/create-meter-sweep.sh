@@ -34,9 +34,22 @@ require_vars GCP_PROJECT_ID GCP_REGION DEPLOYMENT_ID
 # BILLING IS OPT-IN PER DEPLOYMENT. Without both Stripe credentials there is no gateway and nothing
 # to report to - the API answers its billing routes 503 - so this is a stated skip, like every other
 # optional tier. Both, because settings/billing.enabled() requires both.
+METER_JOB="${METER_SWEEP_JOB:-${DEPLOYMENT_ID}-meter-sweep}"
+METER_SCHEDULER="${METER_JOB}-tick"
 if [ -z "${STRIPE_API_KEY_SECRET:-}" ] || [ -z "${STRIPE_WEBHOOK_SECRET_SECRET:-}" ]; then
   info "No billing configured - skipping the meter sweep"
   log "set STRIPE_API_KEY_SECRET and STRIPE_WEBHOOK_SECRET_SECRET to bill overage from this deployment"
+  # TURNING BILLING OFF MUST STOP THE SWEEP TOO. A job provisioned while billing was on keeps its
+  # own Stripe secret references, so leaving its schedule running would go on reporting to the
+  # meter after the API stopped charging. Paused, not deleted: turning billing back on resumes it,
+  # and the job's history stays readable.
+  if gc scheduler jobs describe "${METER_SCHEDULER}" --location "${GCP_REGION}" >/dev/null 2>&1; then
+    gc scheduler jobs pause "${METER_SCHEDULER}" --location "${GCP_REGION}" >/dev/null \
+      || die "billing is off but the existing schedule ${METER_SCHEDULER} could not be paused, so
+   the meter sweep would keep reporting usage to Stripe:
+     gcloud scheduler jobs pause ${METER_SCHEDULER} --location ${GCP_REGION} --project ${GCP_PROJECT_ID}"
+    log "paused the existing schedule ${METER_SCHEDULER}"
+  fi
   exit 0
 fi
 # A sweep with no database has no ledger to read.
@@ -48,7 +61,6 @@ fi
 
 require_digest_reference APP_IMAGE "${APP_IMAGE:-}"
 
-METER_JOB="${METER_SWEEP_JOB:-${DEPLOYMENT_ID}-meter-sweep}"
 METER_SA="${API_SERVICE_ACCOUNT:-${DEPLOYMENT_ID}-api}"
 METER_SA_EMAIL="${METER_SA}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 # EVERY FIFTEEN MINUTES. Stripe prices a meter at the period close, so the cadence decides only how
@@ -114,7 +126,6 @@ else
   gc run jobs create "${METER_JOB}" "${job_args[@]}"
 fi
 
-METER_SCHEDULER="${METER_JOB}-tick"
 SCHEDULER_URI="https://${GCP_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/${METER_JOB}:run"
 gc services enable cloudscheduler.googleapis.com >/dev/null 2>&1 || true
 sched_args=(
@@ -128,6 +139,8 @@ sched_args=(
 )
 if gc scheduler jobs describe "${METER_SCHEDULER}" --location "${GCP_REGION}" >/dev/null 2>&1; then
   gc scheduler jobs update http "${METER_SCHEDULER}" "${sched_args[@]}" >/dev/null
+  # A schedule paused when billing was last turned off stays paused through an update.
+  gc scheduler jobs resume "${METER_SCHEDULER}" --location "${GCP_REGION}" >/dev/null 2>&1 || true
   SCHED_DISPOSITION=updated
 else
   gc scheduler jobs create http "${METER_SCHEDULER}" "${sched_args[@]}" \
@@ -135,14 +148,23 @@ else
   SCHED_DISPOSITION=created
 fi
 
-gc run jobs add-iam-policy-binding "${METER_JOB}" \
-  --region "${GCP_REGION}" \
-  --member "serviceAccount:${METER_SA_EMAIL}" \
-  --role roles/run.invoker >/dev/null 2>&1 \
-  || warn "could not grant run.invoker on ${METER_JOB} to ${METER_SA_EMAIL}; the schedule will
-       fire and get 403 - and overage will go unbilled - until this exists:
-         gcloud run jobs add-iam-policy-binding ${METER_JOB} --project ${GCP_PROJECT_ID} \\
-           --region ${GCP_REGION} --member serviceAccount:${METER_SA_EMAIL} --role roles/run.invoker"
+# THE GRANT IS VERIFIED, NOT HOPED FOR. Without it every tick gets 403 and overage goes unbilled
+# behind a deploy that looked green - so a failed add is only acceptable if the binding is already
+# there (a deploy identity that may not SET job IAM re-running against one an owner already set).
+if ! gc run jobs add-iam-policy-binding "${METER_JOB}" \
+      --region "${GCP_REGION}" \
+      --member "serviceAccount:${METER_SA_EMAIL}" \
+      --role roles/run.invoker >/dev/null 2>&1; then
+  gc run jobs get-iam-policy "${METER_JOB}" --region "${GCP_REGION}" \
+      --flatten "bindings[].members" --filter "bindings.role=roles/run.invoker" \
+      --format "value(bindings.members)" 2>/dev/null \
+    | grep -qx "serviceAccount:${METER_SA_EMAIL}" \
+    || die "${METER_SA_EMAIL} may not invoke ${METER_JOB}, and this identity could not grant it.
+   Every scheduled sweep would get 403 and overage would go unbilled. As an owner:
+     gcloud run jobs add-iam-policy-binding ${METER_JOB} --project ${GCP_PROJECT_ID} \\
+       --region ${GCP_REGION} --member serviceAccount:${METER_SA_EMAIL} --role roles/run.invoker"
+  log "run.invoker on ${METER_JOB} already held by ${METER_SA_EMAIL}"
+fi
 
 log "meter sweep      ${METER_JOB}"
 log "  identity       ${METER_SA_EMAIL}"
