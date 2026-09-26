@@ -1843,6 +1843,19 @@ def confirmed_roles(state: dict | None) -> dict[str, str]:
     return out
 
 
+def roles_we_proposed(state: dict | None) -> set[str]:
+    """The mouths whose live role is the APPLICATION'S OWN reading, waved through rather than named.
+
+    `whose_value` already reads this off the same note for the handoff to the geometry agent; this is the reading
+    the platform needs for the sentences it writes ITSELF, and both take it off `ACCEPTED_THE_PROPOSAL`, which is
+    set in one place (`_the_proposal_recorded`) and carried by every stored row.
+    """
+    return {str(a["subject"]) for a in live_answers(state)
+            if isinstance(a, dict) and a.get("about") == "opening.role" and a.get("answered_by") == CUSTOMER
+            and not a.get("skipped") and a.get("subject")
+            and str(a.get("note") or "") == ACCEPTED_THE_PROPOSAL}
+
+
 def confirmed_cell_cap(state: dict | None) -> int | None:
     """The budget the customer confirmed in the trade, or None. A stated budget is not this.
 
@@ -2261,7 +2274,15 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
                             f"its role cannot be checked against what the customer said")
         elif confirmed.get(opening) != role:
             said = confirmed.get(opening)
-            problems.append(f"{name} is declared {role} and binds to {opening}, which the customer called "
+            # WHO SAID IT, BECAUSE ONE OF THE TWO WAS NOT THE CUSTOMER. A role they waved through is OUR reading
+            # of that mouth (`roles_we_proposed`), and telling the model "the customer called o10 the wall" about
+            # a value the application wrote is the same fact that lies `whose_value` was added to stop one
+            # boundary later - here it also names the wrong person to go back to. The refusal is unchanged in
+            # what it refuses; only the attribution is now true. MEASURED: on the proposal of survey row
+            # 9fe18cd7 every one of 24 roles is ours, and none of them was named by anybody.
+            whose = ("the setup you showed them placed as" if opening in roles_we_proposed(state)
+                     else "the customer called")
+            problems.append(f"{name} is declared {role} and binds to {opening}, which {whose} "
                             f"{'the ' + said if said else 'nothing'}")
     return problems
 
