@@ -1695,6 +1695,58 @@
   "roots": []
  },
  {
+  "context": "application/geometry_survey.py::_mentions::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_survey.py",
+  "qualname": "_mentions",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_survey.py::confirmed_flow_direction::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_survey.py",
+  "qualname": "confirmed_flow_direction",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_package()['given'].FLOW_DIRECTION_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/learning_export.py::same_build::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/learning_export.py",
+  "qualname": "same_build",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SHORT_SHA",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/learning_export.py::same_build::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/learning_export.py",
+  "qualname": "same_build",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_SHORT_SHA",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/maintenance/cleanup.py::_publish_terminal_log::closing#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
   "path": "application/maintenance/cleanup.py",
   "qualname": "_publish_terminal_log",

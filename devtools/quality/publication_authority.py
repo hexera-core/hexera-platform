@@ -553,6 +553,34 @@ class _Resolver:
                     return f"element of {ast.unparse(node.iter)}"
         return ""
 
+    def _mapping_value(self, sub: ast.Subscript) -> ast.expr | None:
+        """What one key of a locally-defined accessor's returned DICT LITERAL holds, as an expression.
+
+        `_package()['given']` needs no import to place: `_package` is defined in this module, its
+        return is a dict written out literally, and the key names one of its values. Resolving it
+        answers the authority question from what the value IS - so a module stays a non-publisher
+        and a construction root reached this way is still a publisher. Anything less literal than
+        this - a built-up dict, a computed key, an accessor from elsewhere - returns None and the
+        receiver stays UNRESOLVED rather than being assumed to be harmless.
+        """
+        if not (isinstance(sub.value, ast.Call) and isinstance(sub.value.func, ast.Name)):
+            return None
+        if not (isinstance(sub.slice, ast.Constant) and isinstance(sub.slice.value, str)):
+            return None
+        key = sub.slice.value
+        body = self.f.tree.body if isinstance(self.f.tree, ast.Module) else []
+        for node in body:
+            if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == sub.value.func.id):
+                continue
+            for ret in ast.walk(node):
+                if not (isinstance(ret, ast.Return) and isinstance(ret.value, ast.Dict)):
+                    continue
+                for k, v in zip(ret.value.keys, ret.value.values):
+                    if isinstance(k, ast.Constant) and k.value == key:
+                        return v
+        return None
+
     # -> (authority, receiver_type, root) for a receiver expression
     def resolve(self, recv: ast.expr, fn, cls) -> tuple[str, str, str]:
         self._enclosing_class = cls
@@ -652,6 +680,20 @@ class _Resolver:
                 return (UNRESOLVED, "", "")
             # a field on another object: resolve that object's class, then its field
             base = recv.value
+            # `accessor()['key'].field` - resolvable without importing anything when the accessor
+            # is defined here and returns a dict DISPLAYED LITERALLY: the key names one of its
+            # values and that value carries its own type. A module is not a publisher; a
+            # construction root reached this way still is one. This is the shape the geometry
+            # agent's bridge has, and `given.FLOW_DIRECTION_RE.search(...)` is a compiled regex
+            # whose method happens to share a name with an event.
+            if isinstance(base, ast.Subscript):
+                held = self._mapping_value(base)
+                if isinstance(held, ast.Name):
+                    known = self.f.names.get(held.id)
+                    if known and known[0] == "module":
+                        return (NOT_A_PUBLISHER, f"{recv.attr} on module {known[1]}", "")
+                    if known and known[0] == "root":
+                        return (known[1], f"{recv.attr} on {known[1]}", held.id)
             if isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name) \
                     and base.value.id == "self" and cls is not None:
                 owner_ann = self._field_annotation(cls, base.attr)

@@ -149,3 +149,58 @@ def test_the_totals_are_reported_by_authority_and_lifecycle():
     assert by_authority[PA.FORWARDED] == 0 and by_authority[PA.UNRESOLVED] == 0
     assert "" not in by_lifecycle
     assert by_authority[PA.GATED] == by_lifecycle[PA.L_EXECUTION]
+
+
+# a receiver reached through the geometry-agent bridge
+
+
+def test_the_regex_on_the_agent_bridge_is_placed_on_the_module_it_lives_on():
+    # `_package()['given'].FLOW_DIRECTION_RE.search(...)` calls a compiled pattern whose method shares
+    # its name with an event. The answer has to say WHERE the receiver is, not merely that it is
+    # harmless: placed on the agent module it is imported from, a publisher put in that dict would
+    # still resolve as a publisher.
+    records = _at("application/geometry_survey.py::confirmed_flow_direction::search")
+    assert records, "the regex receiver produced no record at all"
+    assert {r.authority for r in records} == {PA.NOT_A_PUBLISHER}, [r.authority for r in records]
+    assert all("geometry_agent.contract.given" in r.receiver_type for r in records), \
+        [r.receiver_type for r in records]
+
+
+def _resolved(source: str, expression: str):
+    """What the resolver makes of `expression` inside a module whose body is `source`."""
+    import ast
+    tree = ast.parse(source)
+    facts = PA.ModuleFacts("synthetic.py", tree, PA._collect_names(tree, "meshpipeline.synthetic"))
+    recv = ast.parse(expression, mode="eval").body
+    return PA._Resolver(facts).resolve(recv, None, None)
+
+
+_BRIDGE = """
+def _package():
+    from geometry_agent.contract import given
+    from meshpipeline.contracts.event_stream import publisher
+    return {"given": given, "pub": publisher}
+"""
+
+_BRIDGE_BUILT_UP = """
+def _package():
+    out = {}
+    out["pub"] = _load("pub")
+    return out
+"""
+
+
+def test_the_same_shape_does_not_swallow_a_publisher_handed_out_by_a_bridge():
+    # THE RULE HAS TO FAIL DIFFERENTLY FROM THE THING IT CHECKS. Calling anything reached through a
+    # dict "not a publisher" would make this resolver blind to a real publisher fetched that way, so
+    # the key's value is resolved and a construction root reached through it is still that root.
+    assert _resolved(_BRIDGE, "_package()['given'].FLOW_DIRECTION_RE")[0] == PA.NOT_A_PUBLISHER
+    authority, rtype, root = _resolved(_BRIDGE, "_package()['pub'].note")
+    assert authority == PA.PLAIN, (authority, rtype)
+    assert root == "publisher" and PA.PLAIN in rtype
+
+
+def test_a_bridge_whose_mapping_is_not_written_out_stays_unresolved():
+    # A dict built up statement by statement is not readable this way, and an unreadable receiver is
+    # reported as unresolved rather than assumed harmless: the completeness gate then fails loudly.
+    assert _resolved(_BRIDGE_BUILT_UP, "_package()['pub'].note")[0] == PA.UNRESOLVED
