@@ -272,3 +272,34 @@ async def test_a_mid_cycle_subscription_invoice_grants_nothing(orgs, grants, rea
         _DbDouble(),
         _event("invoice.paid", {"id": "in_1", "customer": "cus_1", "billing_reason": reason}))
     assert grants == []
+
+
+# AN INVOICE THAT ARRIVES BEFORE ITS SUBSCRIPTION
+
+@pytest.mark.parametrize("snapshot", [
+    {"parent": {"subscription_details": {"metadata": {"plan": "starter"}}}},
+    {"subscription_details": {"metadata": {"plan": "Starter"}}},
+])
+@pytest.mark.asyncio
+async def test_the_first_invoice_grants_from_its_own_snapshot_when_the_plan_has_not_landed(
+        orgs, grants, snapshot):
+    # Deliveries are unordered. `invoice.paid` ahead of `customer.subscription.created` found no
+    # plan on the row and granted nothing - and the event, once claimed, is never retried.
+    org_id = uuid.uuid4()
+    orgs.organization = _Obj(id=org_id, plan="", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(), _event("invoice.paid", {"id": "in_1", "customer": "cus_1",
+                                             "billing_reason": "subscription_create",
+                                             **snapshot}))
+    assert grants == [{"organization_id": org_id, "amount": 1_000,
+                       "reason": billing_service.ALLOWANCE_REASON}]
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_naming_an_undeclared_tier_grants_nothing(orgs, grants):
+    orgs.organization = _Obj(id=uuid.uuid4(), plan="", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(), _event("invoice.paid", {
+            "id": "in_1", "customer": "cus_1", "billing_reason": "subscription_create",
+            "parent": {"subscription_details": {"metadata": {"plan": "platinum"}}}}))
+    assert grants == []

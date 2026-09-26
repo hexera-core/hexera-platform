@@ -31,7 +31,8 @@ _ADDED_BY_LATER_REVISIONS: dict[str, set[str]] = {
                       "subscription_status", "current_period_end"},
     # 0007_usage_metering. NULL until the sweep reports a debit to the provider's meter, and NULL
     # forever on a grant or a refund - only a debit is ever metered.
-    "credit_ledger": {"metered_at"},
+    # 0008_overage_metering adds `overage`: how much of a debit the metered price bills.
+    "credit_ledger": {"metered_at", "overage"},
 }
 
 

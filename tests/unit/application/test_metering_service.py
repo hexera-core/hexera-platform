@@ -2,6 +2,7 @@
 #                 to interrupt and safe to run twice.
 from __future__ import annotations
 
+import types
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -25,14 +26,47 @@ class _Job:
         self.ended_at = ended_at
 
 
+class _Tenant:
+    # THE ORGANISATION AND ITS BALANCE as the charge sees them. Defaults to a tenant with no paid
+    # plan, whose debits are never overage.
+    def __init__(self):
+        self.plan, self.status, self.customer, self.balance = "", "", None, 0
+
+    async def get_by_id(self, db, organization_id):
+        return types.SimpleNamespace(id=organization_id, plan=self.plan,
+                                     subscription_status=self.status,
+                                     stripe_customer_id=self.customer)
+
+
 @pytest.fixture
-def debits(monkeypatch):
+def tenant(monkeypatch):
+    t = _Tenant()
+    monkeypatch.setattr(metering_service, "organization_repo", t)
+    # Both sold tiers carry a metered price unless a test says otherwise.
+    import meshpipeline.settings.billing as billcfg
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_STARTER_OVERAGE", "price_so")
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_TEAM_OVERAGE", "price_to")
+
+    async def _balance(db, *, organization_id):
+        return t.balance
+
+    monkeypatch.setattr(credit_service, "balance", _balance)
+    return t
+
+
+@pytest.fixture
+def debits(monkeypatch, tenant):
     recorded: list[dict] = []
 
-    async def _debit(db, *, organization_id, amount, reason=""):
-        recorded.append({"organization_id": organization_id, "amount": amount, "reason": reason})
+    async def _debit(db, *, organization_id, amount, reason="", overage=0):
+        recorded.append({"organization_id": organization_id, "amount": amount, "reason": reason,
+                         "overage": overage})
+
+    async def _refund(db, *, organization_id, amount, reason=""):
+        recorded.append({"organization_id": organization_id, "refund": amount, "reason": reason})
 
     monkeypatch.setattr(credit_service, "debit", _debit)
+    monkeypatch.setattr(credit_service, "refund", _refund)
     return recorded
 
 
@@ -82,6 +116,77 @@ async def test_a_succeeded_job_is_charged(debits, prices):
     assert str(job.id) in debits[0]["reason"]
 
 
+# WHICH PART OF A CHARGE IS OVERAGE
+
+@pytest.mark.asyncio
+async def test_a_tenant_with_no_paid_plan_never_accrues_overage(debits, prices, tenant):
+    # No metered price exists for it: the balance goes negative and the credit gate refuses the
+    # next run. Signup credits must never turn into a bill.
+    tenant.customer, tenant.balance = "cus_1", -100
+    await metering_service.charge_for_job(None, job=_Job())
+    assert debits == [debits[0]] and debits[0]["overage"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_whose_allowance_covers_the_run_accrues_none(debits, prices, tenant):
+    # THE DOUBLE-BILL THIS FIXES: the flat fee already bought these credits, so reporting the run
+    # to the metered price as well charged for it twice.
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "starter", "active", "cus_1", 900
+    await metering_service.charge_for_job(None, job=_Job())
+    assert [d.get("overage") for d in debits] == [0]
+
+
+@pytest.mark.asyncio
+async def test_only_the_part_beyond_the_balance_is_overage_and_it_is_paid_back(
+        debits, prices, tenant):
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "starter", "active", "cus_1", 4
+    job = _Job()
+    await metering_service.charge_for_job(None, job=job)
+    debit, refund = debits
+    assert (debit["amount"], debit["overage"]) == (15, 11)
+    # The overage is paid in money, so it returns to the balance as credits; otherwise the next
+    # period's allowance would pay for it again after the invoice already had.
+    assert refund["refund"] == 11 and str(job.id) in refund["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_already_at_zero_is_billed_the_whole_run(debits, prices, tenant):
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "team", "past_due", "cus_1", 0
+    await metering_service.charge_for_job(None, job=_Job())
+    assert debits[0]["overage"] == 15 and debits[1]["refund"] == 15
+
+
+@pytest.mark.asyncio
+async def test_an_invoiced_tier_with_no_billing_customer_accrues_no_overage(
+        debits, prices, tenant):
+    # Nobody to report it to: the operator reads the negative balance when raising the invoice, and
+    # paying it back here would erase the one record of it.
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "enterprise", "", None, 0
+    await metering_service.charge_for_job(None, job=_Job())
+    assert [d.get("overage") for d in debits] == [0]
+
+
+@pytest.mark.asyncio
+async def test_an_invoiced_tier_that_gained_a_customer_still_accrues_no_overage(
+        debits, prices, tenant):
+    # Raising an enterprise invoice creates a billing customer. The tier still has no metered
+    # price, so a meter event would be priced by nothing - and paying it back would erase the
+    # negative balance the operator invoices from.
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "enterprise", "", "cus_1", 0
+    await metering_service.charge_for_job(None, job=_Job())
+    assert [d.get("overage") for d in debits] == [0]
+
+
+@pytest.mark.asyncio
+async def test_a_tier_sold_without_a_metered_price_accrues_no_overage(
+        debits, prices, tenant, monkeypatch):
+    import meshpipeline.settings.billing as billcfg
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_STARTER_OVERAGE", "")
+    tenant.plan, tenant.status, tenant.customer, tenant.balance = "starter", "active", "cus_1", 0
+    await metering_service.charge_for_job(None, job=_Job())
+    assert [d.get("overage") for d in debits] == [0]
+
+
 @pytest.mark.parametrize("status", [JobStatus.failed, JobStatus.running, JobStatus.pending,
                                     JobStatus.queued, JobStatus.pending_review])
 @pytest.mark.asyncio
@@ -113,9 +218,10 @@ async def test_a_zero_price_writes_nothing(debits, monkeypatch):
 # THE METER SWEEP
 
 class _Row:
-    def __init__(self, *, amount=-15, organization_id=None):
+    def __init__(self, *, amount=-15, overage=15, organization_id=None):
         self.id = uuid.uuid4()
         self.amount = amount
+        self.overage = overage
         self.organization_id = organization_id or uuid.uuid4()
 
 
@@ -187,12 +293,13 @@ async def test_a_deployment_without_billing_reports_nothing_and_does_not_fail(or
 
 
 @pytest.mark.asyncio
-async def test_a_debit_is_reported_as_a_positive_quantity(orgs):
+async def test_the_overage_is_reported_not_the_whole_debit(orgs):
+    # The allowance paid for the rest of the run; only the part beyond it goes to the metered price.
     gateway = _Gateway()
     billing_contract.set_billing_gateway(gateway)
-    row = _Row(amount=-15)
+    row = _Row(amount=-15, overage=6)
     await metering_service.report_pending_usage(_Db([row]))
-    assert gateway.reported[0]["quantity"] == 15
+    assert gateway.reported[0]["quantity"] == 6
     # THE LEDGER ROW ID IS THE IDEMPOTENCY KEY, so a retried sweep replays rather than adding the
     # same consumption to the bill a second time. Meters aggregate; a duplicate is a real overcharge.
     assert gateway.reported[0]["idempotency_scope"] == str(row.id)
@@ -219,10 +326,20 @@ async def test_one_unreportable_row_does_not_stop_the_sweep(orgs):
     assert [r["idempotency_scope"] for r in gateway.reported] == [str(second.id)]
 
 
+def test_the_sweep_reads_only_reportable_overage():
+    # STARVATION: 0007's sweep read the oldest 200 unmetered debits and skipped any without a
+    # customer, leaving them unstamped - so once 200 such rows existed, every run re-read them and
+    # reported nothing. The filter belongs in the query, and a covered debit is not in it at all.
+    import inspect
+    source = inspect.getsource(metering_service.report_pending_usage)
+    assert "CreditLedgerEntry.overage > 0" in source
+    assert "Organization.stripe_customer_id.is_not(None)" in source
+
+
 @pytest.mark.asyncio
-async def test_an_organisation_with_no_customer_is_left_unstamped(orgs):
-    # Left UNSTAMPED on purpose: if that tenant subscribes later, the consumption it already had is
-    # still there to report rather than having been silently written off.
+async def test_a_customer_detached_mid_sweep_is_left_unstamped(orgs):
+    # The query excludes these; one detached between the read and the report is left for the next
+    # run rather than reported against nobody.
     orgs.organization = _Org(customer=None)
     gateway = _Gateway()
     billing_contract.set_billing_gateway(gateway)

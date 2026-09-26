@@ -9,13 +9,14 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import meshpipeline.settings.billing as billcfg
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.application import credit_service
+from meshpipeline.application import credit_service, spend_gate
 from meshpipeline.contracts.billing import BillingUnavailable, get_billing_gateway
-from meshpipeline.persistence.models import CreditEntryType, CreditLedgerEntry, JobStatus
+from meshpipeline.persistence.models import CreditLedgerEntry, JobStatus, Organization
 from meshpipeline.persistence.repositories.organization_repository import (
     OrganizationRepository,
 )
@@ -27,6 +28,8 @@ organization_repo = OrganizationRepository()
 #: How a job's charge is named in the ledger, so a person reading their own history can match an
 #: entry to the run that caused it. The job id is appended by `charge_for_job`.
 JOB_REASON_PREFIX = "mesh job"
+#: How the part of a job's charge that is billed as overage, not paid from credits, is named.
+OVERAGE_REASON_PREFIX = "billed as overage:"
 
 #: HOW MANY unreported debits one sweep will carry. Bounded because the sweep runs on a schedule and
 #: must be interruptible: a backlog that built up over an outage is drained across several runs
@@ -77,9 +80,49 @@ async def charge_for_job(db: AsyncSession, *, job) -> int:
                              ended_at=getattr(job, "ended_at", None))
     if amount <= 0:
         return 0
+    job_reason = f"{JOB_REASON_PREFIX} {getattr(job, 'id', '?')}"[:128]
+    overage = await _overage_of(db, organization_id=job.organization_id, amount=amount)
     await credit_service.debit(db, organization_id=job.organization_id, amount=amount,
-                               reason=f"{JOB_REASON_PREFIX} {getattr(job, 'id', '?')}"[:128])
+                               reason=job_reason, overage=overage)
+    if overage:
+        # THE OVERAGE IS PAID IN MONEY, so it is returned to the balance as credits. Without this
+        # entry the balance would carry the overage as debt into the next period, and that
+        # period's allowance would pay for it a second time - after the meter already billed it.
+        # With it, a subscriber's balance bottoms out at zero and the invoice carries the rest.
+        await credit_service.refund(db, organization_id=job.organization_id, amount=overage,
+                                    reason=f"{OVERAGE_REASON_PREFIX} {getattr(job, 'id', '?')}"[:128])
     return amount
+
+
+async def _overage_of(db: AsyncSession, *, organization_id, amount: int) -> int:
+    """How much of a charge of `amount` the tenant's balance does not cover and its plan bills."""
+    organization = await organization_repo.get_by_id(db, organization_id)
+    # ONLY A TENANT THE METER CAN BILL has overage, which takes all three of: a customer to report
+    # against, a paid plan, and a metered price ON THAT PLAN. Without a paid plan the balance simply
+    # goes negative and the credit gate refuses the next run. Without a metered price - an invoiced
+    # enterprise account, which gains a customer the first time the operator raises an invoice, or
+    # a tier sold without an overage price - a meter event would be priced by nothing, and paying it
+    # back here would erase the negative balance the operator invoices from.
+    plan = spend_gate.paying_plan(organization) if organization is not None else ""
+    if (not plan or not getattr(organization, "stripe_customer_id", None)
+            or not billcfg.price_for(plan)[1]):
+        return 0
+    await _serialise_charges(db, organization_id)
+    covered = min(max(await credit_service.balance(db, organization_id=organization_id), 0),
+                  amount)
+    return amount - covered
+
+
+async def _serialise_charges(db: AsyncSession, organization_id) -> None:
+    # TWO JOBS OF ONE TENANT FINISHING TOGETHER would both read the same balance and both count as
+    # covered, billing neither. A transaction-scoped advisory lock on the tenant makes the second
+    # wait for the first's debit - held only for the rest of the terminal transaction, and only by
+    # jobs of the same tenant. The same pattern JobService.check_quotas uses; a no-op off Postgres.
+    bind = getattr(db, "bind", None)
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                     {"k": f"credit-ledger:{organization_id}"})
 
 
 async def report_pending_usage(db: AsyncSession, *, limit: int = SWEEP_BATCH) -> dict:
@@ -92,10 +135,17 @@ async def report_pending_usage(db: AsyncSession, *, limit: int = SWEEP_BATCH) ->
         # error, so the sweep says so and stops.
         return {"reported": 0, "skipped": 0, "billing": "unconfigured"}
 
+    # ONLY OVERAGE, AND ONLY FOR A TENANT WITH A CUSTOMER TO BILL. A covered debit has nothing to
+    # report. And filtering on the customer HERE rather than skipping in the loop is what keeps the
+    # sweep from starving: a batch of the oldest rows that can never be reported would otherwise be
+    # re-read by every run, forever, while reportable rows behind it waited.
     rows = (await db.execute(
         select(CreditLedgerEntry)
+        .join(Organization, Organization.id == CreditLedgerEntry.organization_id)
         .where(CreditLedgerEntry.metered_at.is_(None),
-               CreditLedgerEntry.entry_type == CreditEntryType.debit)
+               CreditLedgerEntry.overage > 0,
+               Organization.stripe_customer_id.is_not(None),
+               Organization.stripe_customer_id != "")
         .order_by(CreditLedgerEntry.created_at.asc())
         .limit(limit))).scalars().all()
 
@@ -104,16 +154,15 @@ async def report_pending_usage(db: AsyncSession, *, limit: int = SWEEP_BATCH) ->
     for row in rows:
         organization = await organization_repo.get_by_id(db, row.organization_id)
         if organization is None or not organization.stripe_customer_id:
-            # NOT AN ERROR AND NOT REPORTABLE: an organisation that never checked out has no
-            # customer to meter against. It is left UNSTAMPED on purpose, so that if it subscribes
-            # later the consumption it already had is still there to report.
+            # THE QUERY ALREADY EXCLUDED THESE; a customer detached between the read and here is
+            # left unstamped for the next run rather than reported against nobody.
             skipped += 1
             continue
         try:
             gateway.report_usage(
                 customer_id=organization.stripe_customer_id,
-                # THE DEBIT IS STORED NEGATED; a meter takes a positive quantity.
-                quantity=abs(row.amount),
+                # THE OVERAGE, not the debit: the allowance already paid for the rest of it.
+                quantity=int(row.overage),
                 # THE LEDGER ROW ID, so a retried sweep presents the same idempotency key and the
                 # provider replays rather than adding the same consumption to the bill twice. This
                 # is the whole reason the sweep is safe to interrupt.
