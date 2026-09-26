@@ -39,7 +39,7 @@ async def grant(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
 
 
 async def debit(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
-                reason: str = "") -> None:
+                reason: str = "", overage: int = 0) -> None:
     # THE SPENDING SIDE, which the identity cycle declared and deliberately did not write. It takes
     # a POSITIVE amount and stores it NEGATED, so no caller has to remember the sign convention -
     # a caller that got it wrong would write a debit that increases the balance, and the ledger's
@@ -48,9 +48,12 @@ async def debit(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
         raise ValueError("a debit takes a positive amount; it is stored negated")
     if amount == 0:
         return
+    # `overage` is the part of this debit the metered price will bill - never more than the debit.
+    if not 0 <= overage <= amount:
+        raise ValueError("a debit's overage lies between 0 and the debit itself")
     await credit_ledger_repo.append(db, organization_id=organization_id,
                                     entry_type=CreditEntryType.debit, amount=-amount,
-                                    reason=reason)
+                                    reason=reason, overage=overage)
 
 
 async def refund(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
