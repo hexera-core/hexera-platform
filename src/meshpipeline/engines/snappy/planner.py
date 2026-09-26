@@ -152,13 +152,33 @@ GEOMETRY_AGENT_BLOCK_REFUSED = {
 }
 
 
+# WHY THIS NOTE NO LONGER CARRIES A RATIO OF ITS OWN.
+#
+# It used to say "it has come in at about 0.52x the cells actually delivered... treat it as a FLOOR -
+# the real mesh has usually been about twice it". Both halves became wrong on 2026-09-25, when a
+# per-engine correction of the emulator's forecast shipped.
+#
+# MEASURED in the running api container (agent wheel 0.1.0+g4a6ba99954):
+#     hexera.correction_info('external', 'snappy') -> multiplier 1.8391, applied True
+# So a snappy/external job whose raw envelope is 1.00M now arrives here as 1.84M, and this note told
+# the planner the real mesh is usually about twice THAT - roughly 3.7M. Measured delivered/raw on the
+# 31 geometries the factor was fitted on: median 1.839, p90 2.113, max 2.121. The planner was being
+# aimed about 1.7x above the worst case ever recorded on that population.
+#
+# The 0.52 was also pooled across arms that disagree: FACTS_ONLY_CALIBRATION's own by_representation
+# is carve 0.69, external 0.42, fluid_domain 0.34, so the single figure was wrong for every arm even
+# before the correction existed.
+#
+# A number repeated in prose beside the field that carries it is a second thing to keep in step, and
+# this is what the first divergence cost. The note now points at the field.
+
 #: How to read the block, sent ONLY when a block is present. It says the two things a model cannot
 #: work out from the keys: that the cell envelope systematically UNDER-counts before a plan exists,
 #: and that the places are measured rather than suggested.
 _AGENT_BLOCK_NOTE = """
 
 ABOUT "geometry_agent" IN THE DICT ABOVE: it is a separate measurement of the customer's own file, in metres, made before any plan existed. Read it as follows.
-- agent_forecast_cells is an ENVELOPE, not an estimate of your plan. forecast_calibration carries its MEASURED error against 263 real jobs: before a plan exists it has come in at about 0.52x the cells actually delivered. So treat it as a FLOOR - the real mesh has usually been about twice it - and do NOT shave max_cells towards it.
+- agent_forecast_cells is an ENVELOPE, not an estimate of your plan: read it as a floor and do NOT shave max_cells towards it. HOW FAR OUT IT HAS BEEN IS IN forecast_calibration, WHICH IS MEASURED PER RUN - read median_ratio and p90_ratio there and use those, not a number from this note. The envelope you are given may ALREADY have been corrected for the error that calibration describes, so multiplying it again by that same ratio counts the correction twice.
 - inlet_bore_m is the bore the builder will size from. cells_across_diameter is defined relative to exactly this number.
 - smallest_port_min_dim_m is the smallest port the mesh has to resolve; your wall cell has to fit several cells across it.
 - places are MEASURED locations where this part needs more attention than normal, in the order the part needs it: the flow path first (a throat, a plate or baffle in the passage, a junction, a change of section, a bend, a passage end), then what limits the cell size (a narrow gap, a thin separation, a narrow passage, a small or tilted port mouth, a thin wall). Each has "where_m" (null with "where_missing" when it has no position) and "measurement". They describe the geometry, not the mesh: name them in "focus" and decide the settings yourself.
