@@ -94,6 +94,70 @@ def one_line_reason(evidence: Any) -> str:
     return ""
 
 
+def agent_words_for_confirmation(step: Any) -> str:
+    """What the geometry agent has to say on the last screen before compute, or why it has nothing.
+
+    THREE STATES, NOT TWO, and the row keeps them apart on purpose (`geometry_step`'s own contract: "a
+    step that failed and a step that had nothing to do are different facts"). `status: planned` carries
+    a plan; `status: failed` carries a reason and no plan; NO `geometry_step` KEY AT ALL is a job where
+    the step never had a survey to read. So a branch on "is there a plan" would tell the third kind of
+    customer they lost a block that was never on offer for their job, which is a fact that lies.
+
+    WHY THE FAILED CASE NEEDS A LINE. The fallback is silent by construction: the plan block and the
+    risk block are composed together, so when the step fails BOTH vanish and the confirmation is byte
+    for byte the one a job with no agent gets - not even a blank line where they were. The customer is
+    then asked to approve compute without being told that the second read of their part did not happen.
+    The silence is the defect, not the fallback: the part still meshes, the reviewer still runs, and
+    this sentence says only what is missing.
+
+    Returns the block already spaced for the summary (leading blank line), or "" when there is nothing
+    to say. The caller strips the leading newlines when the block opens the message.
+    """
+    from meshpipeline.application import geometry_step as gst
+
+    if not isinstance(step, dict):
+        return ""
+    status = str(step.get("status") or "")
+    plan = step.get("plan")
+    if status == gst.FAILED or (status and not isinstance(plan, dict)):
+        # NO REASON QUOTED. The stored sentence is written for a log ("the plan was sent back three
+        # times", "a contract refused the handoff") and naming it here would spend the customer's
+        # attention on our internals at the one moment they are deciding whether to spend money.
+        return ((chr(10) * 2) + "NO SECOND READ ON THIS PART" + chr(10)
+                + "The geometry agent did not finish, so I am meshing from the measurement alone: "
+                  "no findings from it below, and no list of things worth knowing before the run. "
+                  "The mesh is still built and still checked the same way.")
+    if not isinstance(plan, dict):
+        return ""
+    words = ""
+    said = str(plan.get("summary_for_user") or "").strip()
+    if said:
+        words = (chr(10) * 2) + "WHAT THE GEOMETRY AGENT FOUND" + chr(10) + said
+    # AND WHAT IT FLAGGED, which was going nowhere at all. On one real job the agent raised FOUR risks
+    # at severity high, effect changes_bc - "your port list names 'outlet_o1', and no opening in this
+    # file is that size or in that place" - correctly catching a declared port that matched no measured
+    # mouth, which is a boundary condition landing on the wrong face. Nobody was ever shown one of
+    # them. A warning nobody reads is not a warning, and this is the turn before compute is spent.
+    #
+    # Only what CHANGES something: high severity, or an effect that moves a boundary condition or the
+    # mesh. An advisory at info is real but it is not worth a line here, and a wall of them would be
+    # read as furniture.
+    loud = []
+    for risk in (plan.get("risks") or []):
+        if not isinstance(risk, dict):
+            continue
+        sev = str(risk.get("severity") or "").lower()
+        eff = str(risk.get("effect") or "").lower()
+        if sev == "high" or eff in ("changes_bc", "changes_mesh"):
+            text = str(risk.get("consequence") or "").strip()
+            fix = str(risk.get("recommendation") or "").strip()
+            if text:
+                loud.append("  - " + text + (" -> " + fix if fix else ""))
+    if loud:
+        words += (chr(10) * 2) + "WORTH KNOWING BEFORE I RUN THIS" + chr(10) + chr(10).join(loud[:5])
+    return words
+
+
 @dataclass(frozen=True)
 class IntakeToolResult:
 
@@ -1492,36 +1556,11 @@ class IntakeToolExecutor:
         # accept the mesh and not quote the o6 pressure drop". Sound engineering, written for the
         # customer, stored on the row, and shown to nobody. This is the last turn before compute is
         # spent, so it is the only turn where a caveat is still worth something.
-        _agent_words = ""
+        # AND WHEN IT DID NOT FINISH, THAT IS SAID TOO. Composed by `agent_words_for_confirmation`
+        # rather than here, so the test can drive the real composition through all three states the row
+        # distinguishes - planned, failed, and a job the step never ran on - instead of a copy of it.
         _step = (st.geometry_survey or {}).get("geometry_step") if isinstance(st.geometry_survey, dict) else None
-        _plan = _step.get("plan") if isinstance(_step, dict) else None
-        if isinstance(_plan, dict):
-            _said = str(_plan.get("summary_for_user") or "").strip()
-            if _said:
-                _agent_words = (chr(10) * 2) + "WHAT THE GEOMETRY AGENT FOUND" + chr(10) + _said
-            # AND WHAT IT FLAGGED, which was going nowhere at all. On one real job the agent raised
-            # FOUR risks at severity high, effect changes_bc - "your port list names 'outlet_o1',
-            # and no opening in this file is that size or in that place" - correctly catching a
-            # declared port that matched no measured mouth, which is a boundary condition landing
-            # on the wrong face. Nobody was ever shown one of them. A warning nobody reads is not a
-            # warning, and this is the turn before compute is spent.
-            #
-            # Only what CHANGES something: high severity, or an effect that moves a boundary
-            # condition or the mesh. An advisory at info is real but it is not worth a line here,
-            # and a wall of them would be read as furniture.
-            _loud = []
-            for _r in (_plan.get("risks") or []):
-                if not isinstance(_r, dict):
-                    continue
-                _sev = str(_r.get("severity") or "").lower()
-                _eff = str(_r.get("effect") or "").lower()
-                if _sev == "high" or _eff in ("changes_bc", "changes_mesh"):
-                    _text = str(_r.get("consequence") or "").strip()
-                    _fix = str(_r.get("recommendation") or "").strip()
-                    if _text:
-                        _loud.append("  - " + _text + (" -> " + _fix if _fix else ""))
-            if _loud:
-                _agent_words += (chr(10) * 2) + "WORTH KNOWING BEFORE I RUN THIS" + chr(10) + chr(10).join(_loud[:5])
+        _agent_words = agent_words_for_confirmation(_step)
         # WHAT IS NEW GOES ABOVE THE ASK, not between the ask and the question. The customer was
         # told "confirm the requirements above", then handed findings they had not read yet, then
         # asked to proceed - so the one line telling them to check something pointed backwards,
