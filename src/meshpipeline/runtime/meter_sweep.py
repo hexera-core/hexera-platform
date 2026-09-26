@@ -42,8 +42,10 @@ def main(argv: list[str] | None = None) -> int:
         total["reported"] += int(out.get("reported", 0))
         total["skipped"] += int(out.get("skipped", 0))
         total["batches"] += 1
-        # A SHORT BATCH IS THE END OF THE BACKLOG. A full one may have more behind it.
-        if int(out.get("reported", 0)) + int(out.get("skipped", 0)) < metering_service.SWEEP_BATCH:
+        # ONLY A BATCH THAT WAS REPORTED IN FULL may have more behind it. A skipped row stays
+        # unstamped and is selected again first, so counting it toward a "full" batch would re-read
+        # the same unreportable rows on every iteration while reportable ones waited behind them.
+        if int(out.get("reported", 0)) < metering_service.SWEEP_BATCH:
             break
     print(json.dumps(total))
     # SKIPPED ROWS ARE RETRIED, NOT LOST - each stays unstamped for the next tick. They are reported

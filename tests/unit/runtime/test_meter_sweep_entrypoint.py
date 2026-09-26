@@ -53,3 +53,17 @@ def test_a_backlog_that_never_ends_is_bounded(gateway, monkeypatch, capsys):
                         lambda: {"reported": metering_service.SWEEP_BATCH, "skipped": 0})
     assert meter_sweep.main([]) == 0
     assert json.loads(capsys.readouterr().out)["batches"] == meter_sweep.MAX_BATCHES
+
+
+def test_a_batch_of_unreportable_rows_ends_the_run_instead_of_re_reading_them(
+        gateway, monkeypatch, capsys):
+    # A skipped row stays unstamped and is selected first again; counting it toward a full batch
+    # would loop over the same rows every iteration while reportable ones waited behind them.
+    calls = []
+
+    def _sweep():
+        calls.append(1)
+        return {"reported": 0, "skipped": metering_service.SWEEP_BATCH}
+    monkeypatch.setattr(meter, "report_pending_usage", _sweep)
+    assert meter_sweep.main([]) == 0
+    assert len(calls) == 1

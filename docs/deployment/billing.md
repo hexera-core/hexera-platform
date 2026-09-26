@@ -94,6 +94,8 @@ End to end, in a Stripe **sandbox**:
 
 ## 6. Turning it off
 
-Clear `STRIPE_API_KEY_SECRET` in the environment's variables and redeploy `app=true`. The billing
-routes return `503`, and the sweep stage skips without deleting the existing job. Existing
-subscriptions keep billing in Stripe until they are cancelled there.
+Clear `STRIPE_API_KEY_SECRET` in the environment's variables and redeploy `app=true`. The API stage
+drops the Stripe bindings and price ids without needing `API_ENV_PRUNE`, and the billing routes
+return `503`. The sweep stage **pauses** the existing schedule rather than deleting the job, so
+turning billing back on resumes it. Existing subscriptions keep billing in Stripe until they are
+cancelled there.
