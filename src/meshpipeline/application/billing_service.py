@@ -62,6 +62,12 @@ async def start_checkout(db: AsyncSession, *, organization_id: uuid.UUID, plan: 
     organization = await organization_repo.get_by_id(db, organization_id)
     if organization is None:
         raise ValueError("organisation not found")
+    if _has_live_subscription(organization):
+        # A SECOND CHECKOUT IS A SECOND SUBSCRIPTION. Checkout in subscription mode always creates
+        # a new one, so an "upgrade" through here would leave the customer paying two flat fees.
+        # Changing tier is a change to the subscription they have, which the provider's portal does.
+        raise AlreadySubscribed("this organisation already has a subscription; change plans "
+                                "under Manage billing")
 
     customer_id = organization.stripe_customer_id
     if not customer_id:
@@ -77,6 +83,21 @@ async def start_checkout(db: AsyncSession, *, organization_id: uuid.UUID, plan: 
     return gateway.start_checkout(
         customer_id=customer_id, price_id=price_id, overage_price_id=overage_price_id,
         organization_id=str(organization_id), plan=plan.strip().lower())
+
+
+class AlreadySubscribed(ValueError):
+    """A checkout was asked of an organisation already paying for a subscription."""
+
+
+#: The provider states in which a subscription still exists and still bills - so a checkout would
+#: create a second one beside it. `incomplete` is in: its first payment is pending, not refused.
+_LIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "incomplete"})
+
+
+def _has_live_subscription(organization) -> bool:
+    return bool(getattr(organization, "stripe_subscription_id", None)) and (
+        (getattr(organization, "subscription_status", "") or "").strip().lower()
+        in _LIVE_SUBSCRIPTION_STATUSES)
 
 
 async def portal_url(db: AsyncSession, *, organization_id: uuid.UUID) -> str:

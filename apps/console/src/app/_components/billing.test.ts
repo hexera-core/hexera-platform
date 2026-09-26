@@ -7,6 +7,7 @@ import {
   isPaying,
   isStripeUrl,
   planLabel,
+  planTerms,
   portalFailureMessage,
   subscriptionSummary,
   type Subscription,
@@ -55,14 +56,16 @@ test("an active subscription names its renewal date, and a stale date is not sho
 test("the success banner does not claim the plan is active before the webhook lands", () => {
   const banner = checkoutBanner("success");
   assert.equal(banner?.tone, "ok");
-  assert.match(banner?.text ?? "", /as soon as Stripe confirms/);
+  // Nor that payment has arrived: a delayed payment method completes checkout before it settles.
+  assert.match(banner?.text ?? "", /once Stripe confirms/);
+  assert.doesNotMatch(banner?.text ?? "", /Payment received/);
   assert.match(checkoutBanner("cancelled")?.text ?? "", /Nothing was charged/);
   assert.equal(checkoutBanner(undefined), null);
   assert.equal(checkoutBanner("<script>"), null);
 });
 
 test("each checkout refusal the API documents has its own message", () => {
-  const messages = [503, 400, 409, 500].map(checkoutFailureMessage);
+  const messages = [503, 400, 409, 500].map((status) => checkoutFailureMessage(status));
   assert.equal(new Set(messages).size, messages.length);
   assert.match(portalFailureMessage(409), /choose a plan first/);
 });
@@ -79,4 +82,22 @@ test("only Stripe's hosted pages are followed", () => {
 test("plan names are shown capitalised, and none reads as 'No plan'", () => {
   assert.equal(planLabel("team"), "Team");
   assert.equal(planLabel(""), "No plan");
+});
+
+test("a second checkout refused as already-subscribed points to the portal", () => {
+  assert.match(
+    checkoutFailureMessage(409, "this organisation already has a subscription; change plans under Manage billing"),
+    /Manage billing/,
+  );
+  assert.match(checkoutFailureMessage(409, "this caller has no organisation to bill"), /no organisation/);
+});
+
+test("overage billing is promised only on a tier with a metered price", () => {
+  const plan = {
+    name: "starter", max_jobs_per_owner: 50, max_concurrent_jobs: 3, rate_limit_per_minute: 240,
+    included_credits: 1000, purchasable: true,
+  };
+  assert.match(planTerms({ ...plan, overage_billed: true }), /billed at the end of the month/);
+  assert.doesNotMatch(planTerms({ ...plan, overage_billed: false }), /billed/);
+  assert.match(planTerms({ ...plan, purchasable: false }), /Invoiced/);
 });

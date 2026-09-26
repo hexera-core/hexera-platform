@@ -12,6 +12,8 @@ export type Plan = {
   rate_limit_per_minute: number;
   included_credits: number;
   purchasable: boolean;
+  /** whether use beyond the allowance is billed; absent from an API older than this field */
+  overage_billed?: boolean;
 };
 
 export type Catalogue = { plans: Plan[]; billing_enabled: boolean };
@@ -59,9 +61,11 @@ export function checkoutBanner(param: string | undefined): { tone: "ok" | "info"
   if (param === "success") {
     // FULFILMENT IS THE WEBHOOK'S, not this redirect's - it may land a few seconds after the
     // browser does, so the page must not claim the plan is already active.
+    // NOR THAT THE MONEY HAS ARRIVED: with a delayed payment method checkout completes before
+    // the payment settles.
     return {
       tone: "ok",
-      text: "Payment received. Your plan and its credits appear here as soon as Stripe confirms it - usually within a minute.",
+      text: "Checkout complete. Your plan and its credits appear here once Stripe confirms the payment - usually within a minute.",
     };
   }
   if (param === "cancelled") {
@@ -70,18 +74,35 @@ export function checkoutBanner(param: string | undefined): { tone: "ok" | "info"
   return null;
 }
 
-/** POST /billing/checkout failed with `status`. */
-export function checkoutFailureMessage(status: number): string {
+/** POST /billing/checkout failed with `status`; `detail` is the API's own reason, when it gave one. */
+export function checkoutFailureMessage(status: number, detail = ""): string {
   if (status === 503) {
     return "Billing is not switched on for this deployment yet.";
   }
   if (status === 400) {
     return "That plan cannot be bought here. Choose another, or contact us.";
   }
+  if (status === 409 && /already has a subscription/.test(detail)) {
+    // The API refuses a second checkout: it would be a second subscription, not a plan change.
+    return "You already have a plan. Change it under Manage billing.";
+  }
   if (status === 409) {
     return "Your account has no organisation to bill yet. Sign out and back in, then try again.";
   }
   return "Could not start checkout just now. Try again.";
+}
+
+/** What a tier's card says about use beyond its allowance - promised only where it is billed. */
+export function planTerms(plan: Plan): string {
+  const limits = `Up to ${plan.max_jobs_per_owner} active runs, ${plan.rate_limit_per_minute} API requests a minute.`;
+  if (!plan.purchasable) {
+    return `${limits} Invoiced - usage beyond the included credits is agreed with us.`;
+  }
+  // NOTHING IS PROMISED for a sold tier without a metered price: that is a deployment that has
+  // not configured one, and neither "billed" nor "stops" would be true of it.
+  return plan.overage_billed
+    ? `${limits} Usage beyond the included credits is billed at the end of the month.`
+    : limits;
 }
 
 /** POST /billing/portal failed with `status`. */
