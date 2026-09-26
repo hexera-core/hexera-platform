@@ -1457,8 +1457,25 @@ def _the_proposal_recorded(state: dict, view: dict, row: dict, *, latest_user_me
                 f"the proposal for {view['id']!r} does not place {place}, and a proposal that covers some of "
                 f"the mouths it names is not one the application may record; it places "
                 f"{sorted(proposal)}. Put the question")
+    # WHAT THEY TYPED IS NOT OURS TO OVERWRITE, WHATEVER THEY SAY LATER.
+    #
+    # This loop writes the platform's map for EVERY place the question names, and `_corrected` retires
+    # whatever stood for that mouth first. So a customer who typed "o1 is the inlet" on one turn and
+    # "you decide the rest" on the next had their own answer retired and replaced by OUR value, wearing
+    # the note that says they accepted a proposal. They accepted a proposal about the OTHER mouths.
+    #
+    # `_mentions` already guards the mouths named in the LATEST message. It cannot guard one they named
+    # three turns ago, and a delegation does not withdraw an answer they have already given: it settles
+    # what is still open. So a place already carrying their own word is skipped here, and only the
+    # unsettled ones take the proposal.
+    theirs = {str(a.get("subject")) for a in live_answers(state)
+              if isinstance(a, dict) and a.get("about") == "opening.role"
+              and a.get("answered_by") == CUSTOMER and not a.get("skipped")
+              and str(a.get("note") or "") != ACCEPTED_THE_PROPOSAL}
     for place, role in sorted(proposal.items()):
         if place not in view["subjects"]:
+            continue
+        if place in theirs:
             continue
         # the same option words and the same vocabulary as an answer the customer named, read through the one
         # function that knows both role shapes, so an accepted proposal and a stated role land identically
