@@ -62,6 +62,7 @@ _ENGINE_CHOICES = list(_vocab.engine_choices())
 # TYPE_CHECKING only - annotations are strings here, so this adds typing/IDE support
 # without a runtime import (which would cycle: graph imports these node modules).
 if TYPE_CHECKING:
+    from meshpipeline.contracts.geometry_source import GeometrySourceRef
     from meshpipeline.contracts.pipeline_state import PipelineState
 
 
@@ -693,8 +694,9 @@ class _GeometryReading:
     armed: bool = False
     #: The stored survey state for this upload, or None when none has been composed yet.
     survey: dict | None = None
-    #: The upload these belong to, for the two survey tools. None when not armed.
-    source_ref: object | None = None
+    #: The upload these belong to, for the two survey tools. None when not armed. Typed, because
+    #: the executor reads `source_id` off what this carries.
+    source_ref: GeometrySourceRef | None = None
 
 
 async def _geometry_reading(state) -> _GeometryReading:

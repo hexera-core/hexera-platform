@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from meshpipeline.agents.intake import admission_token as at
 from meshpipeline.agents.intake import approval as ap
@@ -15,6 +15,9 @@ from meshpipeline.agents.intake import recommendation as rec
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.validation import preview_admission, validate_submission
 from meshpipeline.contracts import rationale as _R
+
+if TYPE_CHECKING:                  # the upload reference is named in an annotation and nowhere else
+    from meshpipeline.contracts.geometry_source import GeometrySourceRef
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +107,9 @@ class IntakeExecutionState:
     #: The stored survey state, updated in place by the two survey tools so a later call in the same
     #: turn, and the submission gate, read what was just recorded.
     geometry_survey: dict | None = None
-    #: The upload the survey belongs to.
-    survey_source_ref: object | None = None
+    #: The upload the survey belongs to. Typed, because `source_id` is read off it: as `object` the
+    #: one field this code uses was invisible to the type checker at both call sites.
+    survey_source_ref: GeometrySourceRef | None = None
     #: The customer's own messages this session, oldest first. The survey is composed from their words
     #: and never from intake's write-up of them.
     customer_messages: tuple[str, ...] = ()
@@ -302,7 +306,10 @@ class IntakeToolExecutor:
         shown = _vocab.to_display(_vocab.ENGINE, eng)
         prior = st.selection
         prior_state = es.state_of(prior)
-        same_engine = isinstance(prior, dict) and prior.get("engine") == eng
+        #: The standing selection as a mapping - empty when there is none. One narrowing, read by
+        #: `same_engine` and by the rewrite below, instead of a bool that proves nothing about it.
+        held: dict = prior if isinstance(prior, dict) else {}
+        same_engine = bool(held) and held.get("engine") == eng
 
         # ALREADY CHOSEN. Re-proposing the engine the user has already selected used to replace that
         # selection with a fresh question, discarding consent this application had already recorded
@@ -321,7 +328,7 @@ class IntakeToolExecutor:
         if same_engine and prior_state == es.PROPOSED:
             if es.answers_the_selection_question(eng, quote, st.latest_user_msg, outstanding=True,
                                                  earlier_user_messages=st.user_messages):
-                st.selection = {**prior, "state": es.CONFIRMED,
+                st.selection = {**held, "state": es.CONFIRMED,
                                 "confirmed_revision": st.revision,
                                 "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
                 logger.info("Intake: engine selection CONFIRMED from the user's answer to the "
@@ -773,7 +780,7 @@ class IntakeToolExecutor:
             st.surveyor_panel = surveyor_panel(await self._current_document(), st.geometry_survey)
 
         logger.info("Intake: survey composed for %s, stage=%s - job_id=%s", args.get("purpose"),
-                    st.geometry_survey.get("stage"), self._job_id)
+                    (st.geometry_survey or {}).get("stage"), self._job_id)
         return IntakeToolResult(tool="survey_the_part", accepted=True, content=self._survey_text())
 
     async def _do_answer_survey_question(self, args: dict) -> IntakeToolResult:

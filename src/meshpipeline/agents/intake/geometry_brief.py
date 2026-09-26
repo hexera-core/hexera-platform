@@ -283,10 +283,10 @@ def agreement_lines(survey: dict | None) -> list[str]:
     quiet_ids = [o for o in sorted(disagreed) if not (disagreed[o] or {}).get("asked")]
     for oid in asked_ids[:AGREEMENT_IDS_SHOWN]:
         entry = disagreed[oid] if isinstance(disagreed[oid], dict) else {}
-        about = ", ".join(str(a) for a in (entry.get("about") or [])) or "this mouth"
+        reads = ", ".join(str(a) for a in (entry.get("about") or [])) or "this mouth"
         measured = str(entry.get("measured") or "").strip()
         out.append("  reads {} differently from the measurement ({}){} - so I am asking about that one"
-                   .format(oid, about, f"; measured: {measured}" if measured else ""))
+                   .format(oid, reads, f"; measured: {measured}" if measured else ""))
     if quiet_ids:
         about = sorted({str(a) for o in quiet_ids for a in ((disagreed[o] or {}).get("about") or [])})
         out.append("  reads {} differently from the measurement ({}) - the mesher does not cut those faces, "
@@ -317,10 +317,12 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     """
     if not isinstance(document, dict) or document.get("status") != "ok":
         return ""
-    look = document.get("look") if isinstance(document.get("look"), dict) else {}
+    seen = document.get("look")
+    look = seen if isinstance(seen, dict) else {}
     if str(look.get("status") or "") != "ok":
         return ""
-    imp = look.get("impression") if isinstance(look.get("impression"), dict) else {}
+    impression = look.get("impression")
+    imp = impression if isinstance(impression, dict) else {}
     rows = [r for r in (document.get("openings") or []) if isinstance(r, dict)]
     out = ["", "- - - THE SURVEYOR - - -", ""]
 
@@ -428,7 +430,7 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     # is itself over it, the ceiling is what gets quoted, named as a ceiling.
     all_tiers = [e for e in ((document.get("facts") or {}).get("cell_estimates") or []) if isinstance(e, dict)]
     tiers, beyond = runnable_cell_estimates(all_tiers)
-    by_tier = {str(e.get("tier")): e.get("cells") for e in tiers if e.get("cells")}
+    by_tier = {str(e.get("tier")): e["cells"] for e in tiers if e.get("cells")}
     if by_tier.get("standard"):
         line = "  mesh size    about {:,.0f} cells at standard".format(float(by_tier["standard"]))
         spare = [f"{t} about {float(by_tier[t]):,.0f}" for t in ("draft", "max") if by_tier.get(t)]

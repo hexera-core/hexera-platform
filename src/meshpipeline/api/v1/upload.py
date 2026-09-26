@@ -65,7 +65,8 @@ def _measured_summary(document: dict | None) -> str:
     """
     if not isinstance(document, dict) or document.get("status") != "ok":
         return ""
-    unit = document.get("unit") if isinstance(document.get("unit"), dict) else {}
+    declared_unit = document.get("unit")
+    unit = declared_unit if isinstance(declared_unit, dict) else {}
     declared = str(unit.get("declared") or "").strip()
     extent = ((document.get("bbox") or {}).get("extent_m")) or []
     rows = [r for r in (document.get("openings") or []) if isinstance(r, dict)]
