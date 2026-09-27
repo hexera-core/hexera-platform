@@ -1607,8 +1607,33 @@ class IntakeToolExecutor:
         # submitted with - the CORRECTED payload, since the rewrite above happened first - and this says
         # which of those the agent moved and why. Empty on every job where nothing changed, and the summary
         # is then byte for byte what it is today.
+        # AND WHEN THE ANSWER WE COULD NOT READ CHANGED NOTHING, SAY SO.
+        #
+        # A message the confirmation grammar does not recognise is a CORRECTION: `message._settle`
+        # invalidates the pending approval and hands the turn back to intake for a fresh proposal. That
+        # is right for a real correction. When the message WAS an approval, in words the vocabulary is
+        # short of, the fresh proposal is the same proposal - so the customer is shown the identical
+        # screen, says the identical thing, and nothing ever tells them their answer was not understood.
+        #
+        # MEASURED 2026-09-26: driving 12 parts with "good to go" stalled 12 of 12, looping to the turn
+        # cap, five to seven re-asks each. The vocabulary is longer now, but NO VOCABULARY IS COMPLETE,
+        # and this is the half that does not depend on guessing the phrase: an invalidated approval whose
+        # fingerprint equals the one we are about to offer means the last message changed nothing, which
+        # is the signature of a misread rather than of a correction.
+        #
+        # It says it once per repeat and it does not refuse anything: the setup below is unchanged and a
+        # recognised word still dispatches it.
+        _misread = ""
+        if (isinstance(st.approval, dict)
+                and str(st.approval.get("status") or "") == ap.INVALIDATED
+                and str(st.approval.get("fingerprint") or "") == at.fingerprint(canon_stored)):
+            _misread = ("I READ YOUR LAST MESSAGE AS A CHANGE, AND IT CHANGED NOTHING, so I have "
+                        "probably misread it. What is below is the same setup you just saw. If you "
+                        "meant yes, one word does it: go." + (chr(10) * 2))
+            logger.info("Intake: the last message changed nothing - likely an unrecognised approval"
+                        " - session=%s fingerprint=%s", st.session_id, at.fingerprint(canon_stored))
         _mine = self._roles_i_changed_from_my_own_proposal(_announce)
-        st.submit_summary = (_head + self._what_is_being_confirmed(args)
+        st.submit_summary = (_misread + _head + self._what_is_being_confirmed(args)
                              + (_mine + (chr(10) * 2) if _mine else "")
                              + _agent_words.lstrip() + (chr(10) * 2 if _agent_words else "")
                              + at.CONFIRM_REQUIREMENTS_ASK

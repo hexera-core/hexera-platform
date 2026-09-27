@@ -32,6 +32,18 @@ _APPROVE = {
     "correct proceed", "yes correct", "that is correct proceed", "looks good proceed",
     "yes looks good", "yes that is right", "that is right proceed", "yes approve",
     "yes confirmed", "yes confirm", "confirm dispatch", "yes dispatch",
+    # MEASURED, 2026-09-26. Driving 12 parts with "good to go" as the approval word stalled 12 of 12:
+    # it normalises to "good to go", no phrase here covers "good to", so it fell through to
+    # CORRECTION_INTENT, the requirements were recomposed, the same confirmation was re-shown, and the
+    # customer said it again. Five times on bend_elbow_003, seven on three other parts, to the turn cap.
+    # The same run with "go" submitted in four messages. The grammar was right and the vocabulary was
+    # short: these are bare whole-message approvals a person actually types, and the whole-message rule
+    # is what keeps them safe - none of them can carry a change, because a message that carries one is
+    # not one of these.
+    "good to go", "all good", "we are good", "go for it", "send it", "ship it", "lgtm",
+    "looks good", "sounds good", "that works", "works for me", "fine", "fine by me",
+    "continue", "yes continue", "carry on", "go on", "mesh it", "yes go", "run",
+    "run the mesh", "no changes", "no changes proceed", "as is", "happy with that",
 }
 
 _HEDGE = {
