@@ -99,7 +99,12 @@ def test_a_flow_role_on_an_uncovered_mouth_asks_once_and_names_both_readings():
     state = _settled(state)
     mouth = _an_uncovered_opening(doc, state)
     oid = str(mouth["id"])
-    problems = gs.role_problems(state, doc, [_patch("tube_end", "outlet", mouth)])
+    # a second outlet on a mouth a question DID name, so this one is not the only outlet. Without it the
+    # load-bearing carve-out fires and the agent's reading stands, which the test below this one covers.
+    covered = sorted(gs._covered_by_a_role_question(state))
+    other = next(o for o in doc["openings"] if str(o["id"]) == covered[0])
+    problems = gs.role_problems(state, doc, [_patch("tube_end", "outlet", mouth),
+                                             _patch("port", "outlet", other)])
     hit = [p for p in problems if oid in p]
     assert hit, problems
     said = hit[0]
@@ -127,3 +132,35 @@ def test_a_mouth_they_were_asked_about_is_untouched_by_this():
     problems = gs.role_problems(state, doc, [_patch("port", wrong, named)])
     assert not any("NO role question covered" in p for p in problems), \
         "a covered mouth must not fall down the uncovered path"
+
+def test_the_default_is_not_forced_where_it_would_leave_the_flow_nowhere_to_go():
+    """MEASURED on the 36-run batch after the first version of this rule: two plans died with
+
+        ["flow.inlet_ids contains o1 whose patch role is 'wall'",
+         "flow.outlet_ids contains o2 whose patch role is 'wall'"]
+
+    Both of that part's flow mouths were uncovered, the rule demanded the default on both, and the plan lost
+    its inlet AND its outlet. The plan rate went 86 per cent to 79 on my own change.
+
+    A mouth carrying the ONLY inlet, or the only outlet, is not a face where two readings differ by a detail:
+    the agent's reading is the only one that leaves a runnable job. So it stands, and the customer sees it on
+    the faces line of the setup they confirm, which is the same disclosure a role we proposed ourselves gets.
+    """
+    doc, state = _state("block_boss_sharp")
+    state = _settled(state)
+    covered = sorted(gs._covered_by_a_role_question(state))
+    mouth = _an_uncovered_opening(doc, state)
+    oid = str(mouth["id"])
+
+    # the only inlet in the whole plan sits on an uncovered mouth: it stands
+    alone = [_patch("in", "inlet", mouth),
+             _patch("out", "outlet", next(o for o in doc["openings"] if str(o["id"]) == covered[0]))]
+    problems = gs.role_problems(state, doc, alone)
+    assert not any("NO role question covered" in p for p in problems), problems
+
+    # a SECOND inlet elsewhere, so this one is no longer load bearing: the default is demanded again
+    second = next(o for o in doc["openings"]
+                  if str(o["id"]) not in (oid, covered[0]))
+    crowded = alone + [_patch("in2", "inlet", second)]
+    problems = gs.role_problems(state, doc, crowded)
+    assert any("NO role question covered" in p and oid in p for p in problems), problems

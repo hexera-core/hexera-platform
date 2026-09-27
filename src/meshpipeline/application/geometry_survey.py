@@ -2366,6 +2366,23 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
             if said is None and opening not in _covered_by_a_role_question(state):
                 if role == UNASKED_DEFAULT_ROLE:
                     continue
+                # BUT NOT WHERE THE DEFAULT WOULD LEAVE THE FLOW WITH NOWHERE TO GO.
+                #
+                # MEASURED on the 36-run batch that followed the first version of this: two plans died with
+                # ["flow.inlet_ids contains o1 whose patch role is 'wall'", "flow.outlet_ids contains o2
+                # whose patch role is 'wall'"]. Both of that part's flow mouths were uncovered, this demanded
+                # the default on both, and the plan lost its inlet AND its outlet. The plan rate went 86 per
+                # cent to 79 on my own change.
+                #
+                # A mouth carrying the only inlet, or the only outlet, is not a face where two readings
+                # differ by a detail: the agent's reading is the only one that leaves a runnable job, and
+                # ours would leave a mesh with no flow through it at all. So the agent's stands, and the
+                # customer sees it where they see every other role, on the faces line of the setup they
+                # confirm. That is the same disclosure they get for a role we proposed ourselves.
+                if role in ("inlet", "outlet") and not any(
+                        str(q.get("type") or q.get("role") or "").strip().lower() == role
+                        for q in _roled(patches) if q is not patch):
+                    continue
                 # AND THE DISAGREEMENT RIDES ON THE CONFIRMATION, NOT ON A TURN OF ITS OWN.
                 #
                 # This first told the model to put ONE question naming both readings. MEASURED immediately
