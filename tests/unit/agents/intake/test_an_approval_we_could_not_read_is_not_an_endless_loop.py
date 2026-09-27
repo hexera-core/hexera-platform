@@ -94,3 +94,52 @@ def test_a_real_correction_is_left_alone():
 def test_a_first_confirmation_says_nothing_extra():
     assert not _loops(None, "fp-anything")
     assert not _loops({}, "fp-anything")
+
+# -------------------------------------------------------------------------------------------------
+# A bare delegation, which the survey already treated as consent while this called it a correction
+# -------------------------------------------------------------------------------------------------
+
+def test_a_bare_delegation_is_consent_to_the_thing_on_screen():
+    """MEASURED 2026-09-27: "you decide" was a CORRECTION here, so the pending approval was invalidated
+    and the requirements recomposed. The cost was not the extra turn. `accepts_a_proposal` reads the same
+    message as acceptance AND RECORDS THE CUSTOMER'S PORT ROLES FROM IT - "deferring to a choice we have
+    already made and shown is accepting it". One reader wrote boundary conditions from their words while
+    the other threw their approval away."""
+    for said in ("you decide", "you decide it", "you decide everything", "you decide the rest",
+                 "decide it", "you pick", "you pick the rest", "you choose", "your call",
+                 "up to you", "make the call", "whatever you think", "whatever you think is best",
+                 "whatever you reckon", "as you see fit"):
+        assert ap.classify(said) == ap.APPROVE_INTENT, said
+
+
+def test_the_two_readers_of_consent_now_agree_on_those():
+    """The disagreement was the defect, not either verdict on its own."""
+    from meshpipeline.application.geometry_survey import accepts_a_proposal
+    for said in ("you decide", "you decide everything", "whatever you think is best", "your call"):
+        assert (ap.classify(said) == ap.APPROVE_INTENT) == accepts_a_proposal(said), said
+
+
+def test_a_delegation_carrying_a_specification_is_still_a_correction():
+    """THE CASE THAT KILLED THE FIRST ATTEMPT. A branch that asked "is this a delegation, and does it
+    name a mouth" answered APPROVE for this, which is exactly what the closed vocabulary exists to
+    refuse: a delegation with a number in it is not bare consent, and dispatching it would run the stale
+    requirements. Putting the phrases INTO the vocabulary keeps the guarantee by construction."""
+    for said in ("you decide the far field of 50 chords",
+                 "you decide, but make o5 the outlet",
+                 "you decide but keep it under 2 million cells",
+                 "your call on everything except the inlet, that is o1"):
+        assert ap.classify(said) == ap.CORRECTION_INTENT, said
+
+
+def test_a_refusal_carrying_a_delegation_is_still_a_refusal():
+    """"no, you pick the rest" keeps its denial. The survey reads the delegation half for the ROLE
+    question, deliberately; dispatching compute off it is a different decision and this does not."""
+    assert ap.classify("no, you pick the rest") == ap.CORRECTION_INTENT
+    assert ap.classify("no, you decide") == ap.CORRECTION_INTENT
+
+
+def test_the_verbose_delegation_is_knowingly_left_as_a_correction():
+    """The owner's own third message. It does not compose from the closed vocabulary, and the fix for
+    that would be loosening the rule that catches the test above. One extra turn is the right side to
+    err on, and this records the choice so it is not mistaken for an oversight."""
+    assert ap.classify("do the half minute read and decide it") == ap.CORRECTION_INTENT

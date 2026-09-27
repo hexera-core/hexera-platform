@@ -40,6 +40,28 @@ _APPROVE = {
     # short: these are bare whole-message approvals a person actually types, and the whole-message rule
     # is what keeps them safe - none of them can carry a change, because a message that carries one is
     # not one of these.
+    # A BARE DELEGATION IS CONSENT TO THE THING ON SCREEN, and the platform already acted as if it were.
+    #
+    # MEASURED 2026-09-27 on the owner's own phrasing across all 12 parts: "you decide" and its kin were
+    # classified CORRECTION, so the pending approval was invalidated and the requirements recomposed, and
+    # the run cost a message it did not need.
+    #
+    # The extra turn is not the damage. `geometry_survey.accepts_a_proposal` reads the same messages as
+    # acceptance AND RECORDS THE CUSTOMER'S PORT ROLES ON THAT BASIS - its docstring says "deferring to a
+    # choice we have already made and shown is accepting it". So one reader took their words as consent
+    # and wrote boundary conditions from them while the other called the same words a correction and threw
+    # the approval away. Two readers of consent, disagreeing, where the cost is a paid job.
+    #
+    # THEY GO IN THE CLOSED VOCABULARY AND NOT IN A BRANCH OF THEIR OWN. The first attempt at this was a
+    # branch that asked "is this a delegation, and does it name a mouth", and it answered APPROVE for
+    # "you decide the far field of 50 chords" - a delegation carrying a specification, which is precisely
+    # what `_parses_as` and this closed set exist to refuse. Adding phrases keeps that guarantee by
+    # construction: a message composed only of consent phrases approves, and anything carrying words no
+    # phrase covers stays a correction. The cost is that a verbose delegation ("do the half minute read
+    # and decide it") is still read as a correction, and one extra turn is the right side to err on.
+    "you decide", "you decide it", "you decide everything", "you decide the rest", "decide it",
+    "you pick", "you pick the rest", "you choose", "your call", "up to you", "make the call",
+    "whatever you think", "whatever you think is best", "whatever you reckon", "as you see fit",
     "good to go", "all good", "we are good", "go for it", "send it", "ship it", "lgtm",
     "looks good", "sounds good", "that works", "works for me", "fine", "fine by me",
     "continue", "yes continue", "carry on", "go on", "mesh it", "yes go", "run",
