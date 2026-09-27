@@ -344,9 +344,18 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
         out.append("  its own confidence  {}".format(imp["confidence"]))
     for edge in (imp.get("sharp_edges") or [])[:3]:
         out.append(f"  sharp        {edge}")
-    notes = str(imp.get("notes") or "").strip()
-    if notes:
-        out.append(f"  notes        {notes[:260]}")
+    # `notes` IS NOT SHOWN, and three other code paths already say why. `vision/trust.py` tiers it
+    # RECORDED with the reason "free prose, and the claims that land there held out worst", and
+    # `for_model`, `model_safe` and `WITHHELD_FROM_MODELS` each keep it away from a machine. None of
+    # them stood between it and the person. So the field measured to be least trustworthy was the
+    # one printed verbatim on the panel, sliced at a hard 260 characters: 14 of 38 notes rows in the
+    # 36-run batch were cut mid-word, and 11 carried a claim about the meshing outcome that the
+    # look's own contract forbids it from making.
+    #
+    # The rows that stay are the relied-on ones - attachments, the openings it can see,
+    # inside_is_plain, and the agreement lines - because they are what the panel's claim rests on.
+    # The panel reads less like a person for losing this row. That is the point: it read like a
+    # person because it was free prose, which is exactly why it could not be trusted.
     from meshpipeline.application.geometry_survey import agreement_of
     _agreement = agreement_of(survey)
     out.extend(agreement_lines(survey))
