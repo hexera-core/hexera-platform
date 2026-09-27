@@ -166,20 +166,41 @@ def test_the_last_gate_refuses_a_port_declared_on_a_face_the_proposal_walled():
     """
     caps = _inner_body_end_caps(_doc())
     doc = _doc()
-    state, proposal = _with_walls(_fresh(), caps)
+    # A FACE WHERE OUR PROPOSAL IS THE ONLY REASON THERE IS. Every one of `caps` is also a face the
+    # measurement classifies `interface`, and on those the refusal now cites the measurement instead
+    # (asserted below). This half is about the attribution of OUR reading, so it needs a mouth the
+    # measurement says nothing disqualifying about - which on this part is one of the outer planar faces.
+    plain = next(m for m in sorted(_role_question(_fresh())["proposal"])
+                 if m not in caps and not gs.is_a_region_interface(doc, m))
+    state, proposal = _with_walls(_fresh(), [*caps, plain])
     view = _role_question(state)
     state = gs.record_answer(state, question_id=view["id"], words="you decide everything",
                              latest_user_message="you decide everything", accepted_proposal=True)
 
-    on_the_lump = {"name": "outlet_on_the_centre_body", "type": "outlet", "opening_id": caps[0]}
+    on_the_lump = {"name": "outlet_on_a_face_we_walled", "type": "outlet", "opening_id": plain}
     problems = gs.role_problems(state, doc, [on_the_lump])
     assert len(problems) == 1
-    assert caps[0] in problems[0] and "the wall" in problems[0]
+    assert plain in problems[0] and "the wall" in problems[0]
     # AND IT NAMES WHOEVER ACTUALLY SAID IT. They said "you decide everything"; the wall is our reading of that
     # mouth, and a refusal telling the model the CUSTOMER called it that sends it back to the wrong person.
     assert gs.roles_we_proposed(state) == set(proposal)
     assert "the setup you showed them placed as the wall" in problems[0]
     assert "the customer called" not in problems[0]
 
-    real = next(m for m, r in sorted(proposal.items()) if r == "outlet")
+    # AND ON ONE OF THE CAPS THE MEASUREMENT IS THE REASON REPORTED, not our proposal. Both rules refuse
+    # the face; the one that cites a measured fact is the one the model can act on, because our proposal
+    # walling it is our reading of the same geometry and naming that offers the model a reading to argue
+    # with. Exactly one problem either way: two refusals for one patch reads as two faults.
+    measured = gs.role_problems(state, doc, [{"name": "o", "type": "outlet", "opening_id": caps[0]}])
+    assert len(measured) == 1
+    assert "MEASUREMENT" in measured[0] and gs.INTERFACE_CLASSIFICATION in measured[0]
+
+    # A PATCH THAT BINDS TO NOTHING IS ONE FAULT, not one fault and then a sentence about a mouth that is
+    # not there. This was an if/elif chain and the interface rule went into the middle of it, which left
+    # the unbound patch falling through to `confirmed.get(None) != role` and a second problem naming None.
+    nowhere = gs.role_problems(state, doc, [{"name": "p", "type": "outlet", "opening_id": "o_does_not_exist"}])
+    assert len(nowhere) == 1 and "does not bind" in nowhere[0]
+
+    real = next(m for m, r in sorted(proposal.items())
+                if r == "outlet" and not gs.is_a_region_interface(doc, m))
     assert gs.role_problems(state, doc, [{"name": "outlet_1", "type": "outlet", "opening_id": real}]) == []

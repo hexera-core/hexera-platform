@@ -2394,6 +2394,10 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
         if not opening:
             problems.append(f"{name} ({role}) does not bind to a measured mouth by its position or bore, so "
                             f"its role cannot be checked against what the customer said")
+            # and nothing below can say anything true about a patch with no mouth behind it, so this
+            # one is finished here. It used to be the head of an if/elif chain, which said the same
+            # thing by structure until a branch was inserted into the middle of it.
+            continue
         # AN INTERFACE IS NOT A MOUTH, AND THE MEASUREMENT ALREADY SAID SO.
         #
         # This is the first thing in the platform ever to read `classification`. Measured on the stored
@@ -2412,16 +2416,16 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
         # default of ours can never open this - and a customer who really does mean flow through a
         # region boundary is describing a different model than the one we measured, which is worth the
         # one sentence it costs to say.
-        if role in ("inlet", "outlet") and is_a_region_interface(document, opening):
-            if opening not in confirmed_by_the_customer:
-                problems.append(
-                    f"{name} is declared {role} and binds to {opening}, which the MEASUREMENT classifies "
-                    f"as {INTERFACE_CLASSIFICATION!r}: the face where two regions meet, not a mouth to the "
-                    f"outside. Flow does not enter or leave the domain through it, so it takes the wall or "
-                    f"the coupled-interface role. If the customer has told you otherwise in their own "
-                    f"words, record that answer and it stands; do not assume it")
-                continue
-        elif confirmed.get(opening) != role:
+        if (role in ("inlet", "outlet") and is_a_region_interface(document, opening)
+                and opening not in confirmed_by_the_customer):
+            problems.append(
+                f"{name} is declared {role} and binds to {opening}, which the MEASUREMENT classifies "
+                f"as {INTERFACE_CLASSIFICATION!r}: the face where two regions meet, not a mouth to the "
+                f"outside. Flow does not enter or leave the domain through it, so it takes the wall or "
+                f"the coupled-interface role. If the customer has told you otherwise in their own "
+                f"words, record that answer and it stands; do not assume it")
+            continue
+        if confirmed.get(opening) != role:
             said = confirmed.get(opening)
             # A MOUTH NO ROLE QUESTION EVER COVERED IS NOT ONE THE CUSTOMER DECLINED TO PLACE.
             #
