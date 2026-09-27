@@ -105,10 +105,14 @@ def test_a_flow_role_on_an_uncovered_mouth_asks_once_and_names_both_readings():
     said = hit[0]
     assert "NO role question covered" in said
     assert f"the platform's own reading of it is {gs.UNASKED_DEFAULT_ROLE!r}" in said
-    assert "which is right?" in said, "one question, both readings named in it"
-    assert "reads it as outlet" in said
-    assert "Do not ask them to list the mouths" in said, \
-        "four turns of a real run went on exactly that"
+    assert f"you read {oid} as outlet" in said, "both readings named"
+    assert "say in the setup block" in said, "it rides on the confirmation, not a turn of its own"
+    assert "one word from them changes it" in said
+    # MEASURED on shell_and_tube_7 the first time this was a question of its own: it fired correctly,
+    # the customer answered "good to go", which is not a choice between two readings, and it asked to
+    # the turn cap. The owner's rule is asked once, take the best reading, move on.
+    assert "NOT put it as a question of its own" in said
+    assert "NOT ask them to list the mouths" in said, "four turns went on exactly that"
 
 
 def test_a_mouth_they_were_asked_about_is_untouched_by_this():

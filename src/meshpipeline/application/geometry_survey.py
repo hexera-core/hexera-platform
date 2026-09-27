@@ -2364,14 +2364,25 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
             if said is None and opening not in _covered_by_a_role_question(state):
                 if role == UNASKED_DEFAULT_ROLE:
                     continue
+                # AND THE DISAGREEMENT RIDES ON THE CONFIRMATION, NOT ON A TURN OF ITS OWN.
+                #
+                # This first told the model to put ONE question naming both readings. MEASURED immediately
+                # after, on shell_and_tube_7: the question fires correctly, the customer answers "good to go",
+                # which is not a choice between two readings, and it asks again to the turn cap. The owner's
+                # standing rule is "asked once, take the best reading and move on", and a separate question
+                # also spends a turn his own answer did not ask for.
+                #
+                # So the mouth takes the platform's reading, which is what happens with no answer either way,
+                # and the setup block the customer confirms NAMES the disagreement. They see both readings on
+                # the screen they were going to read anyway, one word corrects it, and "go" proceeds.
                 problems.append(
                     f"{name} is declared {role} and binds to {opening}, which NO role question covered: the "
                     f"measurement does not call it a port, so the platform's own reading of it is "
-                    f"{UNASKED_DEFAULT_ROLE!r} and that is what happens if nobody answers. Either carry "
-                    f"{UNASKED_DEFAULT_ROLE!r} on it, or put ONE question that names both readings (\"I read "
-                    f"{opening} as {UNASKED_DEFAULT_ROLE}, the geometry agent reads it as {role}; which is "
-                    f"right?\") and record their answer. Do not ask them to list the mouths: they were never "
-                    f"asked about this one")
+                    f"{UNASKED_DEFAULT_ROLE!r} and that is what happens if nobody answers. Carry "
+                    f"{UNASKED_DEFAULT_ROLE!r} on it, and say in the setup block that you read {opening} as "
+                    f"{role} and the measurement reads it as {UNASKED_DEFAULT_ROLE}, so one word from them "
+                    f"changes it. Do NOT put it as a question of its own and do NOT ask them to list the "
+                    f"mouths: they were never asked about this one, and they have already said to go ahead")
                 continue
             # WHO SAID IT, BECAUSE ONE OF THE TWO WAS NOT THE CUSTOMER. A role they waved through is OUR reading
             # of that mouth (`roles_we_proposed`), and telling the model "the customer called o10 the wall" about
