@@ -25,8 +25,11 @@ MIN_RING_BORE_FRACTION = 0.1
 #: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
 #: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
 MIN_MOUTH_OF_THICKNESS = 0.1
-#: A mouth is a duct section, not a plate's edge or a pin's end: its sides differ by at most this.
+#: A mouth is a duct section, not a plate's edge or a pin's end: a flat with sides beyond this
+#: ratio is a mouth only when its narrow side is a real size against the part (THIN_FLAT of the
+#: diagonal); a wide flat HVAC duct's 6:1 mouth stays, a bracket's 3 mm edge goes.
 MOUTH_MAX_ASPECT = 6.0
+THIN_FLAT = 0.05
 #: A closed solid that fills this much of its bounding box is a body (a car fills ~80% of its box),
 #: not a passage (a bent or branched fluid body fills far less). Judged with the flat share.
 BOX_LIKE_FILL = 0.5
@@ -38,6 +41,9 @@ FINNED_FLAT_SHARE = 0.75
 #: is machined.
 MAX_ODD_FLATS = 2
 MAX_MOUTHS = 12
+#: Same-size flats fanning over three or more directions are blade tips only by the handful: a
+#: Y junction's three arms fan too.
+MIN_BLADES = 4
 #: A duct's side wall has a partner of the same size facing it across the duct, about one wall
 #: width away; a mouth's partner (the other mouth) is far away, or faces another way, or is absent.
 #: Two such flats closer than this, in units of their own size, are walls, not mouths.
@@ -453,6 +459,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
     # the largest few - and the rest are dropped as facets, vents and bolt seats.
     # Rings and discs are ranked apart: a wide flat duct's end rings are tiny against its side
     # faces, and they are the whole point.
+    every_flat = list(candidates)                          # what the stage's "add an opening" may snap to
     probed: list[Opening] = []
     for kind in ("ring", "disc"):
         same = sorted((o for o in candidates if o.kind == kind), key=lambda o: o.area, reverse=True)
@@ -472,7 +479,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
     decision: dict = {}
     candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
     candidates = drop_stacked_rings(candidates)
-    measured = measured_faces(candidates)
+    measured = measured_faces(every_flat)
     # A RING is a port when its hole opens to the outside (clear ahead), nothing rings the face in
     # its own plane (an orifice plate and a bore shoulder are set into wall) and it faces away from
     # the part (a flange's back face looks at the body it is bolted to).
@@ -507,16 +514,21 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         #   - a body with more odd flats than mouths (blade tips, lugs, keyways) is machined, not swept.
         sx, sy, sz = (bbox_max[k] - bbox_min[k] for k in range(3))
         thinnest = max(min(sx, sy, sz), 1e-9)
+        fill = volume / max(sx * sy * sz, 1e-18)
         walls = _wall_pairs(discs)
         mouth_like = [o for o in discs if o.shape in ("circle", "rectangle")
                       and o.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
-                      and max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9)]
+                      and (max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9) or min(o.wh) >= THIN_FLAT * diag)]
+        if mouth_like and all(id(o) in walls for o in mouth_like) and fill >= BOX_LIKE_FILL:
+            # A short fat passage: its two ends face each other a diameter apart, and they are all it
+            # has. It fills its box like the cylinder it is; a rotor hub whose two end discs sit as
+            # close is nearly all blades and fills a fifth of its box, so its discs stay walls.
+            walls = set()
         mouths = [o for o in mouth_like if id(o) not in walls]
         # odd in shape, size or aspect; a duct's side walls are long and thin but they are not odd
         odd_flats = len([o for o in discs if o not in mouth_like and id(o) not in walls])
         box_skin = 2.0 * (sx * sy + sy * sz + sz * sx) or 1.0
         flat_share = sum(o.area for o in candidates) / box_skin
-        fill = volume / max(sx * sy * sz, 1e-18)
         box_like = (flat_share >= BOX_LIKE_FLAT_SHARE and fill >= BOX_LIKE_FILL) or flat_share >= FINNED_FLAT_SHARE
         bladed = _bladed([o for o in discs if id(o) not in walls])
         machined = odd_flats > MAX_ODD_FLATS or len(mouths) > MAX_MOUTHS or bladed
@@ -587,15 +599,16 @@ def _wall_pairs(discs: list[Opening]) -> set[int]:
 
 
 def _bladed(discs: list[Opening]) -> bool:
-    """Three or more flats of one size whose normals fan out in three or more directions are
+    """MIN_BLADES or more flats of one size whose normals fan out in three or more directions are
     blade tips or lugs around an axis (a rotor, a fan), not the ports of a passage - a manifold's
-    identical outlets all face one way, a cross fitting's four ports lie on two axes."""
+    identical outlets all face one way, a cross fitting's four ports lie on two axes, and a Y
+    junction's three arms are too few."""
     groups: dict[tuple, list[Opening]] = {}
     for o in discs:
         key = (o.shape, round(math.log(max(o.area, 1e-12)) / math.log(1.15)))   # ~15% size bins
         groups.setdefault(key, []).append(o)
     for same in groups.values():
-        if len(same) < 3:
+        if len(same) < MIN_BLADES:
             continue
         axes: list = []
         for o in same:

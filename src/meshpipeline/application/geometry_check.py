@@ -458,9 +458,9 @@ NAME_TOOL = {
                                              "intake, an aircraft's nose) - read against the axis marker in the pictures. "
                                              "unknown when no end is plainly the nose."},
                 "flow_axis": {"type": "string", "enum": ["+x", "-x", "+y", "-y", "+z", "-z", "unknown"],
-                              "description": "EXTERNAL flow only: the direction the fluid TRAVELS past the part - the "
-                                             "opposite of nose_axis, or what the user's words say. unknown when nothing "
-                                             "settles it."},
+                              "description": "EXTERNAL flow only: ONLY what the user's own words say about the direction "
+                                             "the fluid travels (\"flow along +y\"). unknown when the user did not say. "
+                                             "Never read it off the pictures: the nose fields do that."},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1,
                                "description": "How sure you are about the part and the flow direction overall."},
                 "notes": {"type": "string", "description": "Anything the user should check, in one or two plain sentences. Say if you see an opening that has no sticker."},
@@ -544,8 +544,12 @@ def _flow_from_nose(answer: dict, shots=()) -> dict:
         answer["nose_axis"] = signed_axis(v)
         answer["nose_from"] = f"{side} of the {view} picture"
     nose = str(answer.get("nose_axis") or "").lower()
-    if nose in _AXES:
+    said = str(answer.get("flow_axis") or "").lower()
+    if said in _AXES:
+        answer["flow_from"] = "the user's words"       # the user's word decides; the nose only fills a silence
+    elif nose in _AXES:
         answer["flow_axis"] = ("-" if nose[0] == "+" else "+") + nose[1]
+        answer["flow_from"] = "the nose"
     return answer
 
 

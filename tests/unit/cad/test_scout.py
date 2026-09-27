@@ -335,3 +335,17 @@ def test_an_orifice_plate_inside_a_pipe_is_not_a_port(tmp_path):
     r = _scout(_write(BRepAlgoAPI_Fuse(tube, plate).Shape(), tmp_path / "orifice.step"))
     assert (r.input_kind, r.flow) == ("body-surface", "internal")
     assert sorted(round(o.centroid[0], 3) for o in r.openings) == [0.0, 0.3]
+
+
+def test_a_short_fat_fluid_passage_keeps_both_mouths(tmp_path):
+    """Two ends facing each other a diameter apart look like a wall pair; when they are all the
+    part has, they are its mouths (a pipe stub, a short reducer's fluid)."""
+    r = _scout(_fluid(tmp_path / "stub.step", r=40.0, length=56.0))
+    assert (r.input_kind, r.flow) == ("fluid-domain", "internal")
+    assert len(r.openings) == 2
+
+
+def test_every_flat_face_stays_selectable_however_many_there_are(tmp_path):
+    """The stage's "add an opening" snaps to any measured flat, probed or not."""
+    r = _scout(_tee(tmp_path / "tee.step"))
+    assert len(r.faces) >= r.planar_faces - 0 and len(r.faces) >= 3

@@ -337,6 +337,14 @@ def test_where_the_nose_sits_in_a_named_picture_becomes_the_flow_direction():
     assert (a["nose_axis"], a["flow_axis"]) == ("+z", "-z")
 
 
+def test_the_users_stated_direction_wins_over_the_nose():
+    top = _View("top", (0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "+y"}, [top])
+    assert a["flow_axis"] == "+y" and a["flow_from"] == "the user's words"
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "unknown"}, [top])
+    assert a["flow_axis"] == "+x" and a["flow_from"] == "the nose"
+
+
 def test_the_models_own_nose_axis_is_the_fallback_and_an_unknown_nose_settles_nothing():
     a = gc._flow_from_nose({"nose_view": "unknown", "nose_side": "unknown", "nose_axis": "+y"}, [])
     assert a["flow_axis"] == "-y"
