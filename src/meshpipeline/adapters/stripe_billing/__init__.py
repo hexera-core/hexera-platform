@@ -57,7 +57,13 @@ class StripeBillingGateway:
         # or may not exist - and the caller's only safe move is to retry. Without a key that retry
         # creates a SECOND customer. The key is derived from what the call is ABOUT, so the retry
         # presents the same one and Stripe replays the original result instead of acting twice.
-        return {"idempotency_key": f"{scope}:{key}"}
+        #
+        # INSIDE `options`, which is the only keyword a StripeClient service method takes besides
+        # `params`. Passed as a bare `idempotency_key=` it is a TypeError raised before any request
+        # leaves the process - so every write here failed, and the unit tier could not see it
+        # because it fakes the client. test_stripe_adapter_signatures now binds each call against
+        # the SDK's real methods.
+        return {"options": {"idempotency_key": f"{scope}:{key}"}}
 
     def ensure_customer(self, *, organization_id: str, email: str, name: str) -> str:
         customer = self._client.customers.create(
@@ -128,7 +134,9 @@ class StripeBillingGateway:
         # ADDS a line, and the customer would be billed both tiers' flat fees from then on. Which
         # existing item is which is read off the price itself - metered or not - rather than off
         # its position, which Stripe does not promise.
-        subscription = self._client.subscriptions.retrieve(subscription_id)
+        # A PLAIN DICT, because an SDK object is not a mapping: `.get` on one raises rather than
+        # answering, which is how the first version of this failed against the live SDK.
+        subscription = self._client.subscriptions.retrieve(subscription_id).to_dict()
         flat_item = metered_item = None
         for item in subscription["items"]["data"]:
             usage = ((item["price"].get("recurring") or {}).get("usage_type") or "licensed")
