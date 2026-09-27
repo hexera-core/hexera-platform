@@ -26,11 +26,39 @@ class Snapshot:
     path: Path
     direction: tuple[float, float, float]   # where the camera looks (unit vector)
     facing: list[int]         # opening ids whose mouth faces this camera
+    up: tuple[float, float, float] = (0.0, 0.0, 1.0)   # which way is up on the picture
 
 
 def _unit(v):
     n = math.sqrt(sum(c * c for c in v)) or 1.0
     return tuple(c / n for c in v)
+
+
+def screen_axes(direction, up):
+    """(right, up) as world vectors for a camera looking along `direction`: what "the left of the
+    picture" and "the top of the picture" mean in the part's own axes."""
+    d, u = _unit(direction), _unit(up)
+    right = (d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])
+    return _unit(right), u
+
+
+def signed_axis(v) -> str:
+    """The dominant world axis of a vector, as "+x" .. "-z"."""
+    k = max(range(3), key=lambda i: abs(v[i]))
+    return ("+" if v[k] >= 0 else "-") + "xyz"[k]
+
+
+def camera_words(direction) -> str:
+    """Where a picture looks, in axis words the model can hold against the marker: "-Z (from
+    above)" for a top view, "(-0.6, -0.6, -0.5)" for an oblique one."""
+    d = _unit(direction)
+    k = max(range(3), key=lambda i: abs(d[i]))
+    if abs(d[k]) >= 0.9:
+        sign = "-" if d[k] < 0 else "+"
+        side = {(2, "-"): "from above", (2, "+"): "from below", (0, "-"): "from +X", (0, "+"): "from -X",
+                (1, "-"): "from +Y", (1, "+"): "from -Y"}[(k, sign)]
+        return f"{sign}{'XYZ'[k]} ({side})"
+    return f"({d[0]:.1f}, {d[1]:.1f}, {d[2]:.1f})"
 
 
 def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str = "") -> list[Snapshot]:
@@ -82,10 +110,16 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
         pl.camera.zoom(zoom)
         if part_label:
             pl.add_text(part_label, position="upper_left", font_size=12, color="black")
+        # THE AXIS MARKER: red +X, green +Y, blue +Z in the corner, drawn by the same camera as the
+        # part, so "the nose points along the red arrow" can be read straight off the picture -
+        # without it the model cannot turn "faces left" into "+X" and answers unknown.
+        pl.add_axes(line_width=4, xlabel="X", ylabel="Y", zlabel="Z", viewport=(0.0, 0.0, 0.28, 0.28))  # type: ignore[call-arg]
+        pl.add_text(f"camera looks along {camera_words(direction)}", position="lower_right",
+                    font_size=10, color="black")
         path = out_dir / f"{name}.png"
         pl.screenshot(str(path))
         pl.close()
-        return Snapshot(name=name, path=path, direction=_unit(direction), facing=facing(direction))
+        return Snapshot(name=name, path=path, direction=_unit(direction), facing=facing(direction), up=up)
 
     numbers = [str(i) for i in ids]
     named = [f"{i}  {o.get('name') or ''}".strip() for i, o in zip(ids, openings)]
@@ -96,7 +130,7 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
     shots.append(shoot("overview", tuple(centre[k] - iso[k] * far for k in range(3)), iso, named,
                        translucent=True))
     for name, direction in (("iso", iso), ("top", (0.0, 0.0, -1.0)), ("front", (0.0, 1.0, 0.0)),
-                            ("side", (-1.0, 0.0, 0.0))):
+                            ("side", (-1.0, 0.0, 0.0)), ("end", (1.0, 0.0, 0.0))):
         position = tuple(centre[k] - direction[k] * far for k in range(3))
         shots.append(shoot(name, position, direction, numbers))
     # CLOSE-UPS: straight into each mouth from outside, framed on the mouth

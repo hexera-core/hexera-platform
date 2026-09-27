@@ -316,3 +316,43 @@ def test_a_naming_failure_on_an_unnamed_check_is_recorded(monkeypatch):
     result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="an elbow")
     assert result["status"] == "failed" and "provider down" in result["reason"]
     assert json.loads(store.written[f"sessions/{sid}/geometry_check/scout.json"])["status"] == "failed"
+
+
+# ---------------------------------------------------------------- the nose, and the flow from it ----
+class _View:
+    def __init__(self, name, direction, up=(0.0, 0.0, 1.0)):
+        self.name, self.direction, self.up, self.facing = name, direction, up, []
+
+
+def test_where_the_nose_sits_in_a_named_picture_becomes_the_flow_direction():
+    """The top picture looks down -Z with +Y up, so its right is +X: a nose at the left of the top
+    picture is at the -X end, and the fluid then travels +x."""
+    top = _View("top", (0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left"}, [top])
+    assert (a["nose_axis"], a["flow_axis"]) == ("-x", "+x")
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "right"}, [top])
+    assert (a["nose_axis"], a["flow_axis"]) == ("+x", "-x")
+    front = _View("front", (0.0, 1.0, 0.0))                    # looks along +Y, up +Z: right is +X
+    a = gc._flow_from_nose({"nose_view": "front", "nose_side": "top"}, [front])
+    assert (a["nose_axis"], a["flow_axis"]) == ("+z", "-z")
+
+
+def test_the_users_stated_direction_wins_over_the_nose():
+    top = _View("top", (0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "+y"}, [top])
+    assert a["flow_axis"] == "+y" and a["flow_from"] == "the user's words"
+    a = gc._flow_from_nose({"nose_view": "top", "nose_side": "left", "flow_axis": "unknown"}, [top])
+    assert a["flow_axis"] == "+x" and a["flow_from"] == "the nose"
+
+
+def test_the_models_own_nose_axis_is_the_fallback_and_an_unknown_nose_settles_nothing():
+    a = gc._flow_from_nose({"nose_view": "unknown", "nose_side": "unknown", "nose_axis": "+y"}, [])
+    assert a["flow_axis"] == "-y"
+    a = gc._flow_from_nose({"nose_view": "unknown", "nose_side": "unknown", "flow_axis": "unknown"}, [])
+    assert a["flow_axis"] == "unknown" and "nose_axis" not in a
+
+
+def test_the_model_is_told_which_way_each_picture_looks_and_about_the_axis_marker():
+    text = gc._facts_text(_facts(), [_View("top", (0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))], "")
+    assert "red +X, green +Y, blue +Z" in text
+    assert "top (stickers facing the camera: none), camera looks along -Z (from above)" in text

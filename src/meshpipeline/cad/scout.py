@@ -20,7 +20,36 @@ MIN_OPENING_FRACTION = 0.02
 MAX_OPENINGS = 16
 #: A ring face (an annular end of a pipe wall) rims an opening when the hole is a real bore, not
 #: a bolt hole: the inner area against the ring's own outer area.
-MIN_RING_BORE_FRACTION = 0.2
+MIN_RING_BORE_FRACTION = 0.1
+#: A closed solid's flat face is a MOUTH (the end of a swept fluid body) only when it is a round or
+#: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
+#: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
+MIN_MOUTH_OF_THICKNESS = 0.1
+#: A mouth is a duct section, not a plate's edge or a pin's end: a flat with sides beyond this
+#: ratio is a mouth only when its narrow side is a real size against the part (THIN_FLAT of the
+#: diagonal); a wide flat HVAC duct's 6:1 mouth stays, a bracket's 3 mm edge goes.
+MOUTH_MAX_ASPECT = 6.0
+THIN_FLAT = 0.05
+#: A closed solid that fills this much of its bounding box is a body (a car fills ~80% of its box),
+#: not a passage (a bent or branched fluid body fills far less). Judged with the flat share.
+BOX_LIKE_FILL = 0.5
+#: Flat faces covering this much of the box make a body whatever it fills: a finned heat sink
+#: (90%) is machined, not a manifold with twelve mouths.
+FINNED_FLAT_SHARE = 0.75
+#: A swept passage has a few odd flats at most (a volute's side, a mitred elbow's top); a switch,
+#: a connector or a bracket has many. Past this many, or past MAX_MOUTHS mouth-like flats, the part
+#: is machined.
+MAX_ODD_FLATS = 2
+MAX_MOUTHS = 12
+#: Same-size flats fanning over three or more directions are blade tips only by the handful: a
+#: Y junction's three arms fan too.
+MIN_BLADES = 4
+#: A duct's side wall has a partner of the same size facing it across the duct, about one wall
+#: width away; a mouth's partner (the other mouth) is far away, or faces another way, or is absent.
+#: Two such flats closer than this, in units of their own size, are walls, not mouths.
+WALL_PAIR_GAP = 0.9
+#: How many of the largest flat faces get the ray and rim probes.
+MAX_PROBED = 32
 #: Flat faces covering this much of the part's bounding box make it box-like - a body in a flow
 #: (the Ahmed body's flats cover 84% of its box), not a fluid passage (a reducer's two mouths
 #: cover 3%).
@@ -52,6 +81,14 @@ class Opening:
     #: the face's outer extent (for a ring, around the hole): what tells a flange band, which
     #: sits exactly inside the next band's hole, from a coaxial fitting's port, which leaves a gap
     outer_wh: tuple[float, float] = (0.0, 0.0)
+    #: nothing of the part sits in the face's own plane just outside its rim (an orifice plate or a
+    #: bore shoulder is ringed by wall; a real end face is ringed by air)
+    rim_free: bool = True
+    #: how far the body runs behind the face along -normal (m), and over the face's own size
+    depth: float = 0.0
+    depth_ratio: float = 0.0
+    #: the face looks back at the part's centre (a flange's back face), not away from it
+    inward: bool = False
 
     @property
     def shape(self) -> str:
@@ -283,6 +320,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
     from OCP.BRepGProp import BRepGProp
     from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
     from OCP.GProp import GProp_GProps
@@ -319,6 +357,9 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
             he.Next()
         shells_per_solid.append(n)
     classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
+    vg = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, vg)
+    volume = abs(float(vg.Mass()))
 
     def inside_any(p) -> bool:
         for c in classifiers:
@@ -336,6 +377,34 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
                 return False
             inter.Next()
         return True
+
+    def first_hit(origin, direction, skip: float) -> float:
+        """Distance to the first surface along `direction` beyond `skip`, or 0.0 when none."""
+        inter = BRepIntCurveSurface_Inter()
+        inter.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
+        best = 0.0
+        while inter.More():
+            w = inter.W()
+            if w > skip and (best == 0.0 or w < best):
+                best = w
+            inter.Next()
+        return best
+
+    def rim_is_free(face, centroid, normal) -> bool:
+        """The face's plane just outside its outer rim holds no material: an end face, not a plate
+        set into a wall or a shoulder inside a bore."""
+        pts = _rim_polyline(face, BRepTools.OuterWire_s(face))
+        if len(pts) < 3:
+            return True
+        step = max(1, len(pts) // 8)
+        for q in pts[::step]:
+            out = _add(centroid, _sub(q, centroid), 1.12)          # 12% beyond the rim, in-plane
+            for dz in (0.004 * diag, -0.004 * diag):
+                if inside_any(_add(out, normal, dz)):
+                    return False
+        return True
+
+    centre = tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3))
 
     # every planar face, measured: the candidate openings and the flat walls among them
     faces: list = []
@@ -380,16 +449,41 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         t_edge = min(((bbox_max[k] if normal[k] > 0 else bbox_min[k]) - o_centroid[k]) / normal[k]
                      for k in range(3) if abs(normal[k]) > 1e-6)
         on_extremity = t_edge <= 0.03 * diag
-        clear = clear_ahead(_add(o_centroid, normal, 0.001 * diag), normal, 0.0)
+        inward = (not on_extremity) and _dot(normal, _sub(o_centroid, centre)) < 0.0
         candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=normal,
-                                  area=o_area, wh=o_wh, clear_ahead=clear, on_extremity=on_extremity,
-                                  outer_wh=outer_wh))
+                                  area=o_area, wh=o_wh, clear_ahead=False, on_extremity=on_extremity,
+                                  outer_wh=outer_wh, inward=inward))
+
+    # THE PROBES (clear ahead, rim, depth) cost a ray or a dozen classifier calls each; a boat hull
+    # or an assembly has thousands of small flats, so only the candidates that can matter get them -
+    # the largest few - and the rest are dropped as facets, vents and bolt seats.
+    # Rings and discs are ranked apart: a wide flat duct's end rings are tiny against its side
+    # faces, and they are the whole point.
+    every_flat = list(candidates)                          # what the stage's "add an opening" may snap to
+    probed: list[Opening] = []
+    for kind in ("ring", "disc"):
+        same = sorted((o for o in candidates if o.kind == kind), key=lambda o: o.area, reverse=True)
+        largest = same[0].area if same else 0.0
+        for o in same[:MAX_PROBED]:
+            if o.area < MIN_OPENING_FRACTION * largest:
+                break
+            o.clear_ahead = clear_ahead(_add(o.centroid, o.normal, 0.001 * diag), o.normal, 0.0)
+            o.rim_free = rim_is_free(faces[o.face_index], o.centroid, o.normal)
+            depth = first_hit(o.centroid, _flip(o.normal), 0.001 * diag)
+            o.depth = depth
+            o.depth_ratio = depth / max(math.sqrt(max(o.area, 0.0)), 1e-9)
+            probed.append(o)
+    candidates = probed
 
     notes: list[str] = []
+    decision: dict = {}
     candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
     candidates = drop_stacked_rings(candidates)
-    measured = measured_faces(candidates)
-    rings = [c for c in candidates if c.kind == "ring"]
+    measured = measured_faces(every_flat)
+    # A RING is a port when its hole opens to the outside (clear ahead), nothing rings the face in
+    # its own plane (an orifice plate and a bore shoulder are set into wall) and it faces away from
+    # the part (a flange's back face looks at the body it is bolted to).
+    rings = [c for c in candidates if c.kind == "ring" and c.clear_ahead and c.rim_free and not c.inward]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
 
@@ -407,22 +501,52 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         confidence_kind = 0.4
         notes.append("the file holds surfaces, not a closed solid; the openings are read from its flat faces")
     else:
-        pool = discs
-        # A fluid body is slender: its mouths are a few percent of its box's skin. A car body or
-        # a hub is BOX-LIKE: its flat faces cover most of the box, and every one of them is
-        # "clear ahead" too - so flat-face count alone would read the Ahmed body as a manifold.
+        # A closed single solid is EITHER a fluid body (its mouths are the flat ends of a swept
+        # passage) or a solid body in a flow (a car, a hub, a wing). Geometry alone cannot always
+        # tell a solid cylinder from the water inside a pipe - that is the user's word - but it can
+        # rule out the usual false mouths and the box-like bodies:
+        #   - a mouth is a round or rectangular flat at least a fifth of the part's thinnest side
+        #     (a nacelle's tail flat, a blade tip and a wing's airfoil-shaped tip are not);
+        #   - a body whose flats cover much of its box AND which fills it is a body (the Ahmed body:
+        #     84% and 95%); a short fat elbow covers a third but fills less than half;
+        #   - a part with more than a couple of odd flats, or a dozen mouth-like ones, is machined
+        #     (a switch, a connector, a bracket), and so is one whose same-size flats fan around an axis;
+        #   - a body with more odd flats than mouths (blade tips, lugs, keyways) is machined, not swept.
         sx, sy, sz = (bbox_max[k] - bbox_min[k] for k in range(3))
+        thinnest = max(min(sx, sy, sz), 1e-9)
+        fill = volume / max(sx * sy * sz, 1e-18)
+        walls = _wall_pairs(discs)
+        mouth_like = [o for o in discs if o.shape in ("circle", "rectangle")
+                      and o.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
+                      and (max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9) or min(o.wh) >= THIN_FLAT * diag)]
+        if mouth_like and all(id(o) in walls for o in mouth_like) and fill >= BOX_LIKE_FILL:
+            # A short fat passage: its two ends face each other a diameter apart, and they are all it
+            # has. It fills its box like the cylinder it is; a rotor hub whose two end discs sit as
+            # close is nearly all blades and fills a fifth of its box, so its discs stay walls.
+            walls = set()
+        mouths = [o for o in mouth_like if id(o) not in walls]
+        # odd in shape, size or aspect; a duct's side walls are long and thin but they are not odd
+        odd_flats = len([o for o in discs if o not in mouth_like and id(o) not in walls])
         box_skin = 2.0 * (sx * sy + sy * sz + sz * sx) or 1.0
         flat_share = sum(o.area for o in candidates) / box_skin
-        if len(pool) >= 2 and flat_share < BOX_LIKE_FLAT_SHARE:
+        box_like = (flat_share >= BOX_LIKE_FLAT_SHARE and fill >= BOX_LIKE_FILL) or flat_share >= FINNED_FLAT_SHARE
+        bladed = _bladed([o for o in discs if id(o) not in walls])
+        machined = odd_flats > MAX_ODD_FLATS or len(mouths) > MAX_MOUTHS or bladed
+        decision = {"flat_share": flat_share, "fill": fill, "n_mouths": len(mouths), "n_odd": odd_flats,
+                    "bladed": float(bladed)}
+        pool = mouths
+        if len(mouths) >= 2 and not box_like and not machined:
             body_kind, input_kind, flow = "single_solid", "fluid-domain", "internal"
             confidence_kind = 0.7
         else:
             body_kind, input_kind, flow = "single_solid", "solid-body", "external"
-            confidence_kind = 0.7 if flat_share >= BOX_LIKE_FLAT_SHARE else 0.6
-            if len(pool) >= 2:
-                notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box, so it reads as a "
-                             "solid body in a flow, not a fluid passage")
+            confidence_kind = 0.7 if (box_like or machined or not mouths) else 0.6
+            if len(mouths) >= 2 and box_like:
+                notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box and the part fills "
+                             f"{100 * fill:.0f}% of it, so it reads as a solid body in a flow, not a fluid passage")
+            elif len(mouths) >= 2 and machined:
+                notes.append(f"{odd_flats} odd flat faces against {len(mouths)} mouth-like ones, so it reads "
+                             "as a machined body in a flow, not a fluid passage")
 
     pool = sorted(pool, key=lambda o: o.area, reverse=True)
     if pool:
@@ -449,11 +573,50 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         planar_faces=planar, bbox_min=bbox_min, bbox_max=bbox_max, openings=openings,
         seed_point=seed,
         confidence={"input_kind": confidence_kind,
-                    "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0},
+                    "openings": (sum(o.confidence for o in openings) / len(openings)) if openings else 0.0,
+                    **decision},
         notes=notes, faces=measured)
 
 
 MAX_FACES = 200
+
+
+def _wall_pairs(discs: list[Opening]) -> set[int]:
+    """The flats that are a duct's side walls: each has a partner of about its size facing it
+    (anti-parallel) across a gap no wider than WALL_PAIR_GAP of its own size. Returns their ids."""
+    walls: set[int] = set()
+    for i, a in enumerate(discs):
+        for b in discs[i + 1:]:
+            if _dot(a.normal, b.normal) > -0.8:
+                continue                                   # not facing each other (a taper's walls converge a little)
+            if not (0.5 <= a.area / max(b.area, 1e-18) <= 2.0):
+                continue                                   # not the same size
+            gap = abs(_dot(_sub(b.centroid, a.centroid), a.normal))
+            size = math.sqrt(max(min(a.area, b.area), 0.0))
+            if gap <= WALL_PAIR_GAP * size:
+                walls.add(id(a)); walls.add(id(b))
+    return walls
+
+
+def _bladed(discs: list[Opening]) -> bool:
+    """MIN_BLADES or more flats of one size whose normals fan out in three or more directions are
+    blade tips or lugs around an axis (a rotor, a fan), not the ports of a passage - a manifold's
+    identical outlets all face one way, a cross fitting's four ports lie on two axes, and a Y
+    junction's three arms are too few."""
+    groups: dict[tuple, list[Opening]] = {}
+    for o in discs:
+        key = (o.shape, round(math.log(max(o.area, 1e-12)) / math.log(1.15)))   # ~15% size bins
+        groups.setdefault(key, []).append(o)
+    for same in groups.values():
+        if len(same) < MIN_BLADES:
+            continue
+        axes: list = []
+        for o in same:
+            if all(abs(_dot(o.normal, a)) < 0.9 for a in axes):
+                axes.append(o.normal)
+        if len(axes) >= 3:
+            return True
+    return False
 
 
 def measured_faces(candidates: list[Opening]) -> list[dict]:
@@ -466,7 +629,9 @@ def measured_faces(candidates: list[Opening]) -> list[dict]:
              "centroid_m": [round(v, 6) for v in c.centroid],
              "centroid_mm": [round(v * mm, 2) for v in c.centroid],
              "normal": [round(v, 5) for v in c.normal], "area_mm2": round(c.area * mm * mm, 2),
-             "diameter_mm": round(c.equivalent_diameter * mm, 2)}
+             "diameter_mm": round(c.equivalent_diameter * mm, 2),
+             "clear_ahead": c.clear_ahead, "on_extremity": c.on_extremity, "rim_free": c.rim_free,
+             "inward": c.inward, "depth_ratio": round(c.depth_ratio, 2)}
         if c.shape != "circle":
             d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, 2), round(c.wh[1] * mm, 2)
         out.append(d)
@@ -585,6 +750,15 @@ def drop_stacked_rings(candidates: list[Opening]) -> list[Opening]:
         g = root(i)
         if g not in keep or candidates[i].equivalent_diameter < candidates[keep[g]].equivalent_diameter:
             keep[g] = i
+    # The survivor stands for the whole stacked end: its rim is free when any band's rim is (the
+    # inner band's rim touches the next band, but the outermost band's rim meets air), and it is
+    # clear ahead when any band is.
+    for i in rings:
+        g = root(i)
+        survivor = candidates[keep[g]]
+        if i != keep[g]:
+            survivor.rim_free = survivor.rim_free or candidates[i].rim_free
+            survivor.clear_ahead = survivor.clear_ahead or candidates[i].clear_ahead
     kept = set(keep.values())
     return [c for k, c in enumerate(candidates) if c.kind != "ring" or k in kept]
 
