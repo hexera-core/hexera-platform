@@ -2286,6 +2286,46 @@ def _roled(patches: Any) -> list[dict]:
             and str(p.get("type") or p.get("role") or "").strip().lower() in ("inlet", "outlet")]
 
 
+#: A measured opening whose classification says it is where two regions meet. It is not a mouth to the
+#: outside world: on a conjugate part it is the coupled boundary between the fluid and the solid, and flow
+#: does not enter or leave the domain through it.
+INTERFACE_CLASSIFICATION = "interface"
+
+
+def measured_classification(document: dict | None, opening_id: str) -> str:
+    """What the MEASUREMENT calls this opening, or "" when it does not say.
+
+    THE PLATFORM HAD NEVER READ THIS FIELD. Every measured opening carries `classification` -
+    planar_face, interface, port_candidate, hole, ring - and a grep of src/meshpipeline for it returns
+    nothing but unrelated uses of the word. The panel's only source for "is this a port" was the look's
+    per-opening guess, which is the same source as the reading the panel claims to be checking: one
+    source doing both jobs, so there was never a disagreement to detect.
+
+    MEASURED on the stored `cht_enclosing_2region` document: 18 openings, of which 12 are classified
+    `interface` - the faces where the inner body meets the outer one - and 6 are planar faces. On one
+    real run the job submitted with seventeen pressure outlets, twelve of them on those interfaces,
+    which tells the solver that fluid leaves the domain through the inside of the part. The mesh builds
+    and every mass balance is nonsense. On a different phrasing of the same part the geometry agent
+    happened to catch it and said so. Whether the customer got a usable job came down to which model
+    call ran.
+
+    An interface being an interface is topology, not a judgement: the two regions either share that face
+    or they do not. So this is the one class of port error that can be made impossible rather than
+    unlikely, and it costs one field read.
+    """
+    if not isinstance(document, dict):
+        return ""
+    for row in (document.get("openings") or []):
+        if isinstance(row, dict) and str(row.get("id") or "") == str(opening_id):
+            return str(row.get("classification") or "")
+    return ""
+
+
+def is_a_region_interface(document: dict | None, opening_id: str) -> bool:
+    """Whether the measurement says this face is where two regions meet."""
+    return measured_classification(document, opening_id) == INTERFACE_CLASSIFICATION
+
+
 def _covered_by_a_role_question(state: dict | None) -> set[str]:
     """Every mouth a role question names, which is not every mouth the file has.
 
@@ -2339,6 +2379,12 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
     if problems:
         return problems
     confirmed = confirmed_roles(state)
+    # WHOSE ANSWER IT WAS. `confirmed_roles` includes roles the platform proposed and the customer
+    # waved through, which is right for most gates and wrong for overruling a measured fact: a
+    # default of ours must not be able to put flow through a region boundary. `roles_we_proposed`
+    # is the accessor that separates them, and it already exists for exactly this distinction.
+    _ours = roles_we_proposed(state)
+    confirmed_by_the_customer = {oid for oid in confirmed if oid not in _ours}
     from meshpipeline.agents.intake.geometry_brief import bind_patches
     for patch in _roled(patches):
         role = str(patch.get("type") or patch.get("role") or "").strip().lower()
@@ -2348,6 +2394,33 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
         if not opening:
             problems.append(f"{name} ({role}) does not bind to a measured mouth by its position or bore, so "
                             f"its role cannot be checked against what the customer said")
+        # AN INTERFACE IS NOT A MOUTH, AND THE MEASUREMENT ALREADY SAID SO.
+        #
+        # This is the first thing in the platform ever to read `classification`. Measured on the stored
+        # cht_enclosing_2region document: 18 openings, 12 of them classified `interface` - the faces
+        # where the inner body meets the outer one - and a real run submitted seventeen pressure outlets
+        # with twelve of them on those faces, telling the solver fluid leaves the domain through the
+        # inside of the part. On another phrasing of the same part the geometry agent caught it. Which
+        # model call ran decided whether the customer got a usable job.
+        #
+        # Two regions either share a face or they do not, so this is topology and not an opinion, which
+        # is what lets the whole class of error be refused instead of merely flagged.
+        #
+        # THE CUSTOMER MAY STILL OVERRULE IT, the same way they may on a hole, a planar face and an
+        # inner body's end cap: "whatever the human says is final; if he says something wrong we can
+        # correct him". `confirmed_roles` carries only roles somebody actually answered for, so a
+        # default of ours can never open this - and a customer who really does mean flow through a
+        # region boundary is describing a different model than the one we measured, which is worth the
+        # one sentence it costs to say.
+        if role in ("inlet", "outlet") and is_a_region_interface(document, opening):
+            if opening not in confirmed_by_the_customer:
+                problems.append(
+                    f"{name} is declared {role} and binds to {opening}, which the MEASUREMENT classifies "
+                    f"as {INTERFACE_CLASSIFICATION!r}: the face where two regions meet, not a mouth to the "
+                    f"outside. Flow does not enter or leave the domain through it, so it takes the wall or "
+                    f"the coupled-interface role. If the customer has told you otherwise in their own "
+                    f"words, record that answer and it stands; do not assume it")
+                continue
         elif confirmed.get(opening) != role:
             said = confirmed.get(opening)
             # A MOUTH NO ROLE QUESTION EVER COVERED IS NOT ONE THE CUSTOMER DECLINED TO PLACE.

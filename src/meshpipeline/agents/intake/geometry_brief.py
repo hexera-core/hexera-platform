@@ -392,6 +392,24 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     if _agreement.get("agreed_and_asked") and is_flow:
         out.append("  the only thing still open on the mouths we agree about is which way the flow goes "
                    "through them - nothing measures that, so it is the one question I put")
+    # WHAT THE MEASUREMENT SAYS THOSE OPENINGS ARE, before the look is asked to guess.
+    #
+    # Until this line the panel's only source for "is this a port" was the look's own per-opening guess,
+    # which is also the reading the panel claims to be checking against the measurement - one source
+    # doing both jobs, so no disagreement was ever detectable. Every opening row carries
+    # `classification`, and nothing in the platform had ever read it.
+    #
+    # MEASURED on cht_enclosing_2region: 18 openings, 12 classified `interface`. A real run submitted
+    # seventeen pressure outlets with twelve on those faces. Saying it here is the half the customer can
+    # act on; `geometry_survey.role_problems` refuses the role either way, because a sentence on a panel
+    # is not enforcement.
+    _iface = [str(r.get("id")) for r in (rows or [])
+              if isinstance(r, dict) and str(r.get("classification") or "") == "interface"]
+    if _iface:
+        _named = ", ".join(_iface[:6]) + (f" and {len(_iface) - 6} more" if len(_iface) > 6 else "")
+        out.append(f"  {len(_iface)} of the {len(rows)} are where two regions meet ({_named}), measured, "
+                   "not guessed: those are coupled boundaries and not mouths, so flow neither enters nor "
+                   "leaves through them")
     if not_ports and len(not_ports) == len(rows) and rows:
         line = f"  the {len(not_ports)} opening(s) above do NOT look like ports - no duct mouth behind them"
         if is_flow:
