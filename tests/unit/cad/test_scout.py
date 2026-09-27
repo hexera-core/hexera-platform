@@ -278,3 +278,60 @@ def test_rings_facing_the_same_way_but_a_duct_apart_or_side_by_side_are_two_mout
     assert len(drop_stacked_rings([_band(0.0, 0.2), _band(0.0, 0.15, kind="disc")])) == 2
     # facing opposite ways is the flange-twin rule's business, not this one
     assert len(drop_stacked_rings([_band(0.0, 0.2), _band(0.0, 0.18, nx=1.0)])) == 2
+
+
+# ------------------------------------------------- bodies, walls that are not mouths, false ports ----
+def test_an_elliptical_extrusion_is_a_body_not_a_fluid_passage(tmp_path):
+    """A wing-shaped solid has two flat ends, like the water in a pipe. Its ends are neither round
+    nor rectangular, so they are not mouths: the part reads as a body in a flow."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Elips, gp_Vec
+
+    ellipse = gp_Elips(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), 60.0, 8.0)     # chord 120, thickness 16
+    wire = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(ellipse).Edge()).Wire()
+    wing = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire).Face(), gp_Vec(0, 400, 0)).Shape()
+    r = _scout(_write(wing, tmp_path / "wing.step"))
+    assert (r.input_kind, r.flow) == ("solid-body", "external")
+    assert r.openings == []
+
+
+def test_a_rectangular_fluid_elbow_keeps_its_two_mouths_and_drops_its_side_walls(tmp_path):
+    """The fluid in a mitred rectangular elbow: every face is flat. The side walls come in pairs
+    that face each other across the duct's width; the two mouths have no such partner."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    outline = BRepBuilderAPI_MakePolygon()                 # an L, 60 wide, legs 300 long, one prism
+    for x, y in ((0, 0), (300, 0), (300, 300), (240, 300), (240, 60), (0, 60)):
+        outline.Add(gp_Pnt(float(x), float(y), 0.0))
+    outline.Close()
+    elbow = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(outline.Wire()).Face(), gp_Vec(0, 0, 40)).Shape()
+    r = _scout(_write(elbow, tmp_path / "rect_elbow.step"))
+    assert (r.input_kind, r.flow) == ("fluid-domain", "internal")
+    assert len(r.openings) == 2
+    assert {o.shape for o in r.openings} == {"rectangle"}
+    ends = sorted(round(o.centroid[0], 3) for o in r.openings)
+    assert ends == [0.0, 0.27]                      # x = 0 (leg 1's mouth) and x = 270 (leg 2's)
+
+
+def test_a_flanges_back_face_is_not_a_port(tmp_path):
+    """A flanged pipe wall: the flange's back face is a ring too, but it looks at the pipe it is
+    bolted to, not away from it. Two openings, not three."""
+    tube = BRepAlgoAPI_Cut(_cyl(50.0, 300.0), _cyl(40.0, 300.0)).Shape()
+    flange = BRepAlgoAPI_Cut(_cyl(80.0, 12.0), _cyl(40.0, 12.0)).Shape()
+    r = _scout(_write(BRepAlgoAPI_Fuse(tube, flange).Shape(), tmp_path / "flanged.step"))
+    assert (r.input_kind, r.flow) == ("body-surface", "internal")
+    assert sorted(round(o.centroid[0], 3) for o in r.openings) == [0.0, 0.3]
+    assert all(abs(o.equivalent_diameter - 0.08) < 0.002 for o in r.openings)
+
+
+def test_an_orifice_plate_inside_a_pipe_is_not_a_port(tmp_path):
+    """A plate with a hole set into the bore: its faces are rings whose rim is pipe wall all
+    round, not air. The pipe still has exactly its two end openings."""
+    tube = BRepAlgoAPI_Cut(_cyl(50.0, 300.0), _cyl(40.0, 300.0)).Shape()
+    plate = BRepAlgoAPI_Cut(_cyl(40.0, 6.0, (150, 0, 0)), _cyl(15.0, 6.0, (150, 0, 0))).Shape()
+    r = _scout(_write(BRepAlgoAPI_Fuse(tube, plate).Shape(), tmp_path / "orifice.step"))
+    assert (r.input_kind, r.flow) == ("body-surface", "internal")
+    assert sorted(round(o.centroid[0], 3) for o in r.openings) == [0.0, 0.3]

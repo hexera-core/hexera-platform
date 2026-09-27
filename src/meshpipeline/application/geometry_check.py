@@ -446,10 +446,21 @@ NAME_TOOL = {
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     }, "required": ["id", "name", "role", "confidence"]},
                 },
+                "nose_view": {"type": "string", "enum": ["overview", "iso", "top", "front", "side", "end", "unknown"],
+                              "description": "EXTERNAL flow only: the picture in which the part's NOSE (the end that meets "
+                                             "the oncoming fluid) is clearest. Prefer top, front, side or end over iso."},
+                "nose_side": {"type": "string", "enum": ["left", "right", "top", "bottom", "unknown"],
+                              "description": "EXTERNAL flow only: where the nose sits in that picture - at its left, right, "
+                                             "top or bottom edge."},
+                "nose_axis": {"type": "string", "enum": ["+x", "-x", "+y", "-y", "+z", "-z", "unknown"],
+                              "description": "EXTERNAL flow only: the direction from the part's middle to its NOSE - the end "
+                                             "that meets the oncoming fluid (a car's nose, a wing's leading edge, a nacelle's "
+                                             "intake, an aircraft's nose) - read against the axis marker in the pictures. "
+                                             "unknown when no end is plainly the nose."},
                 "flow_axis": {"type": "string", "enum": ["+x", "-x", "+y", "-y", "+z", "-z", "unknown"],
-                              "description": "EXTERNAL flow only: the direction the fluid travels past the part, read from "
-                                             "how it faces (a car's nose, a wing's leading edge, the side a building would "
-                                             "meet the wind) and from the user's words. unknown when nothing settles it."},
+                              "description": "EXTERNAL flow only: the direction the fluid TRAVELS past the part - the "
+                                             "opposite of nose_axis, or what the user's words say. unknown when nothing "
+                                             "settles it."},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1,
                                "description": "How sure you are about the part and the flow direction overall."},
                 "notes": {"type": "string", "description": "Anything the user should check, in one or two plain sentences. Say if you see an opening that has no sticker."},
@@ -464,9 +475,18 @@ _SYSTEM = (
     "measuring step found; the numbers are the only names you may use. Say what the part is, "
     "whether fluid flows through it or around it, and for every sticker which opening it is and "
     "whether fluid enters (inlet) or leaves (outlet) there - or that it is not an opening at all "
-    "(a bolt hole, a mounting face). For a body the fluid flows AROUND, say which way the fluid "
-    "travels from how the part faces. The user's own description, when given, decides the flow "
-    "direction and what the part is. If the pictures do not settle something, say so with a low "
+    "(a bolt hole, a mounting face). The stickers and the measuring step's guess of the kind are a "
+    "machine's first reading, not facts: a closed solid with flat ends may be the water inside a "
+    "pipe, or a wing, a car body, a rotor with flat hub faces. The user's own description decides "
+    "what the part is and which way the fluid goes; when they say the fluid flows AROUND the part, "
+    "or the part is plainly a body, answer external / solid-body and mark every sticker "
+    "not_an_opening. Every picture carries an axis marker in its corner: red is +X, green +Y, "
+    "blue +Z, and each picture says which way its camera looks. For a body the fluid flows "
+    "AROUND, first find its NOSE - the end that meets the oncoming fluid: a car's rounded front, a "
+    "wing's rounded leading edge, a nacelle's intake, an aircraft's nose. Say which picture shows "
+    "it best (nose_view) and at which edge of that picture it sits (nose_side: left, right, top or "
+    "bottom); the code turns that into the part's axes. Give nose_axis too, read against the marker, "
+    "when you can. The fluid then travels the opposite way. If the pictures do not settle something, say so with a low "
     "confidence rather than guessing confidently. Answer by calling name_geometry."
 )
 
@@ -477,6 +497,8 @@ def _image_part(path: Path) -> dict:
 
 
 def _facts_text(facts: dict, shots, purpose_text: str) -> str:
+    from meshpipeline.render.scout_snapshots import camera_words
+
     lines = [f"Part size: {facts['size_mm'][0]:.0f} x {facts['size_mm'][1]:.0f} x {facts['size_mm'][2]:.0f} mm.",
              f"Measuring step's guess: {facts['input_kind']} ({facts['body_kind']}), flow {facts['flow']}."]
     if facts.get("read_as") == "mesh":
@@ -495,9 +517,36 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
     if facts.get("flow") == "external" and facts.get("flow_axis_guess"):
         lines.append(f"Measuring step's guess for the flow direction: along {facts['flow_axis_guess']} "
                      "(its longest horizontal side); the sign is yours to decide from how the part faces.")
+    lines.append("Axis marker in every picture: red +X, green +Y, blue +Z.")
     lines.append("Pictures, in order: " + "; ".join(
-        f"{s.name} (stickers facing the camera: {', '.join(map(str, s.facing)) or 'none'})" for s in shots))
+        f"{s.name} (stickers facing the camera: {', '.join(map(str, s.facing)) or 'none'})"
+        + (f", camera looks along {camera_words(s.direction)}" if getattr(s, "direction", None) else "")
+        for s in shots))
     return "\n".join(lines)
+
+
+_AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
+
+
+def _flow_from_nose(answer: dict, shots=()) -> dict:
+    """The fluid travels away from the nose: a nose at the -X end means flow along +x. The model
+    finds a nose far more reliably than it reads an axis marker, so the surest answer is "in the top
+    picture the nose is on the left": the camera of that picture says what "left" is in the part's
+    axes. That settles nose_axis and flow_axis; the model's own nose_axis is the fallback."""
+    from meshpipeline.render.scout_snapshots import screen_axes, signed_axis
+
+    view = str(answer.get("nose_view") or "").lower()
+    side = str(answer.get("nose_side") or "").lower()
+    shot = next((s for s in shots if s.name == view), None)
+    if shot is not None and side in ("left", "right", "top", "bottom") and getattr(shot, "up", None):
+        right, up = screen_axes(shot.direction, shot.up)
+        v = {"right": right, "left": tuple(-c for c in right), "top": up, "bottom": tuple(-c for c in up)}[side]
+        answer["nose_axis"] = signed_axis(v)
+        answer["nose_from"] = f"{side} of the {view} picture"
+    nose = str(answer.get("nose_axis") or "").lower()
+    if nose in _AXES:
+        answer["flow_axis"] = ("-" if nose[0] == "+" else "+") + nose[1]
+    return answer
 
 
 def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str, owner_id: str) -> dict:
@@ -516,7 +565,7 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
                                                            user_id=owner_id)
         for call in result.tool_calls:
             if call.name == "name_geometry":
-                return json.loads(call.arguments)
+                return _flow_from_nose(json.loads(call.arguments), shots)
         return {"error": "the model answered without naming the stickers"}
 
     try:
