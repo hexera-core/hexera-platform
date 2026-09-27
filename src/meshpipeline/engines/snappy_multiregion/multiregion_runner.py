@@ -669,10 +669,40 @@ def _run_snappy_multiregion_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                                   timeout: int = 2400) -> dict:
     from meshpipeline.engines.snappy_multiregion.native import run_native_build
 
-    return run_native_build(workspace, preflight=assembly_preflight,
-                            render_region_properties=render_region_properties,
-                            parse_layer_coverage=parse_layer_coverage,
-                            bashrc=bashrc, timeout=timeout)
+    out = run_native_build(workspace, preflight=assembly_preflight,
+                           render_region_properties=render_region_properties,
+                           parse_layer_coverage=parse_layer_coverage,
+                           bashrc=bashrc, timeout=timeout)
+    # QUALITY IS MEASURED HERE, BESIDE THE MESHES, and travels home with them.
+    #
+    # `checkMesh` is an OpenFOAM binary and the worker that reads a Cloud Run result has none, so
+    # measuring there returns nothing. snappy fixed this for itself; cfMesh and this engine were
+    # never given the same treatment, and `criteria.py` here requires max_non_ortho, so on the
+    # remote path every multi-region mesh reached the reviewer with no quality at all and was
+    # dead-lettered for evidence that could not be produced. Measured on cfMesh as job 1457d15f:
+    # rc=0, polyMesh confirmed, solvability PASSED, executor success=True, then DEAD_LETTER
+    # review_evidence_missing.
+    #
+    # The AGGREGATE is what is cached, not one file per region. `check_mesh` below already reduces
+    # the per-region readings to one dict, and it is that dict every reader downstream wants; the
+    # per-region calls it makes need checkMesh, which is why they have to happen on this side.
+    #
+    # A stale file is cleared first: `check_mesh` PREFERS this file, so a retry in a reused
+    # workspace would otherwise hand back the previous attempt's regions as if they were these.
+    try:
+        ws = Path(workspace)
+        if _region_dirs(ws):
+            stale = ws / "mesh_quality.json"
+            if stale.exists():
+                stale.unlink()
+            q = check_mesh(ws)
+            if q:
+                import json as _json
+                stale.write_text(_json.dumps(q, default=str))
+    except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
+        logger.warning("checkMesh after the multi-region build failed; quality omitted",
+                       exc_info=True)
+    return out
 
 
 def _region_dirs(ws: Path) -> list[str]:
@@ -684,6 +714,18 @@ def _region_dirs(ws: Path) -> list[str]:
 def check_mesh(workspace) -> dict:
     import json
     ws = Path(workspace)
+    # A MEASUREMENT TAKEN WHERE THE MESHES WERE BUILT WINS, because here it is impossible: every
+    # per-region reading below shells out to checkMesh, and the worker reading a Cloud Run result
+    # has no OpenFOAM. `_run_snappy_multiregion_local` writes this file beside the meshes it
+    # measured and it arrives with them.
+    cached = ws / "mesh_quality.json"
+    if cached.is_file():
+        try:
+            measured = json.loads(cached.read_text())
+            if isinstance(measured, dict) and measured:
+                return measured
+        except (OSError, ValueError):
+            logger.warning("mesh_quality.json unreadable; measuring locally instead")
     regions_declared = []
     if (ws / ".regions.json").exists():
         regions_declared = json.loads((ws / ".regions.json").read_text())

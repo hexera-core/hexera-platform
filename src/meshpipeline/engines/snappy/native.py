@@ -195,6 +195,15 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         if (ws / "constant" / "polyMesh" / "owner").exists():
             try:
                 from meshpipeline.engines.snappy.foam_exec import check_mesh
+                # AND A STALE ONE IS CLEARED FIRST. `check_mesh` PREFERS this file - that is the
+                # whole point of it - so a retry in a reused workspace measured nothing and handed
+                # back the PREVIOUS attempt's numbers as though they described this mesh. The
+                # builder does retry in place, and these numbers decide whether the reviewer keeps
+                # the mesh, so it was a fact that lies sitting on the one path that had been fixed.
+                # Found by the invariant test written for cfMesh, not by anything here.
+                stale = ws / "mesh_quality.json"
+                if stale.exists():
+                    stale.unlink()
                 q = check_mesh(ws, bashrc=bashrc)
                 if q:
                     out["quality"] = q

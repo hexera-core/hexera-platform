@@ -2,6 +2,7 @@
 # Boundaries: the native seam: it executes the real mesher and returns the shared result contract. It judges nothing.
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -59,6 +60,35 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             rc = proc2.returncode
     except subprocess.TimeoutExpired:
         rc, timed_out = -1, True
+    # QUALITY IS MEASURED HERE, BESIDE THE MESH, and travels home with it.
+    #
+    # `engines/snappy/native._run_snappy_local` has done this since the day the same defect was
+    # found there, in its own words: "the local worker image carries no OpenFOAM at all, so every
+    # metric came back empty ... the reviewer refused each run for missing max_non_ortho evidence
+    # AFTER a mesh had been built, paid for, and passed both the manifest and solvability gates."
+    # cfMesh was never given the same treatment and it fails the same way for the same reason.
+    #
+    # MEASURED 2026-09-27, job 1457d15f: cartesianMesh rc=0 on Cloud Run, polyMesh confirmed,
+    # solvability PASSED, executor success=True, then DEAD_LETTER review_evidence_missing for
+    # ('metric:max_non_ortho',). `cfmesh/criteria.py` requires that metric, so this was every
+    # cfMesh run on the remote path, not an edge case.
+    #
+    # The stale file is removed first. `check_mesh` PREFERS mesh_quality.json when it is there,
+    # which is the whole point of it, so a retry in a reused workspace would otherwise measure
+    # nothing and hand back the previous attempt's numbers as if they described this mesh. A fact
+    # that lies is worse than a missing one, and these numbers decide whether the customer gets
+    # the mesh at all.
+    if rc == 0 and (ws / "constant" / "polyMesh" / "owner").exists():
+        try:
+            from meshpipeline.engines.cfmesh.foam_exec import check_mesh
+            stale = ws / "mesh_quality.json"
+            if stale.exists():
+                stale.unlink()
+            q = check_mesh(ws, bashrc=bashrc)
+            if q:
+                (ws / "mesh_quality.json").write_text(json.dumps(q, default=str))
+        except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
+            logger.warning("checkMesh after cartesianMesh failed; quality omitted", exc_info=True)
     tail = ""
     if log.exists():
         tail = "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])

@@ -2,6 +2,7 @@
 # Boundaries: every command is time-bounded, and parse-time code directives are refused before any mesher starts.
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -49,6 +50,34 @@ _FATAL = (("negative volume", "negative-volume cells"),
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:
     ws = Path(workspace)
+    # A MEASUREMENT TAKEN WHERE THE MESH WAS BUILT WINS, because here it may be impossible.
+    # checkMesh is an OpenFOAM binary; on the Cloud Run path the mesh is built in a container that
+    # has one and read back by a worker that does not, so shelling out here returns an empty dict on
+    # every single run. `engines/snappy/foam_exec.check_mesh` has said exactly this since the day it
+    # was fixed there. It was never done for cfMesh, and the consequence is measured:
+    #
+    #   MEASURED 2026-09-27, job 1457d15f. cartesianMesh ran on Cloud Run rc=0, the builder confirmed
+    #   the polyMesh, the solvability gate PASSED, the executor reported success=True - and then
+    #   "Reviewer: required deterministic evidence missing ('metric:max_non_ortho',)" and
+    #   DEAD_LETTER review_evidence_missing. A mesh that was built, paid for and sound was destroyed
+    #   for a number nothing on this side could produce. `criteria.py` requires that metric, so this
+    #   is every cfMesh run on the remote path, not an edge case.
+    #
+    # Worse than the missing number was the disagreement about it: solvability reads the same empty
+    # dict and passes, because it only reports the metric when it is present. Two readers of one
+    # missing fact, reaching opposite verdicts - this codebase's signature defect, and here it costs
+    # the customer the whole mesh.
+    #
+    # The runner writes this file next to the polyMesh it measured; it arrives with it.
+    if not region:
+        cached = ws / "mesh_quality.json"
+        if cached.is_file():
+            try:
+                measured = json.loads(cached.read_text())
+                if isinstance(measured, dict) and measured:
+                    return measured
+            except (OSError, ValueError):
+                logger.warning("mesh_quality.json unreadable; measuring locally instead")
     reason = scan_case_dicts(ws)
     if reason:
         return {"mesh_ok": False, "fatal": [f"case dicts rejected: {reason}"],
