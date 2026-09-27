@@ -30,15 +30,15 @@ OpenFOAM and a Cloud Run container, so a test of it would be skipped exactly whe
 """
 from __future__ import annotations
 
-import re
+import inspect
 from pathlib import Path
 
 import pytest
 
 ENGINES = Path(__file__).parents[3] / "src" / "meshpipeline" / "engines"
 
-#: The metrics that only `checkMesh` produces. An engine requiring one of these at review cannot get
-#: it from anywhere but the container the mesh was built in.
+#: The metrics only `checkMesh` produces. An engine requiring one at review cannot get it from
+#: anywhere but the container the mesh was built in.
 FOAM_ONLY_METRICS = ("max_non_ortho", "max_skewness", "max_aspect_ratio")
 
 
@@ -47,55 +47,61 @@ def _engines_requiring_a_foam_metric() -> list[str]:
     for crit in sorted(ENGINES.glob("*/criteria.py")):
         text = crit.read_text(encoding="utf-8")
         for metric in FOAM_ONLY_METRICS:
-            if re.search(r'MetricRequirement\(\s*"' + metric + r'"', text):
+            if 'MetricRequirement("' + metric + '"' in text:
                 out.append(crit.parent.name)
                 break
     return out
+
+
+def _resolved(engine: str):
+    """The check_mesh and the local runner THIS ENGINE ACTUALLY USES, off the same registries the
+    pipeline uses. The first version of this test guessed filenames - foam_exec.py and native.py -
+    and so missed snappy_multiregion entirely, whose real check_mesh is the per-region aggregator in
+    multiregion_runner.py. A test that assumes where code lives fails differently from a test that
+    asks what is wired, and the wiring is the thing that matters."""
+    from meshpipeline.engines.dispatch import engine_runners
+    from meshpipeline.engines.runtime import get_engine
+    return get_engine(engine).check_mesh, engine_runners()[engine]
 
 
 def test_at_least_two_engines_are_in_scope():
     """If this drops to nothing the finder has broken and the rest of the file is vacuously green."""
     found = _engines_requiring_a_foam_metric()
     assert len(found) >= 2, found
-    assert "cfmesh" in found and "snappy" in found, found
+    for expected in ("cfmesh", "snappy", "snappy_multiregion"):
+        assert expected in found, (expected, found)
 
 
 @pytest.mark.parametrize("engine", _engines_requiring_a_foam_metric())
 def test_its_check_mesh_prefers_the_measurement_taken_where_the_mesh_was_built(engine):
-    foam = ENGINES / engine / "foam_exec.py"
-    if not foam.is_file():
-        pytest.skip(f"{engine} has no foam_exec bundle")
-    text = foam.read_text(encoding="utf-8")
-    assert "mesh_quality.json" in text, (
-        f"{engine}/foam_exec.py never looks for mesh_quality.json, so on the Cloud Run path it shells "
-        "out to a binary that is not there and returns nothing")
-    head = text[text.index("def check_mesh"):]
-    body = head[: head.index("run_guarded")] if "run_guarded" in head else head
-    assert "mesh_quality.json" in body, (
-        f"{engine}/check_mesh reads mesh_quality.json only AFTER shelling out; the cached measurement "
+    check_mesh, _runner = _resolved(engine)
+    src = inspect.getsource(check_mesh)
+    assert "mesh_quality.json" in src, (
+        f"{engine}: the check_mesh the pipeline resolves never looks for mesh_quality.json, so on "
+        "the Cloud Run path it shells out to a binary that is not there and returns nothing")
+    before_shell = src.split("run_guarded")[0].split("_single_region_check_mesh")[0]
+    assert "mesh_quality.json" in before_shell, (
+        f"{engine}: check_mesh reads mesh_quality.json only AFTER measuring; the cached measurement "
         "has to win, because here the measurement may be impossible")
 
 
 @pytest.mark.parametrize("engine", _engines_requiring_a_foam_metric())
-def test_its_native_runner_writes_the_measurement_beside_the_mesh(engine):
-    candidates = [p for p in (ENGINES / engine).glob("*.py")
-                  if p.name in ("native.py", f"{engine}_runner.py")]
-    assert candidates, f"{engine} has no native runner to check"
-    wrote = [p.name for p in candidates if "mesh_quality.json" in p.read_text(encoding="utf-8")]
-    assert wrote, (
-        f"{engine} requires a checkMesh metric at review and none of {[p.name for p in candidates]} "
-        "writes mesh_quality.json, so every remote run arrives with no quality at all and the "
-        "reviewer dead-letters a mesh that built correctly")
+def test_its_local_runner_writes_the_measurement_beside_the_mesh(engine):
+    _check_mesh, runner = _resolved(engine)
+    src = inspect.getsource(runner)
+    assert "mesh_quality.json" in src, (
+        f"{engine}: {runner.__name__} requires a checkMesh metric at review and never writes "
+        "mesh_quality.json, so every remote run arrives with no quality at all and the reviewer "
+        "dead-letters a mesh that built correctly")
 
 
 @pytest.mark.parametrize("engine", _engines_requiring_a_foam_metric())
 def test_it_does_not_hand_back_a_previous_attempts_numbers(engine):
-    """`check_mesh` prefers the file, so a runner that measures into a reused workspace without
-    clearing it would report the last attempt's mesh as if it were this one. A fact that lies is worse
-    than a missing one, and these numbers decide whether the customer gets the mesh."""
-    for p in (ENGINES / engine).glob("*.py"):
-        text = p.read_text(encoding="utf-8")
-        if "mesh_quality.json" not in text or "def check_mesh" in text:
-            continue
-        assert "unlink()" in text or "missing_ok" in text, (
-            f"{p.name} writes mesh_quality.json but never clears a stale one before measuring")
+    """check_mesh PREFERS the file, and the builder retries in place, so a runner that measures into
+    a reused workspace without clearing it reports the last attempt's mesh as if it were this one.
+    A fact that lies is worse than a missing one, and these numbers decide whether the customer gets
+    the mesh. snappy had exactly this gap and nothing had noticed."""
+    _check_mesh, runner = _resolved(engine)
+    src = inspect.getsource(runner)
+    assert "unlink()" in src or "missing_ok" in src, (
+        f"{engine}: {runner.__name__} writes mesh_quality.json but never clears a stale one first")
