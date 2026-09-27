@@ -97,6 +97,12 @@ DEFAULT_TAKEN = "default_taken"
 #: not a `DEFAULT_TAKEN`, which is nobody answering; the note is what lets a reader of the row tell the two
 #: apart afterwards without changing what either one means to a consumer.
 ACCEPTED_THE_PROPOSAL = "accepted the setup the application proposed"
+
+#: The platform's own reading of a measured opening that no role question ever covered. It is not a guess:
+#: R31 (`geometry_agent.agent.grounding._normalise`) gives every opening the catalog cannot call a port the
+#: WALL patch, so this is what the pipeline does when nobody answers, which is the same standard every other
+#: default in this module is held to.
+UNASKED_DEFAULT_ROLE = "wall"
 #: Why a proposal row is retired when the customer later states the SAME role in their own words. Not
 #: SUPERSEDED: nothing about the mesh changed. What changed is who owns the answer, and that decides
 #: whether the geometry agent may correct it.
@@ -2280,6 +2286,18 @@ def _roled(patches: Any) -> list[dict]:
             and str(p.get("type") or p.get("role") or "").strip().lower() in ("inlet", "outlet")]
 
 
+def _covered_by_a_role_question(state: dict | None) -> set[str]:
+    """Every mouth a role question names, which is not every mouth the file has.
+
+    `ask.uncertainty.port_role_uncertainties` covers the BUILDER'S CANDIDATE SET, which under a fluid-domain
+    representation is `catalog.port_openings`. MEASURED offline on shell_and_tube_7_unshared: 32 measured
+    openings, 16 port openings, so o1, o2 and o5 to o18 appear in no question and carry no proposal. Nothing
+    was ever put to the customer about them, so their silence about them is not a refusal.
+    """
+    return {str(p) for v in question_views(state) if v["about"] == "opening.role"
+            for p in (v.get("subjects") or ())}
+
+
 def role_problems(state: dict | None, document: dict | None, patches: Any) -> list[str]:
     """Why these patches may not be submitted, in sentences for the model. Empty means they may.
 
@@ -2330,6 +2348,31 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
                             f"its role cannot be checked against what the customer said")
         elif confirmed.get(opening) != role:
             said = confirmed.get(opening)
+            # A MOUTH NO ROLE QUESTION EVER COVERED IS NOT ONE THE CUSTOMER DECLINED TO PLACE.
+            #
+            # MEASURED, live, 2026-09-26 on shell_and_tube_7_unshared: the customer said "no, you pick the
+            # rest", which `accepts_a_proposal` reads correctly as a delegation; 16 of the 32 mouths were
+            # recorded from the platform's proposal and the other 16 were refused here as "binds to o1, which
+            # the customer called nothing". The model's only lever was to ask a person who had already
+            # delegated to type out sixteen opening ids, which it did for four turns, and the job never
+            # submitted. Nothing had ever been put to them about those mouths.
+            #
+            # The platform has its own reading and does not need their words for it: `UNASKED_DEFAULT_ROLE`
+            # is what R31 does when nobody answers, so carrying it invents nothing. Where the agent wants
+            # something ELSE, that is two readings disagreeing rather than an answer missing, and it is put
+            # once, naming both, instead of being turned into a request for a list.
+            if said is None and opening not in _covered_by_a_role_question(state):
+                if role == UNASKED_DEFAULT_ROLE:
+                    continue
+                problems.append(
+                    f"{name} is declared {role} and binds to {opening}, which NO role question covered: the "
+                    f"measurement does not call it a port, so the platform's own reading of it is "
+                    f"{UNASKED_DEFAULT_ROLE!r} and that is what happens if nobody answers. Either carry "
+                    f"{UNASKED_DEFAULT_ROLE!r} on it, or put ONE question that names both readings (\"I read "
+                    f"{opening} as {UNASKED_DEFAULT_ROLE}, the geometry agent reads it as {role}; which is "
+                    f"right?\") and record their answer. Do not ask them to list the mouths: they were never "
+                    f"asked about this one")
+                continue
             # WHO SAID IT, BECAUSE ONE OF THE TWO WAS NOT THE CUSTOMER. A role they waved through is OUR reading
             # of that mouth (`roles_we_proposed`), and telling the model "the customer called o10 the wall" about
             # a value the application wrote is the same fact that lies `whose_value` was added to stop one
