@@ -111,7 +111,13 @@ def test_a_flow_role_on_an_uncovered_mouth_asks_once_and_names_both_readings():
     assert "NO role question covered" in said
     assert f"the platform's own reading of it is {gs.UNASKED_DEFAULT_ROLE!r}" in said
     assert f"you read {oid} as outlet" in said, "both readings named"
-    assert "say in the setup block" in said, "it rides on the confirmation, not a turn of its own"
+    assert "ay in the setup block" in said, "it rides on the confirmation, not a turn of its own"
+    # BOTH HALVES OF THE EDIT. The first version named only the role, the model left the mouth in `flow`,
+    # and the agent's own checker rejected "flow.inlet_ids contains o9 whose patch role is 'wall'" - the plan
+    # died on a contradiction this message had asked for.
+    assert "take " + oid + " out of flow.inlet_ids" in said
+    assert "flow.outlet_ids" in said
+    assert "your own checker rejects" in said
     assert "one word from them changes it" in said
     # MEASURED on shell_and_tube_7 the first time this was a question of its own: it fired correctly,
     # the customer answered "good to go", which is not a choice between two readings, and it asked to

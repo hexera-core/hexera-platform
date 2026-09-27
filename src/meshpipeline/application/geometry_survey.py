@@ -2394,12 +2394,21 @@ def role_problems(state: dict | None, document: dict | None, patches: Any) -> li
                 # So the mouth takes the platform's reading, which is what happens with no answer either way,
                 # and the setup block the customer confirms NAMES the disagreement. They see both readings on
                 # the screen they were going to read anyway, one word corrects it, and "go" proceeds.
+                #
+                # AND IT NAMES BOTH HALVES OF THE EDIT, because the first version named one. MEASURED on the
+                # re-run: "flow.inlet_ids contains o9 whose patch role is 'wall'" together with the same for
+                # the outlet. The model carried the role this asked for and left the mouth in `flow`, which
+                # is an inconsistency the AGENT'S OWN checker rejects, so the plan died three strikes later on
+                # a contradiction this message had asked for. An instruction that leaves half the edit implied
+                # is the same defect as a check with the same blind spot as the thing it checks.
                 problems.append(
                     f"{name} is declared {role} and binds to {opening}, which NO role question covered: the "
                     f"measurement does not call it a port, so the platform's own reading of it is "
                     f"{UNASKED_DEFAULT_ROLE!r} and that is what happens if nobody answers. Carry "
-                    f"{UNASKED_DEFAULT_ROLE!r} on it, and say in the setup block that you read {opening} as "
-                    f"{role} and the measurement reads it as {UNASKED_DEFAULT_ROLE}, so one word from them "
+                    f"{UNASKED_DEFAULT_ROLE!r} on it AND take {opening} out of flow.inlet_ids and "
+                    f"flow.outlet_ids, because a {UNASKED_DEFAULT_ROLE} patch still named in flow is an "
+                    f"inconsistency your own checker rejects. Say in the setup block that you read {opening} "
+                    f"as {role} and the measurement reads it as {UNASKED_DEFAULT_ROLE}, so one word from them "
                     f"changes it. Do NOT put it as a question of its own and do NOT ask them to list the "
                     f"mouths: they were never asked about this one, and they have already said to go ahead")
                 continue
