@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -94,6 +95,60 @@ def one_line_reason(evidence: Any) -> str:
     return ""
 
 
+#: Words that mean a sentence is describing OUR MACHINERY rather than the customer's part. Every one is
+#: taken from a sentence a real customer was actually shown; see `customer_safe`.
+_OUR_INTERNALS = ("dev plan", "measured deliveries", "in the last run were", "hard_limit",
+                  "locationinmesh", "settings/", "src/meshpipeline", "geometry_agent/")
+
+#: Sentence end, for splitting a card without a natural-language dependency. A FULL STOP AND NOT A
+#: SEMICOLON, deliberately: a semicolon usually joins a clause to the one it depends on, and dropping
+#: only the half with the source path left the customer reading "until then it is advisory." with no
+#: antecedent. Dropping the joined pair together loses a little more and never leaves an orphan, and
+#: for a leak filter that is the safe direction. (A decimal is not a split: the lookbehind sees the
+#: digit before the space, not the point inside the number.)
+_SENTENCE_END = re.compile(r"(?<=\.)\s+")
+
+
+def customer_safe(text: str) -> str:
+    """A risk card with our source code taken out of it, or "" when that was all it was.
+
+    MEASURED on the 36-run batch of 2026-09-27: 15 of 36 runs printed at least one of these into the
+    panel the customer approves spend on. Nine named a source file, eight named a dev-plan item, and
+    one quoted ANOTHER JOB'S statistics at them. Verbatim, to a customer, on bend_elbow_003:
+
+        "The classifier's CARVE LEAKED repair asks for a larger domain_margin (judge.py:42-48);
+         render_internal_case reads no domain_margin and pads by max(2 base_cell, 0.03 maxext)
+         (snappy_runner.py:619), so on this path cells_across_diameter is the key that changes the
+         surface that seals"
+
+    and on cht_block_round_channel, quoting other people's jobs: "36 of 131 measured deliveries in
+    the last run were over their stated cap and every one of them passed every gate."
+
+    `agent_words_for_confirmation` sits twenty lines below a docstring that says of the step's failure
+    reason: "naming it here would spend the customer's attention on our internals at the one moment
+    they are deciding whether to spend money." That was right, and then the risk cards went out
+    unfiltered directly underneath it.
+
+    WHY HERE AND NOT IN THE CARDS. The cards are authored in the agent package, which ships as a
+    vendored wheel, and `catalog.add()` already takes a separate `derivation=` for exactly this
+    material - so the authoring side has a right answer available and did not use it. Rewriting the
+    cards fixes the cards we have; filtering at the boundary fixes the ones written next year too.
+    "An instruction to a model is a request; anything required must be enforced where we control it."
+
+    IT DROPS SENTENCES, NOT CARDS. A card is usually one customer-facing clause plus one mechanism
+    clause, and the first is the half worth reading. A card that is nothing but mechanism returns ""
+    and the caller then omits it rather than printing an empty bullet.
+    """
+    kept = []
+    for sentence in _SENTENCE_END.split(str(text or "")):
+        low = sentence.lower()
+        if ".py" in low or any(w in low for w in _OUR_INTERNALS):
+            continue
+        if sentence.strip():
+            kept.append(sentence.strip())
+    return " ".join(kept)
+
+
 def agent_words_for_confirmation(step: Any) -> str:
     """What the geometry agent has to say on the last screen before compute, or why it has nothing.
 
@@ -149,8 +204,8 @@ def agent_words_for_confirmation(step: Any) -> str:
         sev = str(risk.get("severity") or "").lower()
         eff = str(risk.get("effect") or "").lower()
         if sev == "high" or eff in ("changes_bc", "changes_mesh"):
-            text = str(risk.get("consequence") or "").strip()
-            fix = str(risk.get("recommendation") or "").strip()
+            text = customer_safe(str(risk.get("consequence") or "").strip())
+            fix = customer_safe(str(risk.get("recommendation") or "").strip())
             if text:
                 loud.append("  - " + text + (" -> " + fix if fix else ""))
     if loud:
