@@ -103,7 +103,10 @@ job_args=(
   --region "${GCP_REGION}"
   --service-account "${METER_SA_EMAIL}"
   --command python
-  --args "-m,meshpipeline.runtime.meter_sweep"
+  # ATTACHED WITH '=', because the value starts with '-': written as two words, gcloud's parser
+  # reads "-m,..." as a flag of its own and refuses the create with "--args: expected one
+  # argument" - which is exactly how the first deploy of this stage failed.
+  --args=-m,meshpipeline.runtime.meter_sweep
   # ONE RETRY. The sweep is idempotent - the ledger row id is the provider's idempotency key and a
   # row is stamped only after the provider accepted it - so a retry is safe; more than one only
   # delays the next tick, which retries anyway.

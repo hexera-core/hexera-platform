@@ -167,3 +167,12 @@ def test_a_grant_this_identity_cannot_set_but_already_exists_passes(run):
     done, _ = run(fake={"FAKE_ADD_IAM_RC": "1",
                         "FAKE_INVOKERS": "serviceAccount:t-api@fake-proj.iam.gserviceaccount.com"})
     assert done.returncode == 0, done.stderr
+
+
+def test_an_argument_list_that_starts_with_a_dash_is_attached_to_its_flag():
+    # `--args "-m,..."` is read by gcloud as a flag, not a value; only `--args=-m,...` survives.
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "--args=-m,meshpipeline.runtime.meter_sweep" in text
+    import re
+    for flag in re.findall(r"--(?:args|command)\s+\"?-", text):
+        raise AssertionError(f"a dash-leading value is passed as a separate word: {flag}")
