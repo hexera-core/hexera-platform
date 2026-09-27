@@ -2294,6 +2294,8 @@ def _covered_by_a_role_question(state: dict | None) -> set[str]:
     openings, 16 port openings, so o1, o2 and o5 to o18 appear in no question and carry no proposal. Nothing
     was ever put to the customer about them, so their silence about them is not a refusal.
     """
+    if not isinstance(state, dict):
+        return set()
     return {str(p) for v in question_views(state) if v["about"] == "opening.role"
             for p in (v.get("subjects") or ())}
 
