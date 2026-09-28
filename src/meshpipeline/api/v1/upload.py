@@ -305,30 +305,11 @@ def _enqueue_geometry_check(session_id: str, owner_id: str, *, source_payload: d
 
     if not gcfg.GEOMETRY_CHECK_ENABLED:
         return
-    from meshpipeline.application.geometry_check import STATUS_FAILED, STATUS_PENDING, write_status
-    from meshpipeline.contracts.geometry_check import enqueue_scout
+    from meshpipeline.application.geometry_check import start_scout
 
-    marked = False
-    try:
-        # The marker goes down BEFORE the task is published. A worker that finishes first must
-        # never have its answer overwritten by "pending", which nothing would ever replace.
-        write_status(session_id, STATUS_PENDING)
-        marked = True
-        if not enqueue_scout(session_id=session_id, owner_id=owner_id, source=source_payload,
-                             interpretation=interpretation_payload):
-            raise RuntimeError("no worker is configured to run the geometry check")
-        logger.info("upload_step_file: geometry check queued - session_id=%s", session_id)
-    except Exception as exc:  # noqa: BLE001 - the upload stands; the intake will ask instead
-        logger.warning("upload_step_file: geometry check could not be queued (%s: %s) - "
-                       "session_id=%s", type(exc).__name__, exc, session_id)
-        if marked:
-            # a "pending" nobody will finish would keep the console waiting; say so instead
-            try:
-                write_status(session_id, STATUS_FAILED,
-                             reason="the geometry check could not be started; the intake will ask instead")
-            except Exception:  # noqa: BLE001
-                logger.warning("upload_step_file: could not mark the geometry check failed - "
-                               "session_id=%s", session_id)
+    # The "pending" marker goes down before the task is published, and a scout nobody will run
+    # is marked failed rather than left pending; the retry route starts the same way.
+    start_scout(session_id, owner_id, source=source_payload, interpretation=interpretation_payload)
 
 
 def _declared_unit_evidence(staged: Path):

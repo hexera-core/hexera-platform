@@ -53,6 +53,10 @@ class FailureCategory(str, enum.Enum):
     # alone (see worker_lost_result); never derived from graph facts, because a run that reaches
     # terminal derivation still has a worker.
     worker_lost = "worker_lost"
+    # No worker ever picked the job up: it sat `pending`/`queued` past the reaper's ceiling. Also
+    # the reaper's alone (never_started_result). Not `worker_lost` - no worker ever held it, and
+    # telling the user one was lost gives them a failure that did not happen.
+    never_started = "never_started"
     # NOTE: no `cancelled` - cancellation is currently unsupported (see TerminalStatus).
 
 
@@ -88,6 +92,8 @@ _CATEGORY_META: dict[FailureCategory, tuple[str, bool, bool, bool]] = {
         "Something went wrong on our side while running the job.", False, True, False),
     FailureCategory.worker_lost: (
         "The worker running this job was lost before it finished.", False, True, False),
+    FailureCategory.never_started: (
+        "No worker picked this run up.", False, True, False),
 }
 
 # Categories whose closing sentence is OWNED by errors.py: the same class the rest of the
@@ -96,6 +102,7 @@ _CATEGORY_META: dict[FailureCategory, tuple[str, bool, bool, bool]] = {
 _CATEGORY_CLASS: dict[FailureCategory, FailureClass] = {
     FailureCategory.input_rejected: FailureClass.DOMAIN_REJECTED,
     FailureCategory.worker_lost:    FailureClass.WORKER_LOST,
+    FailureCategory.never_started:  FailureClass.NEVER_STARTED,
 }
 
 
@@ -455,6 +462,12 @@ def render_message(fr: FinalResult) -> str:
         FailureCategory.internal_pipeline_failure
     headline, _may_have_mesh, retry_ok, user_change = _CATEGORY_META[cat]
     lines.append("Mesh generation did not complete successfully.")
+    if cat in _CATEGORY_CLASS:
+        # ONE SENTENCE OWNS these: whose problem it is and the next step, in errors.py's words.
+        # The headline is not repeated in front of it - the class message already opens with it.
+        lines.append("No downloadable mesh deliverable is available.")
+        lines.append(user_message_for(_CATEGORY_CLASS[cat]))
+        return "\n".join(lines)
     lines.append(headline)
     lines.append("No downloadable mesh deliverable is available.")
     if cat == FailureCategory.delivery_failed:
@@ -462,34 +475,50 @@ def render_message(fr: FinalResult) -> str:
                      "so no download is available. This is our fault, not your geometry's.")
     if cat == FailureCategory.attempts_exhausted and fr.attempts_max:
         lines.append(f"Attempts used: {fr.attempts}/{fr.attempts_max}.")
-    if cat in _CATEGORY_CLASS:
-        # whose problem it is and the next step, in errors.py's words
-        lines.append(user_message_for(_CATEGORY_CLASS[cat]))
-    elif user_change:
-        lines.append("A change to the request is needed before this can be meshed.")
+    # WHAT THE USER CAN DO NEXT names something that exists: the same chat takes the next run
+    # on this geometry, with the last requirements as the proposal (agents/intake/message.py).
+    if user_change:
+        lines.append("A change to the request is needed before this can be meshed. Tell me "
+                     "what to change in this chat and I will set up a new run.")
     elif retry_ok:
-        lines.append("You can try running the job again.")
+        lines.append("You can run it again from this chat: say \"run it again\", or tell me "
+                     "what to change first.")
     return "\n".join(lines)
 
 
-def worker_lost_result(*, job_id: str, owner_id: str, attempts: int = 0,
-                       attempts_max: int = 0) -> FinalResult:
-    """The durable record for a job the REAPER failed: the worker holding it was lost.
+def _reaped_result(category: FailureCategory, *, job_id: str, owner_id: str, attempts: int,
+                   attempts_max: int) -> FinalResult:
+    """The durable record for a job the REAPER failed.
 
     The reaper has no graph state, no approved intent and no checkpoint - only the job row -
     so nothing here is derived and nothing is invented: the engine is unknown, no mesh was
     validated, the review was never reached. What the record exists for is the sentence: a
     socket that connects after the event log has expired, and the job's status read, both render
-    it, so a lost worker never again reads as "Job already failed."."""
+    it, so a reaped job never again reads as "Job already failed."."""
     return FinalResult(
         schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=str(job_id), owner_id=str(owner_id),
         status=TerminalStatus.failed, executor_success=False,
         reviewer_verdict=None, review_execution=ReviewExecution.not_reached,
-        outcome_code=FailureCategory.worker_lost.value,
-        failure_category=FailureCategory.worker_lost.value,
+        outcome_code=category.value, failure_category=category.value,
         attempts=max(0, int(attempts or 0)), attempts_max=max(0, int(attempts_max or 0)),
         required_ready=False, delivered_types=[], missing_outputs=[],
         finalized_at=datetime.now(UTC).isoformat())
+
+
+def worker_lost_result(*, job_id: str, owner_id: str, attempts: int = 0,
+                       attempts_max: int = 0) -> FinalResult:
+    """A job that was RUNNING when the reaper failed it: the worker holding it was lost (its
+    lease lapsed, or it started long ago without ever holding one)."""
+    return _reaped_result(FailureCategory.worker_lost, job_id=job_id, owner_id=owner_id,
+                          attempts=attempts, attempts_max=attempts_max)
+
+
+def never_started_result(*, job_id: str, owner_id: str, attempts: int = 0,
+                         attempts_max: int = 0) -> FinalResult:
+    """A job that was still PENDING or QUEUED when the reaper failed it: no worker ever picked it
+    up. Its own record, because "the worker was lost" would describe a worker that never existed."""
+    return _reaped_result(FailureCategory.never_started, job_id=job_id, owner_id=owner_id,
+                          attempts=attempts, attempts_max=attempts_max)
 
 
 # #

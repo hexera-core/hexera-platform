@@ -41,6 +41,10 @@ class FailureClass(str, enum.Enum):
     # RESOURCE (a limit the job hit while running) and INTERNAL (a defect), which would each
     # send the user or an operator looking for a cause that was never there.
     WORKER_LOST        = "worker_lost"
+    # No worker ever picked the job up: it sat pending/queued past the reaper's ceiling (the
+    # fleet never woke, or its queue was never read). Also ours, also not the user's request -
+    # but no worker was LOST, so it is not WORKER_LOST.
+    NEVER_STARTED      = "never_started"
     # review evidence (we could not JUDGE the mesh; not the provider, not the mesh)
     # Telling a user "an AI service is unavailable" when the truth is "your mesh's quality
     # evidence was incomplete" is a lie that also hides a real quality signal. This is a
@@ -53,7 +57,7 @@ class FailureClass(str, enum.Enum):
             FailureClass.PROVIDER_TRANSIENT, FailureClass.PROVIDER_DOWN,
             FailureClass.DEPENDENCY_DOWN, FailureClass.RESOURCE, FailureClass.INTERNAL,
             FailureClass.REVIEW_EVIDENCE_MISSING, FailureClass.DATA_INTEGRITY,
-            FailureClass.WORKER_LOST,
+            FailureClass.WORKER_LOST, FailureClass.NEVER_STARTED,
         )
 
     @property
@@ -203,10 +207,17 @@ _USER_MESSAGES: dict[FailureClass, str] = {
         "so we stopped rather than mesh the wrong thing. This is on our side. Please "
         "upload the geometry again - we apologise for the inconvenience."
     ),
+    # Both next steps name what exists since the same conversation takes the next run once
+    # this one has ended (agents/intake/message.py): the words the console offers for it.
     FailureClass.WORKER_LOST: (
         "The worker running this job was lost before it finished, so the run was marked "
-        "failed. This is on our side, not your geometry or request - please try again by "
-        "starting a new run."
+        "failed. This is on our side, not your geometry or request - please try again: say "
+        "\"run it again\" in this chat to start a new run."
+    ),
+    FailureClass.NEVER_STARTED: (
+        "No worker picked this run up, so it never started and was marked failed. This is on "
+        "our side, not your geometry or request - please try again: say \"run it again\" in "
+        "this chat to start it again."
     ),
 }
 
@@ -245,8 +256,9 @@ _FAILED_REASON: dict[FailureClass, str] = {
     FailureClass.USER_INPUT:              "unhandled",
     # The geometry could not be meshed: the closest existing coarse value.
     FailureClass.DOMAIN_REJECTED:         "mesh_generation",
-    # What the reaper has always stamped a lost job with.
+    # What the reaper has always stamped a job it failed with.
     FailureClass.WORKER_LOST:             "unhandled",
+    FailureClass.NEVER_STARTED:           "unhandled",
 }
 
 

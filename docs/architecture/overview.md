@@ -301,6 +301,7 @@ Tests: `tests/unit/application/test_policy_versions.py`,
 |---|---|---|
 | **api** | FastAPI: HTTP, WebSocket, and the legacy `/ui` page | applies migrations on start |
 | **worker** | Celery worker running the pipeline | the LangGraph graph executes here |
+| **worker-geometry** | the geometry check: draws an upload and names its openings | the same image on its own `geometry_checks` queue, so an upload is drawn while a mesh runs rather than after it |
 | **worker-utility** | maintenance work (retention, reconciliation) | separate so a long mesh never blocks it |
 | **beat** | scheduled maintenance triggers | |
 | **postgres** | durable job, session, artifact and capture state | also the LangGraph checkpointer |

@@ -43,6 +43,7 @@ ADMIT_MALFORMED = "malformed"
 _HARD_IMPOSSIBLE_CODES = frozenset({
     "purpose_incompatible", "input_kind_incompatible", "dimensionality_unsupported",
     "symmetry_unsupported", "multiple_wall_patches_unsupported", "geometry_unsuitable",
+    "ground_plane_unsupported",
 })
 
 # The two lines closing every impossible message: they preserve user intent, name NO alternative
@@ -84,6 +85,8 @@ def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality
     for field in ("safe_user_message", "capability_reason"):
         if result.get(field):
             result[field] = _vocab.humanize(result[field])
+    if result.get("what_would_pass"):
+        result["what_would_pass"] = [_vocab.humanize(h) for h in result["what_would_pass"]]
     return result
 
 
@@ -135,6 +138,7 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                     "dimensionality_unsupported": ["dimensionality", "engine"],
                     "symmetry_unsupported": ["patches", "engine"],
                     "multiple_wall_patches_unsupported": ["patches", "engine"],
+                    "ground_plane_unsupported": ["patches", "engine"],
                     "geometry_unsuitable": ["geometry", "engine"]}
         return {"verdict": ADMIT_IMPOSSIBLE, "blocking_rule_code": r0.code,
                 "blocking_rule_codes": sorted({r.code for r in hard}),
@@ -143,6 +147,10 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                 # The engine-authored WHY on its own (no revise coda) - this is what an engine
                 # COMPARISON quotes; the coda only belongs on a selected-engine refusal.
                 "capability_reason": " ".join(r.message for r in hard).strip(),
+                # The engine's own statement of what WOULD pass, one per finding. Handed to the
+                # model with the refusal, so it can repair a value of its own or propose the one
+                # revision to the user instead of ending the turn on what cannot be done.
+                "what_would_pass": [str(r.fix_hint) for r in hard if r.fix_hint],
                 "safe_user_message": _impossible_message(hard)}
     # capability + structure OK; anything left (params / missing patches) is still-to-gather.
     gather = [r for r in rejections if r.code in ("engine_param_invalid",) or r.field == "patches"]
@@ -400,6 +408,37 @@ def _validate_domain_declaration(args: dict) -> list[str]:
     return errors
 
 
+def _validate_ground_plane(patches: list, flow_axis) -> list[str]:
+    """External flow: a patch named ground is the floor of the far-field box, which the domain
+    builds as a wall under the part - never a region of the geometry. Two declarations it cannot
+    build are refused here, where fixing them costs one question: a ground that is not a wall, and
+    a ground under a part whose flow runs along z. The geometry check measures 'stands on the
+    ground' at the part's lowest z, so the floor and the flow would share one axis."""
+    from meshpipeline.engines.ground_plane import GROUND_PATCH, ground_patch_name
+
+    errors: list[str] = []
+    entries = [p for p in patches if isinstance(p, dict)]
+    grounds = [(p.get("name") or "").strip() for p in entries
+               if (p.get("name") or "").strip().casefold() == GROUND_PATCH]
+    if len(grounds) > 1:
+        errors.append(
+            f"patches declare the ground {len(grounds)} times ({', '.join(map(repr, grounds))}) - "
+            "the box has one floor, so declare it once, as 'ground' with type 'wall'")
+    for i, p in enumerate(entries):
+        nm = (p.get("name") or "").strip()
+        if nm.casefold() == GROUND_PATCH and (p.get("type") or "").strip() != "wall":
+            errors.append(
+                f"patches[{i}] {nm!r} is the floor of the far-field box, which the domain builds "
+                "as a wall under the part - declare it with type 'wall', or give this patch "
+                "another name")
+    if ground_patch_name(entries) and str(flow_axis or "").strip().lower() in ("+z", "-z"):
+        errors.append(
+            "a ground plane lies under the part, at its lowest z, so the flow cannot also travel "
+            "along z - ask the user which horizontal axis (+x, -x, +y, -y) the flow travels "
+            "along, or drop 'ground' if the part is free in the flow")
+    return errors
+
+
 def validate_submission(args: dict) -> list[str]:
     _val_errors: list[str] = []
 
@@ -474,6 +513,8 @@ def validate_submission(args: dict) -> list[str]:
 
     if _purpose == "internal_cfd" and isinstance(_patches, list):
         _val_errors.extend(_validate_internal_ports(_patches))
+    if _purpose == "external_cfd" and isinstance(_patches, list):
+        _val_errors.extend(_validate_ground_plane(_patches, args.get("flow_axis")))
 
     _val_errors.extend(_validate_domain_declaration(args))
 

@@ -46,8 +46,12 @@ def measurements_from_manifest(manifest: dict) -> dict:
     fc = manifest.get("patch_face_counts") or {}
     roles = manifest.get("patch_types") or {}
     # wall_faces is manifest-derived, not engine-reported: it is the face total over the patches the
-    # delivered mesh actually roles as `wall`.
-    wall_faces = sum(fc.get(p, 0) for p, r in roles.items() if r == "wall") or None
+    # delivered mesh actually roles as `wall` - the BODY's walls. An external mesh's ground plane is
+    # a box face the domain made; its faces say nothing about whether the body was captured.
+    from meshpipeline.engines.ground_plane import is_ground
+    _external = str(manifest.get("flow_topology") or "") != "internal"
+    wall_faces = sum(fc.get(p, 0) for p, r in roles.items()
+                     if r == "wall" and not (_external and is_ground(p, r))) or None
     # `fatal` is passed through exactly as the engine reported it and is deliberately NOT defaulted
     # to []. An absent fatal list means checkMesh never ran, which must read as not-measured (and so
     # fail the gate below) rather than as a clean bill of health.

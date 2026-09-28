@@ -429,3 +429,86 @@ def test_a_shard_missing_from_the_union_is_caught_by_the_union(guard, tmp_path):
     # counts the reports before calling the guard. The guard's own backstop is the named
     # guarantees: drop the shard carrying one and the union says so.
     assert guard.main(_quartered(tmp_path)[:3]) == 1
+
+
+# the union across re-run attempts
+#
+# "Re-run failed jobs" adds a second report for the re-run shard to the same run. The union pass
+# downloads every attempt's artifact into its own directory and judges each shard by its NEWEST
+# attempt. Before this, a shared artifact name let the stale failing report win, so a flake could
+# only be cleared by pushing a new commit.
+
+_FAIL = _case("test_checkpoint_dispositions", "test_flaky", "<failure>boom</failure>")
+
+
+def _artifacts(tmp_path: Path, layout: dict[tuple[int, int], bool]) -> Path:
+    """Lay out downloaded artifacts: {(shard, attempt): passed}. Shards carry the quartered tier."""
+    root = tmp_path / "integration-reports"
+    quarters = [Path(p).read_text() for p in _quartered(tmp_path)]
+    for (shard, attempt), passed in layout.items():
+        d = root / f"integration-report-{shard}-attempt-{attempt}"
+        d.mkdir(parents=True)
+        body = quarters[shard - 1]
+        if not passed:
+            body = body.replace("</testsuite>", _FAIL + "</testsuite>")
+        (d / f"report-shard{shard}-pass1.xml").write_text(body)
+    return root
+
+
+def _union(guard, root: Path, shards: int = 4) -> int:
+    return guard._cli(["--shard-artifacts", str(root), "--shards", str(shards)])
+
+
+_GREEN = {(1, 1): True, (2, 1): True, (3, 1): True}
+
+
+def test_one_attempt_of_every_shard_is_a_pass(guard, tmp_path):
+    assert _union(guard, _artifacts(tmp_path, {**_GREEN, (4, 1): True})) == 0
+
+
+def test_a_passing_rerun_clears_the_failed_attempt_it_replaced(guard, tmp_path):
+    # THE BUG: shard 4 failed on attempt 1 and passed on attempt 2. The run is green.
+    assert _union(guard, _artifacts(tmp_path, {**_GREEN, (4, 1): False, (4, 2): True})) == 0
+
+
+def test_an_older_passing_attempt_cannot_hide_a_newer_failure(guard, tmp_path):
+    # "Re-run all jobs" re-runs green shards too; the newest verdict is the one that counts.
+    assert _union(guard, _artifacts(tmp_path, {**_GREEN, (4, 1): True, (4, 2): False})) == 1
+
+
+def test_attempts_are_ordered_by_number_not_by_name(guard, tmp_path):
+    # A text sort would put attempt-10 before attempt-9 and judge the stale report.
+    assert _union(guard, _artifacts(tmp_path, {**_GREEN, (4, 9): False, (4, 10): True})) == 0
+
+
+def test_a_shard_with_no_report_in_any_attempt_fails_the_union(guard, tmp_path, capsys):
+    assert _union(guard, _artifacts(tmp_path, _GREEN)) == 1
+    assert "shard 4 contributed no report" in capsys.readouterr().out
+
+
+def test_an_artifact_with_no_report_in_it_fails_the_union(guard, tmp_path):
+    root = _artifacts(tmp_path, {**_GREEN, (4, 1): True})
+    (root / "integration-report-4-attempt-2").mkdir()
+    assert _union(guard, root) == 1
+
+
+def test_nothing_downloaded_fails_the_union(guard, tmp_path):
+    assert _union(guard, tmp_path / "never-created") == 1
+
+
+@pytest.mark.parametrize("stray", ["integration-report-4", "integration-report-5-attempt-1",
+                                   "integration-report-x-attempt-1"])
+def test_an_artifact_that_is_not_a_known_shard_is_refused(guard, tmp_path, stray):
+    root = _artifacts(tmp_path, {**_GREEN, (4, 1): True})
+    (root / stray).mkdir()
+    assert _union(guard, root) == 1
+
+
+@pytest.mark.parametrize("argv", [["--shard-artifacts", "d"],
+                                  ["--shard-artifacts", "d", "--shards", "4", "--partial"],
+                                  ["--shard-artifacts", "d", "--shards", "4", "extra.xml"],
+                                  []])
+def test_the_union_mode_cannot_be_mixed_with_the_single_report_mode(guard, argv):
+    with pytest.raises(SystemExit) as exc:
+        guard._cli(argv)
+    assert exc.value.code == 2

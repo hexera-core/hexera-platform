@@ -26,7 +26,8 @@ def _check() -> dict:
     return {"status": "ready", "named": True, "skin": True, "pictures": [], "proposal": {
         "part": "a car body", "input_kind": "solid-body", "flow": "external", "openings": [],
         "size_mm": [4200.0, 1800.0, 1400.0], "seed_point_mm": None, "notes": [],
-        "flow_axis": "+x", "flow_axis_guessed": True, "reference_length_mm": 4200.0,
+        # a fraction on purpose: an untouched reference length is confirmed exactly as served
+        "flow_axis": "+x", "flow_axis_guessed": True, "reference_length_mm": 4200.6,
         "extents": {"upstream": 5, "downstream": 10, "lateral": 5, "vertical": 5}, "grounded": True}}
 
 
@@ -58,7 +59,7 @@ def test_a_body_in_a_flow_shows_the_arrow_and_the_box_and_confirms_the_far_field
     assert opened["fellBack"] is False and opened["pins"] == 0, opened
     assert opened["ext"]["arrow"] is True and opened["ext"]["box"] is True, opened
     assert opened["intHidden"] is True and opened["extHidden"] is False, opened
-    assert opened["axis"] == "+x" and opened["guess"] is True and opened["ref"] == "4200" and opened["ground"] is True
+    assert opened["axis"] == "+x" and opened["guess"] is True and opened["ref"] == "4200.6" and opened["ground"] is True
 
     # turning the flow to -y and lifting the part off the ground redraws the arrow and the box
     redrawn = live.evaluate(f"""(() => {{
@@ -79,7 +80,7 @@ def test_a_body_in_a_flow_shows_the_arrow_and_the_box_and_confirms_the_far_field
     live.wait_for("window.__confirmed !== null", timeout=30, what="the confirmation to be sent")
     body = live.evaluate("window.__confirmed")
     assert body["flow"] == "external" and body["input_kind"] == "solid-body" and body["openings"] == []
-    assert body["flow_axis"] == "-y" and body["reference_length_mm"] == 4200.0 and body["grounded"] is False
+    assert body["flow_axis"] == "-y" and body["reference_length_mm"] == 4200.6 and body["grounded"] is False
     # a blank box keeps its default and a zero is held to half a length: never a zero margin
     assert body["extents"] == {"upstream": 3, "downstream": 10, "lateral": 5, "vertical": 0.5}
     assert live.evaluate(f"!document.getElementById('gstage-{SESSION}')") is True

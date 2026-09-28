@@ -2,12 +2,15 @@
 # Boundaries: the sentence and the persistence guard; the loop itself is covered by the canonical loop tests.
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+from meshpipeline.agents.intake import approval as ap
+from meshpipeline.agents.intake import engine_selection as es
 from meshpipeline.agents.intake import message as msg
 from meshpipeline.agents.intake.executor import IntakeExecutionState
-from meshpipeline.agents.intake.turn import unsettled_reply
+from meshpipeline.agents.intake.turn import defers_to_default, unsettled_reply
 from meshpipeline.contracts.agent_loop import LoopExit
 
 
@@ -20,19 +23,54 @@ def _state(**over):
 
 # the sentence names the one thing the user can say next
 
-def test_the_sentence_names_the_unconfirmed_engine_choice():
-    text = unsettled_reply(_state(selection={"id": "sel-1", "engine": "snappy"}),
-                           LoopExit.rounds_exhausted)
+# The gate records exactly as the intake writes them: a selection records its confirmation in
+# `state` (engine_selection.CONFIRMED), never in a `confirmed` field of its own.
+
+def _proposed(engine="snappy"):
+    return es.propose(engine, session_id="s1", owner_id="u1", revision="r1", user_msg_count=1)
+
+
+def _confirmed(engine="snappy"):
+    return es.select_from_structured_input(engine, session_id="s1", owner_id="u1", revision="r1")
+
+
+def _live_approval():
+    return {"id": "a1", "status": ap.AWAITING, "expires_at": time.time() + 600}
+
+
+def test_the_sentence_asks_about_a_proposed_engine_by_name():
+    text = unsettled_reply(_state(selection=_proposed("snappy")), LoopExit.rounds_exhausted)
     assert text.startswith("I could not settle this in one go")
-    assert "which engine" in text and text.endswith("and I will continue.")
+    assert "say yes to use snappy" in text and text.endswith("and I will continue.")
+
+
+def test_a_confirmed_engine_is_never_asked_for_again():
+    text = unsettled_reply(_state(selection=_confirmed("snappy")), LoopExit.rounds_exhausted)
+    assert "engine" not in text, "a confirmed engine choice was asked for again"
+    assert "use defaults" in text
+
+
+def test_the_suggested_phrase_is_one_the_intake_reads_as_handing_the_question_back():
+    assert defers_to_default("use defaults")
 
 
 def test_the_sentence_asks_for_the_go_ahead_when_a_summary_awaits():
-    text = unsettled_reply(_state(selection={"id": "sel-1", "confirmed": True},
-                                  approval={"id": "a1", "status": "awaiting_confirmation"}),
+    text = unsettled_reply(_state(selection=_confirmed(), approval=_live_approval()),
                            LoopExit.no_progress)
     assert "go ahead" in text and "what to change" in text
-    assert "which engine" not in text
+    assert "engine" not in text
+    assert ap.classify("go ahead") == ap.APPROVE_INTENT, "the suggested words would not approve"
+
+
+def test_an_expired_summary_is_not_a_question_anyone_is_waiting_on():
+    stale = {"id": "a1", "status": ap.AWAITING, "expires_at": time.time() - 1}
+    text = unsettled_reply(_state(selection=_confirmed(), approval=stale), LoopExit.no_progress)
+    assert "go ahead" not in text
+
+
+def test_an_expired_proposal_is_read_as_no_selection():
+    old = {**_proposed(), "expires_at": time.time() - 1}
+    assert "what you need meshed" in unsettled_reply(_state(selection=old), None)
 
 
 def test_the_sentence_asks_for_the_request_when_nothing_is_on_the_table():

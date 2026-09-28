@@ -122,7 +122,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
                             awaiting_confirmation=outcome.awaiting_confirmation)
 
     session = _require_session(outcome.session, session_id)
-    state = _build_intake_state(session, owner_id)
+    state = _build_intake_state(session, owner_id, previous_run=outcome.previous_run)
     # The turn after submit_requirements: the user is answering "shall I proceed?".
     state["awaiting_confirmation"] = bool(session.request_txt)
     result = await node_intake(state)
@@ -202,9 +202,9 @@ def _session_geometry_state(session):
     return {"ref": GeometrySourceRef.from_row(row).to_payload()}
 
 
-def _build_intake_state(session, owner_id: str) -> dict:
+def _build_intake_state(session, owner_id: str, *, previous_run=None) -> dict:
     from meshpipeline.pipeline.state_factory import make_pipeline_state
-    return make_pipeline_state(
+    state = make_pipeline_state(
         job_id=str(session.id),
         user_id=owner_id,
         session_id=str(session.id),
@@ -222,6 +222,13 @@ def _build_intake_state(session, owner_id: str) -> dict:
         input_kind=session.input_kind or "",
         requested_mesh_fidelity=getattr(session, "requested_mesh_fidelity", None) or None,
     )
+    if previous_run is not None:
+        # An intake-only working key, like `awaiting_confirmation` above: this conversation
+        # already ran once and that run is over, so the turn is the start of another run on the
+        # same geometry. The authority decided that (agents/intake/message.py); the route only
+        # carries it.
+        state["previous_run"] = previous_run.as_state()
+    return state
 
 
 

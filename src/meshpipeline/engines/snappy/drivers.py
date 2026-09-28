@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
 from meshpipeline.engines.port_binding import BindError as _PortBindError
-from meshpipeline.engines.workspace_facts import read_purpose
+from meshpipeline.engines.workspace_facts import contract_patches, read_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,19 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     return result
 
 
+def _box_patch_names(patches: list) -> frozenset[str]:
+    """The external box's own patches: the far field, a declared ground plane and declared
+    symmetry planes. Everything else in the boundary is the body - its wall and any regions it
+    was split into - so this is what a count of the body's faces leaves out."""
+    names = {"farfield"}
+    names.update(str(p.get("name")) for p in patches
+                 if (p.get("type") or "").strip() == "symmetry" and p.get("name"))
+    ground = ground_patch_name(patches)
+    if ground:
+        names.add(ground)
+    return frozenset(names)
+
+
 def _plan_surface(state, workspace):
     from meshpipeline.cad.staging import staged_surface
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
@@ -247,16 +261,23 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # paid for. Two declared patches is the 2.5D slab case and needs both ends emitted.
     _sym_names = [p.get("name") for p in (state.get("intake_patches") or [])
                   if (p.get("type") or "").strip() == "symmetry" and p.get("name")]
+    # GROUND PLANE - a body standing on the ground. The declared ground wall is the box's floor,
+    # laid at the body's lowest z by the domain (snappy_runner.domain_from_strategy), not a region
+    # of the geometry. Like symmetry it claims a box face, so it shares this module's one refusal
+    # and one note: every publication here is a certified user-facing message.
+    _ground = ground_patch_name(state.get("intake_patches") or [])
+    _refusal, _refusal_op = "", ""
+    _slab = len(_sym_names) >= 2
     if _sym_names and (state.get("dimensionality") or "3D").upper() == "3D":
         # ONE declared patch is a half-model; TWO is a swept slab. Same decision, same two
         # outcomes, so they share this module's refusal and its note rather than adding sites:
         # every publication here is a certified user-facing message, and two ways of saying
         # "symmetry could not be placed" is one more than the reader needs.
-        _slab = len(_sym_names) >= 2
         symmetry = (R.detect_slab_symmetry(analysis, _sym_names[0], _sym_names[1]) if _slab
                     else R.detect_symmetry_plane(analysis, _sym_names[0]))
         if symmetry is None:
-            await publish.aerror(
+            _refusal_op = "snappy:symmetry-unusable"
+            _refusal = (
                 (f"Two symmetry boundaries were declared ('{_sym_names[0]}', '{_sym_names[1]}'), "
                  "which describes an extruded section meshed as a slab - but this geometry has "
                  "no pair of flat end caps to place them on."
@@ -264,19 +285,46 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                  f"The symmetry boundary '{_sym_names[0]}' was declared, but the geometry is not "
                  "a half-model - it has no coplanar cut face to place a symmetry plane on (a "
                  "full-span body straddles the centreline).")
-                + " Mesh the full domain without symmetry, or supply a half-model.",
-                op_id="snappy:symmetry-unusable")
-            return False
+                + " Mesh the full domain without symmetry, or supply a half-model.")
+    if _ground and not _refusal:
+        _axis = str(state.get("flow_axis") or "").strip().lower()
+        if _axis[-1:] == "xyz"[VERTICAL_AXIS]:
+            _refusal_op = "snappy:ground-unusable"
+            _refusal = (f"The ground '{_ground}' lies under the body, across z, but the flow was "
+                        f"declared along {_axis} - the floor and the flow cannot share an axis. "
+                        "Say which horizontal axis (+x, -x, +y or -y) the flow travels along, or "
+                        f"drop '{_ground}' if the body is free in the flow.")
+        elif symmetry and int(symmetry["axis"]) == VERTICAL_AXIS and (
+                symmetry.get("slab") or symmetry.get("side") == "min"):
+            _refusal_op = "snappy:ground-unusable"
+            _refusal = (f"The ground '{_ground}' and the symmetry plane both fall on the bottom "
+                        "face of the domain, and one face can be only one boundary. Drop the "
+                        f"symmetry to mesh the whole body on the ground, or drop '{_ground}'.")
+    if _refusal:
+        await publish.aerror(_refusal, op_id=_refusal_op)
+        return False
+    _layout: list[str] = []
+    if symmetry is not None:
         # `axis` is the INDEX every other consumer indexes with (snappy_runner's _BOX_FACES and
         # domain bounds); the reader is told which axis that is, not the number.
+        _layout.append(
+            f"Extruded slab detected - symmetry on both {'XYZ'[int(symmetry['axis'])]} end faces "
+            f"('{symmetry['lo_name']}', '{symmetry['hi_name']}'); the domain is not padded along "
+            "that axis."
+            if _slab else
+            f"Half-model detected - mirroring on the {'XYZ'[int(symmetry['axis'])]} cut face "
+            f"and meshing one side only (boundary '{symmetry['name']}')")
+    if _ground:
+        _layout.append(
+            f"The body stands on the ground - the floor of the domain sits at its lowest point "
+            f"(z = {float(analysis['bbox_min'][VERTICAL_AXIS]):.4g} m) and is the wall "
+            f"'{_ground}'; the other box faces stay far field.")
+    if _layout:
         await publish.anote(
-            (f"Extruded slab detected - symmetry on both {'XYZ'[int(symmetry['axis'])]} end faces "
-             f"('{symmetry['lo_name']}', '{symmetry['hi_name']}'); the domain is not padded along "
-             "that axis."
-             if _slab else
-             f"Half-model detected - mirroring on the {'XYZ'[int(symmetry['axis'])]} cut face "
-             f"and meshing one side only (boundary '{symmetry['name']}')"),
-            op_id="snappy:symmetry-detected")
+            ("; ".join(_layout)),
+            op_id="snappy:symmetry-detected" if symmetry is not None else "snappy:ground-plane")
+    # the patches blockMesh makes from the BOX, not the body: none of their faces is the body's
+    _box_patches = _box_patch_names(state.get("intake_patches") or [])
 
     plan = initial_plan
     # retry mode arrives with a prior failure but no pre-made plan → seed the first re-plan with it
@@ -351,7 +399,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # gate will judge the delivered box in (see domain_from_strategy)
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"),
-                                                ruler_m=state.get("reference_length_m"))
+                                                ruler_m=state.get("reference_length_m"),
+                                                ground=bool(_ground))
             wall = _contract_wall_patch(workspace) or "body"
             # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
             # (no thin features, policy off, no layers requested) authors the historical case
@@ -378,7 +427,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 strategy=strategy, dimensionality=state.get("dimensionality", "3D"),
                 symmetry=symmetry, surface_regions=_dict_regions,
                 layer_counts=LP.layer_counts_for(_policy),
-                layer_overrides=LP.overrides_for(_policy))
+                layer_overrides=LP.overrides_for(_policy), ground=_ground)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -399,7 +448,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
-            wall_faces = sum(c for p, c in fc.items() if p != "farfield")
+            # faces on the BODY: every box face - far field, ground, symmetry - has faces of its
+            # own, and counting one would call a carve that lost the body a captured one
+            wall_faces = sum(c for p, c in fc.items() if p not in _box_patches)
             production, reason = _judge_snappy(result, q, wall_faces)
             last_valid = bool(result.get("rc") == 0 and wall_faces > 0 and not q.get("fatal"))
             run.note_native_run(produced_usable_mesh=last_valid)
@@ -806,7 +857,8 @@ def run_enricher(R, workspace, res: dict, q: dict, out: dict) -> None:
     # Reach the shared patch-count helper THROUGH the engine seam (the adapter
     # forwards it) so builder_tools stays engine-agnostic.
     fc = R._patch_face_counts(workspace)
-    wall_faces = sum(c for p, c in fc.items() if p != "farfield")
+    _box = _box_patch_names(contract_patches(workspace))
+    wall_faces = sum(c for p, c in fc.items() if p not in _box)
     out["layer_coverage_pct"] = res.get("layer_coverage")
     out["per_patch_layers"] = res.get("per_patch_layers")
     out["wall_faces"] = wall_faces

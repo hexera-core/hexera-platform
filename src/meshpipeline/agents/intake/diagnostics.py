@@ -20,6 +20,7 @@ class IntakeRunExtension:
     approval_state: str = ""                  # "", "awaiting", "approved"
     recommendation_turn: bool = False
     canonical_revision: str = ""              # the app-computed revision id, not the payload
+    repeated_questions: int = 0               # replies sent back for asking the same thing again
 
     def sanitized(self) -> Mapping[str, DiagnosticValue]:
         return {
@@ -32,6 +33,7 @@ class IntakeRunExtension:
             "approval_state": self.approval_state,
             "recommendation_turn": self.recommendation_turn,
             "canonical_revision": self.canonical_revision,
+            "repeated_questions": self.repeated_questions,
         }
 
 

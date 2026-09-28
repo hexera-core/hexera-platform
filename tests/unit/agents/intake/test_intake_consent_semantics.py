@@ -205,22 +205,42 @@ def test_submit_then_a_no_op_call_preserves_the_approval(h, monkeypatch):
     assert "CANONICAL SUMMARY" in str(r.payload)
 
 
-def test_the_terminal_priority_is_admission_then_selection_then_submission(monkeypatch):
+def test_the_terminal_priority_is_selection_then_submission(monkeypatch):
     from meshpipeline.agents.intake.loop_policy import TERMINAL_PRIORITY
-    assert TERMINAL_PRIORITY == ("admission_block", "selection_prompt", "submit_summary")
+    # An impossible admission is no terminal: it goes back to the model as a tool result (see the
+    # test below for the voiding it still does). Only the application's own two texts end a turn.
+    assert TERMINAL_PRIORITY == ("selection_prompt", "submit_summary")
     # a FRESH state each time: resolving a higher-priority terminal deliberately voids the
     # submission below it, so the same state cannot be reused to probe the next rung
     def _resolve(**kw):
         st = _state(**kw)
         return IntakeLoopPolicy(exec_state=st, executor=None).resolve_terminal(), st
 
-    got, st = _resolve(admission_block="BLOCK", selection_prompt="SELECT",
-                       submit_summary="SUMMARY")
-    assert got == "BLOCK"
-    assert st.submit_summary is None, "a blocked admission voids the submission beneath it"
-    assert _resolve(selection_prompt="SELECT", submit_summary="SUMMARY")[0] == "SELECT"
+    got, st = _resolve(selection_prompt="SELECT", submit_summary="SUMMARY")
+    assert got == "SELECT"
+    assert st.submit_summary is None, "a new selection voids the submission beneath it"
     assert _resolve(submit_summary="SUMMARY")[0] == "SUMMARY"
     assert _resolve()[0] is None, "no terminal means the loop continues"
+    assert not hasattr(_state(), "admission_block"), "the admission terminal is back"
+
+
+def test_an_impossible_preview_voids_the_submission_beneath_it_without_ending_the_turn(h, monkeypatch):
+    st = _approved_state(monkeypatch)
+    monkeypatch.setattr("meshpipeline.agents.intake.executor.es.verify_confirmed",
+                        lambda *a, **k: (True, ""))
+    monkeypatch.setattr("meshpipeline.agents.intake.executor.preview_admission",
+                        lambda *a, **k: {"verdict": "impossible", "selected_engine": "snappy",
+                                         "blocking_rule_codes": ["x"], "capability_reason": "no",
+                                         "what_would_pass": ["one wall"],
+                                         "safe_user_message": "no. Which would you like to revise?"})
+    p = _policy_for(st, monkeypatch)
+    r = _drive(p, [_round(_tc("submit_requirements", mesh_engine="snappy"),
+                          _tc("preview_selected_admission", selected_engine="snappy",
+                              purpose="p", input_kind="k"))], h, monkeypatch)
+    assert st.submit_args is None and st.submit_summary is None, "the submission is void"
+    assert st.pending is None and st.approval["status"] == "invalidated"
+    assert st.admission_refusal is not None and st.admission_refusal["verdict"] == "impossible"
+    assert r.exit is LoopExit.turn_complete, "the refusal ended the turn instead of going back"
 
 
 def test_no_further_round_follows_a_final_authorized_summary(h, monkeypatch):

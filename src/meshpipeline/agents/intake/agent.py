@@ -8,9 +8,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.agents.intake import engine_selection as es
 from meshpipeline.agents.intake import refusal, turn
 from meshpipeline.agents.intake import settings as icfg
 from meshpipeline.agents.intake import vocabulary as _vocab
@@ -172,10 +174,12 @@ INTAKE_TOOLS: list[dict] = [
         "function": {
             "name": "confirm_engine_selection",
             "description": (
-                "Record the user's EXPLICIT confirmation of the proposed engine, given after they "
-                "saw the application's 'Selected engine: X' question. The application checks your "
-                "quote against the user's actual message and refuses if it is not there, so quote "
-                "them exactly. If they answered with a different engine, call "
+                "Record the user's confirmation of the proposed engine, given after they saw the "
+                "application's 'Selected engine: X' question. A plain 'yes', 'ok', 'sure' or 'go "
+                "with that' answers that question and confirms X - the application reads it "
+                "itself, so this call is then simply accepted. Otherwise quote their words "
+                "exactly: the application checks the quote against their actual message and "
+                "refuses words they did not write. If they answered with a different engine, call "
                 "propose_engine_selection for that engine instead."
             ),
             "parameters": {
@@ -204,10 +208,12 @@ INTAKE_TOOLS: list[dict] = [
                 "when known) - declaring patches is essential because some impossibilities depend on "
                 "patch count/roles. You MUST call this before telling the user their setup is "
                 "impossible, and before submit_requirements, which accepts ONLY the token this "
-                "returns for the EXACT payload previewed. If the verdict is 'impossible' the turn "
-                "ENDS with the application's own message - do not compose or expand it, and never add "
-                "an engine suggestion. NEVER silently drop, merge, rename or re-role a declared patch "
-                "to make it fit."
+                "returns for the EXACT payload previewed. If the verdict is 'impossible' the result "
+                "says why and what would pass, and NOTHING was recorded: a value that was your own "
+                "(a patch the user never named, a role you assigned) you repair and check again in "
+                "the same turn; a value the USER declared you keep - put the finding to them with "
+                "the one revision that would pass, and ask. Never add an engine suggestion. NEVER "
+                "silently drop, merge, rename or re-role a patch the user declared to make it fit."
             ),
             "parameters": {
                 "type": "object",
@@ -556,6 +562,105 @@ def _confirmation_block(state: dict) -> str:
     )
 
 
+def _submit_fields() -> tuple[str, ...]:
+    """submit_requirements' own argument names, less the single-use preview token - read off the
+    tool definition, so the rerun context can never fall behind an argument the tool gains."""
+    for tool in INTAKE_TOOLS:
+        fn = tool.get("function") or {}
+        if fn.get("name") == "submit_requirements":
+            return tuple(k for k in fn["parameters"]["properties"] if k != "preview_token")
+    return ()
+
+
+#: where each submit_requirements argument lives on the session, for a run whose approval
+#: record is gone. Only these survive there; the rest (engine_source, the typed far-field
+#: request, strictness, ...) were only ever on the approval record.
+_SESSION_COLUMN_OF = {
+    "domain": "domain", "request_txt": "request_txt", "review_brief_txt": "review_brief_txt",
+    "patches": "intake_patches", "dimensionality": "dimensionality", "purpose": "purpose",
+    "input_kind": "input_kind", "mesh_engine": "engine", "engine_params": "engine_params",
+    "mesh_fidelity": "requested_mesh_fidelity",
+}
+
+
+def _approved_last_time(state: Mapping[str, Any]) -> tuple[dict, bool]:
+    """What the previous run was approved with, as submit_requirements arguments, and whether
+    that is the approval record itself.
+
+    The dispatched approval snapshot's payload IS the exact argument set the approval authority
+    ran - request and review brief, engine provenance, the typed far-field request and its
+    strictness included - so 'the same again' can be re-submitted from it without the model
+    having to recreate anything. The session columns are only a fallback, and an incomplete one:
+    request_txt is cleared from them at dispatch (approval.py disarms consent that way) and the
+    typed values were never stored there."""
+    fields = _submit_fields()
+    approval = (state.get("intake_gate") or {}).get("approval") or {}
+    if approval.get("job_id") and approval.get("payload"):
+        payload = dict(approval.get("payload") or {})
+        return {k: payload[k] for k in fields if k in payload}, True
+    recorded = {}
+    for arg, column in _SESSION_COLUMN_OF.items():
+        value = state.get(column)
+        if value not in (None, "", [], {}):
+            recorded[arg] = value
+    return recorded, False
+
+
+def _previous_run_block(state: Mapping[str, Any]) -> str:
+    """THE TURN AFTER A RUN HAS ENDED. This conversation already produced a run on this geometry
+    and the user is back for another one - the same again, or with a change. The block tells the
+    model how the last run ended and what it was approved with, so every question it asks can
+    carry 'the same as last time' as the proposal. It records nothing: a new run dispatches only
+    after a fresh submit_requirements and a fresh approval, exactly like the first."""
+    prev = state.get("previous_run") or {}
+    last, from_record = _approved_last_time(state)
+    ended = str(prev.get("status") or "").strip()
+    outcome = str(prev.get("outcome") or "").strip()
+    outcome_lines = ("\n".join("  " + ln for ln in outcome.splitlines() if ln.strip())
+                     if outcome else "  (no verdict text is on record for it)")
+    if from_record:
+        provenance = (
+            "That run was approved with these submit_requirements arguments - the approval record\n"
+            "itself, every argument it ran with except the single-use preview_token. An argument\n"
+            "that is absent was not given, and stays absent for the same again:\n")
+    else:
+        missing = [k for k in _submit_fields() if k not in last]
+        provenance = (
+            "No approval record survives for that run, so these are the conversation's last\n"
+            "recorded requirements, and they are INCOMPLETE - not on record: "
+            f"{', '.join(missing) or '(nothing)'}.\n"
+            "Establish each missing value that applies from the conversation before submitting;\n"
+            "never invent one:\n")
+    return (
+        "\n\n## ANOTHER RUN ON THE SAME GEOMETRY - the previous run has ended\n"
+        f"This conversation already approved a run (job {prev.get('job_id') or 'unknown'}), "
+        f"and it ended: {ended or 'the record of it is gone'}. The user was told:\n"
+        f"{outcome_lines}\n\n"
+        f"{provenance}"
+        f"{json.dumps(last, indent=2, ensure_ascii=False, default=str)}\n\n"
+        "The uploaded geometry and its confirmed unit are unchanged; never ask about them again.\n"
+        "NOTHING above is recorded for the new run - it is your proposal, and the user's latest\n"
+        "message says what they want. Decide from it:\n"
+        "- The same again ('run it again', 'same as last time', a bare yes) → re-run\n"
+        "  preview_selected_admission on the payload above and call submit_requirements with\n"
+        "  EVERY argument above exactly as it is, plus the new preview_token. The application\n"
+        "  shows the summary and takes a fresh approval; you do not write the summary.\n"
+        "- A change (a number, a patch, the fluid, the domain size, the mesh detail) → apply it\n"
+        "  to the arguments above and keep every other one as it is (request_txt and\n"
+        "  review_brief_txt must both state the change, worded identically), re-run\n"
+        "  preview_selected_admission on the FULL updated payload, and call submit_requirements.\n"
+        "- A different ENGINE → that is a new selection: call propose_engine_selection.\n"
+        "- The verdict above blames the request itself → say in one line what it needs, propose\n"
+        "  the specific change that addresses it, and ask whether to go with that.\n"
+        "- You cannot tell what they want → ask ONE question whose proposal is the same settings\n"
+        "  again.\n"
+        "If a tool answers that the engine selection is no longer confirmed, propose it again\n"
+        "and let the user confirm it in their next message.\n"
+        "You cannot start the mesh yourself and must never claim it has started or will start.\n"
+        "Do NOT re-ask for information already settled above."
+    )
+
+
 def _build_llm_messages(system: str, state_messages: list) -> list[dict]:
     messages: list[dict] = [{"role": "system", "content": system}]
     for m in state_messages:
@@ -670,10 +775,29 @@ def _block_geometry_check() -> str:
         "reference_length_m (mm / 1000) and requested_extents exactly as written. Ask only what "
         "the message does not contain - typically the purpose, the fluid and its speed, and the "
         "engine when it is not settled.\n"
+        "A later correction changes only what depends on it. If the user says the file is in a "
+        "different unit from the one the check read (the check reads every number as "
+        "millimetres), the picture's openings, axes and flow direction stand - they do not depend "
+        "on the unit - and only the sizes change, in two steps. First RELABEL: the numbers were "
+        "right and the unit was wrong, so a reference length the check called 117 mm is 117 of "
+        "the unit they named - 117 m, 117 cm or 117 in - never 117 divided by anything. Then "
+        "express each value in the unit its field requires: reference_length_m in metres (117 m "
+        "stays 117; 117 cm is 1.17; 117 in is 2.97), an opening's diameter_mm in millimetres "
+        "(40 m is 40000; 40 cm is 400; 40 in is 1016). Re-state the affected numbers that way in "
+        "one line, propose them, and carry on. That is not a conflict, and never a reason to ask "
+        "the flow axis, or anything else the check settled, again.\n"
         "An assistant message beginning 'GEOMETRY CHECK (drawing your part):' is a holding line "
         "while the picture is made: nothing in it is declared, and you never repeat it. A user "
         "message saying they confirmed the geometry check is your cue to continue with the next "
-        "question, not to summarise."
+        "question, not to summarise.\n"
+        "A part that STANDS ON THE GROUND: the ground is produced by the domain - the floor of "
+        "the far-field box, laid under the part at its lowest z. Declare it as ONE patch named "
+        "exactly `ground` with type wall, beside the body's own wall and the farfield (e.g. car "
+        "wall, ground wall, farfield). It is never a region of the geometry, so never ask the "
+        "user to name, split or supply it in their file, and never count it against the parts "
+        "the file distinguishes - a one-region body on the ground is still one body wall. "
+        "The name `ground` is kept for that floor: do not give it to anything else. A part the "
+        "message calls free in the flow gets no ground patch."
     )
 
 
@@ -691,7 +815,27 @@ def _block_propose_first() -> str:
         "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
         "patch names, refinement zones - go into ONE question with ONE proposal, not four turns. "
         "Two things are never proposed: the ENGINE (rule 5 above stands - offer the menu, do not "
-        "recommend unless asked) and the file's UNIT (units are asked, never guessed)."
+        "recommend unless asked) and the file's UNIT (units are asked, never guessed).\n"
+        "HOW A REPLY IS READ: 'ok', 'yes', 'fine', 'sure', 'sensible default', 'you decide', "
+        "'whatever is standard' and 'I do not know' all ACCEPT the proposal exactly as you stated "
+        "it - take those values and move on. Any other reply is still the user's ONE answer to "
+        "that question: if it changes a value, take the change; if it is unclear or answers "
+        "something else, take your own proposal, note it in request_txt as an assumption the user "
+        "did not state, and move on. Never ask the same question twice, in any wording, and never "
+        "re-ask what the user has already answered - the application watches for a repeated "
+        "question and sends it back to you to move on. Near-wall treatment (the y+ band, the "
+        "first-layer thickness, the layer count), patch names and refinement zones are courtesy "
+        "questions: one question, one proposal, and never a reason to hold a submission. The same "
+        "holds after an admission refusal: whatever you must ask the user carries your proposed "
+        "revision, so 'ok' answers it.\n"
+        "A VALUE THE USER LEAVES TO YOU is yours to choose. 'I do not know', 'use a sensible "
+        "default' or 'you decide' answers even a question you had no proposal for - which of two "
+        "openings is the second inlet, say: pick the sensible default (the first candidate you "
+        "listed, unless the geometry says otherwise), say which in one line, record it as an "
+        "assumption, and continue. Never reply that a value is required and cannot be defaulted: "
+        "required means it must be in the submission, not that the user must type it. The two "
+        "exceptions stand - the ENGINE is proposed and confirmed, never defaulted, and the UNIT is "
+        "asked, never guessed."
     )
 
 
@@ -702,7 +846,7 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_engine_first),
     ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
      _block_geometry_check),
-    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' confirms it; engine and unit never proposed",
+    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; engine and unit never proposed",
      _block_propose_first),
 )
 
@@ -766,6 +910,10 @@ async def node_intake(state: PipelineState) -> dict:
     system = compose_intake_system()
     if _awaiting_confirmation:
         system += _confirmation_block(state)
+    elif state.get("previous_run"):
+        # the conversation's run has ended and this turn starts another; once the new
+        # requirements are submitted the confirmation block above takes over
+        system += _previous_run_block(state)
     state_messages = state.get("messages", [])
     llm_messages = _build_llm_messages(system=system, state_messages=state_messages)
 
@@ -774,8 +922,27 @@ async def node_intake(state: PipelineState) -> dict:
         logger.warning("Intake: MAX_TURNS=%d reached - nudging toward closure (fail-safe, never "
                        "forcing a submit) - job_id=%s", turn.MAX_TURNS, job_id)
         llm_messages, state_messages = turn.apply_budget_nudge(llm_messages, state_messages)
+    if turn.defers_to_default(turn.latest_user_text(state_messages)):
+        # "I do not know, use a sensible default and continue" is an answer: the value is the
+        # model's to choose. Said here, in code, before the model can ask the question again or
+        # reply that the value "cannot be selected by default".
+        logger.info("Intake: the user left the open question to the model - take the default "
+                    "- job_id=%s", job_id)
+        llm_messages, state_messages = turn.apply_default_nudge(llm_messages, state_messages)
 
     _ctx = turn.hydrate(state, state_messages)
+    # A plain yes to the application's own engine question ("Do you want to select X?") is read
+    # HERE, before the model runs. The question named the engine, so "yes", "ok" or "go with
+    # that" binds to it and needs no quote; the model used to have to quote the user to confirm,
+    # and a "yes" it paraphrased was refused as words they never wrote - then asked again.
+    _assented = es.confirm_by_assent(
+        _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+        revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
+        user_msg_count=_ctx.user_msg_count)
+    if _assented is not None:
+        logger.info("Intake: engine selection CONFIRMED by the user's plain yes engine=%s - "
+                    "job_id=%s", _assented["engine"], job_id)
+        _ctx = dataclasses.replace(_ctx, selection=_assented)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a
     # fake job id or instantiate a worker-owned publisher in the request path, the turn collects
     # the same typed events through a sink and returns them with the response.
@@ -794,7 +961,9 @@ async def node_intake(state: PipelineState) -> dict:
         # INTAKE_MAX_ROUNDS is the ONLY Intake bound. No tool-call cap, no category cap, no
         # deadline, and no no-progress threshold: progress is counted and reported, never
         # enforced, because no measured Intake distribution justifies a value.
-        limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS))
+        limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS),
+        # What has already been asked, so a reply that asks it again is caught inside the loop.
+        prior_questions=turn.prior_assistant_texts(state_messages))
 
     async def _intake_provider(*, messages, tools, job_id, user_id, tool_choice="auto"):
         # No on_reasoning here on purpose: intake's route is not streamed, so it has no reasoning
@@ -832,22 +1001,17 @@ async def node_intake(state: PipelineState) -> dict:
     # has had its chance (a refusal is never silent, so the two cannot collide).
     assistant_text = str(_loop_result.payload or "")
 
-    # The rendered refusal is correct but concatenates whatever rules fired, so the model rewrites
-    # it for the user. The call carries NO tool, so the turn stays terminal, and the result is
-    # checked: wording that names another engine or drops a declared value is discarded for the
-    # rendered text.
+    # An admission refusal the model did not repair ends with the model's OWN reply - it had the
+    # finding as a tool result and wrote with it in hand. That reply is checked before it goes
+    # out: one that names another engine, asks nothing, or does not exist (the loop ran out of
+    # rounds) is replaced by the rendered finding. Not when the user asked for a comparison (the
+    # engines named are the answer), and not when the turn ended on the application's own text.
+    if (_exec_state.admission_refusal is not None and not _exec_state.recommended_this_turn
+            and _loop_result.exit is not _LoopExit.terminal_action):
+        _settled = refusal.settle(assistant_text, _exec_state.admission_refusal)
+        assistant_text = _settled.text
+        logger.info("Intake: refusal delivered %s - job_id=%s", _settled.source, job_id)
     _in_tokens, _out_tokens = _policy.input_tokens, _policy.output_tokens
-    if _exec_state.admission_facts and assistant_text == _exec_state.admission_block:
-        _refusal = await refusal.explain(
-            _exec_state.admission_facts, provider_call=_intake_provider,
-            job_id=str(job_id), user_id=_ctx.owner_id)
-        assistant_text = _refusal.text
-        # The loop counts its own rounds only, and this call happens after it. Without these the
-        # turn reports less than it spent.
-        _in_tokens += _refusal.input_tokens
-        _out_tokens += _refusal.output_tokens
-        logger.info("Intake: refusal delivered %s (+%d/%d tokens) - job_id=%s",
-                    _refusal.source, _refusal.input_tokens, _refusal.output_tokens, job_id)
     if not assistant_text.strip():
         # The loop ran out of rounds (or time, or progress) without a reply, or the model
         # returned empty content. A blank assistant message is not a turn: the user saw an empty

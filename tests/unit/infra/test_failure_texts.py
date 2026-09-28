@@ -38,9 +38,19 @@ def test_a_rejected_geometry_says_fix_the_cad_and_re_upload():
 def test_a_lost_worker_is_ours_and_the_run_can_be_started_again():
     msg = user_message_for(FailureClass.WORKER_LOST)
     assert "worker" in msg and "lost" in msg
-    assert "on our side" in msg and "starting a new run" in msg
+    assert "on our side" in msg and '"run it again" in this chat' in msg
     assert FailureClass.WORKER_LOST.is_system
     assert not FailureClass.WORKER_LOST.is_retryable
+
+
+def test_a_job_no_worker_picked_up_is_not_told_a_worker_was_lost():
+    msg = user_message_for(FailureClass.NEVER_STARTED)
+    assert "No worker picked this run up" in msg and "never started" in msg
+    assert "lost" not in msg, "a job no worker held must not be told its worker was lost"
+    assert "on our side" in msg and '"run it again" in this chat' in msg
+    assert FailureClass.NEVER_STARTED.is_system
+    assert not FailureClass.NEVER_STARTED.is_retryable
+    assert failed_reason_for(FailureClass.NEVER_STARTED) == "unhandled"
 
 
 def test_domain_messages_read_without_a_reason():

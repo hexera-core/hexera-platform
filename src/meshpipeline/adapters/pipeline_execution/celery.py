@@ -5,6 +5,12 @@ from __future__ import annotations
 import logging
 
 from meshpipeline.adapters.pipeline_execution.celery_app import celery_app
+from meshpipeline.application.geometry_check import (
+    NAMING_HARD_LIMIT_S,
+    NAMING_SOFT_LIMIT_S,
+    SCOUT_HARD_LIMIT_S,
+    SCOUT_SOFT_LIMIT_S,
+)
 from meshpipeline.application.pipeline_run import run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -30,13 +36,15 @@ def run_simulation(**kwargs) -> dict:
     name="worker.tasks.scout_geometry",
     bind=False,
     max_retries=0,
-    soft_time_limit=900,
-    time_limit=1200,
+    # the application's numbers: the API reads a check through a time box built from them
+    soft_time_limit=SCOUT_SOFT_LIMIT_S,
+    time_limit=SCOUT_HARD_LIMIT_S,
 )
 def scout_geometry(**kwargs) -> dict:
     # THE GEOMETRY CHECK runs on the worker because reading CAD and drawing it need the mesh
-    # toolchain the API image does not carry. It shares the simulation queue for now, so on a
-    # busy fleet an upload waits behind a running job; a queue of its own is the next step.
+    # toolchain the API image does not carry. It runs on the `geometry_checks` queue (celery_app.py
+    # task_routes), which every worker drains from a slot of its own, so an upload is drawn while a
+    # mesh job runs beside it rather than after it.
     from meshpipeline.application.geometry_check import run_geometry_check
     return run_geometry_check(**kwargs)
 
@@ -45,12 +53,13 @@ def scout_geometry(**kwargs) -> dict:
     name="worker.tasks.name_geometry",
     bind=False,
     max_retries=0,
-    soft_time_limit=600,
-    time_limit=900,
+    soft_time_limit=NAMING_SOFT_LIMIT_S,
+    time_limit=NAMING_HARD_LIMIT_S,
 )
 def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
-    # the user's words go to the vision model together. Same queue as the scout, for now.
+    # the user's words go to the vision model together. Same queue as the scout - the user is
+    # waiting on this one too.
     from meshpipeline.application.geometry_check import run_geometry_naming
     return run_geometry_naming(**kwargs)
 

@@ -17,7 +17,8 @@ import { esc } from "../core/format.js";
 import { disputeReview } from "../api/endpoints.js";
 
 let onRerun = () => {};
-/** Installed by the entrypoint: (newJobId, message) -> void. */
+/** Installed by the entrypoint: (newJobId, message, disputedJobId) -> void. The disputed run is
+ *  named so the new one can belong to the same conversation - not to whatever the page holds. */
 export function configureDispute({ onRerun: fn } = {}) { onRerun = fn || (() => {}); }
 
 function modal(html) {
@@ -60,7 +61,8 @@ export function flagDispute(job, flags) {
       close();
       document.getElementById("viewer-" + job)?.remove();
       onRerun(d.job_id,
-        `Re-review started for your flagged region${flags.length > 1 ? "s" : ""}. New job: \`${d.job_id}\``);
+        `Re-review started for your flagged region${flags.length > 1 ? "s" : ""}. New job: \`${d.job_id}\``,
+        job);
     } catch (e) {
       go.disabled = false;
       alert("Could not start the re-review: " + e.message);
@@ -91,7 +93,8 @@ export function acceptMesh(job, findings) {
       close();
       document.getElementById("viewer-" + job)?.remove();
       onRerun(d.job_id,
-        "Understood - I'll re-review the same mesh against the bar you just set, and deliver it if it clears.");
+        "Understood - I'll re-review the same mesh against the bar you just set, and deliver it if it clears.",
+        job);
     } catch (e) {
       go.disabled = false;
       alert("Could not start the re-review: " + e.message);

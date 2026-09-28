@@ -20,8 +20,8 @@ import { Notice } from "./render/notice.js";
 import { Stage, closeLightbox, openLightbox, setResultHandler } from "./render/stage.js";
 import { configure as configureStream, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
-import { configureComposer, disableInput, enableInput, mountComposer, setPlaceholder }
-  from "./shell/composer.js";
+import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
+  offerNewRun, setPlaceholder } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
@@ -46,8 +46,24 @@ configureStream({
   onEvent,
   onTerminal(job) {
     Stage.final(terminalResult(job, getState.outcomeMessage()));
+    // ONLY THE CONVERSATION A RUN CAME FROM CAN RUN IT AGAIN. A run opened from a link has no
+    // conversation on this page: with no session at all a message would go nowhere, so the box
+    // stays closed and says what does work here - a new upload, which opens a new session. A
+    // session a later upload opened is for OTHER geometry: its composer is its own conversation's
+    // and is left exactly as it is, with no offer that would send "run again" to the wrong part.
+    const session = getState.sessionId();
+    if (!session || session !== getState.runSessionId()) {
+      if (!session) {
+        disableInput();
+        setPlaceholder("Upload a geometry file to start a new session…");
+      }
+      return;
+    }
+    // THE RUN IS OVER, THE CONVERSATION IS NOT: the same session takes the next run on this
+    // geometry - the same requirements again, or a change - and the composer says so.
     enableInput();
-    setPlaceholder("Start a new simulation…");
+    setPlaceholder("Run it again, or tell me what to change…");
+    offerNewRun();
   },
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
   // worker has it the line goes back to "working…" and the timeline takes over.
@@ -77,11 +93,14 @@ setResultHandler((data, anchor) => {
   // message already explains what happened - that is the whole result.
 });
 
-/* what "start a new run" means: one definition, used by three callers */
-function attachJob(id, { replayHistory = false, message = "" } = {}) {
+/* what "start a new run" means: one definition, used by three callers. `origin` is the
+   conversation the run belongs to: the page's own session for a run the chat started, the
+   disputed run's conversation for a re-review. */
+function attachJob(id, { replayHistory = false, message = "", origin = getState.sessionId() } = {}) {
   if (message) Stage.chat("assistant", message);
+  clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
-  beginRun(id);
+  beginRun(id, { sessionId: origin });
   // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no
   // routes and keeps the query string it has always used. Neither global set means the second
   // branch, which is today's behaviour byte for byte.
@@ -102,12 +121,18 @@ configureComposer({
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its
   // stickers, the form beside it. When the stage cannot open, the same form arrives as a card.
-  geometryCheck: (sessionId, d, confirm) => openGeometryStage(sessionId, d, confirm,
-    { anchorEl: Stage.col(), fallback: () => { if (d.named !== false) Stage.geometryCheck(d, confirm); } }),
+  geometryCheck: (sessionId, d, confirm, retry) => openGeometryStage(sessionId, d, confirm,
+    { anchorEl: Stage.col(), retry, fallback: () => { Stage.geometryCheck(d, confirm); } }),
+  // the card, when it stands in for the stage, follows the check in place
+  geometryCard: (d) => Stage.geometryCheckUpdate(d),
 });
 
 configureDispute({
-  onRerun: (id, message) => attachJob(id, { message }),
+  // A RE-REVIEW BELONGS TO THE DISPUTED RUN'S CONVERSATION, not to whatever session the page
+  // holds now: a run opened by link, disputed after an upload of other geometry, has none, and
+  // its "run again" must never reach that other geometry's session.
+  onRerun: (id, message, disputedJobId) => attachJob(id,
+    { message, origin: getState.runOrigin(disputedJobId) }),
 });
 
 /* global keyboard affordances */

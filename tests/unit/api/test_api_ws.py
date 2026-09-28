@@ -498,7 +498,7 @@ def test_a_reaped_job_closes_with_the_lost_worker_sentence(monkeypatch):
         assert frame["type"] == "closing"
         assert "Job already" not in frame["text"]
         assert "worker" in frame["text"] and "lost" in frame["text"]
-        assert "starting a new run" in frame["text"]
+        assert "run it again" in frame["text"]
 
 
 def test_a_failed_job_without_a_record_never_closes_with_a_shrug(monkeypatch):
@@ -509,4 +509,4 @@ def test_a_failed_job_without_a_record_never_closes_with_a_shrug(monkeypatch):
         frame = json.loads(ws.receive_text())
         assert frame["type"] == "closing"
         assert frame["text"] != "Job already failed."
-        assert "marked failed" in frame["text"] and "Start a new run" in frame["text"]
+        assert "marked failed" in frame["text"] and "run it again" in frame["text"]

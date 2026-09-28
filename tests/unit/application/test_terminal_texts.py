@@ -12,6 +12,7 @@ from meshpipeline.application.final_result import (
     FinalResult,
     TerminalStatus,
     build_final_result,
+    never_started_result,
     render_message,
     worker_lost_result,
 )
@@ -81,7 +82,7 @@ def test_a_lost_worker_record_renders_the_honest_sentence_and_round_trips():
     msg = render_message(back)
     assert "did not complete successfully" in msg
     assert "worker" in msg and "lost" in msg
-    assert "on our side" in msg and "starting a new run" in msg
+    assert "on our side" in msg and "run it again" in msg
     assert "No downloadable mesh deliverable" in msg
     # it invents nothing it does not know
     assert back.engine == "" and back.attempts == 2 and back.attempts_max == 0
@@ -101,14 +102,14 @@ def test_a_reaped_job_closes_with_the_lost_worker_sentence_not_job_already_faile
                           final_result=worker_lost_result(job_id="j", owner_id="o").to_dict())
     text = terminal_closing_text(job)
     assert "Job already" not in text
-    assert "worker" in text and "lost" in text and "starting a new run" in text
+    assert "worker" in text and "lost" in text and "run it again" in text
 
 
 def test_a_failed_job_without_a_record_still_says_what_to_do():
     from meshpipeline.persistence.models import JobStatus
     text = terminal_closing_text(SimpleNamespace(status=JobStatus.failed, final_result=None))
     assert "Job already" not in text
-    assert "marked failed" in text and "Start a new run" in text
+    assert "marked failed" in text and "run it again" in text
 
 
 def test_a_succeeded_job_without_a_record_names_its_status():
@@ -120,10 +121,39 @@ def test_a_succeeded_job_without_a_record_names_its_status():
 def test_an_unreadable_record_falls_back_rather_than_crashing():
     text = terminal_closing_text(SimpleNamespace(status="failed",
                                                  final_result={"schema_version": 1}))
-    assert "Start a new run" in text
+    assert "run it again" in text
 
 
 def test_a_rendered_record_wins_over_the_fallback():
     fr = _build(failed_gate=GEOMETRY_INPUT_GATE)
     text = terminal_closing_text(SimpleNamespace(status="failed", final_result=fr.to_dict()))
     assert text == render_message(fr)
+
+
+# a job no worker ever picked up is told exactly that
+
+def test_a_never_started_record_says_no_worker_picked_it_up_and_round_trips():
+    back = FinalResult.from_dict(never_started_result(job_id="j", owner_id="o").to_dict())
+    assert back.failure_category == FailureCategory.never_started.value
+    assert back.status is TerminalStatus.failed and back.reviewer_verdict is None
+    msg = render_message(back)
+    assert "No worker picked this run up" in msg and "never started" in msg
+    assert "lost" not in msg
+    assert "run it again" in msg and "No downloadable mesh deliverable" in msg
+
+
+def test_a_class_owned_outcome_states_its_cause_once():
+    # The class sentence opens with what happened; the category headline must not say it again.
+    for fr in (worker_lost_result(job_id="j", owner_id="o"),
+               never_started_result(job_id="j", owner_id="o"),
+               _build(failed_gate=GEOMETRY_INPUT_GATE)):
+        msg = render_message(fr)
+        for phrase in ("lost before it finished", "No worker picked this run up",
+                       "cannot be meshed as it is"):
+            assert msg.count(phrase) <= 1, (fr.failure_category, phrase, msg)
+        assert "You can run it again from this chat" not in msg, "two next steps in one verdict"
+
+
+def test_the_other_categories_keep_mains_next_step():
+    msg = render_message(_build(failed_gate="sicn_floor"))
+    assert 'say "run it again"' in msg and "quality checks" in msg

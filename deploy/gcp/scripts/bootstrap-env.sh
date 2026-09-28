@@ -321,6 +321,9 @@ REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-}
 # sources this file with set -a - the file wins over the environment, so a default computed in
 # the consumer would be overwritten by the value written here and never take effect.
 QUEUE_NAME=${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}
+# The geometry-check queue, under the same prefix. Published beside QUEUE_NAME as a second series
+# of the same metric (create-queue-depth-publisher.sh); the fleet is never sized on it.
+GEOMETRY_QUEUE_NAME=${GEOMETRY_QUEUE_NAME:-${REDIS_KEY_PREFIX:-}geometry_checks}
 REDIS_URL=${REDIS_URL:-}
 WORKER_MIG=${WORKER_MIG:-}
 WORKER_MIG_ZONE=${WORKER_MIG_ZONE:-}

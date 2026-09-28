@@ -70,8 +70,10 @@ export async function disputeReview(jobId, { flags = [], comment = "", mode } = 
   return r.json();
 }
 
-/** The geometry check for an upload: `status` is off | none | pending | ready | unsupported |
- *  failed; a ready check carries the proposal and picture links. Never throws on a plain
+/** The geometry check for an upload: `status` is off | none | pending | scouted | ready |
+ *  unsupported | failed; a scouted or ready check carries the proposal, a ready one the picture
+ *  links, a failed one its `reason` and - when a step can be run again - the `retry` step. A
+ *  step whose worker died is served as failed once its time is up. Never throws on a plain
  *  "not yet" - the composer polls it. */
 export async function getGeometryCheck(sessionId) {
   const r = await apiFetch(`/api/v1/geometry/${sessionId}/check`, { headers: headers() });
@@ -84,6 +86,16 @@ export async function getGeometryCheck(sessionId) {
 export async function confirmGeometryCheck(sessionId, body) {
   const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/confirm`,
     { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** Run a step of the geometry check again - the scout when the part was never measured, the
+ *  naming when it was; `step` left out runs the one the check reports. Resolves to the check as
+ *  it then stands, the same shape getGeometryCheck returns. */
+export async function retryGeometryCheck(sessionId, step) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/retry`,
+    { method: "POST", headers: headers(), body: JSON.stringify(step ? { step } : {}) });
   if (!r.ok) throw await readError(r);
   return r.json();
 }

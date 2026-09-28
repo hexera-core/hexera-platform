@@ -71,7 +71,8 @@ def terminal_closing_text(job) -> str:
     event log carries no closing (crash-dropped, then reaped; or the log has expired).
 
     The durable application-rendered verdict when there is one - a reaped job now carries a
-    `worker_lost` record, so it renders "the worker was lost ... start a new run". Without a
+    `worker_lost` or `never_started` record, so it renders what happened and "run it again".
+    Without a
     record the line still says what is true and what to do, never the bare "Job already failed."
     that read as a shrug."""
     _frd = getattr(job, "final_result", None) if job is not None else None
@@ -83,8 +84,8 @@ def terminal_closing_text(job) -> str:
             pass
     _status = getattr(job, "status", None) if job is not None else None
     if getattr(_status, "value", _status) == "failed":
-        return ("This run was marked failed before a result record was written. "
-                "Start a new run to try again.")
+        return ("This run was marked failed before a result record was written. To try again, "
+                "say \"run it again\" in this chat to start a new run.")
     return "This run already succeeded; the result and its downloads are on the job record."
 
 

@@ -27,7 +27,38 @@ const EXTENTS = [["upstream", "upstream"], ["downstream", "downstream"], ["later
 // a blank box is a box the user has not answered, never a zero
 const num = (v, d) => (v == null || v === "" || isNaN(v)) ? d : Number(v);
 
-export const mm = (v) => (v == null || isNaN(v)) ? "?" : String(Math.round(v));
+/* THE NUMBERS ON THE FORM ARE THE FILE'S OWN. The check reads them under a declared or assumed
+   unit (`scale_to_m`, metres per file unit) and serves them as millimetres of that reading; here
+   they are shown as the file wrote them, with the unit the user has chosen beside every one, so
+   "117" is 117 mm or 117 m as the unit box says - and a blade drawn in metres but read as
+   millimetres is corrected where the sizes are, not discovered after the run. The server
+   re-reads every length in the unit that stands when the form is confirmed. */
+export const UNITS = [["mm", "millimetres"], ["cm", "centimetres"], ["m", "metres"], ["in", "inches"]];
+const SCALE = { mm: 0.001, cm: 0.01, m: 1.0, in: 0.0254 };
+const raw = (v, p) => v * (0.001 / ((p && p.scale_to_m) || 0.001));
+// a number the user types is in the file's own units; the server takes lengths in the reading's
+// millimetres, so it goes back through the same scale
+const typed = (v, p) => v * (((p && p.scale_to_m) || 0.001) / 0.001);
+function fmt3(v) { const a = Math.abs(v); return a >= 100 ? String(Math.round(v)) : a === 0 ? "0" : String(Number(v.toPrecision(3))); }
+// a box the user may leave as it is holds the exact value, not a rounded reading of it
+const exact = (v) => String(Number(v.toFixed(6)));
+export const shown = (v, p) => (v == null || isNaN(v)) ? "?" : fmt3(raw(v, p));
+export const unitOf = (p) => (p && SCALE[p.unit] ? p.unit : "mm");
+const sym = (p) => `<span class="gc-u">${unitOf(p)}</span>`;
+/** A length a person can picture, from metres: 2.66 cm, 1.05 m, 117 m, 1.05 km. */
+export function lengthWords(metres) {
+  let v, u;
+  if (metres >= 1000) { v = metres / 1000; u = "km"; } else if (metres >= 1) { v = metres; u = "m"; }
+  else if (metres >= 0.01) { v = metres * 100; u = "cm"; } else { v = metres * 1000; u = "mm"; }
+  return `${fmt3(v)} ${u}`;
+}
+/** What the unit row says beside the box: on whose word the unit is, and how long the part then is. */
+export function unitHint(p) {
+  const longest = Math.max(0, ...(p.size_mm || []).map((v) => raw(v, p)));
+  const basis = { file_declared: "the file says so", user_confirmed: "confirmed", chosen: "your choice" }[p.unit_basis]
+    || "the file does not say - check the size";
+  return longest > 0 ? `${basis} · the part would be ${lengthWords(longest * SCALE[unitOf(p)])} long` : basis;
+}
 /* a name lands inside a double-quoted attribute; `esc` covers text, this covers the quote too,
    so a model-given label like 2" inlet neither ends the value early nor smuggles markup in */
 export const attr = (v) => esc(v).replace(/"/g, "&quot;");
@@ -39,16 +70,16 @@ function sel(cls, opts, cur) {
 
 /** One row of the openings table. An opening the user added off any measured face has no size
  *  yet: its size cell is a box to type the diameter into. */
-export function rowHtml(o) {
+export function rowHtml(o, p) {
   const id = Number(o.id);
   const size = o.shape === "unknown"
-    ? `<input class="gc-num gc-dia" type="number" min="1" step="1" placeholder="mm across" aria-label="diameter of opening ${id} in millimetres">`
-    : o.shape === "circle" ? esc(`${mm(o.diameter_mm)} mm across`) : esc(`${mm(o.width_mm)} x ${mm(o.height_mm)} mm`);
-  const at = (o.centroid_mm || []).map((v) => mm(v)).join(", ");
+    ? `<input class="gc-num gc-dia" type="number" min="0" step="any" placeholder="${unitOf(p)} across" aria-label="diameter of opening ${id}">`
+    : o.shape === "circle" ? `${esc(shown(o.diameter_mm, p))} ${sym(p)} across` : `${esc(shown(o.width_mm, p))} x ${esc(shown(o.height_mm, p))} ${sym(p)}`;
+  const at = (o.centroid_mm || []).map((v) => shown(v, p)).join(", ");
   return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}">${id}</td>
       <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${id}"></td>
       <td>${sel("gc-role", ROLES, o.role)}</td>
-      <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) mm</td>
+      <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) ${sym(p)}</td>
       <td class="gc-conf" title="how sure the check is">${o.added ? "you" : Math.round((o.confidence || 0) * 100) + "%"}</td>
       <td class="gc-del"><button class="gc-x" type="button" title="remove this opening" aria-label="remove opening ${id}">×</button></td></tr>`;
 }
@@ -56,7 +87,7 @@ export function rowHtml(o) {
 /** The form for one proposal: the kind and flow selects, the openings table, the notes, and the
  *  one action. Every row carries its opening id so the reader can find it again. */
 export function formHtml(p) {
-  const rows = (p.openings || []).map(rowHtml).join("");
+  const rows = (p.openings || []).map((o) => rowHtml(o, p)).join("");
   const notes = (p.notes || []).map((n) => `<div class="gc-note">${esc(n)}</div>`).join("");
   const ext = p.extents || {};
   // A BODY IN A FLOW: which way the fluid travels, the part's length along it, how far the far
@@ -64,12 +95,13 @@ export function formHtml(p) {
   // flow is around the part; the openings table only when it is through.
   const external = `<div class="gc-ext"${p.flow === "external" ? "" : " hidden"}>
       <div class="rc-row"><div class="rc-k">The fluid travels along</div><div class="rc-v">${sel("gc-sel gc-axis", AXES, p.flow_axis || "unknown")}${p.flow_axis_guessed ? '<span class="gc-guess">a guess - check it</span>' : ""}</div></div>
-      <div class="rc-row"><div class="rc-k">Reference length</div><div class="rc-v"><input class="gc-num gc-ref" type="number" min="1" step="1" value="${num(p.reference_length_mm, 0)}" aria-label="reference length in millimetres"> mm along the flow</div></div>
+      <div class="rc-row"><div class="rc-k">Reference length</div><div class="rc-v"><input class="gc-num gc-ref" type="number" min="0" step="any" value="${p.reference_length_mm == null ? 0 : exact(raw(num(p.reference_length_mm, 0), p))}" aria-label="reference length"> ${sym(p)} along the flow</div></div>
       <div class="rc-row"><div class="rc-k">Far field, in lengths</div><div class="rc-v gc-extents">${EXTENTS.map(([k, l]) =>
         `<label>${esc(l)} <input class="gc-num gc-ext-${k}" data-k="${k}" type="number" min="0.5" step="0.5" value="${num(ext[k], 5)}"></label>`).join("")}</div></div>
       <div class="rc-row"><div class="rc-k">On the ground</div><div class="rc-v"><label><input class="gc-ground" type="checkbox"${p.grounded ? " checked" : ""}> the part stands on the ground</label></div></div>
     </div>`;
   return `<div class="rc-row"><div class="rc-k">The file is</div><div class="rc-v">${sel("gc-sel gc-kind", KIND, p.input_kind)}</div></div>
+    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p))}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
     ${rows ? `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
@@ -98,14 +130,39 @@ export function applyFlow(root) {
   show();
 }
 
-/** The external-flow answers as the form holds them now. */
-export function readExternal(root) {
+/** Keep the unit the user chooses in step everywhere a size is shown, and say what the part
+ *  then is. Call once after the form is in the document; `p.unit` follows the box. */
+export function bindUnit(root, p) {
+  const unitSel = root.querySelector(".gc-unit");
+  if (!unitSel) return;
+  const show = () => {
+    root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unitOf(p); });
+    root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unitOf(p)} across`; });
+    const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
+  };
+  unitSel.addEventListener("change", () => { p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true; show(); });
+  show();
+}
+
+/** A unit settled elsewhere - the chat - reaches a form the user has not set themselves. */
+export function followUnit(root, p, unit, basis) {
+  if (!unit || !SCALE[unit] || p.unit_touched || unit === p.unit) return;
+  p.unit = unit; p.unit_basis = basis || "user_confirmed";
+  const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = unit;
+  root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unit; });
+  root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unit} across`; });
+  const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
+}
+
+/** The external-flow answers as the form holds them now; the reference length typed in the
+ *  file's units, read back in the reading's millimetres. */
+export function readExternal(root, p) {
   const ext = {};
   // a margin below half a body length is no far field at all; a blank box keeps the default
   root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { ext[el.dataset.k] = Math.max(0.5, num(el.value, 5)); });
   const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref"), gEl = root.querySelector(".gc-ground");
   return { flow_axis: axisEl ? axisEl.value : "unknown",
-           reference_length_mm: refEl && num(refEl.value, 0) > 0 ? num(refEl.value, 0) : null,
+           reference_length_mm: refEl && num(refEl.value, 0) > 0 ? typed(num(refEl.value, 0), p) : null,
            extents: ext, grounded: !!(gEl && gEl.checked) };
 }
 
@@ -116,22 +173,18 @@ export function readForm(root, p) {
     const body = { id, name: tr.querySelector(".gc-name").value.trim() || o.name || `opening_${id}`,
                    role: tr.querySelector(".gc-role").value, centroid_mm: o.centroid_mm || null };
     const dia = tr.querySelector(".gc-dia");
-    if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = v; }
+    if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = typed(v, p); }    // typed in the file's units
     else if (o.shape === "circle") body.diameter_mm = o.diameter_mm;
     else { body.width_mm = o.width_mm; body.height_mm = o.height_mm; body.diameter_mm = o.diameter_mm; }
     return body;
   });
   const body = { input_kind: root.querySelector(".gc-kind").value, flow, part: p.part || "",
-                 openings, seed_point_mm: p.seed_point_mm || null, size_mm: p.size_mm || null };
-  if (flow === "external") Object.assign(body, readExternal(root));
+                 openings, seed_point_mm: p.seed_point_mm || null, size_mm: p.size_mm || null,
+                 // the scale the numbers were read under and the unit the user says the file is
+                 // in, for the server to record the unit and re-read every length in it
+                 scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m), unit: unitOf(p) };
+  if (flow === "external") Object.assign(body, readExternal(root, p));
   return body;
-}
-
-/** Naming mode: the labels are the measuring step's and not yet the model's, so nothing is
- *  editable and Proceed waits; off again when the model has answered or given up. */
-export function setNaming(root, on) {
-  root.classList.toggle("gc-naming", !!on);
-  root.querySelectorAll("input, select, button").forEach((el) => { el.disabled = !!on; });
 }
 
 /** Lock a form after it was accepted, and say so where the action was. */

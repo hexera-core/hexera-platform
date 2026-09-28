@@ -1,5 +1,5 @@
 # Responsibility: Let a run resume from its durable checkpoint without letting a superseded worker resume it.
-# Owns: the fenced checkpointer wrapper, the continuation decision, and graph entry.
+# Owns: the fenced checkpointer wrapper, the thread's disposition, the continuation decision, and graph entry.
 # Boundaries: durability and ownership around the graph; it runs no node.
 from __future__ import annotations
 
@@ -106,6 +106,35 @@ __all__ = ["FencedCheckpointer"]
 # #
 
 
+def disposition_of(snapshot) -> str:
+    """Name what a generation's durable thread holds, from the snapshot LangGraph reads back.
+
+    absent     nothing is saved: start from START.
+    unstarted  only the run's INPUT is saved: start from START (see below).
+    pending    a step past the input is saved and work remains: resume from that position.
+    complete   the graph finished: reconcile the terminal result.
+
+    UNSTARTED IS NOT PENDING, and treating it as pending was a real restart bug. LangGraph saves
+    a run's input checkpoint (step -1) and its first loop checkpoint (step 0) as two separate
+    background writes, with START's own task writes in between. A process that dies in that gap -
+    a worker killed seconds after it started, or a node that commits an effect and dies before the
+    step-0 write lands on a loaded host - leaves a thread whose LATEST checkpoint is the input:
+      - with nothing else saved, `next` is ('__start__',). It read as pending, and the geometry
+        refresh a resume performs raised "Ambiguous update, specify as_node" because no node has
+        written yet - so the same-execution restart failed the job instead of running it.
+      - with START's writes saved, `next` is () and it read as COMPLETE. The restart skipped
+        fetching its geometry and ran every node on the dead process's local file path.
+    Neither holds a completed node, so the only position there is to resume is START. The restart
+    keeps its generation, so a node the dead process had already started re-derives the same
+    operation identities and its committed effects are recognised rather than repeated.
+    """
+    if snapshot is None or snapshot.created_at is None:
+        return "absent"
+    if (getattr(snapshot, "metadata", None) or {}).get("source") == "input":
+        return "unstarted"
+    return "pending" if snapshot.next else "complete"
+
+
 class Continuation(NamedTuple):
 
     #: The graph input. `None` means CONTINUE from the durable position - LangGraph resumes the
@@ -122,7 +151,9 @@ class Continuation(NamedTuple):
 
 
 def plan_continuation(disposition: str, initial_state, materialized) -> Continuation:
-    if disposition == "absent":
+    # An unstarted thread saved only a previous process's copy of the input, carrying THAT
+    # process's local geometry path. This process's own initial state is the correct input.
+    if disposition in ("absent", "unstarted"):
         return Continuation(initial_state, False, disposition)
     if disposition == "pending":
         return Continuation(None, materialized is not None, disposition)
@@ -132,6 +163,9 @@ def plan_continuation(disposition: str, initial_state, materialized) -> Continua
 async def enter_graph(graph, graph_config, continuation: Continuation, materialized, *,
                       job_id: str, generation: int, jlog):
     if continuation.is_fresh:
+        if continuation.disposition == "unstarted":
+            jlog.info("Job %s saved only its input before the previous process stopped - "
+                      "starting again from START (generation=%d)", job_id, generation)
         return continuation.graph_input
     if continuation.disposition == "pending":
         jlog.info("Resuming job %s from its durable position (generation=%d)", job_id, generation)

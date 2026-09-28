@@ -176,7 +176,10 @@ class _FakeCelery:
         self.conf = types.SimpleNamespace()
         self.conf.update = lambda **kw: self.conf.__dict__.update(kw)
     def task(self, *a, **k):
+        # the options too, for the same reason: a task's time limits are a contract the
+        # application reads a check through, and a test must be able to hold them to it
         def _decorator(fn):
+            fn.task_options = dict(k)
             return fn
         return _decorator
 
