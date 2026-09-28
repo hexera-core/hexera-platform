@@ -46,6 +46,14 @@ configureStream({
   onEvent,
   onTerminal(job) {
     Stage.final(terminalResult(job, getState.outcomeMessage()));
+    // A DEEP-LINKED RUN HAS NO CONVERSATION ON THIS PAGE. Opened from a link, the page watches
+    // the run but holds no session, so a message would go nowhere: the box stays closed and says
+    // what does work here - a new upload, which opens a new session.
+    if (!getState.sessionId()) {
+      disableInput();
+      setPlaceholder("Upload a geometry file to start a new session…");
+      return;
+    }
     // THE RUN IS OVER, THE CONVERSATION IS NOT: the same session takes the next run on this
     // geometry - the same requirements again, or a change - and the composer says so.
     enableInput();

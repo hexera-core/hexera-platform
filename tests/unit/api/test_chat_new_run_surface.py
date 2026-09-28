@@ -44,6 +44,19 @@ def test_the_offer_never_appears_without_a_session_to_continue():
         "a deep-linked run has no conversation here; offering one would send nothing")
 
 
+def test_a_deep_linked_run_that_ends_keeps_the_composer_closed():
+    # Opened from a link, the page holds no session: a composer opened and inviting another run
+    # would swallow whatever is typed. It stays closed and points at the upload instead.
+    main = (UI / "js" / "main.js").read_text()
+    on_terminal = main.split("onTerminal(job) {", 1)[1].split("\n  },", 1)[0]
+    guard, _, rest = on_terminal.partition("if (!getState.sessionId()) {")
+    assert rest, "the end of a run opens the composer whether or not there is a session"
+    no_session = rest.split("\n    }", 1)[0]
+    assert "disableInput()" in no_session and "return;" in no_session
+    assert "Upload a geometry file" in no_session
+    assert "enableInput()" not in guard, "the composer opens before the session is checked"
+
+
 def test_the_offer_is_styled_in_both_shipped_copies():
     for tree in (UI, REPO / "apps" / "console" / "public" / "static"):
         css = (tree / "css" / "result.css").read_text()
@@ -117,3 +130,43 @@ def test_a_disputed_run_whose_session_moved_on_inherits_its_own_dispatch_payload
     # a run with neither (older than dispatch payloads, session gone) degrades to nothing
     none = simulation._parent_intake(None, None)
     assert none.session_id == "" and none.intake_patches == [] and none.purpose == ""
+
+
+# a run the conversation has moved on from keeps its label in the run lists
+
+def _compiled(statement) -> str:
+    from sqlalchemy.dialects import postgresql
+    return " ".join(str(statement.compile(dialect=postgresql.dialect(),
+                                          compile_kwargs={"literal_binds": True})).split())
+
+
+def test_a_released_run_is_listed_under_the_label_it_was_dispatched_with():
+    # Releasing the session's link breaks the join that supplied the label. The label then comes
+    # from the run's own dispatch payload - the same `domain`, frozen at approval - while a
+    # still-linked session keeps supplying it exactly as before.
+    from meshpipeline.persistence.repositories import job_repository as jr
+
+    label = _compiled(jr._task_label())
+    assert label.startswith("coalesce(chat_sessions.domain, "), label
+    assert "jsonb_extract_path_text(simulation_jobs.dispatch_payload, 'domain')" in label
+    assert "nullif(" in label, "an empty dispatched label must read as no label, not ''"
+
+
+async def test_both_run_lists_select_that_label():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from meshpipeline.persistence.repositories import job_repository as jr
+
+    seen: list = []
+    db = MagicMock()
+
+    async def _execute(statement):
+        seen.append(_compiled(statement))
+        return MagicMock(all=lambda: [])
+    db.execute = AsyncMock(side_effect=_execute)
+    await jr.JobRepository().list_for_owner(db, "alice")
+    await jr.JobRepository().list_recent_admin(db)
+    label = _compiled(jr._task_label())
+    assert len(seen) == 2 and all(label in sql for sql in seen), seen
+    assert all("LEFT OUTER JOIN chat_sessions" in sql for sql in seen), (
+        "a run with no session must still be listed")
