@@ -53,10 +53,11 @@ _FILLER = frozenset({
 # idioms mean the opposite of their words and go first.
 _NEGATION = frozenset({"not", "dont", "never", "cancel", "stop"})
 _DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
-#: In their filler-free form ("I don't think so" reads as "not think"), matched only where the
-#: answer begins or ends.
+#: In their filler-free form ("I don't think so" reads as "not think", "forget it" as "forget"),
+#: matched only where the answer begins or ends: "yes, forget it" retracts, "yes, but forget the
+#: ground patch" does not.
 _DECLINE_IDIOMS = ("not think", "not really", "rather not", "prefer not", "no way", "not yet",
-                   "not now", "changed my mind")
+                   "not now", "changed my mind", "forget")
 _INTENSIFIERS = frozenset({"definitely", "absolutely", "certainly", "surely"})
 _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use", "pick", "take",
                      "keep", "go", "fancy", "wish"})
