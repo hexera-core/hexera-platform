@@ -161,7 +161,8 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     # the SAME measurements this report card is built from - a manifest cannot publish a grade its
     # own numbers contradict.
     _qc_rows = _qc_evaluate(mesh_mode, measurements_from_manifest(
-        {"quality": quality, "patch_face_counts": fc, "patch_types": roles}))
+        {"quality": quality, "patch_face_counts": fc, "patch_types": roles,
+         "flow_topology": flow_topology or ""}))
     _gating = [r for r in _qc_rows if r["gating"] and r["passed"] is not None]
     manifest = {
         "schema_version": "2.1", "mesh_mode": mesh_mode, "mesh_written": owner,

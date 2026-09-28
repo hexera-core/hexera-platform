@@ -68,7 +68,10 @@ def contract_patches(workspace) -> list[dict]:
 
 
 def contract_wall_patch(workspace) -> str | None:
-    for p in contract_patches(workspace):
-        if p["type"] == "wall":
-            return p["name"]
-    return None
+    """The BODY's wall: the first declared wall that is not the ground plane. The ground is a
+    face of the far-field box, so naming the body's surface after it would stage the car as the
+    floor - whichever order the user listed the two walls in."""
+    from meshpipeline.engines.ground_plane import is_ground
+    walls = [p["name"] for p in contract_patches(workspace) if p["type"] == "wall"]
+    body = [w for w in walls if not is_ground(w, "wall")]
+    return (body or walls or [None])[0]
