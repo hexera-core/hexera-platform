@@ -30,6 +30,20 @@ def small_enough(monkeypatch):
     monkeypatch.setattr(gm.polcfg, "GEOMETRY_MEASUREMENT_SYNC_MAX_MB", 4.0, raising=False)
 
 
+def _raising(exc):
+    """A stand-in for `asyncio.wait_for` that fails the way we want to test.
+
+    It CLOSES the coroutine it was handed before raising. `on_upload` builds `asyncio.to_thread(...)` as the
+    argument, so a fake that simply raises leaves it un-awaited and every test here emits a RuntimeWarning
+    about it - noise that would sit in the suite forever and read as a defect in the code under test.
+    """
+    async def _fake(coro=None, *a, **k):
+        if hasattr(coro, "close"):
+            coro.close()
+        raise exc
+    return _fake
+
+
 def _run(**kw):
     return asyncio.run(gm.on_upload("11111111-1111-1111-1111-111111111111", "owner-1",
                                     size_bytes=1024, **kw))
@@ -38,10 +52,7 @@ def _run(**kw):
 def test_a_measurement_that_outlives_the_ceiling_is_handed_to_a_worker(small_enough, monkeypatch):
     handed: list[tuple] = []
 
-    async def _never(*a, **k):
-        raise TimeoutError
-
-    monkeypatch.setattr(gm.asyncio, "wait_for", _never)
+    monkeypatch.setattr(gm.asyncio, "wait_for", _raising(TimeoutError()))
     monkeypatch.setattr(gm, "enqueue_measurement",
                         lambda sid, owner, *, purpose: handed.append((sid, owner, purpose)) or True)
     assert _run() == "queued", "it used to return 'skipped' and enqueue nothing"
@@ -55,10 +66,7 @@ def test_the_purpose_the_caller_asked_for_travels_to_the_worker(small_enough, mo
     measurement and would be a quiet substitution."""
     handed: list[tuple] = []
 
-    async def _never(*a, **k):
-        raise TimeoutError
-
-    monkeypatch.setattr(gm.asyncio, "wait_for", _never)
+    monkeypatch.setattr(gm.asyncio, "wait_for", _raising(TimeoutError()))
     monkeypatch.setattr(gm, "enqueue_measurement",
                         lambda sid, owner, *, purpose: handed.append(purpose) or True)
     assert _run(purpose="external_cfd") == "queued"
@@ -68,10 +76,7 @@ def test_the_purpose_the_caller_asked_for_travels_to_the_worker(small_enough, mo
 def test_no_worker_available_is_still_skipped_and_never_an_exception(small_enough, monkeypatch):
     """The fail-open is unchanged where it belongs: a broker that will not take the task is an upload that
     still succeeds with no measurement behind it."""
-    async def _never(*a, **k):
-        raise TimeoutError
-
-    monkeypatch.setattr(gm.asyncio, "wait_for", _never)
+    monkeypatch.setattr(gm.asyncio, "wait_for", _raising(TimeoutError()))
     monkeypatch.setattr(gm, "enqueue_measurement", lambda *a, **k: False)
     assert _run() == "skipped"
 
@@ -81,10 +86,7 @@ def test_a_failure_that_is_not_a_timeout_is_not_retried(small_enough, monkeypatc
     Only the timeout is retried, and this is the test that keeps the branch narrow."""
     handed: list = []
 
-    async def _boom(*a, **k):
-        raise RuntimeError("the file is not readable")
-
-    monkeypatch.setattr(gm.asyncio, "wait_for", _boom)
+    monkeypatch.setattr(gm.asyncio, "wait_for", _raising(RuntimeError("the file is not readable")))
     monkeypatch.setattr(gm, "enqueue_measurement", lambda *a, **k: handed.append(1) or True)
     assert _run() == "skipped"
     assert handed == [], "a non-timeout failure must not spend a worker"
