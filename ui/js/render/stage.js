@@ -117,6 +117,8 @@ export const Stage = {
     applyFlow(g);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
+    // a triangle file carries no unit: the card waits on the chat for that alone
+    if(d.unit_needed){btn.disabled=true;g.querySelector('.gc-hint').textContent='The file does not say its unit: answer the question in the chat first.';}
     btn.onclick=async()=>{
       const body=readForm(g,p);
       btn.disabled=true;btn.textContent='Confirming…';

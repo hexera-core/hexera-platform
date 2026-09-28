@@ -1,5 +1,7 @@
 # Responsibility: Serve the geometry check to the console - what the scout proposed and the
 # pictures it drew - and record what the user confirmed on it, in the session the intake reads.
+# A check is served through the application's time box, so a step whose worker died reads as
+# failed with a reason and a way on (a retry, or the chat), never as a spinner that never ends.
 # Boundaries: transport. It reads and writes the check's stored objects and the session's declared
 # fields; it judges nothing, draws nothing and calls no model.
 from __future__ import annotations
@@ -107,26 +109,44 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     `ready` (with the proposal and picture links), `unsupported` or `failed` (with a reason)."""
     if not gcfg.GEOMETRY_CHECK_ENABLED:
         return {"status": STATUS_OFF}
-    await _owned_session(session_id, owner_id, organization_id)
-    from meshpipeline.application.geometry_check import check_object_key, naming_requested
+    session = await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application.geometry_check import (
+        check_object_key,
+        naming_pending,
+        naming_requested,
+        retry_step,
+        time_boxed,
+    )
     from meshpipeline.contracts.object_storage import get_object_store
 
-    payload = _read_json(check_object_key(str(session_id), "scout.json"))
-    if payload is None:
+    stored = _read_json(check_object_key(str(session_id), "scout.json"))
+    if stored is None:
         return {"status": STATUS_NONE}
-    from meshpipeline.contracts.geometry_fields import form_spec
-    payload["fields"] = form_spec()
-    payload.setdefault("named", payload.get("status") == "ready")
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
     try:
-        payload["naming_requested"] = naming_requested(str(session_id)) is not None
+        requested = naming_requested(str(session_id))
     except Exception as exc:  # noqa: BLE001 - a marker we cannot read is "not asked yet", never a broken check
         logger.warning("geometry check: naming marker unreadable (%s) - session_id=%s", exc, session_id)
-        payload["naming_requested"] = False
-    if payload.get("status") in ("ready", "scouted"):
-        # the stage opens on a scouted check too, with the code's labels; the pictures are for
-        # the card, which only shows once the check is ready
+        requested = None
+    # THE TIME BOX. A scout still pending past the worker's hard limit, or a naming asked for that
+    # long ago and never answered, is served as failed with a plain reason and the step to run
+    # again - the read path is the one place that cannot be forgotten, and it stores nothing, so
+    # a worker that was merely slow still lands its result.
+    payload = time_boxed(stored, requested) or stored
+    from meshpipeline.contracts.geometry_fields import form_spec
+    payload["fields"] = form_spec()
+    payload.setdefault("named", payload.get("status") == "ready")
+    payload["naming_requested"] = naming_pending(requested)
+    # a triangle file carries no unit: until the chat has settled it, the sizes on the stage are
+    # in a unit nobody has named, and the stage says so instead of confirming them
+    payload["unit_needed"] = unit_needed(session)
+    if payload.get("status") == "failed":
+        payload.setdefault("retry", retry_step(payload))
+    if payload.get("status") in ("ready", "scouted") or payload.get("facts"):
+        # the stage opens on a scouted check too, with the code's labels, and keeps them on a
+        # naming that failed; the pictures are for the card, which only shows once the check
+        # is ready
         if payload.get("status") == "ready":
             store = get_object_store()
             payload["pictures"] = [
@@ -140,6 +160,78 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     if confirmed is not None:
         payload["confirmed"] = confirmed
     return payload
+
+
+def unit_needed(session) -> bool:
+    """Whether the session's file still has no unit - none declared in it, none confirmed in the
+    chat - so nothing measured on it can be confirmed yet."""
+    return bool(getattr(session, "geometry_source_id", None)) and not getattr(session, "geometry_interpretation_id", None)
+
+
+UNIT_FIRST = ("Say in the chat what unit the file is in first - millimetres, centimetres, metres or "
+              "inches. The sizes on the picture cannot be confirmed in a unit nobody has named.")
+
+
+class RetryIn(BaseModel):
+    #: the step to run again; left out, it is the one the check reports for a retry
+    step: Literal["scout", "naming"] | None = None
+
+
+@router.post("/{session_id}/check/retry")
+async def retry_check(session_id: uuid.UUID, body: RetryIn | None = None,
+                      owner_id: str = Depends(owner_dep), organization_id: str = Depends(org_dep)) -> dict:
+    """Run a step of the check again - the scout when the part was never measured, the naming
+    when it was - and serve the check as it then stands. The way on from a drawing that took
+    too long or a naming that never answered; the other way on is the chat, which asks what
+    the picture would have settled."""
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        raise HTTPException(404, "The geometry check is not enabled on this deployment")
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "This session has already been dispatched")
+    from meshpipeline.application import geometry_check as gc
+    from meshpipeline.application import geometry_hold as gh
+    from meshpipeline.persistence.session import get_db
+
+    sid = str(session_id)
+    stored = gc.read_check(sid)
+    if stored is None:
+        raise HTTPException(404, "No geometry check has been started for this session")
+    try:
+        requested = gc.naming_requested(sid)
+    except Exception:  # noqa: BLE001 - as the read treats it: not asked yet
+        requested = None
+    step = (body.step if body is not None else None) or gc.retry_step(gc.time_boxed(stored, requested))
+    if step is None:
+        raise HTTPException(409, "This geometry check has nothing to run again")
+    async with get_db() as db:
+        interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+        source = await _source_payload(db, session, owner_id, organization_id)
+    if step == gc.RETRY_SCOUT:
+        if source is None:
+            raise HTTPException(409, "The uploaded file could not be found for this session")
+        # the words handed to an earlier naming go back with the new scout's facts
+        gc.clear_naming_request(sid)
+        gc.start_scout(sid, owner_id, source=source, interpretation=interpretation, where="retry")
+    else:
+        purpose = str((requested or {}).get("purpose_text") or gh.purpose_from(session.messages))
+        if not gc.restart_naming(sid, owner_id, purpose_text=purpose, interpretation=interpretation):
+            raise HTTPException(409, "The part has not been measured yet, so its openings cannot be "
+                                     "named; run the scout again first")
+    logger.info("geometry check %s retried - session_id=%s", step, session_id)
+    return await get_check(session_id, owner_id, organization_id)
+
+
+async def _source_payload(db, session, owner_id: str, organization_id: str) -> dict | None:
+    """The uploaded file as the scout reads it, from the session's source row, or None."""
+    source_id = getattr(session, "geometry_source_id", None)
+    if not source_id:
+        return None
+    from meshpipeline.contracts.geometry_source import GeometrySourceRef
+    from meshpipeline.persistence.repositories.geometry_source_repository import GeometrySourceRepository
+
+    row = await GeometrySourceRepository().get_for_owner(db, source_id, owner_id, organization_id=organization_id)
+    return GeometrySourceRef.from_row(row).to_payload() if row is not None else None
 
 
 @router.get("/{session_id}/check/skin")
@@ -250,6 +342,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "This session has already been dispatched")
+    if unit_needed(session):
+        # the numbers on the form are the file's own, read as millimetres until the chat says
+        # otherwise; a declaration in a unit nobody named would bind the ports at the wrong scale
+        raise HTTPException(409, UNIT_FIRST)
     names = [o.name for o in body.openings]
     if len(set(names)) != len(names):
         raise HTTPException(422, "Every opening needs its own name")

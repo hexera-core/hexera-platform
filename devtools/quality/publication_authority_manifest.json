@@ -701,6 +701,19 @@
   ]
  },
  {
+  "context": "agents/intake/unit_clarification.py::classify::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "classify",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SIZE_BEFORE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/loop/accounting.py::AgentRunAccountant.record_round::stage#1|NotAPublisher|not-a-publisher|",
   "path": "agents/loop/accounting.py",
   "qualname": "AgentRunAccountant.record_round",

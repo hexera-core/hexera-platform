@@ -1,8 +1,10 @@
-# Responsibility: Verify the stage opens the moment the part is measured - labels greyed out under
-# the naming banner, nothing editable - fills in the model's labels when they arrive, lets the
-# user add a sticker (snapped to a measured face, or free with a size to type) and remove one,
-# and sends exactly those openings when proceeding. Also that the prepared skin draws - smooth
-# normals, sharp edges - with none of the view cube, snap buttons or hint bar that were removed.
+# Responsibility: Verify the stage opens the moment the part is measured - the measuring step's
+# labels editable under a banner that says what is happening, so the user can proceed without
+# the naming - fills in the model's labels when they arrive, waits on the chat for the file's
+# unit alone, offers to run a naming that gave up again, lets the user add a sticker (snapped to
+# a measured face, or free with a size to type) and remove one, and sends exactly those openings
+# when proceeding. Also that the prepared skin draws - smooth normals, sharp edges - with none of
+# the view cube, snap buttons or hint bar that were removed.
 # Boundaries: the skin is the one the worker stores, built through the same code; only the
 # network is stood in for. Pixel picking is not driven here (the hook adds at a point instead).
 from __future__ import annotations
@@ -75,8 +77,9 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     live.wait_for(f"window._vdbg && window._vdbg['gstage:{SESSION}']", timeout=90,
                   what="the geometry stage to initialise")
 
-    # SCOUTED: the part is there to turn, the code's labels are shown greyed out, nothing is
-    # editable, Proceed and Add are off, the banner says the naming is under way
+    # SCOUTED: the part is there to turn, the code's labels are shown and editable - the user can
+    # fix them and proceed without waiting for the model - and the banner says the stage is
+    # waiting on the chat, not on the model
     naming = live.evaluate(f"""(() => {{
       const h = window._vdbg['gstage:{SESSION}'], root = document.getElementById('gstage-{SESSION}');
       return {{fellBack: window.__fellBack, naming: window.__stage.isNaming(), pins: h.pins(),
@@ -84,16 +87,16 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
                bare: !root.querySelector('.v-hint') && !root.querySelector('.gc-views'),
                banner: root.querySelector('.gc-banner').textContent.trim(), bannerHidden: root.querySelector('.gc-banner').hidden,
                greyed: root.querySelector('.gc-form').classList.contains('gc-naming'),
-               allOff: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => e.disabled),
+               allOn: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => !e.disabled),
                names: [...root.querySelectorAll('.gc-name')].map(i => i.value),
                axes: {{el: !!root.querySelector('.gc-axes'), lines: root.querySelectorAll('.gc-axes line').length,
                       labels: [...root.querySelectorAll('.gc-axes text')].map(t => t.textContent), now: h.axes()}}}};
     }})()""")
-    assert naming["fellBack"] is False and naming["naming"] is True and naming["pins"] == 2, naming
+    assert naming["fellBack"] is False and naming["naming"] is False and naming["pins"] == 2, naming
     assert naming["edges"] == 12 and naming["smooth"] is True and naming["bare"] is True, naming
     # before the user has answered, the banner says the stage is waiting on the chat
     assert naming["bannerHidden"] is False and "Answer the question" in naming["banner"], naming
-    assert naming["greyed"] is True and naming["allOff"] is True and naming["names"] == ["inlet", "outlet"], naming
+    assert naming["greyed"] is False and naming["allOn"] is True and naming["names"] == ["inlet", "outlet"], naming
     # the axes overlay: three lines with their letters, and from the opening view Z runs up the screen
     ax = naming["axes"]
     assert ax["el"] is True and ax["lines"] == 3 and ax["labels"] == ["X", "Y", "Z"], ax
@@ -116,15 +119,17 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     tp = turned["top"]["axes"]
     assert abs(tp["y"][1] - 1) < 0.01 and tp["z"][2] > 0.99 and turned["top"]["dimmed"] == [False, False, False], turned
 
-    # the user answered: the check says the naming was asked for, and the banner says so, with
-    # the form still greyed out
+    # the user answered: the check says the naming was asked for, and the banner says so; the
+    # form stays open, so the user can still fix the names and proceed without waiting
     asked = live.evaluate(f"""(() => {{
       window.__stage.update(__ASKED__);
       const root = document.getElementById('gstage-{SESSION}');
       return {{naming: window.__stage.isNaming(), banner: root.querySelector('.gc-banner').textContent.trim(),
-               greyed: root.querySelector('.gc-form').classList.contains('gc-naming')}};
+               greyed: root.querySelector('.gc-form').classList.contains('gc-naming'),
+               allOn: [...root.querySelectorAll('.gc-form input, .gc-form select, .gc-form button')].every(e => !e.disabled)}};
     }})()""".replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True))))
     assert asked["naming"] is True and "Naming the openings" in asked["banner"] and asked["greyed"] is True, asked
+    assert asked["allOn"] is True, asked
 
     # READY: the model's labels replace the code's, the form opens, the banner goes; the stickers
     # keep the code's positions
@@ -254,6 +259,57 @@ def test_the_first_opening_added_to_a_part_that_had_none_keeps_the_add_button(li
     assert state["armed"] is True and state["after"] == {"add": True, "rows": 2, "pins": 2}, state
     live.evaluate("window.__stage3.release()")
     assert_clean(live, "the geometry stage after adding to an empty table")
+
+
+def test_a_file_with_no_unit_waits_on_the_chat_for_that_alone_and_a_failed_naming_offers_a_retry(live):
+    check = _check("scouted"); check["unit_needed"] = True
+    live.evaluate("""(async () => {
+      const SKIN = __SKIN__, CHECK = __CHECK__, ASKED = __ASKED__;
+      const real = window.fetch.bind(window);
+      window.fetch = (u, o) => String(u).includes('/geometry/__S__-unit/check/skin')
+        ? Promise.resolve(new Response(JSON.stringify(SKIN), {status: 200, headers: {'Content-Type': 'application/json'}}))
+        : real(u, o);
+      window.__retried = null;
+      const { openGeometryStage } = await import('/static/js/viewer/geometry_stage.js');
+      window.__stage5 = await openGeometryStage('__S__-unit', CHECK, async () => ({message: 'ok'}),
+        {anchorEl: document.getElementById('stage'), fallback: () => {},
+         retry: async (step) => { window.__retried = step; return ASKED; }});
+    })()""".replace("__SKIN__", json.dumps(_skin())).replace("__CHECK__", json.dumps(check))
+       .replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True))).replace("__S__", SESSION), timeout=60)
+    live.wait_for(f"window._vdbg && window._vdbg['gstage:{SESSION}-unit']", timeout=90,
+                  what="the geometry stage to initialise")
+    # THE UNIT: Proceed waits on the chat, the names can be fixed meanwhile, the banner says why
+    waiting = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{SESSION}-unit');
+      return {{proceedOff: root.querySelector('.gc-proceed').disabled, banner: root.querySelector('.gc-banner').textContent.trim(),
+               nameOn: !root.querySelector('.gc-name').disabled}};
+    }})()""")
+    assert waiting["proceedOff"] is True and "unit" in waiting["banner"] and waiting["nameOn"] is True, waiting
+    # the chat settled it: Proceed opens
+    opened = live.evaluate(f"""(() => {{
+      window.__stage5.update(__SCOUTED__);
+      const root = document.getElementById('gstage-{SESSION}-unit');
+      return {{proceedOn: !root.querySelector('.gc-proceed').disabled, banner: root.querySelector('.gc-banner').textContent.trim()}};
+    }})()""".replace("__SCOUTED__", json.dumps(_check("scouted"))))
+    assert opened["proceedOn"] is True and "unit" not in opened["banner"], opened
+    # THE NAMING NEVER ANSWERED: the banner says so and offers to run it again; the retry brings
+    # the naming banner back, with the form still open
+    failed = dict(_check("scouted"), status="failed", reason="the naming step did not answer", retry="naming")
+    gave_up = live.evaluate(f"""(() => {{
+      window.__stage5.update(__FAILED__);
+      const root = document.getElementById('gstage-{SESSION}-unit');
+      const btn = root.querySelector('.gc-banner .gc-retry');
+      const seen = {{warn: root.querySelector('.gc-banner').classList.contains('warn'), banner: root.querySelector('.gc-banner').textContent.trim(),
+                    retry: !!btn, proceedOn: !root.querySelector('.gc-proceed').disabled}};
+      if (btn) btn.click();
+      return seen;
+    }})()""".replace("__FAILED__", json.dumps(failed)))
+    assert gave_up["warn"] is True and "did not answer" in gave_up["banner"] and gave_up["retry"] is True, gave_up
+    assert gave_up["proceedOn"] is True, gave_up
+    live.wait_for("window.__retried === 'naming' && window.__stage5.isNaming() === true", timeout=30,
+                  what="the retry to bring the naming back")
+    live.evaluate("window.__stage5.release()")
+    assert_clean(live, "the geometry stage waiting on the unit and retrying the naming")
 
 
 def test_a_naming_that_never_comes_opens_the_form_and_a_late_answer_keeps_the_users_edits(live):

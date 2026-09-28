@@ -9,14 +9,15 @@
 
 /* THE GEOMETRY STAGE.
  *
- * The stage opens the moment the part is measured, with the measuring step's own labels greyed
- * out under a "naming" banner, and fills in the model's labels when they arrive - the user is
- * already turning the part while the model thinks. Proceeding hands the workbench back, and the
- * conversation carries on where it was.
+ * The stage opens the moment the part is measured, with the measuring step's own labels under a
+ * banner that says what is happening, and fills in the model's labels when they arrive - the
+ * user is already turning the part while the model thinks, and can fix the labels and proceed
+ * without waiting for it. Proceeding hands the workbench back, and the conversation carries on
+ * where it was.
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, formHtml, markConfirmed, mm, readExternal, readForm, rowHtml, setNaming }
+import { applyFlow, formHtml, markConfirmed, mm, readExternal, readForm, rowHtml }
   from "../render/geometry_form.js";
 
 let _vtkP = null;
@@ -84,9 +85,11 @@ function leadHtml(p) {
 }
 
 /** Open the check as a stage. `d` is the check the API served (its `proposal` is what is shown;
- *  `named: false` opens the stage in naming mode, labels greyed out under a banner until
- *  `update` brings the model's), `confirm(body)` records the answer. `opts.fallback()` is called
- *  instead when the stage cannot be drawn - no skin, no WebGL - so the user still gets the card. */
+ *  `named: false` opens the stage with the measuring step's labels under a banner that says what
+ *  is happening, and `update` brings the model's when they arrive), `confirm(body)` records the
+ *  answer, `opts.retry(step)` runs a step of the check again and resolves to the check as it then
+ *  stands. `opts.fallback()` is called instead when the stage cannot be drawn - no skin, no
+ *  WebGL - so the user still gets the card. */
 export async function openGeometryStage(sessionId, d, confirm, opts) {
   opts = opts || {};
   const p = d.proposal || {};
@@ -95,7 +98,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
   box.innerHTML = `<div class="v-bar gc-panel">
       <div class="v-row"><b>Geometry check</b><span class="v-meta">what Hexera sees</span></div>
-      <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span></div>
+      <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span><span class="gc-banner-act"></span></div>
       <div class="gc-lead">${leadHtml(p)}</div>
       <div class="gc-form">${formHtml(p)}</div>
     </div>
@@ -110,31 +113,61 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const form = panel.querySelector(".gc-form");
   applyFlow(form);
   const banner = panel.querySelector(".gc-banner");
-  function showBanner(text, cls) {
-    banner.hidden = !text; banner.className = "gc-banner" + (cls ? " " + cls : "");
-    banner.querySelector(".gc-banner-text").textContent = text || "";
-  }
-  // THE BANNER SAYS WHAT IS REALLY HAPPENING: the model only starts naming once the user has
-  // answered the question in the chat; before that the stage is waiting on them, not on it
-  const bannerFor = (d1) => (d1 && d1.naming_requested
-    ? "Naming the openings… you can turn the part meanwhile"
-    : "Answer the question in the chat and I'll name the openings - you can turn the part meanwhile");
-  let naming = d.named === false;
-  // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
-  // the form opens with the measuring step's labels so the user can go on. The model's names
-  // still fill any row the user has not touched when they do arrive.
+  /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
+     point; the banner says what is happening around them - whether the file's unit is known (a
+     triangle file carries none, and sizes cannot be confirmed in a unit nobody has named, so
+     Proceed waits on the chat for that alone), whether the model was asked to name the openings,
+     whether it answered, or gave up - and what to do about it. */
+  let naming = false, stalled = false, unitNeeded = !!d.unit_needed, shown = "";
   const STALL_MS = opts.stallMs || 3 * 60 * 1000;
   let askedAt = null, stallTimer = null;
+  function showBanner(text, cls, retryStep) {
+    banner.hidden = !text; banner.className = "gc-banner" + (cls ? " " + cls : "");
+    banner.querySelector(".gc-banner-text").textContent = text || "";
+    const act = banner.querySelector(".gc-banner-act"); act.innerHTML = "";
+    if (text && retryStep && opts.retry) {
+      // THE WAY ON when the naming gave up: run it again from here, over the same facts
+      const b = document.createElement("button"); b.type = "button"; b.className = "gc-retry"; b.textContent = "Try again";
+      b.onclick = () => {
+        b.disabled = true; b.textContent = "Starting…";
+        Promise.resolve(opts.retry(retryStep))
+          .then((d3) => { askedAt = null; stalled = false; shown = ""; update(d3); })
+          .catch((e) => { showBanner("Could not run it again: " + ((e && e.message) || "try later"), "warn", retryStep); });
+      };
+      act.appendChild(b);
+    }
+  }
+  function setProceed() {
+    const btn = form.querySelector(".gc-proceed"); if (!btn) return;
+    btn.disabled = unitNeeded;
+    btn.title = unitNeeded ? "say in the chat what unit the file is in first" : "";
+  }
+  function stateBanner() {
+    if (unitNeeded) return ["The file does not say its unit: answer the question in the chat first. The names below are the measuring step's own - fix them meanwhile.", ""];
+    if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
+    if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
+    return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
+  }
+  function showState() {
+    const key = ["scouted", naming, stalled, unitNeeded].join("|");
+    if (key === shown) return;                 // the poll repeating a state changes nothing
+    shown = key;
+    const [text, cls] = stateBanner();
+    showBanner(text, cls);
+    form.classList.toggle("gc-naming", naming);
+    setProceed();
+  }
+  // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
+  // the banner says so and stops waiting. The model's names still fill any row the user has
+  // not touched when they do arrive.
   function noteAsked(d1) {
     if (!(d1 && d1.naming_requested) || askedAt !== null) return;
     askedAt = Date.now();
-    stallTimer = setTimeout(() => {
-      if (!naming) return;
-      naming = false; setNaming(form, false);
-      showBanner("The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn");
-    }, STALL_MS);
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { if (!naming) return; naming = false; stalled = true; showState(); }, STALL_MS);
   }
-  if (naming) { showBanner(bannerFor(d)); setNaming(form, true); noteAsked(d); }
+  if (d.named === false) { naming = !!d.naming_requested; noteAsked(d); showState(); }
+  else setProceed();
 
   let scene = null;
   try {
@@ -177,18 +210,24 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   }
   bindProceed();
 
-  /** The model's labels arrived (or gave up): the form is re-drawn from the new proposal, the
-   *  banner goes, the form opens for editing. Positions and sizes are the code's and do not
-   *  move; the stickers stay where they are. */
+  /** The check moved on. Scouted: only the banner and Proceed follow it. Ready: the form is
+   *  re-drawn from the model's proposal and the banner goes. Failed: the naming gave up, or
+   *  never answered - the measuring step's labels stand, and the naming can be run again from
+   *  here. Positions and sizes are the code's and do not move; the stickers stay where they are. */
   function update(d2) {
-    if (d2 && d2.status === "scouted") {              // still measuring-step labels: only the banner moves
-      if (naming) showBanner(bannerFor(d2));
+    if (!d2) return;
+    unitNeeded = !!d2.unit_needed;
+    if (d2.status === "scouted") {
+      if (d2.naming_requested && !stalled) naming = true;
       noteAsked(d2);
+      showState();
       return;
     }
     clearTimeout(stallTimer);
-    const p2 = (d2 && d2.proposal) || {};
-    const failed = d2 && d2.status === "failed";
+    naming = false; stalled = false;
+    form.classList.remove("gc-naming");
+    const p2 = d2.proposal || {};
+    const failed = d2.status === "failed";
     if (!failed) {
       // keep the code's measurements, take the model's words - IN PLACE: the scene holds the
       // same object, and what the user adds or removes there is what Proceed reads. A row the
@@ -204,13 +243,17 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
       applyFlow(form); bindProceed(); scene.rebind();
-      showBanner("");
+      shown = "ready"; showBanner("");
     } else {
-      showBanner("The naming step gave up; the names below are the measuring step's own.", "warn");
-      setTimeout(() => { if (!naming) showBanner(""); }, 8000);
+      const key = "failed|" + (d2.reason || "");
+      if (key !== shown) {
+        shown = key;
+        showBanner("The naming step gave up" + (d2.reason ? " (" + d2.reason + ")" : "")
+          + ". The names below are the measuring step's own: fix them and proceed"
+          + (d2.retry && opts.retry ? ", or try the naming again." : "."), "warn", d2.retry);
+      }
     }
-    naming = false;
-    setNaming(form, false);
+    setProceed();
     scene.refresh();
   }
 

@@ -25,9 +25,28 @@ STATUS_PENDING, STATUS_SCOUTED, STATUS_READY = "pending", "scouted", "ready"
 STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
 _CAD_SUFFIXES = (".step", ".stp", ".igs", ".iges")
 _MESH_SUFFIXES = (".stl", ".obj", ".vtp")
-#: How long the naming step waits for a scout that is still running before giving up - the
-#: scout's own hard limit, so a slow queue is waited out rather than abandoned.
-NAMING_WAIT_S = 900.0
+#: THE WORKER'S LIMITS for the two steps, in seconds. Past the soft one the task is told to stop
+#: and stores `failed` itself; past the hard one it is killed and stores nothing - and a worker
+#: whose VM is deleted mid-task stores nothing either. The Celery tasks take these same numbers,
+#: so the time box the API reads the check through (`time_boxed`) cannot drift from them.
+SCOUT_SOFT_LIMIT_S, SCOUT_HARD_LIMIT_S = 900, 1200
+NAMING_SOFT_LIMIT_S, NAMING_HARD_LIMIT_S = 600, 900
+#: How long past its hard limit a step is still believed to be running: queue time on a busy
+#: fleet, and clock skew between the API and the worker.
+STALE_MARGIN_S = 120.0
+#: How long the naming step waits for a scout that is still running before giving up. Under its
+#: own soft limit on purpose: a wait that outlived the limit was ended by the worker with a
+#: `failed` written over the scout's `pending`, instead of the request being withdrawn so the
+#: next chat turn can ask again once the scout has landed.
+NAMING_WAIT_S = float(NAMING_SOFT_LIMIT_S - 60)
+#: The plain reasons a time-boxed check reports, and the step a retry runs again.
+SCOUT_TOO_LONG = "the drawing took too long"
+NAMING_TOO_LONG = "the naming step did not answer"
+RETRY_SCOUT, RETRY_NAMING = "scout", "naming"
+#: What write_status stamps on every record; what a re-store of a record leaves out.
+_STAMPED_KEYS = ("status", "written_at", "seconds", "session_id")
+#: What a failure adds to a record; what a retry takes off it again.
+_FAILURE_KEYS = ("reason", "retry", "step", "timed_out")
 
 
 def check_object_key(session_id: str, name: str) -> str:
@@ -89,6 +108,145 @@ def write_status(session_id: str, status: str, **fields) -> None:
                 {"status": status, "session_id": session_id, "written_at": time.time(), **fields})
 
 
+def _failed_record(reason: str, step: str, current: dict | None) -> dict:
+    """What a failed step stores: the reason, the step, and which step a retry runs - and, for a
+    naming that failed, everything the scout had stored, so the stage keeps the part and its
+    labels for the user to fix by hand and a retry has facts to name."""
+    record = {"reason": reason, "named": False, "step": step,
+              "retry": RETRY_NAMING if step == RETRY_NAMING else RETRY_SCOUT}
+    if step == RETRY_NAMING and current is not None and current.get("status") == STATUS_SCOUTED:
+        record = {**{k: v for k, v in current.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}, **record}
+    return record
+
+
+def store_status(session_id: str, status: str, task_step: str, **fields) -> dict:
+    """`write_status` for the end of a task. A write that breaks is itself stored, as a failed
+    check with the exception's class and one plain sentence, so no task ends on the status it
+    started with: one stray numpy bool in a face record once made the store refuse the scouted
+    result, and because nothing caught that the stage waited forever on `pending`. Returns the
+    record that was stored - the failed one when the write broke - and raises nothing; when even
+    the minimal record cannot be stored, the read-side time box is what tells the user."""
+    try:
+        write_status(session_id, status, **fields)
+        return {"status": status, **fields}
+    except Exception as exc:  # noqa: BLE001 - said and stored, never raised out of the task
+        logger.exception("geometry check: could not store the %s result - session=%s", status, session_id)
+        reason = f"{type(exc).__name__}: the {task_step} result could not be stored"
+        try:
+            write_status(session_id, STATUS_FAILED, **_failed_record(reason, task_step, read_check(session_id)))
+        except Exception:  # noqa: BLE001 - the store itself is what broke
+            logger.warning("geometry check: could not store the failure either - session=%s", session_id)
+        return {"status": STATUS_FAILED, "reason": reason, "named": False, "step": task_step}
+
+
+def naming_pending(requested: dict | None) -> bool:
+    """Whether a naming is on its way: asked for, and not withdrawn."""
+    return requested is not None and not requested.get("withdrawn")
+
+
+def mark_naming_withdrawn(session_id: str) -> None:
+    """The naming gave up waiting for the scout. The marker stays, marked withdrawn, so the chat
+    asks again once the part is measured - and never holds again for a scout that is still not
+    there. (`clear_naming_request` is the other withdrawal: a turn that was never stored.)"""
+    current = naming_requested(session_id) or {"session_id": session_id}
+    _store_json(check_object_key(session_id, "naming.json"),
+                {**current, "withdrawn": True, "withdrawn_at": time.time()})
+
+
+def time_boxed(stored: dict | None, requested: dict | None, now: float | None = None) -> dict | None:
+    """THE CHECK AS IT SHOULD BE REPORTED NOW. A scout still `pending` past its hard limit (plus
+    the margin) was killed, or lost its worker: nothing will ever write its result, so it is
+    reported `failed` with a plain reason and the step a retry runs. A `scouted` check whose
+    naming was requested that long ago and never answered is reported the same way, with the
+    scout's proposal and skin still on it so the user can fill the names in by hand. Pure, and
+    the one rule every reader applies; it stores nothing, so a worker that was merely slow still
+    lands its result and the next read serves it."""
+    if stored is None:
+        return None
+    at = time.time() if now is None else now
+    status = stored.get("status")
+    if status == STATUS_PENDING:
+        since = float(stored.get("written_at") or 0.0)
+        if at - since > SCOUT_HARD_LIMIT_S + STALE_MARGIN_S:
+            return {**stored, "status": STATUS_FAILED, "reason": SCOUT_TOO_LONG, "named": False,
+                    "step": RETRY_SCOUT, "retry": RETRY_SCOUT, "timed_out": True}
+    elif status == STATUS_SCOUTED and naming_pending(requested):
+        asked = float((requested or {}).get("requested_at") or 0.0)
+        if at - asked > NAMING_HARD_LIMIT_S + STALE_MARGIN_S:
+            return {**stored, "status": STATUS_FAILED, "reason": NAMING_TOO_LONG, "named": False,
+                    "step": RETRY_NAMING, "retry": RETRY_NAMING, "timed_out": True}
+    return stored
+
+
+def retry_step(reported: dict | None) -> str | None:
+    """Which step a retry runs for a check as reported: the scout for one that never measured the
+    part, the naming for one that did; None when there is nothing to run again."""
+    if not reported:
+        return None
+    status = reported.get("status")
+    if status == STATUS_PENDING:
+        return RETRY_SCOUT
+    if status == STATUS_SCOUTED:
+        return RETRY_NAMING
+    if status == STATUS_FAILED:
+        if reported.get("retry") in (RETRY_SCOUT, RETRY_NAMING):
+            return str(reported["retry"])
+        return RETRY_NAMING if reported.get("step") == RETRY_NAMING or reported.get("facts") else RETRY_SCOUT
+    return None
+
+
+def start_scout(session_id: str, owner_id: str, *, source: dict, interpretation: dict | None,
+                where: str = "upload") -> bool:
+    """Queue the scout and leave the `pending` marker - the marker BEFORE the task is published,
+    so a worker that finishes first is never overwritten by a "pending" nothing would replace.
+    A scout nobody will run is marked failed, never left pending. True when it was queued;
+    never raises, because the upload (or the retry) stands whatever the queue does."""
+    from meshpipeline.contracts.geometry_check import enqueue_scout
+
+    marked = False
+    try:
+        write_status(session_id, STATUS_PENDING)
+        marked = True
+        if not enqueue_scout(session_id=session_id, owner_id=owner_id, source=source,
+                             interpretation=interpretation):
+            raise RuntimeError("no worker is configured to run the geometry check")
+        logger.info("geometry check queued from the %s - session_id=%s", where, session_id)
+        return True
+    except Exception as exc:  # noqa: BLE001 - the upload stands; the intake will ask instead
+        logger.warning("geometry check could not be queued from the %s (%s: %s) - session_id=%s",
+                       where, type(exc).__name__, exc, session_id)
+        if marked:
+            # a "pending" nobody will finish would keep the console waiting; say so instead
+            try:
+                write_status(session_id, STATUS_FAILED, named=False, step=RETRY_SCOUT, retry=RETRY_SCOUT,
+                             reason="the geometry check could not be started; the intake will ask instead")
+            except Exception:  # noqa: BLE001
+                logger.warning("geometry check: could not mark the check failed - session_id=%s", session_id)
+        return False
+
+
+def restart_naming(session_id: str, owner_id: str, *, purpose_text: str,
+                   interpretation: dict | None) -> bool:
+    """Run the naming again over the scout's facts. A failed naming's record goes back to
+    `scouted` (its facts, proposal and skin are still on it), the request marker is stamped
+    afresh so the time box starts again, and the naming is queued. False when the record has no
+    facts to name, or nothing is configured to run it."""
+    from meshpipeline.contracts.geometry_check import enqueue_naming
+
+    stored = read_check(session_id)
+    if stored is None or not stored.get("facts"):
+        return False
+    if stored.get("status") != STATUS_SCOUTED:
+        write_status(session_id, STATUS_SCOUTED,
+                     **{k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS})
+    if not enqueue_naming(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
+                          interpretation=interpretation):
+        return False
+    mark_naming_requested(session_id, purpose_text)
+    logger.info("geometry naming queued again - session_id=%s", session_id)
+    return True
+
+
 def naming_requested(session_id: str) -> dict | None:
     """The marker the API leaves when it hands the user's first answer to the naming step, so a
     second message never queues a second naming. None until then."""
@@ -148,16 +306,18 @@ def run_geometry_check(*, session_id: str, owner_id: str, source: dict,
         result = _scout(session_id=session_id, owner_id=owner_id, source=source,
                         interpretation=interpretation)
     except _Unsupported as exc:
-        result = {"status": STATUS_UNSUPPORTED, "reason": str(exc)}
+        result = {"status": STATUS_UNSUPPORTED, "reason": str(exc), "named": False}
     except Exception as exc:  # noqa: BLE001 - the user is told, in one sentence, and the intake carries on
         logger.exception("geometry scout failed - session=%s", session_id)
-        result = {"status": STATUS_FAILED, "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        result = {"status": STATUS_FAILED, "reason": f"{type(exc).__name__}: {str(exc)[:200]}",
+                  "named": False, "step": RETRY_SCOUT, "retry": RETRY_SCOUT}
     result["seconds"] = round(time.time() - started, 1)
-    status = result.pop("status")
-    write_status(session_id, status, **result)
-    logger.info("geometry scout %s - session=%s in %.1fs", result.get("reason") or status,
+    # THE WRITE IS PART OF THE TASK: a result that cannot be stored is stored as a failure, so the
+    # stage never waits on a `pending` nothing will replace
+    stored = store_status(session_id, result.pop("status"), RETRY_SCOUT, **result)
+    logger.info("geometry scout %s - session=%s in %.1fs", stored.get("reason") or stored["status"],
                 session_id, result["seconds"])
-    return {"status": status, **result}
+    return stored
 
 
 class _Unsupported(RuntimeError):
@@ -321,10 +481,13 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
             if current is not None and current.get("status") == STATUS_READY and current.get("named"):
                 logger.info("geometry naming: a failed attempt left the ready check alone - session=%s", session_id)
                 return {"status": STATUS_READY, "named": True, "superseded_failure": reason}
-            write_status(session_id, STATUS_FAILED, reason=reason, named=False)
+            # the scout's facts, proposal and skin stay on the failed record: the stage keeps
+            # the part for the user to name by hand, and a retry has something to name
+            write_status(session_id, STATUS_FAILED, **_failed_record(reason, RETRY_NAMING, current))
         except Exception:  # noqa: BLE001 - the store itself may be what broke
             logger.warning("geometry naming: could not record the failure for %s", session_id)
-        return {"status": STATUS_FAILED, "named": False, "reason": reason}
+        return {"status": STATUS_FAILED, "named": False, "reason": reason, "step": RETRY_NAMING,
+                "retry": RETRY_NAMING}
 
 
 def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> dict:
@@ -336,9 +499,10 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
     if stored is None or stored.get("status") not in (STATUS_SCOUTED, STATUS_READY):
         status = (stored or {}).get("status") or "missing"
         if status in (STATUS_PENDING, "missing"):
-            # the scout never finished in time: withdraw the request, so the next chat turn may
-            # ask again once it has, instead of a conversation that waits forever
-            clear_naming_request(session_id)
+            # the scout never finished in time: the request is marked withdrawn, so the chat
+            # asks again once the part is measured - and not before, so a scout that never
+            # comes cannot trap the conversation a second time
+            mark_naming_withdrawn(session_id)
         logger.info("geometry naming skipped - session=%s scout status=%s", session_id, status)
         return {"status": status, "named": False}
 
@@ -374,14 +538,15 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
     proposal = _proposal(facts, vision)
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
-    result = {k: v for k, v in stored.items()
-              if k not in ("status", "written_at", "seconds", "session_id")}
+    result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
     result.update(named=True, facts=facts, vision=vision, proposal=proposal,
                   purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
-    write_status(session_id, STATUS_READY, **result)
-    logger.info("geometry naming ready - session=%s in %.1fs (model %s)", session_id,
+    # the write is part of the step: a result the store refuses is stored as a failure over the
+    # scout's record, so the stage stops waiting and keeps the part
+    landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+    logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
-    return {"status": STATUS_READY, **result}
+    return landed
 
 
 def _wait_for_scout(session_id: str) -> dict | None:

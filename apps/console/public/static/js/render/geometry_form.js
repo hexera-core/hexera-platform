@@ -127,13 +127,6 @@ export function readForm(root, p) {
   return body;
 }
 
-/** Naming mode: the labels are the measuring step's and not yet the model's, so nothing is
- *  editable and Proceed waits; off again when the model has answered or given up. */
-export function setNaming(root, on) {
-  root.classList.toggle("gc-naming", !!on);
-  root.querySelectorAll("input, select, button").forEach((el) => { el.disabled = !!on; });
-}
-
 /** Lock a form after it was accepted, and say so where the action was. */
 export function markConfirmed(root) {
   root.querySelectorAll("input,select").forEach((el) => { el.disabled = true; });
