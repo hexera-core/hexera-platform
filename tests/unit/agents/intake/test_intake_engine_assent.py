@@ -160,6 +160,27 @@ def test_only_a_plain_choice_outlives_a_retraction(said):
                                 latest_user_message=said, user_msg_count=2) is None
 
 
+@pytest.mark.parametrize("said", [
+    "Forget it; snappyHexMesh is right for this?",
+    "forget it - is snappyHexMesh the better choice here?",
+    "Forget it. Should I use snappyHexMesh?",
+])
+def test_a_question_after_a_retraction_is_no_choice(said):
+    # The engine's name and a choice word are in the message, but the user asked; the
+    # retraction is still the last thing they decided.
+    c, why = _confirm(said, quote="snappyHexMesh")
+    assert c is None and "declined" in why
+    assert es.confirm_by_assent(_proposed(), session_id="s", owner_id="u", revision="r2",
+                                latest_user_message=said, user_msg_count=2) is None
+
+
+def test_a_statement_after_a_question_still_counts_as_the_choice():
+    # A question elsewhere in the message does not hide a plain choice made after it.
+    said = "forget it - is that the fast one? fine, use snappyHexMesh"
+    c, why = _confirm(said, quote="use snappyHexMesh")
+    assert why == "" and es.state_of(c) == es.CONFIRMED
+
+
 def test_a_forget_aimed_at_a_patch_leaves_the_explicit_yes_standing():
     # "Forget" drops the ground patch, not the engine. The message says more than a yes, so the
     # application does not confirm it on its own; the model reads it and its quote is honoured.

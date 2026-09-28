@@ -86,6 +86,8 @@ _YES = frozenset({"yes", "yep", "yeah", "yup", "sure", "ok", "okay", "agree", "a
 #: Where one clause ends and the next begins; a decimal point is not one.
 _CLAUSE_BREAK = re.compile(r"[,;:!?()]|\.(?!\d)|\s[-\u2013\u2014]+\s|[\u2013\u2014]")
 _BREAK_WORD = "xbreak"
+#: A clause that ends in a question mark: asked, not chosen.
+_QUESTION_WORD = "xquestion"
 _INTENSIFIERS = frozenset({"definitely", "absolutely", "certainly", "surely"})
 _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use", "pick", "take",
                      "keep", "go", "fancy", "wish"})
@@ -107,6 +109,7 @@ def _tokens(engine: str, message: str, *, keep_engine: bool,
     # each clause boundary is kept as a word of its own.
     text = re.sub(r"n['’]t\b", " not", str(message or "").casefold())
     if keep_breaks:
+        text = text.replace("?", f" {_QUESTION_WORD} ")
         text = _CLAUSE_BREAK.sub(f" {_BREAK_WORD} ", text)
     text = re.sub(r"[^0-9a-z]+", " ", text)
     for spelling in {engine, engine_label(engine)}:
@@ -176,17 +179,21 @@ def _chooses_the_engine(clause: list[str]) -> bool:
 
 def _retracts_the_answer(engine: str, message: str) -> bool:
     # Clause by clause, the last word wins: a retraction stands unless a later clause picks the
-    # engine by name again.
+    # engine by name again. A question picks nothing: "Forget it; snappyHexMesh is right for
+    # this?" asks, and the retraction stands.
     words = _tokens(engine, message, keep_engine=True, keep_breaks=True)
     clauses: list[list[str]] = [[]]
+    asked: list[bool] = [False]
     for w in words:
-        if w == _BREAK_WORD:
+        if w in (_BREAK_WORD, _QUESTION_WORD):
+            asked[-1] = w == _QUESTION_WORD
             clauses.append([])
+            asked.append(False)
         else:
             clauses[-1].append(w)
     retracted = False
-    for clause in clauses:
-        if retracted and _chooses_the_engine(clause):
+    for clause, is_question in zip(clauses, asked):
+        if retracted and not is_question and _chooses_the_engine(clause):
             retracted = False
         if any(w == _RETRACT and _retracts(clause[i + 1:]) for i, w in enumerate(clause)):
             retracted = True
