@@ -369,7 +369,7 @@ def _opening(face_index: int, kind: str, c, n, area: float, wh, bbox_min, bbox_m
              outer_wh=None) -> Opening:
     n = np.asarray(n, dtype=float)
     ts = [((bbox_max[k] if n[k] > 0 else bbox_min[k]) - c[k]) / n[k] for k in range(3) if abs(n[k]) > 1e-6]
-    on_extremity = bool(ts) and min(ts) <= 0.03 * diag
+    on_extremity = bool(ts) and bool(min(ts) <= 0.03 * diag)     # a plain bool: numpy's is not JSON
     return Opening(face_index=face_index, kind=kind, centroid=(float(c[0]), float(c[1]), float(c[2])),
                    normal=(float(n[0]), float(n[1]), float(n[2])), area=float(area),
                    wh=(float(wh[0]), float(wh[1])), clear_ahead=on_extremity, on_extremity=on_extremity,
