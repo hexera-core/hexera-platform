@@ -452,7 +452,7 @@ def assert_payload_matches_approval(payload: dict, snapshot: dict, source_ref, *
 
 
 async def _refuse_in_the_conversation(db, session_repo, session_id, gate: dict, snapshot: dict,
-                                      status: "ConfirmStatus", reason: str, *, logger,
+                                      status: ConfirmStatus, reason: str, *, logger,
                                       cause: BaseException | None = None) -> None:
     """A refusal BEFORE any job exists, answered as a turn of the conversation.
 
