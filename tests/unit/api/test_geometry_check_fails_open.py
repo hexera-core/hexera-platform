@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -111,7 +112,20 @@ async def test_a_scouted_check_with_no_naming_asked_is_served_for_the_stage_to_o
     d = await route.get_check(SID, "alice", "org-1")
     assert d["status"] == "scouted" and d["named"] is False and d["naming_requested"] is False
     assert d["skin"] is True and d["unit_needed"] is False and "facts" not in d
-    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001}    # the scale the numbers were read under
+    # the scale the numbers were read under, and the unit they are read in, on whose word
+    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001, "unit": "mm", "unit_basis": "assumed"}
+
+
+async def test_the_unit_the_session_holds_is_served_beside_the_sizes(served, monkeypatch):
+    served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4())
+
+    async def _declared(db, sess, owner_id, organization_id):
+        return {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "m", "scale_to_metres": 1.0,
+                "basis": "file_declared", "evidence": "SI_UNIT"}
+    monkeypatch.setattr(gh, "interpretation_payload", _declared)
+    d = await route.get_check(SID, "alice", "org-1")
+    assert d["proposal"]["unit"] == "m" and d["proposal"]["unit_basis"] == "file_declared"
+    assert route.unit_in_effect(None) == ("mm", "assumed")
 
 
 def test_a_confirmation_drawn_under_an_assumed_unit_is_re_read_in_the_confirmed_one():
@@ -142,7 +156,8 @@ async def test_a_naming_that_never_answered_reads_as_failed_and_keeps_the_part_f
                             "purpose_text": "a pipe"}})
     d = await route.get_check(SID, "alice", "org-1")
     assert d["status"] == "failed" and d["reason"] == gc.NAMING_TOO_LONG and d["retry"] == "naming"
-    assert d["skin"] is True and d["proposal"] == {"openings": [], "scale_to_m": 0.001} and d["naming_requested"] is True
+    assert d["skin"] is True and d["naming_requested"] is True
+    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001, "unit": "mm", "unit_basis": "assumed"}
 
 
 async def test_a_naming_that_gave_up_waiting_for_the_scout_is_not_reported_as_running(served):
@@ -215,7 +230,7 @@ async def test_a_step_that_is_not_the_one_the_check_reports_is_refused(served):
 
 
 async def test_the_confirm_waits_for_the_files_unit(served):
-    """The numbers on the stage are the file's own read as millimetres until the chat says
+    """The numbers on the stage are the file's own read as millimetres until somebody says
     otherwise: a confirmation in a unit nobody has named would bind the ports at the wrong scale."""
     served({"scout.json": _scouted()})
     body = route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[])
@@ -224,3 +239,63 @@ async def test_the_confirm_waits_for_the_files_unit(served):
     assert refused.value.status_code == 409 and "unit" in refused.value.detail
     assert route.unit_needed(SimpleNamespace(geometry_source_id=uuid.uuid4(), geometry_interpretation_id=uuid.uuid4())) is False
     assert route.unit_needed(SimpleNamespace(geometry_source_id=None, geometry_interpretation_id=None)) is False
+
+
+def _confirming(monkeypatch, session, interpretation: dict | None, recorded: list):
+    """The confirm's collaborators stood in for: the session's interpretation, the unit record,
+    the session row, and the chat turn that follows."""
+    from meshpipeline.api.v1 import chat as chatmod
+    from meshpipeline.persistence import session as dbmod
+    from meshpipeline.persistence.repositories import session_repository as srmod
+
+    async def _interp(db, sess, owner_id, organization_id):
+        return interpretation
+    monkeypatch.setattr(gh, "interpretation_payload", _interp)
+
+    async def _record(db, sess, owner_id, organization_id, unit):
+        recorded.append(unit)
+        return {"interpretation_id": "i2", "geometry_source_id": "s1", "unit": unit,
+                "scale_to_metres": {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254}[unit],
+                "basis": "user_confirmed", "evidence": "confirmed on the geometry stage"}
+    monkeypatch.setattr(gh, "record_unit", _record)
+
+    @asynccontextmanager
+    async def _db():
+        yield SimpleNamespace(commit=AsyncMock())
+    monkeypatch.setattr(dbmod, "get_db", _db)
+
+    class _Sessions:
+        async def get_for_owner(self, db, session_id, owner_id, organization_id=""):
+            return session
+    monkeypatch.setattr(srmod, "SessionRepository", _Sessions)
+
+    async def _turn(body, owner_id, organization_id):
+        return SimpleNamespace(model_dump=lambda mode="json": {"reply": "next"})
+    monkeypatch.setattr(chatmod, "chat_message", _turn)
+
+
+async def test_a_unit_corrected_on_the_stage_is_recorded_and_the_sizes_re_read(served, monkeypatch):
+    """A STEP file that says millimetres for a blade drawn in metres: the user picks metres in the
+    box beside the sizes, the unit is recorded as theirs, and the declaration carries the sizes
+    in true millimetres - 117,000 of them - before the intake reads it."""
+    store = served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = (await route._owned_session(SID, "alice", "org-1"))
+    recorded: list = []
+    declared_mm = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm", "scale_to_metres": 0.001,
+                   "basis": "file_declared", "evidence": "SI_UNIT"}
+    _confirming(monkeypatch, session, declared_mm, recorded)
+    body = route.ConfirmIn(input_kind="body-surface", flow="internal", size_mm=[7.0, 7.0, 117.0],
+                           openings=[route.ConfirmedOpening(id=1, name="root", role="inlet", diameter_mm=4.2, centroid_mm=[0.0, 0.0, 0.0])],
+                           scale_to_m=0.001, unit="m")
+    out = await route.confirm_check(SID, body, "alice", "org-1")
+    assert recorded == ["m"]
+    assert "Part size: 7000 x 7000 x 117000 mm" in out["message"] and "4200 mm across" in out["message"]
+    assert out["patches"][0]["diameter_mm"] == 4200.0
+    assert json.loads(store.objects[_key("confirmed.json")])["unit"] == "m"
+    assert session.input_kind == "body-surface"
+    # the unit the session already holds, left as it is: nothing recorded, nothing re-read
+    recorded.clear()
+    same = route.ConfirmIn(input_kind="body-surface", flow="internal", size_mm=[7.0, 7.0, 117.0], openings=[],
+                           scale_to_m=0.001, unit="mm")
+    out = await route.confirm_check(SID, same, "alice", "org-1")
+    assert recorded == [] and "Part size: 7 x 7 x 117 mm" in out["message"]

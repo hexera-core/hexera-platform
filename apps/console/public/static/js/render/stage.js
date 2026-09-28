@@ -16,7 +16,7 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
-import { applyFlow, displayText, formHtml, markConfirmed, mm, readForm } from "./geometry_form.js";
+import { applyFlow, bindUnit, displayText, followUnit, formHtml, markConfirmed, readForm, shown, unitOf } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -102,10 +102,10 @@ export const Stage = {
     const hero=pics.find(x=>x.name==='iso')||pics.find(x=>x.name!=='overview')||pics[0];
     const thumbs=pics.filter(x=>x!==hero&&x.name!=='overview').slice(0,8).map(x=>
       `<img class="gc-thumb" src="${x.url}" alt="${esc(x.name)}" title="${esc(x.name)}" loading="lazy">`).join('');
-    const size=(p.size_mm||[]).map(v=>mm(v)).join(' x ');
+    const size=(p.size_mm||[]).map(v=>shown(v,p)).join(' x ');
     const html=`<div class="who">Geometry check · what Hexera sees</div>
       <div class="req-card gc-card">
-        <div class="rc-h">${esc(p.part||'the part')}${size?` · ${esc(size)} mm`:''}</div>
+        <div class="rc-h">${esc(p.part||'the part')}${size?` · ${esc(size)} <span class="gc-u">${unitOf(p)}</span>`:''}</div>
         ${hero?`<img class="gc-overview" src="${hero.url}" alt="the part, with a numbered sticker on each opening" title="click to enlarge">`:''}
         ${thumbs?`<div class="gc-thumbs">${thumbs}</div>`:''}
         ${formHtml(p)}
@@ -113,11 +113,10 @@ export const Stage = {
     this.clearEmpty();
     if(this._gcEl)this._gcEl.remove();
     const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
-    this.col().appendChild(g);this._gcEl=g;
-    applyFlow(g);
+    this.col().appendChild(g);this._gcEl=g;this._gcP=p;
+    applyFlow(g);bindUnit(g,p);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
-    this.geometryCheckUpdate(d);
     btn.onclick=async()=>{
       const body=readForm(g,p);
       btn.disabled=true;btn.textContent='Confirming…';
@@ -132,16 +131,13 @@ export const Stage = {
       this.scrollBottom();};
     this.scrollBottom();},
 
-  /* THE CARD FOLLOWS THE CHECK IN PLACE: a triangle file carries no unit, so Proceed waits on the
-     chat for that alone and opens the moment the chat settles it. The card is never drawn again
-     for that, so what the user typed on it stays. A confirmed card is left as it is. */
+  /* THE CARD FOLLOWS THE CHECK IN PLACE: a unit settled in the chat reaches its unit box when the
+     user has not set it themselves. The card is never drawn again for that, so what the user
+     typed on it stays. A confirmed card is left as it is. */
   geometryCheckUpdate(d){
-    const g=this._gcEl;if(!g||g.querySelector('.gc-done'))return;
-    const btn=g.querySelector('.gc-proceed'),hint=g.querySelector('.gc-hint');
-    if(!btn)return;
-    btn.disabled=!!(d&&d.unit_needed);
-    if(hint)hint.textContent=d&&d.unit_needed?'The file does not say its unit: answer the question in the chat first.'
-      :'Fix any name or role first. The questions that follow skip everything confirmed here.';},
+    const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
+    const q=(d&&d.proposal)||{};
+    followUnit(g,p,q.unit,q.unit_basis);},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';

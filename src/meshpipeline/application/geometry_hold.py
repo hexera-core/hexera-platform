@@ -133,6 +133,33 @@ async def interpretation_payload(db, session, owner_id: str, organization_id: st
     return asdict(GeometryInterpretationRef.from_domain(recorded)) if recorded else None
 
 
+async def record_unit(db, session, owner_id: str, organization_id: str, unit: str) -> dict:
+    """The unit corrected on the stage, recorded exactly as the chat records an answer: a
+    user-confirmed interpretation bound to the session, and the open unit question closed. A
+    STEP file that says millimetres for a part drawn in metres is caught here, where the sizes
+    are, not after the run. Returns the interpretation as the worker reads it."""
+    import uuid
+    from dataclasses import asdict
+
+    from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
+    from meshpipeline.contracts.geometry_units import LengthUnit, ResolutionBasis
+    from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
+        GeometryInterpretationRepository,
+    )
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    recorded = await GeometryInterpretationRepository().record(
+        db, owner_id=owner_id, geometry_source_id=session.geometry_source_id, unit=LengthUnit(unit),
+        basis=ResolutionBasis.user_confirmed, evidence="confirmed on the geometry stage",
+        organization_id=organization_id)
+    sessions = SessionRepository()
+    await sessions.bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
+    gate = dict(getattr(session, "intake_gate", None) or {})
+    if gate.pop("unit_question", None) is not None:
+        await sessions.set_intake_gate(db, session.id, gate)
+    return asdict(GeometryInterpretationRef.from_domain(recorded))
+
+
 def queue_naming(session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> bool:
     """Hand the words and the unit to the naming step and leave the marker that says so. False
     when nothing is configured to run it, so the caller lets the intake carry on."""
@@ -159,4 +186,4 @@ def withdraw_naming(session_id: str) -> None:
 
 __all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "hold_applies",
            "hold_decision", "interpretation_payload", "measured_size_mm", "purpose_from", "queue_naming",
-           "should_hold", "withdraw_naming"]
+           "record_unit", "should_hold", "withdraw_naming"]

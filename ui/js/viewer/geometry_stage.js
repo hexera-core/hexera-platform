@@ -17,7 +17,7 @@
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, formHtml, markConfirmed, mm, readExternal, readForm, rowHtml }
+import { applyFlow, bindUnit, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml, shown, unitOf }
   from "../render/geometry_form.js";
 
 let _vtkP = null;
@@ -78,8 +78,8 @@ function takeOver(box, anchorEl) {
 }
 
 function leadHtml(p) {
-  const size = (p.size_mm || []).map((v) => mm(v)).join(" x ");
-  return `<b>${esc(p.part || "the part")}</b>${size ? ` · ${esc(size)} mm` : ""}<br>
+  const size = (p.size_mm || []).map((v) => shown(v, p)).join(" x ");
+  return `<b>${esc(p.part || "the part")}</b>${size ? ` · ${esc(size)} <span class="gc-u">${unitOf(p)}</span>` : ""}<br>
     Turn the part and click a sticker to select its row. Fix any name or role, add or remove a
     sticker, then proceed: the questions that follow skip everything confirmed here.`;
 }
@@ -111,13 +111,13 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  applyFlow(form);
+  applyFlow(form); bindUnit(panel, p);
   const banner = panel.querySelector(".gc-banner");
   /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
-     point; the banner says what is happening around them - whether the file's unit is known (a
-     triangle file carries none, and sizes cannot be confirmed in a unit nobody has named, so
-     Proceed waits on the chat for that alone), whether the model was asked to name the openings,
-     whether it answered, or gave up - and what to do about it. */
+     point; the banner says what is happening around them - whether the file said its unit (a
+     triangle file carries none; the unit box beside the sizes is where to say, or the chat),
+     whether the model was asked to name the openings, whether it answered, or gave up - and
+     what to do about it. */
   let naming = false, stalled = false, unitNeeded = !!d.unit_needed, shown = "";
   const STALL_MS = opts.stallMs || 3 * 60 * 1000;
   let askedAt = null, stallTimer = null;
@@ -137,13 +137,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       act.appendChild(b);
     }
   }
-  function setProceed() {
-    const btn = form.querySelector(".gc-proceed"); if (!btn) return;
-    btn.disabled = unitNeeded;
-    btn.title = unitNeeded ? "say in the chat what unit the file is in first" : "";
-  }
   function stateBanner() {
-    if (unitNeeded) return ["The file does not say its unit: answer the question in the chat first. The names below are the measuring step's own - fix them meanwhile.", ""];
+    if (unitNeeded) return ["The file does not say its unit, so millimetres is assumed: check the size beside the unit box below, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
     if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
     if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
     return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
@@ -155,7 +150,6 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     const [text, cls] = stateBanner();
     showBanner(text, cls);
     form.classList.toggle("gc-naming", naming);
-    setProceed();
   }
   // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
   // the banner says so and stops waiting. The model's names still fill any row the user has
@@ -167,7 +161,6 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     stallTimer = setTimeout(() => { if (!naming) return; naming = false; stalled = true; showState(); }, STALL_MS);
   }
   if (d.named === false) { naming = !!d.naming_requested; noteAsked(d); showState(); }
-  else setProceed();
 
   let scene = null;
   try {
@@ -217,6 +210,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   function update(d2) {
     if (!d2) return;
     unitNeeded = !!d2.unit_needed;
+    const q = d2.proposal || {};
+    followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     if (d2.status === "scouted") {
       if (d2.naming_requested && !stalled) naming = true;
       noteAsked(d2);
@@ -239,10 +234,18 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
         const m = byId.get(o.id), u = typed.get(Number(o.id));
         if (u && u.name !== undefined && (u.name !== (o.name || "") || u.role !== o.role)) return { ...o, name: u.name, role: u.role };
         return m ? { ...o, name: m.name, role: m.role, confidence: m.confidence } : o; });
-      Object.assign(p, p2, { openings: merged });
+      // THE STAGE KEEPS THE SCOUT'S OWN NUMBERS. A naming that re-read the facts in the confirmed
+      // unit serves them re-read, but the scene and its skin were drawn from the scout's reading,
+      // so every length here stays in it: the unit box says which unit that is, and the server
+      // re-reads the form from `scale_to_m` when it is confirmed. Only the words move.
+      const rescaled = p2.scale_to_m && p.scale_to_m && Math.abs(p2.scale_to_m - p.scale_to_m) > 1e-12;
+      const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$/.test(k))) : p2;
+      // a unit the user set in the box outlives the re-draw; a served one fills an untouched box
+      const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
+      Object.assign(p, words, { openings: merged }, chosen);
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindProceed(); scene.rebind();
+      applyFlow(form); bindUnit(panel, p); bindProceed(); scene.rebind();
       shown = "ready"; showBanner("");
     } else {
       const key = "failed|" + (d2.reason || "");
@@ -253,7 +256,6 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
           + (d2.retry && opts.retry ? ", or try the naming again." : "."), "warn", d2.retry);
       }
     }
-    setProceed();
     scene.refresh();
   }
 
@@ -474,11 +476,11 @@ function initScene(sessionId, box, surf, p) {
           centroid_m: point.slice(), centroid_mm: point.map((v) => Math.round(v * 1000 * 100) / 100), normal: normal.slice(), added: true };
     p.openings = [...(p.openings || []), o];
     const tbody = form.querySelector(".gc-table tbody");
-    if (tbody) { tbody.insertAdjacentHTML("beforeend", rowHtml(o)); }
+    if (tbody) { tbody.insertAdjacentHTML("beforeend", rowHtml(o, p)); }
     else {
       // the first opening on a part that had none: the table takes the "no openings" note's
       // place, and the Add button beside it stays
-      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o)}</tbody></table>`;
+      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o, p)}</tbody></table>`;
       const note = form.querySelector(".gc-int .gc-note");
       if (note) note.outerHTML = table; else form.querySelector(".gc-int").insertAdjacentHTML("afterbegin", table);
     }

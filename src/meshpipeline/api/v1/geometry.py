@@ -54,9 +54,13 @@ class ConfirmIn(BaseModel):
     grounded: bool = False
     #: THE SCALE THE NUMBERS WERE READ UNDER: metres per unit of the file, as the scout assumed
     #: it when the form was drawn (served on the proposal, sent back with it). A triangle file's
-    #: numbers are read as millimetres until the chat confirms the unit; when the confirmed unit
+    #: numbers are read as millimetres until the unit is confirmed; when the confirmed unit
     #: differs, every length above is re-read in it before anything is declared.
     scale_to_m: float | None = Field(default=None, gt=0)
+    #: THE UNIT THE USER SAYS THE FILE IS IN, from the unit box beside the sizes on the stage. One
+    #: that differs from what the session holds (the file's own declaration, or an earlier
+    #: answer) is recorded as the user's, exactly as a chat answer is.
+    unit: Literal["mm", "cm", "m", "in"] | None = None
 
     @field_validator("extents")
     @classmethod
@@ -115,6 +119,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     if not gcfg.GEOMETRY_CHECK_ENABLED:
         return {"status": STATUS_OFF}
     session = await _owned_session(session_id, owner_id, organization_id)
+    from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import (
         check_object_key,
         naming_pending,
@@ -123,10 +128,13 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         time_boxed,
     )
     from meshpipeline.contracts.object_storage import get_object_store
+    from meshpipeline.persistence.session import get_db
 
     stored = _read_json(check_object_key(str(session_id), "scout.json"))
     if stored is None:
         return {"status": STATUS_NONE}
+    async with get_db() as db:
+        interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
     try:
@@ -152,9 +160,12 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # the stage opens on a scouted check too, with the code's labels, and keeps them on a
         # naming that failed; the pictures are for the card, which only shows once the check
         # is ready
-        if isinstance(payload.get("proposal"), dict) and (payload.get("facts") or {}).get("scale_to_m"):
-            # the scale the proposal's numbers were read under, for the confirm to re-read them
-            payload["proposal"]["scale_to_m"] = float(payload["facts"]["scale_to_m"])
+        if isinstance(payload.get("proposal"), dict):
+            # the scale the proposal's numbers were read under, for the confirm to re-read them,
+            # and the unit they are read in - on whose word - for the unit box beside the sizes
+            if (payload.get("facts") or {}).get("scale_to_m"):
+                payload["proposal"]["scale_to_m"] = float(payload["facts"]["scale_to_m"])
+            payload["proposal"]["unit"], payload["proposal"]["unit_basis"] = unit_in_effect(interpretation)
         if payload.get("status") == "ready":
             store = get_object_store()
             payload["pictures"] = [
@@ -176,6 +187,16 @@ def unit_needed(session) -> bool:
     return bool(getattr(session, "geometry_source_id", None)) and not getattr(session, "geometry_interpretation_id", None)
 
 
+def unit_in_effect(interpretation: dict | None) -> tuple[str, str]:
+    """The unit the file's numbers are read in, and on whose word: the interpretation the session
+    holds (`file_declared` by the file, `user_confirmed` in the chat or on the stage), else the
+    scout's assumption of millimetres - which the stage shows beside the part's size, so a 117 m
+    blade read as 117 mm is corrected where the sizes are."""
+    if interpretation:
+        return str(interpretation.get("unit") or "mm"), str(interpretation.get("basis") or "user_confirmed")
+    return "mm", "assumed"
+
+
 def in_confirmed_unit(body: ConfirmIn, scale_to_metres: float | None) -> ConfirmIn:
     """The confirmation with every length re-read in the unit the chat confirmed. The numbers on
     the form are the file's own, read under the scale the scout assumed (`scale_to_m`, drawn
@@ -195,8 +216,9 @@ def in_confirmed_unit(body: ConfirmIn, scale_to_metres: float | None) -> Confirm
     return ConfirmIn(**rescaled_lengths(plain, k), scale_to_m=float(scale_to_metres))
 
 
-UNIT_FIRST = ("Say in the chat what unit the file is in first - millimetres, centimetres, metres or "
-              "inches. The sizes on the picture cannot be confirmed in a unit nobody has named.")
+UNIT_FIRST = ("Say what unit the file is in first - in the box beside the sizes, or in the chat: "
+              "millimetres, centimetres, metres or inches. The sizes cannot be confirmed in a unit "
+              "nobody has named.")
 
 
 STILL_RUNNING = ("This geometry check is still running. It can be run again once it reports failed - "
@@ -382,10 +404,6 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "This session has already been dispatched")
-    if unit_needed(session):
-        # the numbers on the form are the file's own, read as millimetres until the chat says
-        # otherwise; a declaration in a unit nobody named would bind the ports at the wrong scale
-        raise HTTPException(409, UNIT_FIRST)
     names = [o.name for o in body.openings]
     if len(set(names)) != len(names):
         raise HTTPException(422, "Every opening needs its own name")
@@ -398,12 +416,24 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
     from meshpipeline.persistence.session import get_db
 
-    # THE UNIT THE CHAT CONFIRMED, read first: a form drawn while the file's numbers were still
-    # read as millimetres is re-read in it, so a user who proceeds before the naming has re-read
-    # the facts never declares a size at the wrong scale
+    # THE UNIT, SETTLED BEFORE ANYTHING IS DECLARED. A unit corrected in the box beside the sizes
+    # is recorded as the user's, exactly as a chat answer is - a STEP file that says millimetres
+    # for a blade drawn in metres is caught here. Then a form drawn while the numbers were read
+    # under another scale is re-read in the unit that stands, so a user who proceeds before the
+    # naming has re-read the facts never declares a size at the wrong scale.
     async with get_db() as db:
         interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
-    body = in_confirmed_unit(body, float(interpretation["scale_to_metres"]) if interpretation else None)
+        current = str(interpretation.get("unit")) if interpretation else None
+        if body.unit and body.unit != current:
+            interpretation = await gh.record_unit(db, session, owner_id, organization_id, body.unit)
+            await db.commit()
+            logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
+                        body.unit, session_id)
+    if interpretation is None:
+        # the numbers on the form are the file's own, read as millimetres until somebody says
+        # otherwise; a declaration in a unit nobody named would bind the ports at the wrong scale
+        raise HTTPException(409, UNIT_FIRST)
+    body = in_confirmed_unit(body, float(interpretation["scale_to_metres"]))
     message = confirmation_message(body)
     patches = patches_from(body)
 
