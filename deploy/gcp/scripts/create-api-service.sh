@@ -208,9 +208,12 @@ if [ -n "${STRIPE_API_KEY_SECRET:-}" ]; then
    just paid to http://localhost:3000. Set CONSOLE_BASE_URL to the console's public origin."
   API_ENV_PAIRS+=("CONSOLE_BASE_URL=${_console_base}")
   for _price in STRIPE_PRICE_STARTER STRIPE_PRICE_STARTER_OVERAGE \
-                STRIPE_PRICE_TEAM STRIPE_PRICE_TEAM_OVERAGE; do
+                STRIPE_PRICE_TEAM STRIPE_PRICE_TEAM_OVERAGE \
+                STRIPE_PRICE_EXTRA_CREDITS; do
     [ -z "${!_price:-}" ] || API_ENV_PAIRS+=("${_price}=${!_price}")
   done
+  [ -z "${EXTRA_CREDITS_AMOUNT:-}" ] \
+    || API_ENV_PAIRS+=("EXTRA_CREDITS_AMOUNT=${EXTRA_CREDITS_AMOUNT}")
 fi
 # TURNING BILLING OFF IS A REDEPLOY, not a prune. With the holder cleared these names are no longer
 # declared, and the undeclared-setting refusal below would otherwise stop the rollout and leave the
@@ -219,7 +222,8 @@ fi
 BILLING_OFF_DROPPABLE=()
 if [ -z "${STRIPE_API_KEY_SECRET:-}" ]; then
   BILLING_OFF_DROPPABLE=(STRIPE_API_KEY STRIPE_WEBHOOK_SECRET CONSOLE_BASE_URL STRIPE_PRICE_STARTER
-                         STRIPE_PRICE_STARTER_OVERAGE STRIPE_PRICE_TEAM STRIPE_PRICE_TEAM_OVERAGE)
+                         STRIPE_PRICE_STARTER_OVERAGE STRIPE_PRICE_TEAM STRIPE_PRICE_TEAM_OVERAGE
+                         STRIPE_PRICE_EXTRA_CREDITS EXTRA_CREDITS_AMOUNT)
 fi
 # The mesh executor, if this deployment has one. The application reads the job as CLOUDRUN_JOB.
 if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then

@@ -52,6 +52,11 @@ STRIPE_PRICE_TEAM: str = optional_env("STRIPE_PRICE_TEAM", "")
 STRIPE_PRICE_STARTER_OVERAGE: str = optional_env("STRIPE_PRICE_STARTER_OVERAGE", "")
 STRIPE_PRICE_TEAM_OVERAGE: str = optional_env("STRIPE_PRICE_TEAM_OVERAGE", "")
 
+#: Optional one-off credit pack. The price is a one-time Stripe price used in Checkout payment
+#: mode, so buying credits never creates or changes a subscription.
+STRIPE_PRICE_EXTRA_CREDITS: str = optional_env("STRIPE_PRICE_EXTRA_CREDITS", "")
+EXTRA_CREDITS_AMOUNT: int = int(optional_env("EXTRA_CREDITS_AMOUNT", "1000") or "1000")
+
 
 def enabled() -> bool:
     # THE ONE QUESTION every caller asks before touching Stripe. A deployment without credentials is
@@ -85,3 +90,9 @@ def price_for(plan: str) -> tuple[str, str]:
         "team":    (self.STRIPE_PRICE_TEAM,    self.STRIPE_PRICE_TEAM_OVERAGE),
     }
     return table.get(plan.strip().lower(), ("", ""))
+
+
+def extra_credit_pack() -> tuple[str, int]:
+    import meshpipeline.settings.billing as self
+
+    return (self.STRIPE_PRICE_EXTRA_CREDITS.strip(), int(self.EXTRA_CREDITS_AMOUNT))

@@ -404,6 +404,10 @@ INVENTORY: list[Group] = [
                help="recurring price id for the team tier's flat fee"),
         EnvVar("STRIPE_PRICE_TEAM_OVERAGE", "",
                help="metered price id billed in arrears once the team allowance is spent"),
+        EnvVar("STRIPE_PRICE_EXTRA_CREDITS", "",
+               help="one-time price id for an optional extra-credit pack"),
+        EnvVar("EXTRA_CREDITS_AMOUNT", "1000", kind="int",
+               help="credits granted by one extra-credit pack"),
     ]),
     Group("Postgres connection pool", note="Per process. The API container and the worker each open their own pool against the local database.", vars=[
         EnvVar("DB_POOL_SIZE", "5"),

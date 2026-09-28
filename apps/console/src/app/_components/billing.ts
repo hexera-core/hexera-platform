@@ -16,7 +16,16 @@ export type Plan = {
   overage_billed?: boolean;
 };
 
-export type Catalogue = { plans: Plan[]; billing_enabled: boolean };
+export type ExtraCreditsOffer = {
+  credits_per_pack: number;
+  purchasable: boolean;
+};
+
+export type Catalogue = {
+  plans: Plan[];
+  billing_enabled: boolean;
+  extra_credits?: ExtraCreditsOffer | null;
+};
 
 export type Subscription = {
   plan: string;
@@ -92,6 +101,20 @@ export function checkoutFailureMessage(status: number, detail = ""): string {
   return "Could not start checkout just now. Try again.";
 }
 
+/** POST /billing/credits/checkout failed with `status`. */
+export function creditCheckoutFailureMessage(status: number): string {
+  if (status === 503) {
+    return "Billing is not switched on for this deployment yet.";
+  }
+  if (status === 400) {
+    return "Extra credits cannot be bought in this deployment yet.";
+  }
+  if (status === 409) {
+    return "Your account has no organisation to bill yet. Sign out and back in, then try again.";
+  }
+  return "Could not start checkout just now. Try again.";
+}
+
 /** What a tier's card says about use beyond its allowance - promised only where it is billed. */
 export function planTerms(plan: Plan): string {
   const limits = `Up to ${plan.max_jobs_per_owner} active runs, ${plan.rate_limit_per_minute} API requests a minute.`;
@@ -103,6 +126,14 @@ export function planTerms(plan: Plan): string {
   return plan.overage_billed
     ? `${limits} Usage beyond the included credits is billed at the end of the month.`
     : limits;
+}
+
+export function extraCreditsLabel(offer: ExtraCreditsOffer): string {
+  return `${offer.credits_per_pack.toLocaleString()} credits`;
+}
+
+export function extraCreditsUnavailable(offer: ExtraCreditsOffer | null | undefined): boolean {
+  return !offer?.purchasable || offer.credits_per_pack <= 0;
 }
 
 /** POST /billing/plan failed with `status`. */

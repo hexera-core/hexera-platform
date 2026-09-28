@@ -177,6 +177,28 @@ async def test_a_subscription_without_our_metadata_does_not_clear_the_tier(orgs)
 
 
 @pytest.mark.asyncio
+async def test_a_portal_plan_change_moves_the_tier_from_the_flat_price(orgs, monkeypatch):
+    # Stripe's hosted portal updates subscription items, not our custom metadata. The webhook must
+    # follow the configured flat price or a successful hosted switch would leave the local tier old.
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_STARTER", "price_starter")
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_TEAM", "price_team")
+    org_id = uuid.uuid4()
+    await billing_service.handle_event(
+        _DbDouble(),
+        _event("customer.subscription.updated", {
+            "id": "sub_1",
+            "metadata": {"organization_id": str(org_id), "plan": "starter"},
+            "status": "active",
+            "current_period_end": 1_760_000_000,
+            "items": {"data": [
+                {"price": {"id": "price_team", "recurring": {"usage_type": "licensed"}}},
+                {"price": {"id": "price_team_over", "recurring": {"usage_type": "metered"}}},
+            ]},
+        }))
+    assert orgs.subscriptions[0]["plan"] == "team"
+
+
+@pytest.mark.asyncio
 async def test_a_period_end_is_stored_timezone_aware(orgs):
     # The column is DateTime(timezone=True). A naive datetime written there is an hour-shaped bug
     # that only appears where the server's local zone is not UTC.
@@ -318,6 +340,10 @@ class _CheckoutGateway:
         self.sessions.append(kwargs)
         return "https://checkout.stripe.com/c/pay/cs_test"
 
+    def start_credit_checkout(self, **kwargs):
+        self.sessions.append(kwargs)
+        return "https://checkout.stripe.com/c/pay/cs_extra"
+
 
 @pytest.fixture
 def checkout_gateway(monkeypatch):
@@ -352,14 +378,83 @@ async def test_a_former_subscriber_may_check_out_again(orgs, checkout_gateway):
     assert checkout_gateway.sessions[0]["customer_id"] == "cus_1"
 
 
-# CHANGING TIER IN PLACE
+# ONE-OFF EXTRA CREDITS
+
+@pytest.mark.asyncio
+async def test_a_configured_credit_pack_opens_checkout(orgs, checkout_gateway, monkeypatch):
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_EXTRA_CREDITS", "price_extra")
+    monkeypatch.setattr(billcfg, "EXTRA_CREDITS_AMOUNT", 2_500)
+    org_id = uuid.uuid4()
+    orgs.organization = _Obj(id=org_id, name="Acme", stripe_customer_id="cus_1")
+    url = await billing_service.start_credit_checkout(
+        _DbDouble(), organization_id=org_id, quantity=3, email="a@example.com")
+    assert url.startswith("https://checkout.stripe.com/")
+    assert checkout_gateway.sessions == [{"customer_id": "cus_1", "price_id": "price_extra",
+                                          "organization_id": str(org_id),
+                                          "quantity": 3, "credits_per_pack": 2_500}]
+
+
+@pytest.mark.asyncio
+async def test_a_paid_credit_pack_checkout_grants_the_pack_not_the_base_plan(orgs, grants,
+                                                                             monkeypatch):
+    # A credit pack is a one-off Checkout payment, not another subscription. Completing it grants
+    # the purchased credits without also replaying the customer's plan allowance.
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_EXTRA_CREDITS", "price_extra")
+    monkeypatch.setattr(billcfg, "EXTRA_CREDITS_AMOUNT", 2_500)
+    org_id = uuid.uuid4()
+    orgs.organization = _Obj(id=org_id, plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(), _event("checkout.session.completed", {
+            "id": "cs_extra", "customer": "cus_1", "payment_status": "paid",
+            "metadata": {"organization_id": str(org_id), "credit_pack": "one_off",
+                         "total_credits": "5000"},
+        }))
+    assert grants == [{"organization_id": org_id, "amount": 5_000,
+                       "reason": billing_service.EXTRA_CREDITS_REASON}]
+
+
+@pytest.mark.asyncio
+async def test_an_unpaid_credit_pack_checkout_grants_nothing_yet(orgs, grants, monkeypatch):
+    # Delayed payment methods can complete Checkout before Stripe has the money. Fulfilment waits
+    # for a paid/no-payment-required session instead of trusting the redirect path.
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_EXTRA_CREDITS", "price_extra")
+    monkeypatch.setattr(billcfg, "EXTRA_CREDITS_AMOUNT", 2_500)
+    org_id = uuid.uuid4()
+    orgs.organization = _Obj(id=org_id, plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(), _event("checkout.session.completed", {
+            "id": "cs_extra", "customer": "cus_1", "payment_status": "unpaid",
+            "metadata": {"organization_id": str(org_id), "credit_pack": "one_off",
+                         "total_credits": "5000"},
+        }))
+    assert grants == []
+
+
+@pytest.mark.asyncio
+async def test_an_async_paid_credit_pack_checkout_grants_the_pack(orgs, grants, monkeypatch):
+    monkeypatch.setattr(billcfg, "STRIPE_PRICE_EXTRA_CREDITS", "price_extra")
+    monkeypatch.setattr(billcfg, "EXTRA_CREDITS_AMOUNT", 2_500)
+    org_id = uuid.uuid4()
+    orgs.organization = _Obj(id=org_id, plan="team", stripe_customer_id="cus_1")
+    await billing_service.handle_event(
+        _DbDouble(), _event("checkout.session.async_payment_succeeded", {
+            "id": "cs_extra", "customer": "cus_1", "payment_status": "paid",
+            "metadata": {"organization_id": str(org_id), "credit_pack": "one_off",
+                         "total_credits": "5000"},
+        }))
+    assert grants == [{"organization_id": org_id, "amount": 5_000,
+                       "reason": billing_service.EXTRA_CREDITS_REASON}]
+
+
+# HOSTED TIER CHANGES
 
 class _PlanGateway:
     def __init__(self):
-        self.changes: list[dict] = []
+        self.plan_portals: list[dict] = []
 
-    def change_plan(self, **kwargs):
-        self.changes.append(kwargs)
+    def plan_change_portal(self, **kwargs):
+        self.plan_portals.append(kwargs)
+        return "https://billing.stripe.com/p/session/plan_change"
 
 
 @pytest.fixture
@@ -374,15 +469,13 @@ def plan_gateway(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_subscriber_changes_tier_on_the_subscription_it_already_has(orgs, plan_gateway):
-    # The provider's portal refuses to switch a subscription with a flat AND a metered item, and a
-    # second checkout would be a second subscription; this is the one route a tier changes by.
+async def test_a_subscriber_is_sent_to_stripe_to_change_tier(orgs, plan_gateway):
     orgs.organization = _Obj(id=uuid.uuid4(), plan="starter", stripe_customer_id="cus_1",
                              stripe_subscription_id="sub_1", subscription_status="active")
     assert await billing_service.change_plan(
-        _DbDouble(), organization_id=uuid.uuid4(), plan="Team") == "team"
-    assert plan_gateway.changes == [{"subscription_id": "sub_1", "price_id": "price_team",
-                                     "overage_price_id": "price_team_over", "plan": "team"}]
+        _DbDouble(), organization_id=uuid.uuid4(), plan="Team"
+    ) == "https://billing.stripe.com/p/session/plan_change"
+    assert plan_gateway.plan_portals == [{"customer_id": "cus_1", "subscription_id": "sub_1"}]
     # The tier itself moves when the webhook says so, never here.
     assert orgs.subscriptions == []
 
@@ -394,7 +487,7 @@ async def test_an_organisation_with_nothing_to_change_is_sent_to_checkout(orgs, 
                              stripe_subscription_id="", subscription_status="canceled")
     with pytest.raises(billing_service.NotSubscribed):
         await billing_service.change_plan(_DbDouble(), organization_id=uuid.uuid4(), plan="team")
-    assert plan_gateway.changes == []
+    assert plan_gateway.plan_portals == []
 
 
 @pytest.mark.asyncio
@@ -404,7 +497,7 @@ async def test_an_unsold_tier_cannot_be_switched_to(orgs, plan_gateway):
     with pytest.raises(ValueError):
         await billing_service.change_plan(_DbDouble(), organization_id=uuid.uuid4(),
                                           plan="enterprise")
-    assert plan_gateway.changes == []
+    assert plan_gateway.plan_portals == []
 
 
 @pytest.mark.asyncio
@@ -412,5 +505,5 @@ async def test_switching_to_the_current_tier_calls_nothing(orgs, plan_gateway):
     orgs.organization = _Obj(id=uuid.uuid4(), plan="team", stripe_customer_id="cus_1",
                              stripe_subscription_id="sub_1", subscription_status="active")
     assert await billing_service.change_plan(
-        _DbDouble(), organization_id=uuid.uuid4(), plan="team") == "team"
-    assert plan_gateway.changes == []
+        _DbDouble(), organization_id=uuid.uuid4(), plan="team") == ""
+    assert plan_gateway.plan_portals == []

@@ -4,6 +4,9 @@ import test from "node:test";
 import {
   checkoutBanner,
   checkoutFailureMessage,
+  creditCheckoutFailureMessage,
+  extraCreditsLabel,
+  extraCreditsUnavailable,
   isPaying,
   isStripeUrl,
   planChangeFailureMessage,
@@ -107,4 +110,12 @@ test("each plan-change refusal the API documents has its own message", () => {
   const messages = [503, 409, 400, 500].map((status) => planChangeFailureMessage(status));
   assert.equal(new Set(messages).size, messages.length);
   assert.match(planChangeFailureMessage(409), /Choose a plan/);
+});
+
+test("a configured credit pack is labelled by the credits it grants", () => {
+  assert.equal(extraCreditsLabel({ credits_per_pack: 2500, purchasable: true }), "2,500 credits");
+  assert.equal(extraCreditsUnavailable(null), true);
+  assert.equal(extraCreditsUnavailable({ credits_per_pack: 2500, purchasable: false }), true);
+  assert.equal(extraCreditsUnavailable({ credits_per_pack: 2500, purchasable: true }), false);
+  assert.match(creditCheckoutFailureMessage(400), /Extra credits/);
 });

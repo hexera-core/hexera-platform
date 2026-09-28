@@ -38,26 +38,50 @@ export default async function ApiKeysPage({
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">API keys</h1>
+        <div>
+          <p className="page__eyebrow">Automation access</p>
+          <h1 className="page__title">API keys</h1>
+          <p className="page__intro">
+            Mint and revoke script credentials for submitting mesh runs outside the console.
+          </p>
+        </div>
       </div>
-      <p className="page__sub">
-        A key acts as you against the API. The secret half is shown once, when it is minted, and
-        is not recoverable — a lost key is replaced, never looked up.
-      </p>
+
+      <div className="summary-grid">
+        <div className="metric-card">
+          <p className="label">Scope</p>
+          <b>You</b>
+          <span>A key acts as your account against the API.</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Secret</p>
+          <b>Shown once</b>
+          <span>A lost key is replaced, never looked up.</span>
+        </div>
+      </div>
+
       {keys === null ? (
-        <p className="empty">Could not reach the API just now. Reload to try again.</p>
+        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
       ) : (
-        <>
-          <ApiKeysPanel keys={keys.items} />
-          {keys.next_cursor ? (
-            <Link
-              className="btn"
-              href={`/settings/api-keys?cursor=${encodeURIComponent(keys.next_cursor)}`}
-            >
-              Older keys
-            </Link>
-          ) : null}
-        </>
+        <section className="panel">
+          <div className="panel__head">
+            <div>
+              <p className="label">Key registry</p>
+              <p className="page__sub">Active and revoked credentials for this organisation.</p>
+            </div>
+          </div>
+          <div className="panel__body">
+            <ApiKeysPanel keys={keys.items} />
+            {keys.next_cursor ? (
+              <Link
+                className="btn"
+                href={`/settings/api-keys?cursor=${encodeURIComponent(keys.next_cursor)}`}
+              >
+                Older keys
+              </Link>
+            ) : null}
+          </div>
+        </section>
       )}
     </div>
   );

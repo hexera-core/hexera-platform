@@ -1342,6 +1342,8 @@ jobs:
       STRIPE_PRICE_STARTER_OVERAGE: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_STARTER_OVERAGE || '' }}
       STRIPE_PRICE_TEAM: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_TEAM || '' }}
       STRIPE_PRICE_TEAM_OVERAGE: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_TEAM_OVERAGE || '' }}
+      STRIPE_PRICE_EXTRA_CREDITS: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_EXTRA_CREDITS || '' }}
+      EXTRA_CREDITS_AMOUNT: ${{ github.event.inputs.slug == '' && vars.EXTRA_CREDITS_AMOUNT || '' }}
       CONSOLE_BASE_URL: ${{ github.event.inputs.slug == '' && vars.CONSOLE_BASE_URL || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:

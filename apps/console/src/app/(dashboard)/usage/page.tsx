@@ -40,28 +40,45 @@ export default async function UsagePage({
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Usage</h1>
+        <div>
+          <p className="page__eyebrow">Capacity</p>
+          <h1 className="page__title">Credits and usage</h1>
+          <p className="page__intro">
+            Credit movements across signup grants, plan allowances, one-off purchases and mesh runs.
+          </p>
+        </div>
+        <Link className="btn" href="/settings/billing">
+          Billing
+        </Link>
       </div>
 
-      <div className="card">
-        <p className="label">Balance</p>
-        <p style={{ fontSize: "1.8rem", fontFamily: "var(--mono)" }}>
-          {credits ? `${credits.balance} ${credits.unit}` : "unavailable"}
-        </p>
-        <p className="page__sub">
-          Each successful run spends credits: a flat charge plus its meshing minutes. A failed run
-          costs nothing. <Link href="/settings/billing">Plans and billing</Link>
-        </p>
+      <div className="summary-grid">
+        <div className="metric-card">
+          <p className="label">Balance</p>
+          <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
+          <span>{credits ? credits.unit : "unavailable"} remaining</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Charge rule</p>
+          <b>Base + minutes</b>
+          <span>failed runs cost nothing; successful runs debit the ledger</span>
+        </div>
       </div>
 
       {ledger === null ? (
-        <p className="empty">Could not reach the API just now. Reload to try again.</p>
+        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
       ) : ledger.items.length === 0 ? (
-        <p className="empty">
+        <p className="empty card">
           No movements yet. Your signup grant appears here the moment it lands.
         </p>
       ) : (
-        <>
+        <section className="panel">
+          <div className="panel__head">
+            <div>
+              <p className="label">Credit ledger</p>
+              <p className="page__sub">Append-only balance movements for this organisation.</p>
+            </div>
+          </div>
           <table className="table">
             <thead>
               <tr>
@@ -87,14 +104,16 @@ export default async function UsagePage({
             </tbody>
           </table>
           {ledger.next_cursor ? (
-            <Link
-              className="btn"
-              href={`/usage?cursor=${encodeURIComponent(ledger.next_cursor)}`}
-            >
-              Older movements
-            </Link>
+            <div className="panel__body">
+              <Link
+                className="btn"
+                href={`/usage?cursor=${encodeURIComponent(ledger.next_cursor)}`}
+              >
+                Older movements
+              </Link>
+            </div>
           ) : null}
-        </>
+        </section>
       )}
     </div>
   );

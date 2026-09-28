@@ -29,6 +29,7 @@ export const hexeraApiRoutes = {
   // The customer-facing billing surface, scoped to the caller's own organisation.
   billing: `${HEXERA_API_PREFIX}/billing`,
   billingCheckout: `${HEXERA_API_PREFIX}/billing/checkout`,
+  billingCreditsCheckout: `${HEXERA_API_PREFIX}/billing/credits/checkout`,
   billingPlans: `${HEXERA_API_PREFIX}/billing/plans`,
   billingPortal: `${HEXERA_API_PREFIX}/billing/portal`,
   chatHistory: (sessionId: PathSegment): ApiPath =>
