@@ -54,7 +54,11 @@ def test_anything_else_is_not_assent(said):
     "yes, forget it then", "forget snappyHexMesh", "forget about snappyHexMesh",
     "forget the engine", "forget all that", "yes - actually, forget it, let me think",
     "Forget it entirely; I only said yes earlier", "forget that I said yes",
-    "forget the whole thing",
+    "forget the whole thing", "forget that I said yes to it",
+    # the last word wins: a retraction after a choice takes it back, and a later choice that is
+    # negated or qualified does not undo a retraction
+    "use snappyHexMesh - actually, forget it", "forget it, I won't use snappyHexMesh",
+    "forget it, I'll use snappyHexMesh some other time",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -85,6 +89,9 @@ def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     "yes, use snappyHexMesh, but forget that the ground patch exists",
     "yes, and forget the right-hand outlet",
     "ok, forget the y+ target of 30",
+    "yes, forget that I said yes to the ground patch",
+    "yes, forget it, but actually use snappyHexMesh",
+    "forget it - go with snappyHexMesh instead",
 ])
 def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
     # The user accepted the engine and went on to say something else with a "not" in it. The
@@ -109,6 +116,7 @@ def test_a_yes_that_goes_on_to_refuse_the_engine_is_never_confirmed_from_its_yes
     "yes, but forget the ground patch",                # and this one
     "Forget the ground patch; yes, use snappyHexMesh",  # wherever the "forget" sits
     "yes, use snappyHexMesh, but forget that the ground patch exists",   # "that" opens a clause
+    "yes, forget that I said yes to the ground patch",  # the retracted yes was the patch's
 ])
 def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted(said):
     c, why = _confirm(said, quote="yes")
@@ -120,6 +128,17 @@ def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted(said):
 ])
 def test_a_yes_that_retracts_itself_is_never_confirmed_from_its_yes(said):
     c, why = _confirm(said, quote="yes")
+    assert c is None and "declined" in why
+
+
+def test_a_later_choice_of_the_engine_by_name_outlives_a_retraction_before_it():
+    # The user took the answer back and then picked the engine in so many words: the last word
+    # wins, and the model's quote of the choice confirms.
+    said = "yes, forget it, but actually use snappyHexMesh"
+    c, why = _confirm(said, quote="use snappyHexMesh")
+    assert why == "" and es.state_of(c) == es.CONFIRMED
+    # The other order is a no: the retraction is the last word.
+    c, why = _confirm("use snappyHexMesh - actually, forget it", quote="use snappyHexMesh")
     assert c is None and "declined" in why
 
 

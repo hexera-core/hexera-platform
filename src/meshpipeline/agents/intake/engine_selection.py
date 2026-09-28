@@ -62,8 +62,15 @@ _DECLINE_IDIOMS = ("not think", "not really", "rather not", "prefer not", "no wa
 #: thing" ("yes, forget it", "forget about it", "Forget it entirely; ...", "forget all that",
 #: "forget snappyHexMesh"), or when it takes back a yes ("forget that I said yes"). An object
 #: that names something else leaves the yes standing: "Forget the ground patch; yes, use
-#: snappyHexMesh", "yes, but forget that the ground patch exists".
+#: snappyHexMesh", "yes, but forget that the ground patch exists", "forget that I said yes to
+#: the ground patch". The last word wins: a later clause that picks the engine by name ("yes,
+#: forget it, but actually use snappyHexMesh") overrides a retraction before it, and a
+#: retraction after a choice ("use snappyHexMesh - actually, forget it") overrides the choice.
 _RETRACT = "forget"
+#: "yes to the ground patch": a yes with an object of its own.
+_YES_TO = frozenset({"to", "on", "for", "about"})
+#: What may close a clause that picks the engine again: "... use snappyHexMesh instead".
+_CHOICE_TAIL = frozenset({"instead", "after", "all", "anyway", "actually", "really"})
 _RETRACT_WHOLE = frozenset({"about", "all", "everything", "whole", "thing", "entirely",
                             "completely", "totally", "altogether", "actually", "really",
                             "honestly", "anyway", "anyways"})
@@ -125,27 +132,66 @@ def _stands_for_the_engine(raw: list[str], j: int) -> bool:
     return j + 1 >= len(raw) or raw[j + 1] in _FILLER
 
 
+def _takes_back_a_yes(obj: list[str]) -> bool:
+    # A yes inside the object is the one being taken back ("forget that I said yes", "... yes
+    # to it") unless it has an object of its own ("... yes to the ground patch").
+    for j, w in enumerate(obj):
+        if w not in _YES:
+            continue
+        if (j + 1 < len(obj) and obj[j + 1] in _YES_TO
+                and any(t not in _FILLER for t in obj[j + 2:])):
+            continue
+        return True
+    return False
+
+
 def _retracts(obj: list[str]) -> bool:
     # `obj` is what follows "forget" up to the end of its clause. It takes the engine answer back
     # when it names the engine or a yes ("forget snappyHexMesh", "forget that I said yes"), or
     # names nothing of its own ("forget", "forget it then", "forget about it", "forget it
     # entirely", "forget the whole thing") - not when it names something else ("forget the
     # ground patch", "forget that the ground patch exists").
-    if _ENGINE_WORD in obj or any(w in _YES for w in obj):
+    if _ENGINE_WORD in obj or _takes_back_a_yes(obj):
         return True
     return all(w in _FILLER or w in _RETRACT_WHOLE for w in obj)
 
 
-def _retracts_the_answer(engine: str, message: str) -> bool:
-    words = _tokens(engine, message, keep_engine=True, keep_breaks=True)
-    for i, w in enumerate(words):
-        if w != _RETRACT:
+def _chooses_the_engine(clause: list[str]) -> bool:
+    # The clause picks the proposed engine in so many words and ends there: an assent or choice
+    # word, fillers aside, right before its name, and nothing after it but fillers ("actually use
+    # snappyHexMesh", "go with snappyHexMesh instead", "yes, snappyHexMesh after all"). A choice
+    # that is negated ("don't use snappyHexMesh" - a no, read elsewhere) or qualified ("I'll use
+    # snappyHexMesh some other time") picks nothing.
+    for j, w in enumerate(clause):
+        if w != _ENGINE_WORD:
             continue
-        rest = words[i + 1:]
-        end = rest.index(_BREAK_WORD) if _BREAK_WORD in rest else len(rest)
-        if _retracts(rest[:end]):
+        k = j - 1
+        while k >= 0 and clause[k] in _FILLER:
+            k -= 1
+        if (k >= 0 and (clause[k] in _ASSENT or clause[k] in _CHOICE)
+                and not (k > 0 and clause[k - 1] in _NEGATION)
+                and all(t in _FILLER or t in _CHOICE_TAIL for t in clause[j + 1:])):
             return True
     return False
+
+
+def _retracts_the_answer(engine: str, message: str) -> bool:
+    # Clause by clause, the last word wins: a retraction stands unless a later clause picks the
+    # engine by name again.
+    words = _tokens(engine, message, keep_engine=True, keep_breaks=True)
+    clauses: list[list[str]] = [[]]
+    for w in words:
+        if w == _BREAK_WORD:
+            clauses.append([])
+        else:
+            clauses[-1].append(w)
+    retracted = False
+    for clause in clauses:
+        if retracted and _chooses_the_engine(clause):
+            retracted = False
+        if any(w == _RETRACT and _retracts(clause[i + 1:]) for i, w in enumerate(clause)):
+            retracted = True
+    return retracted
 
 
 def declines(engine: str, message: str) -> bool:
