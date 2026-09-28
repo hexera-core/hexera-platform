@@ -165,11 +165,30 @@ def test_the_block_never_weakens_the_rule_against_inventing_a_dimension():
 
 # when there is nothing to say
 
-@pytest.mark.parametrize("document", [None, {}, {"status": "measurement_failed", "reason": "x"},
-                                      {"status": "refused", "reason": "too large"}])
+@pytest.mark.parametrize("document", [None, {}, {"status": "refused", "reason": "too large"}])
 def test_no_measurement_means_no_block_at_all(document):
-    """The fail-open: the system prompt is character-for-character what ships today."""
+    """The fail-open: the system prompt is character-for-character what ships today.
+
+    `measurement_failed` used to be in this list and is not any more. None and {} are "not attempted", and
+    `refused` is the package declining before it opened the file - in all three nothing was ever owed, so
+    an empty block is the whole truth. A measurement that RAN and did not finish owed the conversation a
+    table, and the test for that is below."""
     assert gb.render_block(document) == ""
+
+
+def test_a_measurement_that_ran_and_failed_is_the_one_case_that_is_not_silence():
+    """MEASURED on the 36-file run of 28 September: 3 of 36 parts timed out at the measurement ceiling and
+    those 3 were the stalls. An empty block is the prompt with no measurement at all, so the model could not
+    know one was owed, and on all three it asked the customer for the opening sizes and which mouth was the
+    inlet. One of those parts has 32 openings.
+
+    The full statement of what the block says, and the fact that it names no geometry, is in
+    tests/unit/agents/test_a_measurement_that_failed_is_not_silence.py. This is the boundary itself: the one
+    status of the four that is disclosed."""
+    block = gb.render_block({"status": "measurement_failed", "reason": "measurement exceeded 60s"})
+    assert block == gb.MEASUREMENT_DID_NOT_FINISH
+    assert "Do not ask the customer for geometry" in block
+    assert "60s" not in block, "the reason is ours; the block carries no seconds to a customer's screen"
 
 
 def test_a_run_that_names_no_upload_reads_nothing_and_adds_no_block():

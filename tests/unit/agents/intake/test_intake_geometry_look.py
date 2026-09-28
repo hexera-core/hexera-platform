@@ -65,9 +65,22 @@ def test_a_look_that_failed_or_never_ran_renders_nothing():
         assert "WHAT IT LOOKS LIKE" not in render_block(document)
 
 
-def test_a_measurement_that_did_not_succeed_renders_nothing():
+def test_a_measurement_that_did_not_succeed_renders_no_table_and_no_look():
+    """It used to render nothing at all, and this test was named for that. MEASURED on the 36-file run of
+    28 September: three parts timed out at the measurement ceiling, an empty block is the prompt with no
+    measurement in the product at all, and on all three the model asked the CUSTOMER for the opening sizes
+    and which mouth was the inlet. So a failed measurement is now DISCLOSED.
+
+    What must not change is what the block may contain: there is no measurement, so there is no table, no
+    opening ids and not one word of the look. That is what this test is really about, and it is stricter
+    than the empty string was, because an empty string cannot leak and a sentence can."""
     document = {**_with_look(), "status": "measurement_failed"}
-    assert render_block(document) == ""
+    block = render_block(document)
+    assert block, "silence is what made the model ask the customer to measure their own file"
+    assert "did not finish" in block
+    assert look_lines(document) == [], "no look content reaches a conversation with no measurement"
+    for leaked in ("WHAT IT LOOKS LIKE", "a bolt flange at each end", "o1", "branched distribution"):
+        assert leaked not in block, f"{leaked!r} is a measured or seen fact and there are none"
 
 
 def test_nothing_at_all_is_not_an_exception():
