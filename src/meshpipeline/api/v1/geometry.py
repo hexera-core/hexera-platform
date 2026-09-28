@@ -172,8 +172,15 @@ def confirmation_message(body: ConfirmIn) -> str:
             "fluid-domain": "the fluid volume itself",
             "solid-body": "a solid body"}[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
+    # THE ENGINES' WORD FOR IT. The check says "a solid body" for a body the fluid flows around,
+    # but to the intake and the engine gate 'solid-body' means the physical solid meshed for
+    # structural work (gmsh); a body to wrap in a fluid domain is 'body-surface', the only kind
+    # the flow engines admit for external flow. The message names the intake's kind outright so
+    # the run is not refused with "cannot produce an external mesh from a solid body".
+    intake_kind = "body-surface" if body.input_kind == "solid-body" else body.input_kind
     parts = [f"{CONFIRMED_MARK} the file is {kind}"
-             + (f" ({body.part})" if body.part else "") + f"; the fluid flows {through}."]
+             + (f" ({body.part})" if body.part else "")
+             + f", input_kind {intake_kind}; the fluid flows {through}."]
     ports = [o for o in body.openings if o.role != "not_an_opening"]
     if body.flow == "external":
         from meshpipeline.contracts.geometry_fields import external_declaration

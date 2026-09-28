@@ -92,10 +92,22 @@ def test_the_confirmation_message_opens_with_the_phrase_the_intake_prompt_names(
     m = confirmation_message(_confirm())
     assert m.startswith("GEOMETRY CHECK (confirmed by the user):")
     assert "hollow inside for the fluid (pipe elbow)" in m and "flows through it" in m
+    assert "input_kind body-surface" in m
     assert "inlet (inlet), 466 mm across at (0, 0, 0) mm" in m
     assert "outlet (outlet), 120 x 80 mm at (1197, 867, 0) mm" in m
     assert "A point inside the flow: (120, 87, 0) mm" in m
     assert "Part size: 1449 x 1233 x 539 mm" in m
+
+
+def test_a_body_the_fluid_flows_around_is_declared_to_the_intake_as_a_body_surface():
+    """The check's 'solid-body' is the engines' 'body-surface': the message says the engines' word,
+    or snappyHexMesh refuses the run ("cannot produce an External CFD mesh from Solid body")."""
+    body = ConfirmIn(input_kind="solid-body", flow="external", part="car body", openings=[],
+                     seed_point_mm=None, size_mm=[1044.0, 389.0, 288.0], flow_axis="+x",
+                     reference_length_mm=1044.0, grounded=True)
+    m = confirmation_message(body)
+    assert "a solid body (car body), input_kind body-surface; the fluid flows around it." in m
+    assert "No openings" in m
 
 
 def test_the_patches_carry_the_sizes_and_positions_the_port_binding_reads():
