@@ -40,6 +40,8 @@ const raw = (v, p) => v * (0.001 / ((p && p.scale_to_m) || 0.001));
 // millimetres, so it goes back through the same scale
 const typed = (v, p) => v * (((p && p.scale_to_m) || 0.001) / 0.001);
 function fmt3(v) { const a = Math.abs(v); return a >= 100 ? String(Math.round(v)) : a === 0 ? "0" : String(Number(v.toPrecision(3))); }
+// a box the user may leave as it is holds the exact value, not a rounded reading of it
+const exact = (v) => String(Number(v.toFixed(6)));
 export const shown = (v, p) => (v == null || isNaN(v)) ? "?" : fmt3(raw(v, p));
 export const unitOf = (p) => (p && SCALE[p.unit] ? p.unit : "mm");
 const sym = (p) => `<span class="gc-u">${unitOf(p)}</span>`;
@@ -93,7 +95,7 @@ export function formHtml(p) {
   // flow is around the part; the openings table only when it is through.
   const external = `<div class="gc-ext"${p.flow === "external" ? "" : " hidden"}>
       <div class="rc-row"><div class="rc-k">The fluid travels along</div><div class="rc-v">${sel("gc-sel gc-axis", AXES, p.flow_axis || "unknown")}${p.flow_axis_guessed ? '<span class="gc-guess">a guess - check it</span>' : ""}</div></div>
-      <div class="rc-row"><div class="rc-k">Reference length</div><div class="rc-v"><input class="gc-num gc-ref" type="number" min="0" step="any" value="${p.reference_length_mm == null ? 0 : fmt3(raw(num(p.reference_length_mm, 0), p))}" aria-label="reference length"> ${sym(p)} along the flow</div></div>
+      <div class="rc-row"><div class="rc-k">Reference length</div><div class="rc-v"><input class="gc-num gc-ref" type="number" min="0" step="any" value="${p.reference_length_mm == null ? 0 : exact(raw(num(p.reference_length_mm, 0), p))}" aria-label="reference length"> ${sym(p)} along the flow</div></div>
       <div class="rc-row"><div class="rc-k">Far field, in lengths</div><div class="rc-v gc-extents">${EXTENTS.map(([k, l]) =>
         `<label>${esc(l)} <input class="gc-num gc-ext-${k}" data-k="${k}" type="number" min="0.5" step="0.5" value="${num(ext[k], 5)}"></label>`).join("")}</div></div>
       <div class="rc-row"><div class="rc-k">On the ground</div><div class="rc-v"><label><input class="gc-ground" type="checkbox"${p.grounded ? " checked" : ""}> the part stands on the ground</label></div></div>

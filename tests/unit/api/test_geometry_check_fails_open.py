@@ -241,7 +241,7 @@ async def test_the_confirm_waits_for_the_files_unit(served):
     assert route.unit_needed(SimpleNamespace(geometry_source_id=None, geometry_interpretation_id=None)) is False
 
 
-def _confirming(monkeypatch, session, interpretation: dict | None, recorded: list):
+def _confirming(monkeypatch, session, interpretation: dict | None, recorded: list, commit=None):
     """The confirm's collaborators stood in for: the session's interpretation, the unit record,
     the session row, and the chat turn that follows."""
     from meshpipeline.api.v1 import chat as chatmod
@@ -261,7 +261,7 @@ def _confirming(monkeypatch, session, interpretation: dict | None, recorded: lis
 
     @asynccontextmanager
     async def _db():
-        yield SimpleNamespace(commit=AsyncMock())
+        yield SimpleNamespace(commit=commit or AsyncMock())
     monkeypatch.setattr(dbmod, "get_db", _db)
 
     class _Sessions:
@@ -299,3 +299,18 @@ async def test_a_unit_corrected_on_the_stage_is_recorded_and_the_sizes_re_read(s
                            scale_to_m=0.001, unit="mm")
     out = await route.confirm_check(SID, same, "alice", "org-1")
     assert recorded == [] and "Part size: 7 x 7 x 117 mm" in out["message"]
+
+
+async def test_a_confirmation_whose_transaction_fails_takes_its_stored_copy_back(served, monkeypatch):
+    """The stored copy goes first, the session's transaction second. A transaction that fails
+    leaves no copy behind: the next read would otherwise report a confirmation that never
+    landed, and the console would stop waiting for one."""
+    store = served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = await route._owned_session(SID, "alice", "org-1")
+    declared_mm = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm", "scale_to_metres": 0.001,
+                   "basis": "file_declared", "evidence": "SI_UNIT"}
+    _confirming(monkeypatch, session, declared_mm, [], commit=AsyncMock(side_effect=RuntimeError("db down")))
+    body = route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[], scale_to_m=0.001, unit="m")
+    with pytest.raises(RuntimeError):
+        await route.confirm_check(SID, body, "alice", "org-1")
+    assert _key("confirmed.json") in store.deleted and _key("confirmed.json") not in store.objects

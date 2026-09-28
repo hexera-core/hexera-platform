@@ -452,20 +452,30 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     finally:
         tmp.unlink(missing_ok=True)
 
-    async with get_db() as db:
-        # the same tenant-scoped read every request-facing module uses; never the internal one
-        session = await SessionRepository().get_for_owner(db, session_id, owner_id,
-                                                          organization_id=organization_id)
-        if session is None:
-            raise HTTPException(404, "Session not found")
-        if corrected:
-            await gh.record_unit(db, session, owner_id, organization_id, corrected)
-            logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
-                        corrected, session_id)
-        session.input_kind = body.input_kind
-        session.intake_patches = patches
-        session.messages = with_declaration(session.messages, message)
-        await db.commit()
+    try:
+        async with get_db() as db:
+            # the same tenant-scoped read every request-facing module uses; never the internal one
+            session = await SessionRepository().get_for_owner(db, session_id, owner_id,
+                                                              organization_id=organization_id)
+            if session is None:
+                raise HTTPException(404, "Session not found")
+            if corrected:
+                await gh.record_unit(db, session, owner_id, organization_id, corrected)
+                logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
+                            corrected, session_id)
+            session.input_kind = body.input_kind
+            session.intake_patches = patches
+            session.messages = with_declaration(session.messages, message)
+            await db.commit()
+    except BaseException:
+        # THE STORED COPY GOES BACK: the session never took the declaration (nor the unit), so a
+        # copy that stayed would make the next read report a confirmation that did not land, and
+        # the console would stop waiting for one. Best effort - the store may be what broke.
+        try:
+            get_object_store().delete_object(object_key=check_object_key(str(session_id), "confirmed.json"))
+        except Exception:  # noqa: BLE001
+            logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
+        raise
     logger.info("geometry check confirmed - session_id=%s openings=%d", session_id, len(body.openings))
     # THE INTAKE PICKS UP FROM HERE. The hold left the conversation waiting on this button; one
     # ordinary chat turn, in the user's name, lets the intake ask what is still missing. A turn
