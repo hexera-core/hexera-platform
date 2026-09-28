@@ -46,18 +46,23 @@ _FILLER = frozenset({
 # the message ("no, don't use snappyHexMesh"), ends it ("definitely not", "I'd rather not"),
 # follows an intensifier ("absolutely not, ..."), opens or closes the answer as a refusal idiom
 # ("yes, I don't think so", "hmm, not really" - but not "yes, but not yet on the refinement",
-# where the idiom is aimed at the refinement), or negates a choice verb whose object is the
+# where the idiom is aimed at the refinement), negates a choice verb whose object is the
 # engine or a pronoun standing alone for it ("don't want snappyHexMesh", "can't use that",
 # "won't go with it" - but not "don't want that ground patch", where the pronoun points at the
-# noun after it). Every "n't" is read as "not" first, so the apostrophe never decides. Two
-# idioms mean the opposite of their words and go first.
+# noun after it), or retracts the answer ("forget it"). Every "n't" is read as "not" first, so
+# the apostrophe never decides. Two idioms mean the opposite of their words and go first.
 _NEGATION = frozenset({"not", "dont", "never", "cancel", "stop"})
 _DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
-#: In their filler-free form ("I don't think so" reads as "not think", "forget it" as "forget"),
-#: matched only where the answer begins or ends: "yes, forget it" retracts, "yes, but forget the
-#: ground patch" does not.
+#: In their filler-free form ("I don't think so" reads as "not think"), matched only where the
+#: answer begins or ends.
 _DECLINE_IDIOMS = ("not think", "not really", "rather not", "prefer not", "no way", "not yet",
-                   "not now", "changed my mind", "forget")
+                   "not now", "changed my mind")
+#: A retraction is read from its object, wherever it sits: "yes, forget it", "forget about it",
+#: "forget it then" and "forget snappyHexMesh" take the engine answer back, while "forget the
+#: ground patch" names its own object - so "Forget the ground patch; yes, use snappyHexMesh" is
+#: still a yes.
+_RETRACT = "forget"
+_ABOUT = "about"
 _INTENSIFIERS = frozenset({"definitely", "absolutely", "certainly", "surely"})
 _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use", "pick", "take",
                      "keep", "go", "fancy", "wish"})
@@ -105,6 +110,16 @@ def _stands_for_the_engine(raw: list[str], j: int) -> bool:
     return j + 1 >= len(raw) or raw[j + 1] in _FILLER
 
 
+def _retracts(raw: list[str], i: int) -> bool:
+    # "forget" at raw[i] takes the engine answer back when it has no object of its own - nothing
+    # but fillers follow ("forget", "forget it then", "forget the engine") - or when its object,
+    # after an optional "about", stands for the engine ("forget about it", "forget snappyHexMesh").
+    k = i + 2 if i + 1 < len(raw) and raw[i + 1] == _ABOUT else i + 1
+    if all(w in _FILLER for w in raw[k:]):
+        return True
+    return any(_stands_for_the_engine(raw, j) for j in range(k, min(k + 2, len(raw))))
+
+
 def declines(engine: str, message: str) -> bool:
     raw = _tokens(engine, message, keep_engine=True)
     words = [w for w in raw if w not in _FILLER and w != _ENGINE_WORD]
@@ -117,6 +132,8 @@ def declines(engine: str, message: str) -> bool:
            for idiom in _DECLINE_IDIOMS):
         return True
     for i, w in enumerate(raw):
+        if w == _RETRACT and _retracts(raw, i):
+            return True
         if w not in _NEGATION:
             continue
         if i > 0 and raw[i - 1] in _INTENSIFIERS:

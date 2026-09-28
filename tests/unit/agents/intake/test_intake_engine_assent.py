@@ -51,7 +51,8 @@ def test_anything_else_is_not_assent(said):
     "I don't want to use it", "can't use that", "I won't go with it", "absolutely not, thanks",
     "yes, I don't think so", "hmm, not really", "I don't want this engine",
     "don't want that one", "I've changed my mind", "yes, forget it", "forget about it",
-    "yes, forget it then",
+    "yes, forget it then", "forget snappyHexMesh", "forget about snappyHexMesh",
+    "forget the engine", "forget all that", "yes - actually, forget it, let me think",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -77,6 +78,8 @@ def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     "yes, I changed my mind about the ground patch",
     "ok - not really sure the inlet is 40 mm, check it",
     "yes, but forget the ground patch",
+    "Forget the ground patch; yes, use snappyHexMesh",
+    "forget about the ground patch, yes go ahead",
 ])
 def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
     # The user accepted the engine and went on to say something else with a "not" in it. The
@@ -99,6 +102,7 @@ def test_a_yes_that_goes_on_to_refuse_the_engine_is_never_confirmed_from_its_yes
     "yes, but not yet on the refinement",              # the idiom is aimed at the refinement
     "yes, I changed my mind about the ground patch",   # so is this one
     "yes, but forget the ground patch",                # and this one
+    "Forget the ground patch; yes, use snappyHexMesh",  # wherever the "forget" sits
 ])
 def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted(said):
     c, why = _confirm(said, quote="yes")
@@ -108,6 +112,16 @@ def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted(said):
 def test_a_yes_that_retracts_itself_is_never_confirmed_from_its_yes():
     c, why = _confirm("yes, forget it", quote="yes")
     assert c is None and "declined" in why
+
+
+def test_a_forget_aimed_at_a_patch_leaves_the_explicit_yes_standing():
+    # "Forget" drops the ground patch, not the engine. The message says more than a yes, so the
+    # application does not confirm it on its own; the model reads it and its quote is honoured.
+    said = "Forget the ground patch; yes, use snappyHexMesh"
+    c, why = _confirm(said, quote="yes, use snappyHexMesh")
+    assert why == "" and es.state_of(c) == es.CONFIRMED
+    assert es.confirm_by_assent(_proposed(), session_id="s", owner_id="u", revision="r2",
+                                latest_user_message=said, user_msg_count=2) is None
 
 
 def test_a_yes_with_an_unrelated_negation_still_confirms_when_quoted():
