@@ -122,7 +122,10 @@ export function readForm(root, p) {
     return body;
   });
   const body = { input_kind: root.querySelector(".gc-kind").value, flow, part: p.part || "",
-                 openings, seed_point_mm: p.seed_point_mm || null, size_mm: p.size_mm || null };
+                 openings, seed_point_mm: p.seed_point_mm || null, size_mm: p.size_mm || null,
+                 // the scale the numbers were read under, for the server to re-read them in the
+                 // unit the chat confirmed since
+                 scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m) };
   if (flow === "external") Object.assign(body, readExternal(root));
   return body;
 }

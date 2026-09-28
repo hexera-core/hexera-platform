@@ -52,6 +52,11 @@ class ConfirmIn(BaseModel):
     reference_length_mm: float | None = Field(default=None, gt=0)
     extents: dict[str, float] | None = None
     grounded: bool = False
+    #: THE SCALE THE NUMBERS WERE READ UNDER: metres per unit of the file, as the scout assumed
+    #: it when the form was drawn (served on the proposal, sent back with it). A triangle file's
+    #: numbers are read as millimetres until the chat confirms the unit; when the confirmed unit
+    #: differs, every length above is re-read in it before anything is declared.
+    scale_to_m: float | None = Field(default=None, gt=0)
 
     @field_validator("extents")
     @classmethod
@@ -147,6 +152,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # the stage opens on a scouted check too, with the code's labels, and keeps them on a
         # naming that failed; the pictures are for the card, which only shows once the check
         # is ready
+        if isinstance(payload.get("proposal"), dict) and (payload.get("facts") or {}).get("scale_to_m"):
+            # the scale the proposal's numbers were read under, for the confirm to re-read them
+            payload["proposal"]["scale_to_m"] = float(payload["facts"]["scale_to_m"])
         if payload.get("status") == "ready":
             store = get_object_store()
             payload["pictures"] = [
@@ -168,12 +176,35 @@ def unit_needed(session) -> bool:
     return bool(getattr(session, "geometry_source_id", None)) and not getattr(session, "geometry_interpretation_id", None)
 
 
+def in_confirmed_unit(body: ConfirmIn, scale_to_metres: float | None) -> ConfirmIn:
+    """The confirmation with every length re-read in the unit the chat confirmed. The numbers on
+    the form are the file's own, read under the scale the scout assumed (`scale_to_m`, drawn
+    with the form and sent back with it); when the unit confirmed since differs, a "466 mm"
+    opening in a file drawn in metres is 466,000 mm, and the ports must be bound at that size.
+    Untouched when the form carried no scale, or the two agree - the naming re-reads the facts
+    the same way, and a form drawn from re-read facts carries the confirmed scale already."""
+    if scale_to_metres is None or not body.scale_to_m:
+        return body
+    k = float(scale_to_metres) / float(body.scale_to_m)
+    if abs(k - 1.0) <= 1e-9:
+        return body
+    from meshpipeline.application.geometry_check import rescaled_lengths
+
+    plain = body.model_dump()
+    plain.pop("scale_to_m")
+    return ConfirmIn(**rescaled_lengths(plain, k), scale_to_m=float(scale_to_metres))
+
+
 UNIT_FIRST = ("Say in the chat what unit the file is in first - millimetres, centimetres, metres or "
               "inches. The sizes on the picture cannot be confirmed in a unit nobody has named.")
 
 
+STILL_RUNNING = ("This geometry check is still running. It can be run again once it reports failed - "
+                 "which it does by itself when its time is up.")
+
+
 class RetryIn(BaseModel):
-    #: the step to run again; left out, it is the one the check reports for a retry
+    #: the step to run again, which must be the one the check reports for a retry; left out, that one
     step: Literal["scout", "naming"] | None = None
 
 
@@ -201,9 +232,18 @@ async def retry_check(session_id: uuid.UUID, body: RetryIn | None = None,
         requested = gc.naming_requested(sid)
     except Exception:  # noqa: BLE001 - as the read treats it: not asked yet
         requested = None
-    step = (body.step if body is not None else None) or gc.retry_step(gc.time_boxed(stored, requested))
+    # ONLY A CHECK REPORTED FAILED IS RUN AGAIN, and only its own step: a scout or a naming still
+    # within its time is a worker still at work, and a second one would race it for the record;
+    # a ready check has nothing to run again. The time box is what turns a lost worker into a
+    # failed check, so a retry is never refused for good.
+    reported = gc.time_boxed(stored, requested) or stored
+    step = gc.retry_step(reported) if reported.get("status") == gc.STATUS_FAILED else None
     if step is None:
-        raise HTTPException(409, "This geometry check has nothing to run again")
+        raise HTTPException(409, STILL_RUNNING if reported.get("status") in (gc.STATUS_PENDING, gc.STATUS_SCOUTED)
+                            else "This geometry check has nothing to run again")
+    asked = body.step if body is not None else None
+    if asked and asked != step:
+        raise HTTPException(409, f"The step to run again on this check is the {step}, not the {asked}")
     async with get_db() as db:
         interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
         source = await _source_payload(db, session, owner_id, organization_id)
@@ -349,16 +389,23 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     names = [o.name for o in body.openings]
     if len(set(names)) != len(names):
         raise HTTPException(422, "Every opening needs its own name")
-
-    message = confirmation_message(body)
-    patches = patches_from(body)
     import tempfile
     from pathlib import Path
 
+    from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import check_object_key
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
     from meshpipeline.persistence.session import get_db
+
+    # THE UNIT THE CHAT CONFIRMED, read first: a form drawn while the file's numbers were still
+    # read as millimetres is re-read in it, so a user who proceeds before the naming has re-read
+    # the facts never declares a size at the wrong scale
+    async with get_db() as db:
+        interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+    body = in_confirmed_unit(body, float(interpretation["scale_to_metres"]) if interpretation else None)
+    message = confirmation_message(body)
+    patches = patches_from(body)
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has
     # changed, so pressing the button again is safe; and a second press replaces, never repeats.

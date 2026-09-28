@@ -55,7 +55,7 @@ def _key(name: str) -> str:
 
 
 def _scouted() -> dict:
-    return {"status": "scouted", "named": False, "written_at": 1.0, "facts": {"size_mm": [1, 2, 3]},
+    return {"status": "scouted", "named": False, "written_at": 1.0, "facts": {"size_mm": [1, 2, 3], "scale_to_m": 0.001},
             "proposal": {"openings": []}, "snapshots": [], "skin_key": _key("skin.json")}
 
 
@@ -111,7 +111,29 @@ async def test_a_scouted_check_with_no_naming_asked_is_served_for_the_stage_to_o
     d = await route.get_check(SID, "alice", "org-1")
     assert d["status"] == "scouted" and d["named"] is False and d["naming_requested"] is False
     assert d["skin"] is True and d["unit_needed"] is False and "facts" not in d
-    assert d["proposal"] == {"openings": []}
+    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001}    # the scale the numbers were read under
+
+
+def test_a_confirmation_drawn_under_an_assumed_unit_is_re_read_in_the_confirmed_one():
+    """A "466 mm" opening on a form drawn while a metres file was read as millimetres is
+    466,000 mm; the far-field margins are body lengths and do not move."""
+    body = route.ConfirmIn(
+        input_kind="solid-body", flow="external", part="car",
+        openings=[route.ConfirmedOpening(id=1, name="inlet", role="inlet", diameter_mm=466.2, centroid_mm=[1197.1, 867.2, 0.0]),
+                  route.ConfirmedOpening(id=2, name="slot", role="outlet", width_mm=120.0, height_mm=80.0)],
+        seed_point_mm=[119.7, 86.7, 0.0], size_mm=[1044.0, 389.0, 288.0], flow_axis="+x",
+        reference_length_mm=1044.0, extents={"upstream": 5.0, "downstream": 10.0}, grounded=True, scale_to_m=0.001)
+    metres = route.in_confirmed_unit(body, 1.0)
+    assert metres.openings[0].diameter_mm == 466200.0 and metres.openings[0].centroid_mm == [1197100.0, 867200.0, 0.0]
+    assert metres.openings[1].width_mm == 120000.0 and metres.openings[1].height_mm == 80000.0
+    assert metres.seed_point_mm == [119700.0, 86700.0, 0.0] and metres.size_mm == [1044000.0, 389000.0, 288000.0]
+    assert metres.reference_length_mm == 1044000.0 and metres.extents == {"upstream": 5.0, "downstream": 10.0}
+    assert metres.grounded is True and metres.flow_axis == "+x" and metres.scale_to_m == 1.0
+    assert "1044000 x 389000 x 288000 mm" in route.confirmation_message(metres)
+    assert route.patches_from(route.ConfirmIn(**dict(metres.model_dump(), flow="internal")))[0]["near_mm"] == [1197100.0, 867200.0, 0.0]
+    assert route.in_confirmed_unit(body, 0.001) is body                       # the scales agree
+    assert route.in_confirmed_unit(body, None) is body                        # no unit confirmed yet
+    assert route.in_confirmed_unit(route.ConfirmIn(input_kind="body-surface", flow="internal"), 1.0).scale_to_m is None  # a form with no scale
 
 
 async def test_a_naming_that_never_answered_reads_as_failed_and_keeps_the_part_for_the_stage(served):
@@ -120,7 +142,7 @@ async def test_a_naming_that_never_answered_reads_as_failed_and_keeps_the_part_f
                             "purpose_text": "a pipe"}})
     d = await route.get_check(SID, "alice", "org-1")
     assert d["status"] == "failed" and d["reason"] == gc.NAMING_TOO_LONG and d["retry"] == "naming"
-    assert d["skin"] is True and d["proposal"] == {"openings": []} and d["naming_requested"] is True
+    assert d["skin"] is True and d["proposal"] == {"openings": [], "scale_to_m": 0.001} and d["naming_requested"] is True
 
 
 async def test_a_naming_that_gave_up_waiting_for_the_scout_is_not_reported_as_running(served):
@@ -160,11 +182,36 @@ async def test_the_retry_of_a_naming_that_never_answered_runs_it_again_over_the_
     assert json.loads(store.objects[_key("naming.json")])["requested_at"] > time.time() - 60
 
 
-async def test_a_ready_check_has_nothing_to_run_again(served):
+async def test_a_ready_check_has_nothing_to_run_again_even_when_a_step_is_named(served):
     served({"scout.json": {"status": "ready", "named": True, "facts": {}, "proposal": {}, "snapshots": []}})
     with pytest.raises(HTTPException) as refused:
         await route.retry_check(SID, None, "alice", "org-1")
     assert refused.value.status_code == 409
+    with pytest.raises(HTTPException) as refused:
+        await route.retry_check(SID, route.RetryIn(step="scout"), "alice", "org-1")
+    assert refused.value.status_code == 409 and "nothing to run again" in refused.value.detail
+
+
+async def test_a_check_still_within_its_time_is_not_run_again(served):
+    """A scout or a naming still within its time is a worker still at work: a second one would
+    race it for the record. The time box turns a lost worker into a failed check, so a retry
+    is never refused for good."""
+    store = served({"scout.json": {"status": "pending", "written_at": time.time()}})
+    with pytest.raises(HTTPException) as refused:
+        await route.retry_check(SID, route.RetryIn(step="scout"), "alice", "org-1")
+    assert refused.value.status_code == 409 and "still running" in refused.value.detail
+    assert json.loads(store.objects[_key("scout.json")])["status"] == "pending"      # untouched
+    served({"scout.json": _scouted(), "naming.json": {"requested_at": time.time(), "purpose_text": "a pipe"}})
+    with pytest.raises(HTTPException) as refused:
+        await route.retry_check(SID, None, "alice", "org-1")
+    assert refused.value.status_code == 409 and "still running" in refused.value.detail
+
+
+async def test_a_step_that_is_not_the_one_the_check_reports_is_refused(served):
+    served({"scout.json": {"status": "pending", "written_at": time.time() - 5000}})
+    with pytest.raises(HTTPException) as refused:
+        await route.retry_check(SID, route.RetryIn(step="naming"), "alice", "org-1")
+    assert refused.value.status_code == 409 and "the scout, not the naming" in refused.value.detail
 
 
 async def test_the_confirm_waits_for_the_files_unit(served):

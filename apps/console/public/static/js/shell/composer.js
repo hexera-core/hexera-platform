@@ -138,7 +138,16 @@ async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
   // user is already turning the part while the model thinks - and can proceed without it.
-  let stage = null, stageFailed = false, told = "";
+  let stage = null, stageFailed = false, told = "", card = "";
+  // THE CARD STANDS IN when the stage cannot draw. It is static, so it is drawn again when what
+  // it shows changes - the file's unit settled in the chat, the naming gave up - and never
+  // otherwise, so what the user typed on it stays.
+  const cardKey = (d) => [d.status, !!d.unit_needed, d.reason || ""].join("|");
+  const showCard = async (d) => {
+    if (!d.proposal || cardKey(d) === card) return;
+    card = cardKey(d);
+    await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+  };
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
@@ -192,6 +201,7 @@ async function watchGeometryCheck(sessionId) {
       }
       _checkState = "over";
       releaseHold();
+      if (stageFailed) await showCard(d);        // the card keeps the part, with Proceed as the unit allows
     } else if (status === "failed" && stage) {
       // the naming gave up after the stage opened: the code's labels stand, the user proceeds -
       // or runs the naming again from the stage, so the watch goes on
@@ -201,9 +211,10 @@ async function watchGeometryCheck(sessionId) {
     } else if (status === "scouted") {
       if (d.skin && !stage && !stageFailed) {
         stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
-        if (stage === null) stageFailed = true;                               // the card stands in
+        if (stage === null) { stageFailed = true; card = cardKey(d); }        // the card stands in
       }
       if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
+      else if (stageFailed) await showCard(d);
     } else if (status === "ready" && d.named !== false) {
       _checkState = "ready";
       if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);

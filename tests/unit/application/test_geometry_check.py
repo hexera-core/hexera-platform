@@ -533,6 +533,31 @@ def test_the_retry_of_a_failed_naming_puts_the_check_back_to_scouted_and_stamps_
     assert gc.restart_naming(sid, "o1", purpose_text="a pipe", interpretation=None) is False
 
 
+def test_a_naming_retry_that_cannot_be_queued_puts_the_failure_back(monkeypatch):
+    """Otherwise the record said scouted and the marker said nothing: a check waiting for a
+    naming nobody queued, with the Try again gone."""
+    import json
+
+    from meshpipeline.contracts import geometry_check as seam
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-aaaa"
+    failed = {**_scouted(sid, unit_assumed=False, scale=0.001), "status": "failed", "reason": "provider down",
+              "step": "naming", "retry": "naming", "named": False}
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(failed).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    for broken in (None, lambda **kw: (_ for _ in ()).throw(ConnectionError("broker unreachable"))):
+        seam.set_naming_enqueuer(broken)
+        try:
+            assert gc.restart_naming(sid, "o1", purpose_text="a pipe", interpretation=None) is False
+        finally:
+            seam.set_naming_enqueuer(None)
+        stored = json.loads(store.objects[f"sessions/{sid}/geometry_check/scout.json"])
+        assert stored["status"] == "failed" and stored["reason"] == "provider down" and stored["retry"] == "naming"
+        assert stored["facts"] == failed["facts"]
+        assert f"sessions/{sid}/geometry_check/naming.json" not in store.objects        # nothing was asked for
+
+
 def test_a_scout_that_cannot_be_queued_is_marked_failed_with_the_scout_as_the_retry(monkeypatch):
     import json
 

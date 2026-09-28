@@ -34,10 +34,15 @@ _CANDIDATES = (LengthUnit.millimetre, LengthUnit.centimetre, LengthUnit.metre, L
 #: A unit named anywhere in a sentence: "the coordinates are in millimetres", "mm I think". The
 #: bare "m" and "in" are too common as words to count here; as the whole answer parse_unit
 #: reads them.
-_UNIT_ANYWHERE = re.compile(r"\b(millimet(?:er|re)s?|mm|centimet(?:er|re)s?|cm|met(?:er|re)s?|inch(?:es)?)\b")
+_UNIT_WORD = r"(?:millimet(?:er|re)s?|mm|centimet(?:er|re)s?|cm|met(?:er|re)s?|inch(?:es)?)"
+_UNIT_ANYWHERE = re.compile(r"\b(" + _UNIT_WORD + r")\b")
 #: A number right before the unit word makes it a size ("about 2 metres long"), not the file's
 #: unit - the one thing this question must never take from a sentence about size.
-_SIZE_BEFORE = re.compile(r"\d\s*(?:millimet(?:er|re)s?|mm|centimet(?:er|re)s?|cm|met(?:er|re)s?|inch(?:es)?)\b")
+_SIZE_BEFORE = re.compile(r"\d\s*" + _UNIT_WORD + r"\b")
+#: A negation right before it names the unit the user rejects ("not millimetres", "it isn't in
+#: inches"), never the one the file is in.
+_NEGATED_BEFORE = re.compile(r"\b(?:not|no|isn'?t|aren'?t|never|nor|rather than|instead of)\s+(?:in\s+|the\s+)?"
+                             + _UNIT_WORD + r"\b")
 
 #: What confirms a proposed unit: the whole message, nothing else in it. A sentence that merely
 #: contains "yes" is not an answer to a question about scale.
@@ -114,8 +119,8 @@ def classify(message: str, proposal: LengthUnit | None = None) -> LengthUnit | N
     """The unit the message names, or the proposed one when the message is a plain assent to
     it. A bare unit word is the answer, as before; so is a unit named anywhere in the sentence
     ("the coordinates are in millimetres", "yes, mm", "mm I think") when it is the only one
-    named and no number sits before it - "about 2 metres long" states a size, not the file's
-    scale. Anything else names nothing."""
+    named, no number sits before it - "about 2 metres long" states a size, not the file's
+    scale - and no negation does: "not millimetres" rejects one. Anything else names nothing."""
     text = str(message or "").strip()
     try:
         return parse_unit(text)
@@ -123,7 +128,7 @@ def classify(message: str, proposal: LengthUnit | None = None) -> LengthUnit | N
         pass
     low = text.lower()
     named = {parse_unit(word) for word in _UNIT_ANYWHERE.findall(low)}
-    if len(named) == 1 and not _SIZE_BEFORE.search(low):
+    if len(named) == 1 and not _SIZE_BEFORE.search(low) and not _NEGATED_BEFORE.search(low):
         return named.pop()
     if proposal is not None and " ".join(low.replace(",", " ").split()).strip(" .!") in _ASSENT:
         return proposal

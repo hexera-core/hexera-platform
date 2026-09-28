@@ -45,8 +45,10 @@ def test_a_unit_named_anywhere_in_the_reply_is_the_answer(answer, unit):
 
 
 @pytest.mark.parametrize("answer", ["it's about 2 metres long", "1.05 m", "not inches, millimetres",
-                                    "what do you mean?", "not sure", "furlongs", "ok", ""])
-def test_a_reply_that_names_no_unit_or_states_a_size_names_nothing(answer):
+                                    "what do you mean?", "not sure", "furlongs", "ok", "",
+                                    "not millimetres", "it is not in metres", "it isn't inches", "no mm",
+                                    "somewhere between mm and cm"])
+def test_a_reply_that_names_no_unit_or_states_or_rejects_one_names_nothing(answer):
     assert uc.classify(answer) is None
 
 

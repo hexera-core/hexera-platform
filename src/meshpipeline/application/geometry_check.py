@@ -236,11 +236,25 @@ def restart_naming(session_id: str, owner_id: str, *, purpose_text: str,
     stored = read_check(session_id)
     if stored is None or not stored.get("facts"):
         return False
-    if stored.get("status") != STATUS_SCOUTED:
+    was_failed = stored.get("status") != STATUS_SCOUTED
+    if was_failed:
+        # back to scouted BEFORE the task is published: a worker that starts at once must find
+        # a check it names, not one it skips as failed
         write_status(session_id, STATUS_SCOUTED,
                      **{k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS})
-    if not enqueue_naming(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
-                          interpretation=interpretation):
+    try:
+        queued = enqueue_naming(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
+                                interpretation=interpretation)
+    except Exception as exc:  # noqa: BLE001 - the broker's weather; the check must not be left half-way
+        logger.warning("geometry naming could not be queued again (%s: %s) - session_id=%s",
+                       type(exc).__name__, exc, session_id)
+        queued = False
+    if not queued:
+        if was_failed:
+            # the failure goes back as it was, so the read keeps reporting it with its way on,
+            # instead of a check waiting for a naming nobody queued
+            write_status(session_id, str(stored["status"]),
+                         **{k: v for k, v in stored.items() if k not in _STAMPED_KEYS})
         return False
     mark_naming_requested(session_id, purpose_text)
     logger.info("geometry naming queued again - session_id=%s", session_id)
@@ -562,9 +576,10 @@ def _wait_for_scout(session_id: str) -> dict | None:
         time.sleep(2.0)
 
 
-def _rescaled(value, k: float):
+def rescaled_lengths(value, k: float):
     """Every length in a facts dict re-read by factor k: `*_mm` and `*_m` scale by k, areas by k
-    squared, nested lists and dicts alike. Keys that carry no unit are left alone."""
+    squared, nested lists and dicts alike. Keys that carry no unit are left alone. The naming
+    re-reads the scout's facts with it; the confirm re-reads the user's answers the same way."""
     if isinstance(value, dict):
         out = {}
         for key, v in value.items():
@@ -573,11 +588,14 @@ def _rescaled(value, k: float):
             elif key.endswith("_mm") or key.endswith("_m") or key in ("bbox_min_m", "bbox_max_m"):
                 out[key] = _scale_numbers(v, k)
             else:
-                out[key] = _rescaled(v, k)
+                out[key] = rescaled_lengths(v, k)
         return out
     if isinstance(value, list):
-        return [_rescaled(v, k) for v in value]
+        return [rescaled_lengths(v, k) for v in value]
     return value
+
+
+_rescaled = rescaled_lengths
 
 
 def _rescale_skin(session_id: str, k: float) -> None:
