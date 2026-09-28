@@ -444,9 +444,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                 await gh.record_unit(db, session, owner_id, organization_id, corrected)
                 logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
                             corrected, session_id)
-                # A run proposed under the old unit carried the old sizes. The gate is the intake
-                # authority's: the turn below ("I confirmed the geometry check. Go on.") is a
-                # correction to a live proposal, and withdraws it there.
+                # A run proposed under the old unit carried the old sizes: record_unit has the
+                # intake authority withdraw it in this same transaction.
             session.input_kind = body.input_kind
             session.intake_patches = patches
             session.messages = with_declaration(session.messages, message)

@@ -53,10 +53,45 @@ def test_a_sentence_that_says_what_unit_the_file_is_in_names_it(said, unit):
     "somewhere between mm and cm",
     "use snappy with mm",                     # a short reply about something else
     "what about metres",
+    "is the file in metres",                  # a question with no question mark
+    "Is it in inches",
+    "could it be in metres",
+    "not sure if it's in metres",             # a doubt
+    "maybe the file is in inches",
+    "I don't know whether the units are mm",
     "",
 ])
 def test_a_sentence_that_only_mentions_a_unit_names_nothing(said):
     assert uc.stated_unit(said) is None
+
+
+@pytest.mark.asyncio
+async def test_a_unit_change_that_cannot_re_read_the_confirmed_sizes_changes_nothing_and_says_so(monkeypatch):
+    async def _cannot(*a, **k):
+        raise uch.UnitChangeError("the confirmed geometry check could not be read (ConnectionError)")
+    monkeypatch.setattr(uch, "change_unit", _cannot)
+    repo = MagicMock(); repo.append_message = AsyncMock(); repo.set_intake_gate = AsyncMock()
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="the file is in metres", organization_id="")
+    outcome = await msg._settle(inbound, AsyncMock(), gate={}, locked=_locked(), messages=[], revision="r1",
+                                session_repo=repo, logger=MagicMock())
+    assert outcome.status is msg.MessageStatus.unit_changed and outcome.answered
+    assert outcome.reply == msg.UNIT_CHANGE_FAILED.format(unit="metres")
+    assert "changed nothing" in outcome.reply
+    repo.set_intake_gate.assert_not_awaited()
+    assert repo.append_message.await_args.args[2:] == ("assistant", outcome.reply)
+
+
+@pytest.mark.asyncio
+async def test_a_stage_unit_change_withdraws_a_live_proposal_through_the_intake_authority():
+    live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600}
+    repo = MagicMock(); repo.set_intake_gate = AsyncMock()
+    session = _locked(intake_gate={"approval": live, "selection": {"engine": "snappy"}})
+    assert await msg.withdraw_proposal_for_unit_change(AsyncMock(), session, session_repo=repo) is True
+    gate = repo.set_intake_gate.await_args.args[2]
+    assert gate["approval"]["status"] == ap.INVALIDATED and gate["selection"] == {"engine": "snappy"}
+    repo.set_intake_gate.reset_mock()
+    assert await msg.withdraw_proposal_for_unit_change(AsyncMock(), _locked(), session_repo=repo) is False
+    repo.set_intake_gate.assert_not_awaited()
 
 
 def _locked(**over):

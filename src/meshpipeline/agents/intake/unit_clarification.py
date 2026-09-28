@@ -151,6 +151,12 @@ _STATES = re.compile(r"\b" + _SUBJECT + r"(?:'s|'re|\s+(?:is|are|was|were))?\s+(
                      r"(?:in\s+)?(?:the\s+)?(" + _UNIT_WORD + r")\b(?!\s*(?:per\b|/))")
 _WORD = re.compile(r"[a-z0-9']+")
 _UNIT_ONLY = re.compile(_UNIT_WORD)
+#: A message that opens like a question ("is the file in metres", "what if it's inches").
+_ASKS = re.compile(r"^\W*(?:is|are|was|were|am|do|does|did|can|could|should|would|will|shall|may|might|has|"
+                   r"have|what|which|how|why|where|when|who|isn'?t|aren'?t|wasn'?t|doesn'?t|don'?t)\b")
+#: A message that doubts rather than says ("not sure if it's in metres", "maybe inches").
+_UNSURE = re.compile(r"\b(?:not sure|unsure|maybe|perhaps|probably not|might be|could be|whether|wonder|"
+                     r"don'?t know|no idea|if (?:it|the|they|this|that|its|it's)\b)")
 #: The little words a reply that is only a unit may carry around it.
 _REPLY_FILLER = frozenset({"no", "nope", "not", "sorry", "oh", "ah", "actually", "really", "it", "it's", "its",
                            "is", "in", "the", "all", "they're", "theyre", "are", "that's", "thats", "wait",
@@ -163,13 +169,15 @@ def stated_unit(message: str) -> LengthUnit | None:
     naming exactly one ("metres, not millimetres") counts too. A question ("is it in metres?"),
     a negation, a speed or a size names nothing."""
     text = str(message or "").strip()
-    if not text or text.endswith("?"):
+    low = text.lower()
+    # A QUESTION OR A DOUBT CHANGES NOTHING, with or without its question mark: "is the file in
+    # metres", "not sure if it's in metres" - this reply records a unit and re-reads every size.
+    if not text or "?" in text or _ASKS.match(low) or _UNSURE.search(low):
         return None
     try:
         return parse_unit(text)
     except UnitResolutionError:
         pass
-    low = text.lower()
     rejected = {parse_unit(w) for w in re.findall(r"\b(?:not|no|isn'?t|aren'?t|never|rather than|instead of)\s+"
                                                   r"(?:in\s+|the\s+)?(" + _UNIT_WORD + r")\b", low)}
     stated = {parse_unit(m.group(1)) for m in _STATES.finditer(low)} - rejected

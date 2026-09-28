@@ -398,6 +398,28 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
                           transition=GateTransition(revision=revision))
 
 
+async def withdraw_proposal_for_unit_change(db, session, *, session_repo=None) -> bool:
+    """A run proposed with sizes read in another unit can never dispatch. Called in the caller's
+    transaction when the unit changes somewhere other than the chat (the geometry stage), so the
+    withdrawal lands with the change or not at all - never left to a later turn that may fail.
+    The gate is this authority's to write. True when a live proposal was withdrawn."""
+    from meshpipeline.application.unit_change import withdraw_live_approval
+
+    gate, withdrawn = withdraw_live_approval(getattr(session, "intake_gate", None))
+    if not withdrawn:
+        return False
+    if session_repo is None:
+        from meshpipeline.persistence.repositories.session_repository import SessionRepository
+        session_repo = SessionRepository()
+    await session_repo.set_intake_gate(db, session.id, gate)
+    return True
+
+
+#: What the chat says when a unit change could not be made safely: nothing was changed.
+UNIT_CHANGE_FAILED = ("I couldn't switch the file to {unit} just now: the sizes you confirmed on the picture "
+                      "could not be read, so I changed nothing. Please say it again in a moment.")
+
+
 async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: list, revision: str,
                               session_repo, logger) -> MessageOutcome | None:
     """A UNIT CHANGED AFTER IT WAS SETTLED. "The file is in metres", said once the sizes were
@@ -412,11 +434,21 @@ async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: 
     unit = uc.stated_unit(inbound.content)
     if unit is None:
         return None
-    from meshpipeline.application.unit_change import change_unit
+    from meshpipeline.application.unit_change import UnitChangeError, change_unit
 
-    change = await change_unit(db, locked, owner_id=inbound.owner_id,
-                               organization_id=inbound.organization_id, unit=unit,
-                               session_repo=session_repo, where="chat")
+    try:
+        change = await change_unit(db, locked, owner_id=inbound.owner_id,
+                                   organization_id=inbound.organization_id, unit=unit,
+                                   session_repo=session_repo, where="chat")
+    except UnitChangeError as exc:
+        # NOTHING WAS CHANGED: the confirmed sizes could not be re-read, and a unit bound over
+        # them would be the very mismatch this turn exists to prevent. Said, not guessed.
+        logger.warning("intake message: the unit change to %s was not made (%s) - session=%s",
+                       unit.value, exc, inbound.session_id)
+        reply = UNIT_CHANGE_FAILED.format(unit=uc.UNIT_WORDS[unit])
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
+                              transition=GateTransition(revision=revision))
     if change is None:
         return None
     if change.gate is not None:

@@ -151,14 +151,16 @@ def body_of(record: dict) -> SimpleNamespace:
     return SimpleNamespace(**body)
 
 
-def reread_record(record: dict, *, scale_to_metres: float, unit: str) -> dict | None:
+def reread_record(record: dict, *, scale_to_metres: float, unit: str,
+                  confirmed_scale: float | None = None) -> dict | None:
     """A stored confirmation re-read in another unit: every length scaled by the ratio of the new
     scale to the one it was confirmed under (areas by its square; far-field margins are body
-    lengths and stay), the words and patches made again from the result. None when the record
-    does not say what scale its numbers were read under, so nothing can be re-read safely."""
+    lengths and stay), the words and patches made again from the result. The scale is the
+    record's own; `confirmed_scale` stands in for a record stored without one (the unit in force
+    when it was confirmed). None when neither says, so nothing can be re-read safely."""
     from meshpipeline.application.geometry_check import rescaled_lengths
 
-    was = record.get("scale_to_m")
+    was = record.get("scale_to_m") or confirmed_scale
     try:
         was_f = float(was) if was is not None else 0.0
     except (TypeError, ValueError):

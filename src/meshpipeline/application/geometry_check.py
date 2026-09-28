@@ -668,7 +668,7 @@ NAME_TOOL = {
                               "description": "EXTERNAL flow only: ONLY what the user's own words say about the direction "
                                              "the fluid travels (\"flow along +y\"). unknown when the user did not say. "
                                              "Never read it off the pictures: the nose fields do that."},
-                "real_length_m": {"type": "number", "exclusiveMinimum": 0,
+                "real_length_m": {"type": "number", "minimum": 0,
                                   "description": "How long a real one of what this part is usually is, in METRES, "
                                                  "judged from what the part is and the user's words - NOT from the "
                                                  "sizes you were given, which are read in a unit that may be wrong "

@@ -1,7 +1,7 @@
 # Responsibility: Verify the stage is served the other reading of a doubtful unit beside the part's
 # size - a "117 mm" wind turbine blade once the user has said what it is, a triangle file whose
 # numbers read as a 1 mm car - and nothing once the user has named the unit; and that a unit
-# changed on the stage is stated in the declaration, with the gate left to the intake authority.
+# changed on the stage is stated in the declaration and withdraws a live run proposal with it.
 # Boundaries: the routes with the session, the store and the interpretation stood in for.
 from __future__ import annotations
 
@@ -131,32 +131,46 @@ async def test_the_suggestion_reads_the_file_units_back_through_the_scale_they_w
     assert gc.unit_suggestion({"size_mm": "x", "scale_to_m": 0.001}, None, "") is None
 
 
-async def test_a_unit_changed_on_the_stage_is_stated_and_the_intake_authority_withdraws_a_live_proposal(served, monkeypatch):
-    """The route never writes the gate. The turn it hands to the intake authority ("I confirmed
-    the geometry check. Go on.") is a correction to a live proposal, which withdraws it there."""
-    live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600}
-    session, _ = served(_scouted([6.836, 6.595, 117.0]), DECLARED_MM, messages=[], intake_gate={"approval": live})
-    turns: list = []
+async def test_a_unit_changed_on_the_stage_withdraws_a_live_proposal_in_the_same_transaction(served, monkeypatch):
+    """The unit, the re-read sizes and the withdrawal of a run proposed with the old sizes land
+    together - the withdrawal by the intake authority, inside the confirmation's transaction -
+    even when the chat turn that follows the confirmation fails."""
     from meshpipeline.api.v1 import chat as chatmod
+    from meshpipeline.contracts.geometry_units import GeometryInterpretation, LengthUnit
+    from meshpipeline.persistence.repositories import geometry_interpretation_repository as girmod
     from meshpipeline.persistence.repositories import session_repository as srmod
 
-    async def _record(db, sess, owner_id, organization_id, unit):
-        return {"unit": unit}
-    monkeypatch.setattr(gh, "record_unit", _record)
+    live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600}
+    session, _ = served(_scouted([6.836, 6.595, 117.0]), DECLARED_MM, messages=[], intake_gate={"approval": live})
+    written: list = []
+
+    class _Interps:
+        async def record(self, db, *, owner_id, geometry_source_id, unit, basis, evidence, organization_id=""):
+            return GeometryInterpretation(interpretation_id=str(uuid.uuid4()), owner_id=owner_id,
+                                          geometry_source_id=str(geometry_source_id), unit=LengthUnit(unit),
+                                          scale_to_metres=1.0, basis=basis, evidence=evidence)
+    monkeypatch.setattr(girmod, "GeometryInterpretationRepository", _Interps)
 
     class _Sessions:
         async def get_for_owner(self, db, session_id, owner_id, organization_id=""):
             return session
+
+        async def bind_geometry_interpretation(self, db, session_id, interpretation_id):
+            written.append(("bind", interpretation_id))
+
+        async def set_intake_gate(self, db, session_id, gate):
+            written.append(("gate", gate))
+            session.intake_gate = gate
     monkeypatch.setattr(srmod, "SessionRepository", _Sessions)
 
-    async def _turn(body, owner_id, organization_id):
-        turns.append(body.content)
-        return SimpleNamespace(model_dump=lambda mode="json": {"reply": "next"})
-    monkeypatch.setattr(chatmod, "chat_message", _turn)
+    async def _turn_fails(body, owner_id, organization_id):
+        raise RuntimeError("the model is down")
+    monkeypatch.setattr(chatmod, "chat_message", _turn_fails)
     body = route.ConfirmIn(input_kind="solid-body", flow="external", size_mm=[6.836, 6.595, 117.0], flow_axis="+z",
                            reference_length_mm=117.0, scale_to_m=0.001, unit="m")
     out = await route.confirm_check(SID, body, "alice", "org-1")
     assert "Reference length: 117000 mm along the flow." in out["message"]
     assert "The file is in metres: the part is 117 m long." in out["message"]
-    assert session.intake_gate["approval"]["status"] == ap.AWAITING          # untouched by the route
-    assert turns == [route.CONTINUE_TEXT] and ap.classify(route.CONTINUE_TEXT) == "correction"
+    assert [w[0] for w in written] == ["bind", "gate"]
+    assert session.intake_gate["approval"]["status"] == ap.INVALIDATED
+    assert out["next"] is None                                  # the turn failed; the withdrawal stands

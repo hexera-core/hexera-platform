@@ -71,6 +71,9 @@ def test_a_confirmation_re_read_in_metres_says_every_size_a_thousand_times_large
     duct = reread_record(DUCT, scale_to_metres=0.0254, unit="in")
     assert duct["patches"][0] == {"name": "inlet", "type": "inlet", "diameter_mm": 106.68, "near_mm": [0.0, 25.4, 50.8]}
     assert "107 mm across" in duct["message"] and "The file is in inches" in duct["message"]
+    # a confirmation stored without its scale was made in the unit in force then
+    unscaled = reread_record({**DUCT, "scale_to_m": None}, scale_to_metres=1.0, unit="m", confirmed_scale=0.001)
+    assert unscaled["patches"][0]["diameter_mm"] == 4200.0
     assert reread_record({**DUCT, "scale_to_m": None}, scale_to_metres=1.0, unit="m") is None
 
 
@@ -107,6 +110,24 @@ def _session(**over):
             "intake_gate": {}, "messages": []}
     base.update(over)
     return SimpleNamespace(**base)
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_cannot_be_read_stops_the_change_before_anything_is_written(monkeypatch):
+    """The unit is never bound over confirmed sizes left in the old one: the confirmation is read
+    first, and a store that fails stops the change with nothing recorded."""
+    repo, recorded = _wire(monkeypatch, stored={}, current={"unit": "mm", "scale_to_metres": 0.001,
+                                                            "basis": "file_declared"})
+
+    class _Broken:
+        def get_bytes(self, *, object_key):
+            raise ConnectionError("the store is down")
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: _Broken())
+    with pytest.raises(uch.UnitChangeError):
+        await uch.change_unit(None, _session(intake_gate={"approval": _live()}), owner_id="a", organization_id="",
+                              unit=LengthUnit.metre, session_repo=repo)
+    assert recorded == []
+    repo.bind_geometry_interpretation.assert_not_awaited(); repo.set_intake_patches.assert_not_awaited()
 
 
 @pytest.mark.asyncio

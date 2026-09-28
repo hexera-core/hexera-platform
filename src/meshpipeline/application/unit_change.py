@@ -83,7 +83,15 @@ def withdraw_live_approval(gate: dict | None) -> tuple[dict, bool]:
     return out, False
 
 
-def _stored(session_id: str, name: str) -> dict | None:
+class UnitChangeError(RuntimeError):
+    """The confirmed sizes could not be read, so the unit is not changed at all: a new unit bound
+    over old sizes is exactly the mismatch this module exists to prevent."""
+
+
+def _stored(session_id: str, name: str, *, strict: bool = False) -> dict | None:
+    """A stored object of the check, or None when there is none. `strict`: a store that cannot
+    be read raises instead of reading as "nothing stored" - for the confirmation, whose sizes
+    must follow the unit or the unit must not change."""
     from meshpipeline.application.geometry_check import check_object_key
     from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
 
@@ -91,8 +99,10 @@ def _stored(session_id: str, name: str) -> dict | None:
         return json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, name)))
     except ObjectNotFound:
         return None
-    except Exception as exc:  # noqa: BLE001 - a store we cannot read re-reads nothing; the unit still changes
+    except Exception as exc:  # noqa: BLE001 - said, then raised or read as nothing
         logger.warning("unit change: could not read %s for %s (%s)", name, session_id, exc)
+        if strict:
+            raise UnitChangeError(f"the confirmed geometry check could not be read ({type(exc).__name__})") from exc
         return None
 
 
@@ -126,6 +136,20 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
     old_unit = str(current["unit"]) if current else None
     if old_unit == unit.value and current and str(current.get("basis")) == ResolutionBasis.user_confirmed.value:
         return None
+    sid = str(session.id)
+    new_scale = scale_to_metres(unit)
+    old_scale = float(current["scale_to_metres"]) if current else None
+    # THE CONFIRMED SIZES ARE READ AND RE-READ BEFORE ANYTHING IS WRITTEN: a store that cannot be
+    # read, or a confirmation whose scale nobody knows, stops the change here (UnitChangeError),
+    # so the unit is never bound over sizes left in the old one. A confirmation stored without its
+    # scale was made in the unit in force then - the one this change replaces.
+    again = None
+    if old_unit != unit.value:
+        confirmed = _stored(sid, "confirmed.json", strict=True)
+        if confirmed is not None:
+            again = reread_record(confirmed, scale_to_metres=new_scale, unit=unit.value, confirmed_scale=old_scale)
+            if again is None:
+                raise UnitChangeError("the confirmed geometry check does not say what scale its sizes were read under")
     recorded = await GeometryInterpretationRepository().record(
         db, owner_id=owner_id, geometry_source_id=session.geometry_source_id, unit=unit,
         basis=ResolutionBasis.user_confirmed,
@@ -137,28 +161,22 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
         # stops offering the other reading - but the conversation goes on as an ordinary turn
         logger.info("unit change: %s confirmed by the user in the %s - session=%s", unit.value, where, session.id)
         return None
-    new_scale = scale_to_metres(unit)
 
-    sid = str(session.id)
     longest_file = _longest_file_units(sid)
     reread = False
     reference_m = None
-    confirmed = _stored(sid, "confirmed.json")
-    if confirmed is not None:
-        again = reread_record(confirmed, scale_to_metres=new_scale, unit=unit.value)
-        if again is not None:
-            await session_repo.set_intake_patches(db, session.id, again["patches"])
-            await session_repo.set_messages(db, session.id,
-                                            replace_declaration(list(session.messages or []), again["message"]))
-            reread = True
-            if again.get("reference_length_mm"):
-                reference_m = float(again["reference_length_mm"]) / 1000.0
+    if again is not None:
+        await session_repo.set_intake_patches(db, session.id, again["patches"])
+        await session_repo.set_messages(db, session.id,
+                                        replace_declaration(list(session.messages or []), again["message"]))
+        reread = True
+        if again.get("reference_length_mm"):
+            reference_m = float(again["reference_length_mm"]) / 1000.0
 
     gate, withdrawn = withdraw_live_approval(getattr(session, "intake_gate", None))
     rewrite = withdrawn or bool(gate.get("unit_question"))
     gate.pop("unit_question", None)                 # an open unit question is answered by this
 
-    old_scale = float(current["scale_to_metres"]) if current else None
     change = UnitChange(
         old_unit=old_unit, new_unit=unit.value,
         longest_old_m=longest_file * old_scale if longest_file and old_scale else None,
@@ -170,4 +188,4 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
     return change
 
 
-__all__ = ["WITHDRAWN_REASON", "UnitChange", "change_unit", "withdraw_live_approval"]
+__all__ = ["WITHDRAWN_REASON", "UnitChange", "UnitChangeError", "change_unit", "withdraw_live_approval"]
