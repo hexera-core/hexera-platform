@@ -419,6 +419,19 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
                    surface=None) -> dict:
     from meshpipeline.engines.workspace_facts import read_dimensionality, read_flow_topology
     topology = read_flow_topology(workspace) or "external"
+    # A GROUND PLANE is refused at intake for this engine (supports_ground_plane is False): its
+    # far field is one closed box surface around the body, and standing the body on that box's
+    # floor would need the two surfaces merged into one - which this path does not do. A case that
+    # got here anyway is stopped before a build whose ground patch would come back with no faces.
+    from meshpipeline.engines.ground_plane import ground_patch_name
+    _ground = ground_patch_name(contract_patches) if topology != "internal" else None
+    if _ground:
+        return {"success": False, "error": (
+            f"the patch contract declares a ground plane ('{_ground}'), and cfMesh's far field "
+            "here is a closed box around the body - it cannot lay the body on the box's floor."),
+            "next": (f"Relay this to the user: mesh the body free in the flow (drop '{_ground}'), "
+                     "or use an engine that builds a ground plane. Do NOT retry with a different "
+                     "strategy - no strategy value changes this.")}
     # the INTAKE-DECLARED dimensionality decides (neutral workspace file, same
     # treatment as flow_topology); an explicit arg only fills in when none was declared
     _dim = read_dimensionality(workspace) or str(args.get("dimensionality") or "3D").upper()

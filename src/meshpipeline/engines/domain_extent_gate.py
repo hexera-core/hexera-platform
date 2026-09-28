@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import re
 
+from meshpipeline.engines.ground_plane import VERTICAL_AXIS, manifest_is_grounded
+
 logger = logging.getLogger(__name__)
 
 _KEYS = ("upstream", "downstream", "lateral")
@@ -129,11 +131,14 @@ class ExtentVerdict:
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 
 
-def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None) -> dict:
+def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None,
+                  grounded: bool = False) -> dict:
     """Margins in ruler units, oriented by the DECLARED flow axis. No declaration keeps the
     legacy assume-X convention byte-for-byte (pre-v5 behaviour, documented). Sign matters:
     flow -y puts downstream at ymin. Lateral/vertical are the remaining axes in (x, y, z)
-    order, each taken as the SMALLER of its two sides."""
+    order, each taken as the SMALLER of its two sides - except the vertical of a body on the
+    ground, whose floor sits on the body by design: its margin is the room ABOVE, which is
+    what the user was asked for ('5 above')."""
     ax = (flow_axis or "+x").strip().lower()
     sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
     i = _AXIS_INDEX[letter]
@@ -146,13 +151,24 @@ def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None) -> dic
         n = names[j]
         return min((float(body[f"{n}min"]) - float(box[f"{n}min"])) / r,
                    (float(box[f"{n}max"]) - float(body[f"{n}max"])) / r)
+    def _above(j: int) -> float:
+        n = names[j]
+        return (float(box[f"{n}max"]) - float(body[f"{n}max"])) / r
+    vertical = (_above(rest[1]) if grounded and rest[1] == VERTICAL_AXIS
+                else _min_side(rest[1]))
     return {"upstream": up, "downstream": down,
-            "lateral": _min_side(rest[0]), "vertical": _min_side(rest[1])}
+            "lateral": _min_side(rest[0]), "vertical": vertical}
 
 
 def evaluate_domain_extents(requested: dict | None, reference_length_m: float | None,
                             manifest: dict, tol: float = 0.15,
-                            flow_axis: str | None = None) -> ExtentVerdict:
+                            flow_axis: str | None = None,
+                            grounded: bool | None = None) -> ExtentVerdict:
+    # A body on the ground is read off the mesh that was built (its manifest carries the ground
+    # wall), unless the caller says. The floor touches the body on purpose; judging the gap
+    # under it would block every grounded mesh as "the domain box touches the body".
+    if grounded is None:
+        grounded = manifest_is_grounded(manifest)
     if (not isinstance(requested, dict)
             or not any(v is not None for v in requested.values())
             or not reference_length_m):
@@ -170,7 +186,7 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
         r = float(reference_length_m)
         if r <= 0:
             raise ValueError("nonpositive ruler")
-        margins = _axis_margins(box, body, r, flow_axis)
+        margins = _axis_margins(box, body, r, flow_axis, grounded=bool(grounded))
     except Exception:  # noqa: BLE001 - no measurable box/body: honesty demands "unmeasured"
         return ExtentVerdict(
             "unmeasured", [],

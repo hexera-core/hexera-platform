@@ -673,7 +673,15 @@ def _block_geometry_check() -> str:
         "An assistant message beginning 'GEOMETRY CHECK (drawing your part):' is a holding line "
         "while the picture is made: nothing in it is declared, and you never repeat it. A user "
         "message saying they confirmed the geometry check is your cue to continue with the next "
-        "question, not to summarise."
+        "question, not to summarise.\n"
+        "A part that STANDS ON THE GROUND: the ground is produced by the domain - the floor of "
+        "the far-field box, laid under the part at its lowest z. Declare it as ONE patch named "
+        "exactly `ground` with type wall, beside the body's own wall and the farfield (e.g. car "
+        "wall, ground wall, farfield). It is never a region of the geometry, so never ask the "
+        "user to name, split or supply it in their file, and never count it against the parts "
+        "the file distinguishes - a one-region body on the ground is still one body wall. "
+        "The name `ground` is kept for that floor: do not give it to anything else. A part the "
+        "message calls free in the flow gets no ground patch."
     )
 
 

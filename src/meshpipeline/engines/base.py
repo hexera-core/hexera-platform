@@ -16,7 +16,8 @@ from meshpipeline.contracts.review_evidence import (
     RenderArtifactRequirement,
     ReviewRenderer,
 )
-from meshpipeline.engines.purposes import PURPOSES, Purpose, is_compatible  # noqa: F401
+from meshpipeline.engines.ground_plane import ground_patch_name
+from meshpipeline.engines.purposes import PURPOSES, Purpose, is_compatible, topology_of  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +387,12 @@ class EngineSpec:
     # False) so intake rejects it BEFORE any compute; flip True on the engine that implements
     # half-domain symmetry meshing (which then also needs a half-model geometry check).
     supports_symmetry_plane: bool = False
+    # GROUND PLANE - a body standing on the ground (a car on a road) needs the far-field box's
+    # floor laid at the body's lowest point and written as a wall patch named ground
+    # (engines.ground_plane). That is the box builder's job, not the geometry's. Default False:
+    # an engine whose box is all far field would deliver the ground with zero faces after a full
+    # build, so intake refuses it up front, with the way on stated.
+    supports_ground_plane: bool = False
     # Can this engine's workflow emit MORE THAN ONE distinct wall patch - i.e. separate
     # a body into named wall regions (wing vs fuselage)? Default True: engines that split
     # on named surface regions / groups (cfMesh solids, gmsh groups) can. snappy's external
@@ -484,12 +491,30 @@ class EngineSpec:
                         "symmetry-plane meshing is not yet available on this engine.",
                 fix_hint="drop 'symmetry' (full domain) or use an engine with symmetry-plane meshing"))
 
+        # GROUND PLANE - a wall named ground in an external flow is the floor of the far-field
+        # box. The DOMAIN makes it, so it is not a region the geometry has to supply, and only an
+        # engine whose box builder lays that floor can deliver it.
+        _ground = (ground_patch_name(evidence.patches)
+                   if topology_of(purpose) == "external" else None)
+        if _ground and not self.supports_ground_plane:
+            out.append(Rejection(
+                code="ground_plane_unsupported", phase="declared", field="patches",
+                actual=_ground,
+                message=f"a ground plane was declared ('{_ground}'), but {self.name} cannot lay "
+                        "the far-field box's floor under the body as a wall - every face of its "
+                        "box is far field. To proceed, mesh the body free in the flow (drop "
+                        f"'{_ground}'), or use an engine that builds a ground plane.",
+                fix_hint=f"drop '{_ground}' (body free in the flow) or use an engine that builds "
+                         "a ground plane"))
+
         # WALL-PATCH ARITY this setup can produce - the engine and the geometry together. A patch
         # the pair cannot deliver comes back with zero faces, and the patch contract rejects it
         # AFTER a full build; catching it here, from declared metadata, fails in seconds instead.
         # (An IMPOSSIBILITY of the declared combination, not a quality or feasibility judgement -
-        # exactly what admission is for.)
-        _walls = [p.name for p in evidence.patches if p.type == "wall"]
+        # exactly what admission is for.) The ground plane is not counted: the domain makes it,
+        # so a one-region car with car + ground + farfield asks the geometry for ONE wall.
+        _walls = [p.name for p in evidence.patches if p.type == "wall"
+                  and not (_ground and p.name == _ground)]
         if len(_walls) > 1 and _supplies_fewer_regions(self, evidence, _walls):
             out.append(Rejection(
                 code="multiple_wall_patches_unsupported", phase="declared", field="patches",
@@ -504,10 +529,12 @@ class EngineSpec:
         is_flow = purpose in PURPOSES and PURPOSES[purpose].requires_mesh_kind == "fluid-volume"
         if is_flow and evidence.patches:
             types = {p.type for p in evidence.patches}
-            if "wall" not in types:
+            if "wall" not in types or (_ground and not _walls):
                 out.append(Rejection(
                     code="missing_wall_patch", phase="declared", field="patches",
-                    message="patches must include at least one entry of type 'wall' (the solid surface).",
+                    message="patches must include at least one entry of type 'wall' (the solid surface)."
+                            + (f" '{_ground}' is the floor the domain builds, not the body - "
+                               "add a wall patch for the body itself." if _ground else ""),
                     fix_hint="add a wall patch"))
             if not (("inlet" in types and "outlet" in types) or "farfield" in types):
                 out.append(Rejection(

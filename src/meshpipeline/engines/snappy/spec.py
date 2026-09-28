@@ -197,6 +197,10 @@ SPEC = EngineSpec(
         # half-model meshing: a declared symmetry patch becomes a symmetryPlane box face on
         # the cut (the driver detects the plane and rejects a full-span body up front).
         supports_symmetry_plane=True,
+        # a body on the ground: the box floor sits at the body's lowest z and blockMesh writes it
+        # as the wall patch the user declared as ground (snappy_runner.domain_from_strategy and
+        # render_snappy_case); the other five faces stay far field.
+        supports_ground_plane=True,
         # PROVEN end to end: a STEP whose parts are named tessellates to named STL solids, the
         # dict declares them under regions{} with per-region patchInfo and layer entries, and
         # snappyHexMesh returns them as separate wall patches carrying their prism layers.
