@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from meshpipeline.agents.intake import turn
 from meshpipeline.agents.intake.diagnostics import IntakeRunExtension
 from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of
 from meshpipeline.agents.loop.accounting import ToolInvocation
@@ -21,10 +23,47 @@ from meshpipeline.contracts.agent_loop import (
 
 logger = logging.getLogger(__name__)
 
-# The application-rendered terminals, in the priority the batch is resolved with. An impossible
-# admission outranks everything (it voids authorization); a new engine selection outranks a
-# submission (the user is choosing again); a submission summary wins only if nothing above it did.
-TERMINAL_PRIORITY = ("admission_block", "selection_prompt", "submit_summary")
+# The application-rendered terminals, in the priority the batch is resolved with. A new engine
+# selection outranks a submission (the user is choosing again); a submission summary wins only if
+# nothing above it did. An impossible admission is NOT a terminal any more: it goes back to the
+# model as a tool result to repair or put to the user (executor.py) - though it still voids the
+# submission beneath it there, so nothing refused is ever delivered.
+TERMINAL_PRIORITY = ("selection_prompt", "submit_summary")
+
+# Words that carry no content when two questions are compared: grammar, the assent vocabulary
+# and the scaffolding every proposal shares ("I would go with ... - ok, or tell me what differs").
+_STOP = frozenset(
+    "a an and are as at be but by can do for from i if in is it of on or so that the this to we "
+    "what which will with would you your ok okay yes no go tell me differs right correct please "
+    "should want like also then now".split())
+_MIN_WORDS = 4
+#: Jaccard similarity of two questions' content words at or above which they are the same ask.
+REPEAT_THRESHOLD = 0.6
+
+
+def _words(text: str) -> frozenset[str]:
+    return frozenset(w for w in re.sub(r"[^0-9a-z+]+", " ", str(text or "").casefold()).split()
+                     if w not in _STOP)
+
+
+def repeats_a_question(candidate: str, prior: tuple[str, ...] | list[str]) -> bool:
+    # A reply repeats a question when it asks what an earlier assistant message asked, in whatever
+    # wording: the same content words, allowing for a rephrase. Compared whole, because a proposal
+    # follows its question ("Fluid? I would go with air - ok?") and the two together are the ask.
+    if "?" not in str(candidate or ""):
+        return False
+    mine = _words(candidate)
+    if len(mine) < _MIN_WORDS:
+        return False
+    for text in prior:
+        if "?" not in str(text or ""):
+            continue
+        theirs = _words(text)
+        if len(theirs) < _MIN_WORDS:
+            continue
+        if len(mine & theirs) / len(mine | theirs) >= REPEAT_THRESHOLD:
+            return True
+    return False
 
 
 @dataclass
@@ -34,8 +73,11 @@ class IntakeLoopPolicy:
     executor: Any                              # IntakeToolExecutor - the ONLY dispatch site
     limits_: LoopLimits = field(default_factory=LoopLimits)
     role: AgentRole = AgentRole.intake
+    #: What the assistant has already said in this conversation - the questions already asked.
+    prior_questions: tuple[str, ...] = ()
 
     malformed_calls: int = 0
+    repeated_questions: int = 0                # replies sent back for asking the same thing again
     plaintext_text: str = ""                   # the model's reply, returned - never diagnosed
     finish_reason: str = ""
     input_tokens: int = 0
@@ -85,6 +127,17 @@ class IntakeLoopPolicy:
         return None
 
     def on_plaintext(self, tally: LoopTally) -> RoundDecision:
+        # THE SAME QUESTION IS NEVER ASKED TWICE - enforced here, not left to the prompt. A reply
+        # that asks what the user was already asked is sent back ONCE, inside the turn, with the
+        # rule: their reply was their answer, take your own proposal and move on. Once, so a model
+        # that insists still ends the turn and the user is never left waiting on a loop; that
+        # second reply is delivered as written.
+        if self.repeated_questions == 0 and repeats_a_question(self.plaintext_text,
+                                                               self.prior_questions):
+            self.repeated_questions += 1
+            logger.info("Intake: the reply asks a question the user was already asked - sent "
+                        "back once to take the proposal and move on")
+            return RoundDecision(message=turn.REPEAT_NUDGE, complete=False)
         return RoundDecision(message="", complete=True, payload=self.plaintext_text,
                              exit=LoopExit.turn_complete)
 
@@ -128,7 +181,8 @@ class IntakeLoopPolicy:
                              else ("proposed" if st.selection else "")),
             approval_state=str((st.approval or {}).get("status", "") or ""),
             recommendation_turn=st.recommended_this_turn,
-            canonical_revision=str(st.revision or ""))
+            canonical_revision=str(st.revision or ""),
+            repeated_questions=self.repeated_questions)
 
 
-__all__ = ["TERMINAL_PRIORITY", "IntakeLoopPolicy"]
+__all__ = ["REPEAT_THRESHOLD", "TERMINAL_PRIORITY", "IntakeLoopPolicy", "repeats_a_question"]

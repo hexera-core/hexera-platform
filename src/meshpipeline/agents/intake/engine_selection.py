@@ -1,11 +1,13 @@
 # Responsibility: Propose, confirm and verify which engine the user chose.
-# Boundaries: a user-named engine is honoured only when the user actually named it.
+# Boundaries: a user-named engine is honoured only when the user actually named it, and a plain
+# yes binds to the engine the application proposed - never to one the model would rather have.
 from __future__ import annotations
 
 import re
 import time
 import uuid
 
+from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.engines.registry import engine_label
 
 PROPOSED_TTL_S = 900     # a proposal the user never answers goes stale
@@ -21,9 +23,57 @@ CONFIRMED = "confirmed_selection"
 VIA_CONVERSATION = "conversation"
 VIA_STRUCTURED_INPUT = "structured_input"
 
+# A PLAIN YES to the application's own question. The question names the engine ("Do you want to
+# select snappyHexMesh?"), so "yes", "ok", "sure" or "go with that" is a complete answer that binds
+# to that engine and needs no quote of the model's. Whole-message, as the approval grammar is: every
+# word must be assent or filler, so "yes, but use cfMesh" is not assent - it names another engine,
+# and that is refused below on its own. A hedge ("maybe", "I think so") has no assent word and is
+# not assent either; the model may still quote a hesitant user's words, and the quote is checked.
+_ASSENT = frozenset({
+    "yes", "y", "yep", "yeah", "yup", "sure", "ok", "okay", "fine", "go", "ahead", "agree",
+    "agreed", "confirm", "confirmed", "correct", "right", "proceed", "select", "use", "keep",
+    "choose", "pick", "alright", "absolutely", "definitely", "certainly", "affirmative",
+})
+_FILLER = frozenset({
+    "please", "thanks", "thank", "you", "then", "now", "just", "lets", "let", "us", "s", "and",
+    "that", "this", "it", "one", "the", "with", "is", "be", "good", "great", "perfect", "sounds",
+    "works", "me", "for", "i", "we", "do", "so", "engine", "mesher", "as", "proposed", "suggested",
+})
+# The first content word of a refusal. Checked only when no assent word is present at all, so
+# "no problem, go ahead" is read by the words that follow it.
+_DECLINE = frozenset({"no", "nope", "nah", "not", "dont", "don", "never", "cancel", "stop",
+                      "wait", "hold"})
+
 
 def _norm(text) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+
+
+def _content_words(engine: str, message: str) -> list[str]:
+    # The message as bare words, with the proposed engine's own name taken out: "yes, snappyHexMesh"
+    # is a yes. Both spellings go, the registry key and the name the user reads.
+    text = re.sub(r"[^0-9a-z]+", " ", str(message or "").casefold())
+    for spelling in {engine, engine_label(engine)}:
+        bare = re.sub(r"[^0-9a-z]+", " ", str(spelling or "").casefold()).strip()
+        if bare:
+            text = re.sub(rf"(?<![0-9a-z]){re.escape(bare)}(?![0-9a-z])", " ", text)
+    return text.split()
+
+
+def plain_assent(engine: str, message: str) -> bool:
+    words = [w for w in _content_words(engine, message) if w not in _FILLER]
+    return bool(words) and all(w in _ASSENT for w in words)
+
+
+def declines(engine: str, message: str) -> bool:
+    words = [w for w in _content_words(engine, message) if w not in _FILLER]
+    if not words or any(w in _ASSENT for w in words):
+        return False
+    return words[0] in _DECLINE
+
+
+def names_another_engine(engine: str, message: str) -> bool:
+    return bool(_vocab.engines_named_in(message, (engine or "").strip().lower()))
 
 
 def state_of(sel: dict | None) -> str:
@@ -78,28 +128,73 @@ def user_named_engine(engine: str, quote: str, latest_user_message: str) -> bool
     return any(n and n in q for n in names)
 
 
-def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
-            quote: str, latest_user_message: str,
-            user_msg_count: int | None = None) -> tuple[dict | None, str]:
+def _confirmed(sel: dict, revision: str) -> dict:
+    return {**sel, "state": CONFIRMED, "confirmed_revision": revision,
+            "expires_at": time.time() + CONFIRMED_TTL_S}
+
+
+def _answerable(sel: dict | None, *, session_id: str, owner_id: str,
+                user_msg_count: int | None) -> tuple[bool, str]:
     st = state_of(sel)
     if st == CONFIRMED:
-        return None, "that engine selection is already confirmed"
+        return False, "that engine selection is already confirmed"
     if st != PROPOSED or not sel:
-        return None, ("no engine selection is awaiting confirmation - call propose_engine_selection "
-                      "first and let the user answer")
+        return False, ("no engine selection is awaiting confirmation - call "
+                       "propose_engine_selection first and let the user answer")
     if sel.get("session") != session_id or sel.get("owner") != owner_id:
-        return None, "that engine selection belongs to a different session or owner"
+        return False, "that engine selection belongs to a different session or owner"
     if (user_msg_count is not None and "proposed_msg_count" in sel
             and int(user_msg_count) != int(sel["proposed_msg_count"]) + 1):
         # The user said something else after the question was asked, so this proposal is stale -
         # a NEW user revision invalidates a pending selection rather than silently outliving it.
-        return None, ("that engine question is stale - the user has said something else since; "
-                      "propose the engine again and let them answer it")
+        return False, ("that engine question is stale - the user has said something else since; "
+                       "propose the engine again and let them answer it")
+    return True, ""
+
+
+def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
+            quote: str, latest_user_message: str,
+            user_msg_count: int | None = None) -> tuple[dict | None, str]:
+    ok, why = _answerable(sel, session_id=session_id, owner_id=owner_id,
+                          user_msg_count=user_msg_count)
+    if not ok or sel is None:
+        return None, why
+    engine = str(sel.get("engine") or "")
+    if names_another_engine(engine, latest_user_message):
+        # "yes, but use cfMesh" quotes as "yes" and is not a yes to snappyHexMesh. A message that
+        # names another engine is never a confirmation of the one asked about, whatever else it
+        # says: the user is choosing again, and that goes through a proposal of THEIR engine.
+        return None, (f"the user named a different engine in their latest message, which is not "
+                      f"a confirmation of {engine_label(engine)} - call propose_engine_selection "
+                      "for the engine they named")
+    if declines(engine, latest_user_message):
+        return None, ("the user declined - they have not confirmed the engine; ask what they want "
+                      "instead")
+    if plain_assent(engine, latest_user_message):
+        # The question named the engine; a plain yes to it needs no quote.
+        return _confirmed(sel, revision), ""
     if not quote_is_from_user(quote, latest_user_message):
         return None, ("the words you quoted are not in the user's latest message - they have not "
                       "confirmed the engine; ask them")
-    return {**sel, "state": CONFIRMED, "confirmed_revision": revision,
-            "expires_at": time.time() + CONFIRMED_TTL_S}, ""
+    return _confirmed(sel, revision), ""
+
+
+def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
+                      latest_user_message: str, user_msg_count: int) -> dict | None:
+    # The application reads a plain yes to its own question ITSELF, before the model runs. The
+    # model used to have to quote the user's words to confirm, and a "yes" it paraphrased
+    # ("yes, select snappyHexMesh") was refused as words the user never wrote - after which it
+    # asked the same question again. The user answered; the answer is honoured here.
+    ok, _ = _answerable(sel, session_id=session_id, owner_id=owner_id,
+                        user_msg_count=user_msg_count)
+    if not ok or sel is None:
+        return None
+    engine = str(sel.get("engine") or "")
+    if names_another_engine(engine, latest_user_message) or declines(engine, latest_user_message):
+        return None
+    if not plain_assent(engine, latest_user_message):
+        return None
+    return _confirmed(sel, revision)
 
 
 def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,

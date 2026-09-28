@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.agents.intake import engine_selection as es
 from meshpipeline.agents.intake import refusal, turn
 from meshpipeline.agents.intake import settings as icfg
 from meshpipeline.agents.intake import vocabulary as _vocab
@@ -172,10 +173,12 @@ INTAKE_TOOLS: list[dict] = [
         "function": {
             "name": "confirm_engine_selection",
             "description": (
-                "Record the user's EXPLICIT confirmation of the proposed engine, given after they "
-                "saw the application's 'Selected engine: X' question. The application checks your "
-                "quote against the user's actual message and refuses if it is not there, so quote "
-                "them exactly. If they answered with a different engine, call "
+                "Record the user's confirmation of the proposed engine, given after they saw the "
+                "application's 'Selected engine: X' question. A plain 'yes', 'ok', 'sure' or 'go "
+                "with that' answers that question and confirms X - the application reads it "
+                "itself, so this call is then simply accepted. Otherwise quote their words "
+                "exactly: the application checks the quote against their actual message and "
+                "refuses words they did not write. If they answered with a different engine, call "
                 "propose_engine_selection for that engine instead."
             ),
             "parameters": {
@@ -204,10 +207,12 @@ INTAKE_TOOLS: list[dict] = [
                 "when known) - declaring patches is essential because some impossibilities depend on "
                 "patch count/roles. You MUST call this before telling the user their setup is "
                 "impossible, and before submit_requirements, which accepts ONLY the token this "
-                "returns for the EXACT payload previewed. If the verdict is 'impossible' the turn "
-                "ENDS with the application's own message - do not compose or expand it, and never add "
-                "an engine suggestion. NEVER silently drop, merge, rename or re-role a declared patch "
-                "to make it fit."
+                "returns for the EXACT payload previewed. If the verdict is 'impossible' the result "
+                "says why and what would pass, and NOTHING was recorded: a value that was your own "
+                "(a patch the user never named, a role you assigned) you repair and check again in "
+                "the same turn; a value the USER declared you keep - put the finding to them with "
+                "the one revision that would pass, and ask. Never add an engine suggestion. NEVER "
+                "silently drop, merge, rename or re-role a patch the user declared to make it fit."
             ),
             "parameters": {
                 "type": "object",
@@ -691,7 +696,19 @@ def _block_propose_first() -> str:
         "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
         "patch names, refinement zones - go into ONE question with ONE proposal, not four turns. "
         "Two things are never proposed: the ENGINE (rule 5 above stands - offer the menu, do not "
-        "recommend unless asked) and the file's UNIT (units are asked, never guessed)."
+        "recommend unless asked) and the file's UNIT (units are asked, never guessed).\n"
+        "HOW A REPLY IS READ: 'ok', 'yes', 'fine', 'sure', 'sensible default', 'you decide', "
+        "'whatever is standard' and 'I do not know' all ACCEPT the proposal exactly as you stated "
+        "it - take those values and move on. Any other reply is still the user's ONE answer to "
+        "that question: if it changes a value, take the change; if it is unclear or answers "
+        "something else, take your own proposal, note it in request_txt as an assumption the user "
+        "did not state, and move on. Never ask the same question twice, in any wording, and never "
+        "re-ask what the user has already answered - the application watches for a repeated "
+        "question and sends it back to you to move on. Near-wall treatment (the y+ band, the "
+        "first-layer thickness, the layer count), patch names and refinement zones are courtesy "
+        "questions: one question, one proposal, and never a reason to hold a submission. The same "
+        "holds after an admission refusal: whatever you must ask the user carries your proposed "
+        "revision, so 'ok' answers it."
     )
 
 
@@ -702,7 +719,7 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_engine_first),
     ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
      _block_geometry_check),
-    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' confirms it; engine and unit never proposed",
+    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; engine and unit never proposed",
      _block_propose_first),
 )
 
@@ -776,6 +793,18 @@ async def node_intake(state: PipelineState) -> dict:
         llm_messages, state_messages = turn.apply_budget_nudge(llm_messages, state_messages)
 
     _ctx = turn.hydrate(state, state_messages)
+    # A plain yes to the application's own engine question ("Do you want to select X?") is read
+    # HERE, before the model runs. The question named the engine, so "yes", "ok" or "go with
+    # that" binds to it and needs no quote; the model used to have to quote the user to confirm,
+    # and a "yes" it paraphrased was refused as words they never wrote - then asked again.
+    _assented = es.confirm_by_assent(
+        _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+        revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
+        user_msg_count=_ctx.user_msg_count)
+    if _assented is not None:
+        logger.info("Intake: engine selection CONFIRMED by the user's plain yes engine=%s - "
+                    "job_id=%s", _assented["engine"], job_id)
+        _ctx = dataclasses.replace(_ctx, selection=_assented)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a
     # fake job id or instantiate a worker-owned publisher in the request path, the turn collects
     # the same typed events through a sink and returns them with the response.
@@ -794,7 +823,9 @@ async def node_intake(state: PipelineState) -> dict:
         # INTAKE_MAX_ROUNDS is the ONLY Intake bound. No tool-call cap, no category cap, no
         # deadline, and no no-progress threshold: progress is counted and reported, never
         # enforced, because no measured Intake distribution justifies a value.
-        limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS))
+        limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS),
+        # What has already been asked, so a reply that asks it again is caught inside the loop.
+        prior_questions=turn.prior_assistant_texts(state_messages))
 
     async def _intake_provider(*, messages, tools, job_id, user_id, tool_choice="auto"):
         # No on_reasoning here on purpose: intake's route is not streamed, so it has no reasoning
@@ -830,22 +861,17 @@ async def node_intake(state: PipelineState) -> dict:
     # model's conversational reply. Round exhaustion carries neither - it says nothing at all.
     assistant_text = str(_loop_result.payload or "")
 
-    # The rendered refusal is correct but concatenates whatever rules fired, so the model rewrites
-    # it for the user. The call carries NO tool, so the turn stays terminal, and the result is
-    # checked: wording that names another engine or drops a declared value is discarded for the
-    # rendered text.
+    # An admission refusal the model did not repair ends with the model's OWN reply - it had the
+    # finding as a tool result and wrote with it in hand. That reply is checked before it goes
+    # out: one that names another engine, asks nothing, or does not exist (the loop ran out of
+    # rounds) is replaced by the rendered finding. Not when the user asked for a comparison (the
+    # engines named are the answer), and not when the turn ended on the application's own text.
+    if (_exec_state.admission_refusal is not None and not _exec_state.recommended_this_turn
+            and _loop_result.exit is not _LoopExit.terminal_action):
+        _settled = refusal.settle(assistant_text, _exec_state.admission_refusal)
+        assistant_text = _settled.text
+        logger.info("Intake: refusal delivered %s - job_id=%s", _settled.source, job_id)
     _in_tokens, _out_tokens = _policy.input_tokens, _policy.output_tokens
-    if _exec_state.admission_facts and assistant_text == _exec_state.admission_block:
-        _refusal = await refusal.explain(
-            _exec_state.admission_facts, provider_call=_intake_provider,
-            job_id=str(job_id), user_id=_ctx.owner_id)
-        assistant_text = _refusal.text
-        # The loop counts its own rounds only, and this call happens after it. Without these the
-        # turn reports less than it spent.
-        _in_tokens += _refusal.input_tokens
-        _out_tokens += _refusal.output_tokens
-        logger.info("Intake: refusal delivered %s (+%d/%d tokens) - job_id=%s",
-                    _refusal.source, _refusal.input_tokens, _refusal.output_tokens, job_id)
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",

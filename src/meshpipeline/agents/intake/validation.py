@@ -84,6 +84,8 @@ def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality
     for field in ("safe_user_message", "capability_reason"):
         if result.get(field):
             result[field] = _vocab.humanize(result[field])
+    if result.get("what_would_pass"):
+        result["what_would_pass"] = [_vocab.humanize(h) for h in result["what_would_pass"]]
     return result
 
 
@@ -143,6 +145,10 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                 # The engine-authored WHY on its own (no revise coda) - this is what an engine
                 # COMPARISON quotes; the coda only belongs on a selected-engine refusal.
                 "capability_reason": " ".join(r.message for r in hard).strip(),
+                # The engine's own statement of what WOULD pass, one per finding. Handed to the
+                # model with the refusal, so it can repair a value of its own or propose the one
+                # revision to the user instead of ending the turn on what cannot be done.
+                "what_would_pass": [str(r.fix_hint) for r in hard if r.fix_hint],
                 "safe_user_message": _impossible_message(hard)}
     # capability + structure OK; anything left (params / missing patches) is still-to-gather.
     gather = [r for r in rejections if r.code in ("engine_param_invalid",) or r.field == "patches"]

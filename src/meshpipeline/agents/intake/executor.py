@@ -35,6 +35,24 @@ MUTATING_TOOLS = frozenset({
 
 MAX_SEARCH_CALLS = 2   # web_search budget per intake turn (RAG was removed)
 
+# What the model is told with an impossible verdict. The finding used to END the turn as the
+# user's reply, which left them holding a sentence about what the engine cannot do and no move
+# to make - when the conflicting value was often the model's own (a wall patch the user never
+# named). The finding goes back to the model instead, with what would pass: the model repairs
+# what was its own and puts to the user, with a proposed answer, only what was theirs.
+REFUSAL_GUIDANCE = (
+    "This setup cannot be meshed as declared. NOTHING was recorded and no token was issued; every "
+    "value the user declared is preserved. Do not end the turn on this finding - act on it. First "
+    "decide WHOSE value conflicts. If it is yours - a patch the user never named, a role or "
+    "dimensionality you assigned, a boundary that is not a surface of the uploaded part (a "
+    "ground, a floor, a cut) - repair it now and call preview_selected_admission again in this "
+    "same turn with the corrected payload, then tell the user in one sentence what you changed "
+    "and why. If the USER declared it, do not change it: tell them plainly what the engine cannot "
+    "do and what that means for them, propose the ONE revision that would pass (see "
+    "what_would_pass) and ask whether to apply it, so that 'ok' is a complete answer. Name no "
+    "engine other than the selected one; if they want alternatives they will ask."
+)
+
 
 def category_of(tool: str) -> str:
     return INTAKE_CATEGORIES.get(tool, "unknown")
@@ -74,11 +92,12 @@ class IntakeExecutionState:
     # make, however many provider rounds the model takes to get there.
     recommended_this_turn: bool = False
 
+    #: The standing admission refusal: the impossible verdict of the LATEST preview this turn, or
+    #: None once a later preview passed or found only gaps. The model holds it as a tool result
+    #: and is expected to act on it; the turn's reply is checked against it after the loop
+    #: (agent.py), and a proposal of an engine the user did not name is refused while it stands.
+    admission_refusal: dict | None = None
     # Application-rendered terminals, resolved after the whole ordered batch.
-    admission_block: str | None = None
-    #: The verdict behind admission_block, kept so the refusal can be put in the user's terms
-    #: after the loop. The rendered text alone cannot be checked against what was declared.
-    admission_facts: dict | None = None
     selection_prompt: str | None = None
     submit_summary: str | None = None
     submit_args: dict | None = None
@@ -212,6 +231,19 @@ class IntakeToolExecutor:
         if eng not in self._engines:
             return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
                 f"{eng!r} is not a registered engine. Available: {', '.join(self._engines)}."))
+        quote = str(args.get("user_named_verbatim") or "")
+        if st.admission_refusal is not None and not es.user_named_engine(eng, quote,
+                                                                          st.latest_user_msg):
+            # A REFUSAL IS NOT ROUTED AROUND. With the finding in hand, the model may not switch
+            # the user to another engine on its own: the application's "Selected engine: X"
+            # question would name a replacement the user never asked about, in the very turn
+            # that refused their setup. Only an engine the user named themselves goes forward.
+            shown = _vocab.to_display(_vocab.ENGINE, eng)
+            return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
+                f"Not allowed: the selected engine was just refused for this setup and the user "
+                f"has not named {shown} themselves. Do not switch engines for them - repair a "
+                "value that was your own and check again, or put the finding to the user with "
+                "the one revision that would pass; if they want alternatives they will ask."))
         # A NEW proposal invalidates the previous selection AND any admission preview or pending
         # canonical confirmation that the old selection authorized - including one obtained
         # EARLIER IN THIS SAME provider response.
@@ -219,10 +251,12 @@ class IntakeToolExecutor:
                                   revision=st.revision, user_msg_count=st.user_msg_count)
         st.pending = None
         st.invalidate_approval("engine selection replaced")
+        # A refusal was about the engine the user has just left behind; the reply about the one
+        # they named is theirs to read in full.
+        st.admission_refusal = None
         # The confirmation question exists to prove the USER chose this engine. If their own latest
         # message already names it, that proof is in hand and asking again is a question with one
         # answer - so the selection is confirmed here instead of costing the user a round-trip.
-        quote = str(args.get("user_named_verbatim") or "")
         if es.user_named_engine(eng, quote, st.latest_user_msg):
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
@@ -244,6 +278,14 @@ class IntakeToolExecutor:
     async def _do_confirm_engine_selection(self, args: dict) -> IntakeToolResult:
         st = self.state
         quote = str(args.get("user_agreed_verbatim") or "").strip()
+        if (es.state_of(st.selection) == es.CONFIRMED and st.selection
+                and st.selection.get("confirmed_revision") == st.revision):
+            # Already confirmed from this very message - by the user's plain yes, read by the
+            # application before the model ran (agent.py), or by their own naming of it. The
+            # call changes nothing and is not a fault; refusing it as "already confirmed" sent
+            # the model back to ask the user a question they had just answered.
+            return IntakeToolResult(tool="confirm_engine_selection", accepted=True,
+                                    content=self._confirmed_text(st.selection["engine"]))
         new_sel, reason = es.confirm(
             st.selection, session_id=st.session_id, owner_id=st.owner_id, revision=st.revision,
             quote=quote, latest_user_message=st.latest_user_msg,
@@ -257,10 +299,12 @@ class IntakeToolExecutor:
         logger.info("Intake: engine selection CONFIRMED engine=%s - job_id=%s",
                     st.selection["engine"], self._job_id)
         return IntakeToolResult(tool="confirm_engine_selection", accepted=True, advanced=True,
-                                content=(f"Confirmed: the user selected "
-                                         f"{_vocab.to_display(_vocab.ENGINE, st.selection['engine'])}. "
-                                         "You may now gather the remaining requirements and call "
-                                         "preview_selected_admission."))
+                                content=self._confirmed_text(st.selection["engine"]))
+
+    @staticmethod
+    def _confirmed_text(engine: str) -> str:
+        return (f"Confirmed: the user selected {_vocab.to_display(_vocab.ENGINE, engine)}. You "
+                "may now gather the remaining requirements and call preview_selected_admission.")
 
     async def _do_preview_selected_admission(self, args: dict) -> IntakeToolResult:
         st = self.state
@@ -292,14 +336,30 @@ class IntakeToolExecutor:
             supported=prev["verdict"] == "supported",
             explanation=str(prev.get("safe_user_message") or ""))
         if prev["verdict"] == "impossible" and not st.recommended_this_turn:
-            # TERMINAL: the application's message is the final reply for this turn; the model does
-            # not compose it. It also invalidates any standing authorization.
-            st.admission_block = prev["safe_user_message"]
-            st.admission_facts = prev
+            # A RESULT FOR THE MODEL, not the user's reply. The verdict is already on the trace
+            # (above) and this result stays in the transcript, so the refusal is on record either
+            # way; what changes is that the turn goes on. Any standing authorization is voided
+            # all the same, and the reply the model then writes is checked against this record
+            # after the loop (agent.py) - one naming another engine is replaced by the rendered
+            # finding, exactly as the application's own text used to be delivered.
+            st.admission_refusal = prev
             st.pending = None
             st.invalidate_approval("admission became impossible")
-            return IntakeToolResult(tool="preview_selected_admission", accepted=True,
-                                    advanced=True, content=prev["safe_user_message"])
+            logger.info("Intake: admission refused (%s) - handed back to the model to repair or "
+                        "put to the user - job_id=%s", prev.get("blocking_rule_code", ""),
+                        self._job_id)
+            return IntakeToolResult(
+                tool="preview_selected_admission", accepted=True,
+                content=json.dumps({
+                    "verdict": "impossible",
+                    "blocking_rule_codes": prev.get("blocking_rule_codes", []),
+                    "finding": prev.get("capability_reason") or prev["safe_user_message"],
+                    "what_would_pass": prev.get("what_would_pass", []),
+                    "recorded": False, "authorizes_submission": False,
+                    "guidance": REFUSAL_GUIDANCE}))
+        # Any other verdict supersedes a refusal recorded earlier this turn: the model repaired
+        # its request, or moved to a payload the gate does not refuse.
+        st.admission_refusal = None
         if prev["verdict"] == "supported":
             # ISSUE the submission-authorizing token, bound to this exact canonical payload, the
             # current user-message revision, AND the confirmed selection.
@@ -406,5 +466,5 @@ class IntakeToolExecutor:
             "do not paraphrase it. Await their explicit approval."))
 
 
-__all__ = ["INTAKE_CATEGORIES", "MAX_SEARCH_CALLS", "MUTATING_TOOLS", "IntakeExecutionState",
-           "IntakeToolExecutor", "IntakeToolResult", "category_of"]
+__all__ = ["INTAKE_CATEGORIES", "MAX_SEARCH_CALLS", "MUTATING_TOOLS", "REFUSAL_GUIDANCE",
+           "IntakeExecutionState", "IntakeToolExecutor", "IntakeToolResult", "category_of"]

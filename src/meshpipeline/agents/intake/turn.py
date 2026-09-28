@@ -24,6 +24,20 @@ BUDGET_NUDGE = (
     "else is answered by that instruction - record the assumption in request_txt and submit."
 )
 
+#: Sent back into the loop, once per turn, when the model's reply asks a question the user was
+#: already asked (agents/intake/loop_policy.py). Their reply was their one answer to it; the model
+#: takes its own proposal and moves on rather than asking a third time.
+REPEAT_NUDGE = (
+    "[SYSTEM] You have already asked the user this, and their reply was their one answer to it. "
+    "Do not ask it again in any wording. Take your own proposal for it, note in request_txt that "
+    "it is an assumption the user did not state, and move on: ask the next thing you genuinely "
+    "need (with a proposed answer), or call submit_requirements if nothing required is missing."
+)
+
+#: Every user-role line the application writes into a turn. None of them is the user's words, and
+#: the transcript marks them so a reader can tell.
+SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE)
+
 
 @dataclass(frozen=True)
 class TurnBudget:
@@ -47,6 +61,14 @@ def apply_budget_nudge(llm_messages: list, state_messages: list) -> tuple[list, 
         list(llm_messages) + [{"role": "user", "content": BUDGET_NUDGE}],
         list(state_messages) + [{"role": "user", "content": BUDGET_NUDGE, "_synthetic": True}],
     )
+
+
+def prior_assistant_texts(state_messages) -> tuple[str, ...]:
+    # What the assistant has already said in this conversation - the application's own lines
+    # included, since a question the application asked is still a question the user answered.
+    return tuple(str(m.get("content", "")) for m in state_messages
+                 if isinstance(m, dict) and m.get("role") == "assistant"
+                 and not m.get("_synthetic"))
 
 
 @dataclass(frozen=True)
@@ -111,7 +133,10 @@ def serialise_transcript(llm_messages, assistant_text: str) -> list:
         for carried in ("tool_calls", "tool_call_id"):
             if m.get(carried):
                 entry[carried] = m[carried]
-        if m.get("_synthetic"):
+        # A nudge reaches the model as a plain user line (the provider payload carries no
+        # marker), so the transcript recognises it by its text: nobody reading the corpus should
+        # take the application's words for the user's.
+        if m.get("_synthetic") or (entry["role"] == "user" and entry["content"] in SYNTHETIC_NUDGES):
             entry["_synthetic"] = True
         out.append(entry)
     return out
