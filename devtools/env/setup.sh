@@ -221,7 +221,7 @@ ${COMPOSE_WHY}
 fi
 
 # 7. build the container images (cached after the first run)
-step "Building container images (api, worker, worker-utility, beat)"
+step "Building container images (api, worker, worker-geometry, worker-utility, beat)"
 echo "  first build compiles the render stack - later runs are cached and fast…"
 ${COMPOSE} build
 ok "images built"

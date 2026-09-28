@@ -117,7 +117,7 @@ cat <<PLAN
   Owner performing   ${ACCOUNT}
 
   DELETED: every resource labelled deployment-id=${DEPLOYMENT_ID} - the API and console services,
-  the mesh, migrate and queue-depth jobs, the scheduler, the worker group and its template, the
+  the mesh, migrate, queue-depth and maintenance-sweep jobs, their schedulers, the worker group and its template, the
   exchange, artifacts and transfer buckets, the object-store key and its secret, and the six
   runtime service accounts. Plus the database ${DB_NAME} on ${CLOUDSQL_INSTANCE}, and
   everything in it.
@@ -160,17 +160,19 @@ _delete() {
   fi
 }
 
-# The SCHEDULER first: it triggers the queue-depth job, and a schedule firing at a job that has
-# just been deleted logs an error every minute until somebody notices.
-info "Scheduler and the queue-depth publisher"
-if gcloud scheduler jobs describe "${DEPLOYMENT_ID}-queue-depth" \
-     --location "${GCP_REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  _delete "scheduler ${DEPLOYMENT_ID}-queue-depth" \
-    gcloud scheduler jobs delete "${DEPLOYMENT_ID}-queue-depth" \
-      --location "${GCP_REGION}" --project "${PROJECT_ID}" --quiet
-else
-  _absent "scheduler ${DEPLOYMENT_ID}-queue-depth"
-fi
+# The SCHEDULERS first: each triggers a job deleted below, and a schedule firing at a job that has
+# just been deleted logs an error every tick until somebody notices.
+info "Schedulers - the queue-depth publisher's and the maintenance sweep's"
+for _sched in "${DEPLOYMENT_ID}-queue-depth" "${DEPLOYMENT_ID}-maintenance-sweep-tick"; do
+  if gcloud scheduler jobs describe "${_sched}" \
+       --location "${GCP_REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+    _delete "scheduler ${_sched}" \
+      gcloud scheduler jobs delete "${_sched}" \
+        --location "${GCP_REGION}" --project "${PROJECT_ID}" --quiet
+  else
+    _absent "scheduler ${_sched}"
+  fi
+done
 
 # THE AUTOSCALER BEFORE THE GROUP. An autoscaler whose group has gone is an orphan Google will not
 # always tidy, and deleting the group first makes the autoscaler undeletable by name.
@@ -209,7 +211,8 @@ for _svc in "${DEPLOYMENT_ID}-api" "${DEPLOYMENT_ID}-console"; do
     _absent "service ${_svc}"
   fi
 done
-for _job in "${DEPLOYMENT_ID}-mesh" "${DEPLOYMENT_ID}-migrate" "${DEPLOYMENT_ID}-queue-depth"; do
+for _job in "${DEPLOYMENT_ID}-mesh" "${DEPLOYMENT_ID}-migrate" "${DEPLOYMENT_ID}-queue-depth" \
+            "${DEPLOYMENT_ID}-maintenance-sweep"; do
   if gcloud run jobs describe "${_job}" --region "${GCP_REGION}" \
        --project "${PROJECT_ID}" >/dev/null 2>&1; then
     _delete "job ${_job}" \

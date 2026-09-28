@@ -174,9 +174,8 @@ async def _classify_checkpoint(thread_id: str) -> str:
         raise GeometrySourceError("the saved execution state could not be read",
                                   failure_class=cls, dependency="checkpoint_store") from exc
 
-    if snapshot is None or snapshot.created_at is None:
-        return "absent"
-    return "pending" if snapshot.next else "complete"
+    from meshpipeline.application.fenced_checkpointer import disposition_of
+    return disposition_of(snapshot)
 
 
 def _coerce_source_ref(value):
@@ -867,16 +866,36 @@ async def _run_async(req: JobRequest) -> dict:
             # KNOWN LIMIT, unchanged by this: a takeover that lands between the PostgreSQL check
             # and a Redis event is still possible. Closing that needs the central atomic Redis
             # fence, which is a later batch.
-            from meshpipeline.application.execution_fence import execution_ownership
-            with execution_ownership(ownership, session_factory=AsyncSessionLocal):
-                _delivery = await deliver_succeeded_run(
-                    AsyncSessionLocal,
-                    job_id=job_id, owner_id=owner_id,
-                    workspace=final_state.get("openfoam_workspace", ""),
-                    engine=str(final_state.get("engine", "") or ""),
-                    delivery_attempt=int(final_state.get("retry_count", 0) or 0),
-                    execution_generation=_generation,
-                    jlog=jlog, publish=_pub, persist_orphans=_persist_orphans)
+            from meshpipeline.application.execution_fence import (
+                StaleWorkerFenced,
+                execution_ownership,
+                lock_ownership_for_commit,
+            )
+
+            async def _fence_registration(db):
+                await lock_ownership_for_commit(db, "artifact registration")
+
+            try:
+                with execution_ownership(ownership, session_factory=AsyncSessionLocal):
+                    _delivery = await deliver_succeeded_run(
+                        AsyncSessionLocal,
+                        job_id=job_id, owner_id=owner_id,
+                        workspace=final_state.get("openfoam_workspace", ""),
+                        engine=str(final_state.get("engine", "") or ""),
+                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                        execution_generation=_generation,
+                        jlog=jlog, publish=_pub, persist_orphans=_persist_orphans,
+                        fence_commit=_fence_registration)
+            except StaleWorkerFenced:
+                # The same ending as the ownership pre-check above, reached one step later: the
+                # owner cancelled (or a newer generation took over) while this worker uploaded,
+                # and the registration's own fence refused it. No rows, no terminal record, no
+                # charge, no announcement - the job's current authority has already spoken.
+                jlog.warning("Worker FENCED at artifact registration (the job was cancelled or "
+                             "taken over during delivery) - producing no terminal side effects. "
+                             "job_id=%s", job_id)
+                await _worker_engine.dispose()
+                return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
             _uploaded_artifacts = _delivery.delivered
             # A run whose mesh could not be delivered did not succeed - the downgrade is a status
             # rule owned by final_result, not two lines of orchestration.

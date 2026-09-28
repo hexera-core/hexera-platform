@@ -9,14 +9,15 @@
 
 /* THE GEOMETRY STAGE.
  *
- * The stage opens the moment the part is measured, with the measuring step's own labels greyed
- * out under a "naming" banner, and fills in the model's labels when they arrive - the user is
- * already turning the part while the model thinks. Proceeding hands the workbench back, and the
- * conversation carries on where it was.
+ * The stage opens the moment the part is measured, with the measuring step's own labels under a
+ * banner that says what is happening, and fills in the model's labels when they arrive - the
+ * user is already turning the part while the model thinks, and can fix the labels and proceed
+ * without waiting for it. Proceeding hands the workbench back, and the conversation carries on
+ * where it was.
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, formHtml, markConfirmed, mm, readExternal, readForm, rowHtml, setNaming }
+import { applyFlow, bindUnit, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml, shown, unitOf }
   from "../render/geometry_form.js";
 
 let _vtkP = null;
@@ -77,16 +78,18 @@ function takeOver(box, anchorEl) {
 }
 
 function leadHtml(p) {
-  const size = (p.size_mm || []).map((v) => mm(v)).join(" x ");
-  return `<b>${esc(p.part || "the part")}</b>${size ? ` · ${esc(size)} mm` : ""}<br>
+  const size = (p.size_mm || []).map((v) => shown(v, p)).join(" x ");
+  return `<b>${esc(p.part || "the part")}</b>${size ? ` · ${esc(size)} <span class="gc-u">${unitOf(p)}</span>` : ""}<br>
     Turn the part and click a sticker to select its row. Fix any name or role, add or remove a
     sticker, then proceed: the questions that follow skip everything confirmed here.`;
 }
 
 /** Open the check as a stage. `d` is the check the API served (its `proposal` is what is shown;
- *  `named: false` opens the stage in naming mode, labels greyed out under a banner until
- *  `update` brings the model's), `confirm(body)` records the answer. `opts.fallback()` is called
- *  instead when the stage cannot be drawn - no skin, no WebGL - so the user still gets the card. */
+ *  `named: false` opens the stage with the measuring step's labels under a banner that says what
+ *  is happening, and `update` brings the model's when they arrive), `confirm(body)` records the
+ *  answer, `opts.retry(step)` runs a step of the check again and resolves to the check as it then
+ *  stands. `opts.fallback()` is called instead when the stage cannot be drawn - no skin, no
+ *  WebGL - so the user still gets the card. */
 export async function openGeometryStage(sessionId, d, confirm, opts) {
   opts = opts || {};
   const p = d.proposal || {};
@@ -95,7 +98,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
   box.innerHTML = `<div class="v-bar gc-panel">
       <div class="v-row"><b>Geometry check</b><span class="v-meta">what Hexera sees</span></div>
-      <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span></div>
+      <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span><span class="gc-banner-act"></span></div>
       <div class="gc-lead">${leadHtml(p)}</div>
       <div class="gc-form">${formHtml(p)}</div>
     </div>
@@ -108,33 +111,56 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  applyFlow(form);
+  applyFlow(form); bindUnit(panel, p);
   const banner = panel.querySelector(".gc-banner");
-  function showBanner(text, cls) {
-    banner.hidden = !text; banner.className = "gc-banner" + (cls ? " " + cls : "");
-    banner.querySelector(".gc-banner-text").textContent = text || "";
-  }
-  // THE BANNER SAYS WHAT IS REALLY HAPPENING: the model only starts naming once the user has
-  // answered the question in the chat; before that the stage is waiting on them, not on it
-  const bannerFor = (d1) => (d1 && d1.naming_requested
-    ? "Naming the openings… you can turn the part meanwhile"
-    : "Answer the question in the chat and I'll name the openings - you can turn the part meanwhile");
-  let naming = d.named === false;
-  // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
-  // the form opens with the measuring step's labels so the user can go on. The model's names
-  // still fill any row the user has not touched when they do arrive.
+  /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
+     point; the banner says what is happening around them - whether the file said its unit (a
+     triangle file carries none; the unit box beside the sizes is where to say, or the chat),
+     whether the model was asked to name the openings, whether it answered, or gave up - and
+     what to do about it. */
+  let naming = false, stalled = false, unitNeeded = !!d.unit_needed, shown = "";
   const STALL_MS = opts.stallMs || 3 * 60 * 1000;
   let askedAt = null, stallTimer = null;
+  function showBanner(text, cls, retryStep) {
+    banner.hidden = !text; banner.className = "gc-banner" + (cls ? " " + cls : "");
+    banner.querySelector(".gc-banner-text").textContent = text || "";
+    const act = banner.querySelector(".gc-banner-act"); act.innerHTML = "";
+    if (text && retryStep && opts.retry) {
+      // THE WAY ON when the naming gave up: run it again from here, over the same facts
+      const b = document.createElement("button"); b.type = "button"; b.className = "gc-retry"; b.textContent = "Try again";
+      b.onclick = () => {
+        b.disabled = true; b.textContent = "Starting…";
+        Promise.resolve(opts.retry(retryStep))
+          .then((d3) => { askedAt = null; stalled = false; shown = ""; update(d3); })
+          .catch((e) => { showBanner("Could not run it again: " + ((e && e.message) || "try later"), "warn", retryStep); });
+      };
+      act.appendChild(b);
+    }
+  }
+  function stateBanner() {
+    if (unitNeeded) return ["The file does not say its unit, so millimetres is assumed: check the size beside the unit box below, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
+    if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
+    if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
+    return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
+  }
+  function showState() {
+    const key = ["scouted", naming, stalled, unitNeeded].join("|");
+    if (key === shown) return;                 // the poll repeating a state changes nothing
+    shown = key;
+    const [text, cls] = stateBanner();
+    showBanner(text, cls);
+    form.classList.toggle("gc-naming", naming);
+  }
+  // A NAMING THAT NEVER COMES: once the model was asked, if nothing has arrived after a while
+  // the banner says so and stops waiting. The model's names still fill any row the user has
+  // not touched when they do arrive.
   function noteAsked(d1) {
     if (!(d1 && d1.naming_requested) || askedAt !== null) return;
     askedAt = Date.now();
-    stallTimer = setTimeout(() => {
-      if (!naming) return;
-      naming = false; setNaming(form, false);
-      showBanner("The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn");
-    }, STALL_MS);
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { if (!naming) return; naming = false; stalled = true; showState(); }, STALL_MS);
   }
-  if (naming) { showBanner(bannerFor(d)); setNaming(form, true); noteAsked(d); }
+  if (d.named === false) { naming = !!d.naming_requested; noteAsked(d); showState(); }
 
   let scene = null;
   try {
@@ -177,18 +203,26 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   }
   bindProceed();
 
-  /** The model's labels arrived (or gave up): the form is re-drawn from the new proposal, the
-   *  banner goes, the form opens for editing. Positions and sizes are the code's and do not
-   *  move; the stickers stay where they are. */
+  /** The check moved on. Scouted: only the banner and Proceed follow it. Ready: the form is
+   *  re-drawn from the model's proposal and the banner goes. Failed: the naming gave up, or
+   *  never answered - the measuring step's labels stand, and the naming can be run again from
+   *  here. Positions and sizes are the code's and do not move; the stickers stay where they are. */
   function update(d2) {
-    if (d2 && d2.status === "scouted") {              // still measuring-step labels: only the banner moves
-      if (naming) showBanner(bannerFor(d2));
+    if (!d2) return;
+    unitNeeded = !!d2.unit_needed;
+    const q = d2.proposal || {};
+    followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
+    if (d2.status === "scouted") {
+      if (d2.naming_requested && !stalled) naming = true;
       noteAsked(d2);
+      showState();
       return;
     }
     clearTimeout(stallTimer);
-    const p2 = (d2 && d2.proposal) || {};
-    const failed = d2 && d2.status === "failed";
+    naming = false; stalled = false;
+    form.classList.remove("gc-naming");
+    const p2 = d2.proposal || {};
+    const failed = d2.status === "failed";
     if (!failed) {
       // keep the code's measurements, take the model's words - IN PLACE: the scene holds the
       // same object, and what the user adds or removes there is what Proceed reads. A row the
@@ -200,17 +234,29 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
         const m = byId.get(o.id), u = typed.get(Number(o.id));
         if (u && u.name !== undefined && (u.name !== (o.name || "") || u.role !== o.role)) return { ...o, name: u.name, role: u.role };
         return m ? { ...o, name: m.name, role: m.role, confidence: m.confidence } : o; });
-      Object.assign(p, p2, { openings: merged });
+      // THE STAGE KEEPS THE SCOUT'S OWN NUMBERS. A naming that re-read the facts in the confirmed
+      // unit serves them re-read, but the scene and its skin were drawn from the scout's reading,
+      // so every length here stays in it: the unit box says which unit that is, and the server
+      // re-reads the form from `scale_to_m` when it is confirmed. Only the words move.
+      const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;    // a missing scale is the display's default
+      const rescaled = Math.abs(theirs - mine) > 1e-12;
+      const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$/.test(k))) : p2;
+      // a unit the user set in the box outlives the re-draw; a served one fills an untouched box
+      const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
+      Object.assign(p, words, { openings: merged }, chosen);
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindProceed(); scene.rebind();
-      showBanner("");
+      applyFlow(form); bindUnit(panel, p); bindProceed(); scene.rebind();
+      shown = "ready"; showBanner("");
     } else {
-      showBanner("The naming step gave up; the names below are the measuring step's own.", "warn");
-      setTimeout(() => { if (!naming) showBanner(""); }, 8000);
+      const key = "failed|" + (d2.reason || "");
+      if (key !== shown) {
+        shown = key;
+        showBanner("The naming step gave up" + (d2.reason ? " (" + d2.reason + ")" : "")
+          + ". The names below are the measuring step's own: fix them and proceed"
+          + (d2.retry && opts.retry ? ", or try the naming again." : "."), "warn", d2.retry);
+      }
     }
-    naming = false;
-    setNaming(form, false);
     scene.refresh();
   }
 
@@ -431,11 +477,11 @@ function initScene(sessionId, box, surf, p) {
           centroid_m: point.slice(), centroid_mm: point.map((v) => Math.round(v * 1000 * 100) / 100), normal: normal.slice(), added: true };
     p.openings = [...(p.openings || []), o];
     const tbody = form.querySelector(".gc-table tbody");
-    if (tbody) { tbody.insertAdjacentHTML("beforeend", rowHtml(o)); }
+    if (tbody) { tbody.insertAdjacentHTML("beforeend", rowHtml(o, p)); }
     else {
       // the first opening on a part that had none: the table takes the "no openings" note's
       // place, and the Add button beside it stays
-      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o)}</tbody></table>`;
+      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o, p)}</tbody></table>`;
       const note = form.querySelector(".gc-int .gc-note");
       if (note) note.outerHTML = table; else form.querySelector(".gc-int").insertAdjacentHTML("afterbegin", table);
     }
@@ -488,7 +534,7 @@ function initScene(sessionId, box, surf, p) {
     const external = !!flowSel && flowSel.value === "external";
     pins.forEach((pn) => { pn.actor.setVisibility(!external); if (external) pn.el.style.display = "none"; });
     if (!external) { rw.render(); return; }
-    const ex = readExternal(form);
+    const ex = readExternal(form, p);
     const axis = ex.flow_axis && ex.flow_axis !== "unknown" ? ex.flow_axis : "+x";
     const k = { x: 0, y: 1, z: 2 }[axis[1]], sign = axis[0] === "-" ? -1 : 1;
     const dir = [0, 0, 0]; dir[k] = sign;

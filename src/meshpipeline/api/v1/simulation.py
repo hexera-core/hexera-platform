@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -40,6 +41,45 @@ def _amended_brief(parent_session, mode: str, comment: str) -> str:
             + comment.strip()[:2000])
 
 
+@dataclass(frozen=True)
+class _ParentIntake:
+    """What the disputed run was approved with, as the dispute child inherits it."""
+
+    session_id: str = ""
+    review_brief_txt: str = ""
+    intake_patches: list = field(default_factory=list)
+    dimensionality: str = ""
+    purpose: str = ""
+    input_kind: str = ""
+
+
+def _parent_intake(parent_session, dispatch_payload) -> _ParentIntake:
+    """The parent's intake context: its session while the session is still linked to it, else
+    the parent's own dispatch payload - the exact set it was approved and run with.
+
+    The session is not the durable record of a run. Once a run has ended the conversation moves
+    on (agents/intake/message.py releases the link and a later run rewrites the columns), so a
+    dispute raised after that found no session and ran the child with no purpose, no patches
+    and no brief. The payload has carried all of them since dispatch.
+    """
+    if parent_session is not None:
+        return _ParentIntake(
+            session_id=str(parent_session.id),
+            review_brief_txt=str(parent_session.review_brief_txt or ""),
+            intake_patches=list(parent_session.intake_patches or []),
+            dimensionality=str(parent_session.dimensionality or ""),
+            purpose=str(parent_session.purpose or ""),
+            input_kind=str(parent_session.input_kind or ""))
+    payload = dict(dispatch_payload or {})
+    return _ParentIntake(
+        session_id=str(payload.get("session_id") or ""),
+        review_brief_txt=str(payload.get("review_brief_txt") or ""),
+        intake_patches=list(payload.get("intake_patches") or []),
+        dimensionality=str(payload.get("dimensionality") or ""),
+        purpose=str(payload.get("purpose") or ""),
+        input_kind=str(payload.get("input_kind") or ""))
+
+
 async def _viewer_data_or_empty(job_id: uuid.UUID, owner_id: str, db=None, *,
                                 organization_id: str = "") -> dict:
     try:
@@ -66,6 +106,10 @@ async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None, *,
         job = await svc.get_job(session, job_id, owner_id, organization_id=organization_id)
         if not job:
             raise HTTPException(404, "Job not found")
+        if _is_cancelled(job):
+            # a cancelled run delivers nothing, whatever a worker managed to store before the
+            # cancel committed (see the status route)
+            raise HTTPException(404, "This run was cancelled; it has no delivered mesh")
         return await ArtifactRepository().get_by_logical_key(session, job_id, VIEWER_LOGICAL_KEY)
 
     # Reuse the caller's session where the route already opened one: a second connection for the
@@ -90,6 +134,12 @@ async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None, *,
         # A row pointing at bytes that are not the payload is an integrity failure, never a 200.
         logger.error("viewer data for job %s is not valid JSON", job_id)
         raise HTTPException(500, "Viewer data is corrupt") from exc
+
+
+def _is_cancelled(job) -> bool:
+    from meshpipeline.persistence.models import JobStatus as _JS
+    status = getattr(job, "status", None)
+    return getattr(status, "value", status) == _JS.cancelled.value
 
 
 def _artifact_label(artifact_type, engine: str) -> str:
@@ -172,7 +222,11 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                                              organization_id=organization_id)
         _engine = str(_vdata.get("engine", "") or "")
         artifacts_out = []
-        for a in (job.artifacts or []):
+        # A CANCELLED RUN LISTS NO DOWNLOADS. The registration fence stops a worker's rows landing
+        # after the cancel commits, but a worker that registered them a moment BEFORE it did left
+        # rows behind - on a job its owner stopped. They are never offered: what the owner asked
+        # for was the run to end, and a mesh from it is not a delivery.
+        for a in ([] if _is_cancelled(job) else (job.artifacts or [])):
             # The viewer payload is what the VIEWER consumes, not something the user downloads.
             # Listing it would put an internal JSON blob in the deliverables panel beside the
             # engine case.
@@ -304,6 +358,9 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # gave up, but the mesh exists and the user is entitled to judge it (that is
         # the whole point of the human-in-the-loop). Only a run with NOTHING to look
         # at is refused.
+        if parent.status == _JS.cancelled:
+            raise HTTPException(409, "This run was cancelled, so there is no mesh to review - "
+                                     "start a new run in the chat instead")
         if parent.status not in (_JS.succeeded, _JS.failed):
             raise HTTPException(409, "This job has not finished yet")
         if parent.status == _JS.failed:
@@ -350,9 +407,11 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         except ValueError as exc:
             raise HTTPException(429, str(exc)) from exc
 
-        # Parent intake context: patches/dimensionality/brief survive dispatch on the
-        # session; request.txt is recovered from the parent workspace by the worker.
-        parent_session = await session_repo.get_by_job_id(db, job_id)
+        # Parent intake context: patches/dimensionality/brief from the session while it is still
+        # linked to this run, else from the run's own dispatch payload (see _parent_intake);
+        # request.txt is recovered from the parent workspace by the worker.
+        _intake = _parent_intake(await session_repo.get_by_job_id(db, job_id),
+                                 parent.dispatch_payload)
 
         new_job = await job_repo.create(db, owner_id=owner_id, organization_id=organization_id)
         # The child IS the operation's durable record. Written in the same transaction that creates
@@ -387,13 +446,13 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
             "geometry_interpretation": (
                 GeometryInterpretationRef.from_domain(_parent_interpretation).to_payload()
                 if parent.geometry_source and _parent_interpretation else None),
-            "session_id":       str(parent_session.id) if parent_session else "",
+            "session_id":       _intake.session_id,
             "request_txt":      "",   # worker recovers the parent's request.txt
-            "review_brief_txt": _amended_brief(parent_session, _mode, body.comment),
-            "intake_patches":   list(parent_session.intake_patches or []) if parent_session else [],
-            "dimensionality":   (parent_session.dimensionality or "") if parent_session else "",
-            "purpose":          (parent_session.purpose or "") if parent_session else "",
-            "input_kind":       (parent_session.input_kind or "") if parent_session else "",
+            "review_brief_txt": _amended_brief(_intake, _mode, body.comment),
+            "intake_patches":   list(_intake.intake_patches),
+            "dimensionality":   _intake.dimensionality,
+            "purpose":          _intake.purpose,
+            "input_kind":       _intake.input_kind,
             "user_dispute":     user_dispute,
         })
         # The child is already committed, deliberately, so a worker that takes the message

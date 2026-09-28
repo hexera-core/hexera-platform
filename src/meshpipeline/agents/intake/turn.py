@@ -24,6 +24,71 @@ BUDGET_NUDGE = (
     "else is answered by that instruction - record the assumption in request_txt and submit."
 )
 
+#: Sent back into the loop, once per turn, when the model's reply asks a question the user was
+#: already asked (agents/intake/loop_policy.py). Their reply was their one answer to it; the model
+#: takes its own proposal and moves on rather than asking a third time.
+REPEAT_NUDGE = (
+    "[SYSTEM] You have already asked the user this, and their reply was their one answer to it. "
+    "Do not ask it again in any wording. Take your own proposal for it, note in request_txt that "
+    "it is an assumption the user did not state, and move on: ask the next thing you genuinely "
+    "need (with a proposed answer), or call submit_requirements if nothing required is missing."
+)
+
+#: Put in front of the model, before it answers, when the user's latest message hands the open
+#: question back ("I do not know, use a sensible default and continue"). A real session asked
+#: which opening was the second inlet nine times and answered four such replies with "this role
+#: assignment is required and cannot be selected by default". The answer is read here, in code.
+DEFAULT_NUDGE = (
+    "[SYSTEM] The user's latest message leaves the open question to you. Do not ask it again, and "
+    "do not tell them a value cannot be defaulted - every value can. Choose the sensible default "
+    "yourself: for a choice between named candidates, the first one you listed unless the "
+    "geometry says otherwise; for a number, the engine's own default or the value you already "
+    "proposed. State it in ONE line as an assumption, carry it into request_txt as 'assumed, not "
+    "stated by the user', and continue with the next thing you genuinely need - or call "
+    "submit_requirements if nothing required is missing. The two standing exceptions hold: the "
+    "ENGINE is proposed and confirmed, never defaulted, and the file's UNIT is asked, never "
+    "guessed."
+)
+
+#: Every user-role line the application writes into a turn. None of them is the user's words, and
+#: the transcript marks them so a reader can tell.
+SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE)
+
+# How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
+# short: a false negative leaves the model to read the reply itself, while a false positive tells
+# it to take its own proposal on a message that was in fact an answer - so "and continue" alone,
+# which an answer may end with, is not on the list. A message that ASKS something ("I'm not sure
+# what you mean by the second inlet; can you explain?") hands nothing back, whatever else it says:
+# the user wants the question explained, not answered for them.
+_DEFERRAL_PHRASES = (
+    "i do not know", "i dont know", "i don t know", "dont know", "don t know", "no idea",
+    "you decide", "you choose", "you pick", "your call", "up to you", "whatever you think",
+    "whatever you suggest", "use a default", "use the default", "use defaults",
+    "sensible default", "reasonable default", "standard default", "whatever is standard",
+    "whatever is typical", "whatever is usual", "as you suggest", "as you suggested",
+    "as you proposed", "go with your", "your suggestion", "your proposal",
+)
+_ASKING_PHRASES = ("explain", "you mean", "mean by", "what is", "what are", "what does",
+                   "which is", "which one is", "how do", "how does", "why")
+
+
+def defers_to_default(text) -> bool:
+    import re
+
+    raw = str(text or "")
+    if "?" in raw:
+        return False
+    t = f" {re.sub(r'[^0-9a-z]+', ' ', raw.casefold()).strip()} "
+    if any(f" {p} " in t for p in _ASKING_PHRASES):
+        return False
+    return any(f" {p} " in t for p in _DEFERRAL_PHRASES)
+
+
+def latest_user_text(state_messages) -> str:
+    user_msgs = [m for m in state_messages if isinstance(m, dict) and not m.get("_synthetic")
+                 and m.get("role") == "user"]
+    return str(user_msgs[-1].get("content", "")) if user_msgs else ""
+
 
 @dataclass(frozen=True)
 class TurnBudget:
@@ -42,11 +107,27 @@ def assess_budget(state_messages, *, awaiting_confirmation: bool) -> TurnBudget:
     return TurnBudget(turns, turns >= MAX_TURNS and not awaiting_confirmation)
 
 
-def apply_budget_nudge(llm_messages: list, state_messages: list) -> tuple[list, list]:
+def _nudged(llm_messages: list, state_messages: list, note: str) -> tuple[list, list]:
     return (
-        list(llm_messages) + [{"role": "user", "content": BUDGET_NUDGE}],
-        list(state_messages) + [{"role": "user", "content": BUDGET_NUDGE, "_synthetic": True}],
+        list(llm_messages) + [{"role": "user", "content": note}],
+        list(state_messages) + [{"role": "user", "content": note, "_synthetic": True}],
     )
+
+
+def apply_budget_nudge(llm_messages: list, state_messages: list) -> tuple[list, list]:
+    return _nudged(llm_messages, state_messages, BUDGET_NUDGE)
+
+
+def apply_default_nudge(llm_messages: list, state_messages: list) -> tuple[list, list]:
+    return _nudged(llm_messages, state_messages, DEFAULT_NUDGE)
+
+
+def prior_assistant_texts(state_messages) -> tuple[str, ...]:
+    # What the assistant has already said in this conversation - the application's own lines
+    # included, since a question the application asked is still a question the user answered.
+    return tuple(str(m.get("content", "")) for m in state_messages
+                 if isinstance(m, dict) and m.get("role") == "assistant"
+                 and not m.get("_synthetic"))
 
 
 @dataclass(frozen=True)
@@ -84,7 +165,7 @@ def hydrate(state, state_messages) -> TurnContext:
     # summary was produced by another nudged turn.
     own = [m for m in state_messages if isinstance(m, dict) and not m.get("_synthetic")]
     user_msgs = [m for m in own if m.get("role") == "user"]
-    latest = str(user_msgs[-1].get("content", "")) if user_msgs else ""
+    latest = latest_user_text(own)
     return TurnContext(
         job_id=str(state.get("job_id", "unknown")),
         session_id=str(state.get("session_id", "")),
@@ -111,7 +192,10 @@ def serialise_transcript(llm_messages, assistant_text: str) -> list:
         for carried in ("tool_calls", "tool_call_id"):
             if m.get(carried):
                 entry[carried] = m[carried]
-        if m.get("_synthetic"):
+        # A nudge reaches the model as a plain user line (the provider payload carries no
+        # marker), so the transcript recognises it by its text: nobody reading the corpus should
+        # take the application's words for the user's.
+        if m.get("_synthetic") or (entry["role"] == "user" and entry["content"] in SYNTHETIC_NUDGES):
             entry["_synthetic"] = True
         out.append(entry)
     return out

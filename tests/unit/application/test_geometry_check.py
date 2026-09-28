@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from meshpipeline.api.v1.geometry import (
     ConfirmedOpening,
     ConfirmIn,
@@ -289,20 +291,26 @@ def test_the_naming_rescales_the_facts_and_the_skin_to_the_confirmed_unit(monkey
     assert abs(edge[0] - 2.0) < 1e-6                                          # and so did its edges
 
 
-def test_a_naming_that_finds_no_scout_in_time_withdraws_its_request(monkeypatch):
+def test_a_naming_that_finds_no_scout_in_time_marks_its_request_withdrawn(monkeypatch):
+    """The marker stays, marked withdrawn: the chat hands the words on again once the part is
+    measured, and never holds again for a scout that is still not there."""
     import json
 
+    from meshpipeline.application.geometry_hold import hold_decision
     from meshpipeline.contracts import object_storage
 
     sid = "abcdef12-3333"
     store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps({"status": "pending"}).encode(),
-                          f"sessions/{sid}/geometry_check/naming.json": b"{}"})
+                          f"sessions/{sid}/geometry_check/naming.json": json.dumps({"requested_at": 1.0, "purpose_text": "a pipe"}).encode()})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
     monkeypatch.setattr(gc, "NAMING_WAIT_S", 0.0)
     result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="a pipe")
     assert result == {"status": "pending", "named": False}
-    assert f"deleted:sessions/{sid}/geometry_check/naming.json" in store.written
-    assert f"sessions/{sid}/geometry_check/naming.json" not in store.objects
+    marker = json.loads(store.objects[f"sessions/{sid}/geometry_check/naming.json"])
+    assert marker["withdrawn"] is True and marker["purpose_text"] == "a pipe"
+    assert gc.naming_pending(marker) is False
+    assert hold_decision({"status": "pending"}, marker, None) is None
+    assert hold_decision({"status": "scouted"}, marker, None) == "queue"
 
 
 def test_a_late_naming_failure_never_replaces_a_ready_check(monkeypatch):
@@ -389,3 +397,179 @@ def test_the_check_store_turns_numpy_into_plain_json():
                                        "faces": [{"clear_ahead": False}], "name": "elbow"}
     assert type(out["ok"]) is bool and type(out["n"]) is int
 
+
+# ---------------------------------------------------------------- the check fails open ----
+def _requested(at: float) -> dict:
+    return {"session_id": "s", "purpose_text": "a pipe", "requested_at": at}
+
+
+def test_a_pending_check_older_than_the_scouts_hard_limit_reads_as_failed_with_a_reason_and_a_retry():
+    """A worker that died mid-scout writes nothing: the read path reports the check failed, in
+    plain words, with the scout as the step to run again - and stores nothing, so a scout that
+    was merely slow still lands."""
+    pending = {"status": "pending", "session_id": "s", "written_at": 1000.0}
+    late = gc.time_boxed(pending, None, now=1000.0 + gc.SCOUT_HARD_LIMIT_S + gc.STALE_MARGIN_S + 1)
+    assert late["status"] == "failed" and late["reason"] == gc.SCOUT_TOO_LONG
+    assert late["retry"] == "scout" and late["named"] is False and late["timed_out"] is True
+    assert gc.retry_step(late) == "scout"
+    assert gc.time_boxed(pending, None, now=1000.0 + gc.SCOUT_HARD_LIMIT_S) is pending   # within the box
+
+
+def test_a_naming_asked_long_ago_and_never_answered_reads_as_failed_but_keeps_the_scouts_part():
+    scouted = _scouted("s", unit_assumed=False, scale=0.001)
+    asked = _requested(5000.0)
+    late = gc.time_boxed(scouted, asked, now=5000.0 + gc.NAMING_HARD_LIMIT_S + gc.STALE_MARGIN_S + 1)
+    assert late["status"] == "failed" and late["reason"] == gc.NAMING_TOO_LONG and late["retry"] == "naming"
+    assert late["facts"] == scouted["facts"] and late["skin_key"] == scouted["skin_key"]  # the stage keeps the part
+    assert gc.time_boxed(scouted, asked, now=5000.0 + 10) is scouted                       # fresh: still naming
+    assert gc.time_boxed(scouted, None, now=1e12) is scouted                     # never asked: waiting on the chat
+    withdrawn = dict(asked, withdrawn=True)
+    assert gc.time_boxed(scouted, withdrawn, now=1e12) is scouted               # gave up waiting for the scout
+
+
+def test_a_stale_check_never_holds_the_chat():
+    from meshpipeline.application.geometry_hold import hold_decision
+
+    pending = {"status": "pending", "written_at": 0.0}
+    assert hold_decision(pending, None, None, now=10.0) == "queue"
+    late = gc.time_boxed(pending, None, now=gc.SCOUT_HARD_LIMIT_S + gc.STALE_MARGIN_S + 1)
+    assert hold_decision(late, None, None, now=1e9) is None
+
+
+def test_a_naming_that_gave_up_waiting_for_the_scout_holds_again_only_once_the_part_is_measured():
+    from meshpipeline.application.geometry_hold import hold_decision
+
+    withdrawn = {"requested_at": 1.0, "withdrawn": True}
+    assert hold_decision({"status": "pending"}, withdrawn, None, now=1e6) is None     # not trapped twice
+    assert hold_decision({"status": "scouted"}, withdrawn, None, now=1e6) == "queue"  # measured now: the words go on
+    assert gc.naming_pending(withdrawn) is False and gc.naming_pending({"requested_at": 1.0}) is True
+
+
+def test_the_worker_tasks_take_the_limits_the_time_box_reads():
+    pytest.importorskip("celery")
+    from meshpipeline.adapters.pipeline_execution import celery as tasks
+
+    def limits(task):
+        opts = getattr(task, "task_options", None)      # the unit tier's fake records the decorator's options
+        return (opts["soft_time_limit"], opts["time_limit"]) if opts else (task.soft_time_limit, task.time_limit)
+    assert limits(tasks.scout_geometry) == (gc.SCOUT_SOFT_LIMIT_S, gc.SCOUT_HARD_LIMIT_S)
+    assert limits(tasks.name_geometry) == (gc.NAMING_SOFT_LIMIT_S, gc.NAMING_HARD_LIMIT_S)
+    assert gc.NAMING_WAIT_S < gc.NAMING_SOFT_LIMIT_S       # the naming withdraws before the worker ends it
+
+
+def test_a_status_write_that_breaks_still_stores_a_failed_check(tmp_path, monkeypatch):
+    """The scout's result is stored as part of the task: when the store refuses it (one numpy
+    bool did this once), a failed check with the exception's class is stored instead and the
+    task raises nothing - the stage never waits on a pending nothing will replace."""
+    import json
+    import tempfile
+
+    from meshpipeline.contracts import object_storage
+
+    store = _NamingStore({})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    real = gc._store_json
+
+    def _refuses_the_result(object_key, payload):
+        if payload.get("status") == "scouted":
+            raise TypeError("Object of type bool_ is not JSON serializable")
+        real(object_key, payload)
+    monkeypatch.setattr(gc, "_store_json", _refuses_the_result)
+    monkeypatch.setattr(gc, "_scout", lambda **k: {"status": "scouted", "named": False, "facts": _facts(),
+                                                  "proposal": {}, "snapshots": [], "skin_key": "k", "source": {}})
+    source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/part.stl", "sha256": "0" * 64,
+              "size_bytes": 4, "original_filename": "part.stl", "suffix_hint": ".stl"}
+    result = gc.run_geometry_check(session_id="abcdef12-6666", owner_id="o1", source=source)
+    assert result["status"] == "failed" and result["reason"].startswith("TypeError")
+    stored = json.loads(store.objects["sessions/abcdef12-6666/geometry_check/scout.json"])
+    assert stored["status"] == "failed" and "could not be stored" in stored["reason"]
+    assert stored["retry"] == "scout" and stored["named"] is False
+
+
+def test_a_naming_failure_keeps_the_scouts_part_for_the_stage_and_a_retry(monkeypatch):
+    import json
+
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-7777"
+    scouted = _scouted(sid, unit_assumed=False, scale=0.001)
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(scouted).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(gc, "_name", lambda **k: (_ for _ in ()).throw(RuntimeError("provider down")))
+    result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="an elbow")
+    assert result["status"] == "failed" and result["retry"] == "naming"
+    stored = json.loads(store.objects[f"sessions/{sid}/geometry_check/scout.json"])
+    assert stored["status"] == "failed" and "provider down" in stored["reason"] and stored["step"] == "naming"
+    assert stored["facts"] == scouted["facts"] and stored["skin_key"] == scouted["skin_key"]
+    assert gc.retry_step(stored) == "naming"
+
+
+def test_the_retry_of_a_failed_naming_puts_the_check_back_to_scouted_and_stamps_a_fresh_request(monkeypatch):
+    import json
+
+    from meshpipeline.contracts import geometry_check as seam
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-8888"
+    failed = {**_scouted(sid, unit_assumed=False, scale=0.001), "status": "failed", "reason": "x",
+              "step": "naming", "retry": "naming", "named": False}
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(failed).encode(),
+                          f"sessions/{sid}/geometry_check/naming.json": json.dumps({"requested_at": 1.0, "purpose_text": "old"}).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    queued: list = []
+    seam.set_naming_enqueuer(lambda **kw: queued.append(kw))
+    try:
+        ok = gc.restart_naming(sid, "o1", purpose_text="a pipe", interpretation=None)
+    finally:
+        seam.set_naming_enqueuer(None)
+    assert ok is True and queued[0]["purpose_text"] == "a pipe" and queued[0]["session_id"] == sid
+    stored = json.loads(store.objects[f"sessions/{sid}/geometry_check/scout.json"])
+    assert stored["status"] == "scouted" and "reason" not in stored and stored["facts"] == failed["facts"]
+    marker = json.loads(store.objects[f"sessions/{sid}/geometry_check/naming.json"])
+    assert marker["requested_at"] > 1.0 and marker["purpose_text"] == "a pipe"
+    # nothing measured: nothing to name
+    store.objects[f"sessions/{sid}/geometry_check/scout.json"] = json.dumps({"status": "pending"}).encode()
+    assert gc.restart_naming(sid, "o1", purpose_text="a pipe", interpretation=None) is False
+
+
+def test_a_naming_retry_that_cannot_be_queued_puts_the_failure_back(monkeypatch):
+    """Otherwise the record said scouted and the marker said nothing: a check waiting for a
+    naming nobody queued, with the Try again gone."""
+    import json
+
+    from meshpipeline.contracts import geometry_check as seam
+    from meshpipeline.contracts import object_storage
+
+    sid = "abcdef12-aaaa"
+    failed = {**_scouted(sid, unit_assumed=False, scale=0.001), "status": "failed", "reason": "provider down",
+              "step": "naming", "retry": "naming", "named": False}
+    store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps(failed).encode()})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    for broken in (None, lambda **kw: (_ for _ in ()).throw(ConnectionError("broker unreachable"))):
+        seam.set_naming_enqueuer(broken)
+        try:
+            assert gc.restart_naming(sid, "o1", purpose_text="a pipe", interpretation=None) is False
+        finally:
+            seam.set_naming_enqueuer(None)
+        stored = json.loads(store.objects[f"sessions/{sid}/geometry_check/scout.json"])
+        assert stored["status"] == "failed" and stored["reason"] == "provider down" and stored["retry"] == "naming"
+        assert stored["facts"] == failed["facts"]
+        assert f"sessions/{sid}/geometry_check/naming.json" not in store.objects        # nothing was asked for
+
+
+def test_a_scout_that_cannot_be_queued_is_marked_failed_with_the_scout_as_the_retry(monkeypatch):
+    import json
+
+    from meshpipeline.contracts import geometry_check as seam
+    from meshpipeline.contracts import object_storage
+
+    store = _NamingStore({})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    seam.set_scout_enqueuer(None)
+    assert gc.start_scout("abcdef12-9999", "o1", source={"k": "v"}, interpretation=None) is False
+    stored = json.loads(store.objects["sessions/abcdef12-9999/geometry_check/scout.json"])
+    assert stored["status"] == "failed" and "could not be started" in stored["reason"]
+    assert gc.retry_step(stored) == "scout"
+    assert gc.retry_step({"status": "ready", "named": True}) is None
+    assert gc.retry_step({"status": "unsupported", "reason": "x"}) is None

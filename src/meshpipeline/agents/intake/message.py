@@ -31,7 +31,8 @@ class MessageStatus(str, enum.Enum):
 
     #: nothing gate-related happened - run the intake turn
     proceed = "proceed"
-    #: the session is already linked to a running job; the message was still recorded
+    #: the session's run is still in flight; the message was recorded and nothing else happens.
+    #: Once that run ends the same session takes the next message as the start of another run.
     already_dispatched = "already_dispatched"
     #: an unambiguous approval - the route hands off to the approval authority
     approve = "approve"
@@ -72,6 +73,23 @@ class GateTransition:
 
 
 @dataclass(frozen=True)
+class PreviousRun:
+    """The run this conversation already made, now over. Carried to the intake turn so the
+    model can propose 'the same again' from what that run was approved with and say how it
+    ended; it records nothing - every value is a proposal until the user confirms it and the
+    approval authority takes a FRESH approval for the new run."""
+
+    job_id: str
+    #: the job's status value ("succeeded", "failed", ...); empty when the row is gone
+    status: str = ""
+    #: the verdict the user was shown for that run, as application code rendered it
+    outcome: str = ""
+
+    def as_state(self) -> dict:
+        return {"job_id": self.job_id, "status": self.status, "outcome": self.outcome}
+
+
+@dataclass(frozen=True)
 class MessageOutcome:
 
     status: MessageStatus
@@ -84,6 +102,9 @@ class MessageOutcome:
     reply: str = ""
     job_id: Any = None
     awaiting_confirmation: bool = False
+    #: set when this conversation has already run once and that run is over: the intake turn
+    #: that follows is the start of another run on the same geometry
+    previous_run: PreviousRun | None = None
 
     @property
     def answered(self) -> bool:
@@ -101,7 +122,78 @@ def _revision(messages) -> str:
     return at.revision_of(messages)
 
 
-async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -> MessageOutcome:
+#: The answer while this session's run is still in flight. It says what the user CAN do; the
+#: line it replaces ("already running") named nothing, and stood forever - it was the answer to
+#: every message for the rest of the session's life, hours after the run had ended.
+STILL_RUNNING_REPLY = (
+    "Mesh generation is still running for this session (job {job_id}). You can watch it here. "
+    "Once it finishes, tell me in this chat whether to run the same requirements again or what "
+    "to change, and I will set up the next run. To mesh a different file, start a new session.")
+
+
+@dataclass(frozen=True)
+class _LastRun:
+    """The run this session's last approval created, read under the row lock."""
+
+    job_id: uuid.UUID
+    status: str
+    outcome: str
+
+    @property
+    def live(self) -> bool:
+        from meshpipeline.persistence.job_state import is_active
+        return is_active(self.status)
+
+    @property
+    def previous(self) -> PreviousRun:
+        return PreviousRun(job_id=str(self.job_id), status=self.status, outcome=self.outcome)
+
+
+def _dispatched_job_id(gate: dict) -> uuid.UUID | None:
+    """The job the gate's approval snapshot dispatched, if it ever did. Only the approval
+    transaction writes `job_id` onto a snapshot (agents/intake/approval.py), and a later
+    invalidation keeps it, so its presence - not the status - is the record that a run was made.
+    A fresh snapshot from a new submission carries none."""
+    raw = (gate.get("approval") or {}).get("job_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def _outcome_of(job) -> str:
+    """What the user was told when that run ended, from its durable final result."""
+    stored = getattr(job, "final_result", None) if job is not None else None
+    if not stored:
+        return ""
+    try:
+        from meshpipeline.application.final_result import FinalResult, render_message
+        return render_message(FinalResult.from_dict(dict(stored)))[:1500]
+    except Exception:                                # noqa: BLE001 - context, never a gate
+        return str(stored.get("outcome_code") or "")
+
+
+async def _last_run(db, *, locked, gate: dict, job_repo) -> _LastRun | None:
+    """The session's last run: the one it is linked to while it holds a link, else the one its
+    dispatched snapshot records (the link is released once that run has ended; see `accept`).
+    Read by id, unscoped: the id comes off a session row already proven to be this owner's, and
+    a job is only ever linked to the session that approved it - the link IS the scoping."""
+    job_id = getattr(locked, "job_id", None) or _dispatched_job_id(gate)
+    if not job_id:
+        return None
+    if job_repo is None:
+        from meshpipeline.persistence.repositories.job_repository import JobRepository
+        job_repo = JobRepository()
+    job = await job_repo.get_internal(db, job_id)
+    raw_status = getattr(job, "status", None) if job is not None else None
+    status = str(getattr(raw_status, "value", raw_status) or "")
+    return _LastRun(job_id=job_id, status=status, outcome=_outcome_of(job))
+
+
+async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
+                 job_repo=None) -> MessageOutcome:
     async with db_factory() as db:
         locked = await session_repo.get_for_update(db, inbound.session_id)
         if locked is None or locked.owner_id != inbound.owner_id:
@@ -118,17 +210,31 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -
         messages.append({"role": "user", "content": inbound.content})
         revision = _revision(messages)
 
-        # A dispatched session is terminal for chat. The message is still recorded - the user
-        # said it, so the transcript shows it - but nothing else happens.
-        if locked.job_id:
+        gate = dict(getattr(locked, "intake_gate", None) or {})
+        # A SESSION WITH A RUN. While that run is in flight the session is closed to everything
+        # but this answer: the message is still recorded - the user said it, so the transcript
+        # shows it - but nothing else happens, and above all nothing can dispatch. Once the run
+        # has ended the session moves on: the link to it is released, under this same lock and in
+        # this same transaction, so the approval authority later sees a session with no run -
+        # exactly what it saw before the first approval - and the next run needs a fresh
+        # submission and a fresh approval like any other. The ended run is carried to the intake
+        # turn as context, not as state: the model proposes from it and records nothing.
+        previous: PreviousRun | None = None
+        run = await _last_run(db, locked=locked, gate=gate, job_repo=job_repo)
+        if run is not None and run.live:
             await db.commit()
             return MessageOutcome(
-                status=MessageStatus.already_dispatched, job_id=locked.job_id,
+                status=MessageStatus.already_dispatched, job_id=run.job_id,
                 transition=GateTransition(revision=revision),
-                reply=("Mesh generation is already running for this session. "
-                       f"Job ID: {locked.job_id}"))
+                reply=STILL_RUNNING_REPLY.format(job_id=run.job_id))
+        if run is not None:
+            previous = run.previous
+            if getattr(locked, "job_id", None):
+                await session_repo.release_job(db, inbound.session_id)
+                logger.info("intake message: run %s has ended (%s) - session %s moves on to "
+                            "another run", run.job_id, run.status or "record gone",
+                            inbound.session_id)
 
-        gate = dict(getattr(locked, "intake_gate", None) or {})
         outcome = await _settle(inbound, db, gate=gate, locked=locked, messages=messages,
                                 revision=revision, session_repo=session_repo, logger=logger)
         try:
@@ -147,7 +253,7 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -
         async with db_factory() as db:
             fresh = await session_repo.get_for_owner(db, inbound.session_id, inbound.owner_id)
         return MessageOutcome(status=MessageStatus.approve, session=fresh,
-                              transition=outcome.transition)
+                              transition=outcome.transition, previous_run=previous)
 
     if outcome.continues_to_intake:
         async with db_factory() as db:
@@ -155,7 +261,7 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger) -
         if fresh is None:
             return MessageOutcome(status=MessageStatus.not_found)
         return MessageOutcome(status=outcome.status, session=fresh,
-                              transition=outcome.transition)
+                              transition=outcome.transition, previous_run=previous)
     return outcome
 
 
@@ -164,6 +270,29 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     approval = gate.get("approval")
     if ap.is_live(approval):
         intent = ap.classify(inbound.content)
+        if uc.needs_confirmation(locked):
+            # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
+            # (application/dispatch_contract refuses the pair), so an approval given while the
+            # question is open is held one turn on it: an answer in the same breath ("ok" to the
+            # proposal) settles it and the approval stands; anything else is asked the question,
+            # with the proposal, and the approval's expected turn moves along with it. A unit
+            # named without a yes is recorded, and the approval waits one more turn for the yes.
+            unit = await _settle_unit(inbound, db, gate=gate, locked=locked, revision=revision,
+                                      session_repo=session_repo, logger=logger,
+                                      insist=intent == ap.APPROVE_INTENT)
+            if unit is not None and unit.status is MessageStatus.unit_question:
+                return unit
+            if unit is not None and intent != ap.APPROVE_INTENT:
+                answered_gate = uc.answered(gate)
+                answered_gate["approval"] = ap.defer(approval)
+                await session_repo.set_intake_gate(db, inbound.session_id, answered_gate)
+                named = uc.classify(inbound.content, uc.proposed(gate))
+                reply = f"{uc.noted(named)} {ap.CLARIFICATION}" if named else ap.CLARIFICATION
+                await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+                return MessageOutcome(
+                    status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
+                    transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                              approval_status=ap.AWAITING))
         if intent == ap.APPROVE_INTENT:
             logger.info("intake message: application-owned approval - session=%s snapshot=%s",
                         inbound.session_id, (approval or {}).get("id"))
@@ -210,6 +339,12 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             if hold is not None:
                 return hold
         return unit
+    if uc.needs_confirmation(locked):
+        # THE NAMING WAITS FOR THE UNIT. The user's words go to the model only once the file's
+        # scale is known: the naming re-reads every measurement in that unit, and the stage
+        # confirms nothing without it. Until then the intake answers as it always did.
+        return MessageOutcome(status=MessageStatus.proceed,
+                              transition=GateTransition(revision=revision))
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
                                        revision=revision, session_repo=session_repo, logger=logger)
     if hold is not None:
@@ -255,12 +390,15 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
 
 
 async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revision: str,
-                       session_repo, logger) -> MessageOutcome | None:
+                       session_repo, logger, insist: bool = False) -> MessageOutcome | None:
+    """The unit turn. `insist` is the approval's: the run cannot start without the unit, so a
+    reply that names none is asked the question again rather than let through."""
     if not uc.needs_confirmation(locked):
         return None
 
     asked_already = uc.already_asked(gate)
-    unit = uc.classify(inbound.content) if asked_already else None
+    proposal = uc.proposed(gate) if asked_already else None
+    unit = uc.classify(inbound.content, proposal) if asked_already else None
     if unit is not None:
         # STAMPED WITH BOTH, exactly as api/v1/upload.py stamps the interpretation it writes for a
         # file-declared unit. The two paths write the same table for the same reason; an
@@ -278,10 +416,28 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
             status=MessageStatus.unit_recorded,
             transition=GateTransition(change=GateChange.unit_answered, revision=revision))
 
-    # Either the question has not been put yet, or the answer was not one of the four. Both mean
-    # the same thing: ask, and do not proceed.
-    reply = uc.REFUSAL if asked_already else uc.QUESTION
-    await session_repo.set_intake_gate(db, inbound.session_id, uc.asked(gate))
+    if asked_already and not insist:
+        # A REPLY THAT NAMES NO UNIT IS AN ORDINARY TURN - a question about the question, "not
+        # sure", anything else - and the intake answers it; asking again trapped the
+        # conversation. The question stays open on the gate: the next reply that names a unit
+        # settles it, and an approval given before then is held on the question (see _settle),
+        # because the run cannot start without it.
+        return None
+
+    # THE QUESTION PROPOSES when the part has been measured: millimetres, with the part's size
+    # in every candidate unit beside it, so the user can see which one is theirs and "ok" is an
+    # answer. Without a measurement it is the plain question, and nothing is proposed that the
+    # user could not check.
+    from meshpipeline.application import geometry_hold as gh
+
+    size = gh.measured_size_mm(str(inbound.session_id))
+    if size:
+        proposal = uc.PROPOSED
+    reply = uc.before_run(size, proposal) if insist else uc.question_for(size)
+    if insist and ap.is_live(gate.get("approval")):
+        # the approval waits one turn on the question: the next clear yes still lands on it
+        gate = dict(gate, approval=ap.defer(gate.get("approval")))
+    await session_repo.set_intake_gate(db, inbound.session_id, uc.asked(gate, proposal))
     await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     return MessageOutcome(
         status=MessageStatus.unit_question, reply=reply, awaiting_confirmation=True,
@@ -353,5 +509,5 @@ def _reply_of(result: dict) -> str:
     return _extract_reply(result)
 
 
-__all__ = ["GateChange", "GateTransition", "InboundMessage", "MessageOutcome", "MessageStatus",
-           "accept", "persist_turn"]
+__all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage",
+           "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]

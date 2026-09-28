@@ -102,7 +102,9 @@ def external_declaration(body) -> list[str]:
         lines.append("Far-field margins in reference lengths: "
                      f"{float(ext.get('upstream', 0)):g} upstream, {float(ext.get('downstream', 0)):g} downstream, "
                      f"{float(ext.get('lateral', 0)):g} to each side, {float(ext.get('vertical', 0)):g} above.")
-    lines.append("The part stands on the ground, so the ground is a wall, not a far-field face."
+    lines.append("The part stands on the ground: the floor of the far-field box, at the part's "
+                 "lowest z, is a wall patch named ground, which the domain builds - it is not a "
+                 "region of the geometry."
                  if getattr(body, "grounded", False) else "The part is free in the flow; every far-field face is open.")
     return lines
 

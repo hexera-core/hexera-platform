@@ -701,6 +701,32 @@
   ]
  },
  {
+  "context": "agents/intake/unit_clarification.py::classify::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "classify",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SIZE_BEFORE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/unit_clarification.py::classify::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "classify",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_NEGATED_BEFORE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/loop/accounting.py::AgentRunAccountant.record_round::stage#1|NotAPublisher|not-a-publisher|",
   "path": "agents/loop/accounting.py",
   "qualname": "AgentRunAccountant.record_round",
@@ -1408,6 +1434,19 @@
   "roots": [
    "application/execution_fence.py::callers of guard_redelivery()"
   ]
+ },
+ {
+  "context": "application/execution_fence.py::lock_ownership_for_commit::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/execution_fence.py",
+  "qualname": "lock_ownership_for_commit",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "application/execution_fence.py::reverify_and_heal_fence::error#1|NotAPublisher|not-a-publisher|",

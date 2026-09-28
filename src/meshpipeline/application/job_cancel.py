@@ -62,20 +62,24 @@ async def cancel_job(job_id: uuid.UUID, *, owner_id: str, organization_id: str =
             return CancelOutcome(CancelResult.already_cancelled, row.status, row.cancel_reason)
         if row.status in TERMINAL_STATES:
             return CancelOutcome(CancelResult.already_finished, row.status)
+        # WHAT THIS MODULE LOGS AND PASSES ON: the row's OWN id, read back from the database, never
+        # the id the caller sent. They are equal by the WHERE clause, but only the first is a value
+        # this code owns - the second arrived in a request and has no business in an operator log.
+        row_id = uuid.UUID(str(row.id))
 
         # 1. EVICT THE WORKER. Revoke the mirror its token authorises and clear the token, under
         #    the lock, so from this commit on every fence check the running worker makes fails:
         #    its checkpoint writes, its native accept, its artifact delivery, and the row lock at
         #    its atomic terminal transaction. Nothing it does after this reaches the user.
-        evicted = await lease_repo.evict_owner(db, job_id)
+        evicted = await lease_repo.evict_owner(db, row_id)
 
         # 2. THE TERMINAL CAS, through the one transition table. It is what refuses the worker's
         #    late succeeded/failed afterwards: a terminal state is never a legal source.
-        tr = await job_repo.transition(db, job_id, JobStatus.cancelled)
+        tr = await job_repo.transition(db, row_id, JobStatus.cancelled)
         if tr is not TransitionResult.applied:
             # The row was locked and non-terminal a moment ago, so this cannot happen without a
             # defect in the table; refuse loudly rather than record a cancel that did not apply.
-            raise RuntimeError(f"cancel of job {job_id} did not apply (transition={tr.value})")
+            raise RuntimeError(f"cancel of job {row_id} did not apply (transition={tr.value})")
         row.cancel_reason = reason or None
 
         # 3. THE DURABLE VERDICT, from what is durable: the approved intent on the dispatch
@@ -84,18 +88,18 @@ async def cancel_job(job_id: uuid.UUID, *, owner_id: str, organization_id: str =
         facts = _fr.merge_durable_facts(approved=row.dispatch_payload or {},
                                         db_attempt=row.current_attempt)
         result = _fr.build_cancelled_result(
-            job_id=str(job_id), owner_id=str(row.owner_id), engine=facts["engine"],
+            job_id=str(row_id), owner_id=str(row.owner_id), engine=facts["engine"],
             purpose=facts["purpose"], dimensionality=facts["dimensionality"],
             approved_snapshot_id=facts["approved_snapshot_id"], attempts=facts["attempts"])
         result_dict = result.to_dict()
-        await job_repo.set_final_result(db, job_id, result_dict)
+        await job_repo.set_final_result(db, row_id, result_dict)
 
         # 4. THE ANNOUNCEMENT, in the same transaction as the record it announces - the
         #    transactional outbox every terminal event goes through, so the closing line is the
         #    rendered verdict and nothing else. Delivered below, and by the recovery sweep if
         #    this process dies first.
         await outbox_repo.enqueue(
-            db, job_id=job_id, execution_generation=int(row.execution_generation or 0),
+            db, job_id=row_id, execution_generation=int(row.execution_generation or 0),
             terminal_status=JobStatus.cancelled.value,
             final_result_schema_version=int(result_dict.get("schema_version", 1)),
             event_payload={"closing_message": _fr.render_message(result),
@@ -103,27 +107,27 @@ async def cancel_job(job_id: uuid.UUID, *, owner_id: str, organization_id: str =
         await db.commit()
 
     log.info("job %s cancelled by its owner (worker evicted=%s, reason given=%s)",
-             job_id, evicted, bool(reason))
+             row_id, evicted, bool(reason))
 
     # AFTER THE COMMIT, and each best-effort: the cancel is already durable and the fence already
     # holds. A queued launch this fails to revoke is refused at its claim (already terminal); a
     # closing line this fails to deliver is delivered by the outbox sweep.
-    await _revoke_launch(str(job_id))
+    await _revoke_launch(row_id)
     from meshpipeline.application import outbox_publisher
-    await outbox_publisher.deliver_own_terminal_event(session_factory, job_id)
+    await outbox_publisher.deliver_own_terminal_event(session_factory, row_id)
     return CancelOutcome(CancelResult.cancelled, JobStatus.cancelled, reason or None)
 
 
-async def _revoke_launch(job_id: str) -> None:
+async def _revoke_launch(row_id: uuid.UUID) -> None:
     from meshpipeline.contracts.pipeline_execution import PipelineLaunchError, get_pipeline_launcher
     try:
-        await get_pipeline_launcher().revoke(job_id)
+        await get_pipeline_launcher().revoke(str(row_id))
     except PipelineLaunchError:
         # No launcher composed in this process (one that never dispatches): it queued nothing.
-        log.info("cancel of job %s: no pipeline launcher composed here; nothing to revoke", job_id)
+        log.info("cancel of job %s: no pipeline launcher composed here; nothing to revoke", row_id)
     except Exception as exc:  # noqa: BLE001 - the broker is a dependency; the claim still refuses
         log.warning("cancel of job %s: could not revoke the queued launch (%s) - a worker that "
-                    "still receives it refuses it as already terminal", job_id, type(exc).__name__)
+                    "still receives it refuses it as already terminal", row_id, type(exc).__name__)
 
 
 __all__ = ["CancelOutcome", "CancelResult", "REASON_MAX", "cancel_job"]

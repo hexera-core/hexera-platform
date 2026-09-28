@@ -59,6 +59,11 @@ spec:
                   value: "${REDIS_URL}"
                 - name: QUEUE_NAME
                   value: "${QUEUE_NAME}"
+                # Every queue measured, one series each under the `task_id` label. The autoscaler
+                # reads QUEUE_NAME's; the geometry-check queue rides along so its backlog is
+                # visible on the same metric.
+                - name: QUEUE_NAMES
+                  value: "${QUEUE_NAMES}"
                 # The two labels that make the published series findable by exactly one autoscaler
                 # filter. They are deployment identity, not tuning.
                 - name: METRIC_NAMESPACE

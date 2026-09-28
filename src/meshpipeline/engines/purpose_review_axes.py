@@ -56,7 +56,9 @@ _EXTERNAL_CFD_AXES: tuple[ReviewAxis, ...] = (
     ReviewAxis(
         name="domain_enclosure", validation_axis="integrity",
         guidance=("Check the body is fully enclosed by the fluid domain and not clipped "
-                  "by a boundary - a clipped body is not the geometry the user submitted."),
+                  "by a boundary - a clipped body is not the geometry the user submitted. "
+                  "A body that stands on the ground rests on the ground wall patch by design: "
+                  "its underside meeting that floor is the declared setup, not a clip."),
         concern="The body is not fully enclosed by the domain",
         failure_signals=("the body intersects or pokes through a domain boundary",
                          "part of the body clipped out of the fluid region"),

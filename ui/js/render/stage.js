@@ -16,7 +16,7 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
-import { applyFlow, displayText, formHtml, markConfirmed, mm, readForm } from "./geometry_form.js";
+import { applyFlow, bindUnit, displayText, followUnit, formHtml, markConfirmed, readForm, shown, unitOf } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -104,13 +104,18 @@ export const Stage = {
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
     const p=d.proposal||{},pics=d.pictures||[];
+    // WHAT WAS TYPED ON THE CARD BEFORE outlives its re-draw (the model's labels arriving): a
+    // name or role the user set, a typed diameter, the kind, the flow, the unit box - read before
+    // the new form is built, so the unit box is drawn with the user's unit
+    const was=this._gcEl&&!this._gcEl.querySelector('.gc-done')?this._gcTyped(this._gcEl,this._gcP):null;
+    if(was&&was.unit){p.unit=was.unit;p.unit_basis='chosen';p.unit_touched=true;}
     const hero=pics.find(x=>x.name==='iso')||pics.find(x=>x.name!=='overview')||pics[0];
     const thumbs=pics.filter(x=>x!==hero&&x.name!=='overview').slice(0,8).map(x=>
       `<img class="gc-thumb" src="${x.url}" alt="${esc(x.name)}" title="${esc(x.name)}" loading="lazy">`).join('');
-    const size=(p.size_mm||[]).map(v=>mm(v)).join(' x ');
+    const size=(p.size_mm||[]).map(v=>shown(v,p)).join(' x ');
     const html=`<div class="who">Geometry check · what Hexera sees</div>
       <div class="req-card gc-card">
-        <div class="rc-h">${esc(p.part||'the part')}${size?` · ${esc(size)} mm`:''}</div>
+        <div class="rc-h">${esc(p.part||'the part')}${size?` · ${esc(size)} <span class="gc-u">${unitOf(p)}</span>`:''}</div>
         ${hero?`<img class="gc-overview" src="${hero.url}" alt="the part, with a numbered sticker on each opening" title="click to enlarge">`:''}
         ${thumbs?`<div class="gc-thumbs">${thumbs}</div>`:''}
         ${formHtml(p)}
@@ -118,8 +123,9 @@ export const Stage = {
     this.clearEmpty();
     if(this._gcEl)this._gcEl.remove();
     const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
-    this.col().appendChild(g);this._gcEl=g;
-    applyFlow(g);
+    this.col().appendChild(g);this._gcEl=g;this._gcP=p;
+    if(was)this._gcRestore(g,was);
+    applyFlow(g);bindUnit(g,p);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
     btn.onclick=async()=>{
@@ -135,6 +141,30 @@ export const Stage = {
       }
       this.scrollBottom();};
     this.scrollBottom();},
+
+  _gcTyped(g,p){
+    const v=(sel)=>{const el=g.querySelector(sel);return el?el.value:undefined;};
+    const rows={};
+    g.querySelectorAll('.gc-table tbody tr').forEach(tr=>{const id=Number(tr.dataset.id),o=((p&&p.openings)||[]).find(x=>Number(x.id)===id)||{};
+      const name=(tr.querySelector('.gc-name')||{}).value,role=(tr.querySelector('.gc-role')||{}).value,dia=(tr.querySelector('.gc-dia')||{}).value;
+      // each field on its own: a row whose role was changed keeps the model's name when it lands
+      const r={};if(name!==undefined&&name!==(o.name||''))r.name=name;if(role!==undefined&&role!==o.role)r.role=role;if(dia)r.dia=dia;
+      if(Object.keys(r).length)rows[id]=r;});
+    return {kind:v('.gc-kind'),flow:v('.gc-flow'),unit:p&&p.unit_touched?p.unit:undefined,rows};},
+  _gcRestore(g,was){
+    const set=(sel,val)=>{const el=g.querySelector(sel);if(el&&val!==undefined)el.value=val;};
+    set('.gc-kind',was.kind);set('.gc-flow',was.flow);
+    Object.entries(was.rows).forEach(([id,r])=>{const tr=g.querySelector(`.gc-table tr[data-id="${id}"]`);if(!tr)return;
+      const name=tr.querySelector('.gc-name'),role=tr.querySelector('.gc-role'),dia=tr.querySelector('.gc-dia');
+      if(name&&r.name!==undefined)name.value=r.name;if(role&&r.role!==undefined)role.value=r.role;if(dia&&r.dia)dia.value=r.dia;});},
+
+  /* THE CARD FOLLOWS THE CHECK IN PLACE: a unit settled in the chat reaches its unit box when the
+     user has not set it themselves. The card is never drawn again for that, so what the user
+     typed on it stays. A confirmed card is left as it is. */
+  geometryCheckUpdate(d){
+    const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
+    const q=(d&&d.proposal)||{};
+    followUnit(g,p,q.unit,q.unit_basis);},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';

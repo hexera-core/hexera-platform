@@ -219,3 +219,34 @@ def test_the_embedded_program_is_the_repositorys_program(tmp_path):
     arg = container["args"][0]
     encoded = arg.split("b64decode('")[1].split("')")[0]
     assert base64.b64decode(encoded) == PROGRAM.read_bytes()
+
+
+def test_the_geometry_queue_is_published_beside_the_scaling_queue_and_never_scaled_on(tmp_path):
+    # The geometry check has a queue of its own (celery_app.py task_routes). Its depth is written as
+    # a second series of the same metric, under the deployment's prefix like the first, so a
+    # backlog of checks is visible where the fleet's backlog is. The autoscaler still reads the
+    # simulation queue alone: a check is seconds of work and an instance takes minutes to arrive,
+    # so a fleet sized on that queue would add machines to a backlog that had already drained.
+    values = {**_BASE, **_FLEET, "REDIS_KEY_PREFIX": "dev-pranav:",
+              "QUEUE_NAME": "dev-pranav:simulation_jobs"}
+    p, log = _run("create-queue-depth-publisher.sh", tmp_path, values)
+    assert p.returncode == 0, p.stderr + p.stdout
+    doc = yaml.safe_load((tmp_path / "rendered" / "queue-depth-job.yaml").read_text())
+    container = doc["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env["QUEUE_NAME"] == "dev-pranav:simulation_jobs"
+    assert env["QUEUE_NAMES"].split(",") == ["dev-pranav:simulation_jobs", "dev-pranav:geometry_checks"], (
+        "the geometry queue is measured under a key nobody writes, or not at all")
+    line = next(c for c in log.splitlines() if "set-autoscaling" in c)
+    assert 'resource.labels.task_id = "dev-pranav:simulation_jobs"' in line
+    assert "geometry_checks" not in line, "the fleet must not be sized on the geometry queue"
+
+
+def test_an_unprefixed_environment_measures_the_bare_geometry_queue(tmp_path):
+    # Shared dev, production and the compose stack set no prefix; their geometry queue is exactly
+    # the literal celery_app.py routes to.
+    _run("create-queue-depth-publisher.sh", tmp_path, {**_BASE, **_FLEET})
+    doc = yaml.safe_load((tmp_path / "rendered" / "queue-depth-job.yaml").read_text())
+    container = doc["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env["QUEUE_NAMES"] == "simulation_jobs,geometry_checks"

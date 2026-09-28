@@ -140,9 +140,13 @@ async function poll() {
     job = await getJob(jobId, { throwOnError: false });
   } catch (e) {
     // the client already surfaced offline/401; on a 401 mid-run, stop hammering
-    if (e && e.status === 401) { clearInterval(pollTimer); pollTimer = null; }
+    if (e && e.status === 401 && getState.jobId() === jobId) { clearInterval(pollTimer); pollTimer = null; }
     return;
   }
+  // A STALE ANSWER. The page may have moved on to another run while this request was in flight;
+  // an answer about the old run must not become the new run's status, stop the new run's polling,
+  // or announce the old run's end over the new one (which would re-offer "run again" mid-run).
+  if (getState.jobId() !== jobId) return;
   if (!job) {
     // a transient 5xx is normal on a busy backend; only complain if it PERSISTS, so the user
     // is not left staring at a frozen timeline wondering whether it died

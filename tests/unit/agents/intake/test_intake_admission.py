@@ -1,4 +1,4 @@
-# Responsibility: Verify an impossible engine and purpose pairing ends the turn, names no substitute, writes nothing.
+# Responsibility: Verify an impossible pairing goes back to the model to repair or put to the user, names no substitute, writes nothing.
 from __future__ import annotations
 
 import asyncio
@@ -96,7 +96,7 @@ def test_semantic_loss_detects_patch_collapse_and_protected_field_changes():
     assert detect_semantic_loss(declared, {**declared, "patches": list(reversed(_FIVE))}) == []
 
 
-# node_intake: impossible preview is TERMINAL (sections 3 + 9)
+# node_intake: an impossible preview is a RESULT the model acts on, never a dead end (sections 3 + 9)
 
 def _tool_call(name, args):
     return SimpleNamespace(id="t", function=SimpleNamespace(name=name, arguments=args))
@@ -112,13 +112,19 @@ def _resp(tool_calls=None, content=""):
         finish_reason="tool_calls" if tool_calls else "stop")
 
 
+_SEEN: list = []          # the tool results the model was shown, most recent last
+
+
 def _run(state, responses):
     import meshpipeline.adapters.model_inference.router as llm_router
     calls = {"n": 0}
     it = iter(responses)
+    _SEEN.clear()
 
-    async def _call(**_kw):
+    async def _call(**kw):
         calls["n"] += 1
+        _SEEN[:] = [m for m in (kw.get("messages") or []) if isinstance(m, dict)
+                    and m.get("role") == "tool"]
         return next(it)
     with patch.object(llm_router, "call_intake_model", _call):
         out = asyncio.run(intake.node_intake(state))
@@ -142,26 +148,178 @@ _SUBMIT_COLLAPSED = json.dumps({
     "patches": [{"name": "aircraft", "type": "wall"}, {"name": "farfield", "type": "farfield"}]})
 
 
-def test_impossible_preview_terminates_the_turn_and_discards_an_unsafe_paraphrase():
+_ONE_WALL_ARGS = json.dumps({
+    "selected_engine": "snappy", "purpose": "external_cfd", "input_kind": "body-surface",
+    "dimensionality": "3D", "patches": [{"name": "aircraft", "type": "wall"},
+                                        {"name": "farfield", "type": "farfield"}]})
+
+
+def _five_walls_state(said="snappy, external CFD, body surface, separate wall patches "
+                           "fuselage/wing/htail/nacelles/pylons + farfield"):
     state = {"job_id": "j", "session_id": "s", "user_id": "u",
-             "messages": [{"role": "user", "content": "snappy, external CFD, body "
-             "surface, separate wall patches fuselage/wing/htail/nacelles/pylons + farfield"}]}
+             "messages": [{"role": "user", "content": said}]}
     _confirmed(state, "snappy")
-    out, ncalls = _run(state, [
+    return state
+
+
+def test_an_impossible_preview_is_a_result_the_model_receives_with_what_would_pass():
+    # The old flow ended the turn on the application's sentence and left the user no move. Now
+    # the finding, and what would satisfy the gate, come back as a tool result the model acts on.
+    out, ncalls = _run(_five_walls_state(), [
         _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
-        _resp(content="I should never be reached - you can also try cfmesh."),
+        _resp(content="Your file is one unnamed body, so snappyHexMesh can write one wall patch "
+                      "for it, not five. I would call it 'aircraft' and keep the farfield - ok, "
+                      "or tell me which part you want to revise?"),
     ])
-    # The second call is the refusal paraphrase: it carries no tool, so it can advance nothing, and
-    # its output reaches the user only by passing the checks. This response names another engine -
-    # the precise leak the terminal used to prevent by never asking - so it must be discarded and
-    # the rendered message delivered in its place.
-    assert ncalls == 2, "the refusal was not put back into the user's terms"
+    assert ncalls == 2, "the model was not given the finding to act on"
+    result = json.loads(_SEEN[-1]["content"])
+    assert result["verdict"] == "impossible" and result["recorded"] is False
+    assert "multiple_wall_patches_unsupported" in result["blocking_rule_codes"]
+    assert "one region" in result["finding"].lower()
+    assert result["what_would_pass"] and "single wall patch" in result["what_would_pass"][0]
+    assert "repair" in result["guidance"] and "propose" in result["guidance"]
+    assert _no_other_engine(result["guidance"], "snappy")
+    # the model's own reply - a proposal the user can answer with "ok" - is what the user reads
     reply = out["messages"][-1]["content"]
-    assert "cfmesh" not in reply, f"an unsafe paraphrase reached the user: {reply}"
-    assert "wall patch" in reply and _no_other_engine(reply, "snappy"), reply   # app message, no alt
+    assert reply.startswith("Your file is one unnamed body") and "ok" in reply
+    assert out["intake_gate"]["admission"] is None, "nothing was authorized"
     assert out.get("dispatch_confirmed") is False
     for f in ("mesh_engine", "purpose", "intake_patches", "request_txt"):
         assert not out.get(f), f
+
+
+def test_the_model_repairs_its_own_value_in_the_same_turn():
+    # The user named ONE wall (the aircraft); the model had added four. With the finding in hand
+    # it previews again with what the user actually declared - supported, token issued, and the
+    # conversation simply continues. No dead end, no question the user did not need.
+    out, ncalls = _run(_five_walls_state("snappy, external CFD, body surface: the aircraft is "
+                                         "the wall, plus a farfield"), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp([_tool_call("preview_selected_admission", _ONE_WALL_ARGS)]),
+        _resp(content="I kept the aircraft as the one wall patch. Fluid and speed? I would go "
+                      "with air at 10 m/s - ok?"),
+    ])
+    assert ncalls == 3
+    assert json.loads(_SEEN[-1]["content"])["verdict"] == "supported"
+    assert out["intake_gate"]["admission"]["verdict"] == "supported"
+    assert out["messages"][-1]["content"].startswith("I kept the aircraft")
+
+
+def test_a_retry_the_gate_never_checked_keeps_the_refusal_standing():
+    # The second preview is malformed (a purpose that is not one), so the gate never ran on it
+    # and nothing was resolved. The reply is still held to the refusal: this one names another
+    # engine, and the rendered finding goes out instead.
+    junk = json.dumps({**json.loads(_FIVE_ARGS), "purpose": "not-a-purpose"})
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp([_tool_call("preview_selected_admission", junk)]),
+        _resp(content="snappyHexMesh cannot do this - cfmesh could, though."),
+    ])
+    assert ncalls == 3
+    assert json.loads(_SEEN[-1]["content"])["verdict"] == "malformed"
+    reply = out["messages"][-1]["content"]
+    assert "cfmesh" not in reply and "wall patch" in reply and "revise" in reply
+
+
+def test_a_retry_the_gate_passed_with_gaps_left_clears_the_refusal():
+    # One wall and no flow boundary yet: the gate ran, refused nothing, and asked for the missing
+    # patch. The refusal is resolved, so the model's next question goes out as written - here a
+    # statement that the refusal check would otherwise have replaced.
+    one_wall_no_farfield = json.dumps({**json.loads(_ONE_WALL_ARGS),
+                                       "patches": [{"name": "aircraft", "type": "wall"}]})
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp([_tool_call("preview_selected_admission", one_wall_no_farfield)]),
+        _resp(content="Noted - I will take a single farfield as the flow boundary."),
+    ])
+    assert ncalls == 3
+    seen = json.loads(_SEEN[-1]["content"])
+    assert seen["verdict"] == "incomplete" and seen["missing_fields"] == ["patches"]
+    assert out["messages"][-1]["content"].startswith("Noted - I will take a single farfield")
+
+
+def test_an_unsafe_reply_after_an_unrepaired_refusal_is_discarded_for_the_rendered_finding():
+    # The model's reply names another engine - the precise leak the old terminal prevented by
+    # never asking. It is discarded and the rendered finding delivered in its place.
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp(content="snappyHexMesh cannot do this - you can also try cfmesh."),
+    ])
+    assert ncalls == 2
+    reply = out["messages"][-1]["content"]
+    assert "cfmesh" not in reply, f"an unsafe reply reached the user: {reply}"
+    assert "wall patch" in reply and _no_other_engine(reply, "snappy"), reply   # app message, no alt
+    assert "revise" in reply
+    assert out.get("dispatch_confirmed") is False
+    for f in ("mesh_engine", "purpose", "intake_patches", "request_txt"):
+        assert not out.get(f), f
+
+
+def test_a_reply_that_asks_nothing_after_a_refusal_is_discarded_too():
+    out, _ = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp(content="That cannot be meshed. Nothing was changed."),
+    ])
+    reply = out["messages"][-1]["content"]
+    assert "revise" in reply and _no_other_engine(reply, "snappy")
+
+
+def test_running_out_of_rounds_after_a_refusal_still_delivers_the_finding(monkeypatch):
+    # A model that keeps re-checking the same refused payload never writes a reply. The user still
+    # gets the finding and the question, not silence.
+    monkeypatch.setattr(intake.icfg, "INTAKE_MAX_ROUNDS", 2)
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp(content="unreached"),
+    ])
+    assert ncalls == 2
+    reply = out["messages"][-1]["content"]
+    assert "wall patch" in reply and "revise" in reply and _no_other_engine(reply, "snappy")
+
+
+def test_after_a_refusal_the_model_may_not_switch_engines_for_the_user():
+    # With the finding in hand the model proposes another engine the user never named. That would
+    # put "Selected engine: cfMesh" in front of a user who asked for snappyHexMesh, in the turn
+    # that refused their setup. Refused; the confirmed selection stands; no engine is named.
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS),
+               _tool_call("propose_engine_selection", json.dumps({"engine": "cfmesh"}))]),
+        _resp(content="Only one wall patch can be written for this body. Shall I declare the "
+                      "aircraft as that single wall patch and keep the farfield?"),
+    ])
+    assert ncalls == 2
+    assert "Not allowed" in _SEEN[-1]["content"] and "cfMesh" in _SEEN[-1]["content"]
+    gate = out["intake_gate"]
+    assert gate["selection"]["engine"] == "snappy" and gate["selection"]["state"] == es.CONFIRMED
+    reply = out["messages"][-1]["content"]
+    assert "Selected engine" not in reply and _no_other_engine(reply, "snappy")
+    assert reply.startswith("Only one wall patch")
+
+
+def test_after_a_refusal_an_engine_the_user_named_themselves_still_goes_forward():
+    out, _ = _run(_five_walls_state("switch to cfmesh then, and keep my five wall patches"), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS),
+               _tool_call("propose_engine_selection",
+                          json.dumps({"engine": "cfmesh", "user_named_verbatim": "switch to cfmesh"}))]),
+        _resp(content="cfMesh it is. Checking your five wall patches against it next."),
+    ])
+    assert "SELECTED" in _SEEN[-1]["content"]
+    gate = out["intake_gate"]
+    assert gate["selection"]["engine"] == "cfmesh" and gate["selection"]["state"] == es.CONFIRMED
+    # the refusal was about the engine the user just left: the reply about theirs is delivered
+    assert out["messages"][-1]["content"].startswith("cfMesh it is")
+
+
+def test_the_refusal_stays_on_the_public_trace():
+    out, _ = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp(content="One wall patch it must be - shall I call it 'aircraft'?"),
+    ])
+    said = [str((e.get("payload") or {}).get("conclusion", "")) for e in out["_public_trace"]
+            if (e.get("payload") or {}).get("type") == "rationale"]
+    assert any("cannot produce this mesh" in s.lower() for s in said), \
+        "the refusal left the audit trail"
 
 
 def test_impossible_preview_then_submit_in_same_response_writes_nothing():

@@ -48,6 +48,31 @@ def test_a_page_carries_one_run_at_a_time_through_its_whole_life(live):
     assert fresh["session"] == "sess-1", "the upload session was discarded with the run"
 
 
+def test_a_run_remembers_the_conversation_it_came_from(live):
+    # "Run again" goes to the conversation that started the run - never to whatever session the
+    # page happens to hold when it ends. A run opened by link has none, even after an upload.
+    out = live.evaluate("""(async () => {
+      const S = await import('/static/js/core/state.js');
+      const before = S.get.sessionId();
+      S.set.sessionId(null);
+      S.beginRun('job-link');                                  // opened from a link
+      const linked = S.get.runSessionId();
+      S.set.sessionId('sess-other');                           // a later upload, other geometry
+      const afterUpload = S.get.runSessionId();
+      S.beginRun('job-chat', {sessionId: S.get.sessionId()});  // a run this conversation started
+      const chat = S.get.runSessionId();
+      S.beginRun('job-link-2');
+      const cleared = S.get.runSessionId();
+      // every run the page began keeps its origin, so a re-review of an earlier one can take it
+      const origins = {link: S.get.runOrigin('job-link'), chat: S.get.runOrigin('job-chat'),
+                       unknown: S.get.runOrigin('job-never-seen')};
+      S.set.sessionId(before);
+      return {linked, afterUpload, chat, cleared, origins};
+    })()""")
+    assert out == {"linked": None, "afterUpload": None, "chat": "sess-other", "cleared": None,
+                   "origins": {"link": None, "chat": "sess-other", "unknown": None}}, out
+
+
 def test_a_finished_job_becomes_the_same_result_card_however_it_was_reached(live):
     out = live.evaluate("""(async () => {
       const { terminalResult } = await import('/static/js/realtime/stream.js');

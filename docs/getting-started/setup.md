@@ -209,8 +209,8 @@ sudo rmdir secrets/gcp/application_default_credentials.json
 ```
 
 `make dev-up` refuses to start unless a regular, non-empty, readable credential is there. Only the
-**worker** receives it, mounted read-only; api, beat and worker-utility get none, because no code
-path in them reaches Google. The images carry the Google Python libraries, never `gcloud` itself.
+**worker** receives it, mounted read-only; api, worker-geometry, beat and worker-utility get none,
+because no code path in them reaches Google. The images carry the Google Python libraries, never `gcloud` itself.
 
 ### Rules
 
@@ -395,7 +395,7 @@ reads back, and watch the run.
 
 ## The local services
 
-The stack is api, worker, worker-utility, beat, postgres, redis, minio and searxng, plus
+The stack is api, worker, worker-geometry, worker-utility, beat, postgres, redis, minio and searxng, plus
 `minio-init`, a one-shot container that creates the buckets and exits. What each one
 owns, how the Compose network is scoped, and the database, object-store and Redis layouts are in
 [architecture/overview.md](../architecture/overview.md#the-local-services).

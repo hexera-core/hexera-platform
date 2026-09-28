@@ -10,7 +10,7 @@
  * Every listener is registered by `mountComposer`, called once by the entrypoint. Before, they
  * were registered at import time, so importing this file attached handlers.
  */
-import { confirmGeometryCheck, getGeometryCheck, sendMessage, uploadGeometry }
+import { confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadGeometry }
   from "../api/endpoints.js";
 import { acceptAttribute, isOfferable, loadIntakeFormats, supportedCopy }
   from "./intake_formats.js";
@@ -31,6 +31,8 @@ let deps = {
   supportedCopy() {},
   // the geometry check's labelled picture and proposal, with the confirm action to call
   geometryCheck() {},
+  // the card that stands in when the stage cannot draw, following the check in place
+  geometryCard() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -99,9 +101,10 @@ async function upload(file) {
 
 /* THE GEOMETRY CHECK. The worker scouts the upload as soon as it is stored and names the
    stickers once the user has answered the opening question; this polls until the named check is
-   ready and hands it to the stage to show. A check that is off, fails, or reads a file it cannot
-   scout simply never appears - the intake asks as it always did. The wait is long on purpose:
-   the naming waits for the user, and a user may take their time over the first answer. */
+   ready and hands it to the stage to show. A check that is off, or reads a file it cannot scout,
+   simply never appears - the intake asks as it always did. A check that gave up is said so, with
+   the way on: try again, or carry on in the chat. The wait is long on purpose: the naming waits
+   for the user, and a user may take their time over the first answer. */
 const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;   // forty-five minutes, then stop quietly
 
 /* THE CHAT WAITS WITH THE USER. From the moment the reply says the part is being drawn until the
@@ -134,10 +137,13 @@ export function holdState() { return { held: _held, check: _checkState }; }
 export function noteCheckState(s) { _checkState = s; }
 
 async function watchGeometryCheck(sessionId) {
-  // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels greyed
-  // out under a banner, and takes the model's labels when they arrive. The user is already
-  // turning the part while the model thinks.
-  let stage = null, stageFailed = false;
+  // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
+  // a banner that says what is happening, and takes the model's labels when they arrive. The
+  // user is already turning the part while the model thinks - and can proceed without it.
+  let stage = null, stageFailed = false, told = "";
+  // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
+  // it was. The watch goes on, so the fresh result lands where the old one would have.
+  const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
   const confirmFn = async (body) => {
     const reply = await confirmGeometryCheck(sessionId, body);
     deps.chat("assistant", reply.message);
@@ -158,7 +164,11 @@ async function watchGeometryCheck(sessionId) {
     let d = null;
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
-    if (status === "off" || status === "unsupported" || (status === "failed" && !stage)) {
+    if (d && d.confirmed) {
+      // answered, on the stage or the card, whatever the naming did afterwards
+      _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
+    }
+    if (status === "off" || status === "unsupported" || (status === "failed" && !stage && !d.retry)) {
       if (status === "failed" && d.reason) {
         deps.notice.show("The geometry check could not read this file; the questions will "
           + "cover it instead.", "warn");
@@ -167,32 +177,94 @@ async function watchGeometryCheck(sessionId) {
       releaseHold();                               // nothing to wait for any more
       return;
     }
-    if (status === "failed" && stage) {
-      // the naming gave up after the stage opened: the code's labels stand, the user proceeds
+    if (status === "failed" && !stage) {
+      // THE CHECK GAVE UP BEFORE THE PART WAS DRAWN - a drawing that took too long, a worker
+      // that died - and can be run again. Said once per outcome, with the way on: try again, or
+      // carry on in the chat, which asks what the picture would have settled. The watch goes on:
+      // a retry, or a slow worker landing after all, brings the check back.
+      const key = "failed|" + (d.reason || "");
+      if (told !== key) {
+        told = key;
+        deps.notice.show("The geometry check did not finish: " + (d.reason || "it gave up")
+          + ". Try again, or just carry on in the chat.", "warn",
+          { sticky: true, action: "Try again", onAction: () => {
+            deps.notice.clear();
+            retryFn(d.retry).catch((e) => deps.notice.show("Could not run the geometry check again: " + e.message, "error"));
+          } });
+      }
+      _checkState = "over";
+      releaseHold();
+      if (stageFailed) deps.geometryCard(d);     // the card keeps the part; Proceed follows the unit
+    } else if (status === "failed" && stage) {
+      // the naming gave up after the stage opened: the code's labels stand, the user proceeds -
+      // or runs the naming again from the stage, so the watch goes on
       stage.update(d); _checkState = "ready";
       if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
-      return;
-    }
-    if (status === "scouted" && d.skin && !stage && !stageFailed) {
-      stage = await deps.geometryCheck(sessionId, d, confirmFn);   // null when the stage cannot draw
-      if (stage === null) stageFailed = true;                      // the card comes once the check is ready
-    }
-    if (status === "scouted" && stage) stage.update(d);            // the banner: waiting on the chat, or naming
-    if (status === "ready" && d.named !== false) {
-      if (d.confirmed) { _checkState = "done"; releaseHold(); if (stage) stage.release(); return; }
+      if (!d.retry) return;
+    } else if (status === "scouted") {
+      if (d.skin && !stage && !stageFailed) {
+        stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
+        if (stage === null) stageFailed = true;                               // the card stands in
+      }
+      if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
+      else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
+    } else if (status === "ready" && d.named !== false) {
       _checkState = "ready";
       if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
-      if (stage) stage.update(d); else await deps.geometryCheck(sessionId, d, confirmFn);
+      if (stage) stage.update(d); else await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
       return;
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
 }
 
+/* AFTER A RUN ENDS THE CONVERSATION GOES ON. The next message starts another run on the same
+   geometry, with the last requirements as the proposal - the server takes it from there. The two
+   common answers get a chip each so they are one click; anything typed works the same way. The
+   offer is made only while this page holds the session: a deep-linked run has no conversation
+   here to continue. */
+const RUN_AGAIN_TEXT = "Run it again with the same requirements.";
+let _offerEl = null;
+
+export function offerNewRun() {
+  clearNewRunOffer();
+  const inner = $("input-inner");
+  if (!getState.sessionId() || !inner) return;
+  const row = document.createElement("div");
+  row.className = "rerun"; row.id = "rerun";
+  const lead = document.createElement("span");
+  lead.className = "rerun-lead"; lead.textContent = "Next:";
+  const again = document.createElement("button");
+  again.type = "button"; again.className = "rerun-chip"; again.id = "rerun-again";
+  again.textContent = "Run again";
+  again.onclick = () => sendText(RUN_AGAIN_TEXT);
+  const change = document.createElement("button");
+  change.type = "button"; change.className = "rerun-chip"; change.id = "rerun-change";
+  change.textContent = "Change something";
+  change.onclick = () => {
+    clearNewRunOffer();
+    enableInput();
+    setPlaceholder("Tell me what to change, and I will set up the next run…");
+  };
+  row.append(lead, again, change);
+  inner.parentElement.insertBefore(row, inner);
+  _offerEl = row;
+}
+
+export function clearNewRunOffer() {
+  if (_offerEl) { _offerEl.remove(); _offerEl = null; }
+}
+
 async function send() {
-  const inp = $("chat-input"), txt = inp.value.trim();
+  const inp = $("chat-input");
+  await sendText(inp.value.trim());
+}
+
+async function sendText(txt) {
+  const inp = $("chat-input");
   const sessionId = getState.sessionId();
   if (!txt || !sessionId) return;
+  clearNewRunOffer();
   inp.value = ""; autoResize(inp);
   deps.chat("user", txt);
   disableInput();

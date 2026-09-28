@@ -125,7 +125,7 @@ dev-images: ##! Build the application images only if their source stamp is not t
 	@# is not evidence of currency, and every way of having none now rebuilds.
 	@digest="$(SOURCE_DIGEST)"; current=1; \
 	 [ -n "$$digest" ] || { current=0; echo "  No source digest - rebuilding rather than assuming."; }; \
-	 for svc in api worker worker-utility beat; do \
+	 for svc in api worker worker-geometry worker-utility beat; do \
 	   img="$(COMPOSE_PROJECT)-$$svc"; \
 	   stamp="$$(docker image inspect "$$img" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"; \
 	   [ -n "$$stamp" ] || stamp="$$(docker run --rm --entrypoint sh "$$img" -c 'printenv MESH_SOURCE_TREE' 2>/dev/null || true)"; \
@@ -141,7 +141,7 @@ dev-build: ## Build the local application images from this checkout (no cloud co
 	@# Stamped with the tree it was built from. The staleness check has nothing to compare an
 	@# unstamped image against, so leaving it out does not make that check lenient - it makes it
 	@# permanently negative, and every start would rebuild what it just built.
-	MESH_SOURCE_TREE="$(SOURCE_DIGEST)" APP_VERSION="$(PRODUCT_VERSION)" docker compose build $(COMPOSE_QUIET) api worker worker-utility beat
+	MESH_SOURCE_TREE="$(SOURCE_DIGEST)" APP_VERSION="$(PRODUCT_VERSION)" docker compose build $(COMPOSE_QUIET) api worker worker-geometry worker-utility beat
 	@echo "  Application images built from this checkout. Nothing was started."
 	@echo "  make dev-up also needs the Cloud Run mesh configured. Check it with: make mesh-doctor"
 
@@ -365,7 +365,7 @@ rebuild: ##! Rebuild app images from the CURRENT working tree and restart them (
 	@# The digest is stamped into every application image as MESH_SOURCE_TREE so
 	@# `make test-integration` can prove the image matches the checkout. Supplying it here is what
 	@# makes the supported rebuild self-contained - no operator has to pass a build argument.
-	MESH_SOURCE_TREE="$(SOURCE_DIGEST)" APP_VERSION="$(PRODUCT_VERSION)" docker compose up -d --build api worker worker-utility beat
+	MESH_SOURCE_TREE="$(SOURCE_DIGEST)" APP_VERSION="$(PRODUCT_VERSION)" docker compose up -d --build api worker worker-geometry worker-utility beat
 
 restart: ##! Full teardown + clean no-cache rebuild + up
 	docker compose down && APP_VERSION="$(PRODUCT_VERSION)" docker compose build --no-cache && APP_VERSION="$(PRODUCT_VERSION)" docker compose up -d
@@ -374,8 +374,8 @@ logs-api: ##! Tail API logs only
 	docker compose logs -f --tail=100 api
 logs-worker: ##! Tail simulation worker logs only
 	docker compose logs -f --tail=100 worker
-logs-all: ##! Tail api + worker + worker-utility
-	docker compose logs -f --tail=100 api worker worker-utility
+logs-all: ##! Tail api + worker + worker-geometry + worker-utility
+	docker compose logs -f --tail=100 api worker worker-geometry worker-utility
 
 migrate: ##! Run Alembic migrations manually (they auto-run on API start)
 	docker compose exec -w /srv api alembic upgrade head

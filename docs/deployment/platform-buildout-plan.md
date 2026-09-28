@@ -266,8 +266,13 @@ recorded).
 - **Queue separation by class of work.** Agent/LLM work (I/O-bound, minutes, cheap to retry)
   and mesh/solver work (CPU-bound, hours, expensive) do not belong in one queue with one
   concurrency setting. `CELERY_WORKER_CONCURRENCY=3` is a single number for both today.
-- **A queue-depth signal per queue**, which item 6 needs to scale on. The exporter currently
-  publishes one scalar.
+  *Since 2026-09-28:* the geometry check - the scout that draws an upload and the naming that
+  follows - has its own `geometry_checks` queue, drained on every worker from a slot the simulation
+  queue cannot take (`docker-compose.yml` `worker-geometry`, `deploy/gcp/worker/startup.sh`). The
+  mesh/agent split above is still open.
+- **A queue-depth signal per queue**, which item 6 needs to scale on. The publisher writes one
+  series per queue under the `task_id` label (`simulation_jobs` and `geometry_checks`); the
+  autoscaler reads the simulation series alone.
 - **First real mesh job execution.** Everything about the Cloud Run job path is untested in
   the live project. Until one runs end to end, the architecture is a design, not a fact.
 - **Redis durability decision.** BASIC tier is a single node with no replica. If the broker is

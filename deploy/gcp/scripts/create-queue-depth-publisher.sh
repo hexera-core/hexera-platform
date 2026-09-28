@@ -49,6 +49,15 @@ QD_SCHEDULER="${QUEUE_DEPTH_SCHEDULER_JOB:-${DEPLOYMENT_ID}-queue-depth}"
 #
 # Empty prefix - shared dev, production, a local stack - leaves this exactly `simulation_jobs`.
 QUEUE_NAME="${QUEUE_NAME:-${REDIS_KEY_PREFIX:-}simulation_jobs}"
+# THE GEOMETRY-CHECK QUEUE RIDES ALONG. celery_app.py routes the scout and the naming to
+# `geometry_checks`, and every worker instance drains it from a slot of its own (worker/startup.sh).
+# Its depth is published as a second series of the same metric - the `task_id` label tells the two
+# apart - so a backlog of checks is visible where the fleet's backlog is. THE AUTOSCALER STILL
+# READS QUEUE_NAME ALONE (the filter in step 7): a check is seconds of work and an instance takes
+# minutes to arrive, so a fleet sized on that queue would add machines to a backlog that had
+# already drained. Under the same prefix, for the reason given above.
+GEOMETRY_QUEUE_NAME="${GEOMETRY_QUEUE_NAME:-${REDIS_KEY_PREFIX:-}geometry_checks}"
+QUEUE_NAMES="${QUEUE_NAME},${GEOMETRY_QUEUE_NAME}"
 METRIC="custom.googleapis.com/hexera/queue_depth"
 PROGRAM="${DEPLOY_DIR}/worker/queue_depth_publisher.py"
 
@@ -61,7 +70,7 @@ if [ -z "${WORKER_MIG:-}" ] || [ -z "${WORKER_MIG_ZONE:-}" ] || [ -z "${REDIS_UR
 fi
 require_digest_reference APP_IMAGE "${APP_IMAGE:-}"
 
-info "Queue-depth publisher for ${WORKER_MIG} (${WORKER_MIG_ZONE}), queue ${QUEUE_NAME}"
+info "Queue-depth publisher for ${WORKER_MIG} (${WORKER_MIG_ZONE}), queues ${QUEUE_NAMES} - sized on ${QUEUE_NAME}"
 
 # Cloud Scheduler and Cloud Monitoring are enabled HERE rather than in enable-apis.sh: that list is
 # what every deployment needs, and a mesh-only deployment has neither a fleet nor a metric.
@@ -114,7 +123,7 @@ PY
 )"
 log "program: ${PROGRAM#"${REPO_ROOT}/"} (${QUEUE_DEPTH_PROGRAM_BYTES} bytes, sha256 ${QUEUE_DEPTH_PROGRAM_SHA256:0:12})"
 
-export QUEUE_DEPTH_PROGRAM_B64 QD_SA_EMAIL APP_IMAGE QUEUE_NAME
+export QUEUE_DEPTH_PROGRAM_B64 QD_SA_EMAIL APP_IMAGE QUEUE_NAME QUEUE_NAMES
 export QUEUE_DEPTH_SA_EMAIL="${QD_SA_EMAIL}"
 export CLOUDRUN_QUEUE_DEPTH_JOB="${QD_JOB}"
 export VPC_NETWORK="${VPC_NETWORK:-default}"

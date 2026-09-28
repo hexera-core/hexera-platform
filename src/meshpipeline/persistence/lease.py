@@ -239,14 +239,16 @@ class LeaseRepository:
             select(SimulationJob).where(SimulationJob.id == job_id).with_for_update())).scalar_one_or_none()
         if row is None or row.active_worker_token is None:
             return False
+        # From here on, the row's own id: the value the database returned, not the argument.
+        held_id = str(row.id)
         _ops = _fence_ops()
         try:
-            _ops.revoke(str(job_id),
-                        _ops.fingerprint(str(job_id), int(row.execution_generation or 0),
+            _ops.revoke(held_id,
+                        _ops.fingerprint(held_id, int(row.execution_generation or 0),
                                          row.active_worker_token))
         except Exception:  # noqa: BLE001 - see the docstring: the row is the authority
             logger.warning("could not revoke the execution fence for job %s on cancel - the "
-                           "mirror expires on its own and the row no longer authorises it", job_id)
+                           "mirror expires on its own and the row no longer authorises it", held_id)
         row.active_worker_token = None
         row.lease_expires_at = now or _now()
         await db.flush()

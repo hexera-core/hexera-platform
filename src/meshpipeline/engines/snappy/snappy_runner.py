@@ -28,6 +28,7 @@ from meshpipeline.cad.stl_io import (  # noqa: F401
 from meshpipeline.engines.domain_extent_gate import (
     extent_gate_for_request as check_domain_extents,  # noqa: F401  (engine-adapter seam; cross-engine-neutral case-level gate)
 )
+from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name, is_ground
 from meshpipeline.engines.manifest import (  # noqa: F401
     _patch_face_counts,
     write_manifest,
@@ -165,7 +166,10 @@ def prepare_surface(workspace, *, geometry_file: str,
 # #
 def surface_capture_reference(workspace, patch_types: dict | None = None):
     ws = Path(workspace)
-    wall = next((n for n, t in (patch_types or {}).items() if t == "wall"), None)
+    # the BODY's wall: the ground plane is a flat box face, and measuring it against the CAD
+    # would report the floor's distance from the car as the car's surface error
+    wall = next((n for n, t in (patch_types or {}).items()
+                 if t == "wall" and not is_ground(n, t)), None)
     if not wall:
         return None
     vtps = sorted(ws.glob(f"VTK/*/boundary/{wall}.vtp"))
@@ -204,7 +208,8 @@ def review_geometry_stls(workspace, internal_flow: bool = False) -> list:
 # generalises across parts with no per-geometry constants.
 # The six hex faces of the blockMesh box, keyed by (axis, side) - the vertex ordering matches
 # the V[] list built in render_snappy_case. One of these becomes the symmetryPlane for a
-# half-model; the rest stay farfield.
+# half-model, and the z-min one the ground wall under a body on the ground; the rest stay
+# farfield.
 _BOX_FACES: dict[tuple[int, str], str] = {
     (0, "min"): "(0 4 7 3)", (0, "max"): "(1 2 6 5)",   # x-min / x-max
     (1, "min"): "(0 1 5 4)", (1, "max"): "(2 3 7 6)",   # y-min / y-max
@@ -315,11 +320,24 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
     return stream, vert, span
 
 
+def _lay_floor(dmin: list, bmin) -> None:
+    """A body ON THE GROUND stands on the box's floor: the z-min face moves up to the body's
+    lowest point, with no gap under it. The part the geometry check calls grounded has a flat
+    face there (cad/scout_mesh.py), so that face lies on the floor - the way the OpenFOAM
+    windAroundBuildings case stands its buildings on the ground. A clearance would leave a sliver
+    of fluid under the body that no mesher resolves; the other margins are untouched."""
+    dmin[VERTICAL_AXIS] = float(bmin[VERTICAL_AXIS])
+
+
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          symmetry: dict | None = None,
                          flow_axis: str | None = None,
-                         ruler_m: float | None = None) -> tuple[list, list]:
+                         ruler_m: float | None = None,
+                         ground: bool = False) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
+    if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[VERTICAL_AXIS]:
+        raise ValueError(f"a ground plane lies across z, so the flow cannot travel along "
+                         f"{flow_axis} as well")
     m = (strategy or {}).get("domain_margin") or {}
     up, dn = float(m.get("up", 2.0)), float(m.get("down", 4.0))
     side, vert = float(m.get("side", 2.0)), float(m.get("vert", 2.0))
@@ -359,6 +377,8 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                 dmin[axx] = symmetry["pos"]
             else:
                 dmax[axx] = symmetry["pos"]
+        if ground:
+            _lay_floor(dmin, bmin)
         return dmin, dmax
 
     roles = axis_roles(analysis, symmetry)
@@ -401,6 +421,8 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
             dmin[ax] = symmetry["pos"]
         else:
             dmax[ax] = symmetry["pos"]
+    if ground:
+        _lay_floor(dmin, bmin)
     return dmin, dmax
 
 
@@ -410,7 +432,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        symmetry: dict | None = None,
                        surface_regions: list | None = None,
                        layer_counts: dict | None = None,
-                       layer_overrides: dict | None = None) -> dict:
+                       layer_overrides: dict | None = None,
+                       ground: str | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -497,26 +520,28 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
          (domain_max[0], domain_max[1], domain_min[2]), (domain_min[0], domain_max[1], domain_min[2]),
          (domain_min[0], domain_min[1], domain_max[2]), (domain_max[0], domain_min[1], domain_max[2]),
          (domain_max[0], domain_max[1], domain_max[2]), (domain_min[0], domain_max[1], domain_max[2])]
+    # THE BOX'S FACES and the patch each becomes. Every face is far field until a declaration
+    # claims it: a 2.5D slab's two sweep ends (both symmetryPlanes - emitting only one left the
+    # second declared patch with zero faces), a half-model's cut (one symmetryPlane), and the floor
+    # under a body on the ground (a wall, under the name the user declared). Unclaimed faces stay
+    # one farfield patch, in the order the all-farfield box has always listed them.
+    _claims: list[tuple[str, str, str]] = []
     if symmetry and symmetry.get("slab"):
-        # 2.5D slab: BOTH faces of the sweep axis are symmetryPlanes, each under the name the
-        # user declared for it. The other four are farfield. Emitting only one of these is what
-        # left the second declared patch with zero faces.
-        _lo = _BOX_FACES[(symmetry["axis"], "min")]
-        _hi = _BOX_FACES[(symmetry["axis"], "max")]
-        _ff = "".join(f for f in _ALL_BOX_FACES if f not in (_lo, _hi))
-        _boundary = (f"boundary (farfield {{ type patch; faces ({_ff}); }} "
-                     f"{symmetry['lo_name']} {{ type symmetryPlane; faces ({_lo}); }} "
-                     f"{symmetry['hi_name']} {{ type symmetryPlane; faces ({_hi}); }});")
+        _claims += [(symmetry["lo_name"], "symmetryPlane", _BOX_FACES[(symmetry["axis"], "min")]),
+                    (symmetry["hi_name"], "symmetryPlane", _BOX_FACES[(symmetry["axis"], "max")])]
     elif symmetry:
-        # half-model: one box face is the symmetryPlane (named as the user declared); the
-        # remaining five are farfield.
-        _sym_face = _BOX_FACES[(symmetry["axis"], symmetry["side"])]
-        _ff = "".join(f for f in _ALL_BOX_FACES if f != _sym_face)
-        _boundary = (f"boundary (farfield {{ type patch; faces ({_ff}); }} "
-                     f"{symmetry['name']} {{ type symmetryPlane; faces ({_sym_face}); }});")
-    else:
-        _boundary = ("boundary (farfield { type patch; faces "
-                     "((0 3 2 1)(4 5 6 7)(0 1 5 4)(2 3 7 6)(1 2 6 5)(0 4 7 3)); });")
+        _claims.append((symmetry["name"], "symmetryPlane",
+                        _BOX_FACES[(symmetry["axis"], symmetry["side"])]))
+    if ground:
+        _floor = _BOX_FACES[(VERTICAL_AXIS, "min")]
+        if any(face == _floor for _, _, face in _claims):
+            raise ValueError(f"the ground plane '{ground}' and a symmetry plane both claim the "
+                             "box's z-min face")
+        _claims.append((ground, "wall", _floor))
+    _ff = "".join(f for f in _ALL_BOX_FACES if f not in {face for _, _, face in _claims})
+    _boundary = ("boundary (" + " ".join(
+        [f"farfield {{ type patch; faces ({_ff}); }}"]
+        + [f"{name} {{ type {kind}; faces ({face}); }}" for name, kind, face in _claims]) + ");")
     (ws / "system" / "blockMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="blockMeshDict")
         + "scale 1; vertices (" + "".join(vf(p) for p in V)
@@ -618,6 +643,8 @@ mergeTolerance 1e-6; debug 0;
         out["layer_counts"] = dict(layer_counts)
     if _synthetic:
         out["merged_regions"] = list(_synthetic)
+    if ground:
+        out["ground"] = {"patch": ground, "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
     return out
 
 
@@ -628,10 +655,14 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
     from meshpipeline.cad.prepared_surface import require_metre_surface
     analysis = analyze_surface(require_metre_surface(surface, workspace, geometry_file))
     rec = recommend_refinement(analysis, max_cells=int(strategy.get("max_cells", 8_000_000)))
+    # a declared ground plane is the box's floor, laid by the domain whichever path authors it
+    ground = ground_patch_name(contract_patches)
     if args.get("domain_min") and args.get("domain_max"):
-        dmin, dmax = args["domain_min"], args["domain_max"]
+        dmin, dmax = list(args["domain_min"]), list(args["domain_max"])
+        if ground:
+            _lay_floor(dmin, analysis["bbox_min"])
     else:
-        dmin, dmax = domain_from_strategy(analysis, strategy)
+        dmin, dmax = domain_from_strategy(analysis, strategy, ground=bool(ground))
     prep = prepare_surface(
         workspace, geometry_file=geometry_file, domain_min=dmin, domain_max=dmax,
         wall_patch=wall_patch, farfield_patch=args.get("farfield_patch", "farfield"),
@@ -639,7 +670,7 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
     summary = render_snappy_case(
         workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
         analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
-        strategy=strategy, dimensionality=args.get("dimensionality", "3D"))
+        strategy=strategy, dimensionality=args.get("dimensionality", "3D"), ground=ground)
     return {"success": True, "wrote": ["system/blockMeshDict", "system/snappyHexMeshDict"],
             **summary,
             "next": "Dicts written (valid + clamped to the budget). Call run_mesh NOW to build "

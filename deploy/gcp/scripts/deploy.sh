@@ -266,6 +266,18 @@ else
   skipped images "the meter sweep keeps whichever digest and schedule it already has"
 fi
 
+stage "Maintenance sweep (the scheduled job that fails what a dead worker left behind)"
+# AFTER the API, and in the same component, for the meter sweep's reason: the same application
+# digest under the API's identity, whose secret grants the API stage makes. Off the fleet on
+# purpose - a beat per instance would run the schedule once per instance, and the fleet consumes
+# no cleanup queue (see the script) - and WITH the image rather than the fleet, so every merge to
+# main provisions it and a new digest never leaves it running last month's reaper.
+if want images; then
+  bash "${S}/create-maintenance-sweep.sh"
+else
+  skipped images "the maintenance sweep keeps whichever digest and schedule it already has"
+fi
+
 stage "Console service (the promoted console digest, in front of the API)"
 # AFTER the API: the console's every page load reaches it, so a console that rolls out first
 # serves errors until the API catches up. It is its own component rather than part of `images`
@@ -342,6 +354,13 @@ elif [ -n "${WORKER_MIG:-}" ]; then
 else
   QUEUE_SIGNAL="no worker fleet declared"
 fi
+if ! want images; then
+  MAINTENANCE="NOT RECONCILED - 'images' was not selected"
+elif [ -n "${MIGRATE_DB_HOST:-}" ]; then
+  MAINTENANCE="${MAINTENANCE_SWEEP_JOB:-${DEPLOYMENT_ID}-maintenance-sweep} on '${MAINTENANCE_SWEEP_SCHEDULE:-*/10 * * * *}'"
+else
+  MAINTENANCE="no hosted database declared - the compose stack's beat service runs the schedule"
+fi
 if want images; then
   MESH_JOB_STATE="[private, ${MESH_JOB_DISPOSITION}]"
 else
@@ -360,6 +379,7 @@ cat <<SUMMARY
   Mesh exchange     gs://${GCP_MESH_BUCKET}         (${MESH_BUCKET_DISPOSITION})
   Schema            ${SCHEMA_STATE}
   Queue depth       ${QUEUE_SIGNAL}
+  Maintenance       ${MAINTENANCE}
   Deployment state  deploy/output/deployment.json   (ownership + digests; no secret values)
 
   Point the local application at it: set GCP_PROJECT_ID, GCP_REGION,

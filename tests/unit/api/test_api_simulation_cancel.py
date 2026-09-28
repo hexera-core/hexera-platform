@@ -106,3 +106,64 @@ async def test_the_status_response_carries_the_cancel_reason():
             resp = await c.get(f"/api/v1/simulation/{_JOB_ID}")
     assert resp.status_code == 200
     assert resp.json()["status"] == "cancelled" and resp.json()["cancel_reason"] == "wrong file"
+
+
+# a cancelled run delivers nothing, whatever a worker stored before the cancel committed
+
+def _cancelled_job_with_rows():
+    now = datetime.now(UTC)
+    art = MagicMock()
+    art.artifact_type = "mesh_bundle"
+    art.storage_key = "jobs/x/mesh.tar.gz"
+    job = MagicMock()
+    job.id = _JOB_ID
+    job.status = JobStatus.cancelled
+    job.current_attempt = 1
+    job.created_at = job.updated_at = job.started_at = job.ended_at = now
+    job.artifacts = [art]            # registered a moment before the cancel committed
+    job.final_result = None
+    job.cancel_reason = None
+    job.workspace_purged = False
+    return job
+
+
+@asynccontextmanager
+async def _fake_db():
+    yield AsyncMock()
+
+
+async def test_a_cancelled_job_lists_no_downloads_even_with_rows_registered():
+    job = _cancelled_job_with_rows()
+    signed = AsyncMock(side_effect=AssertionError("a download link was minted for a cancelled run"))
+    with patch.object(sim_module, "get_db", _fake_db), \
+            patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=job)), \
+            patch.object(sim_module.svc, "signed_url", new=signed):
+        async with _client() as c:
+            resp = await c.get(f"/api/v1/simulation/{_JOB_ID}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "cancelled" and body["artifacts"] == []
+    assert body["mesh_available"] is False
+    signed.assert_not_awaited()
+
+
+async def test_a_cancelled_job_serves_no_surface():
+    job = _cancelled_job_with_rows()
+    with patch.object(sim_module, "get_db", _fake_db), \
+            patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=job)):
+        async with _client() as c:
+            surface = await c.get(f"/api/v1/simulation/{_JOB_ID}/surface")
+            vtk = await c.get(f"/api/v1/simulation/{_JOB_ID}/surface.vtk")
+    assert surface.status_code == 404 and "cancelled" in surface.json()["detail"]
+    assert vtk.status_code == 404
+
+
+async def test_a_cancelled_job_cannot_be_disputed():
+    job = _cancelled_job_with_rows()
+    with patch.object(sim_module, "get_db", _fake_db), \
+            patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=job)):
+        async with _client() as c:
+            resp = await c.post(f"/api/v1/simulation/{_JOB_ID}/dispute",
+                                json={"flags": [], "comment": "finer wake", "mode": "rebuild"})
+    assert resp.status_code == 409
+    assert "cancelled" in resp.json()["detail"], "the refusal says 'not finished' for a stopped run"

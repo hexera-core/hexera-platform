@@ -1,4 +1,5 @@
-# Responsibility: Verify the unit question is asked once, only when needed, and nothing but an answer settles it.
+# Responsibility: Verify the unit question is asked once, only when needed, that nothing but an
+# answer settles it, and that a reply which is not one is an ordinary turn the intake answers.
 from __future__ import annotations
 
 import os
@@ -119,25 +120,31 @@ async def test_a_confirmed_unit_is_recorded_and_bound_to_the_session(db, store, 
     assert recorded.geometry_source_id == ref.source_id
 
 
-async def test_an_unusable_answer_asks_again_and_records_nothing(db, store, tmp_path):
+async def test_an_unusable_answer_is_an_ordinary_turn_and_records_nothing(db, store, tmp_path):
     session_id, _ = await _session_with_unresolved_geometry(db, tmp_path, store)
     await _say(session_id, "mesh it")
 
     again = await _say(session_id, "furlongs")
 
-    assert again.reply == uc.REFUSAL
+    # the intake answers it; the question stays open, and the run cannot start without the unit
+    # (application/dispatch_contract refuses a source without an interpretation)
+    assert again.reply == _MODEL_REPLY
     session = await _session(session_id)
     assert session.geometry_interpretation_id is None, "an unusable answer must record nothing"
 
 
-async def test_it_keeps_asking_rather_than_letting_the_run_proceed(db, store, tmp_path):
+async def test_a_unit_named_later_in_the_conversation_still_settles_it(db, store, tmp_path):
     session_id, _ = await _session_with_unresolved_geometry(db, tmp_path, store)
     await _say(session_id, "mesh it")
 
     for evasion in ("just use whatever", "the normal one", "you decide"):
-        assert (await _say(session_id, evasion)).reply == uc.REFUSAL
-
+        assert (await _say(session_id, evasion)).reply == _MODEL_REPLY
     assert (await _session(session_id)).geometry_interpretation_id is None
+
+    later = await _say(session_id, "ah, the coordinates are in millimetres")
+
+    assert later.reply == _MODEL_REPLY
+    assert (await _session(session_id)).geometry_interpretation_id is not None
 
 
 async def test_once_answered_the_question_is_not_asked_again(db, store, tmp_path):

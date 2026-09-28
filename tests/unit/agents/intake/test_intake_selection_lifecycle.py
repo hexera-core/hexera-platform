@@ -75,7 +75,7 @@ def test_lifecycle_states_and_expiry():
 def test_confirmation_requires_words_the_user_actually_wrote():
     p = es.propose("gmsh", session_id="s", owner_id="u", revision="r1", user_msg_count=1)
     c, why = es.confirm(p, session_id="s", owner_id="u", revision="r2", user_msg_count=2,
-                        quote="yes use gmsh", latest_user_message="Actually, what about cfmesh?")
+                        quote="yes use gmsh", latest_user_message="Actually, what about the other one?")
     assert c is None and "not in the user's latest message" in why
 
 

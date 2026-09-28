@@ -37,8 +37,16 @@ celery_app.conf.update(
     enable_utc=True,
     task_routes={
         "worker.tasks.run_simulation": {"queue": "simulation_jobs"},
-        "worker.tasks.scout_geometry": {"queue": "simulation_jobs"},
-        "worker.tasks.name_geometry": {"queue": "simulation_jobs"},
+        # THE GEOMETRY CHECK HAS A QUEUE OF ITS OWN. The scout draws an upload the moment it lands
+        # and the naming runs when the user says what the part is - seconds of work, with a person
+        # watching. On the simulation queue they sat behind whichever mesh job the fleet's one slot
+        # was running, for as long as that job took (up to the pipeline deadline), while the
+        # console said "drawing your part... in a few seconds". Every worker now drains this queue
+        # from a slot the simulation queue cannot take (docker-compose.yml `worker-geometry`,
+        # deploy/gcp/worker/startup.sh), so a check never waits behind a mesh.
+        # tests/unit/deploy/test_geometry_check_queue.py holds the contract end to end.
+        "worker.tasks.scout_geometry": {"queue": "geometry_checks"},
+        "worker.tasks.name_geometry": {"queue": "geometry_checks"},
         "tasks.cleanup.purge_expired_workspaces":  {"queue": "cleanup_tasks"},
         "tasks.cleanup.reap_stalled_jobs":         {"queue": "cleanup_tasks"},
         "tasks.cleanup.reconcile_orphan_artifacts": {"queue": "cleanup_tasks"},
@@ -47,9 +55,16 @@ celery_app.conf.update(
     },
     task_queue_max_priority={
         "training_export": 9,
+        "geometry_checks": 5,
         "simulation_jobs": 5,
         "cleanup_tasks":   1,
     },
+    # THE SCHEDULE, AND WHERE IT RUNS. The compose stack runs it with the `beat` service and a
+    # `worker-utility` on the cleanup queue. A hosted deployment runs NO beat - the fleet is
+    # simulation workers only (deploy/gcp/worker/startup.sh) - so runtime/maintenance_sweep.py
+    # carries these entries as a scheduled Cloud Run job, and runtime/meter_sweep.py carries
+    # report-pending-usage. An entry added here needs a hosted home too:
+    # tests/unit/deploy/test_fleet_schedule_contract.py refuses one that has none.
     beat_schedule={
         "purge-expired-workspaces": {
             "task": "tasks.cleanup.purge_expired_workspaces",

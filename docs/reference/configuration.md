@@ -323,6 +323,40 @@ Consequences of each mode: [operating-modes.md](../architecture/operating-modes.
 | `CREDIT_GATE_ENABLED` | `true` | refuse a new job from an organisation with no paid plan once its balance cannot cover one (its running jobs each hold back `JOB_BASE_CREDITS`). A subscriber is never refused - its overage is metered. Turn off only on a personal dev environment, never on a public deployment |
 | `CONSOLE_SIGNUP_ENABLED` | `true` | whether an unknown Identity Platform account may provision itself an organisation on first sign-in; an API setting, not a console one - see [identity-platform.md](../deployment/identity-platform.md#5-opening-and-closing-signup-console_signup_enabled) |
 | `CELERY_WORKER_CONCURRENCY` | `2` | pipeline runs per worker process |
+| `GEOMETRY_CHECK_WORKER_CONCURRENCY` | `2` | uploads the geometry-check worker draws at once. Compose only: the worker fleet runs two per instance, fixed in `deploy/gcp/worker/startup.sh`. The check has a queue of its own (`geometry_checks`) so an upload is drawn while a mesh runs, never after it |
+
+## Stalled jobs and the maintenance sweep
+
+A job is failed truthfully when nothing will finish it. Two rules, both in
+`application/maintenance/cleanup.py`, and either is enough:
+
+| Rule | A job is reaped when | Setting |
+|---|---|---|
+| the lease | it is `running` and its lease has been expired for a whole further lease period - by default about thirty minutes after the worker's last heartbeat | `WORKER_LEASE_SECONDS` |
+| the ceiling | it is `pending`/`queued` and was created, or is `running` without ever having held a lease and started, more than this many hours ago. A running job with a lease is judged by the lease alone: this ceiling (4 h) is shorter than the pipeline deadline (6 h), so it must never apply to a live job | `STALLED_JOB_TIMEOUT_HOURS` |
+
+The lease rule is the one that matters on a worker fleet. When the autoscaler replaces the
+instance running a job, the heartbeat stops and nothing takes the job over: a task is acknowledged
+on receipt, so it is never redelivered. Without the rule the job sat as `running` for four hours,
+and because a running job holds back its base credits (`JOB_BASE_CREDITS`), its organisation was
+refused every new job for that long.
+
+A reaped job is marked `failed` and its live stream gets a closing line ("this job stopped
+unexpectedly... please resubmit"). A job that reached a real result in the meantime is never
+overwritten: the update is a compare-and-set on the stalled states, so the sweep is safe to run
+twice and safe to run beside a worker.
+
+Where the schedule runs:
+
+| Stack | Scheduler | Runs |
+|---|---|---|
+| Compose | the `beat` service enqueues the schedule in `celery_app.py`; `worker-utility` consumes it | the reaper, the upload purge, the orphan reconcile, the failed-workspace purge, the meter sweep |
+| Hosted (GCP) | no beat. `<deployment>-maintenance-sweep`, a Cloud Run job on the application image as the API's identity, every ten minutes (`create-maintenance-sweep.sh`, `images` component) | the reaper, the upload purge (`UPLOAD_RETENTION_DAYS`), the orphan reconcile. The meter sweep is its own job. The failed-workspace purge (`FAILED_JOB_RETENTION_HOURS`) is compose-only: on the fleet a workspace is the instance's own disk and goes with the instance |
+
+```bash
+gcloud run jobs executions list --job <deployment>-maintenance-sweep --region <region> --project <project>
+gcloud logging read 'resource.labels.job_name="<deployment>-maintenance-sweep"' --limit 20 --freshness 1h
+```
 
 ## Observability
 
@@ -446,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (231 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (232 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -517,6 +551,7 @@ Every supported setting (231 entries). `template` settings are the ones `.env.ex
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |
 | `CREDIT_GATE_ENABLED` | template | app |  |
+| `GEOMETRY_CHECK_WORKER_CONCURRENCY` | template | compose |  |
 | `JOB_BASE_CREDITS` | template | app |  |
 | `MAX_CONCURRENT_JOBS` | template | app |  |
 | `MAX_JOBS_PER_OWNER` | template | app |  |

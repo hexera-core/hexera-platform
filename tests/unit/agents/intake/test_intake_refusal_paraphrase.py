@@ -1,9 +1,6 @@
-# Responsibility: Verify a refusal may be reworded for the user but never loosened on the way.
-# Boundaries: the paraphrase seam - which combinations are impossible is the admission suite's proof.
+# Responsibility: Verify the reply after an unrepaired refusal may be the model's own words but never a loosening of the finding.
+# Boundaries: the reply guard - which combinations are impossible is the admission suite's proof.
 from __future__ import annotations
-
-import asyncio
-from types import SimpleNamespace
 
 from meshpipeline.agents.intake import refusal
 from meshpipeline.agents.intake.validation import preview_admission
@@ -24,20 +21,9 @@ def _facts(engine="snappy", input_kind="planar-domain"):   # a flat sheet: snapp
                              dimensionality="3D", patches=_FIVE)
 
 
-def _provider(text=None, *, boom=False, seen=None, tokens=(11, 7)):
-    async def _call(**kw):
-        if seen is not None:
-            seen.update(kw)
-        if boom:
-            raise RuntimeError("provider unavailable")
-        return SimpleNamespace(assistant_text=text,
-                               input_tokens=tokens[0], output_tokens=tokens[1])
-    return _call
+# what a reply must satisfy before anyone reads it
 
-
-# what a paraphrase must satisfy before anyone reads it
-
-def test_a_faithful_paraphrase_is_accepted():
+def test_a_faithful_reply_is_accepted():
     assert refusal.check(_ACCEPTABLE, _facts()) == []
 
 
@@ -52,7 +38,7 @@ def test_an_engine_named_by_its_display_name_is_refused():
     assert any("another engine" in p for p in problems), problems
 
 
-def test_a_paraphrase_need_not_list_the_declared_values():
+def test_a_reply_need_not_list_the_declared_values():
     # Requiring every declared value be repeated forced the model to print a list it had already
     # been handed, which is what made these replies read like a form. The values are preserved in
     # the record and re-checked at submission, so the prose does not have to carry them.
@@ -60,70 +46,56 @@ def test_a_paraphrase_need_not_list_the_declared_values():
     assert "fuselage" not in _ACCEPTABLE
 
 
-def test_a_paraphrase_that_asks_nothing_is_refused():
+def test_a_reply_that_asks_nothing_is_refused():
     statement = _ACCEPTABLE.replace("Which part would you like to revise?", "")
     assert any("asks the user nothing" in p for p in refusal.check(statement, _facts()))
 
 
-def test_an_empty_or_overlong_paraphrase_is_refused():
+def test_an_empty_or_overlong_reply_is_refused():
     assert refusal.check("", _facts()) == ["empty"]
     assert any("too long" in p for p in refusal.check("snappy " + "x" * refusal.MAX_CHARS, _facts()))
 
 
 # what actually reaches the user
 
-def test_an_acceptable_paraphrase_is_delivered():
-    out = asyncio.run(refusal.explain(
-        _facts(), provider_call=_provider(_ACCEPTABLE), job_id="j", user_id="u"))
-    assert out.source == "paraphrased" and out.text == _ACCEPTABLE
+def test_an_acceptable_reply_is_delivered_as_written():
+    out = refusal.settle(_ACCEPTABLE, _facts())
+    assert out.source == "composed" and out.text == _ACCEPTABLE
 
 
-def test_every_failure_falls_back_to_the_rendered_message():
+def test_a_reply_with_a_proposed_revision_is_the_point_and_passes():
+    # The model may put the finding to the user with the one change that would pass, so that
+    # "ok" answers it. That is a question, and it names only the selected engine.
+    proposed = ("Your file is one unnamed body, so snappyHexMesh can write one wall patch for it, "
+                "not five. I would call that patch 'aircraft' and keep the farfield - ok, or tell "
+                "me which part you want to revise?")
+    out = refusal.settle(proposed, _facts("snappy", "body-surface"))
+    assert out.source == "composed" and out.text == proposed
+
+
+def test_every_failure_falls_back_to_the_rendered_finding():
     facts = _facts()
     rendered = facts["safe_user_message"]
-    for name, provider in (("names another engine", _provider(_ACCEPTABLE + " Try cfmesh.")),
-                           ("provider failed", _provider(boom=True)),
-                           ("empty reply", _provider("")),
-                           ("no reply field", _provider(None))):
-        out = asyncio.run(refusal.explain(
-            facts, provider_call=provider, job_id="j", user_id="u"))
+    for name, reply in (("names another engine", _ACCEPTABLE + " Try cfmesh."),
+                        ("asks nothing", "It cannot do that. Nothing was changed."),
+                        ("empty reply", ""),
+                        ("no reply at all", None)):
+        out = refusal.settle(reply, facts)
         assert out.source == "rendered", name
         assert out.text == rendered, name
 
 
-def test_the_paraphrase_call_is_offered_no_tool():
-    # It composes one message and nothing else. A tool here could submit, select or dispatch on a
-    # setup the application has just refused.
-    seen: dict = {}
-    asyncio.run(refusal.explain(_facts(), provider_call=_provider(_ACCEPTABLE, seen=seen),
-                                job_id="j", user_id="u"))
-    assert seen.get("tools") == []
-    assert seen.get("tool_choice") == "none"
-
-
-def test_the_call_is_reported_even_when_its_wording_is_discarded():
-    # Data collection must see what a refusal actually cost. The call is billed whether or not its
-    # wording survives, so a discarded paraphrase that reported nothing would teach the corpus that
-    # refusals are free.
+def test_the_rendered_finding_itself_passes_the_checks():
+    # The fallback must never be something the guard would itself reject.
     facts = _facts()
-    kept = asyncio.run(refusal.explain(facts, provider_call=_provider(_ACCEPTABLE),
-                                       job_id="j", user_id="u"))
-    assert (kept.input_tokens, kept.output_tokens) == (11, 7)
-
-    binned = asyncio.run(refusal.explain(
-        facts, provider_call=_provider(_ACCEPTABLE + " Try cfmesh."), job_id="j", user_id="u"))
-    assert binned.source == "rendered"
-    assert (binned.input_tokens, binned.output_tokens) == (11, 7), "a discarded call reported nothing"
-
-    # A call that never happened spends nothing.
-    failed = asyncio.run(refusal.explain(facts, provider_call=_provider(boom=True),
-                                         job_id="j", user_id="u"))
-    assert (failed.input_tokens, failed.output_tokens) == (0, 0)
+    assert refusal.check(facts["safe_user_message"], facts) == []
 
 
-def test_the_request_carries_the_finding_and_every_declared_value():
-    facts = _facts()
-    body = refusal.request_messages(facts)[0]["content"]
-    assert facts["capability_reason"][:40] in body
-    for patch in facts["preserved_declared_values"]["patches"]:
-        assert patch["name"] in body, patch["name"]
+def test_the_module_calls_no_model():
+    # The reply is written in the loop, where the model holds the finding as a tool result. A
+    # separate composing call here would be a second place to leak an engine name from.
+    import inspect
+
+    src = inspect.getsource(refusal)
+    for forbidden in ("provider_call", "call_intake_model", "async def"):
+        assert forbidden not in src, forbidden

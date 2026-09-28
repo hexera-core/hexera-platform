@@ -20,7 +20,7 @@ DIGEST_SCRIPT = REPO / "tests" / "integration" / "source_digest.sh"
 
 #: Every application image whose freshness the integration preflight checks. Each must receive the
 #: digest, or a rebuild would leave one of them unstamped and silently older than the checkout.
-REVISION_CHECKED = ("api", "worker", "worker-utility", "beat")
+REVISION_CHECKED = ("api", "worker", "worker-geometry", "worker-utility", "beat")
 BUILD_ARG = "MESH_SOURCE_TREE"
 
 

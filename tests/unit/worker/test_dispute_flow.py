@@ -287,7 +287,7 @@ async def test_worker_dispute_with_purged_parent_fails_as_system_failure(tmp_pat
 
 # API endpoint  #
 
-def _client(monkeypatch, parent_job, quota_error: str = ""):
+def _client(monkeypatch, parent_job, quota_error: str = "", *, linked_session: bool = True):
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI
@@ -345,6 +345,9 @@ def _client(monkeypatch, parent_job, quota_error: str = ""):
     import meshpipeline.persistence.repositories.session_repository as sr
     class FakeSessionRepo:
         async def get_by_job_id(self, db, job_id):
+            if not linked_session:
+                # the conversation has moved on to another run and released this one
+                return None
             return SimpleNamespace(id=_uuid.uuid4(), review_brief_txt="brief",
                                    intake_patches=[{"name": "aircraft", "type": "wall"}],
                                    dimensionality="3D", purpose="external_cfd",
@@ -372,7 +375,10 @@ def _succeeded_job():
                            workspace_purged=False, geometry_source_id=_SOURCE.source_id,
                            geometry_source=source_row(_SOURCE),
                            # a succeeded job ran at a known scale, and a dispute inherits it
-                           geometry_interpretation_id=_INTERPRETATION.interpretation_id)
+                           geometry_interpretation_id=_INTERPRETATION.interpretation_id,
+                           # the run's own record of what it was approved with; the route reads
+                           # it only when the session has moved on from this run
+                           dispatch_payload=None)
 
 
 def test_dispute_endpoint_dispatches_with_parent_context(monkeypatch):
@@ -390,6 +396,28 @@ def test_dispute_endpoint_dispatches_with_parent_context(monkeypatch):
     assert dispatched["user_dispute"]["flags"][0]["note"] == "gap here"
     assert dispatched["intake_patches"] == [{"name": "aircraft", "type": "wall"}]
     assert dispatched["geometry_source"]["source_id"] == parent.geometry_source_id
+
+
+def test_a_dispute_after_the_conversation_moved_on_inherits_the_runs_own_payload(monkeypatch):
+    # The session released this run and went on to another one, so no session is linked to it.
+    # The child must still carry what THIS run was approved with - from its dispatch payload -
+    # not run with no purpose, no patches and no brief.
+    parent = _succeeded_job()
+    parent.dispatch_payload = {
+        "session_id": "sess-1", "review_brief_txt": "the approved brief",
+        "intake_patches": [{"name": "wing", "type": "wall"}], "dimensionality": "3D",
+        "purpose": "external_cfd", "input_kind": "body-surface"}
+    client, dispatched, _ = _client(monkeypatch, parent, linked_session=False)
+    r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
+                    headers={"X-User-Id": "user-1"},
+                    json={"comment": "finer wake please"})
+    assert r.status_code == 202, r.text
+    assert dispatched["session_id"] == "sess-1"
+    assert dispatched["intake_patches"] == [{"name": "wing", "type": "wall"}]
+    assert dispatched["purpose"] == "external_cfd"
+    assert dispatched["input_kind"] == "body-surface"
+    assert dispatched["dimensionality"] == "3D"
+    assert dispatched["review_brief_txt"].startswith("the approved brief")
 
 
 def test_dispute_endpoint_rejects_non_succeeded_job(monkeypatch):
