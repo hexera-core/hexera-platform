@@ -14,6 +14,21 @@ from meshpipeline.persistence.models import ChatSession, JobStatus, Organization
 from meshpipeline.persistence.repositories import tenant_scope
 
 
+def _task_label():
+    """The label a run is listed under: its session's, while the session is still linked to it,
+    else the label the run was DISPATCHED with.
+
+    A conversation moves on once its run has ended (agents/intake/message.py releases the link
+    before the next run), so the join alone left every finished run unlabelled the moment its
+    user said anything more. The dispatch payload has carried `domain` - the same descriptive
+    label, frozen at approval - since payloads existed; an empty one (a dispute child, a run
+    older than payloads) reads as no label, exactly as before.
+    """
+    dispatched = func.nullif(
+        func.jsonb_extract_path_text(SimulationJob.dispatch_payload, "domain"), "")
+    return func.coalesce(ChatSession.domain, dispatched)
+
+
 class JobRepository:
     async def create(self, db: AsyncSession, owner_id: str, *,
                      organization_id: str = "") -> SimulationJob:
@@ -53,10 +68,11 @@ class JobRepository:
         `domain` is documented on the model as "DESCRIPTIVE task label from intake ('elbow
         internal flow')" - it IS the task label, under the name the schema actually gives it.
         The tuple position (not the column name) is what the route reads, so this stays an
-        internal detail.
+        internal detail. A run its session has moved on from keeps the label it was
+        dispatched with - see _task_label.
         """
         statement = (
-            select(SimulationJob, ChatSession.domain)
+            select(SimulationJob, _task_label())
             .outerjoin(ChatSession, ChatSession.job_id == SimulationJob.id)
             .where(tenant_scope.scope(SimulationJob, owner_id=owner_id,
                                       organization_id=organization_id))
@@ -77,7 +93,7 @@ class JobRepository:
         """Recent runs across tenants. CROSS-TENANT: admin routes only."""
         bounded = max(1, min(limit, 250))
         statement = (
-            select(SimulationJob, ChatSession.domain, Organization.name)
+            select(SimulationJob, _task_label(), Organization.name)
             .outerjoin(ChatSession, ChatSession.job_id == SimulationJob.id)
             .outerjoin(Organization, Organization.id == SimulationJob.organization_id)
             .order_by(SimulationJob.created_at.desc(), SimulationJob.id.desc())
