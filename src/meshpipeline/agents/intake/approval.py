@@ -308,7 +308,7 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
         await session_repo.set_intake_gate(db, session_id, gate)
         await session_repo.append_message(db, session_id, "assistant", reason)
         await db.commit()
-        logger.warning("approval: nothing can run - %s - session=%s", reason, session_id)
+        logger.warning("approval: refused by the quota or credit gate - session=%s", session_id)
         raise ApprovalTransactionError(ConfirmOutcome(
             ConfirmStatus.quota_exceeded, reason)) from exc
 

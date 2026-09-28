@@ -288,6 +288,31 @@ async def test_a_quota_refusal_creates_no_job(wired, monkeypatch):
     assert written["status"] == ap.AWAITING and written["deferred_count"] == 1
 
 
+async def test_after_a_quota_refusal_the_users_next_yes_lands_on_the_summary(wired):
+    """The real verify, no patching: the first yes is the 6th user message and the quota gate
+    refuses it; the gate written back must expect the 7th, so a second yes - after credits are
+    added - is accepted, and the same 6th message alone is not."""
+    import meshpipeline.agents.intake.engine_selection as es
+
+    selection = {"id": "sel", "state": es.CONFIRMED, "expires_at": time.time() + 600}
+    snap = ap.create(owner_id=OWNER, session_id=str(SESSION_ID), selection_id="sel", token_id="tok",
+                     canonical={}, fingerprint="fp-approved", payload={"mesh_engine": "cfmesh"},
+                     summary="s", proposal_revision="r1", proposal_msg_count=5,
+                     intent_canonical={"engine": "cfmesh"}, intent_fingerprint="ifp-approved")
+    locked = _Session(gate={"approval": snap, "selection": selection}, source_id=wired.source_id)
+    locked.messages = [{"role": "user", "content": f"u{i}"} for i in range(6)]   # the 6th is the yes
+    with pytest.raises(ap.ApprovalTransactionError) as ei:
+        await _confirm(wired, locked=locked, quota_error="monthly job limit reached")
+    assert ei.value.outcome.status is ap.ConfirmStatus.quota_exceeded
+    deferred = wired.gate_writes[-1]["approval"]
+    ok, why = ap.verify(deferred, owner_id=OWNER, session_id=str(SESSION_ID),
+                        selection=selection, user_msg_count=7)
+    assert ok, why
+    again, _ = ap.verify(deferred, owner_id=OWNER, session_id=str(SESSION_ID),
+                         selection=selection, user_msg_count=6)
+    assert not again, "the refused yes itself must not count twice"
+
+
 async def test_an_exhausted_balance_is_refused_in_the_conversation_and_creates_no_job(
         wired, monkeypatch):
     # A signup grant is a budget. Once it cannot cover a run the person hears why, in the chat,
