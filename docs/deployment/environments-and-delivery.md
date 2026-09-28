@@ -334,7 +334,7 @@ and money for resources the change never touched.
 
 | Component | Stage |
 | --- | --- |
-| `images` | mesh job + API service — the two workloads carrying an application digest |
+| `images` | mesh job + API service + the meter and maintenance sweeps — the workloads carrying an application digest |
 | `data` | Cloud SQL + Memorystore |
 | `storage` | artifacts bucket + S3-interoperability credential |
 | `migrate` | schema, applied once before anything serves the new image |
@@ -342,6 +342,7 @@ and money for resources the change never touched.
 | `workers` | managed instance group + rolling update |
 | `console` | Cloud Run console service — the promoted console digest, in front of the API |
 | `admin` | Cloud Run admin console — the promoted admin digest, behind IAP; never publicly reachable |
+| `outreach` | the cold-outreach sender, as a scheduled job — its own tier, never a side effect of shipping a page |
 | `edge` | the global address, load balancer and managed certificate the consoles' custom hostnames resolve to |
 
 Always on, never selectable: discovery, config validation, preflight, plan confirmation, API
@@ -359,14 +360,14 @@ most misleading line the script prints.
 image on every run (~20 min) because GitHub runners keep no layer cache between runs. That is the
 dominant cost and is not addressed here — see §7.
 
-### The eighteen stages, in order
+### The stages, in order
 
 1. Discover environment, generate config
 2. Validate configuration schema (typed, read-only)
 3. Preflight (auth, project, permissions, region, existing resources — read-only)
 4. **Confirm the plan** — last read-only step before any mutation
 5. Enable required Google APIs
-6. Artifact Registry + mesh runtime identity
+6. Artifact Registry + the runtime identities
 7. Data tier — Cloud SQL + Memorystore *(`data`)*
 8. Object store *(`storage`)*
 9. Promote the validated release artifact — **no build**
@@ -375,10 +376,13 @@ dominant cost and is not addressed here — see §7.
 12. Schema migrations *(`migrate`)*
 13. Queue-depth publisher *(`queue`)*
 14. API service *(`images`)*
-15. Console service *(`console`)*
-16. Admin console *(`admin`)*
-17. Worker fleet + rolling update *(`workers`)*
-18. Edge — global address, load balancer, managed certificate *(`edge`)*
+15. Meter sweep — the scheduled job that bills overage *(`images`; a stated skip where billing is off)*
+16. Maintenance sweep — the scheduled job that reaps stalled jobs and purges expired uploads *(`images`; a stated skip where there is no hosted database)*
+17. Console service *(`console`)*
+18. Admin console *(`admin`)*
+19. Outreach sender *(`outreach`)*
+20. Worker fleet + rolling update *(`workers`)*
+21. Edge — global address, load balancer, managed certificate *(`edge`)*
 
 Ordering is load-bearing: schema before the API serves it; the console and the admin console after
 the API they talk to; the fleet before the edge, so a worker never starts before the schema, queue
