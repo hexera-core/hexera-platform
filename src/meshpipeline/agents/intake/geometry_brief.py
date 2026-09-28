@@ -485,7 +485,7 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
 #: What intake is told when the measurement was ATTEMPTED on these bytes and did not finish. It is not the
 #: empty string, and that is the whole point of it.
 #:
-#: MEASURED, on the 36-part run of 2026-09-28. Three parts of 36 timed out at the 60-second measurement
+#: MEASURED, on the 36-file run of the night of 2026-09-27. Three parts of 36 timed out at the 60-second measurement
 #: ceiling - blade_row_rotor_001, shell_and_tube_7 and shell_and_tube_7_unshared - and all three were
 #: stalls. With the block empty the prompt is character for character the prompt with no measurement at
 #: all, so the model has no way to know a measurement was owed, and on all three it went looking for the

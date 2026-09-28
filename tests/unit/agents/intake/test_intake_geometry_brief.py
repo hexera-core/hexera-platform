@@ -177,7 +177,7 @@ def test_no_measurement_means_no_block_at_all(document):
 
 
 def test_a_measurement_that_ran_and_failed_is_the_one_case_that_is_not_silence():
-    """MEASURED on the 36-file run of 28 September: 3 of 36 parts timed out at the measurement ceiling and
+    """MEASURED on the 36-file run of the night of 27 September: 3 of 36 parts timed out at the measurement ceiling and
     those 3 were the stalls. An empty block is the prompt with no measurement at all, so the model could not
     know one was owed, and on all three it asked the customer for the opening sizes and which mouth was the
     inlet. One of those parts has 32 openings.

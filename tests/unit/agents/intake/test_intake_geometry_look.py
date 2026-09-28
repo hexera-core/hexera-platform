@@ -66,8 +66,8 @@ def test_a_look_that_failed_or_never_ran_renders_nothing():
 
 
 def test_a_measurement_that_did_not_succeed_renders_no_table_and_no_look():
-    """It used to render nothing at all, and this test was named for that. MEASURED on the 36-file run of
-    28 September: three parts timed out at the measurement ceiling, an empty block is the prompt with no
+    """It used to render nothing at all, and this test was named for that. MEASURED on the 36-file run of the
+    night of 27 September: three parts timed out at the measurement ceiling, an empty block is the prompt with no
     measurement in the product at all, and on all three the model asked the CUSTOMER for the opening sizes
     and which mouth was the inlet. So a failed measurement is now DISCLOSED.
 
