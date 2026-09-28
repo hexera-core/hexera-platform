@@ -111,6 +111,46 @@ def _read_json(object_key: str) -> dict | None:
         return None
 
 
+def _stored_bytes(store, object_key: str) -> bytes | None:
+    """The object's bytes as they stand, or None when there is none."""
+    from meshpipeline.contracts.object_storage import ObjectNotFound
+
+    try:
+        return store.get_bytes(object_key=object_key)
+    except ObjectNotFound:
+        return None
+
+
+def _put_bytes(store, object_key: str, data: bytes) -> None:
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as fh:
+        fh.write(data)
+        tmp = Path(fh.name)
+    try:
+        store.upload_file(local_path=tmp, object_key=object_key)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _take_back(store, object_key: str, *, ours: bytes, earlier: bytes | None, session_id: str) -> None:
+    """Put the confirmed copy back as it stood before a confirmation that did not land: the copy
+    an earlier confirmation stored, when there was one - the session still holds that one's
+    declaration, and the hold and the read go by the copy - else none at all. A copy another
+    confirmation has written since is that one's, and stays. Best effort: the store may be what
+    broke, and the error the user sees is the confirmation's own."""
+    try:
+        if _stored_bytes(store, object_key) != ours:
+            return
+        if earlier is None:
+            store.delete_object(object_key=object_key)
+        else:
+            _put_bytes(store, object_key, earlier)
+    except Exception:  # noqa: BLE001
+        logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
+
+
 @router.get("/{session_id}/check")
 async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                     organization_id: str = Depends(org_dep)) -> dict:
@@ -409,9 +449,6 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     names = [o.name for o in body.openings]
     if len(set(names)) != len(names):
         raise HTTPException(422, "Every opening needs its own name")
-    import tempfile
-    from pathlib import Path
-
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import check_object_key
 
@@ -442,15 +479,14 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has
     # changed, so pressing the button again is safe; and a second press replaces, never repeats.
+    # The copy an earlier confirmation stored is kept in hand, to be put back if this one fails.
+    store = get_object_store()
+    key = check_object_key(str(session_id), "confirmed.json")
+    earlier = _stored_bytes(store, key)
     record = {"confirmed_at": time.time(), "owner_id": owner_id, "message": message,
               "patches": patches, **body.model_dump()}
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-        json.dump(record, fh)
-        tmp = Path(fh.name)
-    try:
-        get_object_store().upload_file(local_path=tmp, object_key=check_object_key(str(session_id), "confirmed.json"))
-    finally:
-        tmp.unlink(missing_ok=True)
+    ours = json.dumps(record).encode()
+    _put_bytes(store, key, ours)
 
     try:
         async with get_db() as db:
@@ -470,11 +506,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     except BaseException:
         # THE STORED COPY GOES BACK: the session never took the declaration (nor the unit), so a
         # copy that stayed would make the next read report a confirmation that did not land, and
-        # the console would stop waiting for one. Best effort - the store may be what broke.
-        try:
-            get_object_store().delete_object(object_key=check_object_key(str(session_id), "confirmed.json"))
-        except Exception:  # noqa: BLE001
-            logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
+        # the console would stop waiting for one.
+        _take_back(store, key, ours=ours, earlier=earlier, session_id=str(session_id))
         raise
     logger.info("geometry check confirmed - session_id=%s openings=%d", session_id, len(body.openings))
     # THE INTAKE PICKS UP FROM HERE. The hold left the conversation waiting on this button; one

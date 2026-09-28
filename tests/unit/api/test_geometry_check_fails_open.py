@@ -1,7 +1,8 @@
 # Responsibility: Verify the geometry check is served through the time box - a scout whose worker
 # died reads as failed with a reason and a way on, a naming that never answered too, a scouted
-# check with no naming asked is served as it is - and that the retry route runs the right step
-# again and the confirm waits for the file's unit.
+# check with no naming asked is served as it is - that the retry route runs the right step
+# again, the confirm waits for the file's unit, a confirmation that fails leaves the stored copy
+# as it stood, and the hold read from the store lets the chat go once the check is not working.
 # Boundaries: the routes with the session, the store and the queue seam stood in for; no
 # database, no worker.
 from __future__ import annotations
@@ -314,3 +315,61 @@ async def test_a_confirmation_whose_transaction_fails_takes_its_stored_copy_back
     with pytest.raises(RuntimeError):
         await route.confirm_check(SID, body, "alice", "org-1")
     assert _key("confirmed.json") in store.deleted and _key("confirmed.json") not in store.objects
+
+
+async def test_a_failed_confirmation_puts_the_earlier_ones_copy_back(served, monkeypatch):
+    """A session already confirmed, then confirmed again with a transaction that fails: the
+    session still holds the first declaration, so its copy goes back - deleting it would make
+    the read stop reporting the confirmation and let the hold catch the chat again."""
+    first = {"confirmed_at": 1.0, "owner_id": "alice", "message": "the first confirmation", "patches": []}
+    store = served({"scout.json": _scouted(), "confirmed.json": first},
+                   geometry_interpretation_id=uuid.uuid4(), messages=[])
+    earlier = store.objects[_key("confirmed.json")]
+    session = await route._owned_session(SID, "alice", "org-1")
+    declared_mm = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm", "scale_to_metres": 0.001,
+                   "basis": "file_declared", "evidence": "SI_UNIT"}
+    _confirming(monkeypatch, session, declared_mm, [], commit=AsyncMock(side_effect=RuntimeError("db down")))
+    body = route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[], scale_to_m=0.001, unit="mm")
+    with pytest.raises(RuntimeError):
+        await route.confirm_check(SID, body, "alice", "org-1")
+    assert store.objects[_key("confirmed.json")] == earlier and _key("confirmed.json") not in store.deleted
+    assert (await route.get_check(SID, "alice", "org-1"))["confirmed"] == first
+    assert gh.hold_applies(str(SID)) is None
+
+
+async def test_a_copy_another_confirmation_wrote_since_is_left_alone(served, monkeypatch):
+    """Two confirmations close together: the one that fails takes back only its own copy."""
+    store = served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    theirs = json.dumps({"confirmed_at": 2.0, "message": "the other confirmation"}).encode()
+
+    async def _overtaken():
+        store.objects[_key("confirmed.json")] = theirs     # the other press landed in between
+        raise RuntimeError("db down")
+    session = await route._owned_session(SID, "alice", "org-1")
+    declared_mm = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm", "scale_to_metres": 0.001,
+                   "basis": "file_declared", "evidence": "SI_UNIT"}
+    _confirming(monkeypatch, session, declared_mm, [], commit=_overtaken)
+    body = route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[], scale_to_m=0.001, unit="mm")
+    with pytest.raises(RuntimeError):
+        await route.confirm_check(SID, body, "alice", "org-1")
+    assert store.objects[_key("confirmed.json")] == theirs and _key("confirmed.json") not in store.deleted
+
+
+async def test_the_hold_read_from_the_store_lets_go_of_a_failed_check_and_a_scouted_one_confirmed(served, monkeypatch):
+    """The chat is held only while the check is working. A scout whose worker died reads as
+    failed and never holds; a naming still running holds the chat until the user confirms the
+    scout's part by hand, and from then the intake answers."""
+    served({"scout.json": {"status": "pending", "written_at": time.time()}})
+    assert gh.hold_applies(str(SID)) == "queue"
+    served({"scout.json": {"status": "pending", "written_at": time.time() - gc.SCOUT_HARD_LIMIT_S - gc.STALE_MARGIN_S - 5}})
+    assert gh.hold_applies(str(SID)) is None
+    served({"scout.json": _scouted(), "naming.json": {"requested_at": time.time(), "purpose_text": "a pipe"}},
+           geometry_interpretation_id=uuid.uuid4(), messages=[])
+    assert gh.hold_applies(str(SID)) == "wait"
+    session = await route._owned_session(SID, "alice", "org-1")
+    declared_mm = {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm", "scale_to_metres": 0.001,
+                   "basis": "file_declared", "evidence": "SI_UNIT"}
+    _confirming(monkeypatch, session, declared_mm, [])
+    await route.confirm_check(SID, route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[],
+                                                   scale_to_m=0.001), "alice", "org-1")
+    assert gh.hold_applies(str(SID)) is None
