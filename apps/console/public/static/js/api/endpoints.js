@@ -70,6 +70,16 @@ export async function disputeReview(jobId, { flags = [], comment = "", mode } = 
   return r.json();
 }
 
+/** Stop a run the caller owns. `reason` is optional and kept with the job. Answers the job's new
+ *  durable facts; a repeat on an already-cancelled run answers the same way rather than failing. */
+export async function cancelJob(jobId, reason = "") {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/cancel`,
+    { method: "POST", headers: headers(),
+      body: JSON.stringify({ reason: String(reason || "").slice(0, 500) }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The geometry check for an upload: `status` is off | none | pending | ready | unsupported |
  *  failed; a ready check carries the proposal and picture links. Never throws on a plain
  *  "not yet" - the composer polls it. */

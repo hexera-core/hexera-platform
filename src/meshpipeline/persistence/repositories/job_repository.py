@@ -35,6 +35,21 @@ class JobRepository:
                                       organization_id=organization_id)))
         return res.scalar_one_or_none()
 
+    async def lock_for_owner(self, db: AsyncSession, job_id: uuid.UUID,
+                             owner_id: str, *, organization_id: str = "") -> SimulationJob | None:
+        # The scoped read, ROW-LOCKED: for an owner-initiated change (a cancel) that must decide on
+        # the status it sees and hold it until it commits, so a worker finalizing at the same
+        # moment either goes first (and the change refuses a finished job) or waits and then finds
+        # the change already committed. Scoped in SQL exactly like `get_for_owner`, so a foreign
+        # job is indistinguishable from a missing one here too.
+        res = await db.execute(
+            select(SimulationJob)
+            .where(SimulationJob.id == job_id,
+                   tenant_scope.scope(SimulationJob, owner_id=owner_id,
+                                      organization_id=organization_id))
+            .with_for_update())
+        return res.scalar_one_or_none()
+
     async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
                              organization_id: str = "", limit: int = 25,
                              before: tuple[datetime, uuid.UUID] | None = None
@@ -181,7 +196,8 @@ class JobRepository:
         values: dict = {"status": target, "updated_at": now}
         if target == JobStatus.running:
             values["started_at"] = now
-        elif target in (JobStatus.succeeded, JobStatus.failed, JobStatus.pending_review):
+        elif target in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled,
+                        JobStatus.pending_review):
             values["ended_at"] = now
         return values
 
@@ -213,7 +229,9 @@ class JobRepository:
     # Active = still-in-flight statuses that count against quotas. (queued and
     # pending_review are defined in the enum but are not assigned by the current
     # pipeline; they are intentionally excluded so a stray non-running status can
-    # never pin an owner's quota forever.)
+    # never pin an owner's quota forever.) `cancelled` is terminal and so never here: a cancel
+    # releases the owner's slot and the tenant's credit reserve (spend_gate counts the same
+    # statuses) in the very commit that ends the job.
     _ACTIVE_STATUSES = [JobStatus.pending, JobStatus.running, JobStatus.queued]
 
     async def count_active_for_owner(self, db: AsyncSession, owner_id: str) -> int:

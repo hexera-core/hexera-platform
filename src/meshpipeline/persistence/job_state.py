@@ -6,7 +6,10 @@ from enum import Enum
 
 from meshpipeline.persistence.models import JobStatus
 
-TERMINAL_STATES: frozenset[JobStatus] = frozenset({JobStatus.succeeded, JobStatus.failed})
+# `cancelled` is terminal too. The owner's cancel authority (application/job_cancel.py) writes it
+# once, and from then on no worker's late succeeded/failed can overwrite it - the CAS below refuses.
+TERMINAL_STATES: frozenset[JobStatus] = frozenset({JobStatus.succeeded, JobStatus.failed,
+                                                   JobStatus.cancelled})
 
 # target -> the current states from which a transition to it is LEGAL. Terminal states never
 # appear as a source, so an ordinary transition can never overwrite a succeeded/failed result.
@@ -17,6 +20,10 @@ LEGAL_SOURCES: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.queued:         frozenset({JobStatus.pending}),                       # reserved (unused by the current pipeline)
     JobStatus.succeeded:      frozenset({JobStatus.running, JobStatus.pending_review}),
     JobStatus.failed:         frozenset({JobStatus.pending, JobStatus.queued,
+                                         JobStatus.running, JobStatus.pending_review}),
+    # the owner's cancel: anything not yet finished. Terminal sources are excluded like everywhere
+    # else, so a cancel can never undo a delivered mesh or a recorded failure.
+    JobStatus.cancelled:      frozenset({JobStatus.pending, JobStatus.queued,
                                          JobStatus.running, JobStatus.pending_review}),
 }
 

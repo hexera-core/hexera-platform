@@ -730,8 +730,9 @@ async def _run_async(req: JobRequest) -> dict:
                             await _hb.commit()
                         if not _ok:
                             jlog.error("Lease LOST - job_id=%s generation=%d token=%s: a newer "
-                                       "generation/token owns this job; the terminal fence will make "
-                                       "this worker's side effects inert.", job_id,
+                                       "generation/token owns this job, or its owner cancelled it; "
+                                       "the terminal fence makes this worker's side effects inert.",
+                                       job_id,
                                        ownership.execution_generation, ownership.token_hash())
                             return
                     except Exception as _hbx:  # noqa: BLE001 - a transient heartbeat error is retried
@@ -948,7 +949,8 @@ async def _run_async(req: JobRequest) -> dict:
         # verdict built from DURABLE evidence, the fence, the atomic commit and the direct-closing
         # fallback all belong to terminal_finalize; this is the lifecycle hook, not the policy.
         # Only `Exception` is caught: CancelledError and SystemExit are BaseException and propagate
-        # untouched, so a cancelled run never gets a terminal record it has no status for.
+        # untouched, so an interrupted run never manufactures a terminal record. The `cancelled`
+        # status is written by the owner's cancel authority alone (application/job_cancel).
         from meshpipeline.application.terminal_finalize import (
             TerminalAssembly as _TA,
         )

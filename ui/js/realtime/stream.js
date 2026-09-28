@@ -165,6 +165,9 @@ async function poll() {
 export function terminalResult(job, outcomeText) {
   return {
     pass: job.status === "succeeded",
+    // the owner's own ending: no verdict was reached, and the reason they gave travels with it
+    cancelled: job.status === "cancelled",
+    cancelReason: job.cancel_reason || "",
     attempts: job.current_attempt || 0,
     text: outcomeText,
     files: (job.artifacts || []).map((a) => ({

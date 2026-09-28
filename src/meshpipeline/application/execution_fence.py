@@ -205,15 +205,15 @@ async def claim_delivery(session_factory, job_repo, job_id: str, *, jlog, backen
                          backend_execution_id: str):
     # Imported inside the call, not at module scope: the repository is substituted per-test on the
     # persistence module, and a module-level binding would capture the real class at import time.
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
     from meshpipeline.persistence.lease import ClaimResult, LeaseRepository
-    from meshpipeline.persistence.models import JobStatus
 
     lease_repo = LeaseRepository()
     worker_token = uuid.uuid4()
     ownership = None
     async with session_factory() as db:
         existing = await job_repo.get_internal(db, uuid.UUID(job_id))
-        if existing is not None and existing.status in (JobStatus.succeeded, JobStatus.failed):
+        if existing is not None and existing.status in TERMINAL_STATES:
             jlog.warning("Ignoring re-delivered task - job already terminal (status=%s); not re-running",
                          existing.status.value)
             return DeliveryRefused(existing.status.value,

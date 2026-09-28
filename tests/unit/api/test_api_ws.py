@@ -230,6 +230,20 @@ def test_already_terminal_job_gets_closing_event_immediately(monkeypatch):
         assert "succeeded" in frame["text"]
 
 
+def test_a_cancelled_job_closes_with_the_cancel_line_not_a_generic_note(monkeypatch):
+    from meshpipeline.application.final_result import build_cancelled_result
+
+    fr = build_cancelled_result(job_id=_VALID_JOB_ID, owner_id="user-1", engine="cfmesh")
+    _wire(monkeypatch, job=SimpleNamespace(owner_id="user-1", status=JobStatus.cancelled,
+                                           final_result=fr.to_dict()))
+    client = TestClient(_app)
+    with client.websocket_connect(f"/api/v1/ws/{_VALID_JOB_ID}/stream") as ws:
+        frame = json.loads(ws.receive_text())
+    assert frame["type"] == "closing"
+    assert frame["text"].startswith("Cancelled by you.")
+    assert "failed" not in frame["text"].lower()
+
+
 def test_a_reconnecting_client_gets_exactly_what_it_missed_and_nothing_twice(monkeypatch):
     import meshpipeline.events as E
 

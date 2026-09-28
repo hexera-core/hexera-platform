@@ -32,6 +32,11 @@ export function closeLightbox() {
 let onResult = () => {};
 export function setResultHandler(fn) { onResult = fn || (() => {}); }
 
+/* Installed by the entrypoint. The card's Cancel control only says the user asked to stop the
+   run; asking them to confirm and calling the API belong to the application, not the renderer. */
+let onCancel = () => {};
+export function setCancelHandler(fn) { onCancel = fn || (() => {}); }
+
 export const Stage = {
   // The empty state names no formats. It used to say "(STL or STEP)" while the server accepted
   // four, so a user holding a .vtp or .iges read that their file was unsupported and never tried
@@ -136,9 +141,11 @@ export const Stage = {
     p.innerHTML=`<div class="proc-head"><svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>
       <span class="proc-title">Generating mesh</span>
       <span class="proc-sub" id="proc-sub">working…</span>
-      <span class="proc-clock" id="proc-clock">0:00</span></div>
+      <span class="proc-clock" id="proc-clock">0:00</span>
+      <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
       <div class="tl" id="tl"></div>`;
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
+    p.querySelector('#proc-cancel').onclick=()=>onCancel();
     this.t0=Date.now();
     // one ticker drives every live duration - the run's total and the active stage's
     clearInterval(this._tick);
@@ -149,6 +156,10 @@ export const Stage = {
         if(n.t0&&!n.tEnd&&n.dur)n.dur.textContent=fmtDur(Date.now()-n.t0);});
       if(this.meshBar)this.tickMesh();
     },500);},
+
+  // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
+  // renders the same card, and a control that could stop nothing must not be on it.
+  showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
 
   // MESH RUN - bounded by the engine's DECLARED budget (published by the backend).
   // We bar elapsed against that real cap; we do not invent a percentage.
@@ -359,12 +370,17 @@ export const Stage = {
     const im=document.createElement('img');im.src='data:image/png;base64,'+b64;im.onclick=()=>openLightbox(im.src);
     w.appendChild(im);n.body.appendChild(w);this.scroll(n);},
   final(data){Object.keys(this.nodes).forEach(k=>this.done(k));
-    if(this.proc){this.proc.classList.add('done');this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':'Run ended';
-      this.proc.querySelector('#proc-sub').textContent=data.pass?'completed':'failed';}
-    // verdict row in the timeline
+    const cancelled=!!data.cancelled;
+    if(this.proc){this.proc.classList.add('done');
+      this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':cancelled?'Run cancelled':'Run ended';
+      this.proc.querySelector('#proc-sub').textContent=data.pass?'completed':cancelled?'cancelled by you':'failed';
+      const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
+    // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
       const att=data.attempts>0?`${data.attempts} attempt${data.attempts!==1?'s':''}`:'';
-      v.innerHTML=`<span class="pill${data.pass?'':' fail'}">${data.pass?'PASS':'FAIL'}</span><span class="mt">${esc(att)}</span>`;
+      const pill=data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
+      v.innerHTML=`<span class="pill${data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
+      if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       n.body.appendChild(v);this.done('result');}
 
     // FINAL RESULT - one turn in the SAME conversation that took the request, so the

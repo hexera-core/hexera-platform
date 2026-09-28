@@ -127,8 +127,8 @@ async def stream_logs(websocket: WebSocket, job_id: str):
     # terminal without a closing log - e.g. crash-dropped then reaped), there is no
     # future pub/sub message, so a plain `listen()` would hang forever. Poll the DB
     # status between messages and close on a terminal state.
+    from meshpipeline.persistence.job_state import TERMINAL_STATES as _TERMINAL
     from meshpipeline.persistence.models import JobStatus
-    _TERMINAL = {JobStatus.succeeded, JobStatus.failed}
 
     async def _is_terminal() -> JobStatus | None:
         try:

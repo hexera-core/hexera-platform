@@ -11,7 +11,14 @@ from fastapi import APIRouter, Depends, HTTPException
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.api import pagination
 from meshpipeline.api.schemas import listing
-from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, JobStatus_
+from meshpipeline.api.schemas.job import (
+    ArtifactOut,
+    CancelIn,
+    CancelOut,
+    DisputeIn,
+    DisputeOut,
+    JobStatus_,
+)
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application import spend_gate
 from meshpipeline.application.job_service import JobService
@@ -211,6 +218,10 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,
+            # a string or nothing: a row from before the column carries none, and a test double must
+            # not be able to smuggle an object into the wire contract
+            cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)
+                           else None),
         )
 
 
@@ -399,3 +410,26 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         raise HTTPException(500, _DISPATCH_FAILED) from exc
 
     return DisputeOut(job_id=new_job.id, dispute_of=job_id, flags=len(body.flags))
+
+
+@router.post("/{job_id}/cancel", response_model=CancelOut)
+async def cancel_job(job_id: uuid.UUID, body: CancelIn | None = None,
+                     owner_id: str = Depends(owner_dep),
+                     organization_id: str = Depends(org_dep)):
+    """Stop a run the caller owns. Transport over the cancel authority, which owns the one
+    transaction: the worker's eviction, the terminal `cancelled` record, its announcement on the
+    stream and the release of the owner's slot and the tenant's credit reserve all land in that
+    commit. The caller's own repeat is answered the same way; a job that already finished is
+    refused, because a delivered mesh or a recorded failure is not something a cancel may undo."""
+    from meshpipeline.application import job_cancel
+
+    outcome = await job_cancel.cancel_job(job_id, owner_id=owner_id,
+                                          organization_id=organization_id,
+                                          reason=(body.reason if body else "") or "")
+    status = outcome.status
+    if outcome.result is job_cancel.CancelResult.not_found or status is None:
+        raise HTTPException(404, "Job not found")
+    if outcome.result is job_cancel.CancelResult.already_finished:
+        raise HTTPException(409, f"This job has already {status.value}; there is nothing to cancel")
+    return CancelOut(job_id=job_id, status=status, cancel_reason=outcome.cancel_reason,
+                     already_cancelled=outcome.result is job_cancel.CancelResult.already_cancelled)

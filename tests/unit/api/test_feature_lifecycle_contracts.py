@@ -58,6 +58,23 @@ def test_the_shipped_ui_accept_action_sends_no_flags():
     assert "flags: []" in call.group(0), f"the accept action sends flags: {call.group(0)}"
 
 
+def test_the_shipped_ui_cancel_control_asks_before_it_calls():
+    import pathlib
+    import re
+
+    src = pathlib.Path("ui/js/shell/cancel.js").read_text()
+    body = src[src.index("export function confirmCancel"):]
+    # the confirm step: the call is wired to a button inside a modal, never made on entry
+    assert "modal(" in body and 'querySelector("#c-go")' in body and "cancelJob(" in body
+    assert body.index("modal(") < body.index("cancelJob("), "cancelJob runs before the confirm modal"
+    api = pathlib.Path("ui/js/api/endpoints.js").read_text()
+    assert re.search(r"/api/v1/simulation/\$\{jobId\}/cancel", api), "the UI does not know the cancel route"
+    # the control only appears on a LIVE run: the entrypoint reveals it where it attaches the stream
+    main = pathlib.Path("ui/js/main.js").read_text()
+    assert main.count("Stage.showCancel()") == 2, "the Cancel control is not revealed on both live paths"
+    assert "isTerminalStatus(job.status)" in main
+
+
 def test_a_hand_built_accept_payload_cannot_enter_the_review_graph():
     # DEFENCE IN DEPTH: a payload that never passed the schema still reaches the graph through
     # dispatch_payload. Entering with both would compose the human-flag axis and promise a rebuild
@@ -146,6 +163,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
+        ("POST", "/api/v1/simulation/{job_id}/cancel"),  # the owner stops a run; 409 once finished
         ("GET", "/api/v1/simulation/{job_id}/surface"),
         ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
         ("POST", "/api/v1/upload/step-file"),
