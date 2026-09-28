@@ -8,6 +8,10 @@ import logging
 from typing import Any
 
 from meshpipeline.contracts.geometry_agent_block import platform_cell_ceiling, runnable_cell_estimates
+from meshpipeline.contracts.geometry_measurement import (
+    STATUS_MEASUREMENT_FAILED,
+    STATUS_OK,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +482,51 @@ def surveyor_panel(document: dict | None, survey: dict | None) -> str:
     return chr(10).join(out)
 
 
+#: What intake is told when the measurement was ATTEMPTED on these bytes and did not finish. It is not the
+#: empty string, and that is the whole point of it.
+#:
+#: MEASURED, on the 36-part run of 2026-09-28. Three parts of 36 timed out at the 60-second measurement
+#: ceiling - blade_row_rotor_001, shell_and_tube_7 and shell_and_tube_7_unshared - and all three were
+#: stalls. With the block empty the prompt is character for character the prompt with no measurement at
+#: all, so the model has no way to know a measurement was owed, and on all three it went looking for the
+#: missing facts in the only other place there is. Its own words, verbatim:
+#:
+#:     I don't actually have measurements of the openings yet - no sizes or locations have been pulled
+#:     from the STEP file - so I need to work from what you can tell me. [...] Which opening is the inlet,
+#:     and which is the outlet? [...] The inlet opening diameter (or width x height), even roughly.
+#:
+#:     I can't act on that [...] I won't guess your openings for you.
+#:
+#: and on the shell and tube, after promising "about half a minute to read the shape": "The geometry
+#: hasn't been read yet on my side." Nobody reads a bore off a STEP file by hand, and on that part there
+#: are 32 of them. Our timeout became their homework and the job never submitted.
+#:
+#: FAIL OPEN IS STILL RIGHT AND EMPTY WAS THE WRONG SHAPE OF IT. A timeout is ours and the conversation
+#: should carry on; what it must not do is carry on as though measurement were not something this product
+#: does. So the block says a measurement was owed and did not arrive, and it shuts the one door the
+#: transcripts show the model walking through. It writes no sentence for the customer: what they read is
+#: still the model's own words, and the wording of a first turn is the owner's to decide.
+#:
+#: `refused` and `unsupported_format` keep today's behaviour on purpose. The first is the package
+#: declining before it opened the file; the second is the customer's to act on and
+#: `pipeline/geometry_admission` already says so at submission. Changing either is a separate decision.
+MEASUREMENT_DID_NOT_FINISH = chr(10).join((
+    "- - - THE MEASUREMENT - - -",
+    "This file WAS measured and the measurement did not finish, so you have no opening table, no port "
+    "sizes, no coordinates and no port count for it. That is a limit on OUR side and not a property of "
+    "their part: the same file often measures on a second attempt.",
+    "WHAT THAT MEANS FOR WHAT YOU ASK. Do not ask the customer for geometry. Not opening sizes, not "
+    "bores or diameters, not which mouth is the inlet or the outlet, not how many openings there are, "
+    "not coordinates, not which face anything sits on. Those are facts about their own file that our "
+    "measurement owes them, nobody reads them off a STEP file by hand, and asking turns our failure "
+    "into their homework. It is the one thing never to do on this turn.",
+    "Ask only for what a person actually holds: the purpose, the fluid, the flow conditions, the cell "
+    "budget. Then either proceed on their brief alone and let the builder read the file itself, or tell "
+    "them plainly that this part could not be read this time and offer to try it again. Never say or "
+    "imply that you are about to read the shape, and never promise a table you cannot produce.",
+))
+
+
 def render_block(document: dict | None, *, survey: dict | None = None, armed: bool = False) -> str:
     """The measurement, as the model's own knowledge of the part. Empty string when there is none.
 
@@ -491,7 +540,13 @@ def render_block(document: dict | None, *, survey: dict | None = None, armed: bo
     port question belongs to the Surveyor rather than to it; the Surveyor's own questions follow; and
     `waiting_lines` names the chain's two slow turns, which exist only when it is armed.
     """
-    if not isinstance(document, dict) or document.get("status") != "ok":
+    if not isinstance(document, dict):
+        # None is "not attempted", the one case where an empty block is the whole truth
+        return ""
+    status = str(document.get("status") or "")
+    if status == STATUS_MEASUREMENT_FAILED:
+        return MEASUREMENT_DID_NOT_FINISH
+    if status != STATUS_OK:
         return ""
     try:
         if not armed:
