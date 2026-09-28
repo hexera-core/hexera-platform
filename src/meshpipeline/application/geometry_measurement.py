@@ -380,9 +380,31 @@ async def on_upload(source_id: str, owner_id: str, *, size_bytes: int,
                 timeout=deadline + 5.0)
             return "measured"
         except TimeoutError:
-            logger.warning("geometry measurement: the inline measurement outlived %.0fs - "
-                           "source_id=%s; the conversation is unaffected", deadline, source_id)
-            return "skipped"
+            # A TIMEOUT IS THE ONE FAILURE WHERE MORE TIME IS THE WHOLE REMEDY, so it goes to a worker
+            # rather than being abandoned. This returned "skipped" and enqueued nothing, which meant a file
+            # small enough for this path and slower than its ceiling got ONE 60-second attempt on an HTTP
+            # request and was then given up on - while the worker beside it has the configured deadline,
+            # 900 seconds by default, and nothing else to do.
+            #
+            # MEASURED on the 36-file run of the night of 2026-09-27. Three parts of 36 died here -
+            # blade_row_rotor_001, shell_and_tube_7, shell_and_tube_7_unshared - and those three were the
+            # only stalls in the batch. `shell_and_tube_7` had measured successfully at 15:57 the same day,
+            # so the ceiling was racing the machine's load rather than rejecting a part we cannot read.
+            #
+            # The size threshold in front of this is what made that invisible: 44 corpus files measure at a
+            # median of 1.11s and a p90 of 3.91s, so a file under the threshold was assumed to be a file
+            # that measures in seconds. These three are under it and are not, and the assumption had no
+            # fallback behind it.
+            #
+            # The customer waits no longer than they did: the request still returns at the ceiling. The
+            # difference is that the measurement now finishes, and `_geometry_reading` reads the row by
+            # primary key on every turn, so a conversation that runs three or four messages picks it up.
+            queued = enqueue_measurement(str(source_id), owner_id, purpose=purpose)
+            logger.warning("geometry measurement: the inline measurement outlived %.0fs - source_id=%s; "
+                           "%s", deadline, source_id,
+                           "handed to a worker, which has the configured deadline" if queued
+                           else "no worker took it, so this upload has no measurement")
+            return "queued" if queued else "skipped"
         except Exception as exc:                   # noqa: BLE001 - an upload is never failed for this
             logger.warning("geometry measurement: the inline measurement failed - source_id=%s: %s",
                            source_id, exc)

@@ -80,8 +80,15 @@ STALLED_JOB_TIMEOUT_HOURS: int  = int(optional_env("STALLED_JOB_TIMEOUT_HOURS", 
 #: 3.91 s, and the one 12.32 s case is 55,946 faces. A customer will not wait for the tail.
 GEOMETRY_MEASUREMENT_SYNC_MAX_MB: float = float(optional_env("GEOMETRY_MEASUREMENT_SYNC_MAX_MB", "4"))
 #: How long one measurement may run before it is abandoned, matching the measurement package's own
-#: default deadline. A measurement that outlives it is recorded as a failure and the conversation
-#: proceeds exactly as it does with no measurement at all.
+#: default deadline. This governs a WORKER. The synchronous upload path has a tighter ceiling of its
+#: own (`application/geometry_measurement.SYNCHRONOUS_DEADLINE_CEILING_S`), because a customer waiting
+#: on an upload is not a worker, and a file that outlives that ceiling is handed to one rather than
+#: given up on.
+#:
+#: A measurement that outlives THIS is recorded as a failure, and the conversation is then told that a
+#: measurement was owed and did not arrive (`agents/intake/geometry_brief.MEASUREMENT_DID_NOT_FINISH`).
+#: It used to proceed exactly as it does with no measurement at all, and that sentence was here; the
+#: 36-file run of the night of 2026-09-27 measured what it cost, which was every stall in the batch.
 GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS: int = int(
     optional_env("GEOMETRY_MEASUREMENT_TIMEOUT_SECONDS", "900"))
 
