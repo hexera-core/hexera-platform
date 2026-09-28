@@ -115,7 +115,7 @@ def test_checks_are_the_applications_gates_not_a_fixed_count():
 
 def test_the_real_compatibility_gate_decides_the_engine_check():
     ok = build_brief(_Session())
-    bad = build_brief(_Session(input_kind="solid-body"))   # cfmesh cannot mesh that
+    bad = build_brief(_Session(input_kind="planar-domain"))   # a flat sheet: cfmesh cannot wrap that (a solid body it can - to a flow engine it is a body surface)
     assert next(c for c in ok["checks"] if c["id"] == "engine_compatible")["status"] == PASS
     fail = next(c for c in bad["checks"] if c["id"] == "engine_compatible")
     assert fail["status"] == FAIL and fail["detail"], "a failure with no reason"

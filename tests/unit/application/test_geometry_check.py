@@ -99,20 +99,20 @@ def test_the_confirmation_message_opens_with_the_phrase_the_intake_prompt_names(
     assert "Part size: 1449 x 1233 x 539 mm" in m
 
 
-def test_a_body_the_fluid_flows_around_is_declared_to_the_intake_as_a_body_surface():
-    """The check's 'solid-body' is the engines' 'body-surface': the message says the engines' word,
-    or snappyHexMesh refuses the run ("cannot produce an External CFD mesh from Solid body")."""
+def test_a_body_the_fluid_flows_around_is_declared_to_the_intake_by_its_own_kind():
+    """The message names the kind verbatim, the same word the session stores. "solid-body" with the
+    fluid around it is admitted by the flow engines through the gate's equivalence
+    (engines/purposes.kinds_admitted_as); a structural request on the same solid still has its kind."""
     body = ConfirmIn(input_kind="solid-body", flow="external", part="car body", openings=[],
                      seed_point_mm=None, size_mm=[1044.0, 389.0, 288.0], flow_axis="+x",
                      reference_length_mm=1044.0, grounded=True)
     m = confirmation_message(body)
-    assert "a solid body (car body), input_kind body-surface; the fluid flows around it." in m
+    assert "a solid body (car body), input_kind solid-body; the fluid flows around it." in m
     assert "No openings" in m
-    # the session stores the same word the message says (confirm_check writes intake_input_kind)
-    from meshpipeline.api.v1.geometry import intake_input_kind
-    assert intake_input_kind("solid-body") == "body-surface"
-    assert intake_input_kind("body-surface") == "body-surface"
-    assert intake_input_kind("fluid-domain") == "fluid-domain"
+    # and the gate admits exactly that submission on the flow engines
+    from meshpipeline.engines import registry as ec
+    from meshpipeline.engines.purposes import is_compatible
+    assert is_compatible(ec.get_spec("snappy"), "external_cfd", "solid-body")
 
 
 def test_the_patches_carry_the_sizes_and_positions_the_port_binding_reads():
