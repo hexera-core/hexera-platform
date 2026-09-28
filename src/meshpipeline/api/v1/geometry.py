@@ -193,8 +193,10 @@ def unit_in_effect(interpretation: dict | None) -> tuple[str, str]:
     scout's assumption of millimetres - which the stage shows beside the part's size, so a 117 m
     blade read as 117 mm is corrected where the sizes are."""
     if interpretation:
-        return str(interpretation.get("unit") or "mm"), str(interpretation.get("basis") or "user_confirmed")
-    return "mm", "assumed"
+        return str(interpretation["unit"]), str(interpretation["basis"])
+    from meshpipeline.contracts.geometry_units import LengthUnit
+
+    return LengthUnit.millimetre.value, "assumed"      # what both scouts assume when nothing says
 
 
 def in_confirmed_unit(body: ConfirmIn, scale_to_metres: float | None) -> ConfirmIn:
@@ -412,28 +414,29 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
 
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import check_object_key
+
+    # THE UNIT, SETTLED BEFORE ANYTHING IS DECLARED. A unit corrected in the box beside the sizes
+    # counts as the user's, exactly as a chat answer does - a STEP file that says millimetres for
+    # a blade drawn in metres is caught here. A form drawn while the numbers were read under
+    # another scale is re-read in the unit that stands, so a user who proceeds before the naming
+    # has re-read the facts never declares a size at the wrong scale. The unit is RECORDED below,
+    # in the same transaction as the rest of the confirmation and after the stored copy, so a
+    # confirmation that fails changes nothing at all.
+    from meshpipeline.contracts.geometry_units import LengthUnit, scale_to_metres
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
     from meshpipeline.persistence.session import get_db
 
-    # THE UNIT, SETTLED BEFORE ANYTHING IS DECLARED. A unit corrected in the box beside the sizes
-    # is recorded as the user's, exactly as a chat answer is - a STEP file that says millimetres
-    # for a blade drawn in metres is caught here. Then a form drawn while the numbers were read
-    # under another scale is re-read in the unit that stands, so a user who proceeds before the
-    # naming has re-read the facts never declares a size at the wrong scale.
     async with get_db() as db:
         interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
-        current = str(interpretation.get("unit")) if interpretation else None
-        if body.unit and body.unit != current:
-            interpretation = await gh.record_unit(db, session, owner_id, organization_id, body.unit)
-            await db.commit()
-            logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
-                        body.unit, session_id)
-    if interpretation is None:
+    current = str(interpretation.get("unit")) if interpretation else None
+    corrected = body.unit if body.unit and body.unit != current else None
+    if corrected is None and interpretation is None:
         # the numbers on the form are the file's own, read as millimetres until somebody says
         # otherwise; a declaration in a unit nobody named would bind the ports at the wrong scale
         raise HTTPException(409, UNIT_FIRST)
-    body = in_confirmed_unit(body, float(interpretation["scale_to_metres"]))
+    scale = scale_to_metres(LengthUnit(corrected)) if corrected else float(interpretation["scale_to_metres"])  # type: ignore[index]
+    body = in_confirmed_unit(body, scale)
     message = confirmation_message(body)
     patches = patches_from(body)
 
@@ -455,6 +458,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                                                           organization_id=organization_id)
         if session is None:
             raise HTTPException(404, "Session not found")
+        if corrected:
+            await gh.record_unit(db, session, owner_id, organization_id, corrected)
+            logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
+                        corrected, session_id)
         session.input_kind = body.input_kind
         session.intake_patches = patches
         session.messages = with_declaration(session.messages, message)

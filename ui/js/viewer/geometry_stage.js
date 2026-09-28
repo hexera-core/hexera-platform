@@ -238,7 +238,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       // unit serves them re-read, but the scene and its skin were drawn from the scout's reading,
       // so every length here stays in it: the unit box says which unit that is, and the server
       // re-reads the form from `scale_to_m` when it is confirmed. Only the words move.
-      const rescaled = p2.scale_to_m && p.scale_to_m && Math.abs(p2.scale_to_m - p.scale_to_m) > 1e-12;
+      const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;    // a missing scale is the display's default
+      const rescaled = Math.abs(theirs - mine) > 1e-12;
       const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$/.test(k))) : p2;
       // a unit the user set in the box outlives the re-draw; a served one fills an untouched box
       const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
@@ -533,7 +534,7 @@ function initScene(sessionId, box, surf, p) {
     const external = !!flowSel && flowSel.value === "external";
     pins.forEach((pn) => { pn.actor.setVisibility(!external); if (external) pn.el.style.display = "none"; });
     if (!external) { rw.render(); return; }
-    const ex = readExternal(form);
+    const ex = readExternal(form, p);
     const axis = ex.flow_axis && ex.flow_axis !== "unknown" ? ex.flow_axis : "+x";
     const k = { x: 0, y: 1, z: 2 }[axis[1]], sign = axis[0] === "-" ? -1 : 1;
     const dir = [0, 0, 0]; dir[k] = sign;

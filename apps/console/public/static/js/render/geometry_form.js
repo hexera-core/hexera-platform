@@ -36,6 +36,9 @@ const num = (v, d) => (v == null || v === "" || isNaN(v)) ? d : Number(v);
 export const UNITS = [["mm", "millimetres"], ["cm", "centimetres"], ["m", "metres"], ["in", "inches"]];
 const SCALE = { mm: 0.001, cm: 0.01, m: 1.0, in: 0.0254 };
 const raw = (v, p) => v * (0.001 / ((p && p.scale_to_m) || 0.001));
+// a number the user types is in the file's own units; the server takes lengths in the reading's
+// millimetres, so it goes back through the same scale
+const typed = (v, p) => v * (((p && p.scale_to_m) || 0.001) / 0.001);
 function fmt3(v) { const a = Math.abs(v); return a >= 100 ? String(Math.round(v)) : a === 0 ? "0" : String(Number(v.toPrecision(3))); }
 export const shown = (v, p) => (v == null || isNaN(v)) ? "?" : fmt3(raw(v, p));
 export const unitOf = (p) => (p && SCALE[p.unit] ? p.unit : "mm");
@@ -90,7 +93,7 @@ export function formHtml(p) {
   // flow is around the part; the openings table only when it is through.
   const external = `<div class="gc-ext"${p.flow === "external" ? "" : " hidden"}>
       <div class="rc-row"><div class="rc-k">The fluid travels along</div><div class="rc-v">${sel("gc-sel gc-axis", AXES, p.flow_axis || "unknown")}${p.flow_axis_guessed ? '<span class="gc-guess">a guess - check it</span>' : ""}</div></div>
-      <div class="rc-row"><div class="rc-k">Reference length</div><div class="rc-v"><input class="gc-num gc-ref" type="number" min="0" step="any" value="${num(p.reference_length_mm, 0)}" aria-label="reference length"> ${sym(p)} along the flow</div></div>
+      <div class="rc-row"><div class="rc-k">Reference length</div><div class="rc-v"><input class="gc-num gc-ref" type="number" min="0" step="any" value="${p.reference_length_mm == null ? 0 : fmt3(raw(num(p.reference_length_mm, 0), p))}" aria-label="reference length"> ${sym(p)} along the flow</div></div>
       <div class="rc-row"><div class="rc-k">Far field, in lengths</div><div class="rc-v gc-extents">${EXTENTS.map(([k, l]) =>
         `<label>${esc(l)} <input class="gc-num gc-ext-${k}" data-k="${k}" type="number" min="0.5" step="0.5" value="${num(ext[k], 5)}"></label>`).join("")}</div></div>
       <div class="rc-row"><div class="rc-k">On the ground</div><div class="rc-v"><label><input class="gc-ground" type="checkbox"${p.grounded ? " checked" : ""}> the part stands on the ground</label></div></div>
@@ -149,14 +152,15 @@ export function followUnit(root, p, unit, basis) {
   const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
 }
 
-/** The external-flow answers as the form holds them now. */
-export function readExternal(root) {
+/** The external-flow answers as the form holds them now; the reference length typed in the
+ *  file's units, read back in the reading's millimetres. */
+export function readExternal(root, p) {
   const ext = {};
   // a margin below half a body length is no far field at all; a blank box keeps the default
   root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { ext[el.dataset.k] = Math.max(0.5, num(el.value, 5)); });
   const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref"), gEl = root.querySelector(".gc-ground");
   return { flow_axis: axisEl ? axisEl.value : "unknown",
-           reference_length_mm: refEl && num(refEl.value, 0) > 0 ? num(refEl.value, 0) : null,
+           reference_length_mm: refEl && num(refEl.value, 0) > 0 ? typed(num(refEl.value, 0), p) : null,
            extents: ext, grounded: !!(gEl && gEl.checked) };
 }
 
@@ -167,7 +171,7 @@ export function readForm(root, p) {
     const body = { id, name: tr.querySelector(".gc-name").value.trim() || o.name || `opening_${id}`,
                    role: tr.querySelector(".gc-role").value, centroid_mm: o.centroid_mm || null };
     const dia = tr.querySelector(".gc-dia");
-    if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = v; }
+    if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = typed(v, p); }    // typed in the file's units
     else if (o.shape === "circle") body.diameter_mm = o.diameter_mm;
     else { body.width_mm = o.width_mm; body.height_mm = o.height_mm; body.diameter_mm = o.diameter_mm; }
     return body;
@@ -177,7 +181,7 @@ export function readForm(root, p) {
                  // the scale the numbers were read under and the unit the user says the file is
                  // in, for the server to record the unit and re-read every length in it
                  scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m), unit: unitOf(p) };
-  if (flow === "external") Object.assign(body, readExternal(root));
+  if (flow === "external") Object.assign(body, readExternal(root, p));
   return body;
 }
 

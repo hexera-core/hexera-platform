@@ -135,9 +135,11 @@ async def interpretation_payload(db, session, owner_id: str, organization_id: st
 
 async def record_unit(db, session, owner_id: str, organization_id: str, unit: str) -> dict:
     """The unit corrected on the stage, recorded exactly as the chat records an answer: a
-    user-confirmed interpretation bound to the session, and the open unit question closed. A
-    STEP file that says millimetres for a part drawn in metres is caught here, where the sizes
-    are, not after the run. Returns the interpretation as the worker reads it."""
+    user-confirmed interpretation bound to the session. A STEP file that says millimetres for a
+    part drawn in metres is caught here, where the sizes are, not after the run. The intake gate
+    is left to the intake authority: its open unit question is moot once the interpretation is
+    bound, which is the first thing every unit turn checks. Returns the interpretation as the
+    worker reads it."""
     import uuid
     from dataclasses import asdict
 
@@ -152,11 +154,7 @@ async def record_unit(db, session, owner_id: str, organization_id: str, unit: st
         db, owner_id=owner_id, geometry_source_id=session.geometry_source_id, unit=LengthUnit(unit),
         basis=ResolutionBasis.user_confirmed, evidence="confirmed on the geometry stage",
         organization_id=organization_id)
-    sessions = SessionRepository()
-    await sessions.bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
-    gate = dict(getattr(session, "intake_gate", None) or {})
-    if gate.pop("unit_question", None) is not None:
-        await sessions.set_intake_gate(db, session.id, gate)
+    await SessionRepository().bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
     return asdict(GeometryInterpretationRef.from_domain(recorded))
 
 
