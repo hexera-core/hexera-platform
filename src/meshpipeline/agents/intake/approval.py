@@ -467,7 +467,8 @@ async def _refuse_in_the_conversation(db, session_repo, session_id, gate: dict, 
     await session_repo.set_intake_gate(db, session_id, gate)
     await session_repo.append_message(db, session_id, "assistant", reason)
     await db.commit()
-    logger.warning("approval: refused before dispatch (%s) - session=%s", status.value, session_id)
+    # the session id is logged by the message path that led here; only the reason class goes out
+    logger.warning("approval: refused before dispatch (%s)", status.value)
     raise ApprovalTransactionError(ConfirmOutcome(status, reason)) from cause
 
 
