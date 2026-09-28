@@ -16,7 +16,7 @@ from meshpipeline.contracts.review_evidence import (
     RenderArtifactRequirement,
     ReviewRenderer,
 )
-from meshpipeline.engines.ground_plane import ground_patch_name
+from meshpipeline.engines.ground_plane import ground_patch_name, is_ground
 from meshpipeline.engines.purposes import PURPOSES, Purpose, is_compatible, topology_of  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -514,7 +514,7 @@ class EngineSpec:
         # exactly what admission is for.) The ground plane is not counted: the domain makes it,
         # so a one-region car with car + ground + farfield asks the geometry for ONE wall.
         _walls = [p.name for p in evidence.patches if p.type == "wall"
-                  and not (_ground and p.name == _ground)]
+                  and not (_ground and is_ground(p.name, p.type))]
         if len(_walls) > 1 and _supplies_fewer_regions(self, evidence, _walls):
             out.append(Rejection(
                 code="multiple_wall_patches_unsupported", phase="declared", field="patches",

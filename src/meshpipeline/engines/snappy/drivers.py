@@ -198,6 +198,19 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     return result
 
 
+def _box_patch_names(patches: list) -> frozenset[str]:
+    """The external box's own patches: the far field, a declared ground plane and declared
+    symmetry planes. Everything else in the boundary is the body - its wall and any regions it
+    was split into - so this is what a count of the body's faces leaves out."""
+    names = {"farfield"}
+    names.update(str(p.get("name")) for p in patches
+                 if (p.get("type") or "").strip() == "symmetry" and p.get("name"))
+    ground = ground_patch_name(patches)
+    if ground:
+        names.add(ground)
+    return frozenset(names)
+
+
 def _plan_surface(state, workspace):
     from meshpipeline.cad.staging import staged_surface
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
@@ -310,6 +323,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         await publish.anote(
             ("; ".join(_layout)),
             op_id="snappy:symmetry-detected" if symmetry is not None else "snappy:ground-plane")
+    # the patches blockMesh makes from the BOX, not the body: none of their faces is the body's
+    _box_patches = _box_patch_names(state.get("intake_patches") or [])
 
     plan = initial_plan
     # retry mode arrives with a prior failure but no pre-made plan → seed the first re-plan with it
@@ -433,9 +448,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
-            # faces on the BODY: the ground is a box face with faces of its own, and counting it
-            # would call a carve that lost the body a captured one
-            wall_faces = sum(c for p, c in fc.items() if p not in ("farfield", _ground))
+            # faces on the BODY: every box face - far field, ground, symmetry - has faces of its
+            # own, and counting one would call a carve that lost the body a captured one
+            wall_faces = sum(c for p, c in fc.items() if p not in _box_patches)
             production, reason = _judge_snappy(result, q, wall_faces)
             last_valid = bool(result.get("rc") == 0 and wall_faces > 0 and not q.get("fatal"))
             run.note_native_run(produced_usable_mesh=last_valid)
@@ -842,8 +857,8 @@ def run_enricher(R, workspace, res: dict, q: dict, out: dict) -> None:
     # Reach the shared patch-count helper THROUGH the engine seam (the adapter
     # forwards it) so builder_tools stays engine-agnostic.
     fc = R._patch_face_counts(workspace)
-    _ground = ground_patch_name(contract_patches(workspace))
-    wall_faces = sum(c for p, c in fc.items() if p not in ("farfield", _ground))
+    _box = _box_patch_names(contract_patches(workspace))
+    wall_faces = sum(c for p, c in fc.items() if p not in _box)
     out["layer_coverage_pct"] = res.get("layer_coverage")
     out["per_patch_layers"] = res.get("per_patch_layers")
     out["wall_faces"] = wall_faces

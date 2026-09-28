@@ -54,6 +54,11 @@ class TestTheGateCountsOnlyTheBody:
         patches = [("car", "wall"), ("Ground", "wall"), ("farfield", "farfield")]
         assert _codes("snappy", patches, ONE_REGION) == set()
 
+    def test_a_second_spelling_of_the_ground_is_not_a_body_wall(self):
+        # ground + Ground and no body: both are the floor, so the body wall is still missing
+        patches = [("ground", "wall"), ("Ground", "wall"), ("farfield", "farfield")]
+        assert "missing_wall_patch" in _codes("snappy", patches, ONE_REGION)
+
     def test_a_ground_with_no_body_wall_asks_for_the_body(self):
         rejections = get_spec("snappy").admit(
             _ev("snappy", [("ground", "wall"), ("farfield", "farfield")], ONE_REGION))
@@ -127,6 +132,13 @@ class TestIntakeValidation:
     def test_a_ground_under_a_flow_along_z_is_refused(self):
         errs = _submission(flow_axis="-z")
         assert any("cannot also travel along z" in e for e in errs), errs
+
+    def test_the_ground_is_declared_once(self):
+        errs = _submission(patches=[{"name": "car", "type": "wall"},
+                                    {"name": "ground", "type": "wall"},
+                                    {"name": "Ground", "type": "wall"},
+                                    {"name": "farfield", "type": "farfield"}])
+        assert any("declare it once" in e for e in errs), errs
 
 
 # the domain builder
@@ -437,6 +449,19 @@ class TestTheDriver:
         seen["faces"] = {"car": 0, "ground": 900, "farfield": 300}
         ok, _pub = run()
         assert ok is False
+
+    def test_symmetry_faces_never_stand_in_for_a_lost_body(self, driver, monkeypatch):
+        # a half car on the ground: the cut and the floor are both box faces, neither the body
+        run, seen = driver
+        monkeypatch.setattr(R, "detect_symmetry_plane", lambda *a, **k: {
+            "axis": 1, "pos": 0.0, "side": "min", "name": "symmetry"})
+        half = [*CAR_ON_GROUND, ("symmetry", "symmetry")]
+        seen["faces"] = {"car": 0, "ground": 900, "symmetry": 400, "farfield": 300}
+        ok, _pub = run(patches=half)
+        assert ok is False
+        seen["faces"] = {"car": 500, "ground": 900, "symmetry": 400, "farfield": 300}
+        ok, _pub = run(patches=half)
+        assert ok is True
 
     def test_a_flow_along_z_is_refused_before_any_build(self, driver):
         run, seen = driver

@@ -412,6 +412,12 @@ def _validate_ground_plane(patches: list, flow_axis) -> list[str]:
 
     errors: list[str] = []
     entries = [p for p in patches if isinstance(p, dict)]
+    grounds = [(p.get("name") or "").strip() for p in entries
+               if (p.get("name") or "").strip().casefold() == GROUND_PATCH]
+    if len(grounds) > 1:
+        errors.append(
+            f"patches declare the ground {len(grounds)} times ({', '.join(map(repr, grounds))}) - "
+            "the box has one floor, so declare it once, as 'ground' with type 'wall'")
     for i, p in enumerate(entries):
         nm = (p.get("name") or "").strip()
         if nm.casefold() == GROUND_PATCH and (p.get("type") or "").strip() != "wall":
