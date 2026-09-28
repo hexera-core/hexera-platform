@@ -298,41 +298,47 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
         plan = await spend_gate.admit(db, owner_id=owner_id, organization_id=organization_id)
         await job_service.check_quotas(db, owner_id, plan=plan)
     except ValueError as exc:
-        raise ApprovalTransactionError(ConfirmOutcome(
-            ConfirmStatus.quota_exceeded, str(exc))) from exc
+        # THE USER SAID YES AND NOTHING CAN RUN. Their "yes" is already in the transcript, so the
+        # summary must expect the NEXT message: without this, the same "yes" after the quota
+        # frees (or credits are added) was refused as stale, forever. And the reason is a turn
+        # of the conversation - only the response carried it before, so the history showed the
+        # "yes" answered by nothing.
+        await _refuse_in_the_conversation(
+            db, session_repo, session_id, gate, snapshot, ConfirmStatus.quota_exceeded, str(exc),
+            logger=logger, cause=exc)
+
+    # THE SESSION'S GEOMETRY, before anything is created. The job inherits the SESSION's source,
+    # resolved inside this transaction and scoped to the owner, so a session naming another
+    # tenant's upload never links. No directory is renamed: the durable copy is the stored object.
+    source_ref = await source_ref_for_session(db, session, owner_id)
+    if source_ref is None:
+        await _refuse_in_the_conversation(
+            db, session_repo, session_id, gate, snapshot, ConfirmStatus.no_geometry,
+            "No geometry is associated with this session. Upload a file first.", logger=logger)
+    # The scale travels with the bytes, resolved in the SAME transaction and scoped to the same
+    # owner. A source whose unit was never confirmed cannot be meshed at all - the size would have
+    # to be assumed - so it is refused here, in the conversation, not as an opaque failure later.
+    interp_ref = await interpretation_ref_for_session(db, session, owner_id)
+    if interp_ref is None:
+        await _refuse_in_the_conversation(
+            db, session_repo, session_id, gate, snapshot, ConfirmStatus.no_confirmed_unit,
+            "This geometry has no confirmed unit yet, so its physical size is unknown. Confirm "
+            "what the file's units represent, then try again.", logger=logger)
+    # RETENTION EXPIRY is answered HERE, before any object-store read and before dispatch: the user
+    # is in the conversation right now and can act on it, and no job should run for bytes that no
+    # longer exist.
+    row = await source_repo.get_for_owner(db, uuid.UUID(source_ref.source_id), owner_id)
+    if row is not None and getattr(row, "purged_at", None) is not None:
+        await _refuse_in_the_conversation(
+            db, session_repo, session_id, gate, snapshot, ConfirmStatus.source_expired,
+            "This geometry was removed after its retention period. Upload the file again to "
+            "start a new run.", logger=logger)
 
     # STAMPED WITH BOTH. The organisation is not optional decoration here: every later read of
     # this job - status polling, the WS ticket, dispute, /surface - scopes on organization_id for
     # any principal that has one, and `NULL = <uuid>` is NULL. A job created without it is
     # invisible to the very person who just approved it, forever.
     job = await job_repo.create(db, owner_id=owner_id, organization_id=organization_id)
-
-    # The job inherits the SESSION's source, resolved inside this transaction and scoped to the
-    # owner, so a session naming another tenant's upload never links. No directory is renamed: the
-    # durable copy is the stored object.
-    source_ref = await source_ref_for_session(db, session, owner_id)
-    if source_ref is None:
-        raise ApprovalTransactionError(ConfirmOutcome(
-            ConfirmStatus.no_geometry,
-            "No geometry is associated with this session. Upload a file first."))
-    # The scale travels with the bytes, resolved in the SAME transaction and scoped to the same
-    # owner. A source whose unit was never confirmed cannot be meshed at all - the size would have
-    # to be assumed - so it is refused here, in the conversation, not as an opaque failure later.
-    interp_ref = await interpretation_ref_for_session(db, session, owner_id)
-    if interp_ref is None:
-        raise ApprovalTransactionError(ConfirmOutcome(
-            ConfirmStatus.no_confirmed_unit,
-            "This geometry has no confirmed unit yet, so its physical size is unknown. Confirm "
-            "what the file's units represent, then try again."))
-    # RETENTION EXPIRY is answered HERE, before any object-store read and before dispatch: the user
-    # is in the conversation right now and can act on it, and no job should run for bytes that no
-    # longer exist.
-    row = await source_repo.get_for_owner(db, uuid.UUID(source_ref.source_id), owner_id)
-    if row is not None and getattr(row, "purged_at", None) is not None:
-        raise ApprovalTransactionError(ConfirmOutcome(
-            ConfirmStatus.source_expired,
-            "This geometry was removed after its retention period. Upload the file again to "
-            "start a new run."))
 
     job.geometry_source_id = uuid.UUID(source_ref.source_id)
     job.geometry_interpretation_id = uuid.UUID(interp_ref.interpretation_id)
@@ -443,6 +449,27 @@ def assert_payload_matches_approval(payload: dict, snapshot: dict, source_ref, *
                      "approval record %s - drifted field(s): %s - refusing to dispatch",
                      snapshot_id, drifted)
         raise ApprovalTransactionError(ConfirmOutcome(ConfirmStatus.inconsistent, _INCONSISTENT))
+
+
+async def _refuse_in_the_conversation(db, session_repo, session_id, gate: dict, snapshot: dict,
+                                      status: ConfirmStatus, reason: str, *, logger,
+                                      cause: BaseException | None = None) -> None:
+    """A refusal BEFORE any job exists, answered as a turn of the conversation.
+
+    The user's "yes" is already in the transcript (accept() committed it), so the snapshot must
+    expect the NEXT message: without the deferral the same "yes" after the cause was fixed - a
+    quota that freed, credits added, a unit confirmed, a file re-uploaded - was refused as
+    "stale", forever. And the reason is written as the assistant's line: the response alone
+    carried it before, so the history showed the "yes" answered by nothing. Nothing else in the
+    transaction has been written yet, so committing here commits only the gate and the line.
+    """
+    gate["approval"] = defer(snapshot)
+    await session_repo.set_intake_gate(db, session_id, gate)
+    await session_repo.append_message(db, session_id, "assistant", reason)
+    await db.commit()
+    # the session id is logged by the message path that led here; only the reason class goes out
+    logger.warning("approval: refused before dispatch (%s)", status.value)
+    raise ApprovalTransactionError(ConfirmOutcome(status, reason)) from cause
 
 
 async def confirm_pending_approval(session, session_repo, owner_id: str, session_id, *,
