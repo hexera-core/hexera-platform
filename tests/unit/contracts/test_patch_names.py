@@ -131,3 +131,43 @@ def test_the_intake_hands_every_handler_the_mesh_safe_names_and_tells_the_model(
                     {"name": "farfield", "type": "farfield"}]}))
     assert [p["name"] for p in seen["patches"]] == ["car_wall", "ground", "farfield"]
     assert "car_wall" in res.content and res.content.endswith("ok")
+
+
+# review findings
+
+def test_a_trailing_newline_is_not_mesh_safe():
+    assert not is_mesh_safe("car\n") and not is_mesh_safe("car\r\n")
+    assert mesh_safe("car\n") == "car"
+
+
+def test_the_same_name_twice_stays_a_duplicate_for_the_validator_to_refuse():
+    # Cleaning a spelling must never turn a duplicate into a second, new boundary.
+    out, renames = normalize_patches([{"name": "ground", "type": "wall"},
+                                      {"name": "ground", "type": "wall"}])
+    assert [p["name"] for p in out] == ["ground", "ground"] and renames == {}
+    out, _ = normalize_patches([{"name": "car wall"}, {"name": "car wall"}])
+    assert [p["name"] for p in out] == ["car_wall", "car_wall"]
+
+
+def test_the_validator_names_the_position_the_caller_sent():
+    from meshpipeline.agents.intake.validation import _validate_patch_names
+
+    errs = _validate_patch_names(["not a patch", {"name": "car wall", "type": "wall"}])
+    assert len(errs) == 1 and errs[0].startswith("patches[1].name")
+
+
+def test_run_mesh_refuses_an_unsafe_approved_name_before_any_mesh(tmp_path):
+    import json
+
+    from meshpipeline.agents.builder.tools.meshing import _unsafe_patch_names
+
+    (tmp_path / "port_declaration.json").write_text(json.dumps([
+        {"name": "car wall", "type": "wall"}, {"name": "ground", "type": "wall"},
+        {"name": "farfield", "type": "farfield"}]), encoding="utf-8")
+    assert _unsafe_patch_names(tmp_path) == ["car wall"]
+    (tmp_path / "port_declaration.json").write_text(json.dumps([
+        {"name": "car_wall", "type": "wall"}]), encoding="utf-8")
+    assert _unsafe_patch_names(tmp_path) == []
+    (tmp_path / "port_declaration.json").unlink()
+    assert _unsafe_patch_names(tmp_path) == []          # no declaration: nothing to refuse
+
