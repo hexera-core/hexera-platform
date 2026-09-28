@@ -11,5 +11,5 @@
 # weighed and why the wheel won). The wheel is how the agent RUNS here; this file is how a person READS it.
 [submodule "geometry_agent"]
 	path = geometry_agent
-	url = https://github.com/hexera-core/Hexera-Geometry.git
+	url = https://github.com/hexera-core/Hexera-Geometry-Survey-Agent.git
 	branch = main
