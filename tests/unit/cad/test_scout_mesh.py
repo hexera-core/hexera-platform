@@ -125,3 +125,37 @@ def test_obj_files_read_the_same_triangles(tmp_path):
     assert tris.shape == (12, 3, 3)
     res = scout_mesh(p, scale_to_m=1.0)
     assert res.flow == "external" and res.solids == 1
+
+
+def test_the_mesh_scouts_result_is_plain_json(tmp_path):
+    """The mesh scout measures with numpy; its result is stored as JSON. One numpy bool in a face
+    record (clear_ahead, on_extremity) refused the whole store, and the check waited forever."""
+    import json
+
+    import numpy as np
+
+    from meshpipeline.cad.scout_mesh import scout_mesh
+
+    tris = np.array([  # an open box: five faces of a 10 mm cube, the top missing - a rim and four flats
+        [[0, 0, 0], [10, 0, 0], [10, 10, 0]], [[0, 0, 0], [10, 10, 0], [0, 10, 0]],
+        [[0, 0, 0], [0, 0, 10], [10, 0, 10]], [[0, 0, 0], [10, 0, 10], [10, 0, 0]],
+        [[10, 0, 0], [10, 0, 10], [10, 10, 10]], [[10, 0, 0], [10, 10, 10], [10, 10, 0]],
+        [[10, 10, 0], [10, 10, 10], [0, 10, 10]], [[10, 10, 0], [0, 10, 10], [0, 10, 0]],
+        [[0, 10, 0], [0, 10, 10], [0, 0, 10]], [[0, 10, 0], [0, 0, 10], [0, 0, 0]],
+    ], dtype=float)
+    path = tmp_path / "box.stl"
+    with path.open("w") as fh:
+        print("solid box", file=fh)
+        for tri in tris:
+            print("facet normal 0 0 0", file=fh)
+            print("outer loop", file=fh)
+            for v in tri:
+                print(f"vertex {v[0]} {v[1]} {v[2]}", file=fh)
+            print("endloop", file=fh)
+            print("endfacet", file=fh)
+        print("endsolid box", file=fh)
+    r = scout_mesh(path, scale_to_m=0.001)
+    d = r.as_dict()
+    d.update(getattr(r, "extra", {}) or {})
+    text = json.dumps(d)                         # raises TypeError on a numpy scalar
+    assert '"on_extremity"' in text and '"clear_ahead"' in text

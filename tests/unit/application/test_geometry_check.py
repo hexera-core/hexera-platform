@@ -373,3 +373,19 @@ def test_the_model_is_told_which_way_each_picture_looks_and_about_the_axis_marke
     text = gc._facts_text(_facts(), [_View("top", (0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))], "")
     assert "red +X, green +Y, blue +Z" in text
     assert "top (stickers facing the camera: none), camera looks along -Z (from above)" in text
+
+
+def test_the_check_store_turns_numpy_into_plain_json():
+    import json
+
+    import numpy as np
+
+    from meshpipeline.application.geometry_check import jsonable
+
+    payload = {"ok": np.bool_(True), "n": np.int64(3), "x": np.float32(1.5), "v": np.array([1, 2]),
+               "faces": [{"clear_ahead": np.bool_(False)}], "name": "elbow"}
+    out = jsonable(payload)
+    assert json.dumps(out) and out == {"ok": True, "n": 3, "x": 1.5, "v": [1, 2],
+                                       "faces": [{"clear_ahead": False}], "name": "elbow"}
+    assert type(out["ok"]) is bool and type(out["n"]) is int
+

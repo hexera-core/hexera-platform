@@ -630,8 +630,9 @@ def measured_faces(candidates: list[Opening]) -> list[dict]:
              "centroid_mm": [round(v * mm, 2) for v in c.centroid],
              "normal": [round(v, 5) for v in c.normal], "area_mm2": round(c.area * mm * mm, 2),
              "diameter_mm": round(c.equivalent_diameter * mm, 2),
-             "clear_ahead": c.clear_ahead, "on_extremity": c.on_extremity, "rim_free": c.rim_free,
-             "inward": c.inward, "depth_ratio": round(c.depth_ratio, 2)}
+             # plain bools: the mesh scout computes these with numpy, and a numpy bool is not JSON
+             "clear_ahead": bool(c.clear_ahead), "on_extremity": bool(c.on_extremity), "rim_free": bool(c.rim_free),
+             "inward": bool(c.inward), "depth_ratio": round(float(c.depth_ratio), 2)}
         if c.shape != "circle":
             d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, 2), round(c.wh[1] * mm, 2)
         out.append(d)

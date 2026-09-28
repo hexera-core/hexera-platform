@@ -37,11 +37,35 @@ def check_object_key(session_id: str, name: str) -> str:
     return f"sessions/{session_id}/geometry_check/{name}"
 
 
+def jsonable(value):
+    """The payload with every numpy scalar and array turned into the plain Python it stands for.
+    The mesh scout measures with numpy, and one stray numpy bool in a face record made the store
+    refuse the whole check - and because the status write failed too, the stage waited forever."""
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy is a hard dependency of the scout
+        np = None
+    if isinstance(value, dict):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    if np is not None:
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return jsonable(value.tolist())
+    return value
+
+
 def _store_json(object_key: str, payload: dict) -> None:
     from meshpipeline.contracts.object_storage import get_object_store
 
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-        json.dump(payload, fh)
+        json.dump(jsonable(payload), fh)
         tmp = Path(fh.name)
     try:
         get_object_store().upload_file(local_path=tmp, object_key=object_key)
