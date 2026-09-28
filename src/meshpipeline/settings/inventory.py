@@ -452,6 +452,7 @@ INVENTORY: list[Group] = [
         EnvVar("WORKER_HEARTBEAT_SECONDS", "60", kind="int", help="must be well under WORKER_LEASE_SECONDS (validated at import)"),
         EnvVar("REQUIRE_DURABLE_CHECKPOINTER", "", kind="bool", help="forced on outside development; leave blank"),
         EnvVar("PIPELINE_BACKEND", "celery", help="which execution backend the run is attributed to"),
+        EnvVar("WORKER_WAKE_MINUTES", "8", kind="int", help="how long a worker takes to pick a job up when the fleet is scaled to zero (autoscaler reaction + VM boot + image pull); the console shows 'waiting for a worker to start (about N minutes)' while a job is pending. 0 hides the estimate"),
     ]),
 
     Group("Safety switches", note="On by default. Each one is a gate that refuses bad geometry or unsafe generated work; turn one off only with a measured reason.", vars=[

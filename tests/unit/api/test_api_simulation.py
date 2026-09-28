@@ -65,3 +65,47 @@ async def test_malformed_job_id_returns_422():
     async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
         resp = await c.get("/api/v1/simulation/not-a-uuid")
     assert resp.status_code == 422
+
+
+async def _get(mock_job):
+    with patch.object(sim_module, "get_db", _mock_get_db):
+        with patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=mock_job)):
+            async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
+                return await c.get(f"/api/v1/simulation/{_JOB_ID}")
+
+
+async def test_a_pending_job_carries_the_worker_wake_estimate(monkeypatch):
+    import meshpipeline.settings.runtime as rtcfg
+    monkeypatch.setattr(rtcfg, "WORKER_WAKE_MINUTES", 8)
+    job = _make_mock_job()
+    job.status = "pending"
+    job.started_at = None
+    job.ended_at = None
+    resp = await _get(job)
+    assert resp.status_code == 200
+    assert resp.json()["worker_wake_minutes"] == 8
+
+
+async def test_a_started_job_carries_no_wake_estimate(monkeypatch):
+    import meshpipeline.settings.runtime as rtcfg
+    monkeypatch.setattr(rtcfg, "WORKER_WAKE_MINUTES", 8)
+    running = _make_mock_job()
+    running.status = "running"
+    assert (await _get(running)).json()["worker_wake_minutes"] is None
+    assert (await _get(_make_mock_job())).json()["worker_wake_minutes"] is None   # succeeded
+
+
+def test_the_wake_estimate_is_pure_over_the_row_and_zero_hides_it(monkeypatch):
+    import meshpipeline.settings.runtime as rtcfg
+    from meshpipeline.api.v1.simulation import worker_wake_estimate
+    from meshpipeline.persistence.models import JobStatus
+    monkeypatch.setattr(rtcfg, "WORKER_WAKE_MINUTES", 8)
+    def row(status, started):
+        return type("J", (), {"status": status, "started_at": started})()
+    assert worker_wake_estimate(row(JobStatus.pending, None)) == 8
+    assert worker_wake_estimate(row(JobStatus.queued, None)) == 8
+    assert worker_wake_estimate(row(JobStatus.pending, _NOW)) is None
+    assert worker_wake_estimate(row(JobStatus.running, None)) is None
+    assert worker_wake_estimate(row(JobStatus.failed, None)) is None
+    monkeypatch.setattr(rtcfg, "WORKER_WAKE_MINUTES", 0)
+    assert worker_wake_estimate(row(JobStatus.pending, None)) is None

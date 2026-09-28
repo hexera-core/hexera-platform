@@ -2,8 +2,11 @@
 # Boundaries: turn mechanics; it decides nothing about intent.
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: The conversation bound. Reaching it never forces a submit - see `budget_nudge`.
 MAX_TURNS = 12
@@ -98,6 +101,27 @@ def hydrate(state, state_messages) -> TurnContext:
         approval=_sub("approval"),
         rec_authorized=rec.recommendation_requested(latest),
     )
+
+
+def unsettled_reply(state, exit_reason=None) -> str:
+    """The sentence a turn stores when the loop ended with nothing to say.
+
+    Round exhaustion, a deadline and a no-progress stop all return no payload, and a completed
+    round can carry empty content; each used to persist a blank assistant message that the
+    console drew as an empty bubble and the next turn handed the model as conversation. The
+    turn owes the user one honest sentence instead: it did not settle the request, and here is
+    the one thing they can say to move it on - named from the gate state, never guessed."""
+    selection = state.selection or {}
+    approval = state.approval or {}
+    if selection and not selection.get("confirmed"):
+        ask = "tell me which engine you want"
+    elif approval.get("status") == "awaiting_confirmation":
+        ask = "say 'go ahead' to confirm the summary above, or tell me what to change,"
+    else:
+        ask = "tell me what you need meshed and for which simulation"
+    _why = getattr(exit_reason, "value", exit_reason) or "no reply"
+    logger.info("Intake: turn ended with nothing to say (%s) - storing the unsettled reply", _why)
+    return f"I could not settle this in one go - {ask} and I will continue."
 
 
 def serialise_transcript(llm_messages, assistant_text: str) -> list:

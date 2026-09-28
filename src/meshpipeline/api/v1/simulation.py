@@ -211,7 +211,21 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,
+            worker_wake_minutes=worker_wake_estimate(job),
         )
+
+
+def worker_wake_estimate(job) -> int | None:
+    """The minutes a pending job may wait for a worker, or None once one has it.
+
+    Pure over the row: `pending`/`queued` with no `started_at` is the only state in which the
+    fleet may still be waking, and WORKER_WAKE_MINUTES (0 = no estimate) is the only number."""
+    import meshpipeline.settings.runtime as rtcfg
+    _status = getattr(job.status, "value", job.status)
+    if _status not in ("pending", "queued") or getattr(job, "started_at", None) is not None:
+        return None
+    minutes = int(rtcfg.WORKER_WAKE_MINUTES or 0)
+    return minutes if minutes > 0 else None
 
 
 @router.get("/{job_id}/surface")

@@ -49,10 +49,12 @@ async def resolve_row_ref(db, ref: GeometrySourceRef) -> GeometrySourceRef:
     # file was damaged and send an operator hunting a fault that does not exist. The row is still
     # here - checksum, size, filename and timestamps - so the history that referenced it stays
     # readable; only a NEW run needs the file back.
+    # The reason states the fact only: user_message_for(USER_INPUT, reason=...) puts it in
+    # the middle of the sentence and adds the next step ("upload the file again ...") itself.
     if getattr(row, "purged_at", None) is not None:
         raise GeometrySourceError(
             "this geometry was removed after its retention period, so it is no longer available "
-            "to mesh; upload the file again to start a new run",
+            "to mesh",
             failure_class=FailureClass.USER_INPUT)
     return GeometrySourceRef.from_row(row)
 
@@ -251,7 +253,10 @@ async def prepare_for_execution(session_factory, *, job_id: str, geometry_source
         await _fail_job_row(session_factory, job_id, fc, job_repo=job_repo, jlog=jlog)
         record_dead_letter(job_id, fc, dep, str(exc))
         try:
-            publish(user_message_for(fc))
+            # The raise site's own sentence rides along as the reason. user_message_for folds it
+            # in for the DOMAIN classes only (an expired upload, a missing unit) and ignores it
+            # for every system class, so a storage error can never carry a bucket name here.
+            publish(user_message_for(fc, reason=str(exc)))
         except Exception:                          # noqa: BLE001
             pass
         reason = "geometry_unavailable" if dep == "geometry_source" else "checkpoint_unreadable"

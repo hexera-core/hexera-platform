@@ -79,10 +79,11 @@ async def test_the_reaper_marks_a_stalled_running_job_failed_not_requeued(monkey
     from meshpipeline.persistence.models import FailedReason, JobStatus
 
     stalled = SimpleNamespace(
-        id="job-stalled", status=JobStatus.running,
+        id="job-stalled", status=JobStatus.running, owner_id="owner-1", current_attempt=2,
         started_at=datetime.now(UTC) - timedelta(hours=9999),
         created_at=datetime.now(UTC) - timedelta(hours=9999))
     updates: list = []
+    published: list = []
 
     class _Result:
         rowcount = 1     # the reaper's CAS reads rowcount: 1 == it performed the transition
@@ -102,7 +103,8 @@ async def test_the_reaper_marks_a_stalled_running_job_failed_not_requeued(monkey
     monkeypatch.setattr(sa_aio, "create_async_engine",
                         lambda *a, **k: SimpleNamespace(dispose=_dispose))
     monkeypatch.setattr(sa_aio, "async_sessionmaker", lambda **k: (lambda: _Session()))
-    monkeypatch.setattr(cleanup, "_publish_terminal_log", lambda job_id: None)
+    monkeypatch.setattr(cleanup, "_publish_terminal_log",
+                        lambda job_id, text="": published.append((job_id, text)))
 
     result = await cleanup._reap_stalled_async()
 
@@ -112,6 +114,16 @@ async def test_the_reaper_marks_a_stalled_running_job_failed_not_requeued(monkey
     values = {col.name: getattr(bind, "value", bind) for col, bind in updates[0]._values.items()}
     assert values["status"] == JobStatus.failed
     assert values["failed_reason"] == FailedReason.unhandled
+    # THE DURABLE ACCOUNT. A reaped job used to carry no record, so once its event log expired
+    # the only thing left to show was "Job already failed." The record says the worker was lost.
+    record = values["final_result"]
+    assert record["failure_category"] == "worker_lost" and record["status"] == "failed"
+    assert record["owner_id"] == "owner-1" and record["attempts"] == 2
+    assert record["required_ready"] is False and record["reviewer_verdict"] is None
+    # ... and the live closing says the same thing as the record
+    assert published and published[0][0] == "job-stalled"
+    text = published[0][1]
+    assert "worker" in text and "lost" in text and "starting a new run" in text
 
 
 def test_delivery_counter_increments_and_fails_open():

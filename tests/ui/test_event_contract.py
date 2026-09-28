@@ -152,3 +152,21 @@ def test_a_tool_call_is_labelled_TOOL_CALL_and_reasoning_fills_one_card(live):
     assert out["shown"] == "TOOL CALL", f"a tool call is labelled {out['shown']!r}"
     assert out["cards"] == 1, f"streamed reasoning drew {out['cards']} cards instead of filling one"
     assert out["body"] == "Checking the budget."
+
+
+def test_a_pending_job_says_it_is_waiting_for_a_worker(live):
+    out = live.evaluate("""(async () => {
+      const { waitingCopy } = await import('/static/js/core/state.js');
+      return [
+        waitingCopy({status:'pending', started_at:null, worker_wake_minutes:8}),
+        waitingCopy({status:'queued', started_at:null, worker_wake_minutes:1}),
+        waitingCopy({status:'pending', started_at:null}),
+        waitingCopy({status:'running', started_at:'2026-09-28T00:00:00Z', worker_wake_minutes:8}),
+        waitingCopy({status:'pending', started_at:'2026-09-28T00:00:00Z'}),
+        waitingCopy(null),
+      ];
+    })()""")
+    assert out[0] == "waiting for a worker to start (about 8 minutes)"
+    assert out[1] == "waiting for a worker to start (about 1 minute)"
+    assert out[2] == "waiting for a worker to start", "no estimate on the wire: no invented number"
+    assert out[3] == "" and out[4] == "" and out[5] == "", "a worker has it: the line steps aside"

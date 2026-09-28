@@ -827,7 +827,9 @@ async def node_intake(state: PipelineState) -> dict:
                                            _sanitize_run_record(_loop_result.record))
 
     # A terminal action carries the APPLICATION's own rendered text; a completed turn carries the
-    # model's conversational reply. Round exhaustion carries neither - it says nothing at all.
+    # model's conversational reply. Round exhaustion carries neither - it says nothing at all,
+    # and a turn that says nothing is given one honest sentence below, after the refusal rewrite
+    # has had its chance (a refusal is never silent, so the two cannot collide).
     assistant_text = str(_loop_result.payload or "")
 
     # The rendered refusal is correct but concatenates whatever rules fired, so the model rewrites
@@ -846,6 +848,11 @@ async def node_intake(state: PipelineState) -> dict:
         _out_tokens += _refusal.output_tokens
         logger.info("Intake: refusal delivered %s (+%d/%d tokens) - job_id=%s",
                     _refusal.source, _refusal.input_tokens, _refusal.output_tokens, job_id)
+    if not assistant_text.strip():
+        # The loop ran out of rounds (or time, or progress) without a reply, or the model
+        # returned empty content. A blank assistant message is not a turn: the user saw an empty
+        # bubble and the next call handed the model an empty assistant turn as history.
+        assistant_text = turn.unsettled_reply(_exec_state, _loop_result.exit)
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",

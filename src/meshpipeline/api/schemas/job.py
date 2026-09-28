@@ -47,6 +47,11 @@ class JobStatus_(BaseModel):
     # from durable state - never model prose. Present once the job is finalized; survives restart.
     final_message: str | None = None
     final_result: dict | None = None
+    # WHILE NO WORKER HAS THE JOB. The fleet scales to zero, so a fresh job can sit `pending` for
+    # minutes while a VM boots. Set only in that state, from WORKER_WAKE_MINUTES, so the console
+    # can say "waiting for a worker to start (about N minutes)" instead of a silent spinner;
+    # None once a worker has started (or when the estimate is disabled).
+    worker_wake_minutes: int | None = None
 
 
 class DisputeFlag(BaseModel):
