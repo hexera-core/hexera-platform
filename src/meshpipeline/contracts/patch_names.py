@@ -24,8 +24,9 @@ _NOT_A_WORD_CHAR = re.compile(r"[^A-Za-z0-9_]+")
 
 
 def is_mesh_safe(name: object) -> bool:
+    # fullmatch, not match: `$` also matches before a final newline, so "car\n" would pass.
     return (isinstance(name, str) and len(name) <= MAX_NAME_LENGTH
-            and MESH_SAFE_NAME.match(name) is not None)
+            and MESH_SAFE_NAME.fullmatch(name) is not None)
 
 
 def mesh_safe(name: object, *, fallback: str = "patch") -> str:
@@ -48,27 +49,35 @@ def mesh_safe(name: object, *, fallback: str = "patch") -> str:
 def normalize_patches(patches: object) -> tuple[object, dict[str, str]]:
     """Make every patch name in a declared patch list mesh-safe and unique.
 
-    Returns the new list and the renames made ({typed: safe}). Two names that become the same
-    spelling are told apart with a number ("car wall" and "car-wall" -> car_wall, car_wall_2).
-    References to other patches (interchangeable_with) follow their renames. Anything that is not
-    a list of dicts is returned untouched: the validators report malformed input, not this."""
+    Returns the new list and the renames made ({typed: safe}). Two DIFFERENT typed names that
+    become the same spelling are told apart with a number ("car wall" and "car-wall" -> car_wall,
+    car_wall_2). The SAME typed name twice stays the same name twice, so the duplicate-name check
+    downstream still refuses it - cleaning a spelling must never turn a duplicate into a second,
+    new boundary. References to other patches (interchangeable_with) follow their renames.
+    Anything that is not a list of dicts is returned untouched: the validators report malformed
+    input, not this."""
     if not isinstance(patches, list):
         return patches, {}
     renames: dict[str, str] = {}
-    taken: set[str] = set()
+    spelled: dict[str, str] = {}          # typed name -> the safe spelling it was given
+    owner: dict[str, str] = {}            # safe spelling -> the typed name that owns it
     out: list = []
     for p in patches:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"].strip():
             out.append(p)
             continue
         typed = p["name"].strip()
+        if typed in spelled:              # an exact duplicate: keep it one, for the validator
+            out.append({**p, "name": spelled[typed]})
+            continue
         safe = mesh_safe(typed)
         base, n = safe, 2
-        while safe in taken:
+        while safe in owner:
             suffix = f"_{n}"
             safe = f"{base[:MAX_NAME_LENGTH - len(suffix)]}{suffix}"
             n += 1
-        taken.add(safe)
+        owner[safe] = typed
+        spelled[typed] = safe
         if safe != typed:
             renames[typed] = safe
         out.append({**p, "name": safe})

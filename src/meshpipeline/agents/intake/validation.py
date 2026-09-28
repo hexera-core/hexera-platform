@@ -270,7 +270,9 @@ def _validate_patch_names(patches: list) -> list[str]:
     from meshpipeline.contracts.patch_names import is_mesh_safe, mesh_safe
 
     errors: list[str] = []
-    for i, p in enumerate(x for x in patches if isinstance(x, dict)):
+    for i, p in enumerate(patches):          # i is the position the caller sent
+        if not isinstance(p, dict):
+            continue
         nm = (p.get("name") or "").strip()
         if nm and not is_mesh_safe(nm):
             errors.append(
