@@ -5,6 +5,12 @@ from __future__ import annotations
 import logging
 
 from meshpipeline.adapters.pipeline_execution.celery_app import celery_app
+from meshpipeline.application.geometry_check import (
+    NAMING_HARD_LIMIT_S,
+    NAMING_SOFT_LIMIT_S,
+    SCOUT_HARD_LIMIT_S,
+    SCOUT_SOFT_LIMIT_S,
+)
 from meshpipeline.application.pipeline_run import run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -30,8 +36,9 @@ def run_simulation(**kwargs) -> dict:
     name="worker.tasks.scout_geometry",
     bind=False,
     max_retries=0,
-    soft_time_limit=900,
-    time_limit=1200,
+    # the application's numbers: the API reads a check through a time box built from them
+    soft_time_limit=SCOUT_SOFT_LIMIT_S,
+    time_limit=SCOUT_HARD_LIMIT_S,
 )
 def scout_geometry(**kwargs) -> dict:
     # THE GEOMETRY CHECK runs on the worker because reading CAD and drawing it need the mesh
@@ -45,8 +52,8 @@ def scout_geometry(**kwargs) -> dict:
     name="worker.tasks.name_geometry",
     bind=False,
     max_retries=0,
-    soft_time_limit=600,
-    time_limit=900,
+    soft_time_limit=NAMING_SOFT_LIMIT_S,
+    time_limit=NAMING_HARD_LIMIT_S,
 )
 def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and

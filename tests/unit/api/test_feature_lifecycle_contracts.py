@@ -152,6 +152,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check"),          # the geometry check: proposal + pictures
         ("POST", "/api/v1/geometry/{session_id}/check/confirm"),  # what the user confirmed on the picture
         ("GET", "/api/v1/geometry/{session_id}/check/skin"),      # the part's skin, for the 3D stage
+        ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),
     }
     v1 = {r for r in served if r[1].startswith("/api/v1/")}

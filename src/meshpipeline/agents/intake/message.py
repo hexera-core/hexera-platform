@@ -164,6 +164,29 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     approval = gate.get("approval")
     if ap.is_live(approval):
         intent = ap.classify(inbound.content)
+        if uc.needs_confirmation(locked):
+            # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
+            # (application/dispatch_contract refuses the pair), so an approval given while the
+            # question is open is held one turn on it: an answer in the same breath ("ok" to the
+            # proposal) settles it and the approval stands; anything else is asked the question,
+            # with the proposal, and the approval's expected turn moves along with it. A unit
+            # named without a yes is recorded, and the approval waits one more turn for the yes.
+            unit = await _settle_unit(inbound, db, gate=gate, locked=locked, revision=revision,
+                                      session_repo=session_repo, logger=logger,
+                                      insist=intent == ap.APPROVE_INTENT)
+            if unit is not None and unit.status is MessageStatus.unit_question:
+                return unit
+            if unit is not None and intent != ap.APPROVE_INTENT:
+                answered_gate = uc.answered(gate)
+                answered_gate["approval"] = ap.defer(approval)
+                await session_repo.set_intake_gate(db, inbound.session_id, answered_gate)
+                named = uc.classify(inbound.content, uc.proposed(gate))
+                reply = f"{uc.noted(named)} {ap.CLARIFICATION}" if named else ap.CLARIFICATION
+                await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+                return MessageOutcome(
+                    status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
+                    transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                              approval_status=ap.AWAITING))
         if intent == ap.APPROVE_INTENT:
             logger.info("intake message: application-owned approval - session=%s snapshot=%s",
                         inbound.session_id, (approval or {}).get("id"))
@@ -210,6 +233,12 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             if hold is not None:
                 return hold
         return unit
+    if uc.needs_confirmation(locked):
+        # THE NAMING WAITS FOR THE UNIT. The user's words go to the model only once the file's
+        # scale is known: the naming re-reads every measurement in that unit, and the stage
+        # confirms nothing without it. Until then the intake answers as it always did.
+        return MessageOutcome(status=MessageStatus.proceed,
+                              transition=GateTransition(revision=revision))
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
                                        revision=revision, session_repo=session_repo, logger=logger)
     if hold is not None:
@@ -255,12 +284,15 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
 
 
 async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revision: str,
-                       session_repo, logger) -> MessageOutcome | None:
+                       session_repo, logger, insist: bool = False) -> MessageOutcome | None:
+    """The unit turn. `insist` is the approval's: the run cannot start without the unit, so a
+    reply that names none is asked the question again rather than let through."""
     if not uc.needs_confirmation(locked):
         return None
 
     asked_already = uc.already_asked(gate)
-    unit = uc.classify(inbound.content) if asked_already else None
+    proposal = uc.proposed(gate) if asked_already else None
+    unit = uc.classify(inbound.content, proposal) if asked_already else None
     if unit is not None:
         # STAMPED WITH BOTH, exactly as api/v1/upload.py stamps the interpretation it writes for a
         # file-declared unit. The two paths write the same table for the same reason; an
@@ -278,10 +310,28 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
             status=MessageStatus.unit_recorded,
             transition=GateTransition(change=GateChange.unit_answered, revision=revision))
 
-    # Either the question has not been put yet, or the answer was not one of the four. Both mean
-    # the same thing: ask, and do not proceed.
-    reply = uc.REFUSAL if asked_already else uc.QUESTION
-    await session_repo.set_intake_gate(db, inbound.session_id, uc.asked(gate))
+    if asked_already and not insist:
+        # A REPLY THAT NAMES NO UNIT IS AN ORDINARY TURN - a question about the question, "not
+        # sure", anything else - and the intake answers it; asking again trapped the
+        # conversation. The question stays open on the gate: the next reply that names a unit
+        # settles it, and an approval given before then is held on the question (see _settle),
+        # because the run cannot start without it.
+        return None
+
+    # THE QUESTION PROPOSES when the part has been measured: millimetres, with the part's size
+    # in every candidate unit beside it, so the user can see which one is theirs and "ok" is an
+    # answer. Without a measurement it is the plain question, and nothing is proposed that the
+    # user could not check.
+    from meshpipeline.application import geometry_hold as gh
+
+    size = gh.measured_size_mm(str(inbound.session_id))
+    if size:
+        proposal = uc.PROPOSED
+    reply = uc.before_run(size, proposal) if insist else uc.question_for(size)
+    if insist and ap.is_live(gate.get("approval")):
+        # the approval waits one turn on the question: the next clear yes still lands on it
+        gate = dict(gate, approval=ap.defer(gate.get("approval")))
+    await session_repo.set_intake_gate(db, inbound.session_id, uc.asked(gate, proposal))
     await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     return MessageOutcome(
         status=MessageStatus.unit_question, reply=reply, awaiting_confirmation=True,

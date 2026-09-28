@@ -99,8 +99,10 @@ configureComposer({
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its
   // stickers, the form beside it. When the stage cannot open, the same form arrives as a card.
-  geometryCheck: (sessionId, d, confirm) => openGeometryStage(sessionId, d, confirm,
-    { anchorEl: Stage.col(), fallback: () => { if (d.named !== false) Stage.geometryCheck(d, confirm); } }),
+  geometryCheck: (sessionId, d, confirm, retry) => openGeometryStage(sessionId, d, confirm,
+    { anchorEl: Stage.col(), retry, fallback: () => { Stage.geometryCheck(d, confirm); } }),
+  // the card, when it stands in for the stage, follows the check in place
+  geometryCard: (d) => Stage.geometryCheckUpdate(d),
 });
 
 configureDispute({
