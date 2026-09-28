@@ -42,9 +42,11 @@ def test_the_fleet_startup_runs_no_scheduler():
     assert not any(re.search(r"\bbeat\b", line) for line in code), "the fleet startup runs a beat"
 
 
-def test_the_fleet_worker_consumes_only_the_simulation_queue():
+def test_the_fleet_consumes_no_cleanup_queue():
     # Why a beat there would be pointless as well as duplicated: its cleanup tasks would have no
-    # consumer. If the fleet ever takes the cleanup queue, revisit where the schedule lives.
+    # consumer. The fleet runs the simulation queue and, beside it, the geometry-check queue
+    # (tests/unit/deploy/test_geometry_check_queue.py) - never the cleanup queue. If it ever takes
+    # the cleanup queue, revisit where the schedule lives.
     code = _code_lines(STARTUP.read_text(encoding="utf-8"))
     assert any("--queues simulation_jobs" in line for line in code)
     assert not any("cleanup_tasks" in line for line in code)
