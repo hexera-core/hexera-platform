@@ -36,14 +36,15 @@ _ASSENT = frozenset({
 })
 _FILLER = frozenset({
     "please", "thanks", "thank", "you", "then", "now", "just", "lets", "let", "us", "s", "t",
-    "and", "that", "this", "it", "one", "the", "with", "is", "be", "good", "great", "perfect",
-    "sounds", "works", "me", "for", "i", "we", "do", "so", "engine", "mesher", "as", "proposed",
-    "suggested",
+    "d", "ll", "ve", "re", "m", "and", "that", "this", "it", "one", "the", "with", "is", "be",
+    "good", "great", "perfect", "sounds", "works", "me", "for", "i", "we", "do", "so", "engine",
+    "mesher", "as", "proposed", "suggested",
 })
-# A refusal. A hard negation negates whatever follows it, wherever it sits - "no, don't use
-# snappyHexMesh" and "definitely not" are refusals even though "use" and "definitely" are assent
-# words - so one anywhere declines. The softer words decline only when they open the message
-# ("nope", "wait, what?"). Two idioms mean the opposite of their words and are taken out first.
+# A refusal. A hard negation refuses when it opens the message ("no, don't use snappyHexMesh"),
+# ends it ("definitely not", "I'd rather not"), or sits against an assent word ("don't use") -
+# not when it is aimed at another clause: "yes, use snappyHexMesh, but don't worry about mesh
+# density" is a yes. The softer words decline only when they open the message ("nope", "wait,
+# what?"). Two idioms mean the opposite of their words and are taken out first.
 _NEGATION = frozenset({"not", "dont", "don", "never", "cancel", "stop"})
 _DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
 _IDIOMS = ("no problem", "no worries", "why not")
@@ -76,7 +77,13 @@ def declines(engine: str, message: str) -> bool:
     words = [w for w in phrase.split() if w not in _FILLER]
     if not words:
         return False
-    return words[0] in _DECLINE_FIRST or any(w in _NEGATION for w in words)
+    if words[0] in _DECLINE_FIRST or words[-1] in _NEGATION:
+        return True
+    # A negation that negates an assent word - fillers are already gone, so "don't use" and
+    # "definitely not" are adjacent here - and not one aimed at something else in the reply.
+    return any(w in _NEGATION and ((i > 0 and words[i - 1] in _ASSENT)
+                                   or (i + 1 < len(words) and words[i + 1] in _ASSENT))
+               for i, w in enumerate(words))
 
 
 def names_another_engine(engine: str, message: str) -> bool:

@@ -47,6 +47,7 @@ def test_anything_else_is_not_assent(said):
 @pytest.mark.parametrize("said", [
     "no", "No.", "nope", "not that one", "no thanks", "don't", "no, don't use snappyHexMesh",
     "definitely not", "I don't think so", "please don't", "wait, what?", "stop",
+    "I'd rather not", "don't select it",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -57,6 +58,24 @@ def test_a_refusal_is_read_as_one(said):
 @pytest.mark.parametrize("said", ["no problem, go ahead", "yes, why not", "sure, no worries"])
 def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     assert es.declines("snappy", said) is False
+
+
+@pytest.mark.parametrize("said", [
+    "yes, use snappyHexMesh, but don't worry about mesh density",
+    "ok, but do not add a ground patch",
+    "yes - the wall is not smooth, by the way",
+])
+def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
+    # The user accepted the engine and went on to say something else with a "not" in it. The
+    # engine answer is the yes; the negation belongs to the other clause.
+    assert es.declines("snappy", said) is False
+
+
+def test_a_yes_with_an_unrelated_negation_still_confirms_when_quoted():
+    said = "yes, use snappyHexMesh, but don't worry about mesh density"
+    assert es.plain_assent("snappy", said) is False        # more than a yes: the model reads it
+    c, why = _confirm(said, quote="yes, use snappyHexMesh")
+    assert why == "" and es.state_of(c) == es.CONFIRMED
 
 
 def test_a_negated_selection_is_never_confirmed_from_the_words_beside_the_no():
