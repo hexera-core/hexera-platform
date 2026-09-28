@@ -35,14 +35,18 @@ _ASSENT = frozenset({
     "choose", "pick", "alright", "absolutely", "definitely", "certainly", "affirmative",
 })
 _FILLER = frozenset({
-    "please", "thanks", "thank", "you", "then", "now", "just", "lets", "let", "us", "s", "and",
-    "that", "this", "it", "one", "the", "with", "is", "be", "good", "great", "perfect", "sounds",
-    "works", "me", "for", "i", "we", "do", "so", "engine", "mesher", "as", "proposed", "suggested",
+    "please", "thanks", "thank", "you", "then", "now", "just", "lets", "let", "us", "s", "t",
+    "and", "that", "this", "it", "one", "the", "with", "is", "be", "good", "great", "perfect",
+    "sounds", "works", "me", "for", "i", "we", "do", "so", "engine", "mesher", "as", "proposed",
+    "suggested",
 })
-# The first content word of a refusal. Checked only when no assent word is present at all, so
-# "no problem, go ahead" is read by the words that follow it.
-_DECLINE = frozenset({"no", "nope", "nah", "not", "dont", "don", "never", "cancel", "stop",
-                      "wait", "hold"})
+# A refusal. A hard negation negates whatever follows it, wherever it sits - "no, don't use
+# snappyHexMesh" and "definitely not" are refusals even though "use" and "definitely" are assent
+# words - so one anywhere declines. The softer words decline only when they open the message
+# ("nope", "wait, what?"). Two idioms mean the opposite of their words and are taken out first.
+_NEGATION = frozenset({"not", "dont", "don", "never", "cancel", "stop"})
+_DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
+_IDIOMS = ("no problem", "no worries", "why not")
 
 
 def _norm(text) -> str:
@@ -66,10 +70,13 @@ def plain_assent(engine: str, message: str) -> bool:
 
 
 def declines(engine: str, message: str) -> bool:
-    words = [w for w in _content_words(engine, message) if w not in _FILLER]
-    if not words or any(w in _ASSENT for w in words):
+    phrase = " ".join(_content_words(engine, message))
+    for idiom in _IDIOMS:
+        phrase = phrase.replace(idiom, " ")
+    words = [w for w in phrase.split() if w not in _FILLER]
+    if not words:
         return False
-    return words[0] in _DECLINE
+    return words[0] in _DECLINE_FIRST or any(w in _NEGATION for w in words)
 
 
 def names_another_engine(engine: str, message: str) -> bool:

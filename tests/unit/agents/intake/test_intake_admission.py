@@ -205,6 +205,39 @@ def test_the_model_repairs_its_own_value_in_the_same_turn():
     assert out["messages"][-1]["content"].startswith("I kept the aircraft")
 
 
+def test_a_retry_the_gate_never_checked_keeps_the_refusal_standing():
+    # The second preview is malformed (a purpose that is not one), so the gate never ran on it
+    # and nothing was resolved. The reply is still held to the refusal: this one names another
+    # engine, and the rendered finding goes out instead.
+    junk = json.dumps({**json.loads(_FIVE_ARGS), "purpose": "not-a-purpose"})
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp([_tool_call("preview_selected_admission", junk)]),
+        _resp(content="snappyHexMesh cannot do this - cfmesh could, though."),
+    ])
+    assert ncalls == 3
+    assert json.loads(_SEEN[-1]["content"])["verdict"] == "malformed"
+    reply = out["messages"][-1]["content"]
+    assert "cfmesh" not in reply and "wall patch" in reply and "revise" in reply
+
+
+def test_a_retry_the_gate_passed_with_gaps_left_clears_the_refusal():
+    # One wall and no flow boundary yet: the gate ran, refused nothing, and asked for the missing
+    # patch. The refusal is resolved, so the model's next question goes out as written - here a
+    # statement that the refusal check would otherwise have replaced.
+    one_wall_no_farfield = json.dumps({**json.loads(_ONE_WALL_ARGS),
+                                       "patches": [{"name": "aircraft", "type": "wall"}]})
+    out, ncalls = _run(_five_walls_state(), [
+        _resp([_tool_call("preview_selected_admission", _FIVE_ARGS)]),
+        _resp([_tool_call("preview_selected_admission", one_wall_no_farfield)]),
+        _resp(content="Noted - I will take a single farfield as the flow boundary."),
+    ])
+    assert ncalls == 3
+    seen = json.loads(_SEEN[-1]["content"])
+    assert seen["verdict"] == "incomplete" and seen["missing_fields"] == ["patches"]
+    assert out["messages"][-1]["content"].startswith("Noted - I will take a single farfield")
+
+
 def test_an_unsafe_reply_after_an_unrepaired_refusal_is_discarded_for_the_rendered_finding():
     # The model's reply names another engine - the precise leak the old terminal prevented by
     # never asking. It is discarded and the rendered finding delivered in its place.

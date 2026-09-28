@@ -53,9 +53,16 @@ def test_nothing_asked_before_is_never_a_repeat():
     assert not repeats_a_question(_Q, ("Which engine do you use?",))
 
 
-def test_a_short_question_is_never_matched_on_a_few_words():
+def test_a_short_question_repeated_word_for_word_is_a_repeat():
+    assert repeats_a_question("Fluid and speed?", ("Fluid and speed?",))
+    assert repeats_a_question("Which engine?", ("Which engine?",))
+
+
+def test_a_short_question_is_not_matched_on_a_rephrase_or_on_nothing():
+    # Too few words to judge a rephrase on; and a question with no content words ("Ok?") is not
+    # a question the guard can recognise at all.
+    assert not repeats_a_question("Which engine?", ("Which mesher?",))
     assert not repeats_a_question("Ok?", ("Ok?",))
-    assert not repeats_a_question("Which engine?", ("Which engine?",))
 
 
 # the loop: sent back once, then delivered
@@ -89,6 +96,24 @@ def test_the_second_reply_is_delivered_whatever_it_says():
     d = p.on_plaintext(LoopTally(rounds=2))
     assert d.complete is True and d.payload == _Q
     assert p.repeated_questions == 1
+
+
+def test_no_nudge_on_the_last_permitted_round():
+    # A nudge the budget cannot honour would end the turn with no reply at all. On the last round
+    # the repeat is delivered rather than sent back into a round that cannot start.
+    from meshpipeline.contracts.agent_loop import LoopLimits
+
+    st = IntakeExecutionState(session_id="s", owner_id="u", revision="r", user_msg_count=1)
+    p = IntakeLoopPolicy(exec_state=st, executor=None, prior_questions=(_Q,),
+                         limits_=LoopLimits(max_rounds=1))
+    p.note_round(_round(_Q))
+    d = p.on_plaintext(LoopTally(rounds=1))          # the round just taken was the only one
+    assert d.complete is True and d.payload == _Q and p.repeated_questions == 0
+
+    p2 = IntakeLoopPolicy(exec_state=st, executor=None, prior_questions=(_Q,),
+                          limits_=LoopLimits(max_rounds=2))
+    p2.note_round(_round(_Q))
+    assert p2.on_plaintext(LoopTally(rounds=1)).complete is False   # one round is left
 
 
 def test_a_fresh_question_completes_the_turn_at_once():
@@ -176,6 +201,13 @@ def test_a_reply_that_moves_on_is_delivered_in_one_round():
     out, calls = _run(dict(_STATE), [_resp(content=_MOVED_ON)])
     assert len(calls) == 1
     assert out["messages"][-1]["content"] == _MOVED_ON
+
+
+def test_a_repeat_on_the_last_round_is_delivered_not_silence(monkeypatch):
+    monkeypatch.setattr(intake.icfg, "INTAKE_MAX_ROUNDS", 1)
+    out, calls = _run(dict(_STATE), [_resp(content=_Q_REWORDED), _resp(content=_MOVED_ON)])
+    assert len(calls) == 1
+    assert out["messages"][-1]["content"] == _Q_REWORDED, "the user got no reply at all"
 
 
 def test_the_nudge_is_not_persisted_as_a_conversation_message():

@@ -53,16 +53,19 @@ def repeats_a_question(candidate: str, prior: tuple[str, ...] | list[str]) -> bo
     if "?" not in str(candidate or ""):
         return False
     mine = _words(candidate)
-    if len(mine) < _MIN_WORDS:
+    if not mine:
         return False
     for text in prior:
         if "?" not in str(text or ""):
             continue
         theirs = _words(text)
-        if len(theirs) < _MIN_WORDS:
+        if not theirs:
             continue
-        if len(mine & theirs) / len(mine | theirs) >= REPEAT_THRESHOLD:
-            return True
+        if mine == theirs:
+            return True                     # the same words again, however few
+        if (len(mine) >= _MIN_WORDS and len(theirs) >= _MIN_WORDS
+                and len(mine & theirs) / len(mine | theirs) >= REPEAT_THRESHOLD):
+            return True                     # a rephrase - judged only on enough words to judge
     return False
 
 
@@ -131,9 +134,11 @@ class IntakeLoopPolicy:
         # that asks what the user was already asked is sent back ONCE, inside the turn, with the
         # rule: their reply was their answer, take your own proposal and move on. Once, so a model
         # that insists still ends the turn and the user is never left waiting on a loop; that
-        # second reply is delivered as written.
-        if self.repeated_questions == 0 and repeats_a_question(self.plaintext_text,
-                                                               self.prior_questions):
+        # second reply is delivered as written. And only while another round may start: a nudge
+        # the budget cannot honour would end the turn with no reply at all.
+        left = tally.remaining_rounds(self.limits_)
+        if (self.repeated_questions == 0 and (left is None or left > 0)
+                and repeats_a_question(self.plaintext_text, self.prior_questions)):
             self.repeated_questions += 1
             logger.info("Intake: the reply asks a question the user was already asked - sent "
                         "back once to take the proposal and move on")

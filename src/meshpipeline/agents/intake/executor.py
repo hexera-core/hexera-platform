@@ -357,9 +357,14 @@ class IntakeToolExecutor:
                     "what_would_pass": prev.get("what_would_pass", []),
                     "recorded": False, "authorizes_submission": False,
                     "guidance": REFUSAL_GUIDANCE}))
-        # Any other verdict supersedes a refusal recorded earlier this turn: the model repaired
-        # its request, or moved to a payload the gate does not refuse.
-        st.admission_refusal = None
+        # A verdict from a payload the gate did NOT refuse supersedes a refusal recorded earlier
+        # this turn: the model repaired its request. "incomplete" counts only when the gate ran -
+        # a call missing the engine, purpose or input kind was never checked, and a malformed one
+        # proves nothing either; both leave the refusal standing for the reply check.
+        if prev["verdict"] == "supported" or (
+                prev["verdict"] == "incomplete"
+                and not {"engine", "purpose", "input_kind"} & set(prev.get("missing_fields") or ())):
+            st.admission_refusal = None
         if prev["verdict"] == "supported":
             # ISSUE the submission-authorizing token, bound to this exact canonical payload, the
             # current user-message revision, AND the confirmed selection.

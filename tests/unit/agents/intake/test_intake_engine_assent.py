@@ -44,13 +44,29 @@ def test_anything_else_is_not_assent(said):
     assert es.plain_assent("snappy", said) is False
 
 
-@pytest.mark.parametrize("said", ["no", "No.", "nope", "not that one", "no thanks", "don't"])
+@pytest.mark.parametrize("said", [
+    "no", "No.", "nope", "not that one", "no thanks", "don't", "no, don't use snappyHexMesh",
+    "definitely not", "I don't think so", "please don't", "wait, what?", "stop",
+])
 def test_a_refusal_is_read_as_one(said):
+    # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
+    # snappyHexMesh" contains "use" and is still a no.
     assert es.declines("snappy", said) is True
 
 
-def test_a_no_that_goes_on_to_agree_is_not_a_refusal():
-    assert es.declines("snappy", "no problem, go ahead") is False
+@pytest.mark.parametrize("said", ["no problem, go ahead", "yes, why not", "sure, no worries"])
+def test_an_idiom_that_means_yes_is_not_a_refusal(said):
+    assert es.declines("snappy", said) is False
+
+
+def test_a_negated_selection_is_never_confirmed_from_the_words_beside_the_no():
+    # "use snappyHexMesh" is genuinely in the user's message - after "don't". The quote path
+    # must not confirm the engine the user just rejected.
+    c, why = _confirm("no, don't use snappyHexMesh", quote="use snappyHexMesh")
+    assert c is None and "declined" in why
+    assert es.confirm_by_assent(_proposed(), session_id="s", owner_id="u", revision="r2",
+                                latest_user_message="no, don't use snappyHexMesh",
+                                user_msg_count=2) is None
 
 
 # confirm: the user's yes binds to the engine the question named
