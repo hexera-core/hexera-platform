@@ -64,11 +64,42 @@ def test_only_the_conversation_a_run_came_from_is_offered_to_run_it_again():
     assert "disableInput()" in no_session and "Upload a geometry file" in no_session
     # the run records the conversation it came from; a run opened by link records none
     attach = main.split("function attachJob(", 1)[1].split("\n}", 1)[0]
-    assert "beginRun(id, { sessionId: getState.sessionId() })" in attach
+    assert 'origin = getState.sessionId() } = {})' in attach, (
+        "a run the chat started no longer defaults to the page's own conversation")
+    assert "beginRun(id, { sessionId: origin })" in attach
     assert "beginRun(deepLinkJob);" in main
     state = (UI / "js" / "core" / "state.js").read_text()
     begin = state.split("export function beginRun(", 1)[1].split("\n}", 1)[0]
     assert "state.runSessionId = sessionId || null;" in begin
+    assert "state.runOrigins[jobId] = state.runSessionId;" in begin
+
+
+def test_a_re_review_belongs_to_the_disputed_runs_conversation():
+    # A run opened by link, then an upload of other geometry, then a dispute of the linked run:
+    # the re-review must not adopt the upload's session, or its "run again" proposes a run on the
+    # wrong part. The dispute names the disputed run, and the re-review takes that run's origin.
+    dispute = (UI / "js" / "viewer" / "dispute.js").read_text()
+    assert dispute.count("onRerun(d.job_id,") == 2
+    for call in dispute.split("onRerun(d.job_id,")[1:]:
+        assert call.split(");", 1)[0].rstrip().endswith("job"), (
+            "a re-review no longer says which run it disputes")
+    main = (UI / "js" / "main.js").read_text()
+    wiring = main.split("configureDispute({", 1)[1].split("\n});", 1)[0]
+    assert "onRerun: (id, message, disputedJobId) => attachJob(id," in wiring
+    assert "origin: getState.runOrigin(disputedJobId)" in wiring
+
+
+def test_an_answer_about_a_run_the_page_has_left_is_dropped():
+    # A status poll for run A still in flight when run B starts must not become B's status, stop
+    # B's polling, or announce A's end over B - which re-offered "run again" while B was running.
+    stream = (UI / "js" / "realtime" / "stream.js").read_text()
+    poll = stream.split("async function poll() {", 1)[1].split("\n}", 1)[0]
+    asked, _, answered = poll.partition("await getJob(jobId")
+    assert "const jobId = getState.jobId();" in asked
+    guard = "if (getState.jobId() !== jobId) return;"
+    assert guard in answered, "a stale poll answer is applied to the current run"
+    assert answered.index(guard) < answered.index("setState.jobStatus(job.status)")
+    assert answered.index(guard) < answered.index("sinks.onTerminal(job)")
 
 
 def test_the_offer_is_styled_in_both_shipped_copies():

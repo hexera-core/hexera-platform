@@ -22,12 +22,15 @@ const state = {
   outcomeMessage: "",   // the closing text, held until the result card is built
   laneCursor: null,     // which timeline lane the event stream is currently in
   userId: "",           // identity for this page load (settings or ?user=)
+  runOrigins: {},       // job id -> the conversation it came from, for every run this page began
 };
 
 export const get = {
   sessionId: () => state.sessionId,
   jobId: () => state.jobId,
   runSessionId: () => state.runSessionId,
+  /** The conversation a run this page began came from; null for one opened by link or unknown. */
+  runOrigin: (jobId) => (jobId && state.runOrigins[jobId]) || null,
   jobStatus: () => state.jobStatus,
   outcomeMessage: () => state.outcomeMessage,
   laneCursor: () => state.laneCursor,
@@ -56,6 +59,7 @@ export function isTerminal() {
 export function beginRun(jobId, { sessionId = null } = {}) {
   state.jobId = jobId || null;
   state.runSessionId = sessionId || null;
+  if (jobId) state.runOrigins[jobId] = state.runSessionId;
   state.jobStatus = "";
   state.outcomeMessage = "";
   state.laneCursor = null;

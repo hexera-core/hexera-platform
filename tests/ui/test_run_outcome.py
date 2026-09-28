@@ -63,10 +63,14 @@ def test_a_run_remembers_the_conversation_it_came_from(live):
       const chat = S.get.runSessionId();
       S.beginRun('job-link-2');
       const cleared = S.get.runSessionId();
+      // every run the page began keeps its origin, so a re-review of an earlier one can take it
+      const origins = {link: S.get.runOrigin('job-link'), chat: S.get.runOrigin('job-chat'),
+                       unknown: S.get.runOrigin('job-never-seen')};
       S.set.sessionId(before);
-      return {linked, afterUpload, chat, cleared};
+      return {linked, afterUpload, chat, cleared, origins};
     })()""")
-    assert out == {"linked": None, "afterUpload": None, "chat": "sess-other", "cleared": None}, out
+    assert out == {"linked": None, "afterUpload": None, "chat": "sess-other", "cleared": None,
+                   "origins": {"link": None, "chat": "sess-other", "unknown": None}}, out
 
 
 def test_a_finished_job_becomes_the_same_result_card_however_it_was_reached(live):
