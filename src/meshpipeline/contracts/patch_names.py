@@ -57,8 +57,9 @@ RESERVED_SUFFIX = "_patch"
 
 
 def is_mesh_safe(name: object) -> bool:
+    # fullmatch, not match: `$` also matches before a final newline, so "car\n" would pass.
     return (isinstance(name, str) and len(name) <= MAX_NAME_LENGTH
-            and MESH_SAFE_NAME.match(name) is not None)
+            and MESH_SAFE_NAME.fullmatch(name) is not None)
 
 
 def is_reserved(name: object) -> bool:
@@ -278,11 +279,23 @@ def _named(q) -> bool:
 def _settle_names(staged: list, typed_types: list[str],
                   ground: GroundRule | None) -> tuple[list, list[Rename]]:
     """Each patch's NAME: mesh-safe, unreserved, the ground plane's one name for a ground (with a
-    GroundRule), and unique in any capitals. A name typed correctly is claimed first, so it is
-    never the one that moves. References (interchangeable_with) follow their renames."""
+    GroundRule), and unique in any capitals. Two DIFFERENT typed names that meet after cleaning
+    are told apart with a number ("car wall", "car-wall" -> car_wall, car_wall_2). The SAME name
+    typed twice - in any capitals - stays the same name twice, so the duplicate-name checks
+    downstream refuse it: cleaning a spelling must never turn a duplicate into a second, new
+    boundary ("ground" twice is one floor declared twice, not a floor and a body wall). A name
+    typed correctly is claimed first, so it is never the one that moves. References
+    (interchangeable_with) follow their renames."""
     taken: set[str] = set()
     final: dict[int, str] = {}
     reasons: dict[int, str] = {}
+    first: dict[str, int] = {}               # typed name, any capitals -> its first position
+    for i, q in enumerate(staged):
+        if _named(q):
+            first.setdefault(q["name"].strip().casefold(), i)
+
+    def _repeat(i: int) -> bool:
+        return first[staged[i]["name"].strip().casefold()] != i
 
     def _is_ground(i: int, name: str) -> bool:
         q = staged[i]
@@ -292,7 +305,7 @@ def _settle_names(staged: list, typed_types: list[str],
     ground_taken = ground is not None and any(
         _named(q) and q["name"].strip().casefold() == ground.name.casefold() for q in staged)
     for i, q in enumerate(staged):
-        if not _named(q):
+        if not _named(q) or _repeat(i):
             continue
         typed = q["name"].strip()
         if (is_mesh_safe(typed) and not is_reserved(typed) and typed.casefold() not in taken
@@ -300,7 +313,7 @@ def _settle_names(staged: list, typed_types: list[str],
             final[i] = typed
             taken.add(typed.casefold())
     for i, q in enumerate(staged):
-        if not _named(q) or i in final:
+        if not _named(q) or i in final or _repeat(i):
             continue
         typed = q["name"].strip()
         safe = mesh_safe(typed)
@@ -318,6 +331,29 @@ def _settle_names(staged: list, typed_types: list[str],
         final[i] = safe
         if safe != typed:
             reasons[i] = reason or "duplicate"
+    # the repeats: the same spelling as their first when typed identically, else their own
+    # cleaned spelling - never a number, so the validator sees the duplicate and asks
+    for i, q in enumerate(staged):
+        if not _named(q) or not _repeat(i):
+            continue
+        typed = q["name"].strip()
+        j = first[typed.casefold()]
+        if staged[j]["name"].strip() == typed:
+            final[i] = final[j]
+            if j in reasons:
+                reasons[i] = reasons[j]
+        else:
+            safe = mesh_safe(typed)
+            reason = "spelling" if safe != typed else ""
+            if is_reserved(safe):
+                safe, reason = unreserved(safe), "reserved"
+            if safe.casefold() != final[j].casefold():
+                # the same word to a person ("Außenhaut", "AUSSENHAUT") that cleans to spellings
+                # the validator could not tell are one: give it the first's, so it is asked about
+                safe, reason = final[j], reasons.get(j, "spelling")
+            final[i] = safe
+            if reason:
+                reasons[i] = reason
 
     out: list = []
     renames: list[Rename] = []
@@ -328,9 +364,9 @@ def _settle_names(staged: list, typed_types: list[str],
             continue
         typed = q["name"].strip()
         out.append({**q, "name": final[i]})
-        if final[i] != typed:
+        if final[i] != typed and typed not in by_typed:
             renames.append(Rename(typed=typed, name=final[i], reason=reasons.get(i, "spelling")))
-            by_typed.setdefault(typed, final[i])
+            by_typed[typed] = final[i]
     if renames:
         for i, q in enumerate(out):
             if isinstance(q, dict) and isinstance(q.get("interchangeable_with"), list):

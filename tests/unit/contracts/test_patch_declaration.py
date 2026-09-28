@@ -103,13 +103,24 @@ def test_farfield_is_not_reserved_it_is_the_far_fields_own_name():
     assert not is_reserved("farfield")
 
 
-# names only capitals tell apart
+# the same name twice, and different names that meet
 
-def test_names_that_differ_only_in_capitals_are_told_apart_and_the_first_keeps_its_own():
-    out = _norm([{"name": "Inlet", "type": "inlet"}, {"name": "inlet", "type": "inlet"}],
-                roles=INTERNAL, ground=False)
-    assert [p["name"] for p in out.patches] == ["Inlet", "inlet_2"]
-    assert "whatever the capitals" in declaration_note(out)
+def test_different_names_that_meet_after_cleaning_are_told_apart():
+    out = _norm([{"name": "car wall", "type": "wall"}, {"name": "car-wall", "type": "wall"}],
+                ground=False)
+    assert [p["name"] for p in out.patches] == ["car_wall", "car_wall_2"]
+
+
+@pytest.mark.parametrize("a,b", [("ground", "ground"), ("car wall", "car wall"),
+                                 ("Inlet", "inlet"), ("ground", "Ground")])
+def test_the_same_name_twice_stays_a_duplicate_for_the_validator_to_refuse(a, b):
+    # a number would turn one boundary declared twice into two different boundaries - "ground"
+    # twice into a floor and a new body wall - where the user needs to be asked
+    out = _norm([{"name": a, "type": "wall"}, {"name": b, "type": "wall"},
+                 {"name": "farfield", "type": "farfield"}])
+    first, second = (p["name"] for p in out.patches[:2])
+    assert first.casefold() == second.casefold()
+    assert _errs(out.patches), "the duplicate reached admission unrefused"
 
 
 def test_a_correctly_typed_name_is_never_the_one_that_moves():

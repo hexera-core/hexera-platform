@@ -236,14 +236,21 @@ def generate(rng: random.Random, combo) -> Scenario:
         sc.upload = "step"
         for role in ("inlet", "outlet", "wall", "external"):
             add(role)
-    # noise every purpose sees: a reserved name, and a name only capitals tell apart
+    # noise every purpose sees: a reserved name, two different names that meet once cleaned, and
+    # the same name twice in other capitals - one boundary declared twice, which must be asked
+    # about, never quietly turned into two
     if patches and rng.random() < 0.12:
         victim = rng.choice(patches)
         victim["name"] = rng.choice(RESERVED)
         sc.features.add("reserved")
     if len(patches) > 1 and rng.random() < 0.08:
         a, b = rng.sample(patches, 2)
-        b["name"] = a["name"].swapcase() if a["name"].swapcase() != a["name"] else a["name"] + "X"
+        b["name"] = a["name"].replace(" ", "-") if " " in a["name"] else a["name"] + "."
+        sc.features.add("meet_after_cleaning")
+    if len(patches) > 1 and rng.random() < 0.06:
+        a, b = rng.sample(patches, 2)
+        b["name"] = a["name"].swapcase() if a["name"].swapcase() != a["name"] else a["name"]
+        sc.must_refuse = sc.must_refuse or "the same name twice is a question"
         sc.features.add("capitals")
     sc.label = f"{engine}/{purpose}/{ik}/{dim}"
     return sc
@@ -752,9 +759,11 @@ def test_what_the_user_approves_is_what_every_engine_delivers(world):
     delivered = {(o.sc.engine, o.sc.purpose) for o in outcomes if o.approved}
     for engine, purpose, _ik, _dim in _combos():
         assert (engine, purpose) in delivered, f"no {engine}/{purpose} declaration was approved"
-    for feature in ("reserved", "ground", "multi_wall", "symmetry", "capitals"):
+    for feature in ("reserved", "ground", "multi_wall", "symmetry", "meet_after_cleaning"):
         assert any(o.approved and feature in o.sc.features for o in outcomes), \
             f"no approved case exercised {feature}"
+    assert any("capitals" in o.sc.features and not o.approved for o in outcomes), \
+        "no case repeated a name in other capitals"
 
 
 def test_the_role_vocabulary_names_every_role_a_purpose_routes_on():
