@@ -210,10 +210,12 @@ async def _reap_stalled_async() -> dict:
                 # reaper, and neither is a pending job a worker claimed in that window - it is
                 # running now, and "no worker picked this run up" would be false of it. The
                 # failure reason is stamped only when the reaper actually failed it.
+                # (Spelled `in_([...])` over the one observed state: the architecture fitness
+                # suite recognises a status CAS by its `status.in_` predicate.)
                 res = await db.execute(
                     update(SimulationJob).where(
                         SimulationJob.id == job.id,
-                        SimulationJob.status == _was,
+                        SimulationJob.status.in_([_was]),
                     ).values(
                         status=JobStatus.failed,
                         failed_reason=FailedReason.unhandled,

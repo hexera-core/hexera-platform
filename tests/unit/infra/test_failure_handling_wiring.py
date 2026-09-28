@@ -224,7 +224,10 @@ async def _reap_one(monkeypatch, job):
     stmt = updates[0]
     values = {col.name: getattr(bind, "value", bind) for col, bind in stmt._values.items()}
     where = stmt.whereclause.compile()
-    return values, str(where), list(where.params.values()), published
+    # the status predicate's bound list: the states the compare-and-set accepts
+    guarded = [v for v in where.params.values() if isinstance(v, list)]
+    assert len(guarded) == 1, f"expected one status IN predicate, got {where.params}"
+    return values, str(where), guarded[0], published
 
 
 async def test_a_job_no_worker_ever_picked_up_is_not_told_its_worker_was_lost(monkeypatch):
@@ -237,7 +240,7 @@ async def test_a_job_no_worker_ever_picked_up_is_not_told_its_worker_was_lost(mo
         id="job-unclaimed", status=JobStatus.pending, owner_id="owner-1", current_attempt=0,
         started_at=None, lease_expires_at=None,
         created_at=datetime.now(UTC) - timedelta(hours=9999))
-    values, where_sql, where_params, published = await _reap_one(monkeypatch, never)
+    values, _where_sql, accepted, published = await _reap_one(monkeypatch, never)
 
     assert values["status"] == JobStatus.failed
     record = values["final_result"]
@@ -246,8 +249,7 @@ async def test_a_job_no_worker_ever_picked_up_is_not_told_its_worker_was_lost(mo
     assert "No worker picked this run up" in text and "lost" not in text
     # the compare-and-set is on the state the row was SELECTED in: a pending job a worker claims
     # in the window is running by then, and "no worker picked this run up" would be false of it
-    assert " IN " not in where_sql.upper() and JobStatus.pending in where_params
-    assert JobStatus.running not in where_params
+    assert accepted == [JobStatus.pending], accepted
 
 
 async def test_a_running_job_whose_worker_is_gone_keeps_the_lost_worker_record(monkeypatch):
@@ -261,7 +263,7 @@ async def test_a_running_job_whose_worker_is_gone_keeps_the_lost_worker_record(m
         started_at=datetime.now(UTC) - timedelta(hours=1),
         lease_expires_at=datetime.now(UTC) - timedelta(hours=1),
         created_at=datetime.now(UTC) - timedelta(hours=1))
-    values, _where_sql, where_params, published = await _reap_one(monkeypatch, gone)
+    values, _where_sql, accepted, published = await _reap_one(monkeypatch, gone)
     assert values["final_result"]["failure_category"] == "worker_lost"
-    assert JobStatus.running in where_params and JobStatus.pending not in where_params
+    assert accepted == [JobStatus.running], accepted
     assert "lost" in published[0][1]
