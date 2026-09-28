@@ -165,3 +165,15 @@ class SessionRepository:
         s = await self.get_internal(db, session_id)
         if s:
             s.job_id = job_id
+
+    async def release_job(self, db: AsyncSession, session_id: uuid.UUID) -> None:
+        """Let the conversation move on from a run that has ended.
+
+        The job row keeps everything about that run, and the dispatched approval snapshot on the
+        gate keeps its id; only the session's "current run" pointer is cleared, so the next
+        approval links a new job exactly as the first one did. Never called while the run is in
+        flight - that decision belongs to the message authority (agents/intake/message.py).
+        """
+        s = await self.get_internal(db, session_id)
+        if s:
+            s.job_id = None

@@ -53,6 +53,7 @@ async def _post(outcome, *, session=None, intake_result=None, confirm=None):
 
     async def _intake(_state):
         seen["intake_calls"] = seen.get("intake_calls", 0) + 1
+        seen["state"] = _state
         return intake_result or {"messages": [{"role": "assistant", "content": "go on"}],
                                  "intake_gate": {}}
 
@@ -140,6 +141,25 @@ async def test_an_already_dispatched_session_reports_its_job_and_is_done():
     assert body["job_id"] == str(job)
     assert str(job) in body["reply"]
     assert "intake_calls" not in seen
+
+
+async def test_a_message_after_the_sessions_run_ended_runs_the_turn_with_that_run_as_context():
+    # The dead end this closes: after ANY finished job the old route answered every message with
+    # "already running" forever. Now the authority hands the turn on with the ended run beside it,
+    # and the route carries that to the intake as context - never as a recorded requirement.
+    previous = msg.PreviousRun(job_id=str(uuid.uuid4()), status="failed", outcome="Run ended.")
+    outcome = msg.MessageOutcome(status=msg.MessageStatus.proceed, session=_session(),
+                                 previous_run=previous)
+    resp, seen = await _post(outcome)
+    assert resp.status_code == 200 and seen["intake_calls"] == 1
+    assert seen["state"]["previous_run"] == previous.as_state()
+    assert resp.json()["done"] is False and resp.json()["job_id"] is None
+
+
+async def test_a_first_conversation_carries_no_previous_run():
+    outcome = msg.MessageOutcome(status=msg.MessageStatus.proceed, session=_session())
+    _, seen = await _post(outcome)
+    assert "previous_run" not in seen["state"]
 
 
 async def test_an_approval_is_handed_to_the_approval_authority_with_zero_model_calls():

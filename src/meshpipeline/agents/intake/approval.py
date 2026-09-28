@@ -545,7 +545,8 @@ async def confirm_pending_approval(session, session_repo, owner_id: str, session
         raise ApprovalTransactionError(ConfirmOutcome(
             ConfirmStatus.dispatch_failed,
             "Could not start mesh generation - the run was not launched and nothing is running. "
-            "Your approved configuration was kept; please try again.", job_id=job_id)) from exc
+            "Your approved configuration was kept: say \"run it again\" in this chat and I will "
+            "set it up for a fresh approval.", job_id=job_id)) from exc
 
     # ACCEPTED FOR ASYNCHRONOUS LAUNCH - not "started by the worker", which this request cannot
     # know. The distinction matters: the old wording claimed execution had begun even when the
