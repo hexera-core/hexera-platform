@@ -223,6 +223,9 @@ async def test_a_purged_source_is_refused_before_any_dispatch(wired, monkeypatch
     assert out.status is ap.ConfirmStatus.source_expired
     assert "upload the file again" in out.message.lower()
     assert wired.dispatches == 0, "a run was dispatched for bytes that no longer exist"
+    assert wired.jobs == 0, "a job row was created for bytes that no longer exist"
+    assert wired.messages == [("assistant", out.message)]          # the person hears why, in the chat
+    assert wired.gate_writes[-1]["approval"]["deferred_count"] == 1  # and their next yes still lands
 
 
 async def test_a_session_without_geometry_is_refused_before_the_transaction(wired):
@@ -244,6 +247,9 @@ async def test_an_unconfirmed_unit_is_refused(wired, monkeypatch):
         await _confirm(wired)
     assert ei.value.outcome.status is ap.ConfirmStatus.no_confirmed_unit
     assert wired.dispatches == 0
+    assert wired.jobs == 0
+    assert wired.messages == [("assistant", ei.value.outcome.message)]
+    assert wired.gate_writes[-1]["approval"]["deferred_count"] == 1
 
 
 # intent consistency
