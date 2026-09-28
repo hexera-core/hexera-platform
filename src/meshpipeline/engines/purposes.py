@@ -136,13 +136,29 @@ def topology_of(purpose_key: str) -> str:
     return PURPOSES[purpose_key].flow_topology if purpose_key in PURPOSES else ""
 
 
+def kinds_admitted_as(input_kind: str | None, required_mesh_kinds: tuple) -> tuple:
+    """The capability input kinds a submitted geometry satisfies for a purpose. To a flow engine a
+    CAD solid of the physical part IS its surface - the mesher wraps the skin and fills the fluid
+    around or inside it - so for a purpose that needs a fluid volume, "solid-body" satisfies a
+    "body-surface" capability. For structural work it stays its own kind: gmsh meshes the solid
+    itself. Without this, a car body, a wing or a blade confirmed on the geometry check as "a
+    solid body the fluid flows around" was refused: "cannot produce an external_cfd mesh from a
+    'solid-body' geometry"."""
+    if input_kind is None:
+        return ()
+    if input_kind == "solid-body" and "fluid-volume" in required_mesh_kinds:
+        return ("solid-body", "body-surface")
+    return (input_kind,)
+
+
 def is_compatible(spec, purpose_key: str, input_kind: str | None = None) -> bool:
     p = PURPOSES[purpose_key]
     req, req_topo = p.requires_mesh_kind, p.flow_topology
     req = (req,) if isinstance(req, str) else tuple(req)
+    admitted = kinds_admitted_as(input_kind, req)
     return any(
         c.output_kind in req
-        and (input_kind is None or c.input_kind == input_kind)
+        and (input_kind is None or c.input_kind in admitted)
         and (not req_topo or req_topo in c.topologies)
         for c in spec.capabilities
     )

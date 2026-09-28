@@ -71,3 +71,28 @@ def test_compatibility_can_refine_on_submitted_geometry_kind():
     assert is_compatible(gmsh, "external_cfd", input_kind="fluid-domain")
     # a solid body submitted for a CFD run: gmsh would mesh the body, not the fluid
     assert not is_compatible(gmsh, "external_cfd", input_kind="solid-body")
+
+
+def test_a_solid_body_is_a_body_surface_to_a_flow_engine_but_not_to_a_structural_one():
+    """A car body, a wing or a blade arrives as a CAD solid the fluid flows around. The flow
+    engines declare only body-surface, and the mesher wraps the solid's skin all the same, so
+    external and internal CFD admit it. Structural work still needs the solid itself: gmsh's
+    solid-body capability is its own thing, and cfMesh has no structural capability at all."""
+    from meshpipeline.engines import registry as ec
+    from meshpipeline.engines.purposes import is_compatible, kinds_admitted_as
+
+    assert kinds_admitted_as("solid-body", ("fluid-volume",)) == ("solid-body", "body-surface")
+    assert kinds_admitted_as("solid-body", ("solid-volume", "surface-mesh")) == ("solid-body",)
+    assert kinds_admitted_as("fluid-domain", ("fluid-volume",)) == ("fluid-domain",)
+    assert kinds_admitted_as(None, ("fluid-volume",)) == ()
+
+    snappy = ec.get_spec("snappy")
+    assert is_compatible(snappy, "external_cfd", "solid-body")
+    assert is_compatible(snappy, "external_cfd", "body-surface")
+    assert is_compatible(snappy, "internal_cfd", "solid-body")
+    assert not is_compatible(snappy, "structural", "solid-body")
+    cfmesh = ec.get_spec("cfmesh")
+    assert is_compatible(cfmesh, "external_cfd", "solid-body")
+    gmsh = ec.get_spec("gmsh")
+    assert is_compatible(gmsh, "structural", "solid-body")
+

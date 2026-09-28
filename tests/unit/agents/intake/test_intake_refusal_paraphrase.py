@@ -19,7 +19,7 @@ _ACCEPTABLE = (
 )
 
 
-def _facts(engine="snappy", input_kind="solid-body"):
+def _facts(engine="snappy", input_kind="planar-domain"):   # a flat sheet: snappyHexMesh cannot wrap one (a solid body it can - it is a body surface to a flow engine)
     return preview_admission(engine, "external_cfd", input_kind,
                              dimensionality="3D", patches=_FIVE)
 
