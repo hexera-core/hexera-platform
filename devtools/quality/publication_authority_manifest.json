@@ -2251,6 +2251,71 @@
   ]
  },
  {
+  "context": "engines/case_contract.py::_apply_create_patch::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_apply_create_patch",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_block::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_block",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_block_mesh_patches::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_block_mesh_patches",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_word::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_word",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::launch_check::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "launch_check",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfmesh/deliverable.py::boundary_foam_types::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfmesh/deliverable.py",
   "qualname": "boundary_foam_types",
@@ -2476,6 +2541,19 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#6|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 6,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::meshed#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
@@ -2609,6 +2687,19 @@
   "roots": [
    "engines/snappy/drivers.py::parameter"
   ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::error#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::meshed#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
@@ -3242,6 +3333,19 @@
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "pipeline/executor.py::node_executor::error#2|NotAPublisher|not-a-publisher|",
+  "path": "pipeline/executor.py",
+  "qualname": "node_executor",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
