@@ -230,7 +230,6 @@ def _admission_message(rejection, engine: str, purpose: str, dim: str) -> str:
 # where a refusal costs one question in chat instead of a meshing run. The 5/3 separation is
 # the binder's tolerance band (a +/-25%% area test cannot tell closer sizes apart under
 # normal manufacturing drift - a counterbored 40 measures like a reduced-bore 50).
-_PORT_NAME_RE = None  # initialised lazily below to keep module import light
 _RESERVED_PATCH_NAMES = frozenset({"outer", "FoamFile", "farfield"})
 _MIN_DECLARED_AREA_SEPARATION = 5.0 / 3.0
 
@@ -264,13 +263,25 @@ def _declared_area_mm2(p: dict) -> float | None:
     return None
 
 
+def _validate_patch_names(patches: list) -> list[str]:
+    # Every flow, every engine: a name must be one a mesher can write. The executor makes every
+    # name mesh-safe before this runs, so in the conversation this never fires; it is the backstop
+    # for a caller that reached the validator some other way, and it names the safe spelling.
+    from meshpipeline.contracts.patch_names import is_mesh_safe, mesh_safe
+
+    errors: list[str] = []
+    for i, p in enumerate(x for x in patches if isinstance(x, dict)):
+        nm = (p.get("name") or "").strip()
+        if nm and not is_mesh_safe(nm):
+            errors.append(
+                f"patches[{i}].name {nm!r} cannot be built verbatim into a mesh - names must "
+                "start with a letter and contain only letters, digits and underscores; use "
+                f"{mesh_safe(nm)!r} and tell the user the new spelling")
+    return errors
+
+
 def _validate_internal_ports(patches: list) -> list[str]:
     import math
-    import re as _re
-
-    global _PORT_NAME_RE
-    if _PORT_NAME_RE is None:
-        _PORT_NAME_RE = _re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
     errors: list[str] = []
     entries = [p for p in patches if isinstance(p, dict)]
@@ -278,11 +289,6 @@ def _validate_internal_ports(patches: list) -> list[str]:
 
     for i, p in enumerate(entries):
         nm = (p.get("name") or "").strip()
-        if nm and not _PORT_NAME_RE.match(nm):
-            errors.append(
-                f"patches[{i}].name {nm!r} cannot be built verbatim into a mesh - names must "
-                "start with a letter and contain only letters, digits and underscores; ask the "
-                "user for a mesh-safe spelling (e.g. inlet_1)")
         if nm in _RESERVED_PATCH_NAMES:
             errors.append(
                 f"patches[{i}].name {nm!r} is reserved by the meshing engines - ask the user "
@@ -511,6 +517,8 @@ def validate_submission(args: dict) -> list[str]:
         # (the single admission path), evaluated once below with the rest of the declared
         # rules. This block validates only that patches are WELL-FORMED for the purpose.
 
+    if isinstance(_patches, list):
+        _val_errors.extend(_validate_patch_names(_patches))
     if _purpose == "internal_cfd" and isinstance(_patches, list):
         _val_errors.extend(_validate_internal_ports(_patches))
     if _purpose == "external_cfd" and isinstance(_patches, list):
