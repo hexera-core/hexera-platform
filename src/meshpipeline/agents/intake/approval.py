@@ -298,8 +298,19 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
         plan = await spend_gate.admit(db, owner_id=owner_id, organization_id=organization_id)
         await job_service.check_quotas(db, owner_id, plan=plan)
     except ValueError as exc:
+        # THE USER SAID YES AND NOTHING CAN RUN. Their "yes" is already in the transcript, so the
+        # summary must expect the NEXT message: without this, the same "yes" after the quota
+        # frees (or credits are added) was refused as stale, forever. And the reason is a turn
+        # of the conversation - only the response carried it before, so the history showed the
+        # "yes" answered by nothing.
+        reason = str(exc)
+        gate["approval"] = defer(snapshot)
+        await session_repo.set_intake_gate(db, session_id, gate)
+        await session_repo.append_message(db, session_id, "assistant", reason)
+        await db.commit()
+        logger.warning("approval: nothing can run - %s - session=%s", reason, session_id)
         raise ApprovalTransactionError(ConfirmOutcome(
-            ConfirmStatus.quota_exceeded, str(exc))) from exc
+            ConfirmStatus.quota_exceeded, reason)) from exc
 
     # STAMPED WITH BOTH. The organisation is not optional decoration here: every later read of
     # this job - status polling, the WS ticket, dispute, /surface - scopes on organization_id for

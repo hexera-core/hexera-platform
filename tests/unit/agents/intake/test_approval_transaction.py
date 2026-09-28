@@ -282,6 +282,10 @@ async def test_a_quota_refusal_creates_no_job(wired, monkeypatch):
         await _confirm(wired, quota_error="monthly job limit reached")
     assert ei.value.outcome.status is ap.ConfirmStatus.quota_exceeded
     assert wired.dispatches == 0
+    # the person hears why, in the chat, and the summary still expects their NEXT message
+    assert wired.messages == [("assistant", ei.value.outcome.message)]
+    written = wired.gate_writes[-1]["approval"]
+    assert written["status"] == ap.AWAITING and written["deferred_count"] == 1
 
 
 async def test_an_exhausted_balance_is_refused_in_the_conversation_and_creates_no_job(
@@ -294,6 +298,8 @@ async def test_an_exhausted_balance_is_refused_in_the_conversation_and_creates_n
         await _confirm(wired, organization_id=str(uuid.uuid4()))
     assert ei.value.outcome.status is ap.ConfirmStatus.quota_exceeded
     assert "out of credits" in ei.value.outcome.message
+    assert wired.messages == [("assistant", ei.value.outcome.message)]
+    assert wired.gate_writes[-1]["approval"]["deferred_count"] == 1
     assert wired.jobs == 0 and wired.dispatches == 0
 
 
