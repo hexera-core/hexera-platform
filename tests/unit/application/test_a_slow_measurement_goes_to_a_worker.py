@@ -2,7 +2,7 @@
 # Boundaries: the branch only. What the conversation says with no measurement is tests/unit/agents/.
 """MEASURED on the 36-file run of the night of 2026-09-27. Three parts of 36 died on this branch -
 blade_row_rotor_001, shell_and_tube_7, shell_and_tube_7_unshared - and those three were the only stalls in
-the batch. `shell_and_tube_7` had measured successfully at 15:57 the same day, so the ceiling was racing the
+the batch. `shell_and_tube_7` had measured successfully at 08:57 the same day, so the ceiling was racing the
 machine's load rather than rejecting a part we cannot read.
 
 The size threshold in front of this path is what made it invisible: 44 corpus files measure at a median of

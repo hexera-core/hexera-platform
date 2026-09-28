@@ -18,7 +18,7 @@ place there is, and asked the CUSTOMER for them:
 The shell and tube has 32 openings. Nobody reads a bore off a STEP file by hand, so our timeout became the
 customer's homework and none of the three submitted.
 
-`shell_and_tube_7` measured successfully at 15:57 and failed at 00:37 the next morning under the load of the
+`shell_and_tube_7` measured successfully at 08:57 and failed at 17:37 the same day under the load of the
 batch, which is what makes the empty block expensive rather than merely wrong: the same part gives two
 different customers two different products.
 """
