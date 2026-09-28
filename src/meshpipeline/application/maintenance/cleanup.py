@@ -138,9 +138,15 @@ def stalled_jobs_clause(now: datetime) -> ColumnElement[bool]:
     sixty-second cadence is not a hiccup. Past the pipeline deadline no heartbeat may extend the
     lease at all, so this is also what fails a zombie run within the hour of its ceiling.
 
-    THE CEILING. A job that started, or was created and never picked up, more than
-    STALLED_JOB_TIMEOUT_HOURS ago. It needs no lease, so it also covers a row that reached
-    `running` without a claim.
+    THE CEILING. A job that was created and never picked up, or that reached `running` WITHOUT
+    EVER HOLDING A LEASE and started, more than STALLED_JOB_TIMEOUT_HOURS ago. A running job with
+    a lease is judged by the lease alone: with a live one it is alive whatever its age, and the
+    ceiling here (four hours) is SHORTER than the pipeline deadline (six), so an age rule applied
+    to leased jobs would have failed every live job between its fourth and sixth hour the first
+    time the reaper ran on a hosted deployment - and the worker's real result would then have been
+    refused by its own terminal compare-and-set. A run that goes on too long is ended by the
+    pipeline deadline, not by this: past it no heartbeat may extend the lease, and the lease rule
+    follows within the hour.
     """
     from sqlalchemy import or_
 
@@ -153,8 +159,9 @@ def stalled_jobs_clause(now: datetime) -> ColumnElement[bool]:
         (SimulationJob.status == JobStatus.running)
         & SimulationJob.lease_expires_at.isnot(None)
         & (SimulationJob.lease_expires_at < lease_cutoff),
-        # abandoned mid-run, with or without a lease to judge by
+        # reached `running` without a claim (a row from before leases), and long ago
         (SimulationJob.status == JobStatus.running)
+        & SimulationJob.lease_expires_at.is_(None)
         & SimulationJob.started_at.isnot(None)
         & (SimulationJob.started_at < started_cutoff),
         # never picked up (started_at is NULL for these)

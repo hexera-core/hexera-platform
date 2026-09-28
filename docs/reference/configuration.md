@@ -332,7 +332,7 @@ A job is failed truthfully when nothing will finish it. Two rules, both in
 | Rule | A job is reaped when | Setting |
 |---|---|---|
 | the lease | it is `running` and its lease has been expired for a whole further lease period - by default about thirty minutes after the worker's last heartbeat | `WORKER_LEASE_SECONDS` |
-| the ceiling | it is `running` and started, or is `pending`/`queued` and was created, more than this many hours ago | `STALLED_JOB_TIMEOUT_HOURS` |
+| the ceiling | it is `pending`/`queued` and was created, or is `running` without ever having held a lease and started, more than this many hours ago. A running job with a lease is judged by the lease alone: this ceiling (4 h) is shorter than the pipeline deadline (6 h), so it must never apply to a live job | `STALLED_JOB_TIMEOUT_HOURS` |
 
 The lease rule is the one that matters on a worker fleet. When the autoscaler replaces the
 instance running a job, the heartbeat stops and nothing takes the job over: a task is acknowledged

@@ -58,3 +58,17 @@ def test_the_ceiling_still_stands_for_running_and_for_never_started_jobs(monkeyp
     sql, params = _compiled(monkeypatch, hours=4)
     assert "started_at <" in sql and "created_at <" in sql
     assert NOW - timedelta(hours=4) in params.values()
+
+
+def test_a_live_job_is_never_reaped_for_its_age(monkeypatch):
+    # The ceiling is four hours and the pipeline deadline is six. An age rule applied to a leased
+    # job would fail every live run between its fourth and sixth hour, and the worker's real result
+    # would then be refused by its own terminal compare-and-set. So the age rule reaches only a
+    # running row that never held a lease; a leased one is judged by the lease alone.
+    import meshpipeline.settings.runtime as rt
+    assert polcfg.STALLED_JOB_TIMEOUT_HOURS * 3600 < rt.PIPELINE_TOTAL_TIMEOUT_SECONDS, (
+        "the premise moved: the ceiling now exceeds the pipeline deadline")
+    sql, _ = _compiled(monkeypatch)
+    assert re.search(
+        r"(\w+)\.status = :\w+ AND \1\.lease_expires_at IS NULL AND \1\.started_at IS NOT NULL "
+        r"AND \1\.started_at <", sql), sql
