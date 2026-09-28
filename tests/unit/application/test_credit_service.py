@@ -17,9 +17,18 @@ class _LedgerDouble:
     def __init__(self):
         self.entries: list[dict] = []
 
-    async def append(self, db, *, organization_id, entry_type, amount, reason="", overage=0):
+    async def get_by_id(self, db, entry_id):
+        for entry in self.entries:
+            if entry.get("id") == entry_id:
+                return type("LedgerEntry", (), entry)()
+        return None
+
+    async def append(self, db, *, organization_id, entry_type, amount, reason="", overage=0,
+                     entry_id=None):
         entry = {"organization_id": organization_id, "entry_type": entry_type,
                  "amount": amount, "reason": reason}
+        if entry_id is not None:
+            entry["id"] = entry_id
         if overage:
             entry["overage"] = overage
         self.entries.append(entry)
@@ -50,6 +59,30 @@ async def test_a_grant_of_zero_writes_nothing(ledger):
     # The ledger's CHECK refuses a zero amount, so the service must not offer it one.
     await credit_service.grant(None, organization_id=uuid.uuid4(), amount=0, reason="signup")
     assert ledger.entries == []
+
+
+@pytest.mark.asyncio
+async def test_a_grant_retry_with_the_same_entry_id_writes_once(ledger):
+    org = uuid.uuid4()
+    entry_id = uuid.uuid4()
+    await credit_service.grant(None, organization_id=org, amount=100, reason="support",
+                               entry_id=entry_id)
+    await credit_service.grant(None, organization_id=org, amount=100, reason="support",
+                               entry_id=entry_id)
+    assert ledger.entries == [{"id": entry_id, "organization_id": org,
+                               "entry_type": CreditEntryType.grant, "amount": 100,
+                               "reason": "support"}]
+
+
+@pytest.mark.asyncio
+async def test_a_grant_entry_id_cannot_be_reused_for_a_different_grant(ledger):
+    org = uuid.uuid4()
+    entry_id = uuid.uuid4()
+    await credit_service.grant(None, organization_id=org, amount=100, reason="support",
+                               entry_id=entry_id)
+    with pytest.raises(ValueError):
+        await credit_service.grant(None, organization_id=org, amount=200, reason="support",
+                                   entry_id=entry_id)
 
 
 @pytest.mark.asyncio

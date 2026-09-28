@@ -14,6 +14,8 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+_O_PATH = getattr(os, "O_PATH", os.O_RDONLY)
+
 # Generous limits: bound runaway without tripping numpy/geometry math.
 # NOTE: RLIMIT_NPROC is deliberately NOT set - it counts threads, and OpenBLAS/numpy
 # spawn per-core worker threads that would fail under it. Fork-bomb protection lives
@@ -166,7 +168,7 @@ try:
                              [(p, _FS_RO) for p in _RUNTIME_RO_PATHS] +
                              [(p, _FS_READ_FILE | _FS_READ_DIR | _FS_WRITE_FILE) for p in _RW_PATHS]):
                 try:
-                    _fd = os.open(_p, os.O_PATH | os.O_CLOEXEC | os.O_DIRECTORY)
+                    _fd = os.open(_p, _O_PATH | os.O_CLOEXEC | os.O_DIRECTORY)
                 except OSError:
                     continue
                 _pb = _PbAttr(_acc, _fd)

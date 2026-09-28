@@ -110,6 +110,24 @@ async function get<T>(path: Parameters<ReturnType<typeof getHexeraApiClient>["re
   }
 }
 
+async function post<T>(
+  path: Parameters<ReturnType<typeof getHexeraApiClient>["request"]>[0],
+  body: unknown,
+): Promise<Read<T>> {
+  try {
+    return ok(
+      await getHexeraApiClient().request<T>(path, {
+        body: JSON.stringify(body),
+        cache: "no-store",
+        headers: { ...adminHeaders(), "Content-Type": "application/json" },
+        method: "POST",
+      }),
+    );
+  } catch (error) {
+    return failed<T>(error);
+  }
+}
+
 export async function readOrganizations(): Promise<
   Read<{ billing_enabled: boolean; organizations: BillingOrganization[] }>
 > {
@@ -134,6 +152,23 @@ export async function readInvoices(
   organizationId: string,
 ): Promise<Read<{ invoices: InvoiceRow[]; reason?: string }>> {
   return get(hexeraApiRoutes.adminBillingInvoices(organizationId));
+}
+
+export async function raiseInvoice(input: {
+  amount: number;
+  currency: string;
+  daysUntilDue: number;
+  description: string;
+  operationId: string;
+  organizationId: string;
+}): Promise<Read<{ invoice: InvoiceRow }>> {
+  return post(hexeraApiRoutes.adminBillingInvoices(input.organizationId), {
+    amount: input.amount,
+    currency: input.currency,
+    days_until_due: input.daysUntilDue,
+    description: input.description,
+    operation_id: input.operationId,
+  });
 }
 
 // FORMATTING lives here rather than in the page so the same number reads the same way in every

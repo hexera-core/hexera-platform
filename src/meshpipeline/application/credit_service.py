@@ -23,7 +23,7 @@ SIGNUP_REASON = "signup grant"
 
 
 async def grant(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
-                reason: str = "") -> None:
+                reason: str = "", entry_id: uuid.UUID | None = None) -> None:
     # A grant is POSITIVE, always. Allowing a negative one would make this the single function in
     # the cycle capable of removing credits - a debit wearing the wrong name - and the design says
     # nothing here spends.
@@ -33,9 +33,18 @@ async def grant(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,
     # refuses a zero-amount row, so the entry is simply not written.
     if amount == 0:
         return
+    if entry_id is not None:
+        existing = await credit_ledger_repo.get_by_id(db, entry_id)
+        if existing is not None:
+            if (existing.organization_id != organization_id
+                    or existing.entry_type != CreditEntryType.grant
+                    or existing.amount != amount
+                    or existing.reason != reason):
+                raise ValueError("credit grant operation id was already used")
+            return
     await credit_ledger_repo.append(db, organization_id=organization_id,
                                     entry_type=CreditEntryType.grant, amount=amount,
-                                    reason=reason)
+                                    reason=reason, entry_id=entry_id)
 
 
 async def debit(db: AsyncSession, *, organization_id: uuid.UUID, amount: int,

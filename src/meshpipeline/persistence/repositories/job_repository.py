@@ -5,12 +5,12 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, tuple_, update
+from sqlalchemy import case, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from meshpipeline.persistence.job_state import TransitionResult, legal_sources
-from meshpipeline.persistence.models import ChatSession, JobStatus, SimulationJob
+from meshpipeline.persistence.models import ChatSession, JobStatus, Organization, SimulationJob
 from meshpipeline.persistence.repositories import tenant_scope
 
 
@@ -70,6 +70,50 @@ class JobRepository:
                 tuple_(SimulationJob.created_at, SimulationJob.id) < before)
         result = await db.execute(statement)
         return [(row[0], row[1]) for row in result.all()]
+
+    async def list_recent_admin(self, db: AsyncSession, *, limit: int = 50,
+                                organization_id: uuid.UUID | None = None
+                                ) -> list[tuple[SimulationJob, str | None, str | None]]:
+        """Recent runs across tenants. CROSS-TENANT: admin routes only."""
+        bounded = max(1, min(limit, 250))
+        statement = (
+            select(SimulationJob, ChatSession.domain, Organization.name)
+            .outerjoin(ChatSession, ChatSession.job_id == SimulationJob.id)
+            .outerjoin(Organization, Organization.id == SimulationJob.organization_id)
+            .order_by(SimulationJob.created_at.desc(), SimulationJob.id.desc())
+            .limit(bounded))
+        if organization_id is not None:
+            statement = statement.where(SimulationJob.organization_id == organization_id)
+        result = await db.execute(statement)
+        return [(row[0], row[1], row[2]) for row in result.all()]
+
+    async def stats_by_organization(
+        self, db: AsyncSession, *, organization_id: uuid.UUID | None = None,
+    ) -> dict[uuid.UUID, dict[str, int | str | None]]:
+        """Run counts per organisation. CROSS-TENANT: admin routes only."""
+        active = case((SimulationJob.status.in_(self._ACTIVE_STATUSES), 1), else_=0)
+        statement = (
+            select(
+                SimulationJob.organization_id,
+                func.count(),
+                func.coalesce(func.sum(active), 0),
+                func.max(SimulationJob.created_at),
+            )
+            .where(SimulationJob.organization_id.is_not(None))
+            .group_by(SimulationJob.organization_id)
+        )
+        if organization_id is not None:
+            statement = statement.where(SimulationJob.organization_id == organization_id)
+        result = await db.execute(statement)
+        return {
+            row[0]: {
+                "active_runs": int(row[2] or 0),
+                "last_run_at": row[3].isoformat() if row[3] else None,
+                "run_count": int(row[1] or 0),
+            }
+            for row in result.all()
+            if row[0] is not None
+        }
 
     async def get_internal(self, db: AsyncSession, job_id: uuid.UUID) -> SimulationJob | None:
         result = await db.execute(

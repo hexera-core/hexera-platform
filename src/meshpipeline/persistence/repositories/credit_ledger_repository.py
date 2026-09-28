@@ -15,10 +15,17 @@ class CreditLedgerRepository:
     # APPEND AND SUM, and deliberately nothing else. There is no update and no delete method,
     # because an entry that can be rewritten is not a ledger - a correction is another entry.
 
+    async def get_by_id(self, db: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
+        result = await db.execute(
+            select(CreditLedgerEntry).where(CreditLedgerEntry.id == entry_id))
+        return result.scalar_one_or_none()
+
     async def append(self, db: AsyncSession, *, organization_id: uuid.UUID,
                      entry_type: CreditEntryType, amount: int,
-                     reason: str = "", overage: int = 0) -> CreditLedgerEntry:
-        row = CreditLedgerEntry(organization_id=organization_id, entry_type=entry_type,
+                     reason: str = "", overage: int = 0,
+                     entry_id: uuid.UUID | None = None) -> CreditLedgerEntry:
+        row = CreditLedgerEntry(id=entry_id or uuid.uuid4(), organization_id=organization_id,
+                                entry_type=entry_type,
                                 amount=int(amount), reason=reason[:128], overage=int(overage))
         db.add(row)
         await db.flush()
