@@ -61,6 +61,13 @@ def api_server(tmp_path):
         "JOBS_DIR": str(staging),
         "INTAKE_GREETING_ON_UPLOAD": "true",
         "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+        # MAX_CONCURRENT_JOBS is a WHOLE-SYSTEM quota and this tier shares one database, so jobs
+        # left active by unrelated suites refuse this suite's uploads for capacity before the
+        # contract under test is reached: measured at 33 active against a limit of 20, once the
+        # size-balanced sharding put this file after a job-creating suite. The same headroom
+        # test_owner_isolation_matrix.py gives its API process, and for the same reason; only
+        # the system-wide limit is raised, and quotas are proven in their own suite.
+        "MAX_CONCURRENT_JOBS": "1000000",
     }
     # The COMPOSED entrypoint the image runs - meshpipeline.api.app is the bare router and
     # never calls the composition root, so an object store would never be configured.

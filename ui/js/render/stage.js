@@ -117,8 +117,7 @@ export const Stage = {
     applyFlow(g);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
-    // a triangle file carries no unit: the card waits on the chat for that alone
-    if(d.unit_needed){btn.disabled=true;g.querySelector('.gc-hint').textContent='The file does not say its unit: answer the question in the chat first.';}
+    this.geometryCheckUpdate(d);
     btn.onclick=async()=>{
       const body=readForm(g,p);
       btn.disabled=true;btn.textContent='Confirming…';
@@ -132,6 +131,17 @@ export const Stage = {
       }
       this.scrollBottom();};
     this.scrollBottom();},
+
+  /* THE CARD FOLLOWS THE CHECK IN PLACE: a triangle file carries no unit, so Proceed waits on the
+     chat for that alone and opens the moment the chat settles it. The card is never drawn again
+     for that, so what the user typed on it stays. A confirmed card is left as it is. */
+  geometryCheckUpdate(d){
+    const g=this._gcEl;if(!g||g.querySelector('.gc-done'))return;
+    const btn=g.querySelector('.gc-proceed'),hint=g.querySelector('.gc-hint');
+    if(!btn)return;
+    btn.disabled=!!(d&&d.unit_needed);
+    if(hint)hint.textContent=d&&d.unit_needed?'The file does not say its unit: answer the question in the chat first.'
+      :'Fix any name or role first. The questions that follow skip everything confirmed here.';},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';

@@ -101,6 +101,8 @@ configureComposer({
   // stickers, the form beside it. When the stage cannot open, the same form arrives as a card.
   geometryCheck: (sessionId, d, confirm, retry) => openGeometryStage(sessionId, d, confirm,
     { anchorEl: Stage.col(), retry, fallback: () => { Stage.geometryCheck(d, confirm); } }),
+  // the card, when it stands in for the stage, follows the check in place
+  geometryCard: (d) => Stage.geometryCheckUpdate(d),
 });
 
 configureDispute({
