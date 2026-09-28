@@ -37,8 +37,10 @@ def test_the_question_proposes_millimetres_with_the_part_in_every_unit_when_it_w
 @pytest.mark.parametrize("answer,unit", [
     ("mm", LengthUnit.millimetre), ("Metres.", LengthUnit.metre), ("in", LengthUnit.inch),
     ("yes, millimetres", LengthUnit.millimetre), ("no - metres", LengthUnit.metre),
+    # the sentence shared dev refused (session ahmed_25deg.stl), and its kin
     ("the coordinates are in millimetres", LengthUnit.millimetre), ("mm I think", LengthUnit.millimetre),
-    ("in inches", LengthUnit.inch), ("It's in cm.", LengthUnit.centimetre),
+    ("it's in inches", LengthUnit.inch), ("in inches", LengthUnit.inch), ("It's in cm.", LengthUnit.centimetre),
+    ("The file is in meters, I believe", LengthUnit.metre), ("should be millimeters", LengthUnit.millimetre),
 ])
 def test_a_unit_named_anywhere_in_the_reply_is_the_answer(answer, unit):
     assert uc.classify(answer) is unit
@@ -110,6 +112,24 @@ async def test_without_a_measurement_the_plain_question_is_asked_and_ok_is_not_a
     outcome, repo = await _settle("ok", gate=gate, size=None, monkeypatch=monkeypatch, recorded=recorded)
     assert outcome.status is msg.MessageStatus.proceed and recorded == []    # an ordinary turn; the question stays open
     assert repo.append_message.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer,unit", [
+    ("the coordinates are in millimetres", LengthUnit.millimetre),
+    ("mm I think", LengthUnit.millimetre),
+    ("it's in inches", LengthUnit.inch),
+])
+async def test_a_sentence_that_names_the_unit_settles_it_and_the_naming_gets_its_turn(monkeypatch, answer, unit):
+    """What shared dev refused with "I could not read that as a unit" - and then sat at scouted
+    for the harness's whole wait, because the naming is only queued once the unit is known."""
+    recorded: list = []
+    held: list = []
+    outcome, repo = await _settle(answer, gate=uc.asked({}, uc.PROPOSED), monkeypatch=monkeypatch,
+                                  recorded=recorded, held=held)
+    assert outcome.status is msg.MessageStatus.unit_recorded and recorded == [unit]
+    assert held == [str(SID)]                              # the geometry check gets its turn at once
+    assert repo.append_message.await_count == 0            # no refusal in the conversation
 
 
 @pytest.mark.asyncio
