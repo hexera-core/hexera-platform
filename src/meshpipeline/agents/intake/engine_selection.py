@@ -30,9 +30,9 @@ VIA_STRUCTURED_INPUT = "structured_input"
 # and that is refused below on its own. A hedge ("maybe", "I think so") has no assent word and is
 # not assent either; the model may still quote a hesitant user's words, and the quote is checked.
 _ASSENT = frozenset({
-    "yes", "y", "yep", "yeah", "yup", "sure", "ok", "okay", "fine", "go", "ahead", "agree",
-    "agreed", "confirm", "confirmed", "correct", "right", "proceed", "select", "use", "keep",
-    "choose", "pick", "alright", "absolutely", "definitely", "certainly", "affirmative",
+    "yes", "y", "yep", "yeah", "yup", "sure", "ok", "okay", "fine", "go", "ahead", "goahead",
+    "agree", "agreed", "confirm", "confirmed", "correct", "right", "proceed", "select", "use",
+    "keep", "choose", "pick", "alright", "absolutely", "definitely", "certainly", "affirmative",
 })
 _FILLER = frozenset({
     "please", "thanks", "thank", "you", "then", "now", "just", "lets", "let", "us", "s", "t",
@@ -40,13 +40,22 @@ _FILLER = frozenset({
     "good", "great", "perfect", "sounds", "works", "me", "for", "i", "we", "do", "so", "engine",
     "mesher", "as", "proposed", "suggested",
 })
-# A refusal. A hard negation refuses when it opens the message ("no, don't use snappyHexMesh"),
-# ends it ("definitely not", "I'd rather not"), or sits against an assent word ("don't use") -
-# not when it is aimed at another clause: "yes, use snappyHexMesh, but don't worry about mesh
-# density" is a yes. The softer words decline only when they open the message ("nope", "wait,
-# what?"). Two idioms mean the opposite of their words and are taken out first.
-_NEGATION = frozenset({"not", "dont", "don", "never", "cancel", "stop"})
+# A REFUSAL, read from where the negation sits rather than from its presence: "yes, use
+# snappyHexMesh, but don't worry about mesh density" is a yes with a negation aimed at another
+# clause, while "yes, but I don't want snappyHexMesh" is a no. A negation refuses when it opens
+# the message ("no, don't use snappyHexMesh"), ends it ("definitely not", "I'd rather not"),
+# follows an intensifier ("absolutely not, ..."), or negates a choice verb whose object is the
+# engine or a pronoun for it ("don't want snappyHexMesh", "can't use that", "won't go with it").
+# Every "n't" is read as "not" first, so the apostrophe never decides. Two idioms mean the
+# opposite of their words and are taken out first.
+_NEGATION = frozenset({"not", "dont", "never", "cancel", "stop"})
 _DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
+_INTENSIFIERS = frozenset({"definitely", "absolutely", "certainly", "surely"})
+_CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use", "pick", "take",
+                     "keep", "go", "fancy", "wish"})
+#: What stands for the proposed engine as the object of a negated choice verb.
+_ENGINE_WORD = "xengine"
+_OBJECT = frozenset({_ENGINE_WORD, "it", "that", "this"})
 _IDIOMS = ("no problem", "no worries", "why not")
 
 
@@ -54,36 +63,45 @@ def _norm(text) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
 
 
-def _content_words(engine: str, message: str) -> list[str]:
-    # The message as bare words, with the proposed engine's own name taken out: "yes, snappyHexMesh"
-    # is a yes. Both spellings go, the registry key and the name the user reads.
-    text = re.sub(r"[^0-9a-z]+", " ", str(message or "").casefold())
+def _tokens(engine: str, message: str, *, keep_engine: bool) -> list[str]:
+    # The message as bare words. Contractions are opened ("don't" -> "do not"), the proposed
+    # engine's own name - both spellings, the registry key and the name the user reads - becomes
+    # one token or nothing, "go ahead" becomes one word, and the idioms go.
+    text = re.sub(r"n['’]t\b", " not", str(message or "").casefold())
+    text = re.sub(r"[^0-9a-z]+", " ", text)
     for spelling in {engine, engine_label(engine)}:
         bare = re.sub(r"[^0-9a-z]+", " ", str(spelling or "").casefold()).strip()
         if bare:
-            text = re.sub(rf"(?<![0-9a-z]){re.escape(bare)}(?![0-9a-z])", " ", text)
+            text = re.sub(rf"(?<![0-9a-z]){re.escape(bare)}(?![0-9a-z])",
+                          f" {_ENGINE_WORD} " if keep_engine else " ", text)
+    text = f" {text} "
+    for idiom in _IDIOMS:
+        text = text.replace(f" {idiom} ", " ")
+    text = text.replace(" go ahead ", " goahead ")
     return text.split()
 
 
 def plain_assent(engine: str, message: str) -> bool:
-    words = [w for w in _content_words(engine, message) if w not in _FILLER]
+    words = [w for w in _tokens(engine, message, keep_engine=False) if w not in _FILLER]
     return bool(words) and all(w in _ASSENT for w in words)
 
 
 def declines(engine: str, message: str) -> bool:
-    phrase = " ".join(_content_words(engine, message))
-    for idiom in _IDIOMS:
-        phrase = phrase.replace(idiom, " ")
-    words = [w for w in phrase.split() if w not in _FILLER]
+    raw = _tokens(engine, message, keep_engine=True)
+    words = [w for w in raw if w not in _FILLER and w != _ENGINE_WORD]
     if not words:
         return False
     if words[0] in _DECLINE_FIRST or words[-1] in _NEGATION:
         return True
-    # A negation that negates an assent word - fillers are already gone, so "don't use" and
-    # "definitely not" are adjacent here - and not one aimed at something else in the reply.
-    return any(w in _NEGATION and ((i > 0 and words[i - 1] in _ASSENT)
-                                   or (i + 1 < len(words) and words[i + 1] in _ASSENT))
-               for i, w in enumerate(words))
+    for i, w in enumerate(raw):
+        if w not in _NEGATION:
+            continue
+        if i > 0 and raw[i - 1] in _INTENSIFIERS:
+            return True
+        if (i + 1 < len(raw) and raw[i + 1] in _CHOICE
+                and any(t in _OBJECT for t in raw[i + 2:i + 5])):
+            return True
+    return False
 
 
 def names_another_engine(engine: str, message: str) -> bool:

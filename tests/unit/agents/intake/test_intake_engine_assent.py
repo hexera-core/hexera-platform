@@ -47,7 +47,8 @@ def test_anything_else_is_not_assent(said):
 @pytest.mark.parametrize("said", [
     "no", "No.", "nope", "not that one", "no thanks", "don't", "no, don't use snappyHexMesh",
     "definitely not", "I don't think so", "please don't", "wait, what?", "stop",
-    "I'd rather not", "don't select it",
+    "I'd rather not", "don't select it", "yes, but I don't want snappyHexMesh",
+    "I don't want to use it", "can't use that", "I won't go with it", "absolutely not, thanks",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -64,11 +65,24 @@ def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     "yes, use snappyHexMesh, but don't worry about mesh density",
     "ok, but do not add a ground patch",
     "yes - the wall is not smooth, by the way",
+    "yes, don't go overboard on the layers",
+    "yes, I don't need anything else",
+    "yes, not sure about the units though",
 ])
 def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
     # The user accepted the engine and went on to say something else with a "not" in it. The
     # engine answer is the yes; the negation belongs to the other clause.
     assert es.declines("snappy", said) is False
+
+
+def test_a_yes_that_goes_on_to_refuse_the_engine_is_never_confirmed_from_its_yes():
+    # "yes" is in the message, and so is "I don't want snappyHexMesh". The quote path must not
+    # confirm the engine the user went on to reject.
+    said = "yes, but I don't want snappyHexMesh"
+    c, why = _confirm(said, quote="yes")
+    assert c is None and "declined" in why
+    assert es.confirm_by_assent(_proposed(), session_id="s", owner_id="u", revision="r2",
+                                latest_user_message=said, user_msg_count=2) is None
 
 
 def test_a_yes_with_an_unrelated_negation_still_confirms_when_quoted():
