@@ -1,0 +1,15 @@
+# THE POINTER AT `geometry_agent` WAS AN ACCIDENT UNTIL THIS FILE EXISTED.
+#
+# The platform tracks the geometry agent as a gitlink: one commit id, no files. That gitlink was created
+# on 2026-09-27 at 04:37 by a broad `git add` that swept a directory holding its own `.git`, which is what
+# git does silently in that situation. Nobody ran `git submodule add`, so no URL was ever recorded, and a
+# clone got an empty directory and a commit id that existed on one laptop.
+#
+# The agent is a separate repository on purpose: its own history, its own venv, its own 170 test files and
+# its own 322-part corpus. It reaches the IMAGE as a vendored wheel, because the Docker build context is
+# this repository and cannot read a sibling one (deploy/vendor_geometry_agent.sh records the four options
+# weighed and why the wheel won). The wheel is how the agent RUNS here; this file is how a person READS it.
+[submodule "geometry_agent"]
+	path = geometry_agent
+	url = https://github.com/hexera-core/Hexera-Geometry.git
+	branch = main
