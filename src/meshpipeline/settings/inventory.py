@@ -384,6 +384,10 @@ INVENTORY: list[Group] = [
                help="how long a retryable artifact-reconciliation failure waits before the "
                     "sweep may claim it again"),
         EnvVar("CELERY_WORKER_CONCURRENCY", "2", kind="int", consumer="compose", help="read by docker-compose.yml when it starts the worker, not by the application"),
+        EnvVar("GEOMETRY_CHECK_WORKER_CONCURRENCY", "2", kind="int", consumer="compose",
+               help="read by docker-compose.yml when it starts the geometry-check worker: how many "
+                    "uploads are drawn at once. A further one waits seconds for a slot, never behind "
+                    "a mesh job"),
     ]),
     Group("Billing (Stripe)", note="Leave every value blank to run without billing: the routes answer 503 and nothing else changes. The price ids name objects inside ONE Stripe account, so a sandbox, CI and live each carry their own - which is why they are configuration and not constants.", vars=[
         EnvVar("STRIPE_API_KEY", "", secret=True,

@@ -15,7 +15,8 @@ x-app-build-args: &app-build-args
   APP_VERSION: ${APP_VERSION-}
 
 # Mesh application - docker-compose.yml
-# Services: api, worker (simulation), worker-utility, beat, redis, postgres, minio, searxng
+# Services: api, worker (simulation), worker-geometry (geometry checks), worker-utility, beat,
+#           redis, postgres, minio, searxng
 # Langfuse is NOT bundled in this compose file. To enable tracing, run a
 # separate Langfuse instance and point LANGFUSE_HOST + KEYS at it.
 #
@@ -260,6 +261,57 @@ services:
           # Container-level fork-bomb guard for LLM-authored run_python (replaces a
           # per-process RLIMIT_NPROC, which would break OpenBLAS/numpy threads).
           pids: 4096
+
+  # Worker (geometry checks) - the scout that draws an upload the moment it lands, and the naming
+  # that follows once the user has said what the part is.
+  #
+  # THE SAME IMAGE as the simulation worker, because reading CAD and drawing it need the mesh
+  # toolchain the API image does not carry - on a QUEUE OF ITS OWN, so an upload is drawn while a
+  # mesh job runs beside it, never after it. A check is seconds of work with a person watching;
+  # routed to the simulation queue it waited behind whichever job that worker was running, for as
+  # long as the job took, while the console said "drawing your part... in a few seconds".
+  # Concurrency is how many uploads are drawn at once; a further one waits seconds for a slot.
+  worker-geometry:
+    build:
+      context: .
+      target: pipeline
+      args: *app-build-args
+    entrypoint: ["/srv/worker_entrypoint.sh"]
+    command: >
+      celery -A meshpipeline.runtime.celery_worker worker
+      --queues geometry_checks
+      --concurrency ${GEOMETRY_CHECK_WORKER_CONCURRENCY}
+      --loglevel info
+      --hostname geometry@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      <<: *app_env
+      # Software rendering for the pictures, exactly as the simulation worker renders its review.
+      NVIDIA_VISIBLE_DEVICES: none
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prom_multiproc
+      # No Google credential and no tests mount: the check reads the upload from the object store
+      # and writes its pictures back there. Meshing, the one thing that reaches Cloud Run, never
+      # runs here.
+    volumes:
+      - workspace_data:/srv/workspaces
+      - ./data:/srv/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+          pids: 2048
 
   # Celery Beat - periodic task scheduler (exactly one instance)
   # NEVER scale this service to >1 replica - duplicate Beat instances

@@ -35,8 +35,9 @@ def run_simulation(**kwargs) -> dict:
 )
 def scout_geometry(**kwargs) -> dict:
     # THE GEOMETRY CHECK runs on the worker because reading CAD and drawing it need the mesh
-    # toolchain the API image does not carry. It shares the simulation queue for now, so on a
-    # busy fleet an upload waits behind a running job; a queue of its own is the next step.
+    # toolchain the API image does not carry. It runs on the `geometry_checks` queue (celery_app.py
+    # task_routes), which every worker drains from a slot of its own, so an upload is drawn while a
+    # mesh job runs beside it rather than after it.
     from meshpipeline.application.geometry_check import run_geometry_check
     return run_geometry_check(**kwargs)
 
@@ -50,7 +51,8 @@ def scout_geometry(**kwargs) -> dict:
 )
 def name_geometry(**kwargs) -> dict:
     # THE NAMING runs once the user has said what the part is: the pictures the scout stored and
-    # the user's words go to the vision model together. Same queue as the scout, for now.
+    # the user's words go to the vision model together. Same queue as the scout - the user is
+    # waiting on this one too.
     from meshpipeline.application.geometry_check import run_geometry_naming
     return run_geometry_naming(**kwargs)
 

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Responsibility: Bring one worker instance up - the pipeline container, and nothing else.
-# Owns: docker install, registry auth, and the worker container's run arguments.
+# Responsibility: Bring one worker instance up - the pipeline container, the geometry-check container beside it, and nothing else.
+# Owns: docker install, registry auth, and both containers' run arguments.
 # Boundaries: it runs what it is told to run; the image digest and every endpoint arrive as instance metadata.
 #
 # This is the MIG instance startup script. It is deliberately free of configuration: the image
@@ -8,9 +8,10 @@
 # instance template is the single place a deployment's values are written, and rolling the template
 # is what changes them.
 #
-# The container runs the celery worker at concurrency 1 - the fleet's capacity is its instance
-# count, so a job's cost is attributable to a whole instance and one stuck job cannot occupy a slot
-# another job would need.
+# The simulation container runs the celery worker at concurrency 1 - the fleet's capacity is its
+# instance count, so a job's cost is attributable to a whole instance and one stuck job cannot
+# occupy a slot another job would need. The geometry-check container beside it is the slot the
+# simulation queue cannot take: an upload is drawn while a job runs, not after it.
 set -euxo pipefail
 
 md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
@@ -107,6 +108,26 @@ docker run -d --name hexera-worker --restart always \
   "${WORKER_IMAGE}" \
   celery -A meshpipeline.runtime.celery_worker worker \
     --queues simulation_jobs --concurrency 1 --loglevel info
+
+# THE GEOMETRY CHECK, IN A CONTAINER OF ITS OWN. The scout draws an upload the moment it lands and
+# the naming runs when the user says what the part is: seconds of work, with a person watching.
+# Routed to the simulation queue they waited behind whichever job the slot above was running - for
+# as long as that job took, up to the pipeline deadline - while the console said "drawing your
+# part... in a few seconds". This container consumes ONLY `geometry_checks` (celery_app.py
+# task_routes), so a check always has a slot a mesh job cannot occupy. Same image, same settings,
+# same mounts. Two slots, because two uploads arriving together is ordinary and a check is light
+# enough that the instance carries both beside a running job. NOT counted by the autoscaler: a new
+# instance takes minutes to arrive and a check takes seconds to drain, so the slots here are the
+# capacity lever, not the fleet's size (create-queue-depth-publisher.sh publishes this queue's
+# depth beside the fleet's, and scales on the fleet's alone).
+docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
+docker run -d --name hexera-geometry-worker --restart always \
+  --env-file /etc/hexera/worker.env \
+  -v /var/lib/hexera/workspaces:/srv/workspaces \
+  -v /var/lib/hexera/data:/srv/data \
+  "${WORKER_IMAGE}" \
+  celery -A meshpipeline.runtime.celery_worker worker \
+    --queues geometry_checks --concurrency 2 --loglevel info --hostname geometry@%h
 
 # NOTHING ELSE RUNS HERE. The queue-depth exporter used to: a systemd unit beside every worker,
 # publishing the group-wide backlog against this instance's own resource. That made the fleet the

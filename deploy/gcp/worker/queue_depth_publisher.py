@@ -24,7 +24,16 @@ names the deployment and the queue. The autoscaler reads it with
 work one instance can carry - the arithmetic the per-instance arrangement could
 not do.
 
-WHAT THE VALUE MEANS. The length of the Redis list Celery routes this queue's
+WHICH QUEUES. QUEUE_NAME is the queue the fleet is SIZED on - the simulation
+queue, where one queued job is one instance's worth of work. QUEUE_NAMES lists
+every queue one run measures, one series each, told apart by the `task_id` label:
+the geometry-check queue rides along so a backlog of checks is visible on the same
+metric, but the autoscaler's filter names QUEUE_NAME alone. A check is seconds of
+work and an instance takes minutes to arrive, so a fleet sized on that queue would
+add machines to a backlog that had already drained; every instance carries slots
+for it instead (deploy/gcp/worker/startup.sh).
+
+WHAT THE VALUE MEANS. The length of the Redis list Celery routes a queue's
 tasks to: work QUEUED, not work in flight. A task a worker has already picked up
 is out of the list, so a lone running job reports depth 0. That is the right
 signal for scaling UP and an incomplete one for scaling DOWN - a group whose
@@ -58,10 +67,27 @@ logger = logging.getLogger("queue_depth_publisher")
 #: The metric the autoscaler is pointed at. Custom metrics live under this prefix by rule.
 METRIC_TYPE = "custom.googleapis.com/hexera/queue_depth"
 
-#: The Celery queue the pipeline's jobs are routed to (celery_app.py task_routes).
-#: Celery on a Redis broker stores a queue as a Redis LIST under the queue's own name,
-#: so its depth is the list's length.
+#: The Celery queue the fleet is SIZED on (celery_app.py task_routes): the simulation queue, where
+#: one queued job is one instance's worth of work. Celery on a Redis broker stores a queue as a
+#: Redis LIST under the queue's own name, so its depth is the list's length.
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "simulation_jobs")
+
+
+def _queues(scaling_queue: str, listed: str) -> list[str]:
+    # The scaling queue FIRST and ALWAYS, whatever the list says: a QUEUE_NAMES that forgot it must
+    # not silence the one series the autoscaler reads. Ordered and de-duplicated after that.
+    names = [scaling_queue] + [q.strip() for q in listed.split(",") if q.strip()]
+    return list(dict.fromkeys(names))
+
+
+#: Every queue this run measures, comma-separated in the environment: QUEUE_NAME and whatever
+#: rides along with it - the geometry-check queue, whose backlog is worth seeing where the fleet's
+#: is. One series each, told apart by the `task_id` label below; the autoscaler's filter names
+#: QUEUE_NAME's and reads nothing else, because a check is seconds of work and an instance takes
+#: minutes to arrive - a fleet sized on that queue would add machines to a backlog that had already
+#: drained (deploy/gcp/worker/startup.sh gives every instance slots for it instead). Unset, this
+#: is QUEUE_NAME alone: exactly what the publisher did before the second queue existed.
+QUEUE_NAMES = _queues(QUEUE_NAME, os.environ.get("QUEUE_NAMES", ""))
 
 #: The `generic_task` labels that IDENTIFY the series. The autoscaler's filter has to select
 #: exactly one time series, and these four are what it selects on, so they are deployment state
@@ -108,9 +134,10 @@ REDIS_READ_TIMEOUT_SECONDS = 5
 REDIS_CONNECT_ATTEMPTS = 3
 
 
-def queue_depth(redis_url: str, queue: str = QUEUE_NAME) -> int:
+def queue_depths(redis_url: str, queues: list[str] | None = None) -> dict[str, int]:
     import redis
 
+    queues = list(queues if queues is not None else QUEUE_NAMES)
     # RETRIED, because the cost above is paid once per cold task and is variable rather than fixed.
     # A generous timeout alone leaves the run dependent on a single attempt; three attempts make an
     # unusually slow attach a slow success instead of a failed deploy. The last failure is re-raised
@@ -123,7 +150,9 @@ def queue_depth(redis_url: str, queue: str = QUEUE_NAME) -> int:
             socket_timeout=REDIS_READ_TIMEOUT_SECONDS,
         )
         try:
-            return int(client.llen(queue))
+            # ONE connection for every queue. The cold attach is paid per connection, so a second
+            # queue is a second LLEN on the connection already open, not a second attach.
+            return {queue: int(client.llen(queue)) for queue in queues}
         except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as exc:
             last = exc
             logger.warning(
@@ -136,29 +165,42 @@ def queue_depth(redis_url: str, queue: str = QUEUE_NAME) -> int:
     raise last
 
 
-def publish(depth: int, *, project_id: str, namespace: str, location: str, queue: str) -> None:
-    now = datetime.datetime.now(datetime.UTC).replace(microsecond=0)
-    body = {
-        "timeSeries": [{
-            "metric": {"type": METRIC_TYPE},
-            "resource": {
-                "type": "generic_task",
-                "labels": {
-                    "project_id": project_id,
-                    "location": location,
-                    "namespace": namespace,
-                    "job": METRIC_JOB,
-                    "task_id": queue,
-                },
+def queue_depth(redis_url: str, queue: str = QUEUE_NAME) -> int:
+    return queue_depths(redis_url, [queue])[queue]
+
+
+def build_time_series(depths: dict[str, int], *, project_id: str, namespace: str, location: str,
+                      end_time: str) -> list[dict]:
+    # One series per queue. They differ in `task_id` and nothing else, which is what lets one
+    # autoscaler filter select exactly one of them and a dashboard show them side by side.
+    return [{
+        "metric": {"type": METRIC_TYPE},
+        "resource": {
+            "type": "generic_task",
+            "labels": {
+                "project_id": project_id,
+                "location": location,
+                "namespace": namespace,
+                "job": METRIC_JOB,
+                "task_id": queue,
             },
-            "metricKind": "GAUGE",
-            "valueType": "DOUBLE",
-            "points": [{
-                "interval": {"endTime": now.isoformat().replace("+00:00", "Z")},
-                "value": {"doubleValue": float(depth)},
-            }],
-        }]
-    }
+        },
+        "metricKind": "GAUGE",
+        "valueType": "DOUBLE",
+        "points": [{
+            "interval": {"endTime": end_time},
+            "value": {"doubleValue": float(depth)},
+        }],
+    } for queue, depth in depths.items()]
+
+
+def publish(depths: dict[str, int], *, project_id: str, namespace: str, location: str) -> None:
+    # ONE write for every queue: the same timestamp on each series, and one request where a
+    # request per queue would double the chance of two writes to one series arriving out of order.
+    now = datetime.datetime.now(datetime.UTC).replace(microsecond=0)
+    body = {"timeSeries": build_time_series(
+        depths, project_id=project_id, namespace=namespace, location=location,
+        end_time=now.isoformat().replace("+00:00", "Z"))}
     req = urllib.request.Request(
         f"https://monitoring.googleapis.com/v3/projects/{project_id}/timeSeries",
         data=json.dumps(body).encode(),
@@ -177,9 +219,10 @@ def main() -> None:
     location = METRIC_LOCATION or os.environ["METRIC_LOCATION"]
     project_id = _metadata("project/project-id")
 
-    depth = queue_depth(redis_url)
-    publish(depth, project_id=project_id, namespace=namespace, location=location, queue=QUEUE_NAME)
-    logger.info("queue_depth=%d published for %s/%s (queue %s)", depth, namespace, location, QUEUE_NAME)
+    depths = queue_depths(redis_url)
+    publish(depths, project_id=project_id, namespace=namespace, location=location)
+    for queue, depth in depths.items():
+        logger.info("queue_depth=%d published for %s/%s (queue %s)", depth, namespace, location, queue)
 
 
 if __name__ == "__main__":
