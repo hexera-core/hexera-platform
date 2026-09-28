@@ -172,8 +172,13 @@ def confirmation_message(body: ConfirmIn) -> str:
             "fluid-domain": "the fluid volume itself",
             "solid-body": "a solid body"}[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
+    # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
+    # stores. A solid body the fluid flows around stays "solid-body": the engine gate reads that as
+    # a body surface for any fluid purpose (engines/purposes.kinds_admitted_as), and a later
+    # structural request on the same solid still finds the kind gmsh needs.
     parts = [f"{CONFIRMED_MARK} the file is {kind}"
-             + (f" ({body.part})" if body.part else "") + f"; the fluid flows {through}."]
+             + (f" ({body.part})" if body.part else "")
+             + f", input_kind {body.input_kind}; the fluid flows {through}."]
     ports = [o for o in body.openings if o.role != "not_an_opening"]
     if body.flow == "external":
         from meshpipeline.contracts.geometry_fields import external_declaration

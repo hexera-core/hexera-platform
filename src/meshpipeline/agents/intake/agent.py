@@ -677,6 +677,24 @@ def _block_geometry_check() -> str:
     )
 
 
+def _block_propose_first() -> str:
+    return (
+        "\n\nPROPOSE, THEN ASK - every question carries your best proposal:\n"
+        "A user who has uploaded a part and said what it is for should be able to answer 'ok' or "
+        "correct one value, not write everything out. So every question you ask comes with the "
+        "answer you would give yourself, read from what is already known - the file, the geometry "
+        "check, the stated purpose, earlier answers, the engine's own defaults - and ends by asking "
+        "whether it is right. For example: 'Fluid and conditions? I would go with air at 15 C and "
+        "sea-level pressure, 10 m/s, k-omega SST with wall functions at y+ 30 to 300 - ok, or tell "
+        "me what differs.' A proposal is NOT a recorded value: record only what the user states or "
+        "confirms; an 'ok' confirms the proposal exactly as you stated it, and you then carry those "
+        "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
+        "patch names, refinement zones - go into ONE question with ONE proposal, not four turns. "
+        "Two things are never proposed: the ENGINE (rule 5 above stands - offer the menu, do not "
+        "recommend unless asked) and the file's UNIT (units are asked, never guessed)."
+    )
+
+
 INTAKE_PROMPT_BLOCKS: tuple = (
     ("quality_criteria", "evidence-backed production-grade bars the intake can cite",
      _block_quality_criteria),
@@ -684,6 +702,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_engine_first),
     ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
      _block_geometry_check),
+    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' confirms it; engine and unit never proposed",
+     _block_propose_first),
 )
 
 
