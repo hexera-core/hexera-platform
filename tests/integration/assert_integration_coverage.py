@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 #: The named guarantees that exist ONLY against real PostgreSQL. If the harness stops provisioning
 #: a database these are the first things to vanish, and their absence is what this guard is for.
@@ -35,6 +37,56 @@ ALLOWED_SKIP_SUBSTRINGS = (
 #: A floor, not a target. The database-backed modules contribute far more than this; the point is
 #: that "collected nothing" and "collected only the hermetic subset" both fail loudly.
 MIN_EXECUTED = 300
+
+
+#: How ci.yml names a shard's report artifact: the shard, and the run attempt that uploaded it.
+ARTIFACT = re.compile(r"^integration-report-(?P<shard>[0-9]+)-attempt-(?P<attempt>[0-9]+)$")
+
+
+def newest_shard_reports(root: str, shards: int) -> tuple[list[str], list[str]]:
+    """For every shard, the reports of the NEWEST attempt that uploaded any. Returns (reports, problems).
+
+    WHY THE ATTEMPT IS IN THE NAME. "Re-run failed jobs" runs a red shard again in a new attempt
+    and uploads a second report for it; the green shards keep the reports their earlier attempt
+    uploaded. All of them belong to the run. When two artifacts share a name, download-artifact
+    keeps the one with the higher artifact ID - and IDs are not in upload order: in run
+    36444966780 the re-run's passing integration-report-4 got a LOWER ID than the first attempt's
+    failing one, so the stale failure was judged again and only a new commit could clear it. With
+    the attempt in the name nothing is dropped on download, and the choice is made here, by the
+    attempt number, which cannot run backwards.
+
+    Still not a way to judge less than the tier: every shard 1..shards must be present, and an
+    artifact that is not a shard report is refused rather than ignored.
+    """
+    base = Path(root)
+    problems: list[str] = []
+    newest: dict[int, tuple[int, Path]] = {}
+    for d in sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []:
+        m = ARTIFACT.match(d.name)
+        if not m:
+            problems.append(f"{d.name} is not a shard report artifact "
+                            "(integration-report-<shard>-attempt-<n>)")
+            continue
+        shard, attempt = int(m["shard"]), int(m["attempt"])
+        if not 1 <= shard <= shards:
+            problems.append(f"{d.name} names shard {shard}, outside 1..{shards}")
+            continue
+        if shard not in newest or attempt > newest[shard][0]:
+            newest[shard] = (attempt, d)
+
+    reports: list[str] = []
+    for shard in range(1, shards + 1):
+        if shard not in newest:
+            problems.append(f"shard {shard} contributed no report - the union would be judging "
+                            "less than the tier")
+            continue
+        attempt, d = newest[shard]
+        found = sorted(str(p) for p in d.rglob("*.xml"))
+        if not found:
+            problems.append(f"{d.name} holds no JUnit report")
+        print(f"shard {shard}: attempt {attempt} -> {', '.join(found) or 'nothing'}")
+        reports.extend(found)
+    return reports, problems
 
 
 def _classname_module(case: ET.Element) -> str:
@@ -137,11 +189,33 @@ def main(paths: list[str], partial: bool = False) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def _cli(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Judge a JUnit report, or the union of a sharded run's.")
-    ap.add_argument("reports", nargs="+", help="one or more junit-report.xml")
+    ap.add_argument("reports", nargs="*", help="one or more junit-report.xml")
     ap.add_argument("--partial", action="store_true",
                     help="this is ONE SHARD: assert what is true of a shard and leave the "
                          "whole-suite floor and named guarantees to the union pass")
-    _args = ap.parse_args()
-    raise SystemExit(main(_args.reports, partial=_args.partial))
+    ap.add_argument("--shard-artifacts", metavar="DIR",
+                    help="a directory holding one integration-report-<shard>-attempt-<n> "
+                         "directory per uploaded artifact; the newest attempt of each shard is "
+                         "judged, as one union")
+    ap.add_argument("--shards", type=int, default=0,
+                    help="with --shard-artifacts: how many shards the tier was cut into")
+    args = ap.parse_args(argv)
+    if args.shard_artifacts is None:
+        if not args.reports:
+            ap.error("give JUnit reports, or --shard-artifacts DIR --shards N")
+        return main(args.reports, partial=args.partial)
+    if args.reports or args.partial or args.shards < 1:
+        ap.error("--shard-artifacts judges the whole union: it takes --shards N and nothing else")
+    reports, problems = newest_shard_reports(args.shard_artifacts, args.shards)
+    if problems:
+        print("::error title=A shard contributed no report::the union cannot be judged:")
+        for p in problems:
+            print(f"    - {p}")
+        return 1
+    return main(reports)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

@@ -5,6 +5,7 @@ import pytest
 
 from meshpipeline.application.fenced_checkpointer import (
     Continuation,
+    disposition_of,
     enter_graph,
     plan_continuation,
 )
@@ -61,6 +62,59 @@ def test_an_unknown_disposition_is_treated_as_a_continuation_not_a_restart():
     assert plan_continuation("something-new", STATE, None).graph_input is None
 
 
+def test_an_unstarted_thread_starts_fresh_from_this_process_state():
+    # The thread holds only a DEAD process's copy of the input, with that process's local
+    # geometry path in it. This process's state, with the geometry it fetched, is the input.
+    c = plan_continuation("unstarted", STATE, _Materialized())
+    assert c.is_fresh and c.graph_input == STATE and not c.refresh_geometry
+
+
+# reading the thread
+
+class _Snap:
+    def __init__(self, *, source, next_=(), created_at="2026-09-28T00:00:00+00:00"):
+        self.metadata = {"source": source, "step": -1 if source == "input" else 3}
+        self.next = next_
+        self.created_at = created_at
+
+
+def test_no_checkpoint_is_absent():
+    assert disposition_of(None) == "absent"
+
+
+def test_a_snapshot_with_no_saved_checkpoint_is_absent():
+    assert disposition_of(_Snap(source="loop", next_=("b",), created_at=None)) == "absent"
+
+
+@pytest.mark.parametrize("next_", [("__start__",), ()], ids=["nothing_else_saved",
+                                                               "start_writes_saved"])
+def test_only_the_input_saved_is_unstarted_whatever_next_says(next_):
+    # The two shapes a crash between the input checkpoint and the first loop checkpoint leaves.
+    # ('__start__',) used to read as pending - and the geometry refresh then raised "Ambiguous
+    # update" - and () used to read as COMPLETE, so the restart ran on the dead process's file.
+    assert disposition_of(_Snap(source="input", next_=next_)) == "unstarted"
+
+
+def test_a_saved_step_with_work_left_is_pending():
+    assert disposition_of(_Snap(source="loop", next_=("b",))) == "pending"
+
+
+def test_a_geometry_refresh_is_still_a_pending_position():
+    # enter_graph's own refresh writes an `update` checkpoint; a crash right after it must still
+    # resume from the saved position rather than start again.
+    assert disposition_of(_Snap(source="update", next_=("b",))) == "pending"
+
+
+def test_a_finished_graph_is_complete():
+    assert disposition_of(_Snap(source="loop", next_=())) == "complete"
+
+
+def test_a_snapshot_without_metadata_is_read_by_its_position():
+    snap = _Snap(source="loop", next_=("b",))
+    snap.metadata = None
+    assert disposition_of(snap) == "pending"
+
+
 # applying it
 
 async def test_a_fresh_run_hands_over_the_state_and_touches_no_checkpoint():
@@ -82,6 +136,17 @@ async def test_a_pending_resume_substitutes_geometry_without_resetting_position(
     assert set(values) == {"geometry"}, (
         f"the resume wrote more than the geometry handle: {sorted(values)} - the saved channel "
         f"state and pending task list must survive untouched")
+
+
+async def test_an_unstarted_thread_starts_again_without_touching_the_checkpoint():
+    # NO geometry refresh here: aupdate_state on an input-only thread is exactly the call that
+    # raised "Ambiguous update" - the new input carries this process's geometry instead.
+    g, log = _Graph(), _Log()
+    mat = _Materialized()
+    out = await enter_graph(g, CFG, plan_continuation("unstarted", STATE, mat), mat,
+                            job_id="j", generation=4, jlog=log)
+    assert out == STATE and g.updates == []
+    assert any(4 in a for a in log.infos), "the start-again did not record its generation"
 
 
 async def test_a_complete_thread_runs_no_node_and_writes_nothing():
