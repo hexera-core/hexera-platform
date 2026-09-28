@@ -557,24 +557,48 @@ def _confirmation_block(state: dict) -> str:
     )
 
 
-def _approved_last_time(state: Mapping[str, Any]) -> dict:
-    """What the previous run was approved with. The dispatched approval snapshot's payload is
-    the exact set the approval authority ran, request text included - the session columns are
-    the fallback, because request_txt is cleared from them at dispatch (approval.py disarms
-    consent that way) and a later turn may already have moved one of them."""
+def _submit_fields() -> tuple[str, ...]:
+    """submit_requirements' own argument names, less the single-use preview token - read off the
+    tool definition, so the rerun context can never fall behind an argument the tool gains."""
+    for tool in INTAKE_TOOLS:
+        fn = tool.get("function") or {}
+        if fn.get("name") == "submit_requirements":
+            return tuple(k for k in fn["parameters"]["properties"] if k != "preview_token")
+    return ()
+
+
+#: where each submit_requirements argument lives on the session, for a run whose approval
+#: record is gone. Only these survive there; the rest (engine_source, the typed far-field
+#: request, strictness, ...) were only ever on the approval record.
+_SESSION_COLUMN_OF = {
+    "domain": "domain", "request_txt": "request_txt", "review_brief_txt": "review_brief_txt",
+    "patches": "intake_patches", "dimensionality": "dimensionality", "purpose": "purpose",
+    "input_kind": "input_kind", "mesh_engine": "engine", "engine_params": "engine_params",
+    "mesh_fidelity": "requested_mesh_fidelity",
+}
+
+
+def _approved_last_time(state: Mapping[str, Any]) -> tuple[dict, bool]:
+    """What the previous run was approved with, as submit_requirements arguments, and whether
+    that is the approval record itself.
+
+    The dispatched approval snapshot's payload IS the exact argument set the approval authority
+    ran - request and review brief, engine provenance, the typed far-field request and its
+    strictness included - so 'the same again' can be re-submitted from it without the model
+    having to recreate anything. The session columns are only a fallback, and an incomplete one:
+    request_txt is cleared from them at dispatch (approval.py disarms consent that way) and the
+    typed values were never stored there."""
+    fields = _submit_fields()
     approval = (state.get("intake_gate") or {}).get("approval") or {}
-    payload = dict(approval.get("payload") or {}) if approval.get("job_id") else {}
-    return {
-        "engine": payload.get("mesh_engine") or state.get("engine") or "",
-        "engine_params": payload.get("engine_params") or state.get("engine_params") or {},
-        "purpose": payload.get("purpose") or state.get("purpose") or "",
-        "input_kind": payload.get("input_kind") or state.get("input_kind") or "",
-        "dimensionality": payload.get("dimensionality") or state.get("dimensionality") or "",
-        "mesh_fidelity": (payload.get("mesh_fidelity")
-                          or state.get("requested_mesh_fidelity") or ""),
-        "patches": payload.get("patches") or state.get("intake_patches") or [],
-        "request_txt": payload.get("request_txt") or state.get("request_txt") or "",
-    }
+    if approval.get("job_id") and approval.get("payload"):
+        payload = dict(approval.get("payload") or {})
+        return {k: payload[k] for k in fields if k in payload}, True
+    recorded = {}
+    for arg, column in _SESSION_COLUMN_OF.items():
+        value = state.get(column)
+        if value not in (None, "", [], {}):
+            recorded[arg] = value
+    return recorded, False
 
 
 def _previous_run_block(state: Mapping[str, Any]) -> str:
@@ -584,38 +608,42 @@ def _previous_run_block(state: Mapping[str, Any]) -> str:
     carry 'the same as last time' as the proposal. It records nothing: a new run dispatches only
     after a fresh submit_requirements and a fresh approval, exactly like the first."""
     prev = state.get("previous_run") or {}
-    last = _approved_last_time(state)
-    patches = ", ".join(
-        f"{p.get('name')}({p.get('role') or p.get('type')})" for p in last["patches"]
-        if isinstance(p, dict)) or "(none)"
+    last, from_record = _approved_last_time(state)
     ended = str(prev.get("status") or "").strip()
     outcome = str(prev.get("outcome") or "").strip()
     outcome_lines = ("\n".join("  " + ln for ln in outcome.splitlines() if ln.strip())
                      if outcome else "  (no verdict text is on record for it)")
+    if from_record:
+        provenance = (
+            "That run was approved with these submit_requirements arguments - the approval record\n"
+            "itself, every argument it ran with except the single-use preview_token. An argument\n"
+            "that is absent was not given, and stays absent for the same again:\n")
+    else:
+        missing = [k for k in _submit_fields() if k not in last]
+        provenance = (
+            "No approval record survives for that run, so these are the conversation's last\n"
+            "recorded requirements, and they are INCOMPLETE - not on record: "
+            f"{', '.join(missing) or '(nothing)'}.\n"
+            "Establish each missing value that applies from the conversation before submitting;\n"
+            "never invent one:\n")
     return (
         "\n\n## ANOTHER RUN ON THE SAME GEOMETRY - the previous run has ended\n"
         f"This conversation already approved a run (job {prev.get('job_id') or 'unknown'}), "
         f"and it ended: {ended or 'the record of it is gone'}. The user was told:\n"
         f"{outcome_lines}\n\n"
-        "That run was approved with:\n"
-        f"  engine:         {last['engine'] or '(unset)'}\n"
-        f"  engine_params:  {json.dumps(last['engine_params'])}\n"
-        f"  purpose:        {last['purpose'] or '(unset)'}\n"
-        f"  input_kind:     {last['input_kind'] or '(unset)'}\n"
-        f"  dimensionality: {last['dimensionality'] or '(unset)'}\n"
-        f"  mesh detail:    {last['mesh_fidelity'] or '(not stated)'}\n"
-        f"  patches:        {patches}\n"
-        f"  request_txt:    {last['request_txt'] or '(unset)'}\n\n"
+        f"{provenance}"
+        f"{json.dumps(last, indent=2, ensure_ascii=False, default=str)}\n\n"
         "The uploaded geometry and its confirmed unit are unchanged; never ask about them again.\n"
         "NOTHING above is recorded for the new run - it is your proposal, and the user's latest\n"
         "message says what they want. Decide from it:\n"
         "- The same again ('run it again', 'same as last time', a bare yes) → re-run\n"
-        "  preview_selected_admission on the FULL payload above and call submit_requirements\n"
-        "  with it. The application shows the summary and takes a fresh approval; you do not\n"
-        "  write the summary.\n"
+        "  preview_selected_admission on the payload above and call submit_requirements with\n"
+        "  EVERY argument above exactly as it is, plus the new preview_token. The application\n"
+        "  shows the summary and takes a fresh approval; you do not write the summary.\n"
         "- A change (a number, a patch, the fluid, the domain size, the mesh detail) → apply it\n"
-        "  to the payload above, re-run preview_selected_admission on the FULL updated payload,\n"
-        "  and call submit_requirements.\n"
+        "  to the arguments above and keep every other one as it is (request_txt and\n"
+        "  review_brief_txt must both state the change, worded identically), re-run\n"
+        "  preview_selected_admission on the FULL updated payload, and call submit_requirements.\n"
         "- A different ENGINE → that is a new selection: call propose_engine_selection.\n"
         "- The verdict above blames the request itself → say in one line what it needs, propose\n"
         "  the specific change that addresses it, and ask whether to go with that.\n"

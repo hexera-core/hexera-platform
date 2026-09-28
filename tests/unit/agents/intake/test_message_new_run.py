@@ -324,22 +324,50 @@ def _state(previous=None, gate=None, **over):
     return base
 
 
+def _approved_args_in(block: str) -> dict:
+    """The submit_requirements arguments the block hands the model, parsed back."""
+    import json
+    start = block.index("{\n")
+    return json.JSONDecoder().raw_decode(block[start:])[0]
+
+
 def test_the_block_states_the_ended_run_and_what_it_was_approved_with():
     block = intake._previous_run_block(_state())
     assert str(OLD_JOB) in block and "failed" in block
     assert "The mesh did not pass review." in block
-    # the approved payload, not the moved session columns
-    assert "engine:         snappy" in block
-    assert '"topology": "external"' in block
-    assert "wing(wall)" in block and "farfield(farfield)" in block
-    assert "far-field 20 chords" in block
-    assert "mesh detail:    standard" in block
+    # the approved payload, not the moved session columns - and all of it, so "the same again"
+    # needs nothing recreated: the review brief included
+    assert _approved_args_in(block) == _DISPATCHED_PAYLOAD
+    assert "the approval record" in block
+
+
+def test_the_same_again_carries_every_approved_argument_the_model_cannot_recreate():
+    # The typed far-field request, its strictness, the engine's provenance, the review brief and
+    # the label were never in the transcript the model sees; a rerun that dropped them would be
+    # refused for missing typed extents, or run against different review criteria.
+    full = {**_DISPATCHED_PAYLOAD, "domain": "wing external aero",
+            "engine_source": "user_direct", "flow_axis": "+x", "reference_length_m": 1.2,
+            "requested_extents": {"upstream": 5.0, "downstream": 10.0},
+            "requirements_strict": True, "port_details_note": "captured"}
+    snapshot = {**_dispatched_snapshot(), "payload": {**full, "preview_token": "tok-spent"}}
+    block = intake._previous_run_block(_state(gate={"approval": snapshot}))
+    assert _approved_args_in(block) == full, "an approved argument did not reach the model"
+    assert "tok-spent" not in block, "a spent preview token was offered for reuse"
+    submit_args = next(t["function"]["parameters"]["properties"] for t in intake.INTAKE_TOOLS
+                       if t["function"]["name"] == "submit_requirements")
+    assert set(intake._submit_fields()) == set(submit_args) - {"preview_token"}
 
 
 def test_the_block_falls_back_to_the_session_when_no_snapshot_dispatched():
     block = intake._previous_run_block(_state(gate={}, intake_patches=[{"name": "in", "type": "inlet"}]))
-    assert "engine:         snappy" in block and "in(inlet)" in block
-    assert "request_txt:    (unset)" in block
+    args = _approved_args_in(block)
+    assert args["mesh_engine"] == "snappy" and args["patches"] == [{"name": "in", "type": "inlet"}]
+    # request_txt is cleared at dispatch, and the typed values were never on the session: the
+    # model is told they are missing rather than handed a payload that looks complete
+    assert "request_txt" not in args
+    assert "INCOMPLETE" in block
+    not_on_record = block.split("not on record:", 1)[1].split("\n", 1)[0]
+    assert "request_txt" in not_on_record and "requested_extents" in not_on_record
 
 
 def test_the_block_demands_a_fresh_submission_and_never_claims_a_start():
