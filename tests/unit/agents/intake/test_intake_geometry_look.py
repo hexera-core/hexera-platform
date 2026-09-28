@@ -78,9 +78,17 @@ def test_a_measurement_that_did_not_succeed_renders_no_table_and_no_look():
     block = render_block(document)
     assert block, "silence is what made the model ask the customer to measure their own file"
     assert "did not finish" in block
-    assert look_lines(document) == [], "no look content reaches a conversation with no measurement"
-    for leaked in ("WHAT IT LOOKS LIKE", "a bolt flange at each end", "o1", "branched distribution"):
-        assert leaked not in block, f"{leaked!r} is a measured or seen fact and there are none"
+    # NOT asserted through `look_lines`, which reads the LOOK's own status and knows nothing about the
+    # measurement's - it would happily render a look beside a failed measurement if anything ever called it
+    # that way. Nothing does: its one caller is `_render`, which is reached only from `render_block` after
+    # the status gate above. So the gate is the thing worth pinning, and the block is where to pin it.
+    # the fixture's own measured and seen facts, by name. Not the WORD "openings", which the block does
+    # carry and should: it is there to forbid asking about them, and a check that banned the noun would have
+    # banned the instruction with it.
+    for leaked in ("WHAT IT LOOKS LIKE", "a bolt flange at each end", "o1", "branched distribution",
+                   "plain, nothing across it"):
+        assert leaked not in block, f"{leaked!r} is a measured or seen fact and there are none to report"
+    assert not any(ch.isdigit() for ch in block), "no number survives a measurement that produced none"
 
 
 def test_nothing_at_all_is_not_an_exception():
