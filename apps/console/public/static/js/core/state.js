@@ -17,6 +17,7 @@
 const state = {
   sessionId: null,      // set by upload, required by chat
   jobId: null,          // the run this page is attached to
+  runSessionId: null,   // the conversation that run came from; null for a run opened by link
   jobStatus: "",        // last status the poller saw: '' | running | succeeded | failed
   outcomeMessage: "",   // the closing text, held until the result card is built
   laneCursor: null,     // which timeline lane the event stream is currently in
@@ -26,6 +27,7 @@ const state = {
 export const get = {
   sessionId: () => state.sessionId,
   jobId: () => state.jobId,
+  runSessionId: () => state.runSessionId,
   jobStatus: () => state.jobStatus,
   outcomeMessage: () => state.outcomeMessage,
   laneCursor: () => state.laneCursor,
@@ -48,9 +50,12 @@ export function isTerminal() {
 }
 
 /** Begin a new run on this page. Clears everything scoped to the previous one and leaves
- *  identity alone. Used by the deep link, by a finished chat turn, and by a re-review. */
-export function beginRun(jobId) {
+ *  identity alone. Used by the deep link, by a finished chat turn, and by a re-review.
+ *  `sessionId` is the conversation the run came from - the one a "run again" must go to. A run
+ *  opened by link passes none: whatever session the page holds later is not that run's. */
+export function beginRun(jobId, { sessionId = null } = {}) {
   state.jobId = jobId || null;
+  state.runSessionId = sessionId || null;
   state.jobStatus = "";
   state.outcomeMessage = "";
   state.laneCursor = null;

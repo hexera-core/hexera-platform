@@ -46,12 +46,17 @@ configureStream({
   onEvent,
   onTerminal(job) {
     Stage.final(terminalResult(job, getState.outcomeMessage()));
-    // A DEEP-LINKED RUN HAS NO CONVERSATION ON THIS PAGE. Opened from a link, the page watches
-    // the run but holds no session, so a message would go nowhere: the box stays closed and says
-    // what does work here - a new upload, which opens a new session.
-    if (!getState.sessionId()) {
-      disableInput();
-      setPlaceholder("Upload a geometry file to start a new session…");
+    // ONLY THE CONVERSATION A RUN CAME FROM CAN RUN IT AGAIN. A run opened from a link has no
+    // conversation on this page: with no session at all a message would go nowhere, so the box
+    // stays closed and says what does work here - a new upload, which opens a new session. A
+    // session a later upload opened is for OTHER geometry: its composer is its own conversation's
+    // and is left exactly as it is, with no offer that would send "run again" to the wrong part.
+    const session = getState.sessionId();
+    if (!session || session !== getState.runSessionId()) {
+      if (!session) {
+        disableInput();
+        setPlaceholder("Upload a geometry file to start a new session…");
+      }
       return;
     }
     // THE RUN IS OVER, THE CONVERSATION IS NOT: the same session takes the next run on this
@@ -90,7 +95,7 @@ function attachJob(id, { replayHistory = false, message = "" } = {}) {
   if (message) Stage.chat("assistant", message);
   clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
-  beginRun(id);
+  beginRun(id, { sessionId: getState.sessionId() });   // the conversation this run belongs to
   // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no
   // routes and keeps the query string it has always used. Neither global set means the second
   // branch, which is today's behaviour byte for byte.

@@ -44,17 +44,31 @@ def test_the_offer_never_appears_without_a_session_to_continue():
         "a deep-linked run has no conversation here; offering one would send nothing")
 
 
-def test_a_deep_linked_run_that_ends_keeps_the_composer_closed():
-    # Opened from a link, the page holds no session: a composer opened and inviting another run
-    # would swallow whatever is typed. It stays closed and points at the upload instead.
+def test_only_the_conversation_a_run_came_from_is_offered_to_run_it_again():
+    # Two ways a finished run is not this page's conversation's: it was opened from a link and
+    # the page holds no session (a composer opened then would swallow whatever is typed), or a
+    # later upload opened a session for OTHER geometry (a "run again" would go to that part).
     main = (UI / "js" / "main.js").read_text()
     on_terminal = main.split("onTerminal(job) {", 1)[1].split("\n  },", 1)[0]
-    guard, _, rest = on_terminal.partition("if (!getState.sessionId()) {")
-    assert rest, "the end of a run opens the composer whether or not there is a session"
-    no_session = rest.split("\n    }", 1)[0]
-    assert "disableInput()" in no_session and "return;" in no_session
-    assert "Upload a geometry file" in no_session
-    assert "enableInput()" not in guard, "the composer opens before the session is checked"
+    guard, _, rest = on_terminal.partition(
+        "if (!session || session !== getState.runSessionId()) {")
+    assert rest, "the end of a run offers another run without asking whose run it was"
+    assert "const session = getState.sessionId();" in guard
+    assert "enableInput()" not in guard and "offerNewRun()" not in guard, (
+        "the composer opens before the run's conversation is checked")
+    not_ours = rest.split("\n    }\n", 1)[0]
+    assert "return;" in not_ours
+    assert "enableInput()" not in not_ours and "offerNewRun()" not in not_ours
+    # no session at all: closed, and pointing at the upload that opens one
+    no_session = not_ours.split("if (!session) {", 1)[1].split("\n      }", 1)[0]
+    assert "disableInput()" in no_session and "Upload a geometry file" in no_session
+    # the run records the conversation it came from; a run opened by link records none
+    attach = main.split("function attachJob(", 1)[1].split("\n}", 1)[0]
+    assert "beginRun(id, { sessionId: getState.sessionId() })" in attach
+    assert "beginRun(deepLinkJob);" in main
+    state = (UI / "js" / "core" / "state.js").read_text()
+    begin = state.split("export function beginRun(", 1)[1].split("\n}", 1)[0]
+    assert "state.runSessionId = sessionId || null;" in begin
 
 
 def test_the_offer_is_styled_in_both_shipped_copies():
