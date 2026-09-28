@@ -169,6 +169,13 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "proves which ONE tenant a caller is, which a cross-tenant sweep has no use for and a "
         "scheduler cannot supply. It is not ungated: it carries Depends(admin_dep) like every "
         "route in that module, and test_every_route_carries_the_guard pins that."),
+    "api/v1/admin_ops.py:grant_credits": (
+        "POST /api/v1/admin/ops/organizations/{id}/credit-grants is an OPERATOR control that "
+        "appends a support-authorized credit grant across the tenant boundary. `owner_dep` would "
+        "scope the caller to one tenant, which is the opposite of an admin console action over a "
+        "customer account. It is not ungated: the route carries Depends(admin_dep), reusing the "
+        "ADMIN_API_KEY guard from admin_billing, and test_every_route_carries_the_guard in "
+        "test_admin_ops_route.py pins that every admin_ops route keeps that guard."),
 }
 
 

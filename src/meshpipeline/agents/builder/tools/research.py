@@ -129,7 +129,8 @@ def run_python(workspace: Path, code: str) -> dict:
         # O_PATH dir fd → Landlock confines the child to THIS workspace (rw) + RO
         # system paths, so it can't read sibling job workspaces.
         try:
-            _ws_fd = _os.open(str(workspace), _os.O_PATH | _os.O_CLOEXEC | _os.O_DIRECTORY)
+            _o_path = getattr(_os, "O_PATH", _os.O_RDONLY)
+            _ws_fd = _os.open(str(workspace), _o_path | _os.O_CLOEXEC | _os.O_DIRECTORY)
         except OSError:
             _ws_fd = None
         proc = subprocess.run(

@@ -71,9 +71,11 @@ class _Gateway:
                         amount_paid=0, currency="usd", created_at=None,
                         hosted_url="https://pay.example/in_1")]
 
-    def create_invoice(self, *, customer_id, amount, currency, description, days_until_due):
+    def create_invoice(self, *, customer_id, amount, currency, description, days_until_due,
+                       idempotency_scope=None):
         self.created.append({"customer_id": customer_id, "amount": amount,
-                             "currency": currency, "days_until_due": days_until_due})
+                             "currency": currency, "days_until_due": days_until_due,
+                             "idempotency_scope": idempotency_scope})
         return Invoice(id="in_2", number="A-2", status="open", amount_due=amount,
                        amount_paid=0, currency=currency, created_at=None, hosted_url="")
 
@@ -225,7 +227,22 @@ def test_an_invoice_can_be_raised_for_an_enterprise_account(client, orgs):
     # THE CURRENCY IS LOWERCASED on the way out: the provider rejects "USD", and an operator typing
     # it in capitals is the ordinary case rather than a mistake worth refusing.
     assert gateway.created == [{"customer_id": "cus_1", "amount": 250_000,
-                                "currency": "usd", "days_until_due": 30}]
+                                "currency": "usd", "days_until_due": 30,
+                                "idempotency_scope": None}]
+
+
+def test_manual_invoice_accepts_a_retry_operation_id(client, orgs):
+    orgs.organization = _Org(id=uuid.uuid4(), name="Acme", slug="acme",
+                             stripe_customer_id="cus_1")
+    gateway = _Gateway()
+    billing_contract.set_billing_gateway(gateway)
+    operation_id = uuid.uuid4()
+    res = client.post(f"/api/v1/admin/billing/organizations/{uuid.uuid4()}/invoices",
+                      headers=HEADERS,
+                      json={"amount": 250_000, "currency": "USD", "description": "Q4 seats",
+                            "operation_id": str(operation_id)})
+    assert res.status_code == 200
+    assert gateway.created[0]["idempotency_scope"] == str(operation_id)
 
 
 def test_an_account_without_a_customer_gets_one_before_being_invoiced(client, orgs):

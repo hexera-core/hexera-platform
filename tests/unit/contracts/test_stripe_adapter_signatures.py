@@ -61,7 +61,7 @@ def test_every_write_binds_against_the_real_sdk_signature(gateway):
     gateway.plan_change_portal(customer_id="cus_1", subscription_id="sub_1")
     gateway.report_usage(customer_id="cus_1", quantity=3, idempotency_scope="row")
     gateway.create_invoice(customer_id="cus_1", amount=100, currency="usd", description="d",
-                           days_until_due=7)
+                           days_until_due=7, idempotency_scope="invoice-op")
     gateway.list_invoices(customer_id="cus_1")
 
 
@@ -72,3 +72,11 @@ def test_every_write_carries_its_idempotency_key_inside_options(gateway):
         "idempotency_key": "customer:org-7"}
     assert gateway._client.billing.meter_events.create.call_args.kwargs["options"] == {
         "idempotency_key": "usage:row-9"}
+    gateway.create_invoice(customer_id="cus_1", amount=100, currency="usd", description="d",
+                           days_until_due=7, idempotency_scope="invoice-op-9")
+    assert gateway._client.invoice_items.create.call_args.kwargs["options"] == {
+        "idempotency_key": "invoiceitem:invoice-op-9"}
+    assert gateway._client.invoices.create.call_args.kwargs["options"] == {
+        "idempotency_key": "invoice:invoice-op-9"}
+    assert gateway._client.invoices.finalize_invoice.call_args.kwargs["options"] == {
+        "idempotency_key": "invoice-finalize:invoice-op-9"}

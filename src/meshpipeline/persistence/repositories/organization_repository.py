@@ -69,7 +69,7 @@ class OrganizationRepository:
         row.current_period_end = current_period_end
         await db.flush()
 
-    async def list_with_billing(self, db: AsyncSession, *, limit: int = 100
+    async def list_with_billing(self, db: AsyncSession, *, limit: int | None = 100
                                 ) -> list[tuple[Organization, int]]:
         """Every organisation with its credit balance. CROSS-TENANT: admin routes only."""
         # ONE QUERY, not a balance lookup per row. The ledger is summed in an OUTER JOIN so an
@@ -82,9 +82,11 @@ class OrganizationRepository:
                    func.coalesce(func.sum(CreditLedgerEntry.amount), 0).label("balance"))
             .group_by(CreditLedgerEntry.organization_id)
             .subquery())
-        res = await db.execute(
+        statement = (
             select(Organization, func.coalesce(balance.c.balance, 0))
             .outerjoin(balance, balance.c.org == Organization.id)
-            .order_by(Organization.created_at.desc())
-            .limit(limit))
+            .order_by(Organization.created_at.desc()))
+        if limit is not None:
+            statement = statement.limit(limit)
+        res = await db.execute(statement)
         return [(row[0], int(row[1] or 0)) for row in res.all()]

@@ -133,6 +133,12 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # The meter sweep, reachable over HTTP because the hosted deployment runs no Celery Beat -
         # its consumer is a scheduler, and without it debits never reach the provider.
         ("POST", "/api/v1/admin/billing/meter/sweep"),
+        # LAUNCH OPS, cross-tenant and behind the same admin credential. Its consumer is the admin
+        # console's Activity and Customers sections.
+        ("GET", "/api/v1/admin/ops/activity"),
+        ("GET", "/api/v1/admin/ops/organizations"),
+        ("GET", "/api/v1/admin/ops/organizations/{organization_id}"),
+        ("POST", "/api/v1/admin/ops/organizations/{organization_id}/credit-grants"),
         # THE PROVIDER'S OWN CALLER. Not a capability a person invokes: it is authenticated by
         # signature rather than by any credential of ours, which is why it is listed apart.
         ("POST", "/api/v1/webhooks/stripe"),

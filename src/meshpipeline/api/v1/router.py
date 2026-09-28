@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from meshpipeline.api.v1 import (
     admin_billing,
+    admin_ops,
     api_keys,
     billing,
     chat,
@@ -32,6 +33,7 @@ router.include_router(billing.router,    prefix="/billing",    tags=["billing"])
 # different noun: everything under /billing answers for ONE tenant and scopes on it, while these
 # routes deliberately read across all of them behind their own credential (ADMIN_API_KEY).
 router.include_router(admin_billing.router, prefix="/admin/billing", tags=["admin"])
+router.include_router(admin_ops.router, prefix="/admin/ops", tags=["admin"])
 # THE WEBHOOK IS NOT UNDER /billing, deliberately. Everything under that prefix answers a proven
 # caller presenting our credential; this one answers Stripe, which holds no credential of ours and
 # authenticates by signature instead. Separate paths keep that difference visible to anyone reading

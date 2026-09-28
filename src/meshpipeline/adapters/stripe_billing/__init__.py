@@ -181,12 +181,13 @@ class StripeBillingGateway:
         )
 
     def create_invoice(self, *, customer_id: str, amount: int, currency: str,
-                       description: str, days_until_due: int) -> Invoice:
+                       description: str, days_until_due: int,
+                       idempotency_scope: str | None = None) -> Invoice:
         # THE ENTERPRISE PATH, invoiced rather than checked out. Three calls in a fixed order, and
         # the order is load-bearing: an invoice item created without `invoice` set attaches to the
         # customer's NEXT invoice, so the item must exist before the invoice is drawn, and the
         # invoice must be finalised before it has a number or a payable URL.
-        item_key = f"{customer_id}:{amount}:{description}"
+        item_key = idempotency_scope or f"{customer_id}:{amount}:{description}"
         self._client.invoice_items.create(
             {"customer": customer_id, "amount": amount, "currency": currency,
              "description": description},
@@ -206,7 +207,8 @@ class StripeBillingGateway:
         # FINALISED IMMEDIATELY. A draft has no number, no hosted page and no due date that means
         # anything - returning one would hand the operator an Invoice value whose fields are blank
         # for a reason they would have to already know.
-        finalized = self._client.invoices.finalize_invoice(invoice.id)
+        finalized = self._client.invoices.finalize_invoice(
+            invoice.id, **self._idempotency("invoice-finalize", item_key))
         return _invoice_of(finalized)
 
     def list_invoices(self, *, customer_id: str, limit: int = 10) -> list[Invoice]:

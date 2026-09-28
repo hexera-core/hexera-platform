@@ -19,6 +19,15 @@ export const hexeraApiRoutes = {
   // THE CROSS-TENANT SURFACE. Every route below `admin` reads across all tenants and is gated by
   // its own credential (X-Admin-Key / ADMIN_API_KEY), which is deliberately NOT the MESH_API_KEY
   // the console and worker hold. Anything calling these is an operator tool, never a customer one.
+  adminOpsActivity: `${HEXERA_API_PREFIX}/admin/ops/activity`,
+  adminOpsOrganization: (organizationId: PathSegment): ApiPath =>
+    `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}`,
+  adminOpsOrganizationCreditGrants: (organizationId: PathSegment): ApiPath =>
+    `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}/credit-grants`,
+  adminOpsOrganizations: (limit?: number): ApiPath =>
+    limit === undefined
+      ? `${HEXERA_API_PREFIX}/admin/ops/organizations`
+      : `${HEXERA_API_PREFIX}/admin/ops/organizations?limit=${segment(limit)}`,
   adminBillingLedger: (organizationId: PathSegment): ApiPath =>
     `${HEXERA_API_PREFIX}/admin/billing/organizations/${segment(organizationId)}/ledger`,
   adminBillingInvoices: (organizationId: PathSegment): ApiPath =>
@@ -52,6 +61,9 @@ export type HexeraApiRoute =
   | (typeof hexeraApiRoutes)[keyof typeof hexeraApiRoutes]
   | ReturnType<(typeof hexeraApiRoutes)["adminBillingInvoices"]>
   | ReturnType<(typeof hexeraApiRoutes)["adminBillingLedger"]>
+  | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganizations"]>
+  | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganization"]>
+  | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganizationCreditGrants"]>
   | ReturnType<(typeof hexeraApiRoutes)["chatHistory"]>
   | ReturnType<(typeof hexeraApiRoutes)["simulation"]>
   | ReturnType<(typeof hexeraApiRoutes)["simulationDispute"]>

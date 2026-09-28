@@ -94,7 +94,8 @@ class BillingGateway(Protocol):
     #: Raise an invoice for an amount agreed outside the product - the enterprise path, which is
     #: invoiced rather than checked out. `amount` is in the smallest currency unit.
     def create_invoice(self, *, customer_id: str, amount: int, currency: str,
-                       description: str, days_until_due: int) -> Invoice: ...
+                       description: str, days_until_due: int,
+                       idempotency_scope: str | None = None) -> Invoice: ...
 
     #: The invoices this customer has, newest first. Read-only: what an invoice SAYS is the
     #: provider's record, and the product keeps no second copy to disagree with it.

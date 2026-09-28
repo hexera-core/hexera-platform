@@ -7,14 +7,20 @@
 // Billing reads real figures now: the `organizations` and `credit_ledger` tables exist, PLANS is
 // populated, and the Stripe integration fills both. Its panels still degrade individually, so the
 // section stays available even where no payment provider is configured - the plans, balances and
-// ledger are true without one, and only invoices need it. Customers stays unavailable because there
-// is no page at all, and Outreach because it is a single prod-only instance that this deployment
-// may not be.
+// ledger are true without one, and only invoices need it. Activity, Customers and Outreach are
+// launch operator surfaces: prod shows them, while dev keeps them out of the way unless a route is
+// explicitly opened.
 export type AdminSection = {
   href: string;
   label: string;
   available: boolean;
 };
+
+export function isLaunchAdminSurfaceEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return (env.ENV ?? env.APP_ENV ?? "").trim().toLowerCase() === "prod";
+}
 
 // Takes the environment rather than reading it, so both shapes - the deployment that runs
 // outreach and the one that does not - are reachable from a test. A module-level constant read
@@ -23,21 +29,22 @@ export type AdminSection = {
 export function buildAdminSections(
   env: Record<string, string | undefined> = process.env,
 ): readonly AdminSection[] {
-  return [
+  const base: AdminSection[] = [
     { href: "/", label: "Fleet", available: true },
     { href: "/costs", label: "Costs", available: true },
     { href: "/billing", label: "Billing", available: true },
-    { href: "/activity", label: "Activity", available: false },
-    { href: "/customers", label: "Customers", available: false },
+  ];
+  if (isLaunchAdminSurfaceEnabled(env)) {
+    base.push(
+      { href: "/activity", label: "Activity", available: true },
+      { href: "/customers", label: "Customers", available: true },
+    );
+  }
+  if ((env.OUTREACH_ENABLED ?? "").trim() === "1") {
     // Outreach is PROD-ONLY: one partner list, one mailbox. A dev copy would either duplicate the
     // real contacts or sit empty, and neither is worth a second Gmail connection. The deployment
     // says whether it runs here, so the flag decides rather than the hostname.
-    {
-      href: "/outreach",
-      label: "Outreach",
-      available: (env.OUTREACH_ENABLED ?? "").trim() === "1",
-    },
-  ];
+    base.push({ href: "/outreach", label: "Outreach", available: true });
+  }
+  return base;
 }
-
-export const ADMIN_SECTIONS: readonly AdminSection[] = buildAdminSections();

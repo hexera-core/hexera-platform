@@ -2,17 +2,17 @@
 
 import { usePathname } from "next/navigation";
 
-import { ADMIN_SECTIONS } from "./sections";
+import type { AdminSection } from "./sections";
 
 // A client component only because the current section is the pathname, and a layout - which is
 // where this renders - is not given one. The alternative is threading the path through every page.
-export function AdminNav() {
+export function AdminNav({ sections }: { sections: readonly AdminSection[] }) {
   const pathname = usePathname();
 
   return (
     <nav aria-label="Admin sections" className="admin-nav">
       <ul>
-        {ADMIN_SECTIONS.map((section) => (
+        {sections.map((section) => (
           <li key={section.href}>
             {section.available ? (
               <a

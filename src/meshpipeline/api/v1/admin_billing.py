@@ -51,6 +51,7 @@ class InvoiceRequest(BaseModel):
     currency: str = Field(default="usd", max_length=3)
     description: str = Field(max_length=256)
     days_until_due: int = Field(default=30, ge=1, le=365)
+    operation_id: uuid.UUID | None = None
 
 
 @router.get("/organizations", dependencies=[Depends(admin_dep)])
@@ -178,7 +179,8 @@ async def raise_invoice(organization_id: str, body: InvoiceRequest) -> dict:
     try:
         invoice = get_billing_gateway().create_invoice(
             customer_id=customer_id, amount=body.amount, currency=body.currency.lower(),
-            description=body.description, days_until_due=body.days_until_due)
+            description=body.description, days_until_due=body.days_until_due,
+            idempotency_scope=str(body.operation_id) if body.operation_id else None)
     except BillingUnavailable:
         raise HTTPException(status_code=503, detail="billing is not configured")
     return {"invoice": _invoice(invoice)}
