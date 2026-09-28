@@ -675,6 +675,12 @@ def _block_geometry_check() -> str:
         "reference_length_m (mm / 1000) and requested_extents exactly as written. Ask only what "
         "the message does not contain - typically the purpose, the fluid and its speed, and the "
         "engine when it is not settled.\n"
+        "A later correction changes only what depends on it. If the user says the file is in a "
+        "different unit from the one the check read (it read millimetres), the picture's "
+        "openings, axes and flow direction stand - they do not depend on the unit - and only the "
+        "sizes change: convert the reference length and every millimetre value to the unit they "
+        "named, propose the converted numbers in one line, and carry on. That is not a conflict, "
+        "and never a reason to ask the flow axis, or anything else the check settled, again.\n"
         "An assistant message beginning 'GEOMETRY CHECK (drawing your part):' is a holding line "
         "while the picture is made: nothing in it is declared, and you never repeat it. A user "
         "message saying they confirmed the geometry check is your cue to continue with the next "
@@ -708,7 +714,15 @@ def _block_propose_first() -> str:
         "first-layer thickness, the layer count), patch names and refinement zones are courtesy "
         "questions: one question, one proposal, and never a reason to hold a submission. The same "
         "holds after an admission refusal: whatever you must ask the user carries your proposed "
-        "revision, so 'ok' answers it."
+        "revision, so 'ok' answers it.\n"
+        "A VALUE THE USER LEAVES TO YOU is yours to choose. 'I do not know', 'use a sensible "
+        "default' or 'you decide' answers even a question you had no proposal for - which of two "
+        "openings is the second inlet, say: pick the sensible default (the first candidate you "
+        "listed, unless the geometry says otherwise), say which in one line, record it as an "
+        "assumption, and continue. Never reply that a value is required and cannot be defaulted: "
+        "required means it must be in the submission, not that the user must type it. The two "
+        "exceptions stand - the ENGINE is proposed and confirmed, never defaulted, and the UNIT is "
+        "asked, never guessed."
     )
 
 
@@ -791,6 +805,13 @@ async def node_intake(state: PipelineState) -> dict:
         logger.warning("Intake: MAX_TURNS=%d reached - nudging toward closure (fail-safe, never "
                        "forcing a submit) - job_id=%s", turn.MAX_TURNS, job_id)
         llm_messages, state_messages = turn.apply_budget_nudge(llm_messages, state_messages)
+    if turn.defers_to_default(turn.latest_user_text(state_messages)):
+        # "I do not know, use a sensible default and continue" is an answer: the value is the
+        # model's to choose. Said here, in code, before the model can ask the question again or
+        # reply that the value "cannot be selected by default".
+        logger.info("Intake: the user left the open question to the model - take the default "
+                    "- job_id=%s", job_id)
+        llm_messages, state_messages = turn.apply_default_nudge(llm_messages, state_messages)
 
     _ctx = turn.hydrate(state, state_messages)
     # A plain yes to the application's own engine question ("Do you want to select X?") is read
