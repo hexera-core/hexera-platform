@@ -53,6 +53,14 @@ DIE_AFTER_HOPS = os.environ.get("DIE_AFTER_HOPS", "")
 EFFECTS = os.environ.get("F1_EFFECTS") == "1"
 DIE_AFTER_EFFECTS = os.environ.get("F1_DIE_AFTER_EFFECTS") == "1"
 OWNER = os.environ.get("F1_OWNER", "")
+# A crash INSIDE LangGraph's own first writes. The input checkpoint (step -1) and the first loop
+# checkpoint (step 0) are separate background writes, and LangGraph chains them: the step-0 write
+# starts only once the step-1 write has landed. START's own task writes are submitted between the
+# two. So dying at the top of the step-0 write is a crash with exactly the input durable - an
+# ordering, not a timing. The two values are the two shapes that gap can leave:
+#   input_only              START's task writes never reach the database either
+#   input_and_start_writes  the step-0 write first waits until START's writes are visible
+DIE_BEFORE_FIRST_STEP = os.environ.get("DIE_BEFORE_FIRST_STEP", "")
 
 
 class _S(TypedDict, total=False):
@@ -169,6 +177,13 @@ async def _durable_effects(state, node):
 
 def _mk(name, last=False):
     async def _node(state):
+        if DIE_BEFORE_FIRST_STEP and name == "first":
+            # HELD, so the crash inside the step-0 write is the only thing that ends this run and
+            # no node body has done anything by then. Bounded, so a crash that never comes fails
+            # the child loudly instead of hanging it.
+            import asyncio as _a
+            await _a.sleep(60)
+            raise AssertionError("the crash inside the step-0 checkpoint write never came")
         if DIE == name:
             await (_wait_for_completed_node(state, int(DIE_AFTER_HOPS))
                if DIE_AFTER_HOPS else _wait_for_checkpoint(state))
@@ -179,6 +194,13 @@ def _mk(name, last=False):
             if DIE_AFTER_EFFECTS and name == "first":
                 # The effects are durable and the node has NOT returned, so no checkpoint records
                 # its completion. Dying here is the pre-durable crash by construction.
+                #
+                # BUT ONLY ONCE THE STEP-0 CHECKPOINT HAS LANDED. It is written in the background
+                # while this node runs, so on a loaded runner the effects above could finish
+                # first - and dying then is a different crash, one that leaves only the input
+                # checkpoint (the DIE_BEFORE_FIRST_STEP case, tested on its own below). That was
+                # the intermittent CI failure: the same test, two crashes, chosen by load.
+                await _wait_for_checkpoint(state)
                 LEDGER.open("a").write(json.dumps({"barrier": "effects_committed",
                                                    "node": name, "op_id": op_id}) + "\n")
                 os._exit(9)
@@ -216,6 +238,44 @@ def _fake_graph(checkpointer=None):
 
 
 graph_module.build_graph = _fake_graph
+
+if DIE_BEFORE_FIRST_STEP:
+    from meshpipeline.application import fenced_checkpointer as _fcp
+    _real_aput = _fcp.FencedCheckpointer.aput
+    _real_aput_writes = _fcp.FencedCheckpointer.aput_writes
+
+    async def _wait_for_start_writes():
+        import asyncio as _a
+
+        import psycopg
+        import meshpipeline.settings.providers as _pc
+        from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION as _V
+        dsn = _pc.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
+        loop = _a.get_running_loop()
+        deadline = loop.time() + 60
+        while loop.time() < deadline:
+            with psycopg.connect(dsn) as c, c.cursor() as cur:
+                cur.execute("select count(*) from checkpoint_writes where thread_id like %s "
+                            "and strpos(task_path, '__start__') > 0", (f"{job_id}:s{_V}:g%",))
+                if (cur.fetchone() or [0])[0] > 0:
+                    return
+            await _a.sleep(0.02)
+        raise AssertionError("START's task writes never became durable")
+
+    async def _aput(self, config, checkpoint, metadata, new_versions):
+        if (metadata or {}).get("step", -1) >= 0:
+            if DIE_BEFORE_FIRST_STEP == "input_and_start_writes":
+                await _wait_for_start_writes()
+            os._exit(9)
+        return await _real_aput(self, config, checkpoint, metadata, new_versions)
+
+    async def _aput_writes(self, config, writes, task_id, task_path=""):
+        if DIE_BEFORE_FIRST_STEP == "input_only" and "__start__" in str(task_path):
+            return None
+        return await _real_aput_writes(self, config, writes, task_id, task_path)
+
+    _fcp.FencedCheckpointer.aput = _aput
+    _fcp.FencedCheckpointer.aput_writes = _aput_writes
 
 import meshpipeline.application.pipeline_run as pr
 
@@ -581,8 +641,12 @@ async def test_a_new_generation_never_inherits_another_generations_position(tmp_
 # `first` commits REAL durable effects through the production authorities and then dies at the
 # end of its body, before returning. LangGraph writes the checkpoint recording a node's
 # completion only after that node returns, so this crash is pre-durable BY CONSTRUCTION - it is
-# not timed, and it cannot drift. The proven structure is step -1 (input), step 0 (written
-# before `first` runs) and step 1 with hops=1 (records that `first` completed).
+# not timed, and it cannot drift. The proven structure is step -1 (input), step 0 (the first loop
+# checkpoint) and step 1 with hops=1 (records that `first` completed).
+#
+# STEP 0 IS WRITTEN IN THE BACKGROUND, while `first` runs - not before it. So the child waits
+# for it to be durable before it dies; without that wait a loaded runner sometimes killed the
+# process with only the input saved, and two tests below failed intermittently on main.
 #
 # The historical wait was `count(*) where step >= 0`, which the step-0 row satisfies. That is why
 # it could release before `first` had done anything, and why the crash it gated was in an
@@ -741,10 +805,13 @@ async def test_a_restart_of_the_same_execution_keeps_its_generation_and_rotates_
 
     shutil.rmtree(tmp_path / "ws-a")
     await _expire_lease(job_id)
-    _child(job_id, geom, tmp_path / "ws-b", ledger, execution_id=exec_id, extra_env=_EFFECT_ENV)
+    _, proc_b = _child(job_id, geom, tmp_path / "ws-b", ledger, execution_id=exec_id,
+                       extra_env=_EFFECT_ENV)
 
     observations = [b for b in _barriers(ledger) if b["barrier"] == "generation_observation"]
-    assert len(observations) == 2, f"expected one observation per process: {observations}"
+    assert len(observations) == 2, (
+        f"expected one observation per process: {observations}\n"
+        f"the restart's own output ended:\n{proc_b.stderr[-2000:]}")
     a, b = observations
     assert a["ownership_generation"] == b["ownership_generation"] == \
         first_claim["execution_generation"], (
@@ -755,3 +822,66 @@ async def test_a_restart_of_the_same_execution_keeps_its_generation_and_rotates_
     # and because the generation held, both processes derived the SAME operation identity
     assert len(_capture_operations(job_id)) == 1
     assert len(_event_counts(job_id)["f1_op_keys"]) == 1
+
+
+# a crash before the first step is saved
+#
+# The gap the two tests above used to fall into on a loaded runner, now reached on purpose. Only
+# the INPUT checkpoint is durable, so no node's completion is: the restart must run the whole
+# graph again from START, on the geometry IT fetched. Before this was handled, the first shape
+# failed the job outright ("Ambiguous update" from the geometry refresh) and the second was read
+# as a finished graph, so the restart fetched nothing and ran every node on the dead process's
+# file path.
+
+def _start_writes(job_id) -> int:
+    import psycopg
+
+    import meshpipeline.settings.providers as pc
+    from meshpipeline.contracts.pipeline_state import STATE_SCHEMA_VERSION as V
+    dsn = pc.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
+    with psycopg.connect(dsn) as c, c.cursor() as cur:
+        cur.execute("select count(*) from checkpoint_writes where thread_id like %s "
+                    "and strpos(task_path, '__start__') > 0", (f"{job_id}:s{V}:g%",))
+        return int((cur.fetchone() or [0])[0])
+
+
+def _paths(ledger: Path, node: str) -> list[str]:
+    rows = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+    return [r["path"] for r in rows if "barrier" not in r and r["node"] == node]
+
+
+@pytest.mark.parametrize("window", ["input_only", "input_and_start_writes"])
+async def test_a_crash_before_the_first_step_is_saved_restarts_from_start(tmp_path, window):
+    job_id, geom = await _seed("pending", tmp_path)
+    ledger = tmp_path / "l.jsonl"
+    exec_id = f"e-{uuid.uuid4()}"
+
+    _, proc = _child(job_id, geom, tmp_path / "ws-a", ledger, execution_id=exec_id,
+                     extra_env={"DIE_BEFORE_FIRST_STEP": window})
+    assert proc.returncode in (9, -9), proc.stderr[-2000:]
+
+    # AT THE KILL: exactly the gap, in the shape asked for, and no node body has run.
+    at_kill = _checkpoint_rows(job_id)
+    assert [r["source"] for r in at_kill] == ["input"], (
+        f"more than the input checkpoint was durable - this is not the gap: {at_kill}")
+    if window == "input_only":
+        assert _start_writes(job_id) == 0, "START's writes landed - this is the other shape"
+    else:
+        assert _start_writes(job_id) > 0, "START's writes never landed - this is the other shape"
+    assert _ledger(ledger) == []
+
+    shutil.rmtree(tmp_path / "ws-a")
+    await _expire_lease(job_id)
+    out, proc_b = _child(job_id, geom, tmp_path / "ws-b", ledger, execution_id=exec_id)
+
+    # The restart ran EVERY node, once, on the geometry it fetched itself.
+    assert _ledger(ledger) == ["first", "final"], (
+        f"the restart did not run the graph from START: {_ledger(ledger)}\n"
+        f"its own output ended:\n{proc_b.stderr[-2000:]}")
+    restart = str(tmp_path / "ws-b")
+    for node in ("first", "final"):
+        assert all(p.startswith(restart) for p in _paths(ledger, node)), (
+            f"`{node}` ran on a geometry path the restart did not fetch: {_paths(ledger, node)}")
+    assert (await _job(job_id))["status"] in ("succeeded", "failed"), out
+    assert any((r["hops"] or 0) >= 2 for r in _checkpoint_rows(job_id)), (
+        "the restart did not checkpoint through `final`")

@@ -147,3 +147,48 @@ def test_the_integration_union_pass_exists_and_the_gate_waits_on_it():
     assert "integration-tier=${{ needs.integration-tier.result }}" in yaml.dump(gate["steps"]), (
         "ci-gate waits for the union pass but never reads its result, so a vacuous integration "
         "tier would still post a green required check")
+
+
+def _step(job: str, action: str) -> dict:
+    steps = yaml.safe_load(CI.read_text(encoding="utf-8"))["jobs"][job]["steps"]
+    found = [s for s in steps if action in str(s.get("uses", ""))]
+    assert len(found) == 1, f"expected one {action} step in {job}, found {len(found)}"
+    return found[0]
+
+
+def test_a_rerun_shard_s_report_replaces_the_one_it_reran():
+    """"Re-run failed jobs" must be able to clear a red integration shard.
+
+    The re-run uploads a second report for that shard into the same run. Under one shared artifact
+    name, download-artifact kept the one with the higher artifact ID - not the newer one - so the
+    old failing report could be judged again and only a new commit cleared it. So: the attempt is
+    in the name, nothing is merged over anything else on download, the guard picks the newest
+    attempt of each shard by number, and it is told the same shard count the matrix runs.
+    """
+    guard_path = REPO / "tests/integration/assert_integration_coverage.py"
+    spec = importlib.util.spec_from_file_location("_cov_guard", guard_path)
+    assert spec and spec.loader
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    name = _step("integration", "upload-artifact")["with"]["name"]
+    assert "${{ github.run_attempt }}" in name, (
+        "the shard report is named without its attempt - a re-run's report shares the failed "
+        "attempt's name and the union may judge the stale one")
+    rendered = name.replace("${{ matrix.shard }}", "3").replace("${{ github.run_attempt }}", "2")
+    m = guard.ARTIFACT.match(rendered)
+    assert m and (m["shard"], m["attempt"]) == ("3", "2"), (
+        f"the guard cannot read shard and attempt out of the uploaded name {name!r}")
+
+    download = _step("integration-tier", "download-artifact")["with"]
+    assert not download.get("merge-multiple"), (
+        "merging lays every attempt's identically named report over the others - the union must "
+        "see each attempt in its own directory")
+
+    union = yaml.safe_load(CI.read_text(encoding="utf-8"))["jobs"]["integration-tier"]
+    run = "\n".join(s.get("run", "") for s in union["steps"])
+    assert "--shard-artifacts" in run, "the union pass no longer picks the newest attempt per shard"
+    counted = re.findall(r"--shards\s+(\d+)", run)
+    assert counted == [str(len(_matrix_shards("integration")))], (
+        f"the union pass expects {counted} shards but the matrix runs "
+        f"{len(_matrix_shards('integration'))} - a shard could go missing unnoticed")

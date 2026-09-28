@@ -174,9 +174,8 @@ async def _classify_checkpoint(thread_id: str) -> str:
         raise GeometrySourceError("the saved execution state could not be read",
                                   failure_class=cls, dependency="checkpoint_store") from exc
 
-    if snapshot is None or snapshot.created_at is None:
-        return "absent"
-    return "pending" if snapshot.next else "complete"
+    from meshpipeline.application.fenced_checkpointer import disposition_of
+    return disposition_of(snapshot)
 
 
 def _coerce_source_ref(value):
