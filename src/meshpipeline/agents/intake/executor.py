@@ -98,7 +98,25 @@ def one_line_reason(evidence: Any) -> str:
 #: Words that mean a sentence is describing OUR MACHINERY rather than the customer's part. Every one is
 #: taken from a sentence a real customer was actually shown; see `customer_safe`.
 _OUR_INTERNALS = ("dev plan", "measured deliveries", "in the last run were", "hard_limit",
-                  "locationinmesh", "settings/", "src/meshpipeline", "geometry_agent/")
+                  "locationinmesh", "settings/", "src/meshpipeline", "geometry_agent/",
+                  # MEASURED LIVE on 2026-09-28 on a hydrogen manifold, on the owner's own run. The
+                  # seed_point card is three sentences: the filter caught the first, because it names
+                  # locationInMesh, and printed the other two to the approval screen as orphans:
+                  #
+                  #     "Ray parity was not run here (no mesh file on disk); the handover's seed_check
+                  #      runs it. The platform's own hollow-wall fallback walks the inlet-to-outlet
+                  #      chord, which on a bend is the air between the legs (21 seedfix reruns in the
+                  #      export)."
+                  #
+                  # which is this function's own docstring warning about orphans, arriving as two of
+                  # them. The card is entirely a builder hook - its own recommendation says so, "the
+                  # step-8 hook, until then it is advisory" - so nothing in it was ever the customer's
+                  # to read, and the names below drop the whole thing rather than its tail.
+                  #
+                  # `in the export` is the corpus, and it sits beside `measured deliveries` and `in the
+                  # last run were` for the same reason: all three quote OTHER people's jobs at the
+                  # person paying for this one.
+                  "ray parity", "seed_check", "seedfix", "hollow-wall", "carve seed", "in the export")
 
 #: Sentence end, for splitting a card without a natural-language dependency. A FULL STOP AND NOT A
 #: SEMICOLON, deliberately: a semicolon usually joins a clause to the one it depends on, and dropping

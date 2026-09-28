@@ -104,3 +104,43 @@ def test_a_risk_whose_whole_recommendation_was_mechanism_still_shows_its_finding
     assert "flow has not settled on" in said
     assert "judge.py" not in said
     assert "-> " not in said, "an empty recommendation must not leave a dangling arrow"
+
+
+def test_the_seed_card_goes_whole_rather_than_leaving_its_mechanism_behind():
+    """MEASURED LIVE on 2026-09-28, on the owner's own run on a hydrogen manifold. The seed_point card is
+    three sentences. The filter caught the first, because it names locationInMesh, and printed the other two
+    onto the approval screen:
+
+        Ray parity was not run here (no mesh file on disk); the handover's seed_check runs it. The
+        platform's own hollow-wall fallback walks the inlet-to-outlet chord, which on a bend is the air
+        between the legs (21 seedfix reruns in the export).
+
+    Which is this filter's own docstring warning about orphans, arriving as two of them. Nothing in that card
+    was ever the customer's to read: its own recommendation calls it a builder hook, advisory until a later
+    step. So it goes whole rather than losing its head.
+    """
+    card = ("The carve seed (snappy's locationInMesh) is 0.25 bores inside the inlet o6 along its inward "
+            "normal. Ray parity was not run here (no mesh file on disk); the handover's seed_check runs it. "
+            "The platform's own hollow-wall fallback walks the inlet-to-outlet chord, which on a bend is the "
+            "air between the legs (21 seedfix reruns in the export).")
+    assert customer_safe(card) == "", "every sentence of this card is mechanism"
+
+    # the variant a run WITH a mesh file on disk produces, which would otherwise survive as an orphan
+    tested = ("The carve seed (snappy's locationInMesh) is 0.25 bores inside the inlet o6 along its inward "
+              "normal. By ray parity it lies inside the carved cavity.")
+    assert customer_safe(tested) == ""
+
+
+def test_the_corpus_is_not_quoted_at_the_person_paying_for_this_job():
+    """`in the export` sits beside `measured deliveries` and `in the last run were` for one reason: all three
+    quote OTHER people's jobs at the customer deciding whether to spend money on theirs."""
+    assert customer_safe("Twenty-one seedfix reruns in the export say otherwise.") == ""
+
+
+def test_a_sentence_of_real_physics_still_survives_the_filter():
+    """The direction that matters. A leak filter that eats the customer's own findings is worse than the leak,
+    so this is the text the same live run DID deserve, and it comes through untouched."""
+    real = ("If o5 is an outlet, the flow leaving through it has had 1.0 diameters since a change in "
+            "cross-section, short of the 5 diameters it takes to settle. A pressure outlet holds one static "
+            "pressure across the whole face and treats the profile there as settled and parallel.")
+    assert customer_safe(real) == real
