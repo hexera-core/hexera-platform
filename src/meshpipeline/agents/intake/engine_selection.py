@@ -57,12 +57,23 @@ _DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
 #: answer begins or ends.
 _DECLINE_IDIOMS = ("not think", "not really", "rather not", "prefer not", "no way", "not yet",
                    "not now", "changed my mind")
-#: A retraction is read from its object, wherever it sits: "yes, forget it", "forget about it",
-#: "forget it then" and "forget snappyHexMesh" take the engine answer back, while "forget the
-#: ground patch" names its own object - so "Forget the ground patch; yes, use snappyHexMesh" is
-#: still a yes.
+#: A retraction is read from its object - the rest of its own clause - wherever it sits. It takes
+#: the engine answer back when that object is empty, the engine, a pronoun or a "the whole
+#: thing" ("yes, forget it", "forget about it", "Forget it entirely; ...", "forget all that",
+#: "forget snappyHexMesh"), or when it takes back a yes ("forget that I said yes"). An object
+#: that names something else leaves the yes standing: "Forget the ground patch; yes, use
+#: snappyHexMesh", "yes, but forget that the ground patch exists".
 _RETRACT = "forget"
-_ABOUT = "about"
+_RETRACT_WHOLE = frozenset({"about", "all", "everything", "whole", "thing", "entirely",
+                            "completely", "totally", "altogether", "actually", "really",
+                            "honestly", "anyway", "anyways"})
+#: The words of a yes the user may take back. Narrower than _ASSENT: "forget the right-hand
+#: outlet" or "forget the y+ target" takes back no yes.
+_YES = frozenset({"yes", "yep", "yeah", "yup", "sure", "ok", "okay", "agree", "agreed",
+                  "confirm", "confirmed", "goahead", "affirmative"})
+#: Where one clause ends and the next begins; a decimal point is not one.
+_CLAUSE_BREAK = re.compile(r"[,;:!?()]|\.(?!\d)|\s[-\u2013\u2014]+\s|[\u2013\u2014]")
+_BREAK_WORD = "xbreak"
 _INTENSIFIERS = frozenset({"definitely", "absolutely", "certainly", "surely"})
 _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use", "pick", "take",
                      "keep", "go", "fancy", "wish"})
@@ -76,11 +87,15 @@ def _norm(text) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
 
 
-def _tokens(engine: str, message: str, *, keep_engine: bool) -> list[str]:
+def _tokens(engine: str, message: str, *, keep_engine: bool,
+            keep_breaks: bool = False) -> list[str]:
     # The message as bare words. Contractions are opened ("don't" -> "do not"), the proposed
     # engine's own name - both spellings, the registry key and the name the user reads - becomes
-    # one token or nothing, "go ahead" becomes one word, and the idioms go.
+    # one token or nothing, "go ahead" becomes one word, and the idioms go. With keep_breaks,
+    # each clause boundary is kept as a word of its own.
     text = re.sub(r"n['’]t\b", " not", str(message or "").casefold())
+    if keep_breaks:
+        text = _CLAUSE_BREAK.sub(f" {_BREAK_WORD} ", text)
     text = re.sub(r"[^0-9a-z]+", " ", text)
     for spelling in {engine, engine_label(engine)}:
         bare = re.sub(r"[^0-9a-z]+", " ", str(spelling or "").casefold()).strip()
@@ -110,14 +125,27 @@ def _stands_for_the_engine(raw: list[str], j: int) -> bool:
     return j + 1 >= len(raw) or raw[j + 1] in _FILLER
 
 
-def _retracts(raw: list[str], i: int) -> bool:
-    # "forget" at raw[i] takes the engine answer back when it has no object of its own - nothing
-    # but fillers follow ("forget", "forget it then", "forget the engine") - or when its object,
-    # after an optional "about", stands for the engine ("forget about it", "forget snappyHexMesh").
-    k = i + 2 if i + 1 < len(raw) and raw[i + 1] == _ABOUT else i + 1
-    if all(w in _FILLER for w in raw[k:]):
+def _retracts(obj: list[str]) -> bool:
+    # `obj` is what follows "forget" up to the end of its clause. It takes the engine answer back
+    # when it names the engine or a yes ("forget snappyHexMesh", "forget that I said yes"), or
+    # names nothing of its own ("forget", "forget it then", "forget about it", "forget it
+    # entirely", "forget the whole thing") - not when it names something else ("forget the
+    # ground patch", "forget that the ground patch exists").
+    if _ENGINE_WORD in obj or any(w in _YES for w in obj):
         return True
-    return any(_stands_for_the_engine(raw, j) for j in range(k, min(k + 2, len(raw))))
+    return all(w in _FILLER or w in _RETRACT_WHOLE for w in obj)
+
+
+def _retracts_the_answer(engine: str, message: str) -> bool:
+    words = _tokens(engine, message, keep_engine=True, keep_breaks=True)
+    for i, w in enumerate(words):
+        if w != _RETRACT:
+            continue
+        rest = words[i + 1:]
+        end = rest.index(_BREAK_WORD) if _BREAK_WORD in rest else len(rest)
+        if _retracts(rest[:end]):
+            return True
+    return False
 
 
 def declines(engine: str, message: str) -> bool:
@@ -131,9 +159,9 @@ def declines(engine: str, message: str) -> bool:
     if any(phrase == idiom or phrase.startswith(f"{idiom} ") or phrase.endswith(f" {idiom}")
            for idiom in _DECLINE_IDIOMS):
         return True
+    if _retracts_the_answer(engine, message):
+        return True
     for i, w in enumerate(raw):
-        if w == _RETRACT and _retracts(raw, i):
-            return True
         if w not in _NEGATION:
             continue
         if i > 0 and raw[i - 1] in _INTENSIFIERS:

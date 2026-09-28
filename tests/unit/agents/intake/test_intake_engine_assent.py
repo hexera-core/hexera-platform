@@ -53,6 +53,8 @@ def test_anything_else_is_not_assent(said):
     "don't want that one", "I've changed my mind", "yes, forget it", "forget about it",
     "yes, forget it then", "forget snappyHexMesh", "forget about snappyHexMesh",
     "forget the engine", "forget all that", "yes - actually, forget it, let me think",
+    "Forget it entirely; I only said yes earlier", "forget that I said yes",
+    "forget the whole thing",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -80,6 +82,9 @@ def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     "yes, but forget the ground patch",
     "Forget the ground patch; yes, use snappyHexMesh",
     "forget about the ground patch, yes go ahead",
+    "yes, use snappyHexMesh, but forget that the ground patch exists",
+    "yes, and forget the right-hand outlet",
+    "ok, forget the y+ target of 30",
 ])
 def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
     # The user accepted the engine and went on to say something else with a "not" in it. The
@@ -103,14 +108,18 @@ def test_a_yes_that_goes_on_to_refuse_the_engine_is_never_confirmed_from_its_yes
     "yes, I changed my mind about the ground patch",   # so is this one
     "yes, but forget the ground patch",                # and this one
     "Forget the ground patch; yes, use snappyHexMesh",  # wherever the "forget" sits
+    "yes, use snappyHexMesh, but forget that the ground patch exists",   # "that" opens a clause
 ])
 def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted(said):
     c, why = _confirm(said, quote="yes")
     assert why == "" and es.state_of(c) == es.CONFIRMED
 
 
-def test_a_yes_that_retracts_itself_is_never_confirmed_from_its_yes():
-    c, why = _confirm("yes, forget it", quote="yes")
+@pytest.mark.parametrize("said", [
+    "yes, forget it", "Forget it entirely; I only said yes earlier", "forget that I said yes",
+])
+def test_a_yes_that_retracts_itself_is_never_confirmed_from_its_yes(said):
+    c, why = _confirm(said, quote="yes")
     assert c is None and "declined" in why
 
 
