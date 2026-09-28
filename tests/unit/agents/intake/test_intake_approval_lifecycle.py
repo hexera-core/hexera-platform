@@ -347,6 +347,7 @@ def _dispatch_once(session_gate, session_overrides=None, msgs=None):
     repo = MagicMock()
     repo.get_for_update = AsyncMock(return_value=locked)
     repo.set_intake_gate = AsyncMock()
+    repo.append_message = AsyncMock()
     repo.link_job = AsyncMock()
     repo.set_request_txt = AsyncMock()
     made = []
@@ -410,6 +411,25 @@ def test_an_already_dispatched_snapshot_makes_no_second_job():
     resp, payload, made = _dispatch_once({"selection": sel, "admission": None, "approval": dead})
     assert made == [], "a duplicate confirmation must not create a second paid job"
     assert payload is None and resp.done is True
+
+
+def test_a_summary_shown_by_a_nudged_turn_dispatches_on_the_users_real_yes():
+    """After MAX_TURNS assistant turns the intake appends a synthetic user entry before the model
+    closes. The proposal must count the user's own messages, or the real "yes" that follows is
+    refused as stale by the confirmation transaction, which counts the persisted transcript."""
+    import meshpipeline.agents.intake.turn as turn
+
+    real = [{"role": "assistant", "content": f"a{i}"} for i in range(turn.MAX_TURNS)]
+    real += [{"role": "user", "content": f"u{i}"} for i in range(turn.MAX_TURNS)]
+    _, nudged = turn.apply_budget_nudge([], real)
+    ctx = turn.hydrate({"job_id": "j", "session_id": _SID, "user_id": "alice",
+                        "intake_gate": None}, nudged)
+    rec, sel = _approval(msg_count=ctx.user_msg_count, owner="alice", session=_SID)
+    persisted = real + [{"role": "user", "content": "yes, go ahead"}]
+    resp, payload, made = _dispatch_once(
+        {"selection": sel, "admission": None, "approval": rec}, msgs=persisted)
+    assert len(made) == 1 and payload is not None, resp.reply
+    assert resp.done and resp.job_id
 
 
 def test_a_stale_or_replaced_snapshot_refuses_to_dispatch():

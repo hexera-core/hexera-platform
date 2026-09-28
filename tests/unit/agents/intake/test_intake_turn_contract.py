@@ -88,6 +88,36 @@ def test_the_latest_user_message_is_the_users_own_last_one():
     assert ctx.latest_user_msg == "use gmsh" and ctx.user_msg_count == 3
 
 
+def test_a_nudged_turn_counts_only_the_users_own_messages():
+    """The nudge is a synthetic user entry. Counting it as the user's put the expected
+    confirmation one message ahead, and every real 'yes' past the budget was refused as stale."""
+    real = _msgs(n_assistant=turn.MAX_TURNS, n_user=turn.MAX_TURNS, last_user="call the wall wall")
+    _, nudged = turn.apply_budget_nudge([], real)
+    ctx, plain = turn.hydrate(_state(), nudged), turn.hydrate(_state(), real)
+    assert ctx.user_msg_count == plain.user_msg_count == turn.MAX_TURNS
+    assert ctx.latest_user_msg == "call the wall wall"
+    assert ctx.revision == plain.revision
+
+
+def test_an_approval_proposed_in_a_nudged_turn_accepts_the_next_real_message():
+    import time
+
+    import meshpipeline.agents.intake.approval as ap
+    import meshpipeline.agents.intake.engine_selection as es
+
+    real = _msgs(n_assistant=turn.MAX_TURNS, n_user=turn.MAX_TURNS, last_user="the wall is wall")
+    _, nudged = turn.apply_budget_nudge([], real)
+    ctx = turn.hydrate(_state(), nudged)
+    snap = ap.create(owner_id="o1", session_id="s1", selection_id="sel", token_id="tok",
+                     canonical={}, fingerprint="f", payload={}, summary="s",
+                     proposal_revision=ctx.revision, proposal_msg_count=ctx.user_msg_count,
+                     intent_canonical={}, intent_fingerprint="g")
+    selection = {"id": "sel", "state": es.CONFIRMED, "expires_at": time.time() + 600}
+    ok, why = ap.verify(snap, owner_id="o1", session_id="s1", selection=selection,
+                        user_msg_count=turn.MAX_TURNS + 1)      # the user's real "yes"
+    assert ok, why
+
+
 def test_recommendation_authority_comes_from_the_users_latest_message_only():
     asked = turn.hydrate(_state(), _msgs(n_user=1, last_user="which engine do you recommend?"))
     plain = turn.hydrate(_state(), _msgs(n_user=1, last_user="mesh the wing"))
