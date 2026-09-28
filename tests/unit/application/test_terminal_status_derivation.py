@@ -136,10 +136,12 @@ async def test_cancellation_is_not_a_derived_status_at_all():
             pytest.fail("a cancellation was caught by `except Exception`")
 
 
-def test_there_is_no_cancelled_terminal_status():
+def test_cancelled_is_a_terminal_status_the_worker_never_derives():
     from meshpipeline.application.final_result import FailureCategory, TerminalStatus
 
-    assert {s.value for s in TerminalStatus} == {"succeeded", "failed"}
+    # the status exists - the owner's cancel authority writes it - but it is not a failure
+    # category, and nothing a run's outcome can say derives it here (see test_cancellation_contract)
+    assert {s.value for s in TerminalStatus} == {"succeeded", "failed", "cancelled"}
     assert "cancelled" not in {c.value for c in FailureCategory}
 
 

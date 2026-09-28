@@ -6,11 +6,15 @@ from enum import Enum
 
 from meshpipeline.persistence.models import JobStatus
 
-TERMINAL_STATES: frozenset[JobStatus] = frozenset({JobStatus.succeeded, JobStatus.failed})
+# `cancelled` is terminal too. The owner's cancel authority (application/job_cancel.py) writes it
+# once, and from then on no worker's late succeeded/failed can overwrite it - the CAS below refuses.
+TERMINAL_STATES: frozenset[JobStatus] = frozenset({JobStatus.succeeded, JobStatus.failed,
+                                                   JobStatus.cancelled})
 
 #: IN FLIGHT: a run in one of these still occupies the conversation it came from, counts against
 #: the owner's quota and can still change status. Everything else has settled - succeeded, failed,
-#: or parked for review - and the conversation that approved it may move on to another run.
+#: cancelled by its owner, or parked for review - and the conversation that approved it may move
+#: on to another run.
 #: (queued and pending_review are not assigned by the current pipeline; they are placed here on
 #: what they mean, so a stray status can never pin a conversation or a quota forever.)
 ACTIVE_STATES: frozenset[JobStatus] = frozenset({JobStatus.pending, JobStatus.running,
@@ -37,6 +41,10 @@ LEGAL_SOURCES: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.queued:         frozenset({JobStatus.pending}),                       # reserved (unused by the current pipeline)
     JobStatus.succeeded:      frozenset({JobStatus.running, JobStatus.pending_review}),
     JobStatus.failed:         frozenset({JobStatus.pending, JobStatus.queued,
+                                         JobStatus.running, JobStatus.pending_review}),
+    # the owner's cancel: anything not yet finished. Terminal sources are excluded like everywhere
+    # else, so a cancel can never undo a delivered mesh or a recorded failure.
+    JobStatus.cancelled:      frozenset({JobStatus.pending, JobStatus.queued,
                                          JobStatus.running, JobStatus.pending_review}),
 }
 

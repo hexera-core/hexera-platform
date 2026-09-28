@@ -275,9 +275,9 @@ async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
 # newer generation owns), persisting it, and falling back to a direct closing when the durable path
 # itself fails. They are separated here.
 # WHAT IS DELIBERATELY NOT CAUGHT: only `Exception`. asyncio.CancelledError and SystemExit are
-# BaseException, so a cancelled or shut-down run propagates untouched and NEVER produces a terminal
-# record - there is no cancelled status to produce (see final_result.TerminalStatus), and inventing
-# a failure for one would be a false terminal outcome.
+# BaseException, so an interrupted or shut-down run propagates untouched and NEVER produces a
+# terminal record here - `cancelled` is written by the owner's cancel authority alone
+# (application/job_cancel.py), and inventing a failure for an interruption would be a false outcome.
 # The caller re-raises after this returns: the crash must still reach Celery and monitoring.
 # #
 

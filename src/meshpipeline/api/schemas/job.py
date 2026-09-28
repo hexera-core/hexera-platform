@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from meshpipeline.persistence.models import ArtifactType, JobStatus
 
@@ -47,6 +47,9 @@ class JobStatus_(BaseModel):
     # from durable state - never model prose. Present once the job is finalized; survives restart.
     final_message: str | None = None
     final_result: dict | None = None
+    # WHY THE OWNER CANCELLED, in their words. Set only on a `cancelled` job, and only when they
+    # gave one; the closing line itself is the final_message, the same on every surface.
+    cancel_reason: str | None = None
     # WHILE NO WORKER HAS THE JOB. The fleet scales to zero, so a fresh job can sit `pending` for
     # minutes while a VM boots. Set only in that state, from WORKER_WAKE_MINUTES, so the console
     # can say "waiting for a worker to start (about N minutes)" instead of a silent spinner;
@@ -97,3 +100,18 @@ class DisputeOut(BaseModel):
     job_id: uuid.UUID            # the NEW dispute job (re-review -> rebuild)
     dispute_of: uuid.UUID        # the disputed (parent) job
     flags: int
+
+
+class CancelIn(BaseModel):
+    # WHY, in the owner's words. Optional; kept on the job and shown back on its status. Clipped
+    # here so the durable column's bound is the wire contract, not a truncation surprise later.
+    reason: str = Field(default="", max_length=500)
+
+
+class CancelOut(BaseModel):
+    job_id: uuid.UUID
+    status: JobStatus
+    cancel_reason: str | None = None
+    # True when the job was ALREADY cancelled and this call changed nothing. A repeat is answered
+    # the same way rather than refused, so a retried click or a double-submit is harmless.
+    already_cancelled: bool = False

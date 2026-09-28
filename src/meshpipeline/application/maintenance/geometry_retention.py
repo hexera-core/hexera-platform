@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 #: Job states that still NEED the uploaded bytes. Taken from JobStatus itself rather than matched
 #: by name: `pending` and `queued` have not fetched the source yet, `running` may re-materialise
 #: after a resume, and `pending_review` can be disputed into a rebuild that re-meshes the SAME
-#: upload. Only `succeeded` and `failed` are terminal, and a terminal job needs its result and
-#: transcript, not the bytes it was built from.
+#: upload. Only `succeeded`, `failed` and `cancelled` are terminal, and a terminal job needs its
+#: result and transcript, not the bytes it was built from. A cancelled run is never disputed.
 SOURCE_REQUIRING_STATES: frozenset[JobStatus] = frozenset({
     JobStatus.pending,
     JobStatus.queued,

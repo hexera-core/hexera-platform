@@ -12,7 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.api import pagination
 from meshpipeline.api.schemas import listing
-from meshpipeline.api.schemas.job import ArtifactOut, DisputeIn, DisputeOut, JobStatus_
+from meshpipeline.api.schemas.job import (
+    ArtifactOut,
+    CancelIn,
+    CancelOut,
+    DisputeIn,
+    DisputeOut,
+    JobStatus_,
+)
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application import spend_gate
 from meshpipeline.application.job_service import JobService
@@ -99,6 +106,10 @@ async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None, *,
         job = await svc.get_job(session, job_id, owner_id, organization_id=organization_id)
         if not job:
             raise HTTPException(404, "Job not found")
+        if _is_cancelled(job):
+            # a cancelled run delivers nothing, whatever a worker managed to store before the
+            # cancel committed (see the status route)
+            raise HTTPException(404, "This run was cancelled; it has no delivered mesh")
         return await ArtifactRepository().get_by_logical_key(session, job_id, VIEWER_LOGICAL_KEY)
 
     # Reuse the caller's session where the route already opened one: a second connection for the
@@ -123,6 +134,12 @@ async def _viewer_data(job_id: uuid.UUID, owner_id: str, db=None, *,
         # A row pointing at bytes that are not the payload is an integrity failure, never a 200.
         logger.error("viewer data for job %s is not valid JSON", job_id)
         raise HTTPException(500, "Viewer data is corrupt") from exc
+
+
+def _is_cancelled(job) -> bool:
+    from meshpipeline.persistence.models import JobStatus as _JS
+    status = getattr(job, "status", None)
+    return getattr(status, "value", status) == _JS.cancelled.value
 
 
 def _artifact_label(artifact_type, engine: str) -> str:
@@ -205,7 +222,11 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                                              organization_id=organization_id)
         _engine = str(_vdata.get("engine", "") or "")
         artifacts_out = []
-        for a in (job.artifacts or []):
+        # A CANCELLED RUN LISTS NO DOWNLOADS. The registration fence stops a worker's rows landing
+        # after the cancel commits, but a worker that registered them a moment BEFORE it did left
+        # rows behind - on a job its owner stopped. They are never offered: what the owner asked
+        # for was the run to end, and a mesh from it is not a delivery.
+        for a in ([] if _is_cancelled(job) else (job.artifacts or [])):
             # The viewer payload is what the VIEWER consumes, not something the user downloads.
             # Listing it would put an internal JSON blob in the deliverables panel beside the
             # engine case.
@@ -251,6 +272,10 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,
+            # a string or nothing: a row from before the column carries none, and a test double must
+            # not be able to smuggle an object into the wire contract
+            cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)
+                           else None),
             worker_wake_minutes=worker_wake_estimate(job),
         )
 
@@ -347,6 +372,9 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # gave up, but the mesh exists and the user is entitled to judge it (that is
         # the whole point of the human-in-the-loop). Only a run with NOTHING to look
         # at is refused.
+        if parent.status == _JS.cancelled:
+            raise HTTPException(409, "This run was cancelled, so there is no mesh to review - "
+                                     "start a new run in the chat instead")
         if parent.status not in (_JS.succeeded, _JS.failed):
             raise HTTPException(409, "This job has not finished yet")
         if parent.status == _JS.failed:
@@ -455,3 +483,26 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         raise HTTPException(500, _DISPATCH_FAILED) from exc
 
     return DisputeOut(job_id=new_job.id, dispute_of=job_id, flags=len(body.flags))
+
+
+@router.post("/{job_id}/cancel", response_model=CancelOut)
+async def cancel_job(job_id: uuid.UUID, body: CancelIn | None = None,
+                     owner_id: str = Depends(owner_dep),
+                     organization_id: str = Depends(org_dep)):
+    """Stop a run the caller owns. Transport over the cancel authority, which owns the one
+    transaction: the worker's eviction, the terminal `cancelled` record, its announcement on the
+    stream and the release of the owner's slot and the tenant's credit reserve all land in that
+    commit. The caller's own repeat is answered the same way; a job that already finished is
+    refused, because a delivered mesh or a recorded failure is not something a cancel may undo."""
+    from meshpipeline.application import job_cancel
+
+    outcome = await job_cancel.cancel_job(job_id, owner_id=owner_id,
+                                          organization_id=organization_id,
+                                          reason=(body.reason if body else "") or "")
+    status = outcome.status
+    if outcome.result is job_cancel.CancelResult.not_found or status is None:
+        raise HTTPException(404, "Job not found")
+    if outcome.result is job_cancel.CancelResult.already_finished:
+        raise HTTPException(409, f"This job has already {status.value}; there is nothing to cancel")
+    return CancelOut(job_id=job_id, status=status, cancel_reason=outcome.cancel_reason,
+                     already_cancelled=outcome.result is job_cancel.CancelResult.already_cancelled)

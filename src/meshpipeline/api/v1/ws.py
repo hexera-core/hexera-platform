@@ -83,10 +83,17 @@ def terminal_closing_text(job) -> str:
         except Exception:  # noqa: BLE001 - an unreadable record must not break the close
             pass
     _status = getattr(job, "status", None) if job is not None else None
-    if getattr(_status, "value", _status) == "failed":
+    _value = getattr(_status, "value", _status)
+    if _value == "failed":
         return ("This run was marked failed before a result record was written. To try again, "
                 "say \"run it again\" in this chat to start a new run.")
-    return "This run already succeeded; the result and its downloads are on the job record."
+    if _value == "cancelled":
+        from meshpipeline.application.final_result import CANCELLED_MESSAGE
+        return (f"{CANCELLED_MESSAGE} No mesh was delivered. When you are ready, say "
+                "\"run it again\" in this chat.")
+    if _value == "succeeded":
+        return "This run already succeeded; the result and its downloads are on the job record."
+    return "This run has ended; what happened is on the job record."
 
 
 async def _authenticate_ws(websocket: WebSocket, job_id: str) -> str | None:
@@ -151,8 +158,8 @@ async def stream_logs(websocket: WebSocket, job_id: str):
     # terminal without a closing log - e.g. crash-dropped then reaped), there is no
     # future pub/sub message, so a plain `listen()` would hang forever. Poll the DB
     # status between messages and close on a terminal state.
+    from meshpipeline.persistence.job_state import TERMINAL_STATES as _TERMINAL
     from meshpipeline.persistence.models import JobStatus
-    _TERMINAL = {JobStatus.succeeded, JobStatus.failed}
 
     async def _is_terminal() -> JobStatus | None:
         try:

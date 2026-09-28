@@ -18,7 +18,7 @@ const state = {
   sessionId: null,      // set by upload, required by chat
   jobId: null,          // the run this page is attached to
   runSessionId: null,   // the conversation that run came from; null for a run opened by link
-  jobStatus: "",        // last status the poller saw: '' | running | succeeded | failed
+  jobStatus: "",        // last status the poller saw: '' | running | succeeded | failed | cancelled
   outcomeMessage: "",   // the closing text, held until the result card is built
   laneCursor: null,     // which timeline lane the event stream is currently in
   userId: "",           // identity for this page load (settings or ?user=)
@@ -46,10 +46,15 @@ export const set = {
   userId(v) { state.userId = v || ""; },
 };
 
+/** The statuses a run cannot leave. One exported set, so the deep link, the poller and the
+ *  reconnect scheduler cannot disagree about what "finished" means. */
+export const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+export function isTerminalStatus(status) { return TERMINAL_STATUSES.has(status); }
+
 /** True once the run reached a terminal state - the single place that decides it, so the
  *  poller, the reconnect scheduler and the composer cannot disagree. */
 export function isTerminal() {
-  return state.jobStatus === "succeeded" || state.jobStatus === "failed";
+  return isTerminalStatus(state.jobStatus);
 }
 
 /** What the run header says while NO WORKER HAS THE JOB. The fleet scales to zero, so a fresh

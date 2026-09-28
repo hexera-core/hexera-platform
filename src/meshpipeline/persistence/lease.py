@@ -217,6 +217,43 @@ class LeaseRepository:
             return None
         return row
 
+    async def evict_owner(self, db: AsyncSession, job_id: uuid.UUID, *,
+                          now: datetime | None = None) -> bool:
+        """Withdraw execution ownership from whoever holds it - the cancel's half of a takeover.
+
+        The owner's cancel authority calls this in its own transaction, BEFORE the terminal CAS.
+        It is `claim_execution`'s revoke-then-rotate with no successor: the mirror the current
+        token authorises is revoked while the row is locked, then the token is cleared, so every
+        fence check the running worker still makes fails from this commit on - `is_current_owner`
+        before delivery, `lock_current_owner` at the atomic terminal transaction, and the heartbeat
+        that could otherwise `heal` the mirror. Returns True when a holder was evicted, False when
+        nothing held the job (a pending job no worker had claimed).
+
+        The mirror revoke is best-effort here, unlike the takeover's, and that is safe: the row is
+        the authority every terminal write is checked against, and a mirror that outlives its
+        claim can never be renewed (heartbeat verifies the row first and refuses), so it can only
+        expire. Failing the cancel over a Redis blip would leave the owner unable to stop a run
+        for no safety gain.
+        """
+        row = (await db.execute(
+            select(SimulationJob).where(SimulationJob.id == job_id).with_for_update())).scalar_one_or_none()
+        if row is None or row.active_worker_token is None:
+            return False
+        # From here on, the row's own id: the value the database returned, not the argument.
+        held_id = str(row.id)
+        _ops = _fence_ops()
+        try:
+            _ops.revoke(held_id,
+                        _ops.fingerprint(held_id, int(row.execution_generation or 0),
+                                         row.active_worker_token))
+        except Exception:  # noqa: BLE001 - see the docstring: the row is the authority
+            logger.warning("could not revoke the execution fence for job %s on cancel - the "
+                           "mirror expires on its own and the row no longer authorises it", held_id)
+        row.active_worker_token = None
+        row.lease_expires_at = now or _now()
+        await db.flush()
+        return True
+
     async def release(self, db: AsyncSession, own: ExecutionOwnership,
                       *, now: datetime | None = None) -> None:
         row = (await db.execute(

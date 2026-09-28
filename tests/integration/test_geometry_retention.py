@@ -58,7 +58,7 @@ async def _job(db, source, status: JobStatus):
 def test_the_eligible_and_protected_states_are_taken_from_the_state_machine():
     assert SOURCE_REQUIRING_STATES == {JobStatus.pending, JobStatus.queued,
                                        JobStatus.running, JobStatus.pending_review}
-    assert TERMINAL_STATES == {JobStatus.succeeded, JobStatus.failed}
+    assert TERMINAL_STATES == {JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}
     assert SOURCE_REQUIRING_STATES | TERMINAL_STATES == set(JobStatus)
     assert not (SOURCE_REQUIRING_STATES & TERMINAL_STATES)
 

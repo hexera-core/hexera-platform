@@ -157,3 +157,17 @@ def test_a_class_owned_outcome_states_its_cause_once():
 def test_the_other_categories_keep_mains_next_step():
     msg = render_message(_build(failed_gate="sicn_floor"))
     assert 'say "run it again"' in msg and "quality checks" in msg
+
+
+def test_a_cancelled_job_without_a_record_is_not_called_a_success():
+    from meshpipeline.persistence.models import JobStatus
+    text = terminal_closing_text(SimpleNamespace(status=JobStatus.cancelled, final_result=None))
+    assert text.startswith("Cancelled by you.")
+    assert "succeeded" not in text and "failed" not in text
+
+
+def test_a_cancelled_record_keeps_its_own_line():
+    from meshpipeline.application.final_result import build_cancelled_result
+    fr = build_cancelled_result(job_id="j", owner_id="o", engine="cfmesh")
+    text = terminal_closing_text(SimpleNamespace(status="cancelled", final_result=fr.to_dict()))
+    assert text == render_message(fr) and text.startswith("Cancelled by you.")

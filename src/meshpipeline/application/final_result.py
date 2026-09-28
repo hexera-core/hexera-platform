@@ -24,12 +24,14 @@ _READABLE_SCHEMA_VERSIONS = frozenset({4, 5})
 class TerminalStatus(str, enum.Enum):
     succeeded = "succeeded"
     failed = "failed"
-    # CANCELLATION IS CURRENTLY UNSUPPORTED. There is no JobStatus.cancelled, no cancel endpoint,
-    # no cooperative-cancellation path, and nothing emits a cancelled outcome - so the taxonomy below
-    # carries NO `cancelled` category (its presence implied a capability that does not exist).
-    # A future cooperative-cancellation feature is a separately-scoped design, not incidental residue.
-    # `timed_out` IS a real, reachable failure (the top-level pipeline deadline,: a run that
+    # Written by exactly ONE authority - application/job_cancel.py, on the owner's request - and
+    # never derived by a worker: derive_terminal_status below answers succeeded or failed only, and
+    # the run's `except Exception` still lets asyncio.CancelledError through untouched. A worker
+    # that lost its lease to a cancel is fenced at its next side effect and records nothing.
+    # Not a failure, so the taxonomy below carries no `cancelled` category.
+    # `timed_out` IS a real, reachable failure (the top-level pipeline deadline): a run that
     # exhausts its logical budget fails with the `timed_out` category - it is not a distinct status.
+    cancelled = "cancelled"
 
 
 class FailureCategory(str, enum.Enum):
@@ -57,7 +59,7 @@ class FailureCategory(str, enum.Enum):
     # the reaper's alone (never_started_result). Not `worker_lost` - no worker ever held it, and
     # telling the user one was lost gives them a failure that did not happen.
     never_started = "never_started"
-    # NOTE: no `cancelled` - cancellation is currently unsupported (see TerminalStatus).
+    # NOTE: no `cancelled` - a cancel is the owner's decision, not a failure (see TerminalStatus).
 
 
 #: The `executor_failed_gate` value the executor short-circuit stamps when node_geometry_admission
@@ -128,7 +130,7 @@ class FinalResult:
     review_execution: ReviewExecution = ReviewExecution.not_reached
     failed_gate: str = ""
     patch_contract_ok: bool | None = None
-    outcome_code: str = ""                       # "success" or a FailureCategory value
+    outcome_code: str = ""                       # "success", "cancelled" or a FailureCategory value
     failure_category: str | None = None
     attempts: int = 0
     attempts_max: int = 0
@@ -330,6 +332,34 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         finalized_at=datetime.now(UTC).isoformat())
 
 
+#: The first line of every cancelled verdict. The owner asked; nothing broke.
+CANCELLED_MESSAGE = "Cancelled by you."
+
+
+def build_cancelled_result(*, job_id: str, owner_id: str, engine: str = "", purpose: str = "",
+                           dimensionality: str = "", approved_snapshot_id: str = "",
+                           attempts: int = 0) -> FinalResult:
+    """The terminal record of a job its owner cancelled.
+
+    Built from DURABLE facts only (the approved intent and the row's attempt counter), by the
+    cancel authority and never by a worker. `executor_success` stays False and nothing is
+    delivered: a cancelled run's mesh, finished or not, is never handed over. Not a failure -
+    `failure_category` is None and `outcome_code` says `cancelled` - so metering and the message
+    never treat it as one.
+    """
+    return FinalResult(
+        schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id,
+        status=TerminalStatus.cancelled, engine=engine, purpose=purpose,
+        dimensionality=dimensionality, approved_snapshot_id=approved_snapshot_id,
+        executor_success=False, reviewer_verdict=None,
+        review_execution=ReviewExecution.not_reached, failed_gate="", patch_contract_ok=None,
+        outcome_code=TerminalStatus.cancelled.value, failure_category=None,
+        attempts=max(int(attempts or 0), 0), attempts_max=0, required_ready=False,
+        delivered_types=[], optional_warnings=[],
+        missing_outputs=list(required_output_classes(engine)),
+        finalized_at=datetime.now(UTC).isoformat())
+
+
 def _derive_failure_category(*, executor_success: bool, verdict: ReviewVerdict | None,
                              execution: ReviewExecution, failed_gate: str,
                              api_failure: str, required_ready: bool, attempts: int,
@@ -458,6 +488,14 @@ def render_message(fr: FinalResult) -> str:
             lines.append("Note: an optional preview could not be prepared, but your mesh is ready.")
         return "\n".join(lines)
 
+    if fr.status == TerminalStatus.cancelled:
+        # THE OWNER STOPPED IT. No failure headline, no "try again" - they know why, and the
+        # reason they gave (if any) sits on the job row, not in this record.
+        lines.append(CANCELLED_MESSAGE)
+        lines.append("No mesh was delivered. When you are ready, say \"run it again\" in this "
+                     "chat, or tell me what to change first.")
+        return "\n".join(lines)
+
     cat = FailureCategory(fr.failure_category) if fr.failure_category else \
         FailureCategory.internal_pipeline_failure
     headline, _may_have_mesh, retry_ok, user_change = _CATEGORY_META[cat]
@@ -526,10 +564,11 @@ def never_started_result(*, job_id: str, owner_id: str, attempts: int = 0,
 # Extracted from application/pipeline_run._run_async. The rules are policy, not sequencing: each one
 # exists because a specific way of over-claiming success was possible, and each is now stated once
 # where the verdict is owned rather than inline in the orchestrator.
-# ON CANCELLATION: there is no cancelled terminal status (see TerminalStatus). `asyncio.CancelledError`
-# is a BaseException, so it is not caught by the run's `except Exception` and propagates untouched -
-# a cancelled run therefore never derives ANY status here, which is exactly why it cannot decay into
-# a generic failure. That property is asserted rather than assumed.
+# ON CANCELLATION: `cancelled` is never derived here. `asyncio.CancelledError` is a BaseException,
+# so it is not caught by the run's `except Exception` and propagates untouched - an interrupted run
+# therefore never derives ANY status here, which is exactly why it cannot decay into a generic
+# failure. The `cancelled` status is written by the owner's cancel authority alone
+# (application/job_cancel.py). That property is asserted rather than assumed.
 # #
 
 @dataclass(frozen=True)

@@ -69,6 +69,11 @@ class ArtifactDeliveryReport:
     delivered: list[dict] = field(default_factory=list)      # {type, storage_key, size_bytes, checksum}
     optional_failures: list[str] = field(default_factory=list)
     orphans: list[OrphanObject] = field(default_factory=list)
+    #: every object this call stored AND registered, as an orphan descriptor. If the registration
+    #: transaction is then refused (the worker was fenced) these objects belong to no committed
+    #: row, and the reconciler - which adopts an object a ready row owns and deletes one nobody
+    #: owns - is told about each of them.
+    stored: list[OrphanObject] = field(default_factory=list)
 
     @property
     def orphaned_objects(self) -> list[str]:
@@ -383,6 +388,7 @@ async def upload_job_artifacts(db, job_id: uuid.UUID, workspace: Path, *,
             report.delivered.append({"type": p.artifact_type.value, "storage_key": stored.object_key,
                                      "size_bytes": stored.size_bytes, "checksum": stored.checksum,
                                      "outcome": outcome.value})
+            report.stored.append(_orphan_of)
             logger.info("artifact_uploader: delivered %s (%d bytes, %s) - key=%s",
                         p.artifact_type.value, stored.size_bytes, outcome.value, stored.object_key)
     finally:
@@ -432,15 +438,22 @@ class RunDelivery(NamedTuple):
 
 async def deliver_succeeded_run(session_factory, *, job_id: str, owner_id: str, workspace: str,
                                 engine: str, delivery_attempt: int, execution_generation: int,
-                                jlog, publish, persist_orphans) -> RunDelivery:
+                                jlog, publish, persist_orphans,
+                                fence_commit=None) -> RunDelivery:
+    # `fence_commit(db)` is the orchestrator's: awaited in the registration transaction just before
+    # it commits, it holds the claim under the job row's lock or raises StaleWorkerFenced. This
+    # module stays neutral about ownership (it never reads or binds it), so the check is handed in
+    # the way `publish` and `persist_orphans` are.
     from pathlib import Path as _Path
 
+    from meshpipeline.contracts.execution_guard import StaleWorkerFenced
     from meshpipeline.errors import (
         FailureClass,
         classify_exception,
         failed_reason_for,
         record_dead_letter,
     )
+
     upload_exc: Exception | None = None
     delivered: list = []
 
@@ -449,6 +462,7 @@ async def deliver_succeeded_run(session_factory, *, job_id: str, owner_id: str, 
         upload_exc = RuntimeError("no workspace to deliver artifacts from")
     else:
         for attempt in range(_DELIVERY_ATTEMPTS):
+            report = None
             try:
                 async with session_factory() as adb:
                     report = await upload_job_artifacts(
@@ -459,6 +473,14 @@ async def deliver_succeeded_run(session_factory, *, job_id: str, owner_id: str, 
                         delivery_attempt=delivery_attempt,
                         execution_generation=execution_generation,
                     )
+                    # THE REGISTRATION IS FENCED UNDER THE FINALIZE'S LOCK. The orchestrator's
+                    # ownership check before delivery is read-only, so an owner's cancel that
+                    # commits between that check and this commit would otherwise leave artifact
+                    # rows - download links - on a cancelled job. Taking the job row's lock here,
+                    # in the rows' own transaction, serialises with the cancel: a fenced worker's
+                    # rows roll back with this session and never become visible.
+                    if fence_commit is not None:
+                        await fence_commit(adb)
                     await adb.commit()
                 # Any orphan whose immediate delete failed gets a DURABLE reconciliation record
                 # (survives restart; a bounded reconciler cleans/adopts it safely).
@@ -476,6 +498,13 @@ async def deliver_succeeded_run(session_factory, *, job_id: str, owner_id: str, 
                     f"Packaged your mesh - {len(delivered)} file(s) ready to download",
                     op_id="delivered")
                 return RunDelivery(delivered, True, None, None)
+            except StaleWorkerFenced:
+                # NOT A DELIVERY FAILURE, and nothing to retry or downgrade: this worker no longer
+                # owns the job (its owner cancelled it, or a newer generation took it over). The
+                # rows rolled back with the session; the objects it stored are nobody's, and the
+                # reconciler cleans them. Nothing is announced - the job's owner speaks for it now.
+                await persist_orphans(owner_id, job_id, list(getattr(report, "stored", []) or []))
+                raise
             except Exception as exc:                      # noqa: BLE001 - classified below
                 upload_exc = exc
                 # Persist any orphans the failed attempt reported, so an undeletable object is

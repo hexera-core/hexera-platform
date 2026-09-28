@@ -70,6 +70,16 @@ export async function disputeReview(jobId, { flags = [], comment = "", mode } = 
   return r.json();
 }
 
+/** Stop a run the caller owns. `reason` is optional and kept with the job. Answers the job's new
+ *  durable facts; a repeat on an already-cancelled run answers the same way rather than failing. */
+export async function cancelJob(jobId, reason = "") {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/cancel`,
+    { method: "POST", headers: headers(),
+      body: JSON.stringify({ reason: String(reason || "").slice(0, 500) }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The geometry check for an upload: `status` is off | none | pending | scouted | ready |
  *  unsupported | failed; a scouted or ready check carries the proposal, a ready one the picture
  *  links, a failed one its `reason` and - when a step can be run again - the `retry` step. A
