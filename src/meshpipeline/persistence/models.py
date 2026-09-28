@@ -37,6 +37,11 @@ class JobStatus(str, PyEnum):
     failed         = "failed"
     queued         = "queued"
     pending_review = "pending_review"
+    # TERMINAL, and written by exactly one authority: application/job_cancel.py, on the owner's
+    # request. The worker never derives it - a run that loses its lease to a cancel is fenced at
+    # its next side effect, and its late result is refused by the CAS in the transition table.
+    # Not a failure: nothing broke, and metering_service charges nothing for it.
+    cancelled      = "cancelled"
 
 
 class FailedReason(str, PyEnum):
@@ -124,6 +129,10 @@ class SimulationJob(Base):
     current_attempt: Mapped[int]       = mapped_column(Integer, default=0)
     workspace_purged: Mapped[bool]     = mapped_column(Boolean, default=False)
     failed_reason:   Mapped[FailedReason | None] = mapped_column(Enum(FailedReason), nullable=True)
+    # WHY THE OWNER CANCELLED, in their own words (optional, clipped by the route). Set in the same
+    # transaction as the `cancelled` transition and never edited after it. Null on every job that
+    # ended any other way.
+    cancel_reason:   Mapped[str | None]      = mapped_column(String(500), nullable=True)
 
     # WHICH BYTES this job meshes. A relation, not a path: the pipeline may run in a
     # different container from the API that received the upload, so identity has to survive

@@ -14,6 +14,15 @@ class PipelineLauncher(Protocol):
 
     async def launch(self, db, job_id: str, payload: dict) -> None: ...
 
+    async def revoke(self, job_id: str) -> None:
+        """Withdraw a launch that has not started: a queued run is discarded instead of run.
+
+        Best-effort by contract. A run already executing is stopped by the execution fence, not
+        by this; a backend with nothing queued does nothing. The caller has already made the job
+        terminal, so a launch this misses is refused at its claim anyway.
+        """
+        ...
+
 
 _launcher: PipelineLauncher | None = None
 

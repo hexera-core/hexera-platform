@@ -17,7 +17,7 @@ from meshpipeline.persistence.repositories.job_repository import JobRepository
 # the transition table is an invariant
 
 def test_terminal_states_are_never_a_legal_source():
-    assert TERMINAL_STATES == {JobStatus.succeeded, JobStatus.failed}
+    assert TERMINAL_STATES == {JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled}
     for target, sources in LEGAL_SOURCES.items():
         assert not (sources & TERMINAL_STATES), (
             f"target {target} allows a TERMINAL source {sources & TERMINAL_STATES} - "
@@ -81,3 +81,21 @@ async def test_not_found_when_the_row_is_missing():
 async def test_a_target_with_no_declared_sources_raises():
     with pytest.raises(ValueError, match="no legal source"):
         await JobRepository().transition(_FakeDB([]), uuid.uuid4(), JobStatus.pending, allow=frozenset())
+
+
+# the owner's cancel
+
+def test_a_cancel_may_end_any_unfinished_job_and_no_finished_one():
+    # the owner's cancel reaches every non-terminal state, and never a terminal one: a delivered
+    # mesh or a recorded failure is not something a cancel may undo
+    assert legal_sources(JobStatus.cancelled) == frozenset(
+        {JobStatus.pending, JobStatus.queued, JobStatus.running, JobStatus.pending_review})
+    for terminal in TERMINAL_STATES:
+        assert terminal not in legal_sources(JobStatus.cancelled)
+        assert JobStatus.cancelled not in legal_sources(terminal)
+
+
+async def test_a_late_worker_result_is_rejected_on_a_cancelled_job():
+    db = _FakeDB([_Result(rowcount=0), _Result(rowcount=0, scalar=JobStatus.cancelled)])
+    r = await JobRepository().transition(db, uuid.uuid4(), JobStatus.succeeded)
+    assert r == TransitionResult.rejected_current_state

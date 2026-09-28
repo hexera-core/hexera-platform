@@ -173,3 +173,27 @@ passed" is available and unsurfaced.
 3. **Attempt history in the UI** — data exists, needs a panel.
 4. **User-placed refinement regions** — both engines accept them already.
 5. **Draft-then-final using the fidelity tiers** — enum exists, needs UI + orchestration.
+
+---
+
+## Cancel a running job — LIVE
+
+Added 2026-09-28. `POST /simulation/{job_id}/cancel` (`api/v1/simulation.py`; the authority is
+`application/job_cancel.py`) ends a job its owner no longer wants, from `pending` through
+`running`. The console shows **Cancel run** on the process card of a live run, behind a confirm
+step with an optional reason.
+
+One cancel, in one transaction: the worker is evicted (its execution fence is revoked and its
+token cleared, so its late result is refused at every fence and by the transition table), the job
+is marked `cancelled` with the reason, the terminal record is written, and the closing line
+("Cancelled by you.") is enqueued on the terminal outbox. After the commit the queued Celery task
+is revoked and the closing line is delivered to the stream. The owner's active-job slot and the
+tenant's credit reserve are released by that same commit (a cancelled job is terminal, not active),
+and nothing is charged - only a succeeded job ever is.
+
+- Idempotent: cancelling a cancelled job answers 200 with `already_cancelled: true`.
+- Refused with 409 once the job succeeded or failed - a delivered mesh or a recorded failure is not
+  something a cancel may undo.
+- Known limit: the worker keeps computing until its next fence check (a checkpoint write, the
+  native accept, delivery), and a Cloud Run mesh execution already started is not stopped. Its
+  result is simply never delivered and never charged.

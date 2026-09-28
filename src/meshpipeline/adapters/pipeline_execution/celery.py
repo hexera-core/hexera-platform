@@ -2,6 +2,7 @@
 # Boundaries: the queue seam; the run itself is application/pipeline_run.py.
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from meshpipeline.adapters.pipeline_execution.celery_app import celery_app
@@ -74,3 +75,15 @@ async def launch(db, job_id: str, payload: dict) -> None:
     run_simulation.apply_async(kwargs=to_run_kwargs(payload, where=f"celery launch job {job_id}"),
                                task_id=job_id)
     logger.info("pipeline dispatched via celery - job_id=%s", job_id)
+
+
+async def revoke(job_id: str) -> None:
+    # The task id IS the job id (see `launch`), so the broadcast names exactly one task. Without
+    # `terminate`: a task still on the queue is discarded when a worker reaches it; one already
+    # running is left to the execution fence, which refuses its result. The revoked set lives in
+    # worker memory, so a worker restarted in between may still take the message - and then
+    # claim_delivery refuses it as already terminal. Two guards, either one sufficient.
+    # Off the event loop: the broadcast talks to the broker, and a slow broker must not stall the
+    # request that already made the cancel durable.
+    await asyncio.to_thread(celery_app.control.revoke, job_id)
+    logger.info("pipeline launch revoked via celery - job_id=%s", job_id)

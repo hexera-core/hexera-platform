@@ -15,11 +15,13 @@
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
 import { getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
-import { beginRun, get as getState, set as setState } from "./core/state.js";
+import { beginRun, get as getState, isTerminalStatus, set as setState } from "./core/state.js";
 import { Notice } from "./render/notice.js";
-import { Stage, closeLightbox, openLightbox, setResultHandler } from "./render/stage.js";
+import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
+  from "./render/stage.js";
 import { configure as configureStream, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
+import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
   offerNewRun, setPlaceholder } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
@@ -107,6 +109,7 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
       routed ? "/runs/" + id : location.pathname + "?job=" + id);
   } catch { /* ignore */ }
   Stage.ensureProc();
+  Stage.showCancel();
   startStream(replayHistory ? 0 : undefined);
 }
 
@@ -131,6 +134,11 @@ configureDispute({
   onRerun: (id, message, disputedJobId) => attachJob(id,
     { message, origin: getState.runOrigin(disputedJobId) }),
 });
+
+/* what "stop this run" means: ask first, then the API. The ending arrives through the stream and
+   the poller like every other, so a cancelled run renders through the one terminal path. */
+setCancelHandler(() => confirmCancel(getState.jobId(),
+  { onError: (msg) => Stage.chat("assistant", msg) }));
 
 /* global keyboard affordances */
 document.addEventListener("keydown", (e) => {
@@ -189,7 +197,7 @@ function bootLive() {
     beginRun(deepLinkJob);
     setState.jobStatus(job.status);
     Stage.ensureProc();
-    if (job.status === "succeeded" || job.status === "failed") {
+    if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
       // keeping one is that a user can see HOW they got their mesh, not just that they got it.
       await replay(deepLinkJob);
@@ -199,6 +207,7 @@ function bootLive() {
     // LIVE. since=0 makes the server replay the entire log, then go live - a reload used to
     // cost the user the history of their run; now it costs them nothing.
     startStream(0);
+    Stage.showCancel();
     disableInput();
   })();
 }

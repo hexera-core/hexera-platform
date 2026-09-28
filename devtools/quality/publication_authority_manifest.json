@@ -1436,6 +1436,19 @@
   ]
  },
  {
+  "context": "application/execution_fence.py::lock_ownership_for_commit::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/execution_fence.py",
+  "qualname": "lock_ownership_for_commit",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/execution_fence.py::reverify_and_heal_fence::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/execution_fence.py",
   "qualname": "reverify_and_heal_fence",

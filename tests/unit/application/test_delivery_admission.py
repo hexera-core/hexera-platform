@@ -112,7 +112,7 @@ async def test_a_granted_claim_returns_ownership_and_the_row_timestamp(lease):
         "the pipeline budget's origin was not carried out of the claim")
 
 
-@pytest.mark.parametrize("status", [JobStatus.succeeded, JobStatus.failed])
+@pytest.mark.parametrize("status", [JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled])
 async def test_an_already_terminal_job_is_never_re_run(lease, status):
     out = await fence.claim_delivery(_sessions(), _Repo(_Row(status)), JOB, jlog=_Log(),
                                      backend="direct", backend_execution_id="x")

@@ -66,7 +66,9 @@ async def _purge_async() -> dict:
         async with _SessionLocal() as db:
             result = await db.execute(
                 select(SimulationJob)
-                .where(SimulationJob.status == JobStatus.failed)
+                # a cancelled run's workspace is purged like a failed one's: nothing in it was
+                # delivered, and nothing ever will be
+                .where(SimulationJob.status.in_([JobStatus.failed, JobStatus.cancelled]))
                 .where(SimulationJob.workspace_purged == False)
                 .where(SimulationJob.ended_at < cutoff)
             )

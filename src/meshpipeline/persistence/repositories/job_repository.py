@@ -50,6 +50,29 @@ class JobRepository:
                                       organization_id=organization_id)))
         return res.scalar_one_or_none()
 
+    async def lock_for_owner(self, db: AsyncSession, job_id: uuid.UUID,
+                             owner_id: str, *, organization_id: str = "") -> SimulationJob | None:
+        # The OWNER'S row, ROW-LOCKED: for an owner-initiated change (a cancel) that must decide on
+        # the status it sees and hold it until it commits, so a worker finalizing at the same
+        # moment either goes first (and the change refuses a finished job) or waits and then finds
+        # the change already committed.
+        #
+        # OWNER AND TENANT, both, and deliberately narrower than `get_for_owner`. The tenant
+        # predicate alone lets every member of an organisation SEE the organisation's runs - right
+        # for a read - but a change made through this lock ends someone's run, and one member must
+        # not be able to stop another's. The product has no role that may act on a colleague's job
+        # (MembershipRole is owner|member and no route reads it), so the actor is the owner alone.
+        # The tenant predicate stays too, so a job re-homed to another organisation is out of reach
+        # even of the person who started it. A foreign job and a missing one still read the same.
+        res = await db.execute(
+            select(SimulationJob)
+            .where(SimulationJob.id == job_id,
+                   SimulationJob.owner_id == owner_id,
+                   tenant_scope.scope(SimulationJob, owner_id=owner_id,
+                                      organization_id=organization_id))
+            .with_for_update())
+        return res.scalar_one_or_none()
+
     async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
                              organization_id: str = "", limit: int = 25,
                              before: tuple[datetime, uuid.UUID] | None = None
@@ -197,7 +220,8 @@ class JobRepository:
         values: dict = {"status": target, "updated_at": now}
         if target == JobStatus.running:
             values["started_at"] = now
-        elif target in (JobStatus.succeeded, JobStatus.failed, JobStatus.pending_review):
+        elif target in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled,
+                        JobStatus.pending_review):
             values["ended_at"] = now
         return values
 
@@ -229,7 +253,9 @@ class JobRepository:
     # Active = still-in-flight statuses that count against quotas. ONE definition, shared with
     # the conversation's own "may this session move on to another run" decision
     # (job_state.ACTIVE_STATES), so the quota and the chat can never disagree about whether a
-    # run is still going.
+    # run is still going. `cancelled` is terminal and so never here: a cancel releases the
+    # owner's slot and the tenant's credit reserve (spend_gate counts the same statuses) in the
+    # very commit that ends the job.
     _ACTIVE_STATUSES = sorted(ACTIVE_STATES, key=lambda s: s.value)
 
     async def count_active_for_owner(self, db: AsyncSession, owner_id: str) -> int:

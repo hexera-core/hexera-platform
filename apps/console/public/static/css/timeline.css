@@ -107,3 +107,9 @@
   text-transform:uppercase;color:var(--text-faint)}
 
 .mb-sub{margin-top:3px;font-size:11px;color:var(--text-faint);letter-spacing:.02em}
+
+/* the owner's way out of a run that is still going; gone the moment the card is done */
+.proc-cancel{margin-left:12px;flex-shrink:0;font:inherit;font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:999px;border:1px solid var(--border);background:transparent;color:var(--text-faint);cursor:pointer}
+.proc-cancel:hover{border-color:var(--border-strong);color:var(--text)}
+.proc.done .proc-cancel{display:none}
+.tl-verd .pill.cancelled{border-color:var(--text-faint);color:var(--text-faint)}

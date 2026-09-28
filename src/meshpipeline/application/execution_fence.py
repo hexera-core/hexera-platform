@@ -67,6 +67,36 @@ async def assert_current_owner(where: str, *, session_factory=None) -> None:
                                 own.token_hash())
 
 
+async def lock_ownership_for_commit(db, where: str) -> None:
+    """Hold THIS worker's claim, row-locked, in `db`'s transaction - or refuse to let it commit.
+
+    THE FINALIZE'S LOCK, for every other write that must not land on a job this worker no longer
+    owns: `LeaseRepository.lock_current_owner` is the same SELECT ... FOR UPDATE the atomic
+    terminal transaction takes. Called immediately before the caller's commit, it closes the
+    check-then-act window a read-only `is_current_owner` leaves open: the owner's cancel locks the
+    same row, so the two serialise. Either the cancel commits first - the token is gone, this
+    raises and the caller's writes roll back with its session - or this commits first, and the
+    cancel then ends a job whose writes are already durable (and which every read of a cancelled
+    job then withholds).
+
+    A terminal status refuses too, even with a matching token: a job that has ended is owned by
+    no execution. With no ownership bound (a hermetic test, a direct call) there is nothing to
+    check, exactly like `assert_current_owner`.
+    """
+    own = _OWNERSHIP.get()
+    if own is None:
+        return
+    # Resolved at call time, like claim_delivery: the repository is substituted per-test on the
+    # persistence module, and a module-level binding would capture the real class at import.
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
+    from meshpipeline.persistence.lease import LeaseRepository as _Lease
+    row = await _Lease().lock_current_owner(db, own)
+    if row is None or getattr(row, "status", None) in TERMINAL_STATES:
+        logger.error("FENCE REJECT at %s - job_id=%s generation=%d token=%s no longer owns the job",
+                     where, own.job_id, own.execution_generation, own.token_hash())
+        raise StaleWorkerFenced(where, str(own.job_id), own.execution_generation, own.token_hash())
+
+
 async def reverify_and_heal_fence(own: ExecutionOwnership, *, what: str = "publish",
                                   session_factory=None) -> None:
     """One out-of-band claim re-verification after the Redis fence gate refused (-2).
@@ -133,7 +163,8 @@ async def _check(own: ExecutionOwnership, *, session_factory=None, _repo=LeaseRe
 
 
 __all__ = ["StaleWorkerFenced", "assert_current_owner", "is_current_owner", "current_ownership",
-           "execution_ownership", "remaining_pipeline_time", "reverify_and_heal_fence"]
+           "execution_ownership", "lock_ownership_for_commit", "remaining_pipeline_time",
+           "reverify_and_heal_fence"]
 
 
 # #
@@ -205,15 +236,15 @@ async def claim_delivery(session_factory, job_repo, job_id: str, *, jlog, backen
                          backend_execution_id: str):
     # Imported inside the call, not at module scope: the repository is substituted per-test on the
     # persistence module, and a module-level binding would capture the real class at import time.
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
     from meshpipeline.persistence.lease import ClaimResult, LeaseRepository
-    from meshpipeline.persistence.models import JobStatus
 
     lease_repo = LeaseRepository()
     worker_token = uuid.uuid4()
     ownership = None
     async with session_factory() as db:
         existing = await job_repo.get_internal(db, uuid.UUID(job_id))
-        if existing is not None and existing.status in (JobStatus.succeeded, JobStatus.failed):
+        if existing is not None and existing.status in TERMINAL_STATES:
             jlog.warning("Ignoring re-delivered task - job already terminal (status=%s); not re-running",
                          existing.status.value)
             return DeliveryRefused(existing.status.value,
