@@ -22,7 +22,9 @@ CLOSURE = {
                                   "ameshing": 1},
     "agents/loop/tracing.py": {"atool_call": 1, "atool_result": 1, "areasoning": 2},
     # 13th note: the internal driver discloses a plate thinner than the wall cell (fix #4)
-    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 3, "anote": 13, "ameshed": 2,
+    # 14th note + 4th error: the pre-flight - a box re-planned before it was meshed, and a case
+    # that cannot produce the approved boundaries stopped before the mesher ran
+    "engines/snappy/drivers.py": {"ameshing": 1, "aerror": 4, "anote": 14, "ameshed": 2,
                                   "atool_call": 1, "atool_result": 1},
     "engines/snappy/planner.py": {"areasoning": 2},
     "contracts/rationale.py": {"arationale": 1},
@@ -140,9 +142,10 @@ def test_each_closure_module_publishes_exactly_its_gated_sites(rel):
 
 def test_the_closure_is_the_size_the_migration_landed():
     total = sum(sum(m.values()) for m in CLOSURE.values())
-    assert total == 39, (
-        f"the closure is {total} sites, not the 39 it holds since the no-progress\n"
-        "stop, the port-binding refusal and the thin-feature disclosure joined the "
+    assert total == 41, (
+        f"the closure is {total} sites, not the 41 it holds since the no-progress\n"
+        "stop, the port-binding refusal, the thin-feature disclosure and the two pre-flight "
+        "sites (a box re-planned before meshing, a case stopped before meshing) joined the "
         "user-facing narration")
 
 

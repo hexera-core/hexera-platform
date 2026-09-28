@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.engines.gates import GateCtx, GateSpec
+from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 from meshpipeline.engines.gmsh.gmsh_runner import SICN_FLOOR
 
 logger = logging.getLogger(__name__)
@@ -45,15 +46,16 @@ def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
                        "deck (the deliverable) was not written; run_mesh again")
     q = manifest.get("quality", {}) or {}
     if q.get("fatal"):
-        return False, (f"[MANIFEST_VALIDATION_FAILED] fatal mesh defects: {q['fatal']} - "
-                       "coarsen or repair the geometry approach and run_mesh again")
+        return False, refuse(f"[MANIFEST_VALIDATION_FAILED] fatal mesh defects: {q['fatal']} - "
+                             "coarsen or repair the geometry approach and run_mesh again",
+                             FailureCause.MESH_QUALITY, fatal=list(q["fatal"]))
     _n = manifest.get("cell_count", 0)
     if _n and _n > polcfg.CELL_HARD_LIMIT:
-        return False, (
+        return False, refuse(
             f"mesh_manifest.json: cell_count={_n:,} exceeds the compute budget "
             f"({polcfg.CELL_HARD_LIMIT:,} elements) - the mesh is TOO FINE. COARSEN it: "
-            "raise size.value (element size factor) in gmsh_spec.json and run_mesh again."
-        )
+            "raise size.value (element size factor) in gmsh_spec.json and run_mesh again.",
+            FailureCause.CELL_BUDGET, cells=int(_n), limit=int(polcfg.CELL_HARD_LIMIT))
     return True, ""
 
 
@@ -61,16 +63,19 @@ def _gate_sicn_floor(ctx: GateCtx) -> tuple[bool, str]:
     q = (ctx.manifest_or_load().get("quality") or {})
     sicn = q.get("min_sicn")
     if sicn is None:
-        return False, ("[QUALITY] min_sicn missing from quality report - the mesh "
-                       "was not quality-checked; run_mesh again")
+        return False, refuse("[QUALITY] min_sicn missing from quality report - the mesh "
+                             "was not quality-checked; run_mesh again",
+                             FailureCause.MESH_QUALITY, unmeasured=["element quality (SICN)"])
     if float(sicn) < SICN_FLOOR:
-        return False, (
+        return False, refuse(
             f"[QUALITY] min SICN {sicn} is below the {SICN_FLOOR} floor - near-"
             "degenerate elements. Fix in gmsh_spec.json: reduce size.value near "
             "small features (or lower curvature_nodes), keep optimize=true, and "
             "consider element_order 1 to isolate whether high-order snapping is "
-            "the cause; then run_mesh again."
-        )
+            "the cause; then run_mesh again.",
+            FailureCause.MESH_QUALITY, checks=[{
+                "key": "min_sicn", "label": "element quality (SICN)", "measured": float(sicn),
+                "op": ">=", "threshold": SICN_FLOOR}])
     return True, ""
 
 
@@ -87,14 +92,14 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     local = q.get("passage_cells_across_local") or {}
     p05 = local.get("p05")
     if p05 is not None and float(p05) < PASSAGE_FLOOR_CELLS:
-        return False, (
+        return False, refuse(
             f"[RESOLUTION] undermeshed: {float(p05):g} cells across the passage at the "
             f"narrowest wall (5th percentile; median {local.get('median')}) - a CFD mesh needs "
             f"at least {PASSAGE_FLOOR_CELLS} everywhere (industry practice is 20-40). Fix in "
             "gmsh_spec.json: lower size.value (the passage field only tightens gmsh's own "
             "size, it cannot refine past size.mode='absolute' values that are too large), and "
-            "run_mesh again."
-        )
+            "run_mesh again.",
+            FailureCause.UNDER_RESOLVED, cells_across=float(p05), needed=PASSAGE_FLOOR_CELLS)
     h = q.get("size_h")
     bounds = q.get("bounds")
     # An older deck without these fields is not judged here (the manifest/sicn
@@ -116,7 +121,7 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     else:
         what = "the part's narrowest dimension"
     if cells_across < RESOLUTION_FLOOR_CELLS:
-        return False, (
+        return False, refuse(
             f"[RESOLUTION] the mesh spans {what} "
             f"({min_ext * 1000:.1f} mm) in only ~{cells_across:.1f} elements "
             f"(element size {float(h) * 1000:.1f} mm) - below the "
@@ -125,8 +130,9 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
             "gmsh_spec.json: set size.mode='absolute' with a value near "
             f"{min_ext / (RESOLUTION_FLOOR_CELLS + 2) * 1000:.1f} mm (or smaller), "
             "and run_mesh again. gmsh's default factor-of-diagonal sizing under-"
-            "resolves long thin parts because the diagonal is the length, not the bore."
-        )
+            "resolves long thin parts because the diagonal is the length, not the bore.",
+            FailureCause.UNDER_RESOLVED, cells_across=float(cells_across),
+            needed=RESOLUTION_FLOOR_CELLS)
     return True, ""
 
 
@@ -140,29 +146,40 @@ def _gate_gmsh_region_contract(ctx: GateCtx) -> tuple[bool, str]:
     if not contracted:
         return True, ""
     from meshpipeline.engines.contract import check_contract
+    from meshpipeline.engines.gates import facts_of
     ok, diag = check_contract(
         intake_patches=contracted,
         manifest_patches={n: (manifest.get("patches") or {}).get(n, [])
                           for n in types},
         manifest_patch_types=types,
     )
-    return ok, ("" if ok else diag)
+    if ok:
+        return True, ""
+    # gmsh's groups are named in gmsh_spec.json, which the BUILDER writes - it reads this
+    # diagnostic and can rename them, so unlike a deterministic case this mismatch keeps its
+    # retries (contracts.failure_cause.retry_can_help)
+    return False, refuse(str(diag), FailureCause.CONTRACT_MISMATCH,
+                         **{**facts_of(diag), "retry_may_fix": True})
 
 
 GMSH_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid", check=_gate_gmsh_manifest_valid, section="MANIFEST",
-             proves="The element deck was written and parses back - no fatal defects"),
+             proves="The element deck was written and parses back - no fatal defects",
+             cause=FailureCause.ENGINE_CRASHED),
     # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
     # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="sicn_floor",     check=_gate_sicn_floor,          section="MESH",
-             proves="No degenerate elements - every element clears the quality floor for FE assembly"),
+             proves="No degenerate elements - every element clears the quality floor for FE assembly",
+             cause=FailureCause.MESH_QUALITY),
     # Well-shaped is not the same as adequately resolved: this catches a mesh whose
     # cells are clean but too big to resolve the flow cross-section (the corpus's
     # silent under-spend). After sicn (a degenerate mesh is the worse news) and
     # before naming (an under-resolved mesh is not worth patch-checking).
     GateSpec(key="resolution_floor", check=_gate_resolution_floor,   section="MESH",
-             proves="The narrowest dimension of the part is resolved in enough cells to carry the flow"),
+             proves="The narrowest dimension of the part is resolved in enough cells to carry the flow",
+             cause=FailureCause.UNDER_RESOLVED),
     GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
-             proves="Every named group you asked for exists in the deck"),
+             proves="Every named group you asked for exists in the deck",
+             cause=FailureCause.CONTRACT_MISMATCH),
 )

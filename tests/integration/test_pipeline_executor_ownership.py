@@ -130,11 +130,18 @@ def _graph(seed_state):
     return g
 
 async def _run(monkeypatch, ws, *, reject="", fin_ok=True, gates=(True,"",""), gate_results=(("mesh_ok",True),),
-               extents=None, solv=None, retry=0):
+               extents=None, solv=None, retry=0, preflight=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
     j=uuid.uuid4(); o=f"exec-{j.hex[:8]}"; await _seed(j,o)
     SEEN.clear(); THREAD.clear(); BUILT.clear(); POST.clear()
+    # the workspace is shared by every scenario: only the pre-flight one holds a refusal record
+    from meshpipeline.engines.preflight import PreflightRefusal, clear_refusal
+    clear_refusal(ws)
+    if preflight:
+        PreflightRefusal(gate="domain_extent", cause="domain_extent",
+                         builder_text="[PREFLIGHT] the planned box is too small",
+                         facts={"before_meshing": True}).write(ws)
     _rec(monkeypatch); _count_constructions(monkeypatch); _watch_post_graph(monkeypatch)
     import meshpipeline.pipeline.executor as ex
     monkeypatch.setattr(ex,"get_engine", lambda e: _Eng(fin_ok,extents,solv))
@@ -187,7 +194,8 @@ def _ws(tmp_path):
 CANONICAL = {
     ("node_executor", "stage"): 1,
     ("node_executor", "note"): 4,
-    ("node_executor", "check"): 6,
+    # the seventh: the gate a recorded pre-flight refusal stands in for, reported as failed
+    ("node_executor", "check"): 7,
 }
 SCENARIOS = [
     ("early_reject",  {"reject": "bad geometry"}),
@@ -195,6 +203,7 @@ SCENARIOS = [
     ("all_pass",      {"solv": (True, "ok")}),
     ("extent_reject", {"extents": (False, "too small")}),
     ("solv_fail",     {"solv": (False, "no converge"), "retry": 2}),
+    ("preflight_record", {"preflight": True}),
 ]
 
 
@@ -212,7 +221,7 @@ async def test_every_executor_publication_runs_under_the_claimed_ownership(monke
         counts[(fn, method)] = counts.get((fn, method), 0) + 1
     assert counts == CANONICAL, (
         f"the executor publication surface changed: expected {CANONICAL}, observed {counts}")
-    assert len(union) == 11, f"expected 11 distinct executor calls, observed {len(union)}"
+    assert len(union) == 12, f"expected 12 distinct executor calls, observed {len(union)}"
 
 
 #: Operation identity per (owning function, method) and retry count, as PRODUCTION emitted it.

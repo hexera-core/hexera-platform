@@ -927,6 +927,8 @@ async def _run_async(req: JobRequest) -> dict:
                 executor_success=bool(final_state.get("executor_success", False)),
                 reviewer_verdict=str(final_state.get("reviewer_verdict", "") or ""),
                 failed_gate=str(final_state.get("executor_failed_gate", "") or ""),
+                failure_cause=str(final_state.get("executor_failure_cause", "") or ""),
+                failure_facts=dict(final_state.get("executor_failure_facts") or {}),
                 api_failure=api_failure,
                 attempts=int(final_state.get("retry_count", 0) or 0),
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),

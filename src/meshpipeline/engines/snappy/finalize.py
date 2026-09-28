@@ -85,6 +85,7 @@ def reconcile_boundary_types(ws: Path, intake_patches: list) -> str:
     if not actual:
         return ""
     bad: list[str] = []
+    mistyped: list[dict] = []
     for p in intake_patches or []:
         role = str(p.get("type", "")).strip()
         name = str(p.get("name", "")).strip()
@@ -92,10 +93,14 @@ def reconcile_boundary_types(ws: Path, intake_patches: list) -> str:
         if want and name in actual and actual[name] != want:
             bad.append(f"{name}: declared role {role!r} requires OpenFOAM type {want!r}, "
                        f"actual boundary has {actual[name]!r}")
+            mistyped.append({"name": name, "declared": role, "want": want, "got": actual[name]})
     if bad:
-        return ("[BOUNDARY_TYPE_MISMATCH] the generated polyMesh boundary contradicts the "
-                "declared contract - " + "; ".join(bad) + ". The mesh would solve wrong; "
-                "re-run the mesh (the type retype/emission step failed).")
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.gates import refuse
+        return refuse("[BOUNDARY_TYPE_MISMATCH] the generated polyMesh boundary contradicts the "
+                      "declared contract - " + "; ".join(bad) + ". The mesh would solve wrong; "
+                      "re-run the mesh (the type retype/emission step failed).",
+                      FailureCause.BOUNDARY_TYPE, mistyped=mistyped)
     return ""
 
 
@@ -329,7 +334,10 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                      mesh_mode=getattr(R, "name", "") or engine or "cfmesh",
                      engine_params=engine_params or {}, flow_topology=flow_topology)
     fatal = q.get("fatal", [])
-    out = (f"[CFMESH] polyMesh cells={q.get('cells')} fatal={fatal} "
+    # The engine that built THIS mesh names it. The tag used to name cfMesh - copied from the
+    # cfMesh finalize this was cloned from - and it is the first line the planner reads on a retry,
+    # so a snappy run's reasoning talked about "CFMESH quality" (job ac1daa3e).
+    out = (f"[SNAPPY] snappyHexMesh polyMesh cells={q.get('cells')} fatal={fatal} "
            f"non_ortho={q.get('max_non_ortho')} skew={q.get('max_skewness')}"
            + internal_leak_msg)
     return {"success": not fatal, "output": out, "stdout": out, "stderr": ""}
