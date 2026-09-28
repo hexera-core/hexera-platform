@@ -49,6 +49,8 @@ def test_anything_else_is_not_assent(said):
     "definitely not", "I don't think so", "please don't", "wait, what?", "stop",
     "I'd rather not", "don't select it", "yes, but I don't want snappyHexMesh",
     "I don't want to use it", "can't use that", "I won't go with it", "absolutely not, thanks",
+    "yes, I don't think so", "hmm, not really", "I don't want this engine",
+    "don't want that one", "I've changed my mind",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -68,6 +70,8 @@ def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     "yes, don't go overboard on the layers",
     "yes, I don't need anything else",
     "yes, not sure about the units though",
+    "yes, but I don't want that ground patch",
+    "sure - I don't want this run to take hours",
 ])
 def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
     # The user accepted the engine and went on to say something else with a "not" in it. The
@@ -83,6 +87,12 @@ def test_a_yes_that_goes_on_to_refuse_the_engine_is_never_confirmed_from_its_yes
     assert c is None and "declined" in why
     assert es.confirm_by_assent(_proposed(), session_id="s", owner_id="u", revision="r2",
                                 latest_user_message=said, user_msg_count=2) is None
+
+
+def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted():
+    # "that" points at the ground patch, not the engine: the engine answer is the yes.
+    c, why = _confirm("yes, but I don't want that ground patch", quote="yes")
+    assert why == "" and es.state_of(c) == es.CONFIRMED
 
 
 def test_a_yes_with_an_unrelated_negation_still_confirms_when_quoted():

@@ -57,22 +57,31 @@ SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE)
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells
 # it to take its own proposal on a message that was in fact an answer - so "and continue" alone,
-# which an answer may end with, is not on the list.
+# which an answer may end with, is not on the list. A message that ASKS something ("I'm not sure
+# what you mean by the second inlet; can you explain?") hands nothing back, whatever else it says:
+# the user wants the question explained, not answered for them.
 _DEFERRAL_PHRASES = (
     "i do not know", "i dont know", "i don t know", "dont know", "don t know", "no idea",
-    "not sure which", "not sure what", "you decide", "you choose", "you pick", "your call",
-    "up to you", "whatever you think", "whatever you suggest", "use a default", "use the default",
-    "use defaults", "sensible default", "reasonable default", "standard default",
-    "whatever is standard", "whatever is typical", "whatever is usual", "as you suggest",
-    "as you suggested", "as you proposed", "go with your", "your suggestion", "your proposal",
+    "you decide", "you choose", "you pick", "your call", "up to you", "whatever you think",
+    "whatever you suggest", "use a default", "use the default", "use defaults",
+    "sensible default", "reasonable default", "standard default", "whatever is standard",
+    "whatever is typical", "whatever is usual", "as you suggest", "as you suggested",
+    "as you proposed", "go with your", "your suggestion", "your proposal",
 )
+_ASKING_PHRASES = ("explain", "you mean", "mean by", "what is", "what are", "what does",
+                   "which is", "which one is", "how do", "how does", "why")
 
 
 def defers_to_default(text) -> bool:
     import re
 
-    t = re.sub(r"\s+", " ", re.sub(r"[^0-9a-z]+", " ", str(text or "").casefold())).strip()
-    return any(p in t for p in _DEFERRAL_PHRASES)
+    raw = str(text or "")
+    if "?" in raw:
+        return False
+    t = f" {re.sub(r'[^0-9a-z]+', ' ', raw.casefold()).strip()} "
+    if any(f" {p} " in t for p in _ASKING_PHRASES):
+        return False
+    return any(f" {p} " in t for p in _DEFERRAL_PHRASES)
 
 
 def latest_user_text(state_messages) -> str:

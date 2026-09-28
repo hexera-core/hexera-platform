@@ -69,6 +69,10 @@ def test_handing_the_question_back_is_recognised(said):
 @pytest.mark.parametrize("said", [
     "outlet_1", "yes", "the file is in metres", "make outlet_2 the inlet and continue",
     "what does inlet mean here?", "not sure the inlet is 40 mm", "",
+    # a request for an explanation hands nothing back, whatever else it says
+    "I'm not sure what you mean by the second inlet; can you explain?",
+    "no idea what you mean by second inlet", "I do not know what a farfield is - explain?",
+    "you decide what? which openings are there", "I don't know - what is the difference",
 ])
 def test_an_answer_or_a_question_is_not_a_deferral(said):
     assert turn.defers_to_default(said) is False
@@ -174,7 +178,15 @@ def test_the_geometry_check_block_says_a_unit_change_re_asks_nothing_settled():
     block = intake._block_geometry_check()
     assert "different unit" in block and "not a conflict" in block
     assert "never a reason to ask the flow axis" in block
-    assert "convert the reference length" in block
+
+
+def test_the_unit_correction_relabels_and_never_divides():
+    # The check's numbers were right and the unit was wrong: 117 mm read in a metre file is
+    # 117 m, not 0.117 m, and the millimetre patch fields carry the value in millimetres.
+    block = intake._block_geometry_check()
+    assert "RELABELLING, never by converting" in block
+    assert "reference_length_m is 117, not 0.117" in block
+    assert "diameter_mm is 40000" in block
 
 
 def test_the_block_registry_is_unchanged():

@@ -44,18 +44,21 @@ _FILLER = frozenset({
 # snappyHexMesh, but don't worry about mesh density" is a yes with a negation aimed at another
 # clause, while "yes, but I don't want snappyHexMesh" is a no. A negation refuses when it opens
 # the message ("no, don't use snappyHexMesh"), ends it ("definitely not", "I'd rather not"),
-# follows an intensifier ("absolutely not, ..."), or negates a choice verb whose object is the
-# engine or a pronoun for it ("don't want snappyHexMesh", "can't use that", "won't go with it").
-# Every "n't" is read as "not" first, so the apostrophe never decides. Two idioms mean the
-# opposite of their words and are taken out first.
+# follows an intensifier ("absolutely not, ..."), forms a refusal idiom ("I don't think so"), or
+# negates a choice verb whose object is the engine or a pronoun standing alone for it ("don't
+# want snappyHexMesh", "can't use that", "won't go with it" - but not "don't want that ground
+# patch", where the pronoun points at the noun after it). Every "n't" is read as "not" first,
+# so the apostrophe never decides. Two idioms mean the opposite of their words and go first.
 _NEGATION = frozenset({"not", "dont", "never", "cancel", "stop"})
 _DECLINE_FIRST = _NEGATION | frozenset({"no", "nope", "nah", "wait", "hold"})
+_DECLINE_IDIOMS = ("not think so", "not really", "rather not", "prefer not", "no way",
+                   "not yet", "not now", "forget it", "changed my mind")
 _INTENSIFIERS = frozenset({"definitely", "absolutely", "certainly", "surely"})
 _CHOICE = frozenset({"want", "like", "need", "prefer", "choose", "select", "use", "pick", "take",
                      "keep", "go", "fancy", "wish"})
 #: What stands for the proposed engine as the object of a negated choice verb.
 _ENGINE_WORD = "xengine"
-_OBJECT = frozenset({_ENGINE_WORD, "it", "that", "this"})
+_PRONOUNS = frozenset({"it", "that", "this"})
 _IDIOMS = ("no problem", "no worries", "why not")
 
 
@@ -86,6 +89,17 @@ def plain_assent(engine: str, message: str) -> bool:
     return bool(words) and all(w in _ASSENT for w in words)
 
 
+def _stands_for_the_engine(raw: list[str], j: int) -> bool:
+    # The object of a negated choice verb: the engine itself, or a pronoun standing alone for it
+    # ("don't want it", "don't want that one", "don't want this engine") - not a pronoun that
+    # points at the noun after it ("don't want that ground patch").
+    if raw[j] == _ENGINE_WORD:
+        return True
+    if raw[j] not in _PRONOUNS:
+        return False
+    return j + 1 >= len(raw) or raw[j + 1] in _FILLER
+
+
 def declines(engine: str, message: str) -> bool:
     raw = _tokens(engine, message, keep_engine=True)
     words = [w for w in raw if w not in _FILLER and w != _ENGINE_WORD]
@@ -93,13 +107,16 @@ def declines(engine: str, message: str) -> bool:
         return False
     if words[0] in _DECLINE_FIRST or words[-1] in _NEGATION:
         return True
+    phrase = f" {' '.join(raw)} "
+    if any(f" {idiom} " in phrase for idiom in _DECLINE_IDIOMS):
+        return True
     for i, w in enumerate(raw):
         if w not in _NEGATION:
             continue
         if i > 0 and raw[i - 1] in _INTENSIFIERS:
             return True
         if (i + 1 < len(raw) and raw[i + 1] in _CHOICE
-                and any(t in _OBJECT for t in raw[i + 2:i + 5])):
+                and any(_stands_for_the_engine(raw, j) for j in range(i + 2, min(i + 5, len(raw))))):
             return True
     return False
 
