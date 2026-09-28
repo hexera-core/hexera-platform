@@ -13,9 +13,9 @@ _FIVE = [{"name": n, "type": "wall"} for n in
         [{"name": "farfield", "type": "farfield"}]
 
 _ACCEPTABLE = (
-    "snappyHexMesh wraps the whole body in one wall patch, so it cannot give you the separate "
-    "named surfaces you asked for - which means no per-component forces from this setup. Nothing "
-    "was changed. Which part would you like to revise?"
+    "snappyHexMesh wraps a body's surface in a fluid domain and fills the fluid around it, so it "
+    "cannot mesh a flat sheet - there is no fluid region around a sheet to fill. Nothing was "
+    "changed. Which part would you like to revise?"
 )
 
 

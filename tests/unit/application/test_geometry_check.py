@@ -108,6 +108,11 @@ def test_a_body_the_fluid_flows_around_is_declared_to_the_intake_as_a_body_surfa
     m = confirmation_message(body)
     assert "a solid body (car body), input_kind body-surface; the fluid flows around it." in m
     assert "No openings" in m
+    # the session stores the same word the message says (confirm_check writes intake_input_kind)
+    from meshpipeline.api.v1.geometry import intake_input_kind
+    assert intake_input_kind("solid-body") == "body-surface"
+    assert intake_input_kind("body-surface") == "body-surface"
+    assert intake_input_kind("fluid-domain") == "fluid-domain"
 
 
 def test_the_patches_carry_the_sizes_and_positions_the_port_binding_reads():

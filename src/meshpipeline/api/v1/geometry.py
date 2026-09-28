@@ -165,6 +165,16 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     return Response(content=raw, media_type="application/json")
 
 
+def intake_input_kind(kind: str) -> str:
+    """THE ENGINES' WORD FOR IT. The check says "solid-body" for a body the fluid flows around, but
+    to the intake and the engine gate 'solid-body' means the physical solid meshed for structural
+    work (gmsh); a body to wrap in a fluid domain is 'body-surface', the kind the flow engines admit.
+    Everything the intake reads - the confirmed sentence and the session's stored kind - carries
+    this word, so the two never disagree and no run is refused with "cannot produce an external
+    mesh from a solid body"."""
+    return "body-surface" if kind == "solid-body" else kind
+
+
 def confirmation_message(body: ConfirmIn) -> str:
     """The sentence the intake reads: everything the user confirmed, in plain words, with the
     numbers the builder needs. Its opening phrase is the one the intake prompt block names."""
@@ -172,12 +182,7 @@ def confirmation_message(body: ConfirmIn) -> str:
             "fluid-domain": "the fluid volume itself",
             "solid-body": "a solid body"}[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
-    # THE ENGINES' WORD FOR IT. The check says "a solid body" for a body the fluid flows around,
-    # but to the intake and the engine gate 'solid-body' means the physical solid meshed for
-    # structural work (gmsh); a body to wrap in a fluid domain is 'body-surface', the only kind
-    # the flow engines admit for external flow. The message names the intake's kind outright so
-    # the run is not refused with "cannot produce an external mesh from a solid body".
-    intake_kind = "body-surface" if body.input_kind == "solid-body" else body.input_kind
+    intake_kind = intake_input_kind(body.input_kind)
     parts = [f"{CONFIRMED_MARK} the file is {kind}"
              + (f" ({body.part})" if body.part else "")
              + f", input_kind {intake_kind}; the fluid flows {through}."]
@@ -284,7 +289,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                                                           organization_id=organization_id)
         if session is None:
             raise HTTPException(404, "Session not found")
-        session.input_kind = body.input_kind
+        session.input_kind = intake_input_kind(body.input_kind)   # the same word the message says
         session.intake_patches = patches
         session.messages = with_declaration(session.messages, message)
         await db.commit()
