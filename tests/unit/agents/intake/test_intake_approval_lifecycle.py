@@ -347,6 +347,7 @@ def _dispatch_once(session_gate, session_overrides=None, msgs=None):
     repo = MagicMock()
     repo.get_for_update = AsyncMock(return_value=locked)
     repo.set_intake_gate = AsyncMock()
+    repo.append_message = AsyncMock()
     repo.link_job = AsyncMock()
     repo.set_request_txt = AsyncMock()
     made = []

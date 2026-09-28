@@ -52,6 +52,7 @@ class _Rec:
         self.commits = 0; self.jobs = 0; self.dispatches = 0
         self.store_reads = 0; self.gate_writes = []; self.links = []
         self.request_txt_writes = 0; self.launch_failures = 0
+        self.messages: list[tuple[str, str]] = []      # every (role, content) appended
         #: every (owner_id, organization_id) pair a job was created with
         self.stamps: list[dict] = []
         #: the plan every quota check was held to, and what the credit gate is set to answer
@@ -63,6 +64,7 @@ class _SessionRepo:
     def __init__(self, rec, locked): self.rec = rec; self.locked = locked
     async def get_for_update(self, db, sid): return self.locked
     async def set_intake_gate(self, db, sid, gate): self.rec.gate_writes.append(gate)
+    async def append_message(self, db, sid, role, content): self.rec.messages.append((role, content))
     async def link_job(self, db, sid, jid): self.rec.links.append(jid)
     async def set_request_txt(self, db, sid, txt): self.rec.request_txt_writes += 1
 
@@ -255,6 +257,8 @@ async def test_a_snapshot_that_no_longer_verifies_is_refused_and_invalidated(wir
     assert "the engine changed since approval" in out.message
     assert wired.jobs == 0 and wired.dispatches == 0
     assert wired.gate_writes, "the stale snapshot was not invalidated"
+    assert wired.messages == [("assistant", out.message)], (
+        "the refusal must be written to the transcript, not only returned")
 
 
 async def test_a_payload_that_drifts_from_the_approval_never_dispatches(wired, monkeypatch):

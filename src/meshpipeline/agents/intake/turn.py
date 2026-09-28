@@ -77,13 +77,19 @@ def hydrate(state, state_messages) -> TurnContext:
         value = gate.get(key)
         return dict(value) if isinstance(value, dict) and value else None
 
-    user_msgs = [m for m in state_messages if isinstance(m, dict) and m.get("role") == "user"]
+    # THE USER'S OWN WORDS ONLY. A budget-nudged turn carries one synthetic user entry (see
+    # apply_budget_nudge) so the model closes; the user never said it. Counting it put the
+    # approval's expected confirmation one message ahead of the transcript, so every real "yes"
+    # after the twelfth assistant turn was refused as stale - and forever, because each fresh
+    # summary was produced by another nudged turn.
+    own = [m for m in state_messages if isinstance(m, dict) and not m.get("_synthetic")]
+    user_msgs = [m for m in own if m.get("role") == "user"]
     latest = str(user_msgs[-1].get("content", "")) if user_msgs else ""
     return TurnContext(
         job_id=str(state.get("job_id", "unknown")),
         session_id=str(state.get("session_id", "")),
         owner_id=str(state.get("user_id", "")),
-        revision=at.revision_of(state_messages),
+        revision=at.revision_of(own),
         latest_user_msg=latest,
         user_msg_count=len(user_msgs),
         source_ref=geometry_ref(state),

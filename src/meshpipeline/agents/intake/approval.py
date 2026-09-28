@@ -277,12 +277,15 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
     if not ok:
         gate["approval"] = invalidate(snapshot_in, why)
         await session_repo.set_intake_gate(db, session_id, gate)
+        refusal = (f"I did not start anything: {why}. Tell me what you would like to do and I "
+                   "will re-check it and show you a fresh summary.")
+        # The refusal is a turn of the conversation. Only the response carried it before, so the
+        # history read served the user's "yes" with nothing after it, and the next turn's model
+        # saw a "yes" it had never answered.
+        await session_repo.append_message(db, session_id, "assistant", refusal)
         await db.commit()
         logger.warning("approval: refused - %s - session=%s", why, session_id)
-        raise ApprovalTransactionError(ConfirmOutcome(
-            ConfirmStatus.refused,
-            f"I did not start anything: {why}. Tell me what you would like to do and I will "
-            "re-check it and show you a fresh summary."))
+        raise ApprovalTransactionError(ConfirmOutcome(ConfirmStatus.refused, refusal))
 
     snapshot: dict = dict(snapshot_in or {})          # verified live above
     try:
