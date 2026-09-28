@@ -159,3 +159,37 @@ def test_the_mesh_scouts_result_is_plain_json(tmp_path):
     d.update(getattr(r, "extra", {}) or {})
     text = json.dumps(d)                         # raises TypeError on a numpy scalar
     assert '"on_extremity"' in text and '"clear_ahead"' in text
+
+
+def test_the_mesh_scouts_openings_carry_plain_bool_flags(tmp_path):
+    """A tube open at both ends is internal flow, so its two rims survive as proposed openings.
+    Each opening's flags are measured with numpy and must come out as plain bools, or the check
+    store refuses the whole record."""
+    import json
+    import math
+
+    from meshpipeline.cad.scout_mesh import scout_mesh
+
+    n, r, length = 24, 5.0, 40.0
+    ring0 = [(r * math.cos(2 * math.pi * i / n), r * math.sin(2 * math.pi * i / n), 0.0) for i in range(n)]
+    ring1 = [(x, y, length) for x, y, _ in ring0]
+    path = tmp_path / "tube.stl"
+    with path.open("w") as fh:
+        print("solid tube", file=fh)
+        for i in range(n):
+            j = (i + 1) % n
+            for tri in ((ring0[i], ring0[j], ring1[j]), (ring0[i], ring1[j], ring1[i])):
+                print("facet normal 0 0 0", file=fh)
+                print("outer loop", file=fh)
+                for v in tri:
+                    print(f"vertex {v[0]} {v[1]} {v[2]}", file=fh)
+                print("endloop", file=fh)
+                print("endfacet", file=fh)
+        print("endsolid tube", file=fh)
+    r = scout_mesh(path, scale_to_m=0.001)
+    assert r.flow == "internal" and len(r.openings) == 2, (r.flow, len(r.openings))
+    for o in r.openings:
+        d = o.as_dict()
+        assert type(d["on_extremity"]) is bool and type(d["clear_ahead"]) is bool, d
+    json.dumps(r.as_dict())                     # raises TypeError on a numpy scalar
+
