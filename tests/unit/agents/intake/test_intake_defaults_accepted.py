@@ -180,13 +180,14 @@ def test_the_geometry_check_block_says_a_unit_change_re_asks_nothing_settled():
     assert "never a reason to ask the flow axis" in block
 
 
-def test_the_unit_correction_relabels_and_never_divides():
+def test_the_unit_correction_relabels_then_expresses_each_field_in_its_own_unit():
     # The check's numbers were right and the unit was wrong: 117 mm read in a metre file is
-    # 117 m, not 0.117 m, and the millimetre patch fields carry the value in millimetres.
+    # 117 m, never 0.117 m. But a field keeps its own unit, so a centimetre or inch file is
+    # then converted into it: reference_length_m in metres, diameter_mm in millimetres.
     block = intake._block_geometry_check()
-    assert "RELABELLING, never by converting" in block
-    assert "reference_length_m is 117, not 0.117" in block
-    assert "diameter_mm is 40000" in block
+    assert "First RELABEL" in block and "never 117 divided by anything" in block
+    assert "reference_length_m in metres (117 m stays 117; 117 cm is 1.17; 117 in is 2.97)" in block
+    assert "diameter_mm in millimetres (40 m is 40000; 40 cm is 400; 40 in is 1016)" in block
 
 
 def test_the_block_registry_is_unchanged():

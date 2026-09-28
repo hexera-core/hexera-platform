@@ -72,6 +72,9 @@ def test_an_idiom_that_means_yes_is_not_a_refusal(said):
     "yes, not sure about the units though",
     "yes, but I don't want that ground patch",
     "sure - I don't want this run to take hours",
+    "yes, but not yet on the refinement",
+    "yes, I changed my mind about the ground patch",
+    "ok - not really sure the inlet is 40 mm, check it",
 ])
 def test_a_negation_aimed_at_another_clause_is_not_a_refusal(said):
     # The user accepted the engine and went on to say something else with a "not" in it. The
@@ -89,9 +92,13 @@ def test_a_yes_that_goes_on_to_refuse_the_engine_is_never_confirmed_from_its_yes
                                 latest_user_message=said, user_msg_count=2) is None
 
 
-def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted():
-    # "that" points at the ground patch, not the engine: the engine answer is the yes.
-    c, why = _confirm("yes, but I don't want that ground patch", quote="yes")
+@pytest.mark.parametrize("said", [
+    "yes, but I don't want that ground patch",        # "that" points at the ground patch
+    "yes, but not yet on the refinement",              # the idiom is aimed at the refinement
+    "yes, I changed my mind about the ground patch",   # so is this one
+])
+def test_a_yes_that_objects_to_something_else_still_confirms_when_quoted(said):
+    c, why = _confirm(said, quote="yes")
     assert why == "" and es.state_of(c) == es.CONFIRMED
 
 
