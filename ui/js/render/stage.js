@@ -16,7 +16,8 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
-import { applyFlow, bindUnit, displayText, followUnit, formHtml, markConfirmed, readForm, shown, unitOf } from "./geometry_form.js";
+import { applyFlow, bindUnit, displayText, followSuggestion, followUnit, formHtml, markConfirmed, readForm, shown,
+  unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -129,6 +130,8 @@ export const Stage = {
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
     btn.onclick=async()=>{
+      // the unit is picked, never passed, while the size makes it doubtful
+      if(unitChoiceNeeded(p)){g.querySelector('.gc-hint').textContent=unitChoiceHint(p);return;}
       const body=readForm(g,p);
       btn.disabled=true;btn.textContent='Confirming…';
       try{
@@ -164,7 +167,7 @@ export const Stage = {
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};
-    followUnit(g,p,q.unit,q.unit_basis);},
+    followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';

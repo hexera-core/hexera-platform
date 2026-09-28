@@ -668,6 +668,12 @@ NAME_TOOL = {
                               "description": "EXTERNAL flow only: ONLY what the user's own words say about the direction "
                                              "the fluid travels (\"flow along +y\"). unknown when the user did not say. "
                                              "Never read it off the pictures: the nose fields do that."},
+                "real_length_m": {"type": "number", "exclusiveMinimum": 0,
+                                  "description": "How long a real one of what this part is usually is, in METRES, "
+                                                 "judged from what the part is and the user's words - NOT from the "
+                                                 "sizes you were given, which are read in a unit that may be wrong "
+                                                 "(a wind turbine blade: about 60-120; a car: about 4.5; a pipe "
+                                                 "elbow: about 0.1-1). Leave it out when you cannot tell."},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1,
                                "description": "How sure you are about the part and the flow direction overall."},
                 "notes": {"type": "string", "description": "Anything the user should check, in one or two plain sentences. Say if you see an opening that has no sticker."},
@@ -693,7 +699,9 @@ _SYSTEM = (
     "wing's rounded leading edge, a nacelle's intake, an aircraft's nose. Say which picture shows "
     "it best (nose_view) and at which edge of that picture it sits (nose_side: left, right, top or "
     "bottom); the code turns that into the part's axes. Give nose_axis too, read against the marker, "
-    "when you can. The fluid then travels the opposite way. If the pictures do not settle something, say so with a low "
+    "when you can. The fluid then travels the opposite way. Say how long a real one of what this part "
+    "is usually is (real_length_m, in metres) from what it is, never from the sizes: those are read in "
+    "a unit that may be wrong. If the pictures do not settle something, say so with a low "
     "confidence rather than guessing confidently. Answer by calling name_geometry."
 )
 
@@ -708,6 +716,9 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
 
     lines = [f"Part size: {facts['size_mm'][0]:.0f} x {facts['size_mm'][1]:.0f} x {facts['size_mm'][2]:.0f} mm.",
              f"Measuring step's guess: {facts['input_kind']} ({facts['body_kind']}), flow {facts['flow']}."]
+    lines.append("These sizes are read in the unit the file declares (or millimetres when it declares "
+                 "none), which is sometimes wrong by a factor of 1000: judge real_length_m from what "
+                 "the part is, not from them.")
     if facts.get("read_as") == "mesh":
         lines.append("The file is a triangle mesh, so the measurements are close, not exact.")
     if purpose_text:
@@ -822,6 +833,14 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         if named.get("role") in ("inlet", "outlet", "not_an_opening"):
             o["role"] = named["role"]
         o["confidence"] = round(float(named.get("confidence", o.get("confidence", 0.5))), 2)
+    try:
+        # how long a real one is, by the model's knowledge of what it is: what the stage checks
+        # the unit against (unit_suggestion), never a size applied to anything
+        real = float(vision.get("real_length_m") or 0.0)
+        if real > 0:
+            proposal["real_length_m"] = round(real, 6)
+    except (TypeError, ValueError):
+        pass
     model_conf = float(vision.get("confidence", 0.0) or 0.0)
     if model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
         if vision.get("input_kind") in ("body-surface", "fluid-domain", "solid-body"):
@@ -836,3 +855,32 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
 
 # kept for callers and tests that knew the check by its first name
 _merge = _proposal
+
+
+def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = "") -> dict | None:
+    """The other unit to show beside the part's size on the stage, or None when the part is
+    believable in the unit in effect - or the user has already named the unit, which settles it.
+
+    The part's longest side in the file's own numbers comes from the proposal's size, read back
+    through the scale it was measured under. What the part is comes, best first, from the naming
+    model's estimate of how long a real one is, else from the words for it (the model's name for
+    the part, the user's own words). A declared unit is only doubted on those words or on a wild
+    size; a unit nothing declared (a triangle file) is only a reading, and yields to either."""
+    from meshpipeline.contracts.geometry_units import LengthUnit
+    from meshpipeline.contracts.unit_plausibility import expected_from_estimate, expected_from_words, suggest
+
+    if interpretation and str(interpretation.get("basis")) == "user_confirmed":
+        return None
+    size, scale = proposal.get("size_mm"), proposal.get("scale_to_m")
+    try:
+        if not size or len(size) != 3 or not scale:
+            return None
+        longest_file = max(float(v) for v in size) * 0.001 / float(scale)
+        in_effect = LengthUnit(str(interpretation["unit"])) if interpretation else LengthUnit.millimetre
+    except (TypeError, ValueError, KeyError):
+        return None
+    part = str(proposal.get("part") or "")
+    expected = (expected_from_estimate(part, proposal.get("real_length_m"))
+                or expected_from_words(f"{part}\n{words or ''}"))
+    s = suggest(longest_file, in_effect, declared=interpretation is not None, expected=expected)
+    return s.as_dict() if s is not None else None

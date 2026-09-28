@@ -279,9 +279,9 @@ def test_a_file_with_no_unit_waits_on_the_chat_for_that_alone_and_a_failed_namin
        .replace("__ASKED__", json.dumps(_check("scouted", naming_requested=True))).replace("__S__", SESSION), timeout=60)
     live.wait_for(f"window._vdbg && window._vdbg['gstage:{SESSION}-unit']", timeout=90,
                   what="the geometry stage to initialise")
-    # THE UNIT: the file does not say it, so the banner says millimetres is assumed and the unit
-    # box beside the sizes says how long the part then is; every size wears that unit; Proceed
-    # is live, the names can be fixed meanwhile
+    # THE UNIT: the file does not say it, so the banner asks for it beside the sizes and the unit
+    # box (millimetres until then) says how long the part then is; every size wears that unit;
+    # Proceed is live, the names can be fixed meanwhile
     waiting = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{SESSION}-unit');
       return {{proceedOn: !root.querySelector('.gc-proceed').disabled, banner: root.querySelector('.gc-banner').textContent.trim(),

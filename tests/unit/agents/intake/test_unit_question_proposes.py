@@ -103,6 +103,23 @@ async def test_the_first_message_is_asked_the_question_with_the_proposal_and_ok_
 
 
 @pytest.mark.asyncio
+async def test_a_part_that_would_be_implausible_in_millimetres_is_proposed_the_believable_unit(monkeypatch):
+    """The Ahmed body STL is 1.044 units long: proposed as millimetres it is a 1 mm car. The
+    question proposes metres - the size in every unit still beside it - and "ok" takes metres."""
+    outcome, repo = await _settle("flow around this body", gate={}, size=[1.044, 0.389, 0.338],
+                                  monkeypatch=monkeypatch)
+    assert "I'll take metres - say ok" in outcome.reply and "1.04 m if metres" in outcome.reply
+    gate = repo.set_intake_gate.await_args.args[2]
+    assert gate["unit_question"] == {"asked": True, "proposed": "m"}
+    recorded: list = []
+    outcome, _ = await _settle("ok", gate=gate, monkeypatch=monkeypatch, recorded=recorded)
+    assert recorded == [LengthUnit.metre]
+    # what the user said the part is can settle what the size alone cannot: a 229-unit block
+    assert uc.proposal_for([229.1, 140.1, 76.0], "wind around a city block of buildings") is LengthUnit.metre
+    assert uc.proposal_for([229.1, 140.1, 76.0], "") is LengthUnit.millimetre
+
+
+@pytest.mark.asyncio
 async def test_without_a_measurement_the_plain_question_is_asked_and_ok_is_not_an_answer(monkeypatch):
     outcome, repo = await _settle("mesh it", gate={}, size=None, monkeypatch=monkeypatch)
     assert outcome.reply == uc.QUESTION
