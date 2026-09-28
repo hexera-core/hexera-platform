@@ -34,7 +34,7 @@ named from it:
 | --- | --- |
 | API | `dev-pranav-api` (Cloud Run, its own `run.app` URL) |
 | Console | `dev-pranav-console` |
-| Jobs | `dev-pranav-mesh`, `dev-pranav-migrate`, `dev-pranav-queue-depth` |
+| Jobs | `dev-pranav-mesh`, `dev-pranav-migrate`, `dev-pranav-queue-depth`, `dev-pranav-maintenance-sweep` |
 | Workers | `dev-pranav-workers` (managed instance group, autoscaled) |
 | Buckets | `dev-pranav-exchange-…`, `dev-pranav-artifacts-…`, `dev-pranav-transfer-…` |
 | Database | `meshpipeline_pranav` |

@@ -113,6 +113,11 @@ Collection is **on by default**. See
 - A purge is claimed before it runs, so two workers cannot both delete, and a claim that expires
   is retried rather than wedging the row.
 - Failed jobs are retained for `FAILED_JOB_RETENTION_HOURS`, then their workspaces are cleaned.
+- On a hosted deployment these sweeps run from the scheduled maintenance job, not from the worker
+  fleet, and a job whose worker was replaced mid-run is failed about thirty minutes after its last
+  heartbeat so its credits are released - see
+  [configuration.md](../reference/configuration.md#stalled-jobs-and-the-maintenance-sweep).
+  A failed job's workspace on the fleet is the instance's own disk and goes with the instance.
 - `make clean-workspaces` removes local job workspaces on demand.
 
 ## Reporting a vulnerability

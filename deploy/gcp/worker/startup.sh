@@ -114,3 +114,11 @@ docker run -d --name hexera-worker --restart always \
 # back - the reason its minimum is 1. Publication moved to a scheduled Cloud Run job
 # (deploy/gcp/scripts/create-queue-depth-publisher.sh), which reports the depth whether or not any
 # instance exists.
+#
+# NO BEAT HERE EITHER. celery_app.py's schedule - the stalled-job reaper, the upload purge, the
+# orphan reconcile - runs for a hosted deployment as the maintenance sweep, a scheduled Cloud Run
+# job (deploy/gcp/scripts/create-maintenance-sweep.sh). A beat beside every worker would run the
+# schedule once per instance, and this worker consumes only the simulation queue, so a beat's
+# cleanup tasks would have no consumer anyway. Until that job existed nothing hosted ran the
+# reaper, and a job whose instance the autoscaler replaced stayed `running` for good.
+# tests/unit/deploy/test_fleet_schedule_contract.py holds both facts.

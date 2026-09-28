@@ -50,6 +50,12 @@ celery_app.conf.update(
         "simulation_jobs": 5,
         "cleanup_tasks":   1,
     },
+    # THE SCHEDULE, AND WHERE IT RUNS. The compose stack runs it with the `beat` service and a
+    # `worker-utility` on the cleanup queue. A hosted deployment runs NO beat - the fleet is
+    # simulation workers only (deploy/gcp/worker/startup.sh) - so runtime/maintenance_sweep.py
+    # carries these entries as a scheduled Cloud Run job, and runtime/meter_sweep.py carries
+    # report-pending-usage. An entry added here needs a hosted home too:
+    # tests/unit/deploy/test_fleet_schedule_contract.py refuses one that has none.
     beat_schedule={
         "purge-expired-workspaces": {
             "task": "tasks.cleanup.purge_expired_workspaces",
