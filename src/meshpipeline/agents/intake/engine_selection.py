@@ -69,8 +69,13 @@ _DECLINE_IDIOMS = ("not think", "not really", "rather not", "prefer not", "no wa
 _RETRACT = "forget"
 #: "yes to the ground patch": a yes with an object of its own.
 _YES_TO = frozenset({"to", "on", "for", "about"})
-#: What may close a clause that picks the engine again: "... use snappyHexMesh instead".
-_CHOICE_TAIL = frozenset({"instead", "after", "all", "anyway", "actually", "really"})
+#: The only other words a clause that picks the engine again may hold: "but actually use
+#: snappyHexMesh instead", "snappyHexMesh after all".
+_CHOICE_PLAIN = frozenset({"but", "instead", "after", "all", "anyway", "actually"})
+#: What may sit between a negation and the choice verb it negates: "won't ever use", "don't
+#: really want", "not even want".
+_NEGATED_ADVERBS = frozenset({"ever", "really", "even", "actually", "exactly", "necessarily",
+                              "particularly", "honestly"})
 _RETRACT_WHOLE = frozenset({"about", "all", "everything", "whole", "thing", "entirely",
                             "completely", "totally", "altogether", "actually", "really",
                             "honestly", "anyway", "anyways"})
@@ -157,22 +162,16 @@ def _retracts(obj: list[str]) -> bool:
 
 
 def _chooses_the_engine(clause: list[str]) -> bool:
-    # The clause picks the proposed engine in so many words and ends there: an assent or choice
-    # word, fillers aside, right before its name, and nothing after it but fillers ("actually use
-    # snappyHexMesh", "go with snappyHexMesh instead", "yes, snappyHexMesh after all"). A choice
-    # that is negated ("don't use snappyHexMesh" - a no, read elsewhere) or qualified ("I'll use
-    # snappyHexMesh some other time") picks nothing.
-    for j, w in enumerate(clause):
-        if w != _ENGINE_WORD:
-            continue
-        k = j - 1
-        while k >= 0 and clause[k] in _FILLER:
-            k -= 1
-        if (k >= 0 and (clause[k] in _ASSENT or clause[k] in _CHOICE)
-                and not (k > 0 and clause[k - 1] in _NEGATION)
-                and all(t in _FILLER or t in _CHOICE_TAIL for t in clause[j + 1:])):
-            return True
-    return False
+    # The clause is a plain choice of the proposed engine and nothing else: its name, a choice or
+    # assent word, and otherwise only fillers ("but actually use snappyHexMesh", "go with
+    # snappyHexMesh instead", "snappyHexMesh is fine"). Any other word - a negation however far
+    # from its verb ("I won't ever use snappyHexMesh"), a hedge ("maybe use snappyHexMesh"), a
+    # qualification ("I'll use snappyHexMesh some other time") - makes it no choice at all.
+    if _ENGINE_WORD not in clause:
+        return False
+    rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
+    return (any(w in _ASSENT or w in _CHOICE for w in rest)
+            and all(w in _ASSENT or w in _CHOICE or w in _CHOICE_PLAIN for w in rest))
 
 
 def _retracts_the_answer(engine: str, message: str) -> bool:
@@ -212,8 +211,11 @@ def declines(engine: str, message: str) -> bool:
             continue
         if i > 0 and raw[i - 1] in _INTENSIFIERS:
             return True
-        if (i + 1 < len(raw) and raw[i + 1] in _CHOICE
-                and any(_stands_for_the_engine(raw, j) for j in range(i + 2, min(i + 5, len(raw))))):
+        v = i + 1
+        while v < len(raw) and raw[v] in _NEGATED_ADVERBS:
+            v += 1     # "won't ever use", "don't really want": the negation still reaches the verb
+        if (v < len(raw) and raw[v] in _CHOICE
+                and any(_stands_for_the_engine(raw, j) for j in range(v + 1, min(v + 4, len(raw))))):
             return True
     return False
 

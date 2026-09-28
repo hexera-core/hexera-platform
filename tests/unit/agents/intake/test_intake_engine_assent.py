@@ -59,6 +59,11 @@ def test_anything_else_is_not_assent(said):
     # negated or qualified does not undo a retraction
     "use snappyHexMesh - actually, forget it", "forget it, I won't use snappyHexMesh",
     "forget it, I'll use snappyHexMesh some other time",
+    "forget it; I won't ever use snappyHexMesh", "forget it; maybe use snappyHexMesh",
+    "forget it; I'd rather use snappyHexMesh later",
+    # a negation still reaches its verb across an adverb
+    "I won't ever use snappyHexMesh", "yes, but I don't really want snappyHexMesh",
+    "I don't even want it",
 ])
 def test_a_refusal_is_read_as_one(said):
     # A negation anywhere refuses, whatever assent words sit beside it: "no, don't use
@@ -140,6 +145,19 @@ def test_a_later_choice_of_the_engine_by_name_outlives_a_retraction_before_it():
     # The other order is a no: the retraction is the last word.
     c, why = _confirm("use snappyHexMesh - actually, forget it", quote="use snappyHexMesh")
     assert c is None and "declined" in why
+
+
+@pytest.mark.parametrize("said", [
+    "forget it; I won't ever use snappyHexMesh",     # a negation, however far from its verb
+    "forget it; maybe use snappyHexMesh",             # a hedge
+    "forget it, I'll use snappyHexMesh some other time",   # a qualification
+])
+def test_only_a_plain_choice_outlives_a_retraction(said):
+    # "use snappyHexMesh" is genuinely in each message; none of them is a choice of it.
+    c, why = _confirm(said, quote="use snappyHexMesh")
+    assert c is None and "declined" in why
+    assert es.confirm_by_assent(_proposed(), session_id="s", owner_id="u", revision="r2",
+                                latest_user_message=said, user_msg_count=2) is None
 
 
 def test_a_forget_aimed_at_a_patch_leaves_the_explicit_yes_standing():
