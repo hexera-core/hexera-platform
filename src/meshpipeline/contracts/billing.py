@@ -74,15 +74,17 @@ class BillingGateway(Protocol):
     def start_checkout(self, *, customer_id: str, price_id: str, overage_price_id: str,
                        organization_id: str, plan: str) -> str: ...
 
+    #: The URL a person is sent to in order to buy one-off credit packs. It must not create or
+    #: mutate a subscription.
+    def start_credit_checkout(self, *, customer_id: str, price_id: str, organization_id: str,
+                              quantity: int, credits_per_pack: int) -> str: ...
+
     #: The URL where a person manages the card, invoices and cancellation they already have.
     def billing_portal(self, *, customer_id: str) -> str: ...
 
-    #: Move an existing subscription to another tier IN PLACE: its flat price becomes `price_id` and
-    #: its metered price `overage_price_id` (blank removes the metered component), prorated. Never a
-    #: second subscription. The provider's portal cannot do this for a subscription carrying both a
-    #: flat and a metered item, which is every subscription this product sells.
-    def change_plan(self, *, subscription_id: str, price_id: str, overage_price_id: str,
-                    plan: str) -> None: ...
+    #: The hosted provider surface for changing an existing subscription. The product still trusts
+    #: webhooks as the writer of the resulting tier; this only gets the customer to Stripe.
+    def plan_change_portal(self, *, customer_id: str, subscription_id: str) -> str: ...
 
     #: Report metered consumption for the current period. Must AGGREGATE rather than overwrite, so
     #: two reports in one window add up instead of the later one discarding the earlier.

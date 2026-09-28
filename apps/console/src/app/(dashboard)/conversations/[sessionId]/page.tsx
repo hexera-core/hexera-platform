@@ -29,7 +29,13 @@ export default async function ConversationPage({
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Conversation</h1>
+        <div>
+          <p className="page__eyebrow">Study transcript</p>
+          <h1 className="page__title">Conversation</h1>
+          <p className="page__intro">
+            The prompt trail and confirmations that shaped this mesh pipeline.
+          </p>
+        </div>
         {history?.job_id ? (
           <Link className="btn" href={`/runs/${history.job_id}`}>
             Open the run
@@ -41,18 +47,28 @@ export default async function ConversationPage({
         // A 404 for somebody else's session and an unreachable API both land here. The route
         // already refuses another tenant's id indistinguishably from a missing one, so this page
         // must not describe which of the two happened either.
-        <p className="empty">Could not load this conversation. Reload to try again.</p>
+        <p className="empty card">Could not load this conversation. Reload to try again.</p>
       ) : history.messages.length === 0 ? (
-        <p className="empty">This conversation has no messages.</p>
+        <p className="empty card">This conversation has no messages.</p>
       ) : (
-        <div style={{ display: "grid", gap: ".9rem" }}>
-          {history.messages.map((message, index) => (
-            <div className="card" key={`${message.role}-${index}`}>
-              <p className="label">{message.role}</p>
-              <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>
+        <section className="panel">
+          <div className="panel__head">
+            <div>
+              <p className="label">Messages</p>
+              <p className="page__sub">
+                {history.awaiting_confirmation ? "Awaiting confirmation" : "Conversation history"}
+              </p>
             </div>
-          ))}
-        </div>
+          </div>
+          <div className="message-stack">
+            {history.messages.map((message, index) => (
+              <div className="message-card" key={`${message.role}-${index}`}>
+                <p className="label">{message.role}</p>
+                <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

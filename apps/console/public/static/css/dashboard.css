@@ -2,7 +2,15 @@
 /* Boundaries: the shell only; the conversation, timeline, viewer and workbench keep their sheets. */
 
 .shell{display:grid;grid-template-columns:15rem 1fr;min-height:100svh;
-  background:var(--canvas)}
+  position:relative;z-index:2;
+  background:
+    radial-gradient(78rem 46rem at 90% -18%,rgba(109,139,175,.11),transparent 58%),
+    radial-gradient(58rem 34rem at 4% 12%,rgba(255,79,0,.08),transparent 55%),
+    linear-gradient(180deg,rgba(255,255,255,.018),transparent 18rem),
+    var(--canvas)}
+.shell::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;opacity:.035;
+  mix-blend-mode:screen;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 
 /* Sidebar. */
 .sidebar{display:flex;flex-direction:column;gap:1.4rem;padding:1.15rem 0;
@@ -61,16 +69,44 @@
 
 /* Page frame. */
 .main{min-width:0;display:flex;flex-direction:column}
-.page{padding:2.2rem clamp(1.25rem,3vw,2.6rem);display:flex;flex-direction:column;gap:1.6rem;
+.page{padding:2.2rem clamp(1.25rem,3vw,2.6rem);display:flex;flex-direction:column;gap:1.35rem;
   max-width:76rem;width:100%}
-.page__head{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;
-  flex-wrap:wrap}
-.page__title{font-family:var(--display);font-weight:300;
-  font-size:clamp(1.7rem,1.2rem+1.4vw,2.4rem);line-height:1.05;color:var(--text-bright)}
+.page__head{display:flex;align-items:flex-end;justify-content:space-between;gap:1.2rem;
+  flex-wrap:wrap;padding:1.2rem 1.25rem;border:1px solid var(--border);
+  border-radius:var(--radius);background:linear-gradient(135deg,rgba(255,255,255,.045),rgba(255,255,255,.012));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035)}
+.page__title{font-family:var(--display);font-weight:700;letter-spacing:.02em;
+  text-transform:uppercase;
+  font-size:clamp(1.55rem,1.1rem+1.2vw,2.2rem);line-height:1.02;color:var(--text-bright)}
 .page__sub{color:var(--text-muted);font-size:.9rem}
+.page__intro{max-width:44rem;color:var(--text-muted);font-size:.92rem;line-height:1.65}
+.page__eyebrow{font-family:var(--mono);font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:.45rem}
 
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius);
-  padding:1.15rem 1.25rem}
+  padding:1.15rem 1.25rem;box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.card--accent{border-left:2px solid var(--accent)}
+
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:1rem}
+.metric-card{background:rgba(18,20,20,.78);border:1px solid var(--border);
+  border-radius:var(--radius);padding:1rem 1.1rem;display:grid;gap:.45rem}
+.metric-card b{font-family:var(--mono);font-weight:500;font-size:1.45rem;color:var(--text-bright);
+  font-variant-numeric:tabular-nums}
+.metric-card span{color:var(--text-muted);font-size:.82rem;line-height:1.5}
+.panel{background:rgba(18,20,20,.64);border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden}
+.panel__head{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;
+  padding:1rem 1.15rem;border-bottom:1px solid var(--border)}
+.panel__body{padding:1rem 1.15rem}
+.billing-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(17rem,.8fr);gap:1rem;
+  align-items:start}
+.billing-plan-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
+.billing-plan-card{display:grid;grid-template-rows:auto auto 1fr auto;gap:.7rem;min-height:13.5rem}
+.billing-actions{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
+.message-stack{display:grid;gap:.85rem;padding:1rem 1.15rem}
+.message-card{background:rgba(255,255,255,.028);border:1px solid var(--border);
+  border-radius:var(--radius);padding:1rem 1.1rem;display:grid;gap:.45rem}
+.message-card p:last-child{color:var(--text);line-height:1.65}
 
 /* Tables. The header row is the mono readout voice; the cells are Geist with tabular numerals
    so a column of counts lines up. */
@@ -94,6 +130,10 @@
 .status--fail::before{background:var(--danger)}
 
 .empty{padding:2.6rem 0;color:var(--text-faint);font-size:.88rem;line-height:1.75}
+
+@media (max-width:980px){
+  .billing-layout{grid-template-columns:1fr}
+}
 
 /* NARROW VIEWPORTS GET A BAR, NOT A RAIL. Collapsing to the desktop rail here used to hide every
    item's label AND the whole footer, which on a sidebar with no icons left a column of blank

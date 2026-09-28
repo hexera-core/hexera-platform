@@ -14,21 +14,38 @@ export default async function AccountPage() {
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Account</h1>
+        <div>
+          <p className="page__eyebrow">Operator identity</p>
+          <h1 className="page__title">Account</h1>
+          <p className="page__intro">
+            Keep the console identity current without changing the owner address that scopes runs,
+            geometry and conversations.
+          </p>
+        </div>
       </div>
 
-      <div className="card">
-        <p className="label">Email</p>
-        <p>{ownerId}</p>
-        {/* Decision 4 of the 09-10 signup design: owner_id IS the lowercased address, and every
+      {/* Decision 4 of the 09-10 signup design: owner_id IS the lowercased address, and every
             job, geometry and chat session is scoped on it. Changing it here would strand all of
             them, so the UI does not offer it. */}
-        <p className="page__sub">
-          Your address identifies your account and cannot be changed here.
-        </p>
+      <div className="summary-grid">
+        <div className="metric-card">
+          <p className="label">Email</p>
+          <b style={{ fontSize: "1rem", overflowWrap: "anywhere" }}>{ownerId}</b>
+          <span>Your address identifies your account and cannot be changed here.</span>
+        </div>
       </div>
 
-      <AccountForm name={session?.user?.name ?? ""} />
+      <section className="panel">
+        <div className="panel__head">
+          <div>
+            <p className="label">Profile</p>
+            <p className="page__sub">Display name and password controls.</p>
+          </div>
+        </div>
+        <div className="panel__body">
+          <AccountForm name={session?.user?.name ?? ""} />
+        </div>
+      </section>
     </div>
   );
 }

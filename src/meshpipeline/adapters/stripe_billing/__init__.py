@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     # importable with `stripe` absent - the contract's tests exercise every handler without it - and
     # a module-level runtime import would take that away. mypy reads this branch; the interpreter
     # never does.
-    from stripe.params import SubscriptionUpdateParams, SubscriptionUpdateParamsItem
     from stripe.params.checkout import (
         SessionCreateParams,
         SessionCreateParamsLineItem,
@@ -119,6 +118,31 @@ class StripeBillingGateway:
         )
         return str(session.url)
 
+    def start_credit_checkout(self, *, customer_id: str, price_id: str, organization_id: str,
+                              quantity: int, credits_per_pack: int) -> str:
+        total_credits = quantity * credits_per_pack
+        params: SessionCreateParams = {
+            "mode": "payment",
+            "customer": customer_id,
+            "line_items": [{"price": price_id, "quantity": quantity}],
+            "success_url": f"{self._console_base_url}/settings/billing?checkout=success",
+            "cancel_url": f"{self._console_base_url}/settings/billing?checkout=cancelled",
+            # A one-off credit purchase is fulfilled by checkout.session.completed, after Stripe
+            # confirms payment. The total is carried explicitly so the handler never guesses from a
+            # mutable price amount.
+            "metadata": {"organization_id": organization_id,
+                         "credit_pack": "one_off",
+                         "credits_per_pack": str(credits_per_pack),
+                         "quantity": str(quantity),
+                         "total_credits": str(total_credits)},
+        }
+        session = self._client.checkout.sessions.create(
+            params,
+            **self._idempotency("credits-checkout",
+                                f"{organization_id}:{quantity}:{uuid.uuid4()}"),
+        )
+        return str(session.url)
+
     def billing_portal(self, *, customer_id: str) -> str:
         # STRIPE'S OWN HOSTED SURFACE for changing a card, reading invoices and cancelling. Each of
         # those is a screen this product would otherwise build, and each would be a second place
@@ -128,44 +152,21 @@ class StripeBillingGateway:
              "return_url": f"{self._console_base_url}/settings/billing"})
         return str(session.url)
 
-    def change_plan(self, *, subscription_id: str, price_id: str, overage_price_id: str,
-                    plan: str) -> None:
-        # EACH ITEM IS SWAPPED BY ITS ID, never appended. Naming a new price without the item id
-        # ADDS a line, and the customer would be billed both tiers' flat fees from then on. Which
-        # existing item is which is read off the price itself - metered or not - rather than off
-        # its position, which Stripe does not promise.
-        # A PLAIN DICT, because an SDK object is not a mapping: `.get` on one raises rather than
-        # answering, which is how the first version of this failed against the live SDK.
-        subscription = self._client.subscriptions.retrieve(subscription_id).to_dict()
-        flat_item = metered_item = None
-        for item in subscription["items"]["data"]:
-            usage = ((item["price"].get("recurring") or {}).get("usage_type") or "licensed")
-            if usage == "metered":
-                metered_item = item["id"]
-            else:
-                flat_item = item["id"]
-        items: list[SubscriptionUpdateParamsItem] = [
-            {"id": flat_item, "price": price_id} if flat_item else {"price": price_id,
-                                                                    "quantity": 1}]
-        if overage_price_id:
-            items.append({"id": metered_item, "price": overage_price_id} if metered_item
-                         else {"price": overage_price_id})
-        elif metered_item:
-            items.append({"id": metered_item, "deleted": True})
-        params: SubscriptionUpdateParams = {
-                "items": items,
-                # PRORATED NOW, so an upgrade is charged for the rest of this period and a downgrade
-                # credited - the ordinary expectation, and what the next invoice will show.
-                "proration_behavior": "create_prorations",
-                # THE PLAN RIDES THE SUBSCRIPTION'S METADATA, which is what the
-                # `customer.subscription.updated` webhook reads to move the organisation's tier.
-                # Nothing here writes the tier directly: the webhook stays the one writer of it.
-                "metadata": {"plan": plan},
-        }
-        self._client.subscriptions.update(
-            subscription_id, params,
-            **self._idempotency("plan", f"{subscription_id}:{plan}:{uuid.uuid4()}"),
-        )
+    def plan_change_portal(self, *, customer_id: str, subscription_id: str) -> str:
+        # Deep-link into Stripe's hosted subscription-update flow. Stripe owns the confirmation,
+        # payment-action handling and resulting subscription update; our webhook remains the writer
+        # of the local tier once Stripe has accepted the change.
+        session = self._client.billing_portal.sessions.create(
+            {
+                "customer": customer_id,
+                "return_url": f"{self._console_base_url}/settings/billing",
+                "flow_data": {
+                    "type": "subscription_update",
+                    "subscription_update": {"subscription": subscription_id},
+                    "after_completion": {"type": "portal_homepage"},
+                },
+            })
+        return str(session.url)
 
     def report_usage(self, *, customer_id: str, quantity: int, idempotency_scope: str) -> None:
         # ADDRESSED TO THE CUSTOMER, not to a subscription item. A meter event names who consumed,

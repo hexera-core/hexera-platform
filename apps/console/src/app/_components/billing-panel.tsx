@@ -1,12 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 
 import {
+  type ExtraCreditsOffer,
   type Plan,
   SALES_CONTACT,
   checkoutFailureMessage,
+  creditCheckoutFailureMessage,
+  extraCreditsLabel,
+  extraCreditsUnavailable,
   isStripeUrl,
   planChangeFailureMessage,
   planLabel,
@@ -86,35 +89,22 @@ export function PlanPicker({
   currentPlan: string;
   billingEnabled: boolean;
 }) {
-  const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
-  // A SUBSCRIBER'S SWITCH, in place and prorated. Stripe's portal cannot switch a subscription with
-  // a flat and a metered item, and a checkout would open a second subscription; so this asks the
-  // API to change the one that exists. The tier shown here moves when the webhook lands.
+  // A SUBSCRIBER'S SWITCH is still hosted by Stripe. The API returns a deep link to the provider's
+  // subscription-update flow; the tier shown here moves when the webhook lands.
   async function switchTo(plan: string) {
     setBusy(plan);
     setError(null);
-    setNotice(null);
     try {
-      const response = await fetch("/api/v1/billing/plan", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ plan }),
-      });
-      if (!response.ok) {
-        setError(planChangeFailureMessage(response.status));
-        return;
+      const message = await redirectTo("/api/v1/billing/plan", { plan }, planChangeFailureMessage);
+      if (message) {
+        setError(message);
+        setBusy(null);
       }
-      setNotice(
-        `Switching to ${planLabel(plan)}. The difference is prorated on your next invoice, and this page shows the new plan once Stripe confirms it.`,
-      );
-      router.refresh();
     } catch {
       setError("Could not reach the API. Try again.");
-    } finally {
       setBusy(null);
     }
   }
@@ -141,33 +131,26 @@ export function PlanPicker({
           {error}
         </div>
       ) : null}
-      {notice ? (
-        <div className="card" role="status">
-          {notice}
-        </div>
-      ) : null}
-      <div style={{ display: "grid", gap: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))" }}>
+      <div className="billing-plan-grid">
         {plans.map((plan) => {
           const current = plan.name === currentPlan;
           return (
-            <div className="card" key={plan.name} style={{ display: "grid", gap: ".5rem" }}>
+            <div className={`card billing-plan-card${current ? " card--accent" : ""}`} key={plan.name}>
               <p className="label">{planLabel(plan.name)}</p>
-              <p style={{ fontSize: "1.4rem", fontFamily: "var(--mono)" }}>
+              <p style={{ fontSize: "1.4rem", fontFamily: "var(--mono)", color: "var(--text-bright)" }}>
                 {plan.included_credits.toLocaleString()} credits / month
               </p>
               <p className="page__sub">{planTerms(plan)}</p>
               {current ? (
                 <span className="status status--ok">Current plan</span>
               ) : currentPlan && plan.purchasable && billingEnabled ? (
-                // A SUBSCRIBER SWITCHES IN PLACE. A checkout here would open a second
-                // subscription beside the first - two flat fees - and the API refuses one.
                 <button
                   className="btn"
                   disabled={busy !== null}
                   onClick={() => switchTo(plan.name)}
                   type="button"
                 >
-                  {busy === plan.name ? "Switching…" : `Switch to ${planLabel(plan.name)}`}
+                  {busy === plan.name ? "Opening Stripe…" : `Switch to ${planLabel(plan.name)}`}
                 </button>
               ) : plan.purchasable && billingEnabled ? (
                 <button
@@ -191,5 +174,72 @@ export function PlanPicker({
         })}
       </div>
     </>
+  );
+}
+
+export function ExtraCreditsPicker({ offer }: { offer: ExtraCreditsOffer | null | undefined }) {
+  const [quantity, setQuantity] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!offer || extraCreditsUnavailable(offer)) {
+    return null;
+  }
+  const activeOffer = offer;
+
+  async function buy() {
+    setBusy(true);
+    setError(null);
+    try {
+      const message = await redirectTo(
+        "/api/v1/billing/credits/checkout",
+        { quantity },
+        creditCheckoutFailureMessage,
+      );
+      if (message) {
+        setError(message);
+        setBusy(false);
+      }
+    } catch {
+      setError("Could not reach the API. Try again.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <aside className="card card--accent" style={{ display: "grid", gap: ".75rem" }}>
+      <div>
+        <p className="label">One-off credits</p>
+        <p style={{ fontSize: "1.55rem", fontFamily: "var(--mono)", color: "var(--text-bright)" }}>
+          {extraCreditsLabel(activeOffer)}
+        </p>
+        <p className="page__sub">Buy extra capacity once. No subscription changes.</p>
+      </div>
+      <div className="billing-actions">
+        <label className="label" htmlFor="extra-credit-packs">
+          Packs
+        </label>
+        <input
+          id="extra-credit-packs"
+          min={1}
+          max={100}
+          onChange={(event) => {
+            const next = Number(event.currentTarget.value);
+            setQuantity(Number.isFinite(next) ? Math.min(Math.max(Math.trunc(next), 1), 100) : 1);
+          }}
+          style={{ width: "5rem" }}
+          type="number"
+          value={quantity}
+        />
+        <button className="btn btn--gold" disabled={busy} onClick={buy} type="button">
+          {busy ? "Opening checkout…" : "Buy in Stripe"}
+        </button>
+      </div>
+      {error ? (
+        <div className="auth__error" role="status">
+          {error}
+        </div>
+      ) : null}
+    </aside>
   );
 }

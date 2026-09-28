@@ -34,15 +34,27 @@ export default async function ConversationsPage({
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Conversations</h1>
+        <div>
+          <p className="page__eyebrow">Study intake</p>
+          <h1 className="page__title">Conversations</h1>
+          <p className="page__intro">
+            The request history behind each mesh run, from initial study framing to confirmation.
+          </p>
+        </div>
       </div>
 
       {page === null ? (
-        <p className="empty">Could not reach the API just now. Reload to try again.</p>
+        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
       ) : page.items.length === 0 ? (
-        <p className="empty">No conversations yet. Every run starts with one.</p>
+        <p className="empty card">No conversations yet. Every run starts with one.</p>
       ) : (
-        <>
+        <section className="panel">
+          <div className="panel__head">
+            <div>
+              <p className="label">Conversation ledger</p>
+              <p className="page__sub">Study requests, message counts and linked runs.</p>
+            </div>
+          </div>
           <table className="table">
             <thead>
               <tr>
@@ -78,14 +90,16 @@ export default async function ConversationsPage({
             </tbody>
           </table>
           {page.next_cursor ? (
-            <Link
-              className="btn"
-              href={`/conversations?cursor=${encodeURIComponent(page.next_cursor)}`}
-            >
-              Older conversations
-            </Link>
+            <div className="panel__body">
+              <Link
+                className="btn"
+                href={`/conversations?cursor=${encodeURIComponent(page.next_cursor)}`}
+              >
+                Older conversations
+              </Link>
+            </div>
           ) : null}
-        </>
+        </section>
       )}
     </div>
   );

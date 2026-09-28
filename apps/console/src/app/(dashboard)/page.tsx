@@ -31,28 +31,50 @@ export default async function OverviewPage() {
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Overview</h1>
+        <div>
+          <p className="page__eyebrow">Mesh studio</p>
+          <h1 className="page__title">Simulation cockpit</h1>
+          <p className="page__intro">
+            Track credit capacity, launch new studies and review the latest solver-ready mesh runs.
+          </p>
+        </div>
         <Link className="btn btn--gold" href="/runs/new">
           New run
         </Link>
       </div>
 
-      <div className="card">
-        <p className="label">Credit balance</p>
-        <p style={{ fontSize: "1.8rem", fontFamily: "var(--mono)" }}>
-          {credits ? `${credits.balance} ${credits.unit}` : "unavailable"}
-        </p>
-        <Link className="nav__link" href="/usage">
-          See the ledger
-        </Link>
+      <div className="summary-grid">
+        <div className="metric-card">
+          <p className="label">Credits</p>
+          <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
+          <span>{credits ? credits.unit : "unavailable"} available for meshing</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Recent runs</p>
+          <b>{runs ? runs.items.length.toLocaleString() : "--"}</b>
+          <span>latest studies in this workspace</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Pipeline</p>
+          <b>CAD → Mesh</b>
+          <span>agent-planned, cloud-executed, quality-gated</span>
+        </div>
       </div>
 
-      <div>
-        <p className="label">Recent runs</p>
+      <section className="panel">
+        <div className="panel__head">
+          <div>
+            <p className="label">Recent runs</p>
+            <p className="page__sub">The latest mesh attempts and review outcomes.</p>
+          </div>
+          <Link className="nav__link" href="/usage">
+            Credit ledger
+          </Link>
+        </div>
         {runs === null ? (
-          <p className="empty">Could not reach the API just now.</p>
+          <p className="empty panel__body">Could not reach the API just now.</p>
         ) : runs.items.length === 0 ? (
-          <p className="empty">
+          <p className="empty panel__body">
             Nothing has run yet. Upload a geometry file to start your first study.
           </p>
         ) : (
@@ -79,7 +101,7 @@ export default async function OverviewPage() {
             </tbody>
           </table>
         )}
-      </div>
+      </section>
     </div>
   );
 }

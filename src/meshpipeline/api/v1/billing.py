@@ -6,7 +6,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import meshpipeline.settings.billing as billcfg
 import meshpipeline.settings.plans as plancfg
@@ -20,6 +20,10 @@ router = APIRouter()
 
 class CheckoutRequest(BaseModel):
     plan: str
+
+
+class CreditCheckoutRequest(BaseModel):
+    quantity: int = Field(default=1, ge=1, le=100)
 
 
 def _organization(organization_id: str) -> uuid.UUID:
@@ -41,6 +45,8 @@ async def read_plans() -> dict:
     # here rather than a list compiled into the browser bundle. A tier whose price id is unset
     # reports `purchasable: false` instead of being hidden: an operator looking at a tier missing
     # from their own console needs to see that it exists and is unconfigured.
+    extra_price, extra_credits = billcfg.extra_credit_pack()
+    billing_enabled = billcfg.enabled()
     return {
         "plans": [
             {
@@ -59,7 +65,11 @@ async def read_plans() -> dict:
         # PRICES ARE NOT REPORTED HERE. What a tier COSTS lives with the provider, which is the one
         # place it can change without a deploy; copying an amount into this response would create a
         # second answer that silently disagrees the first time someone edits the price.
-        "billing_enabled": billcfg.enabled(),
+        "billing_enabled": billing_enabled,
+        "extra_credits": {
+            "credits_per_pack": extra_credits,
+            "purchasable": billing_enabled and bool(extra_price) and extra_credits > 0,
+        },
     }
 
 
@@ -107,6 +117,22 @@ async def start_checkout(body: CheckoutRequest,
     return {"url": url}
 
 
+@router.post("/credits/checkout")
+async def start_credit_checkout(body: CreditCheckoutRequest,
+                                organization_id: Annotated[str, Depends(org_dep)] = "",
+                                owner_id: str = Depends(owner_dep)) -> dict:
+    organization = _organization(organization_id)
+    async with get_db() as db:
+        try:
+            url = await billing_service.start_credit_checkout(
+                db, organization_id=organization, quantity=body.quantity, email=owner_id)
+        except BillingUnavailable:
+            raise HTTPException(status_code=503, detail="billing is not configured")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return {"url": url}
+
+
 @router.post("/plan")
 async def switch_plan(body: CheckoutRequest,
                       organization_id: Annotated[str, Depends(org_dep)] = "",
@@ -118,7 +144,7 @@ async def switch_plan(body: CheckoutRequest,
     organization = _organization(organization_id)
     async with get_db() as db:
         try:
-            plan = await billing_service.change_plan(
+            url = await billing_service.change_plan(
                 db, organization_id=organization, plan=body.plan)
         except BillingUnavailable:
             raise HTTPException(status_code=503, detail="billing is not configured")
@@ -126,7 +152,7 @@ async def switch_plan(body: CheckoutRequest,
             raise HTTPException(status_code=409, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-    return {"plan": plan}
+    return {"url": url}
 
 
 @router.post("/portal")

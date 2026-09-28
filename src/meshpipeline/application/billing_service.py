@@ -33,6 +33,7 @@ organization_repo = OrganizationRepository()
 #: change to this repository. An explicit list means a newly-enabled event is visibly ignored rather
 #: than silently matching some near-miss handler.
 HANDLED = frozenset({
+    "checkout.session.async_payment_succeeded",
     "checkout.session.completed",
     "customer.subscription.created",
     "customer.subscription.updated",
@@ -44,6 +45,7 @@ HANDLED = frozenset({
 #: What a period's included allowance is called in the ledger, so a person reading their own history
 #: sees why the credits are there.
 ALLOWANCE_REASON = "plan allowance"
+EXTRA_CREDITS_REASON = "extra credits"
 
 
 async def start_checkout(db: AsyncSession, *, organization_id: uuid.UUID, plan: str,
@@ -85,14 +87,37 @@ async def start_checkout(db: AsyncSession, *, organization_id: uuid.UUID, plan: 
         organization_id=str(organization_id), plan=plan.strip().lower())
 
 
+async def start_credit_checkout(db: AsyncSession, *, organization_id: uuid.UUID, quantity: int,
+                                email: str) -> str:
+    """The URL a person is sent to in order to buy one-off credit packs."""
+    price_id, credits = billcfg.extra_credit_pack()
+    if not price_id or credits <= 0:
+        raise ValueError("extra credits are not purchasable in this deployment")
+    if quantity < 1 or quantity > 100:
+        raise ValueError("quantity must be between 1 and 100")
+    gateway = get_billing_gateway()
+    organization = await organization_repo.get_by_id(db, organization_id)
+    if organization is None:
+        raise ValueError("organisation not found")
+    customer_id = organization.stripe_customer_id
+    if not customer_id:
+        customer_id = gateway.ensure_customer(
+            organization_id=str(organization_id), email=email, name=organization.name)
+        await organization_repo.attach_customer(
+            db, organization_id=organization_id, stripe_customer_id=customer_id)
+    return gateway.start_credit_checkout(
+        customer_id=customer_id, price_id=price_id, organization_id=str(organization_id),
+        quantity=quantity, credits_per_pack=credits)
+
+
 class NotSubscribed(ValueError):
     """A plan change was asked of an organisation with no live subscription to change."""
 
 
 async def change_plan(db: AsyncSession, *, organization_id: uuid.UUID, plan: str) -> str:
-    """Move a live subscription to `plan` in place. Returns the plan asked for."""
+    """Return the hosted Stripe URL a live subscriber uses to change tier."""
     wanted = plan.strip().lower()
-    price_id, overage_price_id = billcfg.price_for(wanted)
+    price_id, _overage_price_id = billcfg.price_for(wanted)
     if not price_id:
         # The same refusal checkout gives: enterprise is invoiced, and an unpriced tier is unsold.
         raise ValueError(f"plan {plan!r} is not purchasable in this deployment")
@@ -102,14 +127,13 @@ async def change_plan(db: AsyncSession, *, organization_id: uuid.UUID, plan: str
         # never does, so it must not quietly create a subscription with no way to pay for it.
         raise NotSubscribed("this organisation has no subscription to change; choose a plan")
     if (organization.plan or "").strip().lower() == wanted:
-        return wanted
-    get_billing_gateway().change_plan(
-        subscription_id=str(organization.stripe_subscription_id), price_id=price_id,
-        overage_price_id=overage_price_id, plan=wanted)
+        return ""
     # THE TIER ITSELF MOVES WHEN THE WEBHOOK SAYS SO (`customer.subscription.updated` carries the
     # new metadata). Writing it here as well would make two writers of one column, and the one
     # that is not the provider's record could be the one left standing after a failure.
-    return wanted
+    return get_billing_gateway().plan_change_portal(
+        customer_id=str(organization.stripe_customer_id),
+        subscription_id=str(organization.stripe_subscription_id))
 
 
 class AlreadySubscribed(ValueError):
@@ -191,7 +215,7 @@ async def handle_event(db: AsyncSession, event: BillingEvent) -> bool:
     obj = event.payload
     if event.type.startswith("customer.subscription."):
         await _apply_subscription(db, obj, deleted=event.type.endswith(".deleted"))
-    elif event.type == "checkout.session.completed":
+    elif event.type in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         await _apply_checkout(db, obj)
     elif event.type == "invoice.paid":
         await _apply_invoice_paid(db, obj)
@@ -207,8 +231,9 @@ async def _apply_checkout(db: AsyncSession, session: Mapping[str, Any]) -> None:
     # webhook is the only delivery that is retried until it is acknowledged.
     if str(session.get("payment_status", "")) not in {"paid", "no_payment_required"}:
         # AN UNPAID COMPLETED SESSION is a real state, not a contradiction: a delayed payment method
-        # completes the session and settles later. Acting now would grant a plan that has not been
-        # paid for; the later `invoice.paid` is what carries the credits.
+        # completes the session and settles later. Acting now would grant something that has not
+        # been paid for; subscriptions settle through invoice.paid, while one-off credit packs
+        # settle through checkout.session.async_payment_succeeded.
         return
     organization_id = _organization_of(session)
     if organization_id is None:
@@ -219,6 +244,10 @@ async def _apply_checkout(db: AsyncSession, session: Mapping[str, Any]) -> None:
         # revision that crashed between minting the customer and writing the column.
         await organization_repo.attach_customer(
             db, organization_id=organization_id, stripe_customer_id=customer_id)
+    extra_credits = _extra_credits_of_checkout(session)
+    if extra_credits > 0:
+        await credit_service.grant(db, organization_id=organization_id, amount=extra_credits,
+                                   reason=EXTRA_CREDITS_REASON)
 
 
 async def _apply_subscription(db: AsyncSession, subscription: Mapping[str, Any], *,
@@ -237,7 +266,7 @@ async def _apply_subscription(db: AsyncSession, subscription: Mapping[str, Any],
             status="canceled", current_period_end=None)
         return
 
-    plan = str((subscription.get("metadata") or {}).get("plan", "")).strip().lower()
+    plan = _plan_of_subscription(subscription)
     await organization_repo.set_subscription(
         db, organization_id=organization_id,
         subscription_id=str(subscription.get("id", "")),
@@ -327,10 +356,9 @@ async def _apply_invoice_paid(db: AsyncSession, invoice: Mapping[str, Any]) -> N
     # where checkout wrote the plan, so it is read from there when the row has none.
     plan = organization.plan or _plan_of_invoice(invoice)
     included = plancfg.limits_for(plan).included_credits
-    if included <= 0:
-        return
-    await credit_service.grant(db, organization_id=organization.id, amount=included,
-                               reason=ALLOWANCE_REASON)
+    if included > 0:
+        await credit_service.grant(db, organization_id=organization.id, amount=included,
+                                   reason=ALLOWANCE_REASON)
 
 
 async def _apply_payment_failed(db: AsyncSession, invoice: Mapping[str, Any]) -> None:
@@ -360,6 +388,45 @@ def _plan_of_invoice(invoice: Mapping[str, Any]) -> str:
             if plan in plancfg.PLANS:
                 return plan
     return ""
+
+
+def _plan_of_subscription(subscription: Mapping[str, Any]) -> str:
+    # Hosted portal plan changes mutate Stripe's item prices; they do not rewrite our metadata.
+    # The flat recurring price is therefore the provider-owned fact for starter/team switches.
+    items = subscription.get("items") or {}
+    data = items.get("data") if isinstance(items, Mapping) else []
+    for item in data or []:
+        if not isinstance(item, Mapping):
+            continue
+        price = item.get("price") or {}
+        if not isinstance(price, Mapping):
+            continue
+        price_id = str(price.get("id", "")).strip()
+        usage = ((price.get("recurring") or {}).get("usage_type") or "licensed")
+        if usage == "metered":
+            continue
+        for plan in plancfg.PLANS:
+            configured_price, _overage = billcfg.price_for(plan)
+            if configured_price and price_id == configured_price:
+                return plan
+    metadata = subscription.get("metadata") or {}
+    if not isinstance(metadata, Mapping):
+        return ""
+    plan = str(metadata.get("plan", "")).strip().lower()
+    return plan if plan in plancfg.PLANS else ""
+
+
+def _extra_credits_of_checkout(session: Mapping[str, Any]) -> int:
+    metadata = session.get("metadata") or {}
+    if not isinstance(metadata, Mapping) or metadata.get("credit_pack") != "one_off":
+        return 0
+    try:
+        amount = int(str(metadata.get("total_credits", "0")).strip())
+    except ValueError:
+        log.warning("checkout session %s carried malformed total_credits metadata",
+                    session.get("id", "?"))
+        return 0
+    return max(amount, 0)
 
 
 def _organization_of(obj: Mapping[str, Any]) -> uuid.UUID | None:

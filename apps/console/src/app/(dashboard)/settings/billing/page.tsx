@@ -9,7 +9,7 @@ import {
   planLabel,
   subscriptionSummary,
 } from "@/app/_components/billing";
-import { ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
+import { ExtraCreditsPicker, ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -41,7 +41,15 @@ export default async function BillingPage({
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Billing</h1>
+        <div>
+          <p className="page__eyebrow">Commercial control</p>
+          <h1 className="page__title">Plans and credits</h1>
+          <p className="page__intro">
+            Manage the subscription that grants monthly capacity and add one-off credits when a
+            study needs more room.
+          </p>
+        </div>
+        {subscription?.has_billing_account ? <ManageBillingButton /> : null}
       </div>
 
       {banner ? (
@@ -50,44 +58,49 @@ export default async function BillingPage({
         </div>
       ) : null}
 
-      <div className="card" style={{ display: "grid", gap: ".5rem" }}>
-        <p className="label">Current plan</p>
-        <p style={{ fontSize: "1.8rem", fontFamily: "var(--mono)" }}>
-          {subscription === null ? "unavailable" : planLabel(paying ? subscription.plan : "")}
-        </p>
-        <p className="page__sub">
-          {subscription === null
-            ? "Could not reach the API just now. Reload to try again."
-            : subscriptionSummary(subscription)}
-        </p>
-        <p className="page__sub">
-          Balance: {credits ? `${credits.balance.toLocaleString()} ${credits.unit}` : "unavailable"}
-        </p>
-        {subscription?.has_billing_account ? (
-          <div>
-            <ManageBillingButton />
-          </div>
-        ) : null}
+      <div className="summary-grid">
+        <div className="metric-card">
+          <p className="label">Current plan</p>
+          <b>{subscription === null ? "Unavailable" : planLabel(paying ? subscription.plan : "")}</b>
+          <span>{subscription === null ? "API unavailable" : subscriptionSummary(subscription)}</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Credit balance</p>
+          <b>{credits ? credits.balance.toLocaleString() : "--"}</b>
+          <span>{credits ? credits.unit : "unavailable"} available</span>
+        </div>
+        <div className="metric-card">
+          <p className="label">Payment system</p>
+          <b>Stripe</b>
+          <span>Checkout, payment methods, invoices and cancellation are provider-hosted.</span>
+        </div>
       </div>
 
-      <h2 className="label" style={{ marginTop: "1.5rem" }}>
-        Plans
-      </h2>
-      {catalogue === null ? (
-        <p className="empty">Could not load plans just now. Reload to try again.</p>
-      ) : !catalogue.billing_enabled ? (
-        <p className="empty">Plans are not on sale in this deployment yet.</p>
-      ) : (
-        <PlanPicker
-          billingEnabled={catalogue.billing_enabled}
-          currentPlan={paying && subscription ? subscription.plan : ""}
-          plans={catalogue.plans}
-        />
-      )}
-      <p className="page__sub">
-        Prices are shown on the secure Stripe checkout page before you pay. Card details, invoices
-        and cancellation are handled by Stripe under Manage billing.
-      </p>
+      <div className="billing-layout">
+        <section className="panel">
+          <div className="panel__head">
+            <div>
+              <p className="label">Plans</p>
+              <p className="page__sub">Monthly capacity, limits and hosted Stripe plan changes.</p>
+            </div>
+          </div>
+          <div className="panel__body">
+            {catalogue === null ? (
+              <p className="empty">Could not load plans just now. Reload to try again.</p>
+            ) : !catalogue.billing_enabled ? (
+              <p className="empty">Plans are not on sale in this deployment yet.</p>
+            ) : (
+              <PlanPicker
+                billingEnabled={catalogue.billing_enabled}
+                currentPlan={paying && subscription ? subscription.plan : ""}
+                plans={catalogue.plans}
+              />
+            )}
+          </div>
+        </section>
+
+        {catalogue?.extra_credits ? <ExtraCreditsPicker offer={catalogue.extra_credits} /> : null}
+      </div>
     </div>
   );
 }

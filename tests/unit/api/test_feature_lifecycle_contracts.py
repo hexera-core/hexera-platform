@@ -118,8 +118,9 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/billing"),              # the org's plan, status and period
         ("GET", "/api/v1/billing/plans"),        # the tiers this deployment can actually sell
         ("POST", "/api/v1/billing/checkout"),    # opens a hosted checkout for a purchasable tier
+        ("POST", "/api/v1/billing/credits/checkout"), # opens hosted checkout for one-off credits
         ("POST", "/api/v1/billing/portal"),      # opens the provider's card/invoice/cancel surface
-        ("POST", "/api/v1/billing/plan"),        # a subscriber's tier change, in place
+        ("POST", "/api/v1/billing/plan"),        # a hosted subscriber tier-change surface
         # THE CROSS-TENANT SURFACE, behind ADMIN_API_KEY rather than a tenant credential. Its
         # consumer is the admin console's Billing page, not a customer.
         ("GET", "/api/v1/admin/billing/organizations"),

@@ -446,7 +446,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (229 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (231 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -523,7 +523,9 @@ Every supported setting (229 entries). `template` settings are the ones `.env.ex
 | `RECONCILE_RETRY_DELAY_SECONDS` | template | app |  |
 | `SIGNUP_GRANT_CREDITS` | template | app |  |
 | `CONSOLE_BASE_URL` | template | app |  |
+| `EXTRA_CREDITS_AMOUNT` | template | app |  |
 | `STRIPE_API_KEY` | template | app | yes |
+| `STRIPE_PRICE_EXTRA_CREDITS` | template | app |  |
 | `STRIPE_PRICE_STARTER` | template | app |  |
 | `STRIPE_PRICE_STARTER_OVERAGE` | template | app |  |
 | `STRIPE_PRICE_TEAM` | template | app |  |

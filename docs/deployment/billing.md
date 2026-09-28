@@ -1,9 +1,10 @@
 # Billing: turning Stripe on for an environment
 
 How an environment starts charging, and what an operator does by hand that the deploy cannot. Billing
-is **opt-in per environment**. If any of the settings below is empty, that environment does not
+is **opt-in per environment**. If the Stripe credentials are empty, that environment does not
 charge: the API answers its billing routes `503`, the console's Billing page says plans are not on
-sale, and the deploy skips the meter sweep and says why.
+sale, and the deploy skips the meter sweep and says why. Empty price ids leave only that tier or
+add-on unsold in that deployment.
 
 Design and model: #47 (hybrid tiers, overage metered in arrears), the credit gate (a signup grant is a
 budget, not a free tier) and overage-only metering (0008).
@@ -32,19 +33,20 @@ is the last run's minutes, and the credit gate then refuses its next run until i
    - a **recurring monthly** flat price → `STRIPE_PRICE_<TIER>`
    - a **metered** usage price on the meter above, per credit → `STRIPE_PRICE_<TIER>_OVERAGE`
    `enterprise` gets no price. It is invoiced from the admin console.
-3. **A webhook endpoint** at `https://<api-host>/api/v1/webhooks/stripe`, sending exactly:
-   `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
+3. **A one-time extra-credit Product** with one Price → `STRIPE_PRICE_EXTRA_CREDITS`. One purchased
+   pack grants `EXTRA_CREDITS_AMOUNT` credits after Checkout completes.
+4. **A webhook endpoint** at `https://<api-host>/api/v1/webhooks/stripe`, sending exactly:
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+   `customer.subscription.created`, `customer.subscription.updated`,
    `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`. Its signing secret
    is the `whsec_…` value below.
-4. **A restricted key** (`rk_…`) with write access to Customers, Subscriptions, Checkout Sessions,
+5. **A restricted key** (`rk_…`) with write access to Customers, Subscriptions, Checkout Sessions,
    Invoices, Invoice Items, Billing Portal and Meter Events. Never use a secret key (`sk_…`): it can
    also move money out.
-5. **Customer portal** enabled with cancellation (at period end), payment method updates, invoice
-   history and customer details, and **plan switching turned off**. The portal refuses to switch a
-   subscription that has more than one item, and every Hexera subscription has two (the flat fee
-   and the metered overage). Stripe answers "cannot update subscription ... because it has multiple
-   `items`". Tier changes go through the console's **Switch to …** button (`POST /billing/plan`),
-   which swaps both items in place with proration. The API refuses a second checkout.
+6. **Customer portal** enabled with cancellation (at period end), payment method updates, invoice
+   history and customer details, and subscription updates for the starter/team flat prices. Tier
+   changes go through the console's **Switch to …** button (`POST /billing/plan`), which opens a
+   Stripe-hosted portal flow for the existing subscription. The API refuses a second plan checkout.
 
 ## 3. In Secret Manager, per GCP project
 
@@ -67,7 +69,8 @@ cross-tenant billing credential, and nothing else presents it.
 | `STRIPE_API_KEY_SECRET` | `stripe-api-key` |
 | `STRIPE_WEBHOOK_SECRET_SECRET` | `stripe-webhook-secret` |
 | `ADMIN_API_KEY_SECRET` | `admin-api-key` |
-| `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_STARTER_OVERAGE`, `STRIPE_PRICE_TEAM`, `STRIPE_PRICE_TEAM_OVERAGE` | the `price_…` ids from §2 |
+| `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_STARTER_OVERAGE`, `STRIPE_PRICE_TEAM`, `STRIPE_PRICE_TEAM_OVERAGE`, `STRIPE_PRICE_EXTRA_CREDITS` | the `price_…` ids from §2 |
+| `EXTRA_CREDITS_AMOUNT` | credits granted by one extra-credit pack |
 | `CONSOLE_BASE_URL` | the console's public origin, e.g. `https://console.hexera.ai`. Optional when the environment has a `CONSOLE_DOMAIN`, which it defaults to. Required otherwise, and the API stage refuses rather than send a paying customer back to `localhost` |
 
 These are container **names** and price ids. No value here is a secret. They apply to **shared dev

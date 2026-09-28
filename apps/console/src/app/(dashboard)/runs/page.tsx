@@ -38,7 +38,13 @@ export default async function RunsPage({
   return (
     <div className="page">
       <div className="page__head">
-        <h1 className="page__title">Runs</h1>
+        <div>
+          <p className="page__eyebrow">Pipeline history</p>
+          <h1 className="page__title">Mesh runs</h1>
+          <p className="page__intro">
+            Every submitted study, from intake through native meshing and final quality review.
+          </p>
+        </div>
         <Link className="btn btn--gold" href="/runs/new">
           New run
         </Link>
@@ -46,14 +52,20 @@ export default async function RunsPage({
 
       {page === null ? (
         // Fails soft, like every panel. A degraded API costs this table, never the page.
-        <p className="empty">Could not reach the API just now. Reload to try again.</p>
+        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
       ) : page.items.length === 0 ? (
-        <p className="empty">
+        <p className="empty card">
           No runs yet. Upload a geometry file and describe the study you need — the first mesh
           takes minutes, not days.
         </p>
       ) : (
-        <>
+        <section className="panel">
+          <div className="panel__head">
+            <div>
+              <p className="label">Run ledger</p>
+              <p className="page__sub">Status, duration and attempts for each mesh pipeline.</p>
+            </div>
+          </div>
           <table className="table">
             <thead>
               <tr>
@@ -83,14 +95,16 @@ export default async function RunsPage({
             </tbody>
           </table>
           {page.next_cursor ? (
-            <Link
-              className="btn"
-              href={`/runs?cursor=${encodeURIComponent(page.next_cursor)}`}
-            >
-              Older runs
-            </Link>
+            <div className="panel__body">
+              <Link
+                className="btn"
+                href={`/runs?cursor=${encodeURIComponent(page.next_cursor)}`}
+              >
+                Older runs
+              </Link>
+            </div>
           ) : null}
-        </>
+        </section>
       )}
     </div>
   );
