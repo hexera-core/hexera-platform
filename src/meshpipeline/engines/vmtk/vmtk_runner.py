@@ -1134,6 +1134,12 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         from meshpipeline.engines.vmtk.viewer_surface import surface_patches as _named_patches
         from meshpipeline.render.review_artifacts import build_review_msh
         _review = {n: t for n, t in _named_patches(ws, named=True).items() if n != "cap_0"}
+        # vmtk's wall is entity 1, drawn as "wall"; the user's wall is whatever they declared
+        # ("lumen_wall"). The review surface carries the DECLARED name, so the reviewer inspects
+        # the patch the manifest lists instead of an empty one beside an undeclared "wall".
+        _declared_walls = [n for n, r in patch_types.items() if r == "wall"]
+        if len(_declared_walls) == 1 and "wall" in _review and _declared_walls[0] != "wall":
+            _review[_declared_walls[0]] = _review.pop("wall")
         if _review:
             _ents, _ = build_review_msh(ws, _review)
             patch_entities.update(_ents)

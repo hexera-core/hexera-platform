@@ -170,9 +170,26 @@ class RunPolicy:
     submit_hint: str                  # coaching when submit is premature
 
 
-def _region_count(evidence) -> int | None:
+def _region_source(evidence) -> str:
+    return str((evidence.surface_analysis or {}).get("region_source") or "")
+
+
+def _region_staged(spec, evidence) -> bool:
+    # Whether this engine's staging KEEPS the regions the file distinguishes. A region the staged
+    # surface no longer carries is a region the mesher never sees: snappyHexMesh and cfMesh mesh a
+    # CAD file as one flattened surface, so the parts a STEP assembly names reach them as one body.
+    # An unstated source (a caller that supplied a bare count) is taken as kept, as before.
+    source = _region_source(evidence)
+    return not source or source in spec.keeps_regions_from
+
+
+def _region_count(evidence, spec=None) -> int | None:
     facts = evidence.surface_analysis or {}
-    return int(facts["region_count"]) if "region_count" in facts else None
+    if "region_count" not in facts:
+        return None
+    if spec is not None and not _region_staged(spec, evidence):
+        return min(1, int(facts["region_count"]))
+    return int(facts["region_count"])
 
 
 def _region_names(evidence) -> list[str]:
@@ -182,20 +199,33 @@ def _region_names(evidence) -> list[str]:
 def _unmatched_walls(evidence, walls: list[str]) -> list[str]:
     # Declared wall patches with no region of that name in the geometry. Names are what the mesher
     # writes the patches as, so a count alone proves nothing: six regions called a..f cannot become
-    # "fuselage" and "wing" however many of them there are. Compared case-blind because a CAD
-    # exporter's capitalisation is not a difference the user meant.
-    available = {n.casefold() for n in _region_names(evidence)}
-    return [w for w in walls if w.casefold() not in available] if available else []
+    # "fuselage" and "wing" however many of them there are. Compared as the mesher will write them -
+    # mesh-safe and case-blind - because a declared name is made mesh-safe where it enters ("Wing
+    # Left" is declared as Wing_Left) and a CAD exporter's capitalisation is not a difference the
+    # user meant; the engines stage each region under the declared spelling it matched.
+    from meshpipeline.contracts.patch_names import same_patch_name
+    available = _region_names(evidence)
+    if not available:
+        return []
+    return [w for w in walls if not any(same_patch_name(w, n) for n in available)]
+
+
+def _wall_limit(spec, evidence) -> int | None:
+    return spec.boundary_limits_for(topology_of(evidence.purpose or "")).get("wall")
 
 
 def _supplies_fewer_regions(spec, evidence, walls: list[str]) -> bool:
     # THREE questions, and a refusal needs only one answered no: can this engine deliver several
-    # named wall patches at all, does THIS geometry distinguish enough parts, and are the parts it
-    # distinguishes the ones the user asked for? An engine that can do it is never blocked on a
-    # file that carries the regions - and no engine can name a part the file does not contain.
+    # named wall patches at all (for this flow topology), does THIS geometry distinguish enough
+    # parts in a form the engine's staging keeps, and are the parts it distinguishes the ones the
+    # user asked for? An engine that can do it is never blocked on a file that carries the regions -
+    # and no engine can name a part the file does not contain.
     if not spec.supports_multiple_wall_patches:
         return True
-    count = _region_count(evidence)
+    limit = _wall_limit(spec, evidence)
+    if limit is not None and len(walls) > limit:
+        return True
+    count = _region_count(evidence, spec)
     # Unknown says nothing: a caller that supplied no geometry facts is not asserting there are
     # none, and refusing on silence would block a request that may be perfectly deliverable.
     if count is None:
@@ -211,6 +241,15 @@ def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
     if not spec.supports_multiple_wall_patches:
         return (f"{spec.name} delivers one wall patch for the body. "
                 + (spec.single_wall_patch_reason + " " if spec.single_wall_patch_reason else ""))
+    limit = _wall_limit(spec, evidence)
+    if limit is not None and len(walls) > limit:
+        return (f"{spec.name} delivers {limit} wall patch{'es' if limit != 1 else ''} in "
+                f"{topology_of(evidence.purpose or '')} flow - everything that is not an opening "
+                "is one wall. ")
+    if not _region_staged(spec, evidence) and (_region_count(evidence) or 0) > 1:
+        return (f"Your CAD file names its parts ({', '.join(_region_names(evidence)[:8])}), but "
+                f"{spec.name} meshes a CAD file as one surface, so the parts reach it as one "
+                "body. An STL export whose parts are separate named solids keeps them apart. ")
     count = _region_count(evidence)
     if count is not None and count <= 1:
         return ("Your geometry is one region with no component names, so nothing downstream can "
@@ -410,6 +449,23 @@ class EngineSpec:
     #: path to it cannot supply named regions, and naming the wrong one sends a user to revise a
     #: requirement that was fine.
     single_wall_patch_reason: str = ""
+    #: Which kinds of region structure this bundle's STAGING keeps apart (cad/regions.py's
+    #: region_source: "assembly" and "roots" for a CAD file's named parts, "stl-solids" for an STL's
+    #: named solids). A region the staged surface no longer carries is one the mesher never sees, so
+    #: the wall-arity rule counts it as merged. Every source by default.
+    keeps_regions_from: tuple[str, ...] = ("assembly", "roots", "stl-solids")
+    #: THE BOUNDARIES THIS BUNDLE'S CASE WRITER CAN BUILD, per flow topology: role -> the most
+    #: patches of that role it delivers (0 = none). A role the purpose allows but this engine's path
+    #: for that topology cannot build - a second far-field patch on a box that is one surface, a
+    #: symmetry plane inside a carved duct - comes back with zero faces after a full run, so
+    #: admission refuses it up front with the way on stated. A role not listed is not limited here.
+    boundary_limits: tuple[tuple[str, tuple[tuple[str, int], ...]], ...] = ()
+
+    def boundary_limits_for(self, topology: str) -> dict[str, int]:
+        for topo, limits in self.boundary_limits:
+            if topo == topology:
+                return dict(limits)
+        return {}
 
     # USER-BOUNDARY CONTRACT PARITY (application-owned invariant): an engine that consumes the
     # user's approved intake_patches MUST prove the delivered mesh preserves them (no merge, rename,
@@ -474,7 +530,12 @@ class EngineSpec:
         # this is the same rule at the last gate before a mesh runs, so a name that slipped past
         # (an old snapshot, a direct API caller) costs one refusal instead of a whole run that
         # ends with "patch has zero faces".
-        from meshpipeline.contracts.patch_names import is_mesh_safe, mesh_safe
+        from meshpipeline.contracts.patch_names import (
+            is_mesh_safe,
+            is_reserved,
+            mesh_safe,
+            unreserved,
+        )
         for p in evidence.patches:
             if p.name and not is_mesh_safe(p.name):
                 out.append(Rejection(
@@ -484,6 +545,43 @@ class EngineSpec:
                             "name must start with a letter and hold only letters, digits and "
                             f"underscores. Use {mesh_safe(p.name)!r} instead.",
                     fix_hint=f"rename the patch to {mesh_safe(p.name)!r}"))
+            elif p.name and is_reserved(p.name):
+                # the mesher writes a boundary of its own under this name, and one of the two
+                # would come back empty or merged
+                out.append(Rejection(
+                    code="patch_name_reserved", phase="declared", field="patches",
+                    actual=p.name, expected=unreserved(p.name),
+                    message=f"the patch name {p.name!r} is one the meshers use for a boundary of "
+                            f"their own. Use {unreserved(p.name)!r} instead.",
+                    fix_hint=f"rename the patch to {unreserved(p.name)!r}"))
+
+        # BOUNDARIES THIS ENGINE'S CASE WRITER CAN BUILD for this flow topology (declared on the
+        # spec). Walls are counted by the wall-arity rule below, which also knows the geometry.
+        _topology = topology_of(purpose)
+        _limits = self.boundary_limits_for(_topology)
+        _counts: dict[str, list[str]] = {}
+        for p in evidence.patches:
+            _counts.setdefault(p.type, []).append(p.name)
+        for role, most in sorted(_limits.items()):
+            names = _counts.get(role, [])
+            if role == "wall" or len(names) <= most:
+                continue
+            if most == 0:
+                msg = (f"a '{role}' patch was declared ({', '.join(names)}), but {self.name} "
+                       f"cannot build a {role} boundary in {_topology} flow. Drop it, or use an "
+                       f"engine that builds one.")
+                hint = f"drop the '{role}' patch"
+            else:
+                msg = (f"{len(names)} '{role}' patches were declared ({', '.join(names)}), but "
+                       f"{self.name} builds at most {most} in {_topology} flow - "
+                       + ("its far field is one box around the body, so it is one patch. "
+                          if role == "farfield" else "")
+                       + f"Declare {'ONE' if most == 1 else most} '{role}' patch"
+                       + ("" if most == 1 else "es") + ".")
+                hint = f"declare at most {most} '{role}' patch" + ("" if most == 1 else "es")
+            out.append(Rejection(
+                code="boundary_count_unsupported", phase="declared", field="patches",
+                actual=names, expected=most, message=msg, fix_hint=hint))
 
         # DIMENSIONALITY the engine can consume (declared InputContract axis).
         ic = self.input_contract

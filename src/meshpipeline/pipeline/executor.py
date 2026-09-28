@@ -62,6 +62,21 @@ async def node_executor(state: PipelineState) -> dict:
             "executor_output":  "[EXECUTOR_ERROR] No workspace path in state",
         }
 
+    # THE PRE-FLIGHT REFUSED THIS CASE (engines/case_contract.py): the case our own renderer wrote
+    # does not build the patches the user approved, so no mesher was started. That is our defect,
+    # never the user's input and never a mesh-quality verdict - retrying re-renders the same case -
+    # so the job ends here as an INTERNAL failure whose operator detail names the mismatch.
+    from meshpipeline.engines.case_contract import refusal_of
+    _refused = refusal_of(workspace)
+    if _refused:
+        from meshpipeline.errors import FailureClass, SystemFailure
+        _detail = "; ".join(str(p) for p in _refused.get("problems") or [])
+        logger.error("Executor: the written case does not match the approved patches - no mesh "
+                     "was run - job_id=%s: %s", job_id, _detail)
+        raise SystemFailure("case_contract", FailureClass.INTERNAL,
+                            f"{_refused.get('engine', '')} case written against the approved "
+                            f"patch contract does not match it: {_detail}")
+
     # cfMesh-native: the Builder already built constant/polyMesh via run_mesh.
     # The executor validates it + writes the manifest/review-mesh; no meshing here.
         # Flow regime is the neutral `flow_topology` fact (derived from the purpose), NOT an
