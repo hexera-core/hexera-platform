@@ -9,7 +9,7 @@ from sqlalchemy import case, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from meshpipeline.persistence.job_state import TransitionResult, legal_sources
+from meshpipeline.persistence.job_state import ACTIVE_STATES, TransitionResult, legal_sources
 from meshpipeline.persistence.models import ChatSession, JobStatus, Organization, SimulationJob
 from meshpipeline.persistence.repositories import tenant_scope
 
@@ -210,11 +210,11 @@ class JobRepository:
     # psql session - not a method callable from a request, the pipeline, or a reconciler. The
     # architecture fitness suite fails if such a bypass is reintroduced.
 
-    # Active = still-in-flight statuses that count against quotas. (queued and
-    # pending_review are defined in the enum but are not assigned by the current
-    # pipeline; they are intentionally excluded so a stray non-running status can
-    # never pin an owner's quota forever.)
-    _ACTIVE_STATUSES = [JobStatus.pending, JobStatus.running, JobStatus.queued]
+    # Active = still-in-flight statuses that count against quotas. ONE definition, shared with
+    # the conversation's own "may this session move on to another run" decision
+    # (job_state.ACTIVE_STATES), so the quota and the chat can never disagree about whether a
+    # run is still going.
+    _ACTIVE_STATUSES = sorted(ACTIVE_STATES, key=lambda s: s.value)
 
     async def count_active_for_owner(self, db: AsyncSession, owner_id: str) -> int:
         # DELIBERATELY owner_id-only, not tenant_scope.scope. This is a QUOTA check

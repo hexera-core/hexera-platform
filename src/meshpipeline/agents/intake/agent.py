@@ -8,7 +8,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake import refusal, turn
@@ -556,6 +557,77 @@ def _confirmation_block(state: dict) -> str:
     )
 
 
+def _approved_last_time(state: Mapping[str, Any]) -> dict:
+    """What the previous run was approved with. The dispatched approval snapshot's payload is
+    the exact set the approval authority ran, request text included - the session columns are
+    the fallback, because request_txt is cleared from them at dispatch (approval.py disarms
+    consent that way) and a later turn may already have moved one of them."""
+    approval = (state.get("intake_gate") or {}).get("approval") or {}
+    payload = dict(approval.get("payload") or {}) if approval.get("job_id") else {}
+    return {
+        "engine": payload.get("mesh_engine") or state.get("engine") or "",
+        "engine_params": payload.get("engine_params") or state.get("engine_params") or {},
+        "purpose": payload.get("purpose") or state.get("purpose") or "",
+        "input_kind": payload.get("input_kind") or state.get("input_kind") or "",
+        "dimensionality": payload.get("dimensionality") or state.get("dimensionality") or "",
+        "mesh_fidelity": (payload.get("mesh_fidelity")
+                          or state.get("requested_mesh_fidelity") or ""),
+        "patches": payload.get("patches") or state.get("intake_patches") or [],
+        "request_txt": payload.get("request_txt") or state.get("request_txt") or "",
+    }
+
+
+def _previous_run_block(state: Mapping[str, Any]) -> str:
+    """THE TURN AFTER A RUN HAS ENDED. This conversation already produced a run on this geometry
+    and the user is back for another one - the same again, or with a change. The block tells the
+    model how the last run ended and what it was approved with, so every question it asks can
+    carry 'the same as last time' as the proposal. It records nothing: a new run dispatches only
+    after a fresh submit_requirements and a fresh approval, exactly like the first."""
+    prev = state.get("previous_run") or {}
+    last = _approved_last_time(state)
+    patches = ", ".join(
+        f"{p.get('name')}({p.get('role') or p.get('type')})" for p in last["patches"]
+        if isinstance(p, dict)) or "(none)"
+    ended = str(prev.get("status") or "").strip()
+    outcome = str(prev.get("outcome") or "").strip()
+    outcome_lines = ("\n".join("  " + ln for ln in outcome.splitlines() if ln.strip())
+                     if outcome else "  (no verdict text is on record for it)")
+    return (
+        "\n\n## ANOTHER RUN ON THE SAME GEOMETRY - the previous run has ended\n"
+        f"This conversation already approved a run (job {prev.get('job_id') or 'unknown'}), "
+        f"and it ended: {ended or 'the record of it is gone'}. The user was told:\n"
+        f"{outcome_lines}\n\n"
+        "That run was approved with:\n"
+        f"  engine:         {last['engine'] or '(unset)'}\n"
+        f"  engine_params:  {json.dumps(last['engine_params'])}\n"
+        f"  purpose:        {last['purpose'] or '(unset)'}\n"
+        f"  input_kind:     {last['input_kind'] or '(unset)'}\n"
+        f"  dimensionality: {last['dimensionality'] or '(unset)'}\n"
+        f"  mesh detail:    {last['mesh_fidelity'] or '(not stated)'}\n"
+        f"  patches:        {patches}\n"
+        f"  request_txt:    {last['request_txt'] or '(unset)'}\n\n"
+        "The uploaded geometry and its confirmed unit are unchanged; never ask about them again.\n"
+        "NOTHING above is recorded for the new run - it is your proposal, and the user's latest\n"
+        "message says what they want. Decide from it:\n"
+        "- The same again ('run it again', 'same as last time', a bare yes) → re-run\n"
+        "  preview_selected_admission on the FULL payload above and call submit_requirements\n"
+        "  with it. The application shows the summary and takes a fresh approval; you do not\n"
+        "  write the summary.\n"
+        "- A change (a number, a patch, the fluid, the domain size, the mesh detail) → apply it\n"
+        "  to the payload above, re-run preview_selected_admission on the FULL updated payload,\n"
+        "  and call submit_requirements.\n"
+        "- A different ENGINE → that is a new selection: call propose_engine_selection.\n"
+        "- The verdict above blames the request itself → say in one line what it needs, propose\n"
+        "  the specific change that addresses it, and ask whether to go with that.\n"
+        "- You cannot tell what they want → ask ONE question whose proposal is the same settings\n"
+        "  again.\n"
+        "If a tool answers that the engine selection is no longer confirmed, propose it again\n"
+        "and let the user confirm it in their next message.\n"
+        "You cannot start the mesh yourself and must never claim it has started or will start.\n"
+        "Do NOT re-ask for information already settled above."
+    )
+
+
 def _build_llm_messages(system: str, state_messages: list) -> list[dict]:
     messages: list[dict] = [{"role": "system", "content": system}]
     for m in state_messages:
@@ -766,6 +838,10 @@ async def node_intake(state: PipelineState) -> dict:
     system = compose_intake_system()
     if _awaiting_confirmation:
         system += _confirmation_block(state)
+    elif state.get("previous_run"):
+        # the conversation's run has ended and this turn starts another; once the new
+        # requirements are submitted the confirmation block above takes over
+        system += _previous_run_block(state)
     state_messages = state.get("messages", [])
     llm_messages = _build_llm_messages(system=system, state_messages=state_messages)
 

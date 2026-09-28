@@ -429,10 +429,14 @@ def render_message(fr: FinalResult) -> str:
                      "so no download is available. This is our fault, not your geometry's.")
     if cat == FailureCategory.attempts_exhausted and fr.attempts_max:
         lines.append(f"Attempts used: {fr.attempts}/{fr.attempts_max}.")
+    # WHAT THE USER CAN DO NEXT names something that exists: the same chat takes the next run
+    # on this geometry, with the last requirements as the proposal (agents/intake/message.py).
     if user_change:
-        lines.append("A change to the request is needed before this can be meshed.")
+        lines.append("A change to the request is needed before this can be meshed. Tell me "
+                     "what to change in this chat and I will set up a new run.")
     elif retry_ok:
-        lines.append("You can try running the job again.")
+        lines.append("You can run it again from this chat: say \"run it again\", or tell me "
+                     "what to change first.")
     return "\n".join(lines)
 
 

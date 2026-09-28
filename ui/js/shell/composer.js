@@ -189,10 +189,53 @@ async function watchGeometryCheck(sessionId) {
   }
 }
 
+/* AFTER A RUN ENDS THE CONVERSATION GOES ON. The next message starts another run on the same
+   geometry, with the last requirements as the proposal - the server takes it from there. The two
+   common answers get a chip each so they are one click; anything typed works the same way. The
+   offer is made only while this page holds the session: a deep-linked run has no conversation
+   here to continue. */
+const RUN_AGAIN_TEXT = "Run it again with the same requirements.";
+let _offerEl = null;
+
+export function offerNewRun() {
+  clearNewRunOffer();
+  const inner = $("input-inner");
+  if (!getState.sessionId() || !inner) return;
+  const row = document.createElement("div");
+  row.className = "rerun"; row.id = "rerun";
+  const lead = document.createElement("span");
+  lead.className = "rerun-lead"; lead.textContent = "Next:";
+  const again = document.createElement("button");
+  again.type = "button"; again.className = "rerun-chip"; again.id = "rerun-again";
+  again.textContent = "Run again";
+  again.onclick = () => sendText(RUN_AGAIN_TEXT);
+  const change = document.createElement("button");
+  change.type = "button"; change.className = "rerun-chip"; change.id = "rerun-change";
+  change.textContent = "Change something";
+  change.onclick = () => {
+    clearNewRunOffer();
+    enableInput();
+    setPlaceholder("Tell me what to change, and I will set up the next run…");
+  };
+  row.append(lead, again, change);
+  inner.parentElement.insertBefore(row, inner);
+  _offerEl = row;
+}
+
+export function clearNewRunOffer() {
+  if (_offerEl) { _offerEl.remove(); _offerEl = null; }
+}
+
 async function send() {
-  const inp = $("chat-input"), txt = inp.value.trim();
+  const inp = $("chat-input");
+  await sendText(inp.value.trim());
+}
+
+async function sendText(txt) {
+  const inp = $("chat-input");
   const sessionId = getState.sessionId();
   if (!txt || !sessionId) return;
+  clearNewRunOffer();
   inp.value = ""; autoResize(inp);
   deps.chat("user", txt);
   disableInput();

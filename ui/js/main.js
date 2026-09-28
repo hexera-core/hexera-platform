@@ -20,8 +20,8 @@ import { Notice } from "./render/notice.js";
 import { Stage, closeLightbox, openLightbox, setResultHandler } from "./render/stage.js";
 import { configure as configureStream, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
-import { configureComposer, disableInput, enableInput, mountComposer, setPlaceholder }
-  from "./shell/composer.js";
+import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
+  offerNewRun, setPlaceholder } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
@@ -46,8 +46,11 @@ configureStream({
   onEvent,
   onTerminal(job) {
     Stage.final(terminalResult(job, getState.outcomeMessage()));
+    // THE RUN IS OVER, THE CONVERSATION IS NOT: the same session takes the next run on this
+    // geometry - the same requirements again, or a change - and the composer says so.
     enableInput();
-    setPlaceholder("Start a new simulation…");
+    setPlaceholder("Run it again, or tell me what to change…");
+    offerNewRun();
   },
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
@@ -77,6 +80,7 @@ setResultHandler((data, anchor) => {
 /* what "start a new run" means: one definition, used by three callers */
 function attachJob(id, { replayHistory = false, message = "" } = {}) {
   if (message) Stage.chat("assistant", message);
+  clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
   beginRun(id);
   // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no

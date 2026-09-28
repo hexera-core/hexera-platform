@@ -36,6 +36,7 @@
 /* the conversation column is narrow now, so the turns use its full width */
 #app.wb .chat-col{max-width:none;padding:22px 20px 30px;gap:16px}
 #app.wb #input-inner{max-width:none;padding:0}
+#app.wb .rerun{max-width:none}
 #app.wb .im.user .bub{max-width:88%}
 #app.wb .e-shot img{width:96px;height:72px}
 
