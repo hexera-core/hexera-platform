@@ -44,6 +44,9 @@ def test_the_latest_naming_of_an_engine_is_the_users_choice(said):
     ["I used snappyHexMesh last time"],                        # a mention, not a choice (review, #92)
     ["my colleague ran snappyHexMesh on this before", "ok"],
     ["is snappyHexMesh any good for this"],
+    ["snappyHexMesh", "forget it"],                            # taken back without naming it (review, #92)
+    ["use snappy", "actually don't use that"],
+    ["snappyHexMesh", "no, wait"],
 ])
 def test_no_choice_or_a_later_word_against_it_is_no_choice(said):
     assert es.user_chose("snappy", said) is False

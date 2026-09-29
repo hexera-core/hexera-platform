@@ -253,6 +253,10 @@ def user_chose(engine: str, user_texts) -> bool:
         said = str(said or "")
         named = _vocab.engines_named_in(said, "")
         if not named:
+            # a later "forget it", "actually don't use that" takes the choice back although it names
+            # no engine (review on #92): the engine is asked again, never confirmed over it
+            if declines(want, said):
+                return False
             continue
         if named != [want] or "?" in said or declines(want, said):
             return False
