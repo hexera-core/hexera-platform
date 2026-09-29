@@ -39,6 +39,14 @@ def classify(message: str) -> str:
     return CORRECTION_INTENT
 
 
+#: The question under every summary, with the one plain answer that starts the run: the user types
+#: the answer (the console has no approve button), so the question names it.
+PROCEED_ASK = "Shall I proceed with mesh generation? Reply yes to start it, or tell me what to change."
+#: Said above the question when the user's last message was read as a change and changed nothing -
+#: a chatty yes ("ha, we're going in circles - yes, go ahead!") is not a bare yes, and without this
+#: the user saw the same summary again with no idea why.
+NOTHING_CHANGED = "Nothing in the setup changed with your last message."
+
 CLARIFICATION = (
     "I need a clear answer before spending anything: reply \"yes, proceed\" to run exactly the "
     "configuration shown above, or tell me what to change and I will re-check it and show you a "

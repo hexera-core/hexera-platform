@@ -488,8 +488,13 @@ class IntakeToolExecutor:
             flow_axis=args.get("flow_axis"),
             requirements_strict=bool(args.get("requirements_strict") or False),
             request_txt=args.get("request_txt"), source_ref=st.source_ref)
-        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK
-                             + "\n\nShall I proceed with mesh generation?")
+        # the approval this one replaces: withdrawn by the user's last message, and if that message
+        # changed nothing at all, the summary says so instead of reappearing unexplained
+        prior = st.approval or {}
+        unchanged = (prior.get("status") == ap.INVALIDATED
+                     and prior.get("intent_fingerprint") == at.fingerprint(intent_canon))
+        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + "\n\n"
+                             + (f"{ap.NOTHING_CHANGED} " if unchanged else "") + ap.PROCEED_ASK)
         st.approval = ap.create(
             owner_id=st.owner_id, session_id=st.session_id,
             selection_id=str((st.selection or {}).get("id") or ""),
