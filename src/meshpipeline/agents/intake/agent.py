@@ -951,6 +951,7 @@ async def node_intake(state: PipelineState) -> dict:
     _exec_state = IntakeExecutionState(
         session_id=_ctx.session_id, owner_id=_ctx.owner_id, revision=_ctx.revision,
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
+        user_texts=turn.user_texts(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval)
     _executor = IntakeToolExecutor(

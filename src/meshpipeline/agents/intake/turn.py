@@ -88,9 +88,14 @@ def defers_to_default(text) -> bool:
 
 
 def latest_user_text(state_messages) -> str:
-    user_msgs = [m for m in state_messages if isinstance(m, dict) and not m.get("_synthetic")
-                 and m.get("role") == "user"]
-    return str(user_msgs[-1].get("content", "")) if user_msgs else ""
+    texts = user_texts(state_messages)
+    return texts[-1] if texts else ""
+
+
+def user_texts(state_messages) -> tuple[str, ...]:
+    """Every message the user wrote, oldest first - never the application's synthetic nudges."""
+    return tuple(str(m.get("content", "")) for m in state_messages
+                 if isinstance(m, dict) and not m.get("_synthetic") and m.get("role") == "user")
 
 
 @dataclass(frozen=True)

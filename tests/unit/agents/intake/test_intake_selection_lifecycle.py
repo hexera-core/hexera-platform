@@ -99,8 +99,8 @@ def test_only_a_confirmed_selection_authorizes_admission():
 
 # the explicit selection flow, end to end
 
-def test_naming_an_engine_only_proposes_it_and_renders_the_canonical_statement():
-    state = _state("Use gmsh.")
+def test_an_engine_the_model_proposes_on_its_own_is_only_proposed_with_the_canonical_statement():
+    state = _state("Which engine would you suggest for this?")
     out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
                        _resp(content="never reached - the app asks for confirmation")])
     reply = out["messages"][-1]["content"]
@@ -111,6 +111,17 @@ def test_naming_an_engine_only_proposes_it_and_renders_the_canonical_statement()
     assert gate["selection"]["state"] == es.PROPOSED and gate["selection"]["engine"] == "gmsh"
     assert gate["admission"] is None
     assert not out.get("request_txt") and out.get("dispatch_confirmed") is False
+
+
+def test_an_engine_the_user_named_is_selected_without_asking_them_again():
+    # "Use gmsh." answered "Do you want to select Gmsh?" before it was asked: the application reads
+    # the user's own words, so the model needs no quote and the user no second question
+    out = _run(_state("Use gmsh."), [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
+                                     _resp(content="Gmsh it is - checking the setup next.")])
+    gate = out["intake_gate"]
+    assert gate["selection"]["state"] == es.CONFIRMED and gate["selection"]["engine"] == "gmsh"
+    assert "Do you want to select" not in out["messages"][-1]["content"]
+    assert gate["admission"] is None and out.get("dispatch_confirmed") is False
 
 
 def test_confirming_establishes_selection_and_unlocks_a_fresh_admission_preview():
@@ -196,12 +207,12 @@ def test_an_engine_correction_invalidates_the_previous_selection_and_its_admissi
     state = _state("Actually, switch the engine to cfmesh.",
                    gate={"selection": old_sel, "admission": old_tok})
     out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "cfmesh"}))]),
-                       _resp(content="unreached")])
+                       _resp(content="cfMesh it is - re-checking the setup.")])
     gate = out["intake_gate"]
-    assert gate["selection"]["engine"] == "cfmesh" and gate["selection"]["state"] == es.PROPOSED
+    # the user named cfMesh themselves, so it is selected at once - and still a NEW selection
+    assert gate["selection"]["engine"] == "cfmesh" and gate["selection"]["state"] == es.CONFIRMED
     assert gate["selection"]["id"] != old_sel["id"]
     assert gate["admission"] is None, "the correction must void the previous admission preview"
-    assert "Selected engine: cfMesh" in out["messages"][-1]["content"]
     assert out.get("dispatch_confirmed") is False
 
 

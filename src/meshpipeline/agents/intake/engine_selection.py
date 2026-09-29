@@ -237,6 +237,23 @@ def names_another_engine(engine: str, message: str) -> bool:
     return bool(_vocab.engines_named_in(message, (engine or "").strip().lower()))
 
 
+def user_chose(engine: str, user_texts) -> bool:
+    """Whether the user's own words already chose `engine`: the most recent of their messages that
+    names any engine names this one and no other, and neither asks about it nor declines it. The
+    user who answered "which engine?" with "snappyHexMesh" and was asked a setup question next was
+    then asked "Do you want to select snappyHexMesh?" - a question they had answered, because the
+    model proposed the engine a turn later and only the latest message was read for its name. A
+    later message that names another engine, or turns this one down, is the one that counts."""
+    want = (engine or "").strip().lower()
+    for text in reversed(tuple(user_texts or ())):
+        named = _vocab.engines_named_in(str(text or ""), "")
+        if not named:
+            continue
+        return (named == [want] and "?" not in str(text)
+                and not declines(want, str(text)))
+    return False
+
+
 def state_of(sel: dict | None) -> str:
     if not sel or not isinstance(sel, dict):
         return NO_SELECTION
