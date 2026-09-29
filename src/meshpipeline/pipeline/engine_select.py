@@ -1,5 +1,5 @@
 # Responsibility: Resolve which engine a run will use, from its purpose and geometry.
-# Boundaries: selection from declared capabilities; it validates no geometry.
+# Boundaries: selection from declared capabilities; it validates no geometry. A mid-run move is the fallback ladder's (pipeline/engine_fallback.py).
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from meshpipeline.contracts.pipeline_state import PipelineState
 
 
-def _log_selection(job_id: str, payload: dict) -> None:
+def _log_selection(job_id: str, payload: dict, *, op_id: str = "engine-select") -> None:
     try:
         _chosen = payload.get("chosen")
         if _chosen and "planner_required" not in payload:
@@ -23,10 +23,25 @@ def _log_selection(job_id: str, payload: dict) -> None:
         logger.debug("engine_select: could not declare planner_required: %s", exc)
     try:
         from meshpipeline.capture.logger import TrainingLogger
-        # the engine is selected once per run, so the phase alone identifies the operation
-        TrainingLogger(job_id).log("engine_select_run", payload, op_id="engine-select")
+        # the start-of-run selection is one operation per run; each ladder switch is its own,
+        # named by the attempt it opens (op_id), so a replay of either dedupes against itself
+        TrainingLogger(job_id).log("engine_select_run", payload, op_id=op_id)
     except Exception as exc:
         logger.warning("engine_select: could not log training event: %s", exc)
+
+
+def _ladder_facts(state, chosen: str) -> dict:
+    # What the corpus learns from: who chose the engine, and the rungs this request could fall
+    # back to (each marked same-contract or not). Evidence, never load-bearing: a failure to
+    # compute it records nothing rather than failing the selection.
+    try:
+        from meshpipeline.pipeline import engine_fallback as lad
+        st = {**state, "engine": chosen}
+        return {"engine_source": lad.engine_source(st),
+                "ladder": [r.as_dict() for r in lad.ladder(st)]}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine_select: could not compute the ladder: %s", exc)
+        return {}
 
 
 async def _publish(job_id: str, text: str, op_id: str) -> None:
@@ -56,7 +71,8 @@ async def node_engine_select(state: PipelineState) -> dict:
         logger.info("node_engine_select: engine %r pinned (%s) - job_id=%s",
                     state.get("engine"), source, job_id)
         _log_selection(job_id, {"chosen": state.get("engine"), "source": source,
-                                "model": None, "usage": None})
+                                "model": None, "usage": None,
+                                **_ladder_facts(state, state["engine"])})
         return {}
 
     # Topology is DERIVED from the declared purpose, not read back out of engine_params
@@ -73,7 +89,7 @@ async def node_engine_select(state: PipelineState) -> dict:
                     forced, candidates, job_id)
         await _publish(job_id, f"Mesh engine: {forced}", "forced")
         _log_selection(job_id, {"chosen": forced, "source": "topology_internal",
-                                "model": None, "usage": None})
+                                "model": None, "usage": None, **_ladder_facts(state, forced)})
         return {"engine": forced}
 
     # direct dispatch without any declaration: the deterministic default
@@ -82,5 +98,5 @@ async def node_engine_select(state: PipelineState) -> dict:
                 engine, job_id)
     await _publish(job_id, f"Mesh engine: {engine}", "resolved")
     _log_selection(job_id, {"chosen": engine, "source": "default",
-                            "model": None, "usage": None})
+                            "model": None, "usage": None, **_ladder_facts(state, engine)})
     return {"engine": engine}

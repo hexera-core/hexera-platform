@@ -339,6 +339,18 @@ def _incr_delivery_count(job_id: str) -> int:
         return 1
 
 
+def _ladder_record(final_state, *, succeeded: bool, system_failure: bool, jlog) -> dict:
+    # The ladder's closing record is an ACCOUNT, never a verdict: whatever goes wrong computing it
+    # leaves the terminal status and message exactly as they would have been without it.
+    try:
+        from meshpipeline.pipeline.engine_fallback import final_record
+        return final_record(final_state, succeeded=succeeded, system_failure=system_failure)
+    except Exception as exc:  # noqa: BLE001
+        jlog.warning("engine ladder: could not build the closing record (%s) - the verdict "
+                     "stands without it", exc)
+        return {}
+
+
 def _emit_intake_events(job_id: str, intake_events: list) -> None:
     from meshpipeline.capture.logger import TrainingLogger
     tlogger = TrainingLogger(job_id)
@@ -574,6 +586,7 @@ async def _run_async(req: JobRequest) -> dict:
         _disposition = _prep.disposition
 
         from meshpipeline.pipeline.state_factory import (
+            engine_provenance,
             make_pipeline_state,
             pin_selected_engine,
         )
@@ -656,6 +669,12 @@ async def _run_async(req: JobRequest) -> dict:
 
             await _js.seed_dispute_run(initial_state, req.user_dispute, job_id=job_id, jlog=jlog,
                                        publish=_announce_dispute)
+
+        # WHO CHOSE THE ENGINE, read once from the approved submission the dispatch carries. The
+        # fallback ladder moves only an engine the user did not name (pipeline/engine_fallback.py);
+        # an unreadable provenance reads as the user's, so it is never switched on a guess.
+        initial_state["engine_source"] = engine_provenance(
+            req.intake_events, _pinned_engine, dispute=bool(req.user_dispute))
 
         initial_state["schema_version"] = STATE_SCHEMA_VERSION
         # MAY THIS RUN BEGIN? pipeline_budget anchors the absolute top-level deadline and decides;
@@ -911,6 +930,9 @@ async def _run_async(req: JobRequest) -> dict:
             TerminalAssembly,
             assemble_and_finalize,
         )
+        # asked ONCE: the status's timeout account and the ladder's "no offer on a timeout" must
+        # read the same answer
+        _timed_out = _pb.is_exhausted(_pipeline_deadline)
         _publication = await assemble_and_finalize(
             AsyncSessionLocal,
             TerminalAssembly(
@@ -930,7 +952,12 @@ async def _run_async(req: JobRequest) -> dict:
                 api_failure=api_failure,
                 attempts=int(final_state.get("retry_count", 0) or 0),
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
-                pipeline_timed_out=_pb.is_exhausted(_pipeline_deadline),
+                pipeline_timed_out=_timed_out,
+                # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
+                # no mesh came out - the one offer the user can accept in a sentence
+                engine_ladder=_ladder_record(
+                    final_state, succeeded=final_status == JobStatus.succeeded,
+                    system_failure=bool(api_failure) or _timed_out, jlog=jlog),
                 requirement_caveats=(list(final_state.get("requirement_caveats") or [])
                                      + ([_layer_caveat] if _layer_caveat else [])),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),

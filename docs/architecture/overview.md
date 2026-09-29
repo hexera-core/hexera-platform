@@ -28,7 +28,7 @@ Browser ──HTTP──> Console (Next.js) ──signed proxy──> API (state
                               Celery worker ──runs──> LangGraph state machine
 
   intake → engine_select → geometry_admission → builder → executor
-         → {classifier → builder}* → reviewer → END
+         → {classifier → engine_fallback → builder}* → reviewer → END
     (any node may set api_failure → node_failure_handler sink; a geometry-admission
      rejection short-circuits builder entirely: the executor reports it)
 
@@ -216,7 +216,7 @@ Product code above the contracts never imports an adapter and never selects a pr
 |---|---|
 | `agents/` | multi-turn LLM agents, one package each: `intake/`, `builder/`, `reviewer/` (each owns its `settings.py`) |
 | `engines/` | one bundle per engine (`cfmesh`, `snappy`, `snappy_multiregion`, `gmsh`, `vmtk`: all implemented; the two-state contract forbids planned/experimental rows), each owning its `spec`, `authoring`, `criteria`, gates, runner, `pack`, `viewer` and `solvability`; the shared framework (`base`, `registry`, `purposes`, `admission`, `quality_criteria`, `dispatch`, `manifest`, `mesh_history`) sits beside them |
-| `pipeline/` | single-pass orchestration stages: `graph` (the composition root for nodes), `engine_select`, `geometry_admission`, `executor`, `classifier`, `outcome`, `state_factory`, `data_contract`, `enums` |
+| `pipeline/` | single-pass orchestration stages: `graph` (the composition root for nodes), `engine_select`, `engine_fallback`, `geometry_admission`, `executor`, `classifier`, `outcome`, `state_factory`, `data_contract`, `enums` |
 | `application/` | neutral use cases: `pipeline_run` (dispatch + the run body), `job_service`, `artifact_uploader`, `maintenance/{cleanup,export}` |
 | `api/` | HTTP only, adapter-neutral: `app` (assembly), `security`, `v1/{chat,simulation,upload,ws,client_config,router}`, `middleware/hardening`, `schemas/` |
 | `cad/` · `render/` · `sandbox/` | geometry (tessellation, analysis, stl_io, staging, surface checks) · viewer/review artifacts + `review_palette.py` (renderer-owned review presentation) · the LLM code jail (`safe_exec`, `sandbox`, `sandbox_exec`) |

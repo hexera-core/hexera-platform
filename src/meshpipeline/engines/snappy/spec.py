@@ -8,6 +8,7 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
     InputContract,
@@ -256,6 +257,8 @@ SPEC = EngineSpec(
         downstream=DownstreamTarget(
             solvers=("OpenFOAM",),   # the polyMesh feeds OpenFOAM's FV solvers
         ),
+        # an OpenFOAM hex-dominant mesh snapped ONTO the surface, with inflated prism layers
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
             # a production snappy mesh legitimately takes 20-35 min off-box

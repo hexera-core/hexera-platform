@@ -139,6 +139,12 @@ class FinalResult:
     # machine-measured requirement near-misses delivered WITH the mesh; authored only by the
     # executor's typed gate, stated verbatim on every surface, waivable by nobody
     requirement_caveats: list = field(default_factory=list)
+    # THE FALLBACK LADDER'S ACCOUNT (pipeline/engine_fallback.final_record): the approved engine,
+    # every attempt's engine, each switch and why, the engine that built the delivered mesh, and
+    # on a mesh failure the one offer. Added without a schema bump: it defaults to {}, a reader of
+    # an older record reads {}, and an older reader ignores a key it does not know.
+    engine_ladder: dict = field(default_factory=dict)
+
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
     finalized_at: str = ""
@@ -179,6 +185,8 @@ class FinalResult:
             reviewer_verdict=(None if d.get("reviewer_verdict") is None
                               else ReviewVerdict(d["reviewer_verdict"])),
             requirement_caveats=list(d.get("requirement_caveats") or []),
+            engine_ladder=(dict(d["engine_ladder"])
+                           if isinstance(d.get("engine_ladder"), Mapping) else {}),
             review_execution=ReviewExecution(d.get("review_execution", "not_reached")),
             failed_gate=d.get("failed_gate", ""),
             patch_contract_ok=d.get("patch_contract_ok"), outcome_code=d.get("outcome_code", ""),
@@ -414,7 +422,28 @@ def _render_fidelity(fr: FinalResult) -> str:
     return ""
 
 
+def with_engine_ladder(fr: FinalResult, record: Mapping | None) -> FinalResult:
+    import dataclasses
+    return dataclasses.replace(fr, engine_ladder=dict(record or {}))
+
+
 def render_message(fr: FinalResult) -> str:
+    """The closing message: the account of the outcome, then the fallback ladder's line - on a
+    success that another engine built, which one and why; on a mesh failure, the one offer."""
+    text = _render_outcome(fr)
+    ladder = fr.engine_ladder if isinstance(fr.engine_ladder, Mapping) else {}
+    if fr.status == TerminalStatus.succeeded:
+        from meshpipeline.pipeline.engine_fallback import delivered_note
+        note = delivered_note(ladder)
+        return "\n".join((text, note)) if note else text
+    offer = ladder.get("offer")
+    if (fr.status == TerminalStatus.failed and isinstance(offer, Mapping)
+            and str(offer.get("text") or "").strip()):
+        return "\n".join((text, str(offer["text"]).strip()))
+    return text
+
+
+def _render_outcome(fr: FinalResult) -> str:
     lines: list[str] = []
     if fr.status == TerminalStatus.succeeded:
         if fr.requirement_caveats:

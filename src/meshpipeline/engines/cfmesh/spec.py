@@ -9,6 +9,7 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
     InputContract,
@@ -207,6 +208,9 @@ SPEC = EngineSpec(
         downstream=DownstreamTarget(
             solvers=("OpenFOAM",),   # the polyMesh feeds OpenFOAM's FV solvers
         ),
+        # an OpenFOAM hex-dominant octree mesh whose wall is STAIRCASED (the descriptor above), and
+        # whose boundaryLayers the descriptor itself calls unreliable for a y+ target
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="staircased", prism_layers=False),
         run_policy=RunPolicy(
             required_files=("system/meshDict",),
             # 20 MINUTES: at industry density (the passage caps put ~13 cells across every

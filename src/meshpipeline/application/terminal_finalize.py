@@ -161,6 +161,10 @@ class TerminalAssembly:
     attempts: int = 0
     attempts_max: int = 0
     pipeline_timed_out: bool = False
+    #: the fallback ladder's closing record (pipeline/engine_fallback.final_record) - carried into
+    #: the final result verbatim; {} when the run never classified a failure
+    engine_ladder: dict = field(default_factory=dict)
+
     #: node_failure_handler's blameless SYSTEM-failure note, honoured only when api_failure is set
     pre_composed_message: str = ""
     #: machine-measured requirement near-misses for the delivered attempt ([] = fully conforming)
@@ -203,6 +207,8 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
         pipeline_timed_out=assembly.pipeline_timed_out)
+
+    result = _fr.with_engine_ladder(result, assembly.engine_ladder)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
     closing = (assembly.pre_composed_message
