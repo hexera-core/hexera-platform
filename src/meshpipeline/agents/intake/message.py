@@ -418,6 +418,10 @@ async def withdraw_proposal_for_unit_change(db, session, *, session_repo=None) -
 #: What the chat says when a unit change could not be made safely: nothing was changed.
 UNIT_CHANGE_FAILED = ("I couldn't switch the file to {unit} just now: the sizes you confirmed on the picture "
                       "could not be read, so I changed nothing. Please say it again in a moment.")
+#: ... and when the stored sizes do not say what unit they are in, so trying again will not help.
+UNIT_CHANGE_UNSCALED = ("I couldn't switch the file to {unit}: I can't tell which unit the sizes you confirmed on "
+                        "the picture were read in, so I changed nothing. Tell me the opening sizes and the "
+                        "reference length again and I'll use those.")
 
 
 async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: list, revision: str,
@@ -445,7 +449,8 @@ async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: 
         # them would be the very mismatch this turn exists to prevent. Said, not guessed.
         logger.warning("intake message: the unit change to %s was not made (%s) - session=%s",
                        unit.value, exc, inbound.session_id)
-        reply = UNIT_CHANGE_FAILED.format(unit=uc.UNIT_WORDS[unit])
+        reply = (UNIT_CHANGE_UNSCALED if getattr(exc, "unscaled", False)
+                 else UNIT_CHANGE_FAILED).format(unit=uc.UNIT_WORDS[unit])
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
         return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
                               transition=GateTransition(revision=revision))

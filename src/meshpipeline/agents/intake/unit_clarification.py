@@ -154,9 +154,11 @@ _UNIT_ONLY = re.compile(_UNIT_WORD)
 #: A message that opens like a question ("is the file in metres", "what if it's inches").
 _ASKS = re.compile(r"^\W*(?:is|are|was|were|am|do|does|did|can|could|should|would|will|shall|may|might|has|"
                    r"have|what|which|how|why|where|when|who|isn'?t|aren'?t|wasn'?t|doesn'?t|don'?t)\b")
-#: A message that doubts rather than says ("not sure if it's in metres", "maybe inches").
-_UNSURE = re.compile(r"\b(?:not sure|unsure|maybe|perhaps|probably not|might be|could be|whether|wonder|"
-                     r"don'?t know|no idea|if (?:it|the|they|this|that|its|it's)\b)")
+#: A message that doubts rather than says ("not sure if it's in metres", "maybe inches"), or
+#: opens on a condition ("if it's in metres, use snappy"). An "if" later in a statement ("the
+#: file is in metres if that helps") is not a doubt about the unit.
+_UNSURE = re.compile(r"^\W*if\b|\b(?:not sure|unsure|maybe|perhaps|probably not|might be|could be|whether|"
+                     r"wonder|don'?t know|no idea)\b")
 #: The little words a reply that is only a unit may carry around it.
 _REPLY_FILLER = frozenset({"no", "nope", "not", "sorry", "oh", "ah", "actually", "really", "it", "it's", "its",
                            "is", "in", "the", "all", "they're", "theyre", "are", "that's", "thats", "wait",

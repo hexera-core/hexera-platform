@@ -180,6 +180,30 @@ async def test_two_changes_in_a_row_re_read_from_the_confirmation_and_never_comp
 
 
 @pytest.mark.asyncio
+async def test_a_confirmation_stored_without_its_scale_is_read_in_the_unit_it_records_not_the_current_one(monkeypatch):
+    """mm -> m -> in again, with a confirmation that carries its unit but not its scale: the
+    numbers are the millimetre reading's, so the opening is still 106.68 mm - never re-read from
+    the session's current unit (metres), which would make it 0.107 mm."""
+    now_m = {"unit": "m", "scale_to_metres": 1.0, "basis": "user_confirmed"}
+    repo, _ = _wire(monkeypatch, stored={"confirmed.json": {**DUCT, "scale_to_m": None}}, current=now_m)
+    await uch.change_unit(None, _session(), owner_id="alice", organization_id="", unit=LengthUnit.inch,
+                          session_repo=repo)
+    assert repo.set_intake_patches.await_args.args[2][0]["diameter_mm"] == 106.68
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_that_records_neither_scale_nor_unit_changes_nothing(monkeypatch):
+    now_m = {"unit": "m", "scale_to_metres": 1.0, "basis": "user_confirmed"}
+    repo, recorded = _wire(monkeypatch, stored={"confirmed.json": {**DUCT, "scale_to_m": None, "unit": None}},
+                           current=now_m)
+    with pytest.raises(uch.UnitChangeError) as refused:
+        await uch.change_unit(None, _session(), owner_id="alice", organization_id="", unit=LengthUnit.inch,
+                              session_repo=repo)
+    assert refused.value.unscaled is True
+    assert recorded == [] and repo.bind_geometry_interpretation.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_the_unit_already_held_changes_nothing_but_becomes_the_users_word(monkeypatch):
     """"It is in millimetres", said of a file that declares millimetres: nothing to re-read, no
     reply of its own - but the user has now said so, and the stage stops offering the other

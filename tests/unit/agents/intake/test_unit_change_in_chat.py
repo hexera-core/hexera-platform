@@ -36,6 +36,7 @@ SID = uuid.UUID("eeee1111-2222-4222-b222-eeeeeeeeeeee")
     ("metres, not mm", LengthUnit.metre),
     ("that's metres", LengthUnit.metre),
     ("sorry, I meant inches", LengthUnit.inch),
+    ("the file is in metres if that helps", LengthUnit.metre),     # an "if" later is no doubt
 ])
 def test_a_sentence_that_says_what_unit_the_file_is_in_names_it(said, unit):
     assert uc.stated_unit(said) is unit
@@ -59,6 +60,7 @@ def test_a_sentence_that_says_what_unit_the_file_is_in_names_it(said, unit):
     "not sure if it's in metres",             # a doubt
     "maybe the file is in inches",
     "I don't know whether the units are mm",
+    "if it's in metres, use snappy",          # a condition
     "",
 ])
 def test_a_sentence_that_only_mentions_a_unit_names_nothing(said):
@@ -79,6 +81,13 @@ async def test_a_unit_change_that_cannot_re_read_the_confirmed_sizes_changes_not
     assert "changed nothing" in outcome.reply
     repo.set_intake_gate.assert_not_awaited()
     assert repo.append_message.await_args.args[2:] == ("assistant", outcome.reply)
+
+    async def _unscaled(*a, **k):
+        raise uch.UnitChangeError("the confirmed geometry check does not say what unit its sizes are in", unscaled=True)
+    monkeypatch.setattr(uch, "change_unit", _unscaled)
+    outcome = await msg._settle(inbound, AsyncMock(), gate={}, locked=_locked(), messages=[], revision="r1",
+                                session_repo=repo, logger=MagicMock())
+    assert outcome.reply == msg.UNIT_CHANGE_UNSCALED.format(unit="metres")          # trying again won't help
 
 
 @pytest.mark.asyncio

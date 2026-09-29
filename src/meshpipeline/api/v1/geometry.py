@@ -428,8 +428,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     store = get_object_store()
     key = check_object_key(str(session_id), "confirmed.json")
     earlier = _stored_bytes(store, key)
+    # the copy says the scale its sizes are in - the unit in force, which every length above was
+    # re-read into - so a later change of unit re-reads it from that, never from a guess
     record = {"confirmed_at": time.time(), "owner_id": owner_id, "message": message,
-              "patches": patches, **body.model_dump()}
+              "patches": patches, **body.model_dump(), "scale_to_m": float(scale)}
     ours = json.dumps(record).encode()
     _put_bytes(store, key, ours)
 

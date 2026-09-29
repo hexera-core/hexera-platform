@@ -85,7 +85,26 @@ def withdraw_live_approval(gate: dict | None) -> tuple[dict, bool]:
 
 class UnitChangeError(RuntimeError):
     """The confirmed sizes could not be read, so the unit is not changed at all: a new unit bound
-    over old sizes is exactly the mismatch this module exists to prevent."""
+    over old sizes is exactly the mismatch this module exists to prevent. `unscaled` says the
+    record was read but nothing tells what unit its sizes are in - trying again will not help."""
+
+    def __init__(self, message: str, *, unscaled: bool = False):
+        super().__init__(message)
+        self.unscaled = unscaled
+
+
+def _confirmed_scale(record: dict) -> float | None:
+    """The scale a stored confirmation's sizes are in: its own `scale_to_m`, else the scale of
+    the unit it records. Never the session's current unit - after an earlier change that is not
+    the unit the stored numbers were confirmed in."""
+    try:
+        if record.get("scale_to_m"):
+            return float(record["scale_to_m"])
+        if record.get("unit"):
+            return scale_to_metres(LengthUnit(str(record["unit"])))
+    except (TypeError, ValueError):
+        return None
+    return None
 
 
 def _stored(session_id: str, name: str, *, strict: bool = False) -> dict | None:
@@ -140,16 +159,18 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
     new_scale = scale_to_metres(unit)
     old_scale = float(current["scale_to_metres"]) if current else None
     # THE CONFIRMED SIZES ARE READ AND RE-READ BEFORE ANYTHING IS WRITTEN: a store that cannot be
-    # read, or a confirmation whose scale nobody knows, stops the change here (UnitChangeError),
-    # so the unit is never bound over sizes left in the old one. A confirmation stored without its
-    # scale was made in the unit in force then - the one this change replaces.
+    # read, or a confirmation whose scale nothing records, stops the change here
+    # (UnitChangeError), so the unit is never bound over sizes left in the old one. The stored
+    # confirmation is never rewritten, so its scale is always the one it was confirmed under.
     again = None
     if old_unit != unit.value:
         confirmed = _stored(sid, "confirmed.json", strict=True)
         if confirmed is not None:
-            again = reread_record(confirmed, scale_to_metres=new_scale, unit=unit.value, confirmed_scale=old_scale)
+            again = reread_record(confirmed, scale_to_metres=new_scale, unit=unit.value,
+                                  confirmed_scale=_confirmed_scale(confirmed))
             if again is None:
-                raise UnitChangeError("the confirmed geometry check does not say what scale its sizes were read under")
+                raise UnitChangeError("the confirmed geometry check does not say what unit its sizes are in",
+                                      unscaled=True)
     recorded = await GeometryInterpretationRepository().record(
         db, owner_id=owner_id, geometry_source_id=session.geometry_source_id, unit=unit,
         basis=ResolutionBasis.user_confirmed,

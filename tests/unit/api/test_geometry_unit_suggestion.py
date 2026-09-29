@@ -141,7 +141,7 @@ async def test_a_unit_changed_on_the_stage_withdraws_a_live_proposal_in_the_same
     from meshpipeline.persistence.repositories import session_repository as srmod
 
     live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600}
-    session, _ = served(_scouted([6.836, 6.595, 117.0]), DECLARED_MM, messages=[], intake_gate={"approval": live})
+    session, store = served(_scouted([6.836, 6.595, 117.0]), DECLARED_MM, messages=[], intake_gate={"approval": live})
     written: list = []
 
     class _Interps:
@@ -174,3 +174,6 @@ async def test_a_unit_changed_on_the_stage_withdraws_a_live_proposal_in_the_same
     assert [w[0] for w in written] == ["bind", "gate"]
     assert session.intake_gate["approval"]["status"] == ap.INVALIDATED
     assert out["next"] is None                                  # the turn failed; the withdrawal stands
+    # the stored copy says the scale its sizes are in, for any later change to re-read from
+    stored = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert stored["scale_to_m"] == 1.0 and stored["unit"] == "m" and stored["reference_length_mm"] == 117000.0
