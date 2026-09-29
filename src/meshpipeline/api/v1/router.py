@@ -15,11 +15,15 @@ from meshpipeline.api.v1 import (
     simulation,
     stripe_webhook,
     upload,
+    upload_direct,
     ws,
 )
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(upload.router,     prefix="/upload",     tags=["upload"])
+# THE DIRECT UPLOAD, under the same prefix: a large file's bytes go straight to the object store,
+# because a hosted front end refuses a request body over 32 MiB before the API sees it.
+router.include_router(upload_direct.router, prefix="/upload", tags=["upload"])
 router.include_router(client_config.router, prefix="/client-config", tags=["client-config"])
 router.include_router(simulation.router, prefix="/simulation", tags=["simulation"])
 router.include_router(ws.router,         prefix="/ws",         tags=["stream"])

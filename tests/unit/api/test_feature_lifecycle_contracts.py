@@ -167,6 +167,11 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/simulation/{job_id}/surface"),
         ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
         ("POST", "/api/v1/upload/step-file"),
+        # THE DIRECT UPLOAD for a file too large for a request body: begin (a signed PUT URL for
+        # one object), then finish (the multipart route's checks on the bytes that arrived). The
+        # console sends every large file this way; API clients follow the same three steps.
+        ("POST", "/api/v1/upload/direct"),
+        ("POST", "/api/v1/upload/direct/{upload_id}/finalize"),
         ("GET", "/api/v1/geometry/{session_id}/check"),          # the geometry check: proposal + pictures
         ("POST", "/api/v1/geometry/{session_id}/check/confirm"),  # what the user confirmed on the picture
         ("GET", "/api/v1/geometry/{session_id}/check/skin"),      # the part's skin, for the 3D stage
@@ -231,6 +236,24 @@ def test_the_reconciliation_claim_is_due_time_aware():
     assert "next_attempt_at" in claim, "the claim ignores the schedule the column exists for"
     assert "func.now()" in claim, "the due comparison must be made by the database, not the worker"
     assert "skip_locked=True" in claim, "concurrent claimers must still be mutually exclusive"
+
+
+def test_the_source_cleanup_claim_honours_an_upload_hold():
+    # A direct upload's bytes may still be arriving long after its intent was committed; a sweep
+    # that claimed it anyway would close it as "absent" or delete the object mid-transfer.
+    import inspect
+
+    from meshpipeline.persistence.repositories.source_cleanup_repository import (
+        SourceCleanupRepository,
+    )
+
+    claim = inspect.getsource(SourceCleanupRepository.claim_pending)
+    assert "next_attempt_at" in claim, "the claim ignores the hold the column exists for"
+    assert "is_(None)" in claim, "an intent with no hold (every multipart upload) must stay due"
+    assert "func.now()" in claim, "the due comparison must be made by the database"
+    assert "skip_locked=True" in claim, "concurrent claimers must still be mutually exclusive"
+    record = inspect.getsource(SourceCleanupRepository.record_intent)
+    assert "next_attempt_at" in record and "func.now()" in record
 
 
 def test_the_retry_delay_is_a_catalogue_setting():

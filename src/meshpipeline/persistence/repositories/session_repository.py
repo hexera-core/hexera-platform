@@ -30,6 +30,21 @@ class SessionRepository:
                                    organization_id=organization_id)))
         return res.scalar_one_or_none()
 
+    async def get_for_owner_by_geometry_source(self, db: AsyncSession,
+                                               geometry_source_id: uuid.UUID, owner_id: str, *,
+                                               organization_id: str = "") -> ChatSession | None:
+        # The conversation an upload opened, found from the upload's side - how a repeated finish
+        # of one direct upload answers with the session the first finish created. Scoped like every
+        # tenant read; the first-created row wins should a source ever be shared.
+        res = await db.execute(
+            select(ChatSession).where(
+                ChatSession.geometry_source_id == geometry_source_id,
+                tenant_scope.scope(ChatSession, owner_id=owner_id,
+                                   organization_id=organization_id))
+            .order_by(ChatSession.created_at, ChatSession.id)
+            .limit(1))
+        return res.scalar_one_or_none()
+
     async def list_for_owner(self, db: AsyncSession, owner_id: str, *,
                              organization_id: str = "", limit: int = 25,
                              before: tuple[datetime, uuid.UUID] | None = None

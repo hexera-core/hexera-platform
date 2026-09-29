@@ -103,6 +103,35 @@ class MinioStore:
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"minio signed url failed for {key}: {exc}") from exc
 
+    def create_upload_url(self, *, object_key: str, expires_in: timedelta) -> str:
+        key = normalize_key(object_key)
+        try:
+            # Signed against the PUBLIC address for the reason create_download_url is: the client
+            # holding it is a browser or a script outside this process's network, and the host is
+            # part of the signature. Only the host is signed, so the client may send the body with
+            # any Content-Type; the grant is a PUT of this one key until the URL expires. On Google
+            # Cloud Storage this is its S3-interoperability endpoint, which accepts SigV4 URLs made
+            # with the deployment's HMAC key exactly as it accepts the signed downloads.
+            client = self._client(endpoint=provcfg.MINIO_PUBLIC_ENDPOINT)
+            return client.presigned_put_object(self._bucket, key, expires=expires_in)
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"minio signed upload url failed for {key}: {exc}") from exc
+
+    def stat_object(self, *, object_key: str) -> StoredObject:
+        key = normalize_key(object_key)
+        from minio.error import S3Error
+        try:
+            st = self._client().stat_object(self._bucket, key)
+        except S3Error as exc:
+            if exc.code in ("NoSuchKey", "NoSuchObject"):
+                raise ObjectNotFound(f"minio object not found: {key}") from exc
+            raise StorageError(f"minio stat failed for {key}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"minio stat failed for {key}: {exc}") from exc
+        return StoredObject(object_key=key, size_bytes=int(st.size or 0),
+                            content_type=getattr(st, "content_type", None),
+                            checksum=(getattr(st, "etag", None) or "").strip('"') or None)
+
     def delete_object(self, *, object_key: str) -> None:
         key = normalize_key(object_key)
         try:
