@@ -11,6 +11,7 @@ from typing import Any
 
 from meshpipeline.application.artifact_policy import required_output_classes
 from meshpipeline.contracts.review_outcome import ReviewExecution, ReviewVerdict
+from meshpipeline.errors import FailureClass, user_message_for
 
 # v5: `requirement_caveats` - machine-measured requirement near-misses delivered WITH the
 # mesh (empty on every fully conforming run). v4 records predate the field and are read in a
@@ -39,12 +40,32 @@ class FailureCategory(str, enum.Enum):
     native_execution_failed = "native_execution_failed"
     required_output_missing = "required_output_missing"
     gate_failed = "gate_failed"
+    # The INPUT was refused before any mesh was built: the admission gate measured the surface
+    # and the engine could not service it (a self-intersecting surface for a fill engine, say).
+    # It used to land as `gate_failed`, whose headline - "the mesh did not meet the required
+    # quality checks" - describes a mesh that never existed and sends the user to retry a run
+    # that can only refuse again. This is the user's CAD, and the next step is to fix it.
+    input_rejected = "input_rejected"
     review_rejected = "review_rejected"
     attempts_exhausted = "attempts_exhausted"
     delivery_failed = "delivery_failed"
     timed_out = "timed_out" # top-level pipeline-deadline exhaustion
     internal_pipeline_failure = "internal_pipeline_failure"
+    # The worker holding the job died and the reaper failed the run. Authored by the reaper
+    # alone (see worker_lost_result); never derived from graph facts, because a run that reaches
+    # terminal derivation still has a worker.
+    worker_lost = "worker_lost"
+    # No worker ever picked the job up: it sat `pending`/`queued` past the reaper's ceiling. Also
+    # the reaper's alone (never_started_result). Not `worker_lost` - no worker ever held it, and
+    # telling the user one was lost gives them a failure that did not happen.
+    never_started = "never_started"
     # NOTE: no `cancelled` - a cancel is the owner's decision, not a failure (see TerminalStatus).
+
+
+#: The `executor_failed_gate` value the executor short-circuit stamps when node_geometry_admission
+#: refused the INPUT (pipeline/executor.py). The one gate whose failure is the user's CAD rather
+#: than the run: it derives `input_rejected`, every other gate derives `gate_failed`.
+GEOMETRY_INPUT_GATE = "geometry"
 
 
 # category → (headline, whether a mesh deliverable MAY exist, retry-sensible, user-change-needed)
@@ -59,6 +80,8 @@ _CATEGORY_META: dict[FailureCategory, tuple[str, bool, bool, bool]] = {
         "The mesh run finished without producing the required output.", False, True, False),
     FailureCategory.gate_failed: (
         "The mesh did not meet the required quality checks.", True, True, False),
+    FailureCategory.input_rejected: (
+        "The geometry cannot be meshed as it is.", False, False, True),
     FailureCategory.review_rejected: (
         "The mesh did not pass review.", True, True, False),
     FailureCategory.attempts_exhausted: (
@@ -69,6 +92,19 @@ _CATEGORY_META: dict[FailureCategory, tuple[str, bool, bool, bool]] = {
         "The job ran out of time before completing.", False, True, False),
     FailureCategory.internal_pipeline_failure: (
         "Something went wrong on our side while running the job.", False, True, False),
+    FailureCategory.worker_lost: (
+        "The worker running this job was lost before it finished.", False, True, False),
+    FailureCategory.never_started: (
+        "No worker picked this run up.", False, True, False),
+}
+
+# Categories whose closing sentence is OWNED by errors.py: the same class the rest of the
+# pipeline classifies with, so the console, the socket fallback and a dead-letter all say one
+# thing about whose problem it is and what to do next.
+_CATEGORY_CLASS: dict[FailureCategory, FailureClass] = {
+    FailureCategory.input_rejected: FailureClass.DOMAIN_REJECTED,
+    FailureCategory.worker_lost:    FailureClass.WORKER_LOST,
+    FailureCategory.never_started:  FailureClass.NEVER_STARTED,
 }
 
 
@@ -339,6 +375,10 @@ def _derive_failure_category(*, executor_success: bool, verdict: ReviewVerdict |
     # 2. A technical gate the mesh ACTUALLY failed. Checked before the review because a failed
     #    hard gate short-circuits back to authoring without reaching the reviewer, so any verdict
     #    present alongside it is retained from an earlier attempt, not a judgement of this mesh.
+    #    The INPUT gate is the one exception in kind: nothing was built, the CAD itself was
+    #    refused, and that is the user's to fix - not a quality check a retry could pass.
+    if failed_gate == GEOMETRY_INPUT_GATE:
+        return FailureCategory.input_rejected
     if failed_gate:
         return FailureCategory.gate_failed
     # 3. An ELIGIBLE reviewer rejection. Reachable only when the review concluded - see the
@@ -460,6 +500,12 @@ def render_message(fr: FinalResult) -> str:
         FailureCategory.internal_pipeline_failure
     headline, _may_have_mesh, retry_ok, user_change = _CATEGORY_META[cat]
     lines.append("Mesh generation did not complete successfully.")
+    if cat in _CATEGORY_CLASS:
+        # ONE SENTENCE OWNS these: whose problem it is and the next step, in errors.py's words.
+        # The headline is not repeated in front of it - the class message already opens with it.
+        lines.append("No downloadable mesh deliverable is available.")
+        lines.append(user_message_for(_CATEGORY_CLASS[cat]))
+        return "\n".join(lines)
     lines.append(headline)
     lines.append("No downloadable mesh deliverable is available.")
     if cat == FailureCategory.delivery_failed:
@@ -476,6 +522,41 @@ def render_message(fr: FinalResult) -> str:
         lines.append("You can run it again from this chat: say \"run it again\", or tell me "
                      "what to change first.")
     return "\n".join(lines)
+
+
+def _reaped_result(category: FailureCategory, *, job_id: str, owner_id: str, attempts: int,
+                   attempts_max: int) -> FinalResult:
+    """The durable record for a job the REAPER failed.
+
+    The reaper has no graph state, no approved intent and no checkpoint - only the job row -
+    so nothing here is derived and nothing is invented: the engine is unknown, no mesh was
+    validated, the review was never reached. What the record exists for is the sentence: a
+    socket that connects after the event log has expired, and the job's status read, both render
+    it, so a reaped job never again reads as "Job already failed."."""
+    return FinalResult(
+        schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=str(job_id), owner_id=str(owner_id),
+        status=TerminalStatus.failed, executor_success=False,
+        reviewer_verdict=None, review_execution=ReviewExecution.not_reached,
+        outcome_code=category.value, failure_category=category.value,
+        attempts=max(0, int(attempts or 0)), attempts_max=max(0, int(attempts_max or 0)),
+        required_ready=False, delivered_types=[], missing_outputs=[],
+        finalized_at=datetime.now(UTC).isoformat())
+
+
+def worker_lost_result(*, job_id: str, owner_id: str, attempts: int = 0,
+                       attempts_max: int = 0) -> FinalResult:
+    """A job that was RUNNING when the reaper failed it: the worker holding it was lost (its
+    lease lapsed, or it started long ago without ever holding one)."""
+    return _reaped_result(FailureCategory.worker_lost, job_id=job_id, owner_id=owner_id,
+                          attempts=attempts, attempts_max=attempts_max)
+
+
+def never_started_result(*, job_id: str, owner_id: str, attempts: int = 0,
+                         attempts_max: int = 0) -> FinalResult:
+    """A job that was still PENDING or QUEUED when the reaper failed it: no worker ever picked it
+    up. Its own record, because "the worker was lost" would describe a worker that never existed."""
+    return _reaped_result(FailureCategory.never_started, job_id=job_id, owner_id=owner_id,
+                          attempts=attempts, attempts_max=attempts_max)
 
 
 # #

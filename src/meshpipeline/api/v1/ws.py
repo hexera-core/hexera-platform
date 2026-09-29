@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import uuid
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -63,6 +64,36 @@ async def issue_ws_ticket(body: _TicketIn, owner_id: str = Depends(owner_dep),
             status_code=503,
             detail="Live updates are temporarily unavailable - please retry shortly.") from exc
     return _TicketOut(ticket=ticket, expires_in_seconds=WS_TICKET_TTL_SECONDS)
+
+
+def terminal_closing_text(job) -> str:
+    """The closing line for a job that is already terminal when a socket connects and whose
+    event log carries no closing (crash-dropped, then reaped; or the log has expired).
+
+    The durable application-rendered verdict when there is one - a reaped job now carries a
+    `worker_lost` or `never_started` record, so it renders what happened and "run it again".
+    Without a
+    record the line still says what is true and what to do, never the bare "Job already failed."
+    that read as a shrug."""
+    _frd = getattr(job, "final_result", None) if job is not None else None
+    if _frd:
+        try:
+            from meshpipeline.application.final_result import FinalResult, render_message
+            return render_message(FinalResult.from_dict(_frd))
+        except Exception:  # noqa: BLE001 - an unreadable record must not break the close
+            pass
+    _status = getattr(job, "status", None) if job is not None else None
+    _value = getattr(_status, "value", _status)
+    if _value == "failed":
+        return ("This run was marked failed before a result record was written. To try again, "
+                "say \"run it again\" in this chat to start a new run.")
+    if _value == "cancelled":
+        from meshpipeline.application.final_result import CANCELLED_MESSAGE
+        return (f"{CANCELLED_MESSAGE} No mesh was delivered. When you are ready, say "
+                "\"run it again\" in this chat.")
+    if _value == "succeeded":
+        return "This run already succeeded; the result and its downloads are on the job record."
+    return "This run has ended; what happened is on the job record."
 
 
 async def _authenticate_ws(websocket: WebSocket, job_id: str) -> str | None:
@@ -141,16 +172,13 @@ async def stream_logs(websocket: WebSocket, job_id: str):
         return None
 
     async def _terminal_closing(status: JobStatus) -> str:
+        _j = None
         try:
             async with get_db() as _db:
                 _j = await _repo.get_for_owner(_db, uuid.UUID(job_id), owner_id)
-            _frd = getattr(_j, "final_result", None) if _j is not None else None
-            if _frd:
-                from meshpipeline.application.final_result import FinalResult, render_message
-                return render_message(FinalResult.from_dict(_frd))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - the status we already read is the fallback
             pass
-        return f"Job already {status.value}."
+        return terminal_closing_text(_j if _j is not None else SimpleNamespace(status=status))
 
     # WHERE THIS CLIENT GOT TO. A browser that reconnects after a dropped socket sends
     # the last `seq` it rendered; we replay everything after it. Without this, a

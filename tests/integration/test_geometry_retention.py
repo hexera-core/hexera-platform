@@ -134,7 +134,13 @@ async def test_a_new_run_after_purge_asks_for_re_upload(db, store):
     with pytest.raises(GeometrySourceError) as exc:
         await resolve_row_ref(db, ref)
     assert exc.value.failure_class is FailureClass.USER_INPUT, "expiry is not corruption"
-    assert "upload the file again" in str(exc.value).lower()
+    assert "retention period" in str(exc.value).lower()
+    # WHAT THE USER IS TOLD. The raise states the fact; the class sentence carries it and names
+    # the way on - exactly what prepare_for_execution publishes for this refusal.
+    from meshpipeline.errors import user_message_for
+    told = user_message_for(exc.value.failure_class, reason=str(exc.value)).lower()
+    assert "retention period" in told and "not our systems" in told
+    assert "upload the file again" in told, "the user is not told how to get going again"
 
 
 async def test_the_expiry_message_leaks_nothing(db, store):

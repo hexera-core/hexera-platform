@@ -564,9 +564,12 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         # Every other assistant append here carries real text, and an approval system failure
         # appends nothing at all. The user's own message stays either way - `accept` committed it
         # before the turn ran, deliberately, because they said it.
-        if not result.get("api_failure"):
-            await session_repo.append_message(db, inbound.session_id, "assistant",
-                                              _reply_of(result))
+        # ... and a turn with NO TEXT is not a turn either. The agent now composes a sentence
+        # for an exhausted or empty turn (turn.unsettled_reply); this is the durable guarantee
+        # behind it: whatever produced the result, an empty string is never stored as a reply.
+        _reply = _reply_of(result) if not result.get("api_failure") else ""
+        if _reply.strip():
+            await session_repo.append_message(db, inbound.session_id, "assistant", _reply)
         for key, setter in _REQUIREMENT_WRITES:
             value = result.get(key)
             if value:

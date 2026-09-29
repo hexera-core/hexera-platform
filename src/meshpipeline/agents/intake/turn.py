@@ -2,8 +2,11 @@
 # Boundaries: turn mechanics; it decides nothing about intent.
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: The conversation bound. Reaching it never forces a submit - see `budget_nudge`.
 MAX_TURNS = 12
@@ -179,6 +182,38 @@ def hydrate(state, state_messages) -> TurnContext:
         approval=_sub("approval"),
         rec_authorized=rec.recommendation_requested(latest),
     )
+
+
+def unsettled_reply(state, exit_reason=None) -> str:
+    """The sentence a turn stores when the loop ended with nothing to say.
+
+    Round exhaustion, a deadline and a no-progress stop all return no payload, and a completed
+    round can carry empty content; each used to persist a blank assistant message that the
+    console drew as an empty bubble and the next turn handed the model as conversation. The
+    turn owes the user one honest sentence instead: it did not settle the request, and here is
+    the one thing they can say to move it on - named from the gate state, never guessed."""
+    # Read through the gates' OWN readers: a selection records its confirmation in `state`
+    # (engine_selection.CONFIRMED), not in a field of its own, and a summary awaits the user only
+    # while its approval is live - an expired one is not a question anyone is waiting on.
+    from meshpipeline.agents.intake import approval as ap
+    from meshpipeline.agents.intake import engine_selection as es
+    selection = state.selection or {}
+    engine = str(selection.get("engine") or "").strip()
+    chosen = es.state_of(selection)
+    if ap.is_live(state.approval):
+        ask = "say 'go ahead' to run the summary above, or tell me what to change,"
+    elif chosen == es.PROPOSED:
+        ask = (f"say yes to use {engine}, or name another engine," if engine
+               else "tell me which engine you want")
+    elif chosen == es.CONFIRMED:
+        # "use defaults" is one of the phrases the intake reads as handing the open question
+        # back (turn.defers_to_default), so the suggestion is one the next turn acts on.
+        ask = "answer the question above, or say 'use defaults' for anything you have no value for,"
+    else:
+        ask = "tell me what you need meshed and for which simulation"
+    _why = getattr(exit_reason, "value", exit_reason) or "no reply"
+    logger.info("Intake: turn ended with nothing to say (%s) - storing the unsettled reply", _why)
+    return f"I could not settle this in one go - {ask} and I will continue."
 
 
 def serialise_transcript(llm_messages, assistant_text: str) -> list:

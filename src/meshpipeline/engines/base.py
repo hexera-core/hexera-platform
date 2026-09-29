@@ -470,6 +470,21 @@ class EngineSpec:
                                 "step exists to derive it here).",
                         fix_hint=f"submit a {' or '.join(ok)} geometry"))
 
+        # PATCH NAMES the mesher can write. The intake makes every name mesh-safe where it enters;
+        # this is the same rule at the last gate before a mesh runs, so a name that slipped past
+        # (an old snapshot, a direct API caller) costs one refusal instead of a whole run that
+        # ends with "patch has zero faces".
+        from meshpipeline.contracts.patch_names import is_mesh_safe, mesh_safe
+        for p in evidence.patches:
+            if p.name and not is_mesh_safe(p.name):
+                out.append(Rejection(
+                    code="patch_name_unsafe", phase="declared", field="patches",
+                    actual=p.name, expected=mesh_safe(p.name),
+                    message=f"the patch name {p.name!r} cannot be written into a mesh - a boundary "
+                            "name must start with a letter and hold only letters, digits and "
+                            f"underscores. Use {mesh_safe(p.name)!r} instead.",
+                    fix_hint=f"rename the patch to {mesh_safe(p.name)!r}"))
+
         # DIMENSIONALITY the engine can consume (declared InputContract axis).
         ic = self.input_contract
         if evidence.dimensionality and ic is not None and \

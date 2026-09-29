@@ -111,6 +111,10 @@ EVENT_LOG_TTL_SECONDS: int = int(optional_env("EVENT_LOG_TTL_SECONDS", "86400"))
 # Cloud Run severs any request (WebSockets too) at 60 min; we close first, on our terms, so
 # the client reconnects with its cursor. Keep below the platform cap with room to spare.
 WS_MAX_SESSION_SECONDS: int = int(optional_env("WS_MAX_SESSION_SECONDS", "3000"))
+# How long a job waits for a worker when the fleet is asleep. Served on a pending job's status so
+# the console can say "waiting for a worker to start (about N minutes)" instead of a silent
+# spinner; 0 hides the estimate.
+WORKER_WAKE_MINUTES: int = int(optional_env("WORKER_WAKE_MINUTES", "8"))
 # Hard cap on any single builder tool result fed back into the LLM context (context-blowup guard).
 MAX_TOOL_OUTPUT_CHARS: int = int(optional_env("MAX_TOOL_OUTPUT_CHARS", "16000"))
 

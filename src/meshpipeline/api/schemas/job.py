@@ -50,6 +50,11 @@ class JobStatus_(BaseModel):
     # WHY THE OWNER CANCELLED, in their words. Set only on a `cancelled` job, and only when they
     # gave one; the closing line itself is the final_message, the same on every surface.
     cancel_reason: str | None = None
+    # WHILE NO WORKER HAS THE JOB. The fleet scales to zero, so a fresh job can sit `pending` for
+    # minutes while a VM boots. Set only in that state, from WORKER_WAKE_MINUTES, so the console
+    # can say "waiting for a worker to start (about N minutes)" instead of a silent spinner;
+    # None once a worker has started (or when the estimate is disabled).
+    worker_wake_minutes: int | None = None
 
 
 class DisputeFlag(BaseModel):

@@ -190,6 +190,14 @@ export const Stage = {
       if(this.meshBar)this.tickMesh();
     },500);},
 
+  // WAITING FOR A WORKER. The sub-line under "Generating mesh" said "working…" from the
+  // moment a job was created, including the five to ten minutes a job can sit `pending`
+  // while the fleet wakes from zero - a silent spinner that read as a hang. The poller hands
+  // every status here; a non-empty text is the wait (with the backend's estimate), an empty one
+  // means a worker has it and the line returns to "working…". A finished run is left alone.
+  waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
+    const s=this.proc.querySelector('#proc-sub');if(!s)return;
+    s.textContent=text||'working…';},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
   // renders the same card, and a control that could stop nothing must not be on it.
   showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
