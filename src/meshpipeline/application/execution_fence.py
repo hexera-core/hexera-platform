@@ -243,6 +243,8 @@ async def claim_delivery(session_factory, job_repo, job_id: str, *, jlog, backen
     worker_token = uuid.uuid4()
     ownership = None
     async with session_factory() as db:
+        # The fast path only. An owner's cancel can commit between this read and the claim, and
+        # the claim decides on the row it re-reads under its lock, never on this copy of it.
         existing = await job_repo.get_internal(db, uuid.UUID(job_id))
         if existing is not None and existing.status in TERMINAL_STATES:
             jlog.warning("Ignoring re-delivered task - job already terminal (status=%s); not re-running",
