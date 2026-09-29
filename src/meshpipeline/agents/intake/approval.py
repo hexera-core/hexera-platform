@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import enum
-import re
 import time
 import uuid
+
+from meshpipeline.agents.intake import consent as _consent
 
 APPROVAL_TTL_S = 1800   # a snapshot the user never answers goes stale
 
@@ -18,83 +19,39 @@ DISPATCHED = "dispatched"
 # Deterministic confirmation grammar. Deliberately WHOLE-MESSAGE: "yes" approves, but
 # "yes, but make the far-field 50 chords" does NOT - it is agreement WITH A CHANGE, and the old
 # keyword consent classifier dispatched exactly that kind of message with the stale requirements.
-# Anything that is not a bare approval or a bare hedge goes back to intake as a correction.
-_FILLER = {"please", "ok", "okay", "thanks", "thank", "you", "alright", "right",
-           "great", "perfect", "then", "now", "just", "lets", "let", "us", "s", "and"}
-
-_APPROVE = {
-    "yes", "y", "yep", "yeah", "sure", "yes sure", "yes proceed", "proceed", "yes proceed with mesh generation",
-    "proceed with mesh generation", "proceed exactly as shown", "yes proceed exactly as shown",
-    "exactly as shown", "approve", "approve this", "approve this configuration", "approved",
-    "i approve", "i approve this", "use these requirements", "use these", "confirm", "confirmed",
-    "i confirm", "go", "go ahead", "yes go ahead", "start", "start the mesh",
-    "start mesh generation", "yes start the mesh", "run it", "yes run it", "do it", "yes do it",
-    "correct proceed", "yes correct", "that is correct proceed", "looks good proceed",
-    "yes looks good", "yes that is right", "that is right proceed", "yes approve",
-    "yes confirmed", "yes confirm", "confirm dispatch", "yes dispatch",
-}
-
-_HEDGE = {
-    "maybe", "perhaps", "probably", "possibly", "i think so", "i think", "not sure",
-    "i am not sure", "im not sure", "unsure", "hmm", "hm", "i guess", "i suppose",
-    "maybe yes", "probably yes", "i dont know", "dont know", "no idea",
-}
-
+# Anything that is not a bare approval or a bare hedge goes back to intake as a correction. The
+# vocabulary is the intake's ONE consent reader (agents/intake/consent.py), shared with the engine
+# question and the unit proposal, so "looks good", "go for it" or "yes go ahaed" is a yes here
+# exactly as it is there - a yes that was read as a change threw the summary away and showed the
+# user another one.
 APPROVE_INTENT = "approve"
 HEDGE_INTENT = "ambiguous"
 CORRECTION_INTENT = "correction"
 
 
-def _normalise(text: str) -> str:
-    t = re.sub(r"[^0-9a-z]+", " ", str(text or "").casefold())
-    words = [w for w in t.split() if w not in _FILLER]
-    return " ".join(words)
-
-
-def _phrase_seqs(vocab: set[str]) -> list[tuple[str, ...]]:
-    """The vocabulary as normalised word sequences (deduplicated, empties dropped)."""
-    out = {tuple(_normalise(p).split()) for p in vocab}
-    return sorted(seq for seq in out if seq)
-
-
-_APPROVE_SEQS = _phrase_seqs(_APPROVE)
-_CONSENT_SEQS = _phrase_seqs(_APPROVE | _HEDGE)
-
-
-def _parses_as(words: tuple[str, ...], phrases: list[tuple[str, ...]]) -> bool:
-    """True when the whole word sequence is a concatenation of vocabulary phrases."""
-    n = len(words)
-    ok = [False] * (n + 1)
-    ok[0] = True
-    for i in range(n):
-        if not ok[i]:
-            continue
-        for ph in phrases:
-            j = i + len(ph)
-            if j <= n and words[i:j] == ph:
-                ok[j] = True
-    return ok[n]
-
-
-def classify(message: str) -> str:
-    n = _normalise(message)
-    if not n:
-        return HEDGE_INTENT
-    if n in _APPROVE:
+def classify(message: str, engine: str = "") -> str:
+    """The user's answer to a summary. `engine` is the summary's own engine: naming it ("yes, go
+    ahead with snappyHexMesh") adds nothing to a yes, while naming another is a change."""
+    named: tuple[str, ...] = ()
+    if engine:
+        from meshpipeline.agents.intake import vocabulary as _vocab
+        named = (engine, _vocab.to_display(_vocab.ENGINE, engine))
+    reading = _consent.reading(message, named=named)
+    if reading == _consent.APPROVE:
         return APPROVE_INTENT
-    if n in _HEDGE:
-        return HEDGE_INTENT
-    # Composition over the SAME closed vocabulary: "Confirmed. Proceed with mesh generation."
-    # is consent phrases end to end, while "yes, but make the far-field 50 chords" contains
-    # words no consent phrase covers and stays a correction. Consent diluted by a hedge
-    # ("maybe. proceed") stays ambiguous - ask, never dispatch.
-    words = tuple(n.split())
-    if _parses_as(words, _APPROVE_SEQS):
-        return APPROVE_INTENT
-    if _parses_as(words, _CONSENT_SEQS):
+    if reading == _consent.HEDGE:
+        # consent diluted by a hedge ("maybe. proceed"), a bare hedge, or nothing at all: ask
         return HEDGE_INTENT
     return CORRECTION_INTENT
 
+
+#: The question under every summary, with the one plain answer that starts the run: the user types
+#: the answer (the console has no approve button), so the question names it.
+PROCEED_ASK = "Shall I proceed with mesh generation? Reply yes to start it, or tell me what to change."
+#: Said above the question when the user's last message was read as a change and changed nothing -
+#: a chatty yes ("ha, we're going in circles - yes, go ahead!") is not a bare yes, and without this
+#: the user saw the same summary again with no idea why.
+NOTHING_CHANGED = "Nothing in the setup changed with your last message."
 
 CLARIFICATION = (
     "I need a clear answer before spending anything: reply \"yes, proceed\" to run exactly the "

@@ -20,6 +20,7 @@ from meshpipeline.contracts.unit_plausibility import (
     expected_from_words,
     length_words,
     proposed_unit,
+    suggest,
 )
 
 #: Asked once, when a session's geometry has no confirmed scale and the part was not measured.
@@ -52,6 +53,43 @@ _NEGATED_BEFORE = re.compile(r"\b(?:not|no|isn'?t|aren'?t|never|nor|rather than|
 
 #: What confirms a proposed unit: the whole message, nothing else in it. A sentence that merely
 #: contains "yes" is not an answer to a question about scale.
+#: A unit word typed with one slip ("metrees", "metrse", "milimetres", "inchs") is that unit. Only
+#: the long spellings are repaired: "mm", "cm", "m" and "in" are too short to tell a slip from
+#: another word.
+_UNIT_SPELLINGS = ("millimetres", "millimeters", "millimetre", "millimeter", "centimetres", "centimeters",
+                   "centimetre", "centimeter", "metres", "meters", "metre", "meter", "inches", "inch")
+_LONG_WORD = re.compile(r"[a-z]{4,}")
+
+
+#: Real words one slip from a unit spelling, never read as one.
+_NOT_UNITS = frozenset({"inched", "matters", "meteors", "centres", "centred", "metes", "meres", "mites"})
+
+
+def _respelled(low: str) -> str:
+    """The text with each word one slip from a unit spelling written as that spelling."""
+    from meshpipeline.agents.intake.consent import one_slip
+
+    def slip(w: str, u: str) -> bool:
+        # a letter too many only when it doubles one ("metrees"): "meteor" is not "meter"
+        if len(w) == len(u) + 1:
+            return any(w[:i] + w[i + 1:] == u and w[i] == w[i - 1] for i in range(1, len(w)))
+        # two neighbours swapped ("metrse") at any length; a letter dropped or changed only in a
+        # word of six letters or more - "mere", "metro" and "inched" are words, not slips
+        if len(w) == len(u) and sorted(w) == sorted(u):
+            return one_slip(w, u)
+        if len(w) == len(u) - 1:                      # a letter dropped: "inchs", "metrs", not "mere"
+            return len(w) >= 5 and one_slip(w, u) and w not in _NOT_UNITS
+        return len(w) >= 6 and one_slip(w, u) and w not in _NOT_UNITS     # one changed: not "metro"
+
+    def fix(m: re.Match) -> str:
+        w = m.group(0)
+        if w in _UNIT_SPELLINGS:
+            return w
+        hits = [u for u in _UNIT_SPELLINGS if len(u) >= 5 and slip(w, u)]
+        return hits[0] if hits else w
+    return _LONG_WORD.sub(fix, low)
+
+
 _ASSENT = frozenset({"ok", "okay", "yes", "yep", "yeah", "sure", "fine", "correct", "right",
                      "that's right", "thats right", "go on", "go ahead", "confirmed", "confirm",
                      "yes please", "ok go", "sounds right", "looks right", "agreed", "y"})
@@ -66,6 +104,22 @@ def size_hint(size_mm) -> str:
     longest = max(float(v) for v in size_mm)
     return "Its longest side would be " + ", ".join(
         f"{_length_words(longest * scale_to_metres(u))} if {_UNIT_WORDS[u]}" for u in _CANDIDATES) + "."
+
+
+def mentions_unit(message: str) -> bool:
+    """Whether the message names any unit at all - to take, to reject or to doubt."""
+    low = _respelled(str(message or "").lower())
+    return bool(_UNIT_ANYWHERE.search(low))
+
+
+def believable(size_mm, unit: LengthUnit, words: str = "") -> bool:
+    """Whether the part is believable in `unit`: nothing measured yet (there is nothing to doubt it
+    with), or the size under it raises no other reading - the rule the stage uses for a unit the
+    file declares, with what the user says the part is speaking first."""
+    if not size_mm:
+        return True
+    return suggest(max(float(v) for v in size_mm), unit, declared=True,
+                   expected=expected_from_words(words)) is None
 
 
 def proposal_for(size_mm, words: str = "") -> LengthUnit:
@@ -132,7 +186,11 @@ def classify(message: str, proposal: LengthUnit | None = None) -> LengthUnit | N
         return parse_unit(text)
     except UnitResolutionError:
         pass
-    low = text.lower()
+    low = _respelled(text.lower())
+    try:
+        return parse_unit(low)                  # a bare unit word typed with a slip: "metrse"
+    except UnitResolutionError:
+        pass
     named = {parse_unit(word) for word in _UNIT_ANYWHERE.findall(low)}
     if len(named) == 1 and not _SIZE_BEFORE.search(low) and not _NEGATED_BEFORE.search(low):
         return named.pop()
@@ -144,10 +202,11 @@ def classify(message: str, proposal: LengthUnit | None = None) -> LengthUnit | N
 #: A sentence that says what unit the FILE is in, unasked: "the file is in metres", "it's in
 #: inches", "the units are mm", "the model was drawn in cm". The subject has to be the file, its
 #: numbers or "it"; a speed ("metres per second") and a size ("117 metres long") are not a unit.
+#: "The file uses metres" says it as plainly as "the file is in metres".
 _SUBJECT = (r"(?:file|geometry|model|cad|step|stl|obj|vtp|iges|part|drawing|coordinates?|numbers|"
             r"dimensions|sizes|units?|scale|it|everything|this|that|they)")
 _FILLER = r"(?:all|actually|really|definitely|drawn|modell?ed|exported|saved|given|written|made)"
-_STATES = re.compile(r"\b" + _SUBJECT + r"(?:'s|'re|\s+(?:is|are|was|were))?\s+(?:" + _FILLER + r"\s+)*"
+_STATES = re.compile(r"\b" + _SUBJECT + r"(?:'s|'re|\s+(?:is|are|was|were|uses|used))?\s+(?:" + _FILLER + r"\s+)*"
                      r"(?:in\s+)?(?:the\s+)?(" + _UNIT_WORD + r")\b(?!\s*(?:per\b|/))")
 _WORD = re.compile(r"[a-z0-9']+")
 _UNIT_ONLY = re.compile(_UNIT_WORD)
@@ -177,13 +236,13 @@ def stated_unit(message: str) -> LengthUnit | None:
     naming exactly one ("metres, not millimetres") counts too. A question ("is it in metres?"),
     a negation, a speed or a size names nothing."""
     text = str(message or "").strip()
-    low = text.lower()
+    low = _respelled(text.lower())
     # A QUESTION OR A DOUBT CHANGES NOTHING, with or without its question mark: "is the file in
     # metres", "not sure if it's in metres" - this reply records a unit and re-reads every size.
     if not text or "?" in text or _ASKS.match(low) or _UNSURE.search(low):
         return None
     try:
-        return parse_unit(text)
+        return parse_unit(low)
     except UnitResolutionError:
         pass
     rejected = {parse_unit(w) for w in re.findall(r"\b(?:not|no|isn'?t|aren'?t|never|rather than|instead of)\s+"

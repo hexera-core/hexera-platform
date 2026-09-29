@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 
+from meshpipeline.agents.intake import consent as _consent
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.engines.registry import engine_label
 
@@ -125,6 +126,11 @@ def _tokens(engine: str, message: str, *, keep_engine: bool,
 
 
 def plain_assent(engine: str, message: str) -> bool:
+    # The intake's one consent reader first ("sounds good", "go for it", "yes go ahaed" are a yes
+    # to this question exactly as they are to the summary), then this question's own words, which
+    # may name the engine it proposed ("yes, snappyHexMesh", "use it").
+    if _consent.is_yes(message):
+        return True
     words = [w for w in _tokens(engine, message, keep_engine=False) if w not in _FILLER]
     return bool(words) and all(w in _ASSENT for w in words)
 
@@ -229,6 +235,60 @@ def declines(engine: str, message: str) -> bool:
 
 def names_another_engine(engine: str, message: str) -> bool:
     return bool(_vocab.engines_named_in(message, (engine or "").strip().lower()))
+
+
+def user_chose(engine: str, user_texts) -> bool:
+    """Whether the user's own words already chose `engine`. `user_texts` are the user's messages,
+    oldest first. The most recent
+    message that names any engine decides - it must name this one and no other, neither ask about
+    it nor decline it, and CHOOSE it in plain words: the name alone ("snappyHexMesh", the answer
+    to "which toolchain?"), a plain choice ("use snappy", "snappyHexMesh it is") or a choice verb
+    before it ("I'll go with snappyHexMesh for the mesh"). A mention is not a choice: "I used
+    snappyHexMesh last time" names it and chooses nothing. The user who
+    answered "which engine?" with "snappyHexMesh" and was asked a setup question next was then
+    asked "Do you want to select snappyHexMesh?" - the model proposed the engine a turn later and
+    only the latest message was searched for its name."""
+    want = (engine or "").strip().lower()
+    for said in reversed(tuple(user_texts or ())):
+        said = str(said or "")
+        named = _vocab.engines_named_in(said, "")
+        if not named:
+            # a later "forget it", "actually don't use that" takes the choice back although it names
+            # no engine (review on #92): the engine is asked again, never confirmed over it
+            if declines(want, said):
+                return False
+            continue
+        if named != [want] or "?" in said or declines(want, said):
+            return False
+        return _chooses_in(want, said)
+    return False
+
+
+#: What may come before an engine's name to choose it: the choice verbs, and "make it", "switch
+#: to", "change to", "try", "go ahead with".
+_CHOOSING = _CHOICE | frozenset({"make", "switch", "change", "try", "goahead"})
+
+
+def _chooses_in(engine: str, message: str) -> bool:
+    # a clause that is the engine alone, or a plain choice of it ("use it", "go with X", "X it is"),
+    # or a choice verb before the engine within its clause ("I'll go with X for the mesh")
+    words = _tokens(engine, message, keep_engine=True, keep_breaks=True)
+    clauses: list[list[str]] = [[]]
+    for w in words:
+        if w in (_BREAK_WORD, _QUESTION_WORD):
+            clauses.append([])
+        else:
+            clauses[-1].append(w)
+    for clause in clauses:
+        if _ENGINE_WORD not in clause:
+            continue
+        rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
+        if not rest or _chooses_the_engine(clause):
+            return True
+        before = clause[:clause.index(_ENGINE_WORD)]
+        if any(w in _CHOOSING for w in before) and not any(w in _NEGATION for w in before):
+            return True
+    return False
 
 
 def state_of(sel: dict | None) -> str:

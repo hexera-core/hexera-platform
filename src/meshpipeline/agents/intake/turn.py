@@ -88,9 +88,14 @@ def defers_to_default(text) -> bool:
 
 
 def latest_user_text(state_messages) -> str:
-    user_msgs = [m for m in state_messages if isinstance(m, dict) and not m.get("_synthetic")
-                 and m.get("role") == "user"]
-    return str(user_msgs[-1].get("content", "")) if user_msgs else ""
+    texts = user_texts(state_messages)
+    return texts[-1] if texts else ""
+
+
+def user_texts(state_messages) -> tuple[str, ...]:
+    """Every message the user wrote, oldest first - never the application's synthetic nudges."""
+    return tuple(str(m.get("content", "")) for m in state_messages
+                 if isinstance(m, dict) and not m.get("_synthetic") and m.get("role") == "user")
 
 
 @dataclass(frozen=True)
@@ -147,6 +152,16 @@ class TurnContext:
     selection: dict | None
     approval: dict | None
     rec_authorized: bool
+    #: What the gate holds that the model's turn does not own - the unit question the message
+    #: authority asked - handed back untouched. The turn's patch replaces the stored gate whole,
+    #: so a key it left out was erased: the "unit asked" mark went with the first model turn, the
+    #: user's later "the file is in metres" was no longer read as the answer, and the question was
+    #: asked again (and the geometry check waited for a unit that never landed).
+    carried: dict = field(default_factory=dict)
+
+
+#: The gate keys a model turn writes; every other key is the message authority's and is carried.
+MODEL_GATE_KEYS = frozenset({"selection", "admission", "approval"})
 
 
 def hydrate(state, state_messages) -> TurnContext:
@@ -181,6 +196,7 @@ def hydrate(state, state_messages) -> TurnContext:
         selection=_sub("selection"),
         approval=_sub("approval"),
         rec_authorized=rec.recommendation_requested(latest),
+        carried={k: v for k, v in gate.items() if k not in MODEL_GATE_KEYS},
     )
 
 
@@ -256,7 +272,7 @@ class TurnRecord:
 
 
 def _gate_patch(context: TurnContext) -> dict:
-    return {"selection": context.selection, "admission": context.pending,
+    return {**context.carried, "selection": context.selection, "admission": context.pending,
             "approval": context.approval}
 
 

@@ -94,6 +94,12 @@ class IntakeExecutionState:
     revision: str = ""
     user_msg_count: int = 0
     latest_user_msg: str = ""
+    #: Every message the user wrote in this conversation, oldest first (the application's synthetic
+    #: nudges excluded) - where an engine they chose before this turn is found.
+    user_texts: tuple = ()
+    #: (purpose, input kind) the user confirmed on the geometry stage, or None: what an engine the
+    #: model proposes on its own must be able to mesh.
+    declared_case: tuple | None = None
     # The approved SOURCE, not a file. Intake binds which bytes were approved; it never
     # opens them, so it holds the reference and no path.
     source_ref: object | None = None
@@ -265,8 +271,8 @@ class IntakeToolExecutor:
             return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
                 f"{eng!r} is not a registered engine. Available: {', '.join(self._engines)}."))
         quote = str(args.get("user_named_verbatim") or "")
-        if st.admission_refusal is not None and not es.user_named_engine(eng, quote,
-                                                                          st.latest_user_msg):
+        named_now = es.user_named_engine(eng, quote, st.latest_user_msg)
+        if st.admission_refusal is not None and not named_now:
             # A REFUSAL IS NOT ROUTED AROUND. With the finding in hand, the model may not switch
             # the user to another engine on its own: the application's "Selected engine: X"
             # question would name a replacement the user never asked about, in the very turn
@@ -277,6 +283,26 @@ class IntakeToolExecutor:
                 f"has not named {shown} themselves. Do not switch engines for them - repair a "
                 "value that was your own and check again, or put the finding to the user with "
                 "the one revision that would pass; if they want alternatives they will ask."))
+        chosen_by_user = named_now or es.user_chose(eng, st.user_texts)
+        if not chosen_by_user and st.declared_case:
+            # AN ENGINE THE USER DID NOT NAME MUST BE ABLE TO MESH WHAT THEY CONFIRMED. The model
+            # proposed cfMesh for a fluid-volume file on its own; the admission then refused, and
+            # its way out was to relabel the confirmed fluid volume as a body surface - a fact the
+            # user never said - or to ask a user who had said "your call" which value to revise.
+            # The engine is the model's to change, the confirmed geometry is not.
+            purpose, kind = st.declared_case
+            verdict = preview_admission(eng, purpose, kind, dimensionality="3D")
+            if verdict.get("verdict") == "impossible":
+                able = [e for e in self._engines
+                        if preview_admission(e, purpose, kind, dimensionality="3D").get("verdict") != "impossible"]
+                shown = _vocab.to_display(_vocab.ENGINE, eng)
+                names = ", ".join(_vocab.to_display(_vocab.ENGINE, e) for e in able) or "none"
+                return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
+                    f"Not proposed: {shown} cannot mesh what the user confirmed on the geometry "
+                    f"stage ({_vocab.to_display(_vocab.INPUT_KIND, kind)}, "
+                    f"{_vocab.to_display(_vocab.PURPOSE, purpose)}), and the user did not ask for it. "
+                    f"Engines that can: {names}. Propose one of those instead; never ask the user to "
+                    "change the geometry they confirmed to suit an engine they did not choose."))
         # A NEW proposal invalidates the previous selection AND any admission preview or pending
         # canonical confirmation that the old selection authorized - including one obtained
         # EARLIER IN THIS SAME provider response.
@@ -287,10 +313,12 @@ class IntakeToolExecutor:
         # A refusal was about the engine the user has just left behind; the reply about the one
         # they named is theirs to read in full.
         st.admission_refusal = None
-        # The confirmation question exists to prove the USER chose this engine. If their own latest
-        # message already names it, that proof is in hand and asking again is a question with one
-        # answer - so the selection is confirmed here instead of costing the user a round-trip.
-        if es.user_named_engine(eng, quote, st.latest_user_msg):
+        # The confirmation question exists to prove the USER chose this engine. If their own words
+        # already name it - this message, or the latest earlier one that named an engine - that
+        # proof is in hand and asking again is a question with one answer, so the selection is
+        # confirmed here instead of costing the user a round-trip. (A refusal still needs the name
+        # in THIS message, above: an earlier naming is what the refusal was about.)
+        if chosen_by_user:
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
                             "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
@@ -483,8 +511,16 @@ class IntakeToolExecutor:
             flow_axis=args.get("flow_axis"),
             requirements_strict=bool(args.get("requirements_strict") or False),
             request_txt=args.get("request_txt"), source_ref=st.source_ref)
-        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK
-                             + "\n\nShall I proceed with mesh generation?")
+        # the approval this one replaces: withdrawn by the user's last message, and if that message
+        # changed nothing at all, the summary says so instead of reappearing unexplained
+        prior = st.approval or {}
+        # the WHOLE submission the same - requirements, review brief, label and every value - not
+        # only the run-determining intent: a changed brief is a change the user should see
+        unchanged = (prior.get("status") == ap.INVALIDATED
+                     and prior.get("intent_fingerprint") == at.fingerprint(intent_canon)
+                     and prior.get("payload") == payload)
+        st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + "\n\n"
+                             + (f"{ap.NOTHING_CHANGED} " if unchanged else "") + ap.PROCEED_ASK)
         st.approval = ap.create(
             owner_id=st.owner_id, session_id=st.session_id,
             selection_id=str((st.selection or {}).get("id") or ""),

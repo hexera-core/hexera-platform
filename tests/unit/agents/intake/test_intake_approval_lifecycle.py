@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from tests._geometry_support import (
     interpretation_lookup,
     interpretation_ref,
@@ -220,6 +221,39 @@ def test_a_supported_submit_persists_a_pending_snapshot_bound_to_everything():
     assert ap.builder_payload(snap)["request_txt"] == _R
 
 
+def _submit_turn(gate_approval=None):
+    sel = es.select_from_structured_input(
+        "gmsh", session_id="s", owner_id="u",
+        revision=at.revision_of([{"role": "user", "content": "go on"}]))
+    state = {"job_id": "j", "session_id": "s", "user_id": "u",
+             "messages": [{"role": "user", "content": "go on"}],
+             "intake_gate": {"selection": sel, "admission": None, "approval": gate_approval}}
+
+    def _submit_with_token():
+        tok = json.loads(_SEEN[-1]["content"])["preview_token"]
+        return _resp([_tc("submit_requirements", json.dumps({**_SUBMIT, "preview_token": tok}))])
+
+    return _run(state, [
+        _resp([_tc("preview_selected_admission", json.dumps({"selected_engine": "gmsh", **_DECL}))]),
+        _submit_with_token, _resp(content="unreached")])
+
+
+def test_the_summary_names_the_answer_and_says_when_a_change_changed_nothing():
+    first = _submit_turn()["intake_gate"]["approval"]
+    assert first["summary"].endswith(ap.PROCEED_ASK) and ap.NOTHING_CHANGED not in first["summary"]
+    # the user's reply was read as a change ("ha, we're going round in circles - yes!") and the
+    # model resubmitted exactly the same setup: the summary says so rather than just reappearing
+    withdrawn = ap.invalidate(first, "user replied with a correction")
+    again = _submit_turn(withdrawn)["intake_gate"]["approval"]
+    assert ap.NOTHING_CHANGED in again["summary"] and again["summary"].endswith(ap.PROCEED_ASK)
+    # a summary withdrawn for a real change, then changed, does not claim nothing changed
+    changed = {**withdrawn, "intent_fingerprint": "something else"}
+    assert ap.NOTHING_CHANGED not in _submit_turn(changed)["intake_gate"]["approval"]["summary"]
+    # review on #92: the same run-determining intent but a different brief is a change too
+    rebriefed = {**withdrawn, "payload": {**withdrawn["payload"], "review_brief_txt": "a different brief"}}
+    assert ap.NOTHING_CHANGED not in _submit_turn(rebriefed)["intake_gate"]["approval"]["summary"]
+
+
 # chat routing: approval never reaches the model
 
 def _session_with(approval, selection, messages):
@@ -280,6 +314,17 @@ def test_a_bare_approval_dispatches_with_zero_model_calls():
     resp, calls, _ = _route("yes, proceed", rec, sel)
     assert calls["dispatch"] == 1
     assert calls["intake"] == 0, "the model must not be called on a confirmation turn"
+    assert resp.done is True
+
+
+@pytest.mark.parametrize("said", ["looks good", "sounds good to me, go for it", "ok", "yes go ahaed",
+                                  "That sounds great, let's do it!", "fine by me", "👍"])
+def test_a_natural_yes_dispatches_with_zero_model_calls(said):
+    # the grammar used to read each of these as a correction (or "ok" as a hedge): the approved
+    # summary was thrown away and the user was shown another one
+    rec, sel = _approval(msg_count=1)
+    resp, calls, _ = _route(said, rec, sel)
+    assert calls["dispatch"] == 1 and calls["intake"] == 0, said
     assert resp.done is True
 
 
