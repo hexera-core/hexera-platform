@@ -460,6 +460,10 @@ header{height:48px}
 .v-legend .ok{color:var(--ok)}
 .v-legend .x{position:absolute;top:6px;right:8px;color:var(--text-faint);padding:0}
 .v-legend .x:hover{color:var(--text)}
+.v-legend .tog{display:flex;align-items:center;gap:6px;color:var(--text-muted);cursor:pointer;
+  margin-top:2px}
+.v-legend .tog input{accent-color:var(--accent);margin:0}
+.v-legend .nxt{font-family:var(--mono);font-size:10.5px;padding:3px 8px}
 
 /* the probe: a data card, not a bubble */
 .v-probe{background:rgba(6,4,2,.9);border:1px solid var(--border);border-radius:2px;
