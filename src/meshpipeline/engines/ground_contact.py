@@ -45,9 +45,6 @@ MIN_PENETRATION_SHARE = 0.005
 #: Past 4% the cut stops being a contact patch and starts being a shorter body, so it stops
 #: there and the note says at what angle the body then meets the floor.
 MAX_PENETRATION_SHARE = 0.04
-#: A grazing stretch shorter than this share of the whole contact line is a sliver of the
-#: tessellation (a fan of tiny triangles at a corner), not a wedge the mesh will see.
-_NOISE_SHARE = 0.01
 #: Heights tried between the probe and the cap when looking for the shallowest good cut.
 _STEPS = 64
 
@@ -83,12 +80,32 @@ def _unit_normals(tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     keep = norm > 0
     normals = np.zeros_like(cross)
     normals[keep] = cross[keep] / norm[keep, None]
-    # outward, whatever winding the file used: a closed body's signed volume is positive when
-    # its normals point out of it
-    signed = float(np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2])).sum())
-    if signed < 0:
-        normals = -normals
+    # outward, whatever winding the file used - PIECE BY PIECE: a closed piece's signed volume
+    # is positive when its normals point out of it, and a scene can hold a car wound one way
+    # and its wheels the other. One sign for the lot would read a grazing wheel inside out.
+    piece = _pieces(tris)
+    signed = np.bincount(piece, weights=np.einsum("ij,ij->i", tris[:, 0],
+                                                  np.cross(tris[:, 1], tris[:, 2])))
+    normals[signed[piece] < 0] *= -1.0
     return normals, 0.5 * norm
+
+
+def _pieces(tris: np.ndarray) -> np.ndarray:
+    """Which connected piece of the surface each triangle belongs to (shared corners join)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    pts = tris.reshape(-1, 3)
+    span = float(np.ptp(pts, axis=0).max()) or 1.0
+    key = np.round(pts / (1e-9 * span)).astype(np.int64)
+    _uniq, vid = np.unique(key, axis=0, return_inverse=True)
+    vid = vid.reshape(-1, 3)
+    n = int(vid.max()) + 1
+    a = np.concatenate([vid[:, 0], vid[:, 1]])
+    b = np.concatenate([vid[:, 1], vid[:, 2]])
+    graph = coo_matrix((np.ones(len(a), dtype=np.int8), (a, b)), shape=(n, n))
+    _count, labels = connected_components(graph, directed=False)
+    return labels[vid[:, 0]]
 
 
 def contact_line(tris, z: float) -> tuple[np.ndarray, np.ndarray]:
@@ -122,22 +139,23 @@ def _section(t: np.ndarray, normals: np.ndarray, z: float) -> tuple[np.ndarray, 
     return segments, angles
 
 
-def _grazing_share(t: np.ndarray, normals: np.ndarray, z: float,
-                   min_angle: float) -> tuple[float, float, np.ndarray]:
-    """(share of the contact line meeting the floor under min_angle, the shallowest angle on
-    the rest of the line once the noise is set aside, the segments)."""
+def _grazing(t: np.ndarray, normals: np.ndarray, z: float, min_angle: float,
+             noise: float) -> tuple[bool, float, np.ndarray]:
+    """(whether the line meets the floor under min_angle along more than `noise` of its length,
+    the shallowest angle on the line once that noise is set aside, the segments).
+
+    `noise` is a LENGTH, not a share of the line: a small wheel beside a large seated box is a
+    short stretch of a long line, and it grazes all the same."""
     segments, angles = _section(t, normals, z)
     if not len(segments):
-        return 0.0, 90.0, segments
+        return False, 90.0, segments
     lengths = np.linalg.norm(segments[:, 1] - segments[:, 0], axis=1)
-    total = float(lengths.sum()) or 1.0
-    shallow = float(lengths[angles < min_angle].sum()) / total
-    # the shallowest angle the mesh will actually meet: skip the lowest noise share of the line
+    grazing = float(lengths[angles < min_angle].sum()) > noise
+    # the shallowest angle the mesh will actually meet: skip the noise at the shallow end
     order = np.argsort(angles)
-    cum = np.cumsum(lengths[order]) / total
-    k = int(np.searchsorted(cum, _NOISE_SHARE, side="right"))
+    k = int(np.searchsorted(np.cumsum(lengths[order]), noise, side="right"))
     worst = float(angles[order][min(k, len(order) - 1)])
-    return shallow, worst, segments
+    return grazing, worst, segments
 
 
 def measure_contact(tris, *, min_angle_deg: float = MIN_CONTACT_ANGLE_DEG,
@@ -146,11 +164,12 @@ def measure_contact(tris, *, min_angle_deg: float = MIN_CONTACT_ANGLE_DEG,
     """How a body standing on the ground meets it, and where its floor goes.
 
     Read the body's cross-section `min_share` of its height above its lowest point. If the
-    surface there rises from the floor at `min_angle_deg` or steeper along (nearly) the whole
-    line, the body is SEATED, and the floor goes exactly at its lowest point. Otherwise it is
-    GRAZING, and the floor is raised to the lowest height at which the
-    body crosses it at `min_angle_deg` everywhere - at least `min_share` and never more than
-    `max_share` of the body's height."""
+    surface there rises from the floor at `min_angle_deg` or steeper all along the line, the
+    body is SEATED, and the floor goes exactly at its lowest point. Otherwise it is GRAZING,
+    and the floor is raised to the lowest height at which the body crosses it at
+    `min_angle_deg` everywhere - at least `min_share` and never more than `max_share` of the
+    body's height. A shallow stretch shorter than `min_share` of the height is finer than any
+    wall cell and does not count (a sliver triangle, a fan at a corner)."""
     t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
     if not len(t):
         raise ValueError("a ground contact needs the body's triangles, and there are none")
@@ -168,20 +187,21 @@ def measure_contact(tris, *, min_angle_deg: float = MIN_CONTACT_ANGLE_DEG,
     low = zs.min(axis=1) <= top_of_band
     t, normals = t[low], normals[low]
 
-    shallow, worst, segments = _grazing_share(t, normals, probe, min_angle_deg)
-    if shallow <= _NOISE_SHARE:
+    noise = min_share * height
+    grazing, worst, segments = _grazing(t, normals, probe, min_angle_deg, noise)
+    if not grazing:
         return GroundContact(SEATED, lowest, lowest, height, round(worst, 2), seat,
                              _footprint(segments, t, probe))
     # the shallowest cut that meets the angle, from the smallest raise up to the cap
     z = probe
     for k in range(_STEPS + 1):
         z = probe + (top_of_band - probe) * k / _STEPS
-        shallow, worst, segments = _grazing_share(t, normals, z, min_angle_deg)
-        if shallow <= _NOISE_SHARE:
+        grazing, worst, segments = _grazing(t, normals, z, min_angle_deg, noise)
+        if not grazing:
             break
     points, edges = _weld(segments, height)
     return GroundContact(GRAZING, lowest, z, height, round(worst, 2), seat,
-                         _footprint(segments, t, z), capped=shallow > _NOISE_SHARE,
+                         _footprint(segments, t, z), capped=grazing,
                          line_points=points, line_edges=edges)
 
 

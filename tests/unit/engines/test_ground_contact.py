@@ -141,6 +141,30 @@ class TestGrazingBodiesGetAFlatContactPatch:
         c = G.measure_contact(_chamfered(10.0, c=0.02))
         assert c.kind == G.GRAZING
 
+    def test_a_small_wheel_beside_a_large_seated_box_still_grazes(self):
+        # the wheel's shallow stretch is a sliver of the scene's whole contact line, but it is a
+        # wedge the mesh will meet all the same - a share of the line would have hidden it
+        box = _box(dx=4.0, dy=2.0, dz=1.5)
+        wheel = _wheel(radius=0.1, width=0.05) + np.array([5.0, 0.0, 0.0])
+        c = G.measure_contact(np.concatenate([box, wheel]))
+        assert c.kind == G.GRAZING and c.penetration_m > 0.0
+
+    @pytest.mark.parametrize("flipped", ["wheel", "box"])
+    def test_pieces_wound_opposite_ways_are_each_read_outward(self, flipped):
+        # a scene whose pieces disagree on winding: one sign for the lot would read the wheel
+        # inside out and call its wedge an obtuse corner
+        box = _box(dx=1.0, dy=0.4, dz=0.8)
+        wheel = _wheel(radius=0.3, width=0.2) + np.array([2.0, 0.0, 0.0])
+        if flipped == "wheel":
+            wheel = wheel[:, ::-1, :]
+        else:
+            box = box[:, ::-1, :]
+        c = G.measure_contact(np.concatenate([box, wheel]))
+        assert c.kind == G.GRAZING
+        assert c == G.measure_contact(np.concatenate([_box(dx=1.0, dy=0.4, dz=0.8),
+                                                      _wheel(radius=0.3, width=0.2)
+                                                      + np.array([2.0, 0.0, 0.0])]))
+
     def test_it_is_the_angle_that_decides_not_the_area(self):
         # a keel standing on its edge touches along a line, but its flanks leave the floor at
         # 31 degrees - a real corner the cells fill, so no cut; a flatter keel (15 degrees) is cut
