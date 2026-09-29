@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from meshpipeline.engines.admission import AdmissionEvidence, PatchSummary
+from meshpipeline.engines.ground_contact import GRAZING, SEATED, GroundContact
 from meshpipeline.engines.registry import get_spec
 from meshpipeline.engines.snappy import snappy_runner as R
 
@@ -148,6 +149,16 @@ ANALYSIS = {"bbox_min": [0.0, -0.2, 0.0], "bbox_max": [1.0, 0.2, 0.3], "L": 1.0,
 STRATEGY = {"domain_margin": {"up": 5, "down": 10, "side": 5, "vert": 5}}
 REC = {"base_cell": 0.1, "surface_level": [4, 4], "afford_level": 4, "feature_level": 5,
        "distance_bands": [(0.2, 3), (0.8, 2)], "resolve_feature_angle": 30}
+# the two ways a body meets the floor (engines/ground_contact.py measures which)
+GRAZING_CONTACT = GroundContact(GRAZING, lowest_z=0.0, floor_z=0.006, height=0.3,
+                                contact_angle_deg=21.0, seat_area_m2=0.3,
+                                footprint=((0.0, -0.2), (1.0, 0.2)), capped=True,
+                                line_points=((0.0, -0.2, 0.006), (1.0, -0.2, 0.006),
+                                             (1.0, 0.2, 0.006), (0.0, 0.2, 0.006)),
+                                line_edges=((0, 1), (1, 2), (2, 3), (0, 3)))
+SEATED_CONTACT = GroundContact(SEATED, lowest_z=0.0, floor_z=0.0, height=0.3,
+                               contact_angle_deg=90.0, seat_area_m2=0.4,
+                               footprint=((0.0, -0.2), (1.0, 0.2)))
 
 
 class TestTheDomainLaysTheFloor:
@@ -168,15 +179,33 @@ class TestTheDomainLaysTheFloor:
         with pytest.raises(ValueError):
             R.domain_from_strategy(ANALYSIS, STRATEGY, flow_axis="+z", ground=True)
 
+    @pytest.mark.parametrize("flow_axis", [None, "+x", "-y"])
+    def test_a_grazing_contact_raises_the_floor_into_the_body(self, flow_axis):
+        free = R.domain_from_strategy(ANALYSIS, STRATEGY, flow_axis=flow_axis)
+        dmin, dmax = R.domain_from_strategy(ANALYSIS, STRATEGY, flow_axis=flow_axis,
+                                            ground=True, contact=GRAZING_CONTACT)
+        assert dmin[2] == GRAZING_CONTACT.floor_z > ANALYSIS["bbox_min"][2]
+        assert dmax == free[1] and dmin[:2] == free[0][:2]      # only the floor moved
 
-def _render(tmp_path, *, ground=None, symmetry=None, flow_axis="+x"):
+    def test_a_seated_contact_keeps_the_floor_at_the_lowest_point(self):
+        dmin, _dmax = R.domain_from_strategy(ANALYSIS, STRATEGY, flow_axis="+x", ground=True,
+                                             contact=SEATED_CONTACT)
+        assert dmin[2] == ANALYSIS["bbox_min"][2]
+
+    def test_a_contact_without_a_ground_lays_no_floor(self):
+        assert (R.domain_from_strategy(ANALYSIS, STRATEGY, flow_axis="+x",
+                                       contact=GRAZING_CONTACT)
+                == R.domain_from_strategy(ANALYSIS, STRATEGY, flow_axis="+x"))
+
+
+def _render(tmp_path, *, ground=None, symmetry=None, flow_axis="+x", contact=None):
     (tmp_path / "system").mkdir(parents=True, exist_ok=True)
     dmin, dmax = R.domain_from_strategy(ANALYSIS, STRATEGY, symmetry, flow_axis=flow_axis,
-                                        ground=bool(ground))
+                                        ground=bool(ground), contact=contact)
     summary = R.render_snappy_case(
         tmp_path, surface_name="car", feature_file="car.eMesh", analysis=ANALYSIS,
         recommendation=REC, domain_min=dmin, domain_max=dmax, strategy={},
-        dimensionality="3D", symmetry=symmetry, ground=ground)
+        dimensionality="3D", symmetry=symmetry, ground=ground, contact=contact)
     return summary, (tmp_path / "system" / "blockMeshDict").read_text()
 
 
@@ -229,6 +258,66 @@ class TestTheBlockMeshBoundary:
         loc = summary["location_in_mesh"]
         assert loc[2] > ANALYSIS["bbox_min"][2]
         assert loc[0] < ANALYSIS["bbox_min"][0]          # upstream of the car, clear of it
+
+    def test_a_raised_floor_is_the_box_bottom_and_is_recorded(self, tmp_path):
+        summary, bm = _render(tmp_path, ground="ground", contact=GRAZING_CONTACT)
+        assert "ground { type wall; faces ((0 3 2 1)); }" in bm
+        # the four bottom vertices sit on the raised floor
+        verts = re.findall(r"\(([-0-9.e]+) ([-0-9.e]+) ([-0-9.e]+)\)",
+                           bm.split("vertices (")[1].split(");")[0])
+        assert [float(v[2]) for v in verts[:4]] == [GRAZING_CONTACT.floor_z] * 4
+        level = summary["ground"].pop("contact_line_level")
+        assert summary["ground"] == {"patch": "ground", "floor_z": 0.006, "contact": GRAZING,
+                                     "penetration_m": 0.006, "contact_angle_deg": 21.0}
+        assert summary["surface_level"][1] <= level <= summary["surface_level"][1] + 2
+        # the seed point is still in the fluid: above the raised floor, upstream of the body
+        loc = summary["location_in_mesh"]
+        assert loc[2] > GRAZING_CONTACT.floor_z and loc[0] < ANALYSIS["bbox_min"][0]
+
+    def test_the_cut_is_a_feature_line_the_mesher_refines_and_snaps_to(self, tmp_path):
+        summary, bm = _render(tmp_path, ground="ground", contact=GRAZING_CONTACT)
+        shm = (tmp_path / "system" / "snappyHexMeshDict").read_text()
+        level = summary["ground"]["contact_line_level"]
+        assert (f'features ( {{ file "car.eMesh"; level {summary["feature_level"]}; }} '
+                f'{{ file "{R.CONTACT_LINE_FILE}"; level {level}; }} );') in shm
+        # cells on the line no larger than the cut is deep, unless the two-level cap stops it
+        verts = re.findall(r"\(([-0-9.e]+) ([-0-9.e]+) ([-0-9.e]+)\)",
+                           bm.split("vertices (")[1].split(");")[0])
+        div = [int(v) for v in re.search(r"\((\d+) (\d+) (\d+)\) simpleGrading", bm).groups()]
+        lo, hi = [float(c) for c in verts[0]], [float(c) for c in verts[6]]
+        base = max((hi[i] - lo[i]) / div[i] for i in range(3))
+        smax = summary["surface_level"][1]
+        assert base / 2 ** level <= GRAZING_CONTACT.penetration_m or level == smax + 2
+        # the line itself: an OpenFOAM featureEdgeMesh, every point on the raised floor
+        emesh = (tmp_path / "constant" / "triSurface" / R.CONTACT_LINE_FILE).read_text()
+        assert "class featureEdgeMesh;" in emesh
+        body = emesh.split("}\n", 1)[1]
+        pts = re.findall(r"\(([-0-9.e]+) ([-0-9.e]+) ([-0-9.e]+)\)", body)
+        assert len(pts) == 4 and {float(p[2]) for p in pts} == {0.006}
+        assert body.endswith("\n4\n(\n(0 1)\n(1 2)\n(2 3)\n(0 3)\n)\n")
+
+    def test_a_replan_without_a_cut_takes_the_line_away(self, tmp_path):
+        _render(tmp_path, ground="ground", contact=GRAZING_CONTACT)
+        _render(tmp_path, ground="ground", contact=SEATED_CONTACT)
+        assert not (tmp_path / "constant" / "triSurface" / R.CONTACT_LINE_FILE).exists()
+        assert R.CONTACT_LINE_FILE not in (tmp_path / "system" / "snappyHexMeshDict").read_text()
+
+    def test_an_ungrounded_case_is_unchanged_by_a_stray_contact(self, tmp_path):
+        # the contact only means something under a floor: a free body's case is the old one
+        _render(tmp_path / "a")
+        _render(tmp_path / "b", contact=GRAZING_CONTACT)
+        for name in ("blockMeshDict", "snappyHexMeshDict"):
+            assert ((tmp_path / "a" / "system" / name).read_bytes()
+                    == (tmp_path / "b" / "system" / name).read_bytes())
+        assert not (tmp_path / "b" / "constant" / "triSurface" / R.CONTACT_LINE_FILE).exists()
+
+    def test_a_seated_body_gets_the_case_it_always_had(self, tmp_path):
+        _render(tmp_path / "a", ground="ground")
+        _render(tmp_path / "b", ground="ground", contact=SEATED_CONTACT)
+        for name in ("blockMeshDict", "snappyHexMeshDict"):
+            assert ((tmp_path / "a" / "system" / name).read_bytes()
+                    == (tmp_path / "b" / "system" / name).read_bytes())
+        assert not (tmp_path / "b" / "constant" / "triSurface" / R.CONTACT_LINE_FILE).exists()
 
 
 # the gates that judge the built mesh
@@ -462,6 +551,44 @@ class TestTheDriver:
         seen["faces"] = {"car": 500, "ground": 900, "symmetry": 400, "farfield": 300}
         ok, _pub = run(patches=half)
         assert ok is True
+
+    def test_a_grazing_body_gets_a_raised_floor_and_is_told_how_far(self, driver, monkeypatch):
+        run, seen = driver
+        monkeypatch.setattr(R, "measure_ground_contact", lambda *a, **k: GRAZING_CONTACT)
+        ok, pub = run()
+        assert ok is True
+        assert seen["domain"]["contact"] is GRAZING_CONTACT
+        assert seen["render"]["contact"] is GRAZING_CONTACT
+        notes = [a[0] for name, a, _k in pub.calls if name == "anote" and a]
+        said = next(n for n in notes if "stands on the ground" in n)
+        assert "6 mm above its lowest point" in said and "'ground'" in said
+
+    def test_a_seated_body_is_told_the_floor_is_at_its_lowest_point(self, driver, monkeypatch):
+        run, seen = driver
+        monkeypatch.setattr(R, "measure_ground_contact", lambda *a, **k: SEATED_CONTACT)
+        ok, pub = run()
+        assert ok is True and seen["domain"]["contact"] is SEATED_CONTACT
+        notes = [a[0] for name, a, _k in pub.calls if name == "anote" and a]
+        said = next(n for n in notes if "stands on the ground" in n)
+        assert "rise steeply" in said and "floor sits at its lowest point" in said
+
+    def test_a_body_that_cannot_be_measured_still_meshes_on_its_lowest_point(self, driver):
+        # the fixture's surface has no triangles: the build goes on with the floor PR #84 laid
+        run, seen = driver
+        ok, pub = run()
+        assert ok is True and seen["domain"]["contact"] is None
+        notes = [a[0] for name, a, _k in pub.calls if name == "anote" and a]
+        assert any("floor of the domain sits at its lowest point" in n for n in notes), notes
+
+    def test_a_free_body_is_never_measured_for_a_floor(self, driver, monkeypatch):
+        run, seen = driver
+        seen["faces"] = {"car": 500, "farfield": 300}
+
+        def _boom(*_a, **_k):
+            raise AssertionError("a body free in the flow has no contact to measure")
+        monkeypatch.setattr(R, "measure_ground_contact", _boom)
+        ok, _pub = run(patches=[("car", "wall"), ("farfield", "farfield")])
+        assert ok is True and seen["domain"]["contact"] is None
 
     def test_a_flow_along_z_is_refused_before_any_build(self, driver):
         run, seen = driver
