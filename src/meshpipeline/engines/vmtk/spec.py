@@ -211,6 +211,12 @@ SPEC = EngineSpec(
         # (ids 1 and 90, alongside the cap ids), so several named wall regions survive - the caps
         # are additional patches, not a limit of one wall.
         supports_multiple_wall_patches=True,
+        # ...but THIS bundle's path marks one: the staged lumen is the whole wall with the
+        # declared ports cut out (lumen_staging.stage_lumen), the delivered mesh.vtu names the
+        # wall by entity id 1 alone, and a second id would be counted as a cap by the patch gate.
+        # Two declared walls would come back as one while the manifest echoed both - so it is one
+        # wall and the declared openings, and nothing else, until a path splits the wall.
+        boundary_limits=(("internal", (("wall", 1), ("symmetry", 0), ("empty", 0))),),
         validation_coverage=(
             _VC(_VA.INTEGRITY, "tetrahedral element validity - no inverted / zero-volume cells in mesh.vtu",
                 "an inverted or degenerate tet is universally invalid for any FE/FV assembly; blocked by "

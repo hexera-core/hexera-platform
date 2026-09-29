@@ -158,9 +158,20 @@ SPEC = EngineSpec(
                       "non-watertight geometry. Raw thinness is handled by local "
                       "refinement, so no hard thin-feature floor is set.",
         ),
-        # Named solids reach geom.fms and renameBoundary maps each to its own patch; proven
-        # end to end from a STEP whose parts are named.
+        # Named solids reach geom.fms and renameBoundary maps each to its own patch - when the
+        # staged surface carries them as separate STL solids (prepare_surface stages each under
+        # the declared wall it matches).
         supports_multiple_wall_patches=True,
+        # A CAD file is tessellated as ONE surface (cad_tessellate.tessellate_to_stl), so the
+        # parts a STEP assembly names never reach geom.fms apart. Only STL solids are kept.
+        keeps_regions_from=("stl-solids",),
+        # every staged part is a wall patch, so with several walls each part must be one of them
+        parts_become_walls=True,
+        # What this case writer builds. EXTERNAL: the far field is one box surface written as the
+        # first non-wall patch (one), and a 2D case merges its front and back into exactly one
+        # empty patch. INTERNAL: the carve delivers one wall and the declared ports.
+        boundary_limits=(("external", (("farfield", 1), ("empty", 1))),
+                         ("internal", (("wall", 1), ("symmetry", 0), ("empty", 0)))),
         validation_coverage=(
             _VC(_VA.INTEGRITY, "checkMesh fatal-topology (negative-volume / open / mis-oriented cells)",
                 "a fatal topological defect is universally invalid - blocked by the manifest_valid gate"),

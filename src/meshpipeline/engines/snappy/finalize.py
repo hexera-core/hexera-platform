@@ -133,8 +133,18 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             try:
                 _lc = R.parse_layer_coverage(_log.read_text(errors="replace"))
                 _per = _lc.get("per_patch", {}) or {}
-                # coverage on the WALL patches (exclude the box faces that carry no layers)
-                _walls = {n: v for n, v in _per.items() if n not in ("farfield", "symmetry")}
+                # coverage on the WALL patches (exclude the box faces that carry no layers) - the
+                # box faces by the roles the user DECLARED for them, since the box is written under
+                # the declared names; the literal names cover a run that declared nothing
+                from meshpipeline.engines.ground_plane import ground_patch_name
+                _declared = [p for p in (intake_patches or []) if isinstance(p, dict)]
+                _not_walls = ({str(p.get("name")) for p in _declared
+                               if str(p.get("type") or "") != "wall"}
+                              if _declared else {"farfield", "symmetry"})
+                _gp = ground_patch_name(_declared) if not internal_flow else None
+                if _gp:
+                    _not_walls.add(_gp)
+                _walls = {n: v for n, v in _per.items() if n not in _not_walls}
                 # PROVENANCE travels with the number: 'overall' is the AREAL cells-added
                 # headline; 'per_patch_min' is a THICKNESS-percent fallback measuring a
                 # different thing. Downstream policy (layer-coverage caveat eligibility)
