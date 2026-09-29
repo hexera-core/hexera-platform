@@ -219,7 +219,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # background-box skin ('outer') surviving the carve: the channel leaked to the
     # exterior void - a hollow part whose annular port mouths were not sealed - and the
     # delivered mesh contains a spurious outside region (jobs 95bd0197 and 0de57541
-    # shipped 'outer' patches of 58,348 and 5,827 faces beside inlet/outlet/wall).
+    # shipped 'outer' patches of 58,348 and 5,827 faces beside inlet/outlet/wall). The
+    # same patch appears when the surface is closed but the seed sits OUTSIDE it
+    # (bend_elbow_021: 0.5 mm upstream of its sealed inlet), so the message names both.
     # Recorded as a QUALITY KEY (not a criteria row: gate_declared_criteria fails closed
     # on any gating key absent from the quality report, so a new row would demand this
     # measurement of every snappy job, external aero included) and shouted in the builder
@@ -236,10 +238,11 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             internal_leak_msg = (
                 f" [INTERNAL_CARVE_LEAK] boundary patch(es) beyond the staged "
                 f"inlet/outlet/wall set carry faces: {_detail} - the carve kept the "
-                f"exterior void (a hollow part's port mouths were not sealed), so the "
-                f"mesh includes a spurious outside region and is physically wrong for "
-                f"internal flow. This is a geometry-prep defect, not a plan problem - "
-                f"do not re-plan; the port STLs must seal the mouths.")
+                f"exterior void (a port mouth left open, or the seed point outside the "
+                f"cavity), so the mesh includes a spurious outside region and is "
+                f"physically wrong for internal flow. This is a geometry-prep defect, not "
+                f"a plan problem - do not re-plan; the staged surface must close the flow "
+                f"and the seed must sit inside it.")
             logger.error("finalize: internal-flow mesh delivered unexpected boundary "
                          "patch(es) with faces (%s) - carve leaked to the exterior void",
                          _detail)
