@@ -484,6 +484,35 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
     asked_already = uc.already_asked(gate)
     proposal = uc.proposed(gate) if asked_already else None
     unit = uc.classify(inbound.content, proposal) if asked_already else None
+    if unit is None and not asked_already:
+        # THE UNIT SAID BEFORE IT WAS ASKED. "Air over the Ahmed body, the file is in metres" names
+        # the scale in the very message that would otherwise be answered with the unit question -
+        # asking it then is a question the user has just answered. Taken when the part is
+        # believable in it at its measured size; a unit that would make it absurd (a 1 mm car) is
+        # still asked, with the sizes beside every candidate, so the user sees the doubt.
+        from meshpipeline.application import geometry_hold as gh
+
+        unit = uc.stated_unit(inbound.content)
+        if unit is not None and not uc.believable(
+                gh.measured_size_mm(str(inbound.session_id)), unit,
+                f"{gh.purpose_from(getattr(locked, 'messages', None))} {inbound.content}"):
+            logger.info("intake message: %s said unasked but the part is not believable in it - "
+                        "asking - session=%s", unit.value, inbound.session_id)
+            unit = None
+    if unit is None and asked_already and not insist:
+        # THE USER LEAVES IT TO US. "No idea, whatever the file uses" to the unit question is an
+        # answer once the part is measured: the unit the question proposes (millimetres unless the
+        # size makes that absurd), which the stage then shows beside the part's length for the user
+        # to change. Asked again instead, it was the same question every turn and the geometry
+        # check waited on it for good.
+        from meshpipeline.agents.intake import turn as _turn
+        from meshpipeline.application import geometry_hold as gh
+
+        size = gh.measured_size_mm(str(inbound.session_id)) if _turn.defers_to_default(inbound.content) else None
+        if size:
+            unit = proposal or uc.proposal_for(size, gh.purpose_from(getattr(locked, "messages", None)))
+            logger.info("intake message: the user left the unit to us - taking the proposed %s - "
+                        "session=%s", unit.value, inbound.session_id)
     if unit is not None:
         # STAMPED WITH BOTH, exactly as api/v1/upload.py stamps the interpretation it writes for a
         # file-declared unit. The two paths write the same table for the same reason; an

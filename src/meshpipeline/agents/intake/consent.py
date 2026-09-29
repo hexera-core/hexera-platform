@@ -138,7 +138,7 @@ def _build() -> None:
 _build()
 
 
-def _one_slip(word: str, target: str) -> bool:
+def one_slip(word: str, target: str) -> bool:
     """One keystroke apart: a letter dropped, added, changed or two neighbours swapped. A three-letter
     word only by a swap ("yse") or a doubled letter ("yess"); shorter words never."""
     a, b = word, target
@@ -172,7 +172,7 @@ def _repairs(words: list[str]) -> list[list[str]]:
         if w in _VOCAB or w in PROTECTED or not w.isalpha():
             options.append([w])
             continue
-        cands = sorted(t for t in _TARGETS if _one_slip(w, t))
+        cands = sorted(t for t in _TARGETS if one_slip(w, t))
         if not cands:
             return []
         options.append(cands)
@@ -237,4 +237,4 @@ def is_yes(message: str) -> bool:
 
 
 __all__ = ["APPROVE", "FILLER", "HEDGE", "HEDGES", "OTHER", "PHRASES", "PROTECTED", "STANDALONE",
-           "is_yes", "reading"]
+           "is_yes", "one_slip", "reading"]
