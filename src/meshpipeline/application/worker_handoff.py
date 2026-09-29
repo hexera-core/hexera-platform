@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 from meshpipeline.contracts.worker_drain import drain_requested
@@ -141,12 +142,15 @@ async def hand_back(session_factory, ownership, *, jlog: Any = logger, lease_rep
                     job_repo=None) -> dict:
     """Give the job this worker owns back to the queue. Returns the task's result detail.
 
-    1. Tell the user the job is moving to another machine.
-    2. Release it (LeaseRepository.hand_back): lease and fence gone, status back to `pending`.
-       Refused when the job was cancelled or taken over meanwhile - then there is nothing to give.
-    3. Take back this run's delivery count: a planned move is not a crash (contracts/delivery_guard).
-    4. Re-launch it. If that fails, put it where the reaper's automatic re-run finds it, rather
-       than leave a pending job with no message that nothing would ever run.
+    1. Release it (LeaseRepository.hand_back): fence gone, no owner, status back to `pending`,
+       marked released-but-not-yet-requeued. Refused when the job was cancelled or taken over
+       meanwhile - then there is nothing to give, and nothing is said.
+    2. Take back this run's delivery count: a planned move is not a crash (contracts/delivery_guard).
+    3. Re-launch it, and only then clear the mark (LeaseRepository.confirm_requeued) and tell the
+       user it moved. The message cannot be published inside the release's transaction, so the
+       mark is what makes a process dying between the two recoverable: the reaper launches any
+       job still marked released-but-unqueued a lease later, instead of it waiting unseen until
+       its deadline. The same holds when the launch itself fails.
     """
     from meshpipeline.contracts.delivery_guard import forgive_attempt
     from meshpipeline.persistence.lease import LeaseRepository
@@ -155,10 +159,10 @@ async def hand_back(session_factory, ownership, *, jlog: Any = logger, lease_rep
     job_id = str(ownership.job_id)
     leases = lease_repo or LeaseRepository()
     jobs = job_repo or JobRepository()
-    _announce(ownership, job_id)
+    released_at = datetime.now(UTC)
     try:
         async with session_factory() as db:
-            released = await leases.hand_back(db, ownership)
+            released = await leases.hand_back(db, ownership, now=released_at)
             payload = await jobs.get_dispatch_payload(db, ownership.job_id) if released else None
             await db.commit()
     except Exception as exc:  # noqa: BLE001 - nothing was released; the lease lapses on its own
@@ -173,21 +177,22 @@ async def hand_back(session_factory, ownership, *, jlog: Any = logger, lease_rep
 
     async with session_factory() as db:
         launched = await relaunch(db, job_id, payload, log=jlog)
-    if launched:
-        jlog.warning("job %s handed back to the queue (generation %d) - the next free worker "
-                     "runs it", job_id, ownership.execution_generation)
-        return {"job_id": job_id, "status": "handed_back"}
-
+    if not launched:
+        jlog.error("job %s was released but could not be re-queued - the reaper launches it once "
+                   "its release has waited a lease", job_id)
+        return {"job_id": job_id, "status": "handback_unqueued"}
     try:
         async with session_factory() as db:
-            await leases.unqueue_hand_back(db, ownership)
+            await leases.confirm_requeued(db, ownership.job_id, released_at)
             await db.commit()
-    except Exception as exc:  # noqa: BLE001 - logged; the job's deadline still bounds it
-        jlog.error("job %s was released but neither re-queued nor returned to the reaper (%s) - "
-                   "it waits until its pipeline deadline", job_id, type(exc).__name__)
-        return {"job_id": job_id, "status": "handback_unqueued"}
-    jlog.error("job %s could not be re-queued - left for the reaper's automatic re-run", job_id)
-    return {"job_id": job_id, "status": "handback_unqueued"}
+    except Exception as exc:  # noqa: BLE001 - the job IS queued; at worst the reaper queues it twice
+        jlog.warning("job %s is back on the queue but the confirmation was not recorded (%s) - "
+                     "a second message may follow, and its claim will refuse it",
+                     job_id, type(exc).__name__)
+    _announce(ownership, job_id)
+    jlog.warning("job %s handed back to the queue (generation %d) - the next free worker runs it",
+                 job_id, ownership.execution_generation)
+    return {"job_id": job_id, "status": "handed_back"}
 
 
 __all__ = ["CANCEL_GRACE_SECONDS", "DRAIN_POLL_SECONDS", "HANDOFF_NOTE", "WorkerDraining",

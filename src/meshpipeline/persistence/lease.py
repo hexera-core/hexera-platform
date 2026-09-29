@@ -281,11 +281,17 @@ class LeaseRepository:
         """Give a RUNNING job back to the queue, because the worker holding it is going away.
 
         `release`'s revoke-then-clear, plus the status: the job goes back to `pending`, the state
-        a job waiting for a worker is in, with no owner and no lease. The next worker's claim then
-        sees no live lease and takes it as a new generation - a fresh checkpoint thread, the same
-        takeover a lapsed lease has always led to, just without the half hour of waiting for it.
-        `started_at` and `pipeline_deadline_at` are left alone: the run's budget keeps counting
-        from its first start, however many machines it passes through.
+        a job waiting for a worker is in, with no owner. The next worker's claim then sees no live
+        lease (there is no token to hold one) and takes it as a new generation - a fresh checkpoint
+        thread, the same takeover a lapsed lease has always led to, just without the half hour of
+        waiting for it. `started_at` and `pipeline_deadline_at` are left alone: the run's budget
+        keeps counting from its first start, however many machines it passes through.
+
+        `lease_expires_at` is set to `now` and means, on an unowned pending job, "released, but not
+        yet confirmed back on the queue". The message is published only after this commits, and a
+        process that dies in between would otherwise strand a pending job no message will ever
+        reach. `confirm_requeued` clears it once the launcher has taken the message; until then the
+        stalled-job reaper treats the job as released-but-unqueued and launches it itself.
 
         Only the holder can do this. The compare-and-set names this ownership's generation AND
         token, so a worker whose job was cancelled or taken over meanwhile changes nothing and is
@@ -308,30 +314,24 @@ class LeaseRepository:
                 SimulationJob.execution_generation == own.execution_generation,
                 SimulationJob.active_worker_token == own.worker_token,
             ).values(status=JobStatus.pending, active_worker_token=None,
-                     lease_expires_at=None, updated_at=now))
+                     lease_expires_at=now, updated_at=now))
         return bool(res.rowcount == 1)
 
-    async def unqueue_hand_back(self, db: AsyncSession, own: ExecutionOwnership,
-                                *, now: datetime | None = None) -> bool:
-        """A hand-back whose re-queue failed: return the job to where the reaper looks for work a
-        lost worker left behind - `running` with a lapsed lease - so its automatic re-run picks it
-        up on its next tick, once the broker answers again. Left `pending` with no message, nothing
-        would ever run it, and the reaper would only fail it at its deadline, hours later.
+    async def confirm_requeued(self, db: AsyncSession, job_id: uuid.UUID,
+                               released_at: datetime) -> bool:
+        """The launcher took the message for a job released at `released_at`: it is on the queue,
+        so the reaper must leave it to the next worker rather than launch it a second time.
 
-        The lease is backdated by a whole lease period: the reaper's grace exists for a heartbeat
-        that is late, and there is no heartbeat to wait for here - this worker is going away.
-
-        Only the job as this hand-back left it: still pending, still unowned, same generation. A
-        cancel that landed in between wins, and so does anything else that moved it."""
-        now = now or _now()
-        lapsed = now - timedelta(seconds=int(rtcfg.WORKER_LEASE_SECONDS))
+        Only the job exactly as that release left it - still pending, unowned, carrying that
+        release's mark. A worker that already claimed it (the message can be taken before this
+        runs) has moved it on, and so has a cancel; neither is touched."""
         res = await db.execute(
             update(SimulationJob).where(
-                SimulationJob.id == own.job_id,
+                SimulationJob.id == job_id,
                 SimulationJob.status.in_([JobStatus.pending]),
                 SimulationJob.active_worker_token.is_(None),
-                SimulationJob.execution_generation == own.execution_generation,
-            ).values(status=JobStatus.running, lease_expires_at=lapsed, updated_at=now))
+                SimulationJob.lease_expires_at == released_at,
+            ).values(lease_expires_at=None))
         return bool(res.rowcount == 1)
 
 

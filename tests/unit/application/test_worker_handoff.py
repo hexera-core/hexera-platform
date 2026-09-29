@@ -161,13 +161,17 @@ class _Leases:
     def __init__(self, *, released=True):
         self.released = released
         self.calls: list[str] = []
+        self.released_at = None
+        self.confirmed_at = None
 
-    async def hand_back(self, db, own):
+    async def hand_back(self, db, own, *, now=None):
         self.calls.append("hand_back")
+        self.released_at = now
         return self.released
 
-    async def unqueue_hand_back(self, db, own):
-        self.calls.append("unqueue_hand_back")
+    async def confirm_requeued(self, db, job_id, released_at):
+        self.calls.append("confirm_requeued")
+        self.confirmed_at = released_at
         return True
 
 
@@ -230,7 +234,10 @@ async def test_the_job_is_released_and_put_back_on_the_queue(world):
     out = await hand_back(lambda: _Session(), own, lease_repo=leases, job_repo=_Jobs())
 
     assert out == {"job_id": str(own.job_id), "status": "handed_back"}
-    assert leases.calls == ["hand_back"]
+    # released, re-launched, and only THEN confirmed queued - the confirmation names the very
+    # release it confirms, so a claim or a cancel that landed in between is never undone
+    assert leases.calls == ["hand_back", "confirm_requeued"]
+    assert leases.released_at is not None and leases.confirmed_at == leases.released_at
     # re-launched exactly as the API launched it: the approved dispatch payload, the same job id
     assert launcher.launched == [(str(own.job_id), _Jobs.PAYLOAD)]
     # a planned move is not a crash: it must not count toward the poison-job redelivery cap
@@ -240,8 +247,8 @@ async def test_the_job_is_released_and_put_back_on_the_queue(world):
     assert "run it again" not in HANDOFF_NOTE
 
 
-async def test_a_job_cancelled_meanwhile_is_not_put_back(world):
-    own, _said, guard = world
+async def test_a_job_cancelled_meanwhile_is_not_put_back_and_nothing_is_promised(world):
+    own, said, guard = world
     leases, launcher = _Leases(released=False), _Launcher()
     pipeline_execution.set_pipeline_launcher(launcher)
 
@@ -250,18 +257,21 @@ async def test_a_job_cancelled_meanwhile_is_not_put_back(world):
     assert out["status"] == "fenced"
     assert launcher.launched == [], "a cancelled or taken-over job was put back on the queue"
     assert guard.forgiven == []
+    assert said == [], "the user was promised a move that never happened"
 
 
-async def test_a_job_that_cannot_be_requeued_is_left_where_the_reaper_reruns_it(world):
-    # Released but with no message on the queue, nothing would ever run it again.
-    own, _said, _guard = world
+async def test_a_job_that_cannot_be_requeued_keeps_its_release_mark_for_the_reaper(world):
+    # Released but with no message on the queue: the unconfirmed release is exactly what the
+    # reaper looks for, so it is left marked - and the user is not yet told it moved.
+    own, said, _guard = world
     leases = _Leases()
     pipeline_execution.set_pipeline_launcher(_Launcher(fails=True))
 
     out = await hand_back(lambda: _Session(), own, lease_repo=leases, job_repo=_Jobs())
 
     assert out["status"] == "handback_unqueued"
-    assert leases.calls == ["hand_back", "unqueue_hand_back"]
+    assert leases.calls == ["hand_back"], "an unqueued release was confirmed as queued"
+    assert said == []
 
 
 async def test_relaunch_refuses_a_job_with_nothing_to_launch():

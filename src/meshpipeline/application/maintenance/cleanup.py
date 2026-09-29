@@ -157,6 +157,12 @@ def stalled_jobs_clause(now: datetime) -> ColumnElement[bool]:
     judged by the one clock that bounds every run, its pipeline deadline, with a lease of grace for
     a worker that claimed it at the last moment and is refusing it truthfully. The never-started
     ceiling reaches only a job that has truly never started.
+
+    RELEASED BUT NOT CONFIRMED QUEUED. A release (a hand-back, or this reaper's own re-run) marks
+    the unowned pending job with `lease_expires_at` until the launcher has taken its message
+    (persistence/lease.py `hand_back`, `confirm_requeued`). A mark older than a lease is a release
+    whose message may never have been sent - the process died in between, or the launch failed -
+    and nothing else would ever run that job, so it is selected to be launched again.
     """
     from sqlalchemy import or_
 
@@ -183,6 +189,12 @@ def stalled_jobs_clause(now: datetime) -> ColumnElement[bool]:
         & SimulationJob.started_at.isnot(None)
         & SimulationJob.pipeline_deadline_at.isnot(None)
         & (SimulationJob.pipeline_deadline_at < lease_cutoff),
+        # released, but never confirmed back on the queue
+        SimulationJob.status.in_([JobStatus.pending, JobStatus.queued])
+        & SimulationJob.started_at.isnot(None)
+        & SimulationJob.active_worker_token.is_(None)
+        & SimulationJob.lease_expires_at.isnot(None)
+        & (SimulationJob.lease_expires_at < lease_cutoff),
     )
 
 
@@ -212,12 +224,22 @@ def rerun_eligible(job, now: datetime) -> bool:
 
     Only a job that HELD a lease and lost it: a running row that never held one predates leases.
     Only once (RERUN_MARK). Only with a dispatch payload to re-launch, and with enough of the
-    pipeline deadline left for a new run to do something."""
+    pipeline deadline left for a new run to do something.
+
+    A job RELEASED but never confirmed back on the queue (a pending job still carrying its release
+    mark, see stalled_jobs_clause) is launched again whatever its mark says: nothing was lost
+    there - no worker ran it - it is the launch that has to happen, and it happens until it
+    succeeds or the deadline makes it pointless."""
     from meshpipeline.persistence.models import JobStatus
 
-    if job.status != JobStatus.running or getattr(job, "lease_expires_at", None) is None:
+    if getattr(job, "lease_expires_at", None) is None:
         return False
-    if (getattr(job, "pipeline_dispatch_state", None) or "") == RERUN_MARK:
+    if job.status == JobStatus.running:
+        if (getattr(job, "pipeline_dispatch_state", None) or "") == RERUN_MARK:
+            return False
+    elif not (job.status == JobStatus.pending
+              and getattr(job, "active_worker_token", None) is None
+              and getattr(job, "started_at", None) is not None):
         return False
     if not getattr(job, "dispatch_payload", None):
         return False
@@ -278,23 +300,23 @@ async def _reap_stalled_async() -> dict:
             for job in rows:
                 _was = job.status
                 # ONE AUTOMATIC RE-RUN for a job whose worker was lost (rerun_eligible says why).
-                # Back to `pending` with no owner, marked, and re-launched after the commit below;
-                # the next worker claims it as a new execution generation. Compare-and-set on the
-                # lease the row was SELECTED with, so a worker that heartbeat in between - late,
-                # not lost - keeps its job.
+                # Back to `pending` with no owner, marked as re-run once and as released-but-not-
+                # yet-queued (lease_expires_at = now), and re-launched after the commit below; the
+                # next worker claims it as a new execution generation. Compare-and-set on the state
+                # and the lease the row was SELECTED with, so a worker that heartbeat in between -
+                # late, not lost - keeps its job. A pending row selected here was released but never
+                # confirmed queued: it is launched again, and its mark is left as it was.
                 if _can_rerun and rerun_eligible(job, now):
+                    _release: dict = {"status": JobStatus.pending, "active_worker_token": None,
+                                      "lease_expires_at": now, "updated_at": now}
+                    if _was == JobStatus.running:
+                        _release["pipeline_dispatch_state"] = RERUN_MARK
                     res = await db.execute(
                         update(SimulationJob).where(
                             SimulationJob.id == job.id,
-                            SimulationJob.status.in_([JobStatus.running]),
+                            SimulationJob.status.in_([_was]),
                             SimulationJob.lease_expires_at == job.lease_expires_at,
-                        ).values(
-                            status=JobStatus.pending,
-                            active_worker_token=None,
-                            lease_expires_at=None,
-                            pipeline_dispatch_state=RERUN_MARK,
-                            updated_at=now,
-                        )
+                        ).values(**_release)
                     )
                     if res.rowcount == 0:
                         logger.info("reap_stalled_jobs: job %s moved on before its re-run - "
@@ -354,39 +376,29 @@ async def _reap_stalled_async() -> dict:
 
         # THE RE-RUNS, launched only now that `pending` is committed: a worker that takes the
         # message at once must find the job waiting for it, not still `running` under a lease.
+        # Confirmed once the launcher has the message, and only then is the user told. A launch
+        # that fails - or a sweep that dies before confirming - leaves the release mark, and the
+        # next sweep a lease later launches it again, until the deadline says there is no point.
+        from meshpipeline.persistence.lease import LeaseRepository
         for job in rerun:
             job_id = str(job.id)
             async with _SessionLocal() as db:
                 launched = await relaunch(db, job_id, job.dispatch_payload, log=logger)
-            if launched:
-                rerun_ids.append(job_id)
-                logger.warning("reap_stalled_jobs: job %s lost its worker (lease_expires=%s) - "
-                               "re-launched once, automatically", job_id, job.lease_expires_at)
-                publish_job_note(job_id, RERUN_NOTE, op_id=f"rerun:{job_id}")
+            if not launched:
+                logger.error("reap_stalled_jobs: job %s could not be re-launched - the next sweep "
+                             "tries again", job_id)
                 continue
-            # Nothing will run it, so it is failed exactly as it would have been without the
-            # re-run - and only if it is still the pending job this sweep left.
-            _record = worker_lost_result(
-                job_id=job_id, owner_id=str(getattr(job, "owner_id", "") or ""),
-                attempts=int(getattr(job, "current_attempt", 0) or 0))
-            async with _SessionLocal() as db:
-                res = await db.execute(
-                    update(SimulationJob).where(
-                        SimulationJob.id == job.id,
-                        SimulationJob.status.in_([JobStatus.pending]),
-                        SimulationJob.pipeline_dispatch_state == RERUN_MARK,
-                    ).values(
-                        status=JobStatus.failed,
-                        failed_reason=FailedReason.unhandled,
-                        final_result=_record.to_dict(),
-                        ended_at=now,
-                        updated_at=now,
-                    )
-                )
-                await db.commit()
-            if res.rowcount:
-                reaped.append(job_id)
-                _publish_terminal_log(job_id, render_message(_record))
+            try:
+                async with _SessionLocal() as db:
+                    await LeaseRepository().confirm_requeued(db, job.id, now)
+                    await db.commit()
+            except Exception as exc:  # noqa: BLE001 - it IS queued; a second message is refused
+                logger.warning("reap_stalled_jobs: job %s re-launched but not confirmed (%s)",
+                               job_id, type(exc).__name__)
+            rerun_ids.append(job_id)
+            logger.warning("reap_stalled_jobs: job %s lost its worker (lease_expires=%s) - "
+                           "re-launched, automatically", job_id, job.lease_expires_at)
+            publish_job_note(job_id, RERUN_NOTE, op_id=f"rerun:{job_id}")
     finally:
         await _engine.dispose()
     logger.info("reap_stalled_jobs: reaped %d stalled job(s), re-ran %d", len(reaped),

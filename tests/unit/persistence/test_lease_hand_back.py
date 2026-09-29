@@ -76,8 +76,10 @@ async def test_the_holder_gives_the_job_back_to_the_queue(fence):
     values = _values(stmt)
     # back to WAITING FOR A WORKER, owned by nobody: the next claim sees no live lease and takes
     # the job as a new execution generation
-    assert values["status"] == JobStatus.pending
-    assert values["active_worker_token"] is None and values["lease_expires_at"] is None
+    assert values["status"] == JobStatus.pending and values["active_worker_token"] is None
+    # released-but-not-yet-queued: the message goes out after this commits, and until the launch
+    # is confirmed the reaper can find a job whose message never left
+    assert values["lease_expires_at"] == NOW
     # the run's budget keeps counting from its first start, whatever machine it moves to
     assert "started_at" not in values and "pipeline_deadline_at" not in values
     sql, params = _where(stmt)
@@ -105,17 +107,27 @@ async def test_a_mirror_that_cannot_be_revoked_does_not_stop_the_hand_back(monke
     assert await LeaseRepository().hand_back(_Db(), _own(), now=NOW) is True
 
 
-async def test_an_unqueued_hand_back_is_left_as_a_lost_worker_for_the_reaper():
+async def test_a_confirmed_requeue_clears_only_that_release(fence):
     own, db = _own(), _Db()
-    assert await LeaseRepository().unqueue_hand_back(db, own, now=NOW) is True
+    assert await LeaseRepository().confirm_requeued(db, own.job_id, NOW) is True
 
     (stmt,) = db.statements
     values = _values(stmt)
-    assert values["status"] == JobStatus.running
-    # lapsed by a whole lease already: the reaper's grace is for a LATE heartbeat, and this
-    # worker is going away, so its next tick re-runs the job instead of waiting another lease
-    assert values["lease_expires_at"] == NOW - timedelta(seconds=int(rtcfg.WORKER_LEASE_SECONDS))
+    # the mark goes and nothing else moves - in particular not the status
+    assert values == {"lease_expires_at": None}
     sql, params = _where(stmt)
-    assert [JobStatus.pending] in params.values(), "a cancel that landed first must win"
+    # the job exactly as that release left it: still pending, still unowned, that release's mark.
+    # A worker that already claimed it, or a cancel, has moved it on and is not touched.
+    assert [JobStatus.pending] in params.values()
     assert "active_worker_token IS NULL" in sql
-    assert own.execution_generation in params.values()
+    assert NOW in params.values()
+
+
+def test_an_unconfirmed_release_is_what_the_reaper_looks_for():
+    # The two halves must agree: the reaper selects an unowned pending job whose release mark is
+    # older than a lease (application/maintenance/cleanup.py).
+    from meshpipeline.application.maintenance import cleanup
+    later = NOW + timedelta(seconds=int(rtcfg.WORKER_LEASE_SECONDS) + 60)
+    sql = str(cleanup.stalled_jobs_clause(later).compile())
+    assert ("active_worker_token IS NULL AND simulation_jobs.lease_expires_at IS NOT NULL "
+            "AND simulation_jobs.lease_expires_at <") in sql, sql
