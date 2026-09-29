@@ -121,20 +121,27 @@ def check_domain(*, requested, reference_length_m, strict: bool, flow_axis,
 
 
 def zero_face_feedback(text: str, empty: list, workspace) -> GateFeedback:
-    """ONE symptom, two causes, told apart by the delivered boundary itself. A declared patch
-    that is IN the mesh with zero faces was lost by the mesher (a port sealed over by cells
-    larger than the opening) - a meshing problem a retry can fix. A declared patch that is NOT in
-    the mesh at all was never written under that name - the case disagreed with the approval
-    ('car wall' approved, 'car_wall' written, job ac1daa3e) - which no retry changes."""
+    """ONE symptom, several causes, told apart only by POSITIVE evidence in the delivered
+    boundary - the cause that ends the retries is claimed only when it is proven.
+
+    * A declared patch missing from the mesh while its OpenFOAM spelling IS there was written
+      under another name ('car wall' approved, 'car_wall' written, job ac1daa3e): a contract
+      mismatch, which no retry changes.
+    * Any other zero-face patch - present with no faces, or absent with no other spelling in the
+      mesh (cfMesh and createPatch can drop an empty patch altogether) - was lost by the mesher, a
+      meshing problem a retry can fix. An absence alone proves nothing about naming.
+    * No readable boundary at all means the mesh was not written completely: the mesher stopped,
+      and nothing about the patches can be concluded from it."""
     from meshpipeline.engines.contract import foam_spelling
     from meshpipeline.engines.manifest import _patch_face_counts
     present = _patch_face_counts(Path(workspace))
-    absent = [n for n in empty if n not in present]
-    if present and absent:
-        return refuse(text, FailureCause.CONTRACT_MISMATCH, missing=absent,
-                      present=sorted(present),
-                      renamed={n: foam_spelling(n) for n in absent
-                               if foam_spelling(n) != n and foam_spelling(n) in present})
+    if not present:
+        return refuse(text, FailureCause.ENGINE_CRASHED)
+    renamed = {n: foam_spelling(n) for n in empty
+               if n not in present and foam_spelling(n) != n and foam_spelling(n) in present}
+    if renamed:
+        return refuse(text, FailureCause.CONTRACT_MISMATCH, missing=sorted(renamed),
+                      present=sorted(present), renamed=renamed)
     return refuse(text, FailureCause.PATCH_NOT_CAPTURED, patches=list(empty))
 
 

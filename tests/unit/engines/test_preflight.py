@@ -91,9 +91,23 @@ class TestTheZeroFaceGateTellsItsTwoCausesApart:
         assert fb.cause == FailureCause.PATCH_NOT_CAPTURED
         assert fb.facts["patches"] == ["outlet_2"]
 
-    def test_no_boundary_to_read_is_not_called_our_mistake(self, tmp_path):
-        fb = zero_face_feedback("zero faces: ['inlet']", ["inlet"], tmp_path)
+    def test_a_dropped_patch_with_no_other_spelling_keeps_its_retries(self, tmp_path):
+        # cfMesh and createPatch can drop an empty patch from the boundary altogether: an
+        # absence alone proves nothing about naming, so the retry-ending cause is not claimed
+        self._boundary(tmp_path, {"wall": 5000, "inlet": 200})
+        fb = zero_face_feedback("zero faces: ['outlet']", ["outlet"], tmp_path)
         assert fb.cause == FailureCause.PATCH_NOT_CAPTURED
+        assert fb.facts["patches"] == ["outlet"]
+
+    def test_a_renamed_patch_beside_a_lost_one_is_still_the_mismatch(self, tmp_path):
+        self._boundary(tmp_path, {"car_wall": 5000, "farfield": 300})
+        fb = zero_face_feedback("zero faces", ["car wall", "outlet"], tmp_path)
+        assert fb.cause == FailureCause.CONTRACT_MISMATCH
+        assert fb.facts["missing"] == ["car wall"]
+
+    def test_no_boundary_to_read_is_an_incomplete_mesh_not_a_naming_verdict(self, tmp_path):
+        fb = zero_face_feedback("zero faces: ['inlet']", ["inlet"], tmp_path)
+        assert fb.cause == FailureCause.ENGINE_CRASHED
 
 
 def test_the_record_round_trips(tmp_path):
