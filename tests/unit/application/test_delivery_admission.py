@@ -87,6 +87,34 @@ async def test_a_poison_job_is_failed_and_dead_lettered(monkeypatch):
     assert recorded, "no dead-letter record was written"
 
 
+@pytest.mark.parametrize("why, row", [
+    ("another worker holds a live lease on it", {
+        "status": JobStatus.running, "active_worker_token": uuid.uuid4(),
+        "lease_expires_at": "LIVE"}),
+    ("it has already ended", {"status": JobStatus.succeeded}),
+])
+async def test_a_stale_copy_over_the_cap_is_dropped_without_failing_anything(monkeypatch, why, row):
+    # The count is taken before the claim, so a copy of a message - a re-queue whose confirmation
+    # was lost, a message the broker returned late - counts too. Failing on it would fail a healthy
+    # run, or write a second ending over a finished one.
+    from datetime import UTC, datetime, timedelta
+    recorded = []
+    import meshpipeline.errors as errs
+    monkeypatch.setattr(errs, "record_dead_letter", lambda *a, **k: recorded.append(a))
+    job = _Row()
+    for key, value in row.items():
+        setattr(job, key, datetime.now(UTC) + timedelta(minutes=10) if value == "LIVE" else value)
+    repo = _Repo(job)
+
+    refusal = await fence.guard_redelivery(_sessions(), repo, JOB, jlog=_Log(),
+                                           max_redeliveries=3, deliveries=4)
+
+    assert isinstance(refusal, fence.DeliveryRefused), why
+    assert refusal.status == "skipped" and refusal.detail["reason"] == "stale_copy_over_cap"
+    assert repo.transitions == [], f"a job was failed although {why}"
+    assert recorded == [], "a stale copy was dead-lettered as a poison job"
+
+
 async def test_a_database_failure_still_dead_letters(monkeypatch):
     recorded = []
     import meshpipeline.errors as errs

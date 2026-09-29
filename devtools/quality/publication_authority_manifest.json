@@ -1840,6 +1840,34 @@
   ]
  },
  {
+  "context": "application/maintenance/cleanup.py::_reap_stalled_async::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/maintenance/cleanup.py",
+  "qualname": "_reap_stalled_async",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/maintenance/cleanup.py::publish_job_note::note#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
+  "path": "application/maintenance/cleanup.py",
+  "qualname": "publish_job_note",
+  "semantic": "note",
+  "method": "note",
+  "ordinal": 1,
+  "receiver": "publisher(job_id)",
+  "authority": "EventPublisher",
+  "lifecycle": "maintenance",
+  "gated_required": false,
+  "roots": [
+   "application/maintenance/cleanup.py::publisher"
+  ]
+ },
+ {
   "context": "application/maintenance/export.py::_export::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/maintenance/export.py",
   "qualname": "_export",
@@ -2164,6 +2192,68 @@
   "gated_required": false,
   "roots": [
    "application/terminal_finalize.py::callers of finalize_crash()"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::hand_back::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "hand_back",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::hand_back::error#2|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "hand_back",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::relaunch::error#1|NotAPublisher|not-a-publisher|application/maintenance/cleanup.py::logging.Logger,application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "relaunch",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/maintenance/cleanup.py::logging.Logger",
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::relaunch::error#2|NotAPublisher|not-a-publisher|application/maintenance/cleanup.py::logging.Logger,application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "relaunch",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/maintenance/cleanup.py::logging.Logger",
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
   ]
  },
  {
@@ -3813,6 +3903,19 @@
   "method": "warn",
   "ordinal": 7,
   "receiver": "_w",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "runtime/worker_drain.py::request_drain::error#1|NotAPublisher|not-a-publisher|",
+  "path": "runtime/worker_drain.py",
+  "qualname": "request_drain",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

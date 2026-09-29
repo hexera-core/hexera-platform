@@ -100,8 +100,11 @@ WORKER_UID="$(docker run --rm --entrypoint id "${WORKER_IMAGE}" -u 2>/dev/null |
 mkdir -p /var/lib/hexera/workspaces /var/lib/hexera/data
 chown "${WORKER_UID}:${WORKER_UID}" /var/lib/hexera/workspaces /var/lib/hexera/data
 
+# --stop-timeout: when the VM is deleted, docker's own shutdown may stop this container before the
+# shutdown script does (shutdown.sh). Docker's default is 10 seconds and then SIGKILL; this gives
+# the running job the same 75 seconds to hand itself back to the queue whichever stop comes first.
 docker rm -f hexera-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-worker --restart always \
+docker run -d --name hexera-worker --restart always --stop-timeout 75 \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \
@@ -121,7 +124,7 @@ docker run -d --name hexera-worker --restart always \
 # capacity lever, not the fleet's size (create-queue-depth-publisher.sh publishes this queue's
 # depth beside the fleet's, and scales on the fleet's alone).
 docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-geometry-worker --restart always \
+docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import meshpipeline.settings.runtime as rtcfg
@@ -275,6 +275,64 @@ class LeaseRepository:
             row.active_worker_token = None
             row.lease_expires_at = now or _now()
             await db.flush()
+
+    async def hand_back(self, db: AsyncSession, own: ExecutionOwnership,
+                        *, now: datetime | None = None) -> bool:
+        """Give a RUNNING job back to the queue, because the worker holding it is going away.
+
+        `release`'s revoke-then-clear, plus the status: the job goes back to `pending`, the state
+        a job waiting for a worker is in, with no owner. The next worker's claim then sees no live
+        lease (there is no token to hold one) and takes it as a new generation - a fresh checkpoint
+        thread, the same takeover a lapsed lease has always led to, just without the half hour of
+        waiting for it. `started_at` and `pipeline_deadline_at` are left alone: the run's budget
+        keeps counting from its first start, however many machines it passes through.
+
+        `lease_expires_at` is set to `now` and means, on an unowned pending job, "released, but not
+        yet confirmed back on the queue". The message is published only after this commits, and a
+        process that dies in between would otherwise strand a pending job no message will ever
+        reach. `confirm_requeued` clears it once the launcher has taken the message; until then the
+        stalled-job reaper treats the job as released-but-unqueued and launches it itself.
+
+        Only the holder can do this. The compare-and-set names this ownership's generation AND
+        token, so a worker whose job was cancelled or taken over meanwhile changes nothing and is
+        told so (False). The mirror is revoked first, while this worker is still the owner, so no
+        write of the run being stopped can be authorised by it afterwards.
+        """
+        now = now or _now()
+        _ops = _fence_ops()
+        try:
+            _ops.revoke(str(own.job_id),
+                        _ops.fingerprint(str(own.job_id), own.execution_generation,
+                                         own.worker_token))
+        except Exception:  # noqa: BLE001 - the row below is the authority; the mirror expires
+            logger.warning("could not revoke the execution fence for job %s on hand-back",
+                           own.job_id)
+        res = await db.execute(
+            update(SimulationJob).where(
+                SimulationJob.id == own.job_id,
+                SimulationJob.status.in_([JobStatus.running]),
+                SimulationJob.execution_generation == own.execution_generation,
+                SimulationJob.active_worker_token == own.worker_token,
+            ).values(status=JobStatus.pending, active_worker_token=None,
+                     lease_expires_at=now, updated_at=now))
+        return bool(res.rowcount == 1)
+
+    async def confirm_requeued(self, db: AsyncSession, job_id: uuid.UUID,
+                               released_at: datetime) -> bool:
+        """The launcher took the message for a job released at `released_at`: it is on the queue,
+        so the reaper must leave it to the next worker rather than launch it a second time.
+
+        Only the job exactly as that release left it - still pending, unowned, carrying that
+        release's mark. A worker that already claimed it (the message can be taken before this
+        runs) has moved it on, and so has a cancel; neither is touched."""
+        res = await db.execute(
+            update(SimulationJob).where(
+                SimulationJob.id == job_id,
+                SimulationJob.status.in_([JobStatus.pending]),
+                SimulationJob.active_worker_token.is_(None),
+                SimulationJob.lease_expires_at == released_at,
+            ).values(lease_expires_at=None))
+        return bool(res.rowcount == 1)
 
 
 def _aware(dt: datetime | None) -> datetime | None:

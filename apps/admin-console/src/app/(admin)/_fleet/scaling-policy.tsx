@@ -86,7 +86,7 @@ Held at the floor regardless of queue depth.
                 />
                 <NumberField
                   defaultValue={policy.scaleInMaxReplicas}
-                  hint="Max removed per window. No drain contract yet."
+                  hint="Max removed per window. A removed worker hands its job back; it restarts elsewhere."
                   label="Scale-in max"
                   max={maxAllowedReplicas}
                   name="scaleInMaxReplicas"

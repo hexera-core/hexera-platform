@@ -55,16 +55,23 @@ def test_a_failing_step_does_not_stop_the_others_and_the_run_is_red(monkeypatch,
     assert out["steps"]["tasks.cleanup.reconcile_orphan_artifacts"] == {"count": 1}
 
 
-def test_the_ports_bound_are_the_two_a_sweep_publishes_through(monkeypatch):
-    # The reaper's closing line needs a publisher; the two byte sweeps need the store. Nothing else
-    # install_adapters() would bind is touched, so nothing else can stop the sweep from starting.
+def test_the_ports_bound_are_the_three_a_sweep_works_through(monkeypatch):
+    # The reaper's closing line needs a publisher; the two byte sweeps need the store; the reaper's
+    # one automatic re-run of a job whose worker was lost needs the launcher the API dispatches
+    # through. Nothing else install_adapters() would bind is touched, so nothing else can stop
+    # the sweep from starting.
     from meshpipeline.adapters.event_stream.redis import JobPublisher
     from meshpipeline.adapters.object_storage import factory
-    from meshpipeline.contracts import event_stream, object_storage
+    from meshpipeline.adapters.pipeline_execution import celery as celery_launcher
+    from meshpipeline.contracts import event_stream, object_storage, pipeline_execution
 
     monkeypatch.setattr(event_stream, "_factory", None)
     monkeypatch.setattr(object_storage, "_store", None)
     monkeypatch.setattr(factory, "_instance", None)
+    monkeypatch.setattr(pipeline_execution, "_launcher", None)
     _REAL_BIND()
     assert isinstance(event_stream.publisher("job-1"), JobPublisher)
     assert object_storage.get_object_store() is not None
+    assert pipeline_execution.get_pipeline_launcher() is celery_launcher
+    assert pipeline_execution.launcher_runs_work(), (
+        "the sweep's launcher cannot re-run a job, so every lost worker still fails its job")

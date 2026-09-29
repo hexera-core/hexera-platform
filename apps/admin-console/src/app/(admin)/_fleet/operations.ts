@@ -149,9 +149,11 @@ export async function applyFleetOperation(deps: FleetOperationDeps): Promise<Act
           resource: instance,
         });
         return {
-          // The console holds no database connection and there is no drain contract, so it cannot
-          // tell whether this instance held a job lease. Saying so is the only honest option.
-          message: `Deleting ${instance}. This console cannot see whether it had work in flight, and the worker is not drained first — anything it was running is lost.`,
+          // The console holds no database connection, so it cannot tell whether this instance held
+          // a job lease. What it can say is what the worker does about it: its shutdown script
+          // hands a running job back to the queue (deploy/gcp/worker/shutdown.sh), where another
+          // worker starts it again from the beginning.
+          message: `Deleting ${instance}. This console cannot tell whether it had a job in flight; if it did, the job goes back to the queue and starts again on another worker, from the beginning.`,
           ok: true,
         };
       }

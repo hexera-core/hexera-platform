@@ -35,6 +35,8 @@ _VARS = {
     "REDIS_URL": "redis://10.108.144.235:6379/0", "QUEUE_NAME": "simulation_jobs",
     # every queue the publisher measures - the scaling queue and the geometry-check queue
     "QUEUE_NAMES": "simulation_jobs,geometry_checks",
+    # a personal environment's keyspace; the publisher counts running jobs' fences under it
+    "REDIS_KEY_PREFIX": "dev-amp:",
     "WORKER_MIG_ZONE": "us-central1-a",
 }
 _TOKEN = re.compile(r"\$\{(\w+)\}|\$(\w+)")

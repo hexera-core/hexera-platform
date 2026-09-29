@@ -1,5 +1,5 @@
-# Responsibility: Publish the pipeline queue's depth as ONE per-group series the MIG autoscaler scales on.
-# Owns: the metric name, the monitored resource that identifies the series, and the value it reports.
+# Responsibility: Publish each queue's depth, and the pipeline queue's demand (queued + running) the MIG autoscaler scales on, as per-group series.
+# Owns: the metric names, the monitored resource that identifies each series, and the values they report.
 # Boundaries: it measures and publishes once per invocation; it decides nothing about scaling and never touches a job.
 """Publish Celery queue depth to Cloud Monitoring as a single per-group time series.
 
@@ -36,10 +36,20 @@ for it instead (deploy/gcp/worker/startup.sh).
 WHAT THE VALUE MEANS. The length of the Redis list Celery routes a queue's
 tasks to: work QUEUED, not work in flight. A task a worker has already picked up
 is out of the list, so a lone running job reports depth 0. That is the right
-signal for scaling UP and an incomplete one for scaling DOWN - a group whose
-minimum is zero must not be allowed to delete an instance that is mid-job on the
-strength of this number alone (see the scale-in contract in the build-out plan,
-item 6).
+signal for scaling UP and the WRONG one for scaling down.
+
+WHAT THE AUTOSCALER READS INSTEAD: DEMAND. Shared dev, 2026-09-29: the fleet
+scaled in three times in two hours (05:41, 06:39, 07:32 UTC), each time to its
+floor of 1, because a burst of queued jobs had drained and the depth read 0 -
+while three mesh jobs were running on the VMs it deleted. Every one of them was
+failed half an hour later as "worker lost". So the scaling queue gets a second
+metric, `worker_demand` = queued + RUNNING, and that is what the autoscaler's
+filter names (create-queue-depth-publisher.sh). A running job is counted by its
+execution fence - the Redis mirror of its PostgreSQL claim, one key per owned
+job, kept alive by the owner's heartbeat and gone within one lease of the owner
+going away (src/meshpipeline/persistence/lease.py) - so a VM whose worker died
+stops being counted without anyone having to notice. The depth series stays
+exactly as it was: the admin console charts it, and it still means "queued".
 
 WHY IT FAILS LOUDLY. The old exporter swallowed every error because it ran in a
 loop beside a worker and the next tick would try again. This runs once per
@@ -64,8 +74,23 @@ import urllib.request
 
 logger = logging.getLogger("queue_depth_publisher")
 
-#: The metric the autoscaler is pointed at. Custom metrics live under this prefix by rule.
+#: The queue depth per queue - what is WAITING. Charted by the admin console. Custom metrics live
+#: under this prefix by rule.
 METRIC_TYPE = "custom.googleapis.com/hexera/queue_depth"
+
+#: What the autoscaler is pointed at: the scaling queue's jobs that need a worker NOW - queued plus
+#: running. Sized on this, the group never shrinks below the number of jobs in flight.
+DEMAND_METRIC_TYPE = "custom.googleapis.com/hexera/worker_demand"
+
+#: The key every running job's execution fence lives under, inside the deployment's keyspace:
+#: `<REDIS_KEY_PREFIX>jobs:<job id>:eventfence` (src/meshpipeline/events/channels.py
+#: fence_key_for). Restated rather than imported because this program may use only the standard
+#: library and the redis client; tests/unit/deploy/test_worker_scale_in.py holds the two together.
+FENCE_KEY_PATTERN = "jobs:*:eventfence"
+
+#: The deployment's Redis keyspace (Celery's global_keyprefix and every other key). Empty on shared
+#: dev and production; `dev-<slug>:` in a personal environment sharing the same instance.
+REDIS_KEY_PREFIX = os.environ.get("REDIS_KEY_PREFIX", "")
 
 #: The Celery queue the fleet is SIZED on (celery_app.py task_routes): the simulation queue, where
 #: one queued job is one instance's worth of work. Celery on a Redis broker stores a queue as a
@@ -169,6 +194,54 @@ def queue_depth(redis_url: str, queue: str = QUEUE_NAME) -> int:
     return queue_depths(redis_url, [queue])[queue]
 
 
+def _glob_escape(text: str) -> str:
+    # A prefix is a literal; Redis MATCH is a glob. Escaped, a prefix holding `*`, `?` or `[`
+    # still matches only its own keys.
+    return "".join("\\" + ch if ch in "*?[]\\" else ch for ch in text)
+
+
+def fence_pattern(prefix: str = "") -> str:
+    return _glob_escape(prefix) + FENCE_KEY_PATTERN
+
+
+def running_jobs(client, prefix: str = "") -> int:
+    """How many jobs a worker owns right now: one execution fence per owned job.
+
+    SCAN, never KEYS: this runs against a Memorystore instance other environments share, and KEYS
+    would block it for every key it holds. A key seen twice while the keyspace resizes under the
+    scan is counted once."""
+    return len(set(client.scan_iter(match=fence_pattern(prefix), count=500)))
+
+
+def measure(redis_url: str, queues: list[str] | None = None,
+            prefix: str | None = None) -> tuple[dict[str, int], int]:
+    """(depth per queue, running jobs) on ONE connection - the cold attach is paid once."""
+    import redis
+
+    queues = list(queues if queues is not None else QUEUE_NAMES)
+    prefix = REDIS_KEY_PREFIX if prefix is None else prefix
+    last: Exception | None = None
+    for attempt in range(1, REDIS_CONNECT_ATTEMPTS + 1):
+        client = redis.from_url(
+            redis_url,
+            socket_connect_timeout=REDIS_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=REDIS_READ_TIMEOUT_SECONDS,
+        )
+        try:
+            depths = {queue: int(client.llen(queue)) for queue in queues}
+            return depths, running_jobs(client, prefix)
+        except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as exc:
+            last = exc
+            logger.warning(
+                "redis connect attempt %d/%d failed: %s: %s",
+                attempt, REDIS_CONNECT_ATTEMPTS, type(exc).__name__, exc,
+            )
+        finally:
+            client.close()
+    assert last is not None
+    raise last
+
+
 def build_time_series(depths: dict[str, int], *, project_id: str, namespace: str, location: str,
                       end_time: str) -> list[dict]:
     # One series per queue. They differ in `task_id` and nothing else, which is what lets one
@@ -194,13 +267,44 @@ def build_time_series(depths: dict[str, int], *, project_id: str, namespace: str
     } for queue, depth in depths.items()]
 
 
-def publish(depths: dict[str, int], *, project_id: str, namespace: str, location: str) -> None:
-    # ONE write for every queue: the same timestamp on each series, and one request where a
-    # request per queue would double the chance of two writes to one series arriving out of order.
+def build_demand_series(queued: int, running: int, *, queue: str, project_id: str,
+                        namespace: str, location: str, end_time: str) -> dict:
+    # The same resource labels as the scaling queue's depth series - the autoscaler's filter names
+    # them exactly as before - under the demand metric type, valued queued + running.
+    return {
+        "metric": {"type": DEMAND_METRIC_TYPE},
+        "resource": {
+            "type": "generic_task",
+            "labels": {
+                "project_id": project_id,
+                "location": location,
+                "namespace": namespace,
+                "job": METRIC_JOB,
+                "task_id": queue,
+            },
+        },
+        "metricKind": "GAUGE",
+        "valueType": "DOUBLE",
+        "points": [{
+            "interval": {"endTime": end_time},
+            "value": {"doubleValue": float(int(queued) + int(running))},
+        }],
+    }
+
+
+def publish(depths: dict[str, int], *, project_id: str, namespace: str, location: str,
+            running: int | None = None) -> None:
+    # ONE write for every series: the same timestamp on each, and one request where a request per
+    # series would multiply the chance of two writes to one series arriving out of order.
     now = datetime.datetime.now(datetime.UTC).replace(microsecond=0)
-    body = {"timeSeries": build_time_series(
-        depths, project_id=project_id, namespace=namespace, location=location,
-        end_time=now.isoformat().replace("+00:00", "Z"))}
+    end_time = now.isoformat().replace("+00:00", "Z")
+    series = build_time_series(depths, project_id=project_id, namespace=namespace,
+                               location=location, end_time=end_time)
+    if running is not None:
+        series.append(build_demand_series(
+            depths.get(QUEUE_NAME, 0), running, queue=QUEUE_NAME, project_id=project_id,
+            namespace=namespace, location=location, end_time=end_time))
+    body = {"timeSeries": series}
     req = urllib.request.Request(
         f"https://monitoring.googleapis.com/v3/projects/{project_id}/timeSeries",
         data=json.dumps(body).encode(),
@@ -219,10 +323,14 @@ def main() -> None:
     location = METRIC_LOCATION or os.environ["METRIC_LOCATION"]
     project_id = _metadata("project/project-id")
 
-    depths = queue_depths(redis_url)
-    publish(depths, project_id=project_id, namespace=namespace, location=location)
+    depths, running = measure(redis_url)
+    publish(depths, project_id=project_id, namespace=namespace, location=location,
+            running=running)
     for queue, depth in depths.items():
         logger.info("queue_depth=%d published for %s/%s (queue %s)", depth, namespace, location, queue)
+    logger.info("worker_demand=%d published for %s/%s (queue %s: %d queued + %d running)",
+                depths.get(QUEUE_NAME, 0) + running, namespace, location, QUEUE_NAME,
+                depths.get(QUEUE_NAME, 0), running)
 
 
 if __name__ == "__main__":

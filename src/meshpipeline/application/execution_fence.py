@@ -207,8 +207,34 @@ async def guard_redelivery(session_factory, job_repo, job_id: str, *, jlog, max_
         return None
 
     from meshpipeline.errors import FailureClass, failed_reason_for, record_dead_letter
-    from meshpipeline.persistence.job_state import TransitionResult
+    from meshpipeline.persistence.job_state import TERMINAL_STATES, TransitionResult
     from meshpipeline.persistence.models import FailedReason, JobStatus
+
+    # A DELIVERY OVER THE CAP IS NOT ALWAYS A POISON JOB. The count is taken before the claim, so
+    # it also counts a stale copy of a message - a re-queue whose confirmation was lost, a message
+    # the broker returned after its window - arriving while another worker runs the job perfectly
+    # well, or after the job has ended. Failing on that would fail a healthy run, or write a
+    # second ending over a finished one. Such a copy is dropped; the cap is kept for a job that
+    # nothing is running and that keeps coming back.
+    try:
+        async with session_factory() as db:
+            current = await job_repo.get_internal(db, uuid.UUID(job_id))
+    except Exception:  # noqa: BLE001 - unreadable: the cap applies as it always did
+        current = None
+    if current is not None:
+        from datetime import UTC, datetime
+        _expires = getattr(current, "lease_expires_at", None)
+        if _expires is not None and _expires.tzinfo is None:
+            _expires = _expires.replace(tzinfo=UTC)
+        _owned = (getattr(current, "active_worker_token", None) is not None
+                  and _expires is not None and _expires > datetime.now(UTC))
+        if current.status in TERMINAL_STATES or _owned:
+            jlog.warning("Delivery %d of job %s is over the redelivery cap (%d), but the job is %s "
+                         "- a stale copy, dropped without failing anything", deliveries, job_id,
+                         max_redeliveries,
+                         "owned by a live worker" if _owned else f"already {current.status.value}")
+            return DeliveryRefused("skipped", {"job_id": job_id, "status": "skipped",
+                                               "reason": "stale_copy_over_cap"})
 
     jlog.error("Job redelivered %d times (cap %d) - it keeps crashing; dead-lettering and failing it",
                deliveries, max_redeliveries)

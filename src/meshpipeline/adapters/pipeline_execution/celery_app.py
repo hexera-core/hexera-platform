@@ -1,9 +1,18 @@
 # Responsibility: Configure the Celery application: broker, queues, routes, priorities and the periodic schedule.
-# Owns: the acknowledgement policy - a task is acked on receipt, so no long job is ever silently re-run.
+# Owns: the acknowledgement policy and the broker's visibility window - no long job is ever silently re-run by the broker.
 # Boundaries: configuration only; the task bodies live in celery.py and maintenance_tasks.py.
 from celery import Celery
 
 import meshpipeline.settings.providers as provcfg
+import meshpipeline.settings.runtime as rtcfg
+
+#: How long Redis waits before it hands an UNACKNOWLEDGED message to another worker. The pipeline
+#: task is acknowledged late (celery.py, so a busy worker reserves no second job), which makes this
+#: the moment a still-running job would be delivered twice - so it must outlast any job that can
+#: still be running: the pipeline's whole deadline, plus the reaper's hour to fail a run that
+#: outlived it. Redis's own default is one hour, shorter than an ordinary mesh job.
+#: A message that DOES come back after this finds its job terminal and is skipped at the claim.
+BROKER_VISIBILITY_TIMEOUT_SECONDS = int(rtcfg.PIPELINE_TOTAL_TIMEOUT_SECONDS) + 2 * 3600
 
 celery_app = Celery(
     "meshpipeline",
@@ -28,7 +37,8 @@ celery_app.conf.update(
     #
     # BOTH options, not one. The broker carries the queues; the result backend carries the task
     # results. Prefixing only the broker isolates the work and leaves the answers colliding.
-    broker_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
+    broker_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX,
+                              "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS},
     result_backend_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
     task_serializer="json",
     result_serializer="json",
@@ -99,12 +109,15 @@ celery_app.conf.update(
         },
     },
     worker_prefetch_multiplier=1,
-    # NO automatic redelivery. Ack a task on RECEIPT (acks_late=False) so a long-running job is
-    # NEVER silently re-queued and re-run from scratch - that wasted hours and reset the staged
-    # events.jsonl every time a production mesh ran past the broker's visibility window. A worker
-    # that genuinely dies mid-job leaves that job to be marked FAILED by the stalled-job reaper
-    # (application.maintenance.cleanup); it is NOT re-executed. Crash-recovery is traded away on
-    # purpose - a clean failure is far cheaper than blindly redoing a multi-hour job.
+    # NO automatic redelivery by the broker. Tasks are acked on RECEIPT by default (acks_late=False)
+    # so a long-running job is never silently re-queued and re-run from scratch - that wasted hours
+    # and reset the staged events.jsonl every time a production mesh ran past the broker's
+    # visibility window. The pipeline task alone acks late (celery.py) so a busy worker reserves no
+    # second job, and the visibility window above outlasts the pipeline deadline so that cannot
+    # redeliver a running job either. A worker that dies mid-job is not the broker's business: the
+    # stalled-job reaper (application.maintenance.cleanup) re-runs the job ONCE, deliberately, and
+    # fails it if it is lost again; a worker that is shut down on purpose hands its job back first
+    # (application/worker_handoff.py).
     task_acks_late=False,
     task_reject_on_worker_lost=False,
 )
