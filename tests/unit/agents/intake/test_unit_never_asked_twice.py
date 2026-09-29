@@ -110,6 +110,16 @@ async def test_leaving_the_unit_to_the_intake_takes_the_proposal_once_measured(m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("said", ["I don't know, you pick, but not metres", "no idea - maybe mm? you decide",
+                                  "whatever you think, just not inches"])
+async def test_a_deferral_that_names_a_unit_is_not_a_deferral(monkeypatch, said):
+    # review on #92: "you pick, but not metres" rules metres out - never take the proposal over it
+    outcome, recorded, _ = await _settle(said, gate=uc.asked({}, LengthUnit.metre), monkeypatch=monkeypatch,
+                                         size=AHMED_M)
+    assert LengthUnit.metre not in recorded
+
+
+@pytest.mark.asyncio
 async def test_leaving_it_to_the_intake_before_anything_is_measured_keeps_the_question_open(monkeypatch):
     outcome, recorded, repo = await _settle("no idea", gate=uc.asked({}), monkeypatch=monkeypatch, size=None)
     assert outcome.status is msg.MessageStatus.proceed and recorded == []

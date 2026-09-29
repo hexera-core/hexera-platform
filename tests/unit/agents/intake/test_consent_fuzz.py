@@ -191,3 +191,11 @@ def test_naming_another_engine_to_a_summary_is_a_change(said):
                                   "confirmed pls go ahead n mesh it thx", "yes build the mesh", "mesh it now"])
 def test_asking_for_the_mesh_itself_is_a_yes(said):
     assert ap.classify(said) == ap.APPROVE_INTENT, said
+
+
+@pytest.mark.parametrize("said", ["Go ahead? With snappyHexMesh", "yes? snappyHexMesh", "proceed?! with snappy",
+                                  "looks good? go"])
+def test_a_question_mark_anywhere_never_starts_a_run(said):
+    # review on #92: with the engine's name dropped, a "?" that was mid-message must still ask
+    assert ap.classify(said, engine="snappy") != ap.APPROVE_INTENT, said
+    assert ap.classify(said) != ap.APPROVE_INTENT, said

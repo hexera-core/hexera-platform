@@ -510,7 +510,9 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
         from meshpipeline.agents.intake import turn as _turn
         from meshpipeline.application import geometry_hold as gh
 
-        size = gh.measured_size_mm(str(inbound.session_id)) if _turn.defers_to_default(inbound.content) else None
+        # only a PURE deferral: "you pick, but not metres" rules a unit out, and is asked again
+        pure = _turn.defers_to_default(inbound.content) and not uc.mentions_unit(inbound.content)
+        size = gh.measured_size_mm(str(inbound.session_id)) if pure else None
         if size:
             unit = proposal or uc.proposal_for(size, gh.purpose_from(getattr(locked, "messages", None)))
             logger.info("intake message: the user left the unit to us - taking the proposed %s - "

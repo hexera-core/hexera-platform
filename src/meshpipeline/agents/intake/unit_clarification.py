@@ -96,6 +96,12 @@ def size_hint(size_mm) -> str:
         f"{_length_words(longest * scale_to_metres(u))} if {_UNIT_WORDS[u]}" for u in _CANDIDATES) + "."
 
 
+def mentions_unit(message: str) -> bool:
+    """Whether the message names any unit at all - to take, to reject or to doubt."""
+    low = _respelled(str(message or "").lower())
+    return bool(_UNIT_ANYWHERE.search(low))
+
+
 def believable(size_mm, unit: LengthUnit, words: str = "") -> bool:
     """Whether the part is believable in `unit`: nothing measured yet (there is nothing to doubt it
     with), or the size under it raises no other reading - the rule the stage uses for a unit the

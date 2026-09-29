@@ -41,6 +41,9 @@ def test_the_latest_naming_of_an_engine_is_the_users_choice(said):
     ["not snappyHexMesh", "fine"],                             # turned down
     ["no, don't use snappyHexMesh"],
     ["snappyHexMesh multi-region"],                            # a different engine
+    ["I used snappyHexMesh last time"],                        # a mention, not a choice (review, #92)
+    ["my colleague ran snappyHexMesh on this before", "ok"],
+    ["is snappyHexMesh any good for this"],
 ])
 def test_no_choice_or_a_later_word_against_it_is_no_choice(said):
     assert es.user_chose("snappy", said) is False
@@ -55,7 +58,8 @@ def test_the_fuzz_over_conversations_keeps_the_latest_naming():
         for _ in range(rng.randint(1, 6)):
             if rng.random() < 0.4:
                 last = rng.choice(list(engines))
-                convo.append(rng.choice(("{e}", "use {e}", "I'll go with {e}", "{e} please")).format(e=engines[last]))
+                convo.append(rng.choice(("{e}", "use {e}", "I'll go with {e}", "{e} please", "{e} it is",
+                                         "let's go with {e}")).format(e=engines[last]))
             else:
                 convo.append(rng.choice(filler))
         for key in engines:

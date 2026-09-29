@@ -218,8 +218,8 @@ def _read(words: list[str], asked_back: bool) -> str:
 
 
 def reading(message: str, *, named: tuple[str, ...] = ()) -> str:
-    """APPROVE, HEDGE or OTHER for a whole message. A consent that ends in a question mark ("looks
-    good?") is asked back, so it is a hedge; a message one or two slips from consent is consent.
+    """APPROVE, HEDGE or OTHER for a whole message. A consent with a question mark in it ("looks
+    good?", "go ahead? with snappy") is asked back, so it is a hedge; a message one or two slips from consent is consent.
     `named` are words the question itself already stands for - the engine the summary names - so
     "yes, go ahead with snappyHexMesh" to a snappyHexMesh summary is a yes; any other name stays."""
     text = str(message or "")
@@ -238,7 +238,9 @@ def _without(text: str, names, instead: str) -> str:
 
 
 def _reading(text: str) -> str:
-    asked_back = text.rstrip().endswith("?")
+    # A QUESTION MARK ANYWHERE is a question: "Go ahead? With snappyHexMesh" asks, and once the
+    # engine's name is dropped its "?" is no longer at the end
+    asked_back = "?" in text
     words = _raw_words(text)
     first = _read(words, asked_back)
     if first != OTHER or len(words) > MAX_REPAIR_WORDS:

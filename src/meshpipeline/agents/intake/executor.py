@@ -95,7 +95,7 @@ class IntakeExecutionState:
     user_msg_count: int = 0
     latest_user_msg: str = ""
     #: Every message the user wrote in this conversation, oldest first (the application's synthetic
-    #: nudges excluded) - where an engine they named before this turn is found.
+    #: nudges excluded) - where an engine they chose before this turn is found.
     user_texts: tuple = ()
     # The approved SOURCE, not a file. Intake binds which bytes were approved; it never
     # opens them, so it holds the reference and no path.
