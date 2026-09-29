@@ -105,7 +105,9 @@ async def node_executor(state: PipelineState) -> dict:
             "executor_output":      _geom_reject,
             "executor_failed_gate": "geometry",
             "executor_failure_cause": SEAM_CAUSES["geometry"].value,
-            "executor_failure_facts": {"reason": str(_geom_reject)[:600]},
+            # admission's own facts (which KIND of refusal - the CAD's or the setup's) carried on
+            "executor_failure_facts": {**dict(state.get("executor_failure_facts") or {}),
+                                       "reason": str(_geom_reject)[:600]},
         }
 
     if not workspace:

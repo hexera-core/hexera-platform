@@ -129,4 +129,11 @@ async def node_geometry_admission(state: PipelineState) -> dict:
         "geometry_unsuitable_reason": reason,
         "executor_success":           False,
         "retry_count":                bcfg.MAX_BUILDER_RETRIES + 1,
+        # WHICH KIND of refusal, for the user's message: a MEASURED one is the CAD's (a surface
+        # that self-intersects), a DECLARED one is the setup's (a symmetry patch or a parameter
+        # this engine cannot build) - and telling a user to repair a valid file for a setting
+        # they chose sends them to fix the wrong thing. The executor carries these facts on.
+        "executor_failure_facts": {"reason": reason[:600],
+                                   "phases": sorted({r.phase for r in rejections}),
+                                   "codes": [r.code for r in rejections]},
     }

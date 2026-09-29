@@ -123,3 +123,39 @@ def test_success_carries_no_cause():
         attempts=1, attempts_max=4, required_ready=True, delivered_types=["mesh_bundle"],
         optional_warnings=[], failure_cause="mesh_quality", failure_facts={})
     assert fr.failure_cause == "" and fr.failure_detail == "" and fr.retry_skipped is False
+
+
+# admission refusals: the CAD's, or the setup's (review: "setup refusals blame the CAD")
+
+def test_a_measured_refusal_is_the_cads_and_says_why():
+    fr = _fail("geometry", FailureCause.GEOMETRY_REJECTED, {
+        "reason": "[GEOMETRY_UNSUITABLE] the input surface self-intersects.",
+        "phases": ["measured"], "codes": ["geometry_unsuitable"]})
+    msg = render_message(fr)
+    assert fr.failure_category == FailureCategory.input_rejected.value
+    assert "the problem is in the CAD file" in msg
+    assert "the input surface self-intersects" in msg and "[" not in msg
+
+
+def test_a_declared_setup_refusal_does_not_blame_a_valid_file():
+    fr = _fail("geometry", FailureCause.GEOMETRY_REJECTED, {
+        "reason": "a 'symmetry' patch was declared, but the cfmesh engine does not produce "
+                  "symmetry-plane patches yet.",
+        "phases": ["declared"], "codes": ["symmetry_unsupported"]})
+    msg = render_message(fr)
+    assert fr.failure_category == FailureCategory.incompatible_requirements.value
+    assert "CAD" not in msg and "upload it again" not in msg
+    assert "symmetry-plane patches" in msg and "Your geometry was not the problem" in msg
+    assert "the setting, or the engine" in msg
+
+
+def test_a_mixed_refusal_counts_as_the_cads():
+    fr = _fail("geometry", FailureCause.GEOMETRY_REJECTED, {
+        "reason": "x", "phases": ["declared", "measured"]})
+    assert fr.failure_category == FailureCategory.input_rejected.value
+
+
+def test_an_older_admission_record_keeps_the_class_sentence():
+    fr = _fail("geometry")
+    assert fr.failure_category == FailureCategory.input_rejected.value
+    assert "the problem is in the CAD file" in render_message(fr)

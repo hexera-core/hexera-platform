@@ -164,7 +164,7 @@ def _cap(s: str) -> str:
     return s[:1].upper() + s[1:] if s else s
 
 
-def _clean_reason(reason: object) -> str:
+def clean_reason(reason: object) -> str:
     # engine refusals open with a machine tag ("[GEOMETRY_UNSUITABLE] ...") written for the
     # builder; the user gets the words after it
     text = " ".join(str(reason or "").split())
@@ -266,7 +266,7 @@ def describe(cause: object, facts: Mapping | None = None, *,
         return _contract(f)
     if c is FailureCause.PATCH_NOT_CAPTURED:
         patches = [str(p) for p in (f.get("patches") or [])]
-        detail = _clean_reason(f.get("detail"))
+        detail = clean_reason(f.get("detail"))
         what = (f"The mesher lost the boundary {_names(patches)}: it came out with no faces, "
                 "usually because it is smaller than the cells around it."
                 if patches else
@@ -319,9 +319,9 @@ def describe(cause: object, facts: Mapping | None = None, *,
         # the class the input_rejected category renders): lead, the reason, the next step.
         from meshpipeline.errors import FailureClass, user_message_for
         return (user_message_for(FailureClass.DOMAIN_REJECTED,
-                                 reason=_clean_reason(f.get("reason"))), "")
+                                 reason=clean_reason(f.get("reason"))), "")
     return "", ""
 
 
-__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "FailureCause", "as_cause", "describe",
-           "retry_can_help"]
+__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "FailureCause", "as_cause", "clean_reason",
+           "describe", "retry_can_help"]

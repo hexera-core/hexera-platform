@@ -346,6 +346,12 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
     if cat is FailureCategory.gate_failed:
         cause, detail, next_step = _cause_account(failed_gate, failure_cause, failure_facts,
                                                   engine)
+    elif cat is FailureCategory.input_rejected:
+        # The admission refusal, split by WHOSE it is. Only a MEASURED refusal is the CAD's; a
+        # refusal of the DECLARED setup alone (a symmetry patch or a parameter this engine cannot
+        # build) is the request's, and a valid file must not be sent back for repair over it.
+        # Either way the recorded reason is said - it is the one thing the user can act on.
+        cat, cause, detail, next_step = _admission_account(failure_facts, engine)
     from meshpipeline.contracts.failure_cause import retry_can_help
     return FinalResult(
         failure_cause=cause, failure_detail=detail, failure_next_step=next_step,
@@ -465,6 +471,34 @@ def _cause_account(failed_gate: str, failure_cause: str, failure_facts: Mapping 
     return (cause.value, what, next_step) if what else ("", "", "")
 
 
+def _admission_account(failure_facts: Mapping | None,
+                       engine: str) -> tuple[FailureCategory, str, str, str]:
+    """(category, cause, what failed, next step) for a run admission refused before any build.
+    The phases come from node_geometry_admission; a record without them (written before they
+    were recorded) stays input_rejected with errors.py's sentence and no reason, as before."""
+    from meshpipeline.contracts.failure_cause import FailureCause, clean_reason, describe
+    facts: Mapping = failure_facts if isinstance(failure_facts, Mapping) else {}
+    phases = {str(p) for p in (facts.get("phases") or [])}
+    reason = clean_reason(facts.get("reason"))
+    if phases and "measured" not in phases:
+        label = engine
+        try:
+            from meshpipeline.engines.registry import engine_label
+            label = engine_label(engine) or engine
+        except Exception:  # noqa: BLE001
+            pass
+        what = (f"The requested setup cannot be meshed{f' by {label}' if label else ''} as "
+                "specified" + (f": {reason}." if reason else ".") + " Your geometry was not "
+                "the problem.")
+        return (FailureCategory.incompatible_requirements, "", what,
+                "Tell me what to change in this chat - the setting, or the engine - and I "
+                "will set up a new run.")
+    if not reason:
+        return FailureCategory.input_rejected, "", "", ""
+    what, _ = describe(FailureCause.GEOMETRY_REJECTED, {"reason": reason}, engine=engine)
+    return FailureCategory.input_rejected, FailureCause.GEOMETRY_REJECTED.value, what, ""
+
+
 def _render_fidelity(fr: FinalResult) -> str:
     # The mesh-detail line renders the effective tier with its provenance; a record with no tier
     # renders nothing rather than inventing one.
@@ -565,7 +599,9 @@ def render_message(fr: FinalResult) -> str:
         # ONE SENTENCE OWNS these: whose problem it is and the next step, in errors.py's words.
         # The headline is not repeated in front of it - the class message already opens with it.
         lines.append("No downloadable mesh deliverable is available.")
-        lines.append(user_message_for(_CATEGORY_CLASS[cat]))
+        # the class's sentence with the recorded reason folded in (built by errors.py at
+        # terminal time), else the class's sentence alone
+        lines.append(fr.failure_detail or user_message_for(_CATEGORY_CLASS[cat]))
         return "\n".join(lines)
     if fr.failure_detail:
         # WHAT ACTUALLY FAILED, in place of the category headline: "The boundary you approved
