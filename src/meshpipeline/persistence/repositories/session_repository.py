@@ -75,6 +75,14 @@ class SessionRepository:
             msgs.append({"role": role, "content": content})
             s.messages = msgs
 
+    async def set_messages(self, db: AsyncSession, session_id: uuid.UUID,
+                           messages: list[dict]) -> None:
+        """The whole conversation, rewritten: only for a message re-worded where it stands (the
+        geometry check's declaration, re-read after the file's unit changed)."""
+        s = await self.get_internal(db, session_id)
+        if s:
+            s.messages = list(messages)
+
     async def set_request_txt(self, db: AsyncSession, session_id: uuid.UUID,
                                request_txt: str) -> None:
         s = await self.get_internal(db, session_id)

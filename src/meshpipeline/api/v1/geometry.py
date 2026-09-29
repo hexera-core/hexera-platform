@@ -25,8 +25,15 @@ router = APIRouter()
 
 STATUS_OFF, STATUS_NONE = "off", "none"
 _PICTURE_URL_TTL = timedelta(hours=1)
-#: How the confirmation announces itself in the conversation; the intake prompt block names it.
-CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
+
+# The declaration's words and the patch shape live with the application, where a unit changed in
+# the chat re-reads them too; the route re-exports them for its callers.
+from meshpipeline.application.geometry_confirmation import (  # noqa: E402
+    CONFIRMED_MARK,
+    confirmation_message,
+    patches_from,
+    with_declaration,
+)
 
 
 class ConfirmedOpening(BaseModel):
@@ -87,7 +94,8 @@ from meshpipeline.application.geometry_hold import (  # noqa: E402
     should_hold,
 )
 
-REEXPORTED = (CONTINUE_TEXT, DRAWING_MARK, HOLD_REPLY, purpose_from, should_hold)
+REEXPORTED = (CONTINUE_TEXT, DRAWING_MARK, HOLD_REPLY, purpose_from, should_hold,
+              CONFIRMED_MARK, confirmation_message, patches_from, with_declaration)
 
 
 async def _owned_session(session_id: uuid.UUID, owner_id: str, organization_id: str):
@@ -206,6 +214,14 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             if (payload.get("facts") or {}).get("scale_to_m"):
                 payload["proposal"]["scale_to_m"] = float(payload["facts"]["scale_to_m"])
             payload["proposal"]["unit"], payload["proposal"]["unit_basis"] = unit_in_effect(interpretation)
+            # THE OTHER READING, when the part is implausible in the unit in effect - a "117 mm"
+            # wind turbine blade, a 1 mm car from a triangle file: both lengths in plain words,
+            # for the user to pick one before Proceed. Never once the user has named the unit.
+            from meshpipeline.application.geometry_check import unit_suggestion
+            suggestion = unit_suggestion(payload["proposal"], interpretation,
+                                         purpose_from(getattr(session, "messages", None)))
+            if suggestion is not None:
+                payload["proposal"]["unit_suggestion"] = suggestion
         if payload.get("status") == "ready":
             store = get_object_store()
             payload["pictures"] = [
@@ -361,81 +377,6 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     return Response(content=raw, media_type="application/json")
 
 
-def confirmation_message(body: ConfirmIn) -> str:
-    """The sentence the intake reads: everything the user confirmed, in plain words, with the
-    numbers the builder needs. Its opening phrase is the one the intake prompt block names."""
-    kind = {"body-surface": "the part's wall, hollow inside for the fluid",
-            "fluid-domain": "the fluid volume itself",
-            "solid-body": "a solid body"}[body.input_kind]
-    through = "through it" if body.flow == "internal" else "around it"
-    # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
-    # stores. A solid body the fluid flows around stays "solid-body": the engine gate reads that as
-    # a body surface for any fluid purpose (engines/purposes.kinds_admitted_as), and a later
-    # structural request on the same solid still finds the kind gmsh needs.
-    parts = [f"{CONFIRMED_MARK} the file is {kind}"
-             + (f" ({body.part})" if body.part else "")
-             + f", input_kind {body.input_kind}; the fluid flows {through}."]
-    ports = [o for o in body.openings if o.role != "not_an_opening"]
-    if body.flow == "external":
-        from meshpipeline.contracts.geometry_fields import external_declaration
-        parts.append("No openings: the fluid flows around the whole body.")
-        parts.extend(external_declaration(body))
-    elif ports:
-        rows = []
-        for o in ports:
-            size = (f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
-                    else f"{o.width_mm:.0f} x {o.height_mm:.0f} mm" if o.width_mm and o.height_mm else "")
-            at = (f" at ({o.centroid_mm[0]:.0f}, {o.centroid_mm[1]:.0f}, {o.centroid_mm[2]:.0f}) mm"
-                  if o.centroid_mm and len(o.centroid_mm) == 3 else "")
-            rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
-        parts.append("Openings: " + "; ".join(rows) + ".")
-        skipped = [str(o.id) for o in body.openings if o.role == "not_an_opening"]
-        if skipped:
-            parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
-    else:
-        # the fluid flows through the part but no port was confirmed: the intake must ask
-        parts.append("No openings were confirmed on the picture"
-                     + (" (every sticker was marked not an opening)" if body.openings else "")
-                     + "; ask the user where the fluid enters and leaves.")
-    if body.seed_point_mm and len(body.seed_point_mm) == 3:
-        p = body.seed_point_mm
-        parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")
-    if body.size_mm and len(body.size_mm) == 3:
-        s = body.size_mm
-        parts.append(f"Part size: {s[0]:.0f} x {s[1]:.0f} x {s[2]:.0f} mm.")
-    return " ".join(parts)
-
-
-def with_declaration(messages: list[dict] | None, message: str) -> list[dict]:
-    """The conversation with this confirmation as its only one: an earlier confirmation is
-    replaced, not joined, so a retry or a change of mind leaves one declaration for the intake."""
-    kept = [m for m in (messages or [])
-            if not (m.get("role") == "assistant" and str(m.get("content", "")).startswith(CONFIRMED_MARK))]
-    return [*kept, {"role": "assistant", "content": message}]
-
-
-def patches_from(body: ConfirmIn) -> list[dict]:
-    """The session's declared patches, in the shape the intake's submit tool already takes:
-    name and role, plus the size and location fields the port binding reads."""
-    patches: list[dict] = []
-    if body.flow == "external":
-        return patches
-    for o in body.openings:
-        if o.role == "not_an_opening":
-            continue
-        entry: dict = {"name": o.name, "type": o.role}
-        if o.diameter_mm:
-            entry["diameter_mm"] = float(o.diameter_mm)
-        elif o.width_mm and o.height_mm:
-            entry["width_mm"], entry["height_mm"] = float(o.width_mm), float(o.height_mm)
-        if o.centroid_mm and len(o.centroid_mm) == 3:
-            entry["near_mm"] = [float(v) for v in o.centroid_mm]
-        patches.append(entry)
-    if body.flow == "internal" and patches:
-        patches.append({"name": "wall", "type": "wall"})
-    return patches
-
-
 @router.post("/{session_id}/check/confirm")
 async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = Depends(owner_dep),
                         organization_id: str = Depends(org_dep)) -> dict:
@@ -474,6 +415,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         raise HTTPException(409, UNIT_FIRST)
     scale = scale_to_metres(LengthUnit(corrected)) if corrected else float(interpretation["scale_to_metres"])  # type: ignore[index]
     body = in_confirmed_unit(body, scale)
+    # the declaration says which unit the file is in, so the intake is told the scale in words
+    in_force = corrected or (str(interpretation["unit"]) if interpretation else None)
+    if in_force and body.unit != in_force:
+        body = body.model_copy(update={"unit": in_force})
     message = confirmation_message(body)
     patches = patches_from(body)
 
@@ -483,8 +428,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     store = get_object_store()
     key = check_object_key(str(session_id), "confirmed.json")
     earlier = _stored_bytes(store, key)
+    # the copy says the scale its sizes are in - the unit in force, which every length above was
+    # re-read into - so a later change of unit re-reads it from that, never from a guess
     record = {"confirmed_at": time.time(), "owner_id": owner_id, "message": message,
-              "patches": patches, **body.model_dump()}
+              "patches": patches, **body.model_dump(), "scale_to_m": float(scale)}
     ours = json.dumps(record).encode()
     _put_bytes(store, key, ours)
 
@@ -499,6 +446,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                 await gh.record_unit(db, session, owner_id, organization_id, corrected)
                 logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
                             corrected, session_id)
+                # A run proposed under the old unit carried the old sizes: record_unit has the
+                # intake authority withdraw it in this same transaction.
             session.input_kind = body.input_kind
             session.intake_patches = patches
             session.messages = with_declaration(session.messages, message)

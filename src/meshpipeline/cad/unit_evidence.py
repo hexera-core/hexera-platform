@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from meshpipeline.contracts.coordinate_state import OCC_OUTPUT_UNIT  # noqa: F401
-from meshpipeline.contracts.geometry_units import LengthUnit
+from meshpipeline.contracts.geometry_units import SCALE_TO_METRES, LengthUnit
 
 #: Unit names OCC reports that map onto the supported vocabulary.
 _NAME_TO_UNIT = {
@@ -29,68 +29,44 @@ class UnitEvidence:
         return cls(False, None, detail)
 
 
+def unit_of_scale(metres_per_unit: float) -> LengthUnit | None:
+    """The supported unit a declared scale is, to a part in a million; None for any other (a
+    foot, a micrometre), which is asked rather than rounded to the nearest one we know."""
+    for unit, scale in SCALE_TO_METRES.items():
+        if abs(metres_per_unit - scale) <= 1e-6 * scale:
+            return unit
+    return None
+
+
 def _step_evidence(path: Path) -> UnitEvidence:
-    from OCP.STEPControl import STEPControl_Reader
+    """What the file's geometric contexts assign as their length unit, read from its text.
 
-    return _step_evidence_with_reader(STEPControl_Reader(), path)
+    OpenCASCADE's FileUnits answers "metre" for a malformed unit too - a bad prefix, a missing
+    name - and the shape then transfers a thousand times too large; that is why a declared metre
+    used to be distrusted outright, and every file drawn in metres (a turbine blade, a car in an
+    ANSA export, a cascade) was read as millimetres. The entity itself is parsed here instead: a
+    well-formed SI_UNIT($,.METRE.) is metres, a CONVERSION_BASED_UNIT('METRE', 1 x m) is metres,
+    and only an entity that does not parse is refused."""
+    from meshpipeline.cad.step_units import declared_lengths
 
-
-def _step_evidence_with_reader(reader, path: Path) -> UnitEvidence:
-    from OCP.IFSelect import IFSelect_RetDone
-    from OCP.TColStd import TColStd_SequenceOfAsciiString
-
-    if reader.ReadFile(str(path)) != IFSelect_RetDone:
-        return UnitEvidence.unresolved("the STEP file could not be read")
-
-    lengths = TColStd_SequenceOfAsciiString()
-    angles = TColStd_SequenceOfAsciiString()
-    solids = TColStd_SequenceOfAsciiString()
     try:
-        reader.FileUnits(lengths, angles, solids)
-    except Exception:  # noqa: BLE001 - an unreadable unit section is simply no evidence
-        return UnitEvidence.unresolved("the STEP file declares no readable unit")
-
-    names = {lengths.Value(i).ToCString().strip().lower()
-             for i in range(1, lengths.Length() + 1)}
-    if not names:
+        found = declared_lengths(path)
+    except OSError:
+        return UnitEvidence.unresolved("the STEP file could not be read")
+    if not found:
         return UnitEvidence.unresolved("the STEP file declares no length unit")
-    if len(names) > 1:
+    if any(d.metres is None for d in found):
+        return UnitEvidence.unresolved("the STEP file's unit definition is malformed")
+    if len(found) > 1:
         # Mixed representations must not be collapsed into one global reading.
         return UnitEvidence.unresolved(
-            f"the STEP file declares {len(names)} different length units")
-
-    name = next(iter(names))
-    unit = _NAME_TO_UNIT.get(name)
+            f"the STEP file declares {len(found)} different length units")
+    declared = found[0]
+    unit = unit_of_scale(float(declared.metres or 0.0))
     if unit is None:
-        return UnitEvidence.unresolved(f"unsupported length unit {name!r}")
-
-    if not _step_unit_entity_is_well_formed(reader, unit):
-        # FileUnits answers "metre" for a malformed SI unit too, and the shape then transfers a
-        # thousand times too large - so the declaration is only believed when the entity parses.
-        return UnitEvidence.unresolved("the STEP file's unit definition is malformed")
-    return UnitEvidence(True, unit, f"declared in the file as {name}")
-
-
-def _step_unit_entity_is_well_formed(reader, unit: LengthUnit) -> bool:
-    if unit is LengthUnit.inch:
-        return True                      # conversion-based: OCC resolved an explicit factor
-    if unit is LengthUnit.metre:
-        return False                     # indistinguishable from the parser's default
-    try:
-        model = reader.StepModel()
-    except Exception:  # noqa: BLE001
-        return False
-    want = {LengthUnit.millimetre: "MILLI", LengthUnit.centimetre: "CENTI"}[unit]
-    for i in range(1, model.NbEntities() + 1):
-        entity = model.Entity(i)
-        if "SiUnit" not in type(entity).__name__ or "Length" not in type(entity).__name__:
-            continue
-        try:
-            if entity.HasPrefix() and want.lower() in str(entity.Prefix()).lower():
-                return True
-        except Exception:  # noqa: BLE001 - an entity we cannot interrogate is not evidence
-            return False
-    return False
+        return UnitEvidence.unresolved(
+            f"unsupported length unit {declared.name.lower()!r} ({declared.metres:g} m)")
+    return UnitEvidence(True, unit, f"declared in the file as {declared.name.lower()}")
 
 
 def _iges_evidence(path: Path) -> UnitEvidence:
@@ -154,6 +130,12 @@ def parser_applied_unit(path: str | Path) -> LengthUnit:
                  for i in range(1, lengths.Length() + 1)}
     except Exception:  # noqa: BLE001 - an unreadable unit section means OCC used its default
         return LengthUnit.metre
+    if len(names) > 1:
+        # OCC transfers each representation in its own context's unit, so a file that lists more
+        # than one comes out in consistent millimetres; what it applied to the geometry is what
+        # the geometry's contexts declare, when the text says that plainly.
+        evidence = _step_evidence(p)
+        return evidence.unit if evidence.resolved and evidence.unit else LengthUnit.metre
     if len(names) != 1:
         return LengthUnit.metre
     return _NAME_TO_UNIT.get(next(iter(names)), LengthUnit.metre)

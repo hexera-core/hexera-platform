@@ -137,9 +137,9 @@ async def record_unit(db, session, owner_id: str, organization_id: str, unit: st
     """The unit corrected on the stage, recorded exactly as the chat records an answer: a
     user-confirmed interpretation bound to the session. A STEP file that says millimetres for a
     part drawn in metres is caught here, where the sizes are, not after the run. The intake gate
-    is left to the intake authority: its open unit question is moot once the interpretation is
-    bound, which is the first thing every unit turn checks. Returns the interpretation as the
-    worker reads it."""
+    is the intake authority's: its open unit question is moot once the interpretation is bound,
+    which is the first thing every unit turn checks, and a live run proposal is withdrawn by it
+    here, in this transaction. Returns the interpretation as the worker reads it."""
     import uuid
     from dataclasses import asdict
 
@@ -155,6 +155,13 @@ async def record_unit(db, session, owner_id: str, organization_id: str, unit: st
         basis=ResolutionBasis.user_confirmed, evidence="confirmed on the geometry stage",
         organization_id=organization_id)
     await SessionRepository().bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
+    # A RUN PROPOSED WITH THE OLD SIZES is withdrawn in this same transaction, by the intake
+    # authority: left to the chat turn after the confirmation, a turn that failed would leave it
+    # live for a later "yes" to dispatch at the old scale.
+    from meshpipeline.agents.intake.message import withdraw_proposal_for_unit_change
+
+    if await withdraw_proposal_for_unit_change(db, session):
+        logger.info("geometry check: a proposed run was withdrawn by the unit change - session_id=%s", session.id)
     return asdict(GeometryInterpretationRef.from_domain(recorded))
 
 
