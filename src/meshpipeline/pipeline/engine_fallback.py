@@ -33,6 +33,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from meshpipeline.contracts.failure_cause import FailureCause, as_cause, retry_can_help
+
 if TYPE_CHECKING:
     from meshpipeline.contracts.pipeline_state import PipelineState
 
@@ -70,58 +72,48 @@ FIXABLE = "fixable"
 #: approval (a boundary our own authoring wrote wrong), or a multi-region split. Never switch.
 NEVER = "never"
 
-#: contracts.failure_cause values (when the executor recorded one) -> class. Read as plain
-#: strings so this module does not depend on that vocabulary landing first.
-_CAUSE_CLASS: dict[str, str] = {
-    "engine_crashed": ENGINE,
-    "geometry_rejected": ENGINE,
-    "mesh_quality": FIXABLE,
-    "under_resolved": FIXABLE,
-    "cell_budget": FIXABLE,
-    "not_solvable": FIXABLE,
-    "patch_not_captured": FIXABLE,
-    "contract_mismatch": NEVER,
-    "boundary_type": NEVER,
-    "domain_extent": NEVER,
-    "region_split": NEVER,
+#: WHAT A DIFFERENT ENGINE CAN DO about each failure cause. The causes are the executor's
+#: (contracts/failure_cause.py), named by the gate that failed - this module keeps no second
+#: vocabulary and never reads a gate key for meaning. The failure-cause module already answers
+#: "would ANOTHER ATTEMPT of this run change it" (retry_can_help); a cause it calls hopeless is
+#: NEVER here too, unless it is listed in _ONLY_ANOTHER_ENGINE_CHANGES below. The rest is the
+#: engine question alone: a boundary type our emission wrote, the far-field size the user asked
+#: for and a multi-region split are the same whichever engine runs (NEVER); a mesher that stopped
+#: is the engine's own failing (ENGINE); a mesh that missed a bar may be fixed here (FIXABLE).
+_LADDER_CLASS: dict[FailureCause, str] = {
+    FailureCause.ENGINE_CRASHED: ENGINE,
+    FailureCause.GEOMETRY_REJECTED: ENGINE,
+    FailureCause.MESH_QUALITY: FIXABLE,
+    FailureCause.UNDER_RESOLVED: FIXABLE,
+    FailureCause.CELL_BUDGET: FIXABLE,
+    FailureCause.NOT_SOLVABLE: FIXABLE,
+    FailureCause.PATCH_NOT_CAPTURED: FIXABLE,
+    FailureCause.CONTRACT_MISMATCH: NEVER,
+    FailureCause.BOUNDARY_TYPE: NEVER,
+    FailureCause.DOMAIN_EXTENT: NEVER,
+    FailureCause.REGION_SPLIT: NEVER,
 }
-#: The executor's failed-gate key -> class, for a failure recorded without a cause. A gate that
-#: can mean several things (manifest_valid) is read as the milder class: never an immediate switch.
-_GATE_CLASS: dict[str, str] = {
-    "finalize": ENGINE,
-    "geometry": ENGINE,
-    "manifest_valid": FIXABLE,
-    "quality_floor": FIXABLE,
-    "sicn_floor": FIXABLE,
-    "resolution_floor": FIXABLE,
-    "solvability": FIXABLE,
-    "patch_contract": NEVER,
-    "region_contract": NEVER,
-    "boundary_types": NEVER,
-    "domain_extent": NEVER,
-    "regions_split": NEVER,
-    "interfaces": NEVER,
-}
+#: The causes the retry policy calls hopeless that another ENGINE still changes. A refused
+#: geometry is the same file on the next attempt - but a different engine has a different input
+#: contract (VMTK refuses a self-intersecting surface that cfMesh and snappyHexMesh wrap), so it
+#: stays an ENGINE failure: never a mid-run switch (the run ends at the refusal), always an offer.
+_ONLY_ANOTHER_ENGINE_CHANGES: frozenset[FailureCause] = frozenset({FailureCause.GEOMETRY_REJECTED})
 
 #: What each failure means, said to the user. Short and plain: the full account of the failure is
-#: the terminal message's; this is the half-sentence that says why the engine was left.
-_REASON_BY_CAUSE: dict[str, str] = {
-    "engine_crashed": "it stopped before it finished the mesh",
-    "geometry_rejected": "it cannot take this geometry as it is",
-    "mesh_quality": "its cells came out too badly shaped to use",
-    "under_resolved": "it could not fit enough cells across the narrowest passage",
-    "cell_budget": "its mesh came out bigger than one job allows",
-    "not_solvable": "a trial solve on its mesh did not converge",
-    "patch_not_captured": "it lost one of your boundaries",
-}
-_REASON_BY_GATE: dict[str, str] = {
-    "finalize": _REASON_BY_CAUSE["engine_crashed"],
-    "geometry": _REASON_BY_CAUSE["geometry_rejected"],
-    "quality_floor": _REASON_BY_CAUSE["mesh_quality"],
-    "sicn_floor": "its tetrahedra came out too badly shaped to use",
-    "resolution_floor": _REASON_BY_CAUSE["under_resolved"],
-    "solvability": _REASON_BY_CAUSE["not_solvable"],
-    "manifest_valid": "its mesh failed a basic validity check",
+#: the terminal message's (failure_cause.describe); this is the half-sentence that says why the
+#: engine was left.
+_REASON_BY_CAUSE: dict[FailureCause, str] = {
+    FailureCause.ENGINE_CRASHED: "it stopped before it finished the mesh",
+    FailureCause.GEOMETRY_REJECTED: "it cannot take this geometry as it is",
+    FailureCause.MESH_QUALITY: "its cells came out too badly shaped to use",
+    FailureCause.UNDER_RESOLVED: "it could not fit enough cells across the narrowest passage",
+    FailureCause.CELL_BUDGET: "its mesh came out bigger than one job allows",
+    FailureCause.NOT_SOLVABLE: "a trial solve on its mesh did not converge",
+    FailureCause.PATCH_NOT_CAPTURED: "it lost one of your boundaries",
+    FailureCause.CONTRACT_MISMATCH: "a boundary did not come out under the name you approved",
+    FailureCause.BOUNDARY_TYPE: "a boundary came out with the wrong type",
+    FailureCause.DOMAIN_EXTENT: "the far-field domain came out short of the size you asked for",
+    FailureCause.REGION_SPLIT: "the parts did not come out as separate meshes",
 }
 _REASON_REVIEW = "the mesh did not pass review"
 _REASON_GENERIC = "it did not produce a mesh that passed its checks"
@@ -326,15 +318,34 @@ def classify(state: Mapping) -> Failure | None:
         if str(state.get("reviewer_verdict", "") or "").upper() == "FAIL":
             return Failure(FIXABLE, "review", _REASON_REVIEW)
         return None
-    cause = str(state.get("executor_failure_cause", "") or "")
     gate = str(state.get("executor_failed_gate", "") or "")
-    if cause in _CAUSE_CLASS:
-        return Failure(_CAUSE_CLASS[cause], cause,
-                       _REASON_BY_CAUSE.get(cause) or _REASON_BY_GATE.get(gate, _REASON_GENERIC))
-    if gate:
-        return Failure(_GATE_CLASS.get(gate, FIXABLE), gate, _REASON_BY_GATE.get(gate, _REASON_GENERIC))
-    # no gate named at all: the executor had nothing to validate - the builder produced no mesh
-    return Failure(ENGINE, "no_mesh", _REASON_BY_CAUSE["engine_crashed"])
+    facts = state.get("executor_failure_facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    cause = _cause_of(state, gate)
+    if cause is None:
+        if gate:
+            # a gate that names no cause, on no engine this system knows: never a reason to switch
+            # at once, never a reason to refuse one
+            return Failure(FIXABLE, gate, _REASON_GENERIC)
+        # no gate at all: the executor had nothing to validate - the builder produced no mesh
+        cause = FailureCause.ENGINE_CRASHED
+    kind = _LADDER_CLASS[cause]
+    if not retry_can_help(cause, facts) and cause not in _ONLY_ANOTHER_ENGINE_CHANGES:
+        # the retry policy's own verdict: nothing that runs again changes this, so no engine does
+        kind = NEVER
+    return Failure(kind, cause.value, _REASON_BY_CAUSE[cause])
+
+
+def _cause_of(state: Mapping, gate: str) -> FailureCause | None:
+    """The executor's cause for the failed attempt: the one it recorded, else the one it WOULD have
+    recorded - the failed gate's declared cause for this engine, else the seam's - resolved by the
+    executor's own function, so the ladder and the retry policy can never read one failure two
+    ways. (A state without a recorded cause predates the cause fields.)"""
+    recorded = as_cause(state.get("executor_failure_cause"))
+    if recorded is not None or not gate:
+        return recorded
+    from meshpipeline.pipeline.executor import _gate_cause
+    return as_cause(_gate_cause(str(state.get("engine") or ""), gate, None))
 
 
 def tried_engines(state: Mapping) -> list[str]:
@@ -486,8 +497,8 @@ def fresh_start_brief(frm: str, to: str, failure: Failure) -> str:
 #: The failures prism layers commonly cause: folded or squeezed layer cells fail the cell-quality
 #: bars, the trial solve, and the review of layer coverage. Only these CAN earn a fewer-layers
 #: offer, and only with measured evidence that the layers were to blame (_layers_are_to_blame).
-_LAYER_SHAPED = frozenset({"mesh_quality", "quality_floor", "manifest_valid", "not_solvable",
-                           "solvability", "review"})
+_LAYER_SHAPED = frozenset({FailureCause.MESH_QUALITY.value, FailureCause.NOT_SOLVABLE.value,
+                           "review"})
 
 
 def _layers_are_to_blame(state: Mapping) -> bool:

@@ -78,20 +78,57 @@ def test_every_implemented_engine_declares_what_it_delivers():
             f"{name} does not declare its delivered mesh - the ladder cannot compare it")
 
 
-def test_every_declared_gate_has_a_ladder_class():
-    # a new gate must say whether another engine could fix its failure, not default into one
+def test_every_failure_cause_has_a_ladder_class_and_every_gate_declares_one():
+    # ONE vocabulary: the ladder classifies the executor's causes, never gate keys, so a new cause
+    # or a gate without a declared cause cannot slip past it
+    from meshpipeline.contracts.failure_cause import FailureCause
+    assert set(lad._LADDER_CLASS) == set(FailureCause)
     for name in engine_names():
         for gate in get_spec(name).gates:
-            assert gate.key in lad._GATE_CLASS, f"{name}.{gate.key} has no ladder class"
+            assert gate.cause in lad._LADDER_CLASS, f"{name}.{gate.key} declares no known cause"
+
+
+def test_a_cause_the_retry_policy_calls_hopeless_never_moves_the_run_unless_an_engine_changes_it():
+    from meshpipeline.contracts.failure_cause import FailureCause, retry_can_help
+    for cause in FailureCause:
+        f = lad.classify({"engine": "cfmesh", "executor_success": False,
+                          "executor_failed_gate": "manifest_valid",
+                          "executor_failure_cause": cause.value})
+        if not retry_can_help(cause):
+            assert f.kind == lad.NEVER or cause in lad._ONLY_ANOTHER_ENGINE_CHANGES, (
+                f"{cause} is hopeless to the retry policy but the ladder would switch on it")
+    # the one the policy calls hopeless that another engine does change: a refused geometry
+    assert lad.classify({"engine": "vmtk", "executor_failure_cause": "geometry_rejected",
+                         "executor_failed_gate": "geometry"}).kind == lad.ENGINE
+    # a mismatch the builder names (retry_may_fix) is retryable, and still never an engine switch
+    assert lad.classify({"engine": "gmsh", "executor_failed_gate": "patch_contract",
+                         "executor_failure_cause": "contract_mismatch",
+                         "executor_failure_facts": {"retry_may_fix": True}}).kind == lad.NEVER
+
+
+def test_a_record_without_a_cause_reads_the_cause_the_executor_would_have_recorded():
+    # the gate's declared cause for this engine, else the seam's - the executor's own resolver
+    assert lad.classify({"engine": "snappy", "executor_failed_gate": "patch_contract"}).kind \
+        == lad.NEVER
+    assert lad.classify({"engine": "snappy", "executor_failed_gate": "finalize"}).cause \
+        == "engine_crashed"
+    assert lad.classify({"engine": "gmsh", "executor_failed_gate": "sicn_floor"}).cause \
+        == "mesh_quality"
+    # nothing validated at all: the builder produced no mesh
+    assert lad.classify({"engine": "cfmesh"}).kind == lad.ENGINE
 
 
 # the switch happens on the right failures
 
-@pytest.mark.parametrize("gate", ["finalize", "quality_floor", "resolution_floor", "solvability",
-                                  "manifest_valid"])
-def test_an_engine_that_cannot_mesh_the_shape_moves_to_the_same_contract_engine(quiet, gate):
+@pytest.mark.parametrize("gate,cause", [
+    ("finalize", "engine_crashed"), ("manifest_valid", "engine_crashed"),
+    ("quality_floor", "mesh_quality"), ("resolution_floor", "under_resolved"),
+    ("solvability", "not_solvable"), ("manifest_valid", "cell_budget"),
+    ("manifest_valid", "patch_not_captured")])
+def test_an_engine_that_cannot_mesh_the_shape_moves_to_the_same_contract_engine(quiet, gate,
+                                                                              cause):
     said, events = quiet
-    out = _node(_external(executor_failed_gate=gate))
+    out = _node(_external(executor_failed_gate=gate, executor_failure_cause=cause))
     assert out["engine"] == "snappy", f"{gate} on cfMesh did not move the run to snappyHexMesh"
     assert out["builder_mode"] == "initial", "the new engine did not get a fresh build"
     assert out["builder_noop_count"] == 0
@@ -121,8 +158,10 @@ def test_the_recorded_failure_cause_decides_when_it_is_present(quiet):
 
 @pytest.mark.parametrize("gate,cause", [
     ("patch_contract", ""), ("boundary_types", ""), ("domain_extent", ""),
-    ("manifest_valid", "contract_mismatch"), ("manifest_valid", "boundary_type"),
-    ("finalize", "domain_extent")])
+    ("patch_contract", "contract_mismatch"), ("boundary_types", "boundary_type"),
+    ("domain_extent", "domain_extent"), ("manifest_valid", "contract_mismatch"),
+    # a pre-flight refusal stands in for the gate it refused
+    ("domain_extent", "domain_extent"), ("patch_contract", "contract_mismatch")])
 def test_never_switches_on_a_failure_another_engine_cannot_fix(quiet, gate, cause):
     out = _node(_external(executor_failed_gate=gate, executor_failure_cause=cause))
     assert "engine" not in out, f"{gate}/{cause} moved the run to another engine"
@@ -214,9 +253,11 @@ def test_fewer_layers_is_offered_before_another_engine():
     assert 'Reply "use 4 layers"' in offer["text"]
 
 
-@pytest.mark.parametrize("gate", ["quality_floor", "manifest_valid", "solvability"])
-def test_fewer_layers_needs_evidence_that_the_layers_were_to_blame(gate):
+@pytest.mark.parametrize("gate,cause", [("quality_floor", "mesh_quality"),
+                                        ("solvability", "not_solvable")])
+def test_fewer_layers_needs_evidence_that_the_layers_were_to_blame(gate, cause):
     st = _external(engine="snappy", retry_count=2, executor_failed_gate=gate,
+                   executor_failure_cause=cause,
                    request_txt="External aero around a wing, 8 prism layers, y+ 1.",
                    mesh_manifest={"quality": {"fatal": [], "max_non_ortho": 71.0}})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
@@ -451,7 +492,7 @@ def test_an_admission_refusal_is_not_recorded_as_a_build():
                                                   "intersects")
     rec = lad.final_record(st, succeeded=False, system_failure=False)
     assert rec["attempts"] == [{"attempt": 0, "engine": "vmtk", "kind": lad.ENGINE,
-                                "cause": "geometry",
+                                "cause": "geometry_rejected",
                                 "reason": "it cannot take this geometry as it is",
                                 "refused_before_building": True}]
     # and the refusal still ends with an out: another engine, differences stated
