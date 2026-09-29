@@ -32,9 +32,10 @@ def unit_sentence(body) -> str:
         return ""
     size = getattr(body, "size_mm", None)
     longest = max((float(v) for v in size), default=0.0) if size and len(size) == 3 else 0.0
-    tail = f": the part is {length_words(longest / 1000.0)} long" if longest > 0 else ""
-    return (f"The file is in {UNIT_WORDS[unit]}{tail}. The sizes above are already converted to "
-            "millimetres; use them as they stand.")
+    if not longest > 0:
+        return f"The file is in {UNIT_WORDS[unit]}."
+    return (f"The file is in {UNIT_WORDS[unit]}: the part is {length_words(longest / 1000.0)} long. "
+            "The sizes above are already converted to millimetres; use them as they stand.")
 
 
 def confirmation_message(body) -> str:
@@ -177,5 +178,28 @@ def reread_record(record: dict, *, scale_to_metres: float, unit: str,
             "reread": {"from_scale_to_m": was_f, "factor": k}}
 
 
+#: The lengths a confirmation carries, dropped when they cannot be re-read in a new unit.
+_OPENING_LENGTHS = ("centroid_mm", "diameter_mm", "width_mm", "height_mm")
+_BODY_LENGTHS = ("seed_point_mm", "size_mm", "reference_length_mm")
+
+
+def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
+    """A stored confirmation with every length taken out and the rest kept - the kind, the flow,
+    each opening's name and role, the flow axis, the far-field margins (body lengths, unit-free).
+    For a confirmation that does not say what unit its sizes are in: rather than refuse a change
+    of unit, or carry sizes in a unit nobody can name, the sizes go and the intake asks for them
+    in the new unit."""
+    plain = {key: v for key, v in record.items() if key not in _RECORD_ONLY and key not in _BODY_LENGTHS}
+    plain["openings"] = [{k: v for k, v in dict(o).items() if k not in _OPENING_LENGTHS}
+                         for o in plain.get("openings") or []]
+    plain.update(scale_to_m=float(scale_to_metres), unit=unit)
+    body = body_of(plain)
+    message = confirmation_message(body)
+    message += (" The sizes confirmed on the picture could not be carried over to the new unit: ask "
+                "the user for each opening's size and the reference length, in that unit.")
+    return {**{key: record[key] for key in ("confirmed_at", "owner_id") if key in record},
+            **plain, "message": message, "patches": patches_from(body), "reread": {"sizes_dropped": True}}
+
+
 __all__ = ["CONFIRMED_MARK", "body_of", "confirmation_message", "patches_from", "replace_declaration",
-           "reread_record", "unit_sentence", "with_declaration"]
+           "reread_record", "sizeless_record", "unit_sentence", "with_declaration"]

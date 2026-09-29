@@ -42,6 +42,9 @@ class UnitChange:
     reference_length_m: float | None = None
     #: the geometry check's confirmation was re-read in the new unit
     reread: bool = False
+    #: ... but its sizes could not be (nothing says what unit they were in), so they were taken
+    #: out and the intake asks for them in the new unit
+    sizes_dropped: bool = False
     #: a run proposed under the old unit was withdrawn
     approval_withdrawn: bool = False
     #: the intake gate as it must now be written - the proposal withdrawn, an open unit question
@@ -58,7 +61,11 @@ class UnitChange:
             if self.longest_old_m and self.old_unit:
                 said += f", not {length_in(self.longest_old_m, LengthUnit(self.old_unit))}"
         said += "."
-        if self.reread:
+        if self.sizes_dropped:
+            said += (" I couldn't tell which unit the sizes you confirmed on the picture were read in, so I "
+                     f"couldn't carry them over: tell me each opening's size and the reference length in "
+                     f"{UNIT_WORDS[new]}. The names, roles and flow direction you confirmed stand.")
+        elif self.reread:
             said += (f" I've re-read every size you confirmed on the picture in {UNIT_WORDS[new]}"
                      + (f" - the reference length is now {length_words(self.reference_length_m)}"
                         if self.reference_length_m else "")
@@ -85,12 +92,7 @@ def withdraw_live_approval(gate: dict | None) -> tuple[dict, bool]:
 
 class UnitChangeError(RuntimeError):
     """The confirmed sizes could not be read, so the unit is not changed at all: a new unit bound
-    over old sizes is exactly the mismatch this module exists to prevent. `unscaled` says the
-    record was read but nothing tells what unit its sizes are in - trying again will not help."""
-
-    def __init__(self, message: str, *, unscaled: bool = False):
-        super().__init__(message)
-        self.unscaled = unscaled
+    over old sizes is exactly the mismatch this module exists to prevent."""
 
 
 def _confirmed_scale(record: dict) -> float | None:
@@ -143,7 +145,11 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
     the one it replaces. None when no length changes: the session has no file, or already holds
     that unit (recorded as the user's word when it was only the file's declaration)."""
     from meshpipeline.application import geometry_hold as gh
-    from meshpipeline.application.geometry_confirmation import replace_declaration, reread_record
+    from meshpipeline.application.geometry_confirmation import (
+        replace_declaration,
+        reread_record,
+        sizeless_record,
+    )
     from meshpipeline.contracts.geometry_units import ResolutionBasis
     from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
         GeometryInterpretationRepository,
@@ -159,18 +165,17 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
     new_scale = scale_to_metres(unit)
     old_scale = float(current["scale_to_metres"]) if current else None
     # THE CONFIRMED SIZES ARE READ AND RE-READ BEFORE ANYTHING IS WRITTEN: a store that cannot be
-    # read, or a confirmation whose scale nothing records, stops the change here
-    # (UnitChangeError), so the unit is never bound over sizes left in the old one. The stored
-    # confirmation is never rewritten, so its scale is always the one it was confirmed under.
+    # read stops the change here (UnitChangeError), so the unit is never bound over sizes left in
+    # the old one. The stored confirmation is never rewritten, so its scale is always the one it
+    # was confirmed under. One that records no scale and no unit (made by an older console) has
+    # sizes nobody can re-read: they are taken out, and the intake asks for them in the new unit.
     again = None
     if old_unit != unit.value:
         confirmed = _stored(sid, "confirmed.json", strict=True)
         if confirmed is not None:
-            again = reread_record(confirmed, scale_to_metres=new_scale, unit=unit.value,
-                                  confirmed_scale=_confirmed_scale(confirmed))
-            if again is None:
-                raise UnitChangeError("the confirmed geometry check does not say what unit its sizes are in",
-                                      unscaled=True)
+            again = (reread_record(confirmed, scale_to_metres=new_scale, unit=unit.value,
+                                   confirmed_scale=_confirmed_scale(confirmed))
+                     or sizeless_record(confirmed, scale_to_metres=new_scale, unit=unit.value))
     recorded = await GeometryInterpretationRepository().record(
         db, owner_id=owner_id, geometry_source_id=session.geometry_source_id, unit=unit,
         basis=ResolutionBasis.user_confirmed,
@@ -185,6 +190,7 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
 
     longest_file = _longest_file_units(sid)
     reread = False
+    sizes_dropped = bool(again and (again.get("reread") or {}).get("sizes_dropped"))
     reference_m = None
     if again is not None:
         await session_repo.set_intake_patches(db, session.id, again["patches"])
@@ -202,10 +208,10 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
         old_unit=old_unit, new_unit=unit.value,
         longest_old_m=longest_file * old_scale if longest_file and old_scale else None,
         longest_new_m=longest_file * new_scale if longest_file else None,
-        reference_length_m=reference_m, reread=reread, approval_withdrawn=withdrawn,
-        gate=gate if rewrite else None)
-    logger.info("unit change: %s -> %s in the %s - session=%s reread=%s withdrawn=%s",
-                old_unit, unit.value, where, sid, reread, withdrawn)
+        reference_length_m=reference_m, reread=reread, sizes_dropped=sizes_dropped,
+        approval_withdrawn=withdrawn, gate=gate if rewrite else None)
+    logger.info("unit change: %s -> %s in the %s - session=%s reread=%s sizes_dropped=%s withdrawn=%s",
+                old_unit, unit.value, where, sid, reread, sizes_dropped, withdrawn)
     return change
 
 

@@ -158,7 +158,13 @@ _ASKS = re.compile(r"^\W*(?:is|are|was|were|am|do|does|did|can|could|should|woul
 #: opens on a condition ("if it's in metres, use snappy"). An "if" later in a statement ("the
 #: file is in metres if that helps") is not a doubt about the unit.
 _UNSURE = re.compile(r"^\W*if\b|\b(?:not sure|unsure|maybe|perhaps|probably not|might be|could be|whether|"
-                     r"wonder|don'?t know|no idea)\b")
+                     r"wonder|don'?t know|no idea)\b"
+                     # a statement that asks to be checked is tentative, wherever it sits: "... if
+                     # that's correct", "... if I'm not mistaken", "I guess ..."
+                     r"|\bif\s+(?:that'?s|that\s+is|this\s+is|it'?s|it\s+is)\s+(?:correct|right|ok|okay|true|"
+                     r"the\s+case|possible|fine|allowed)\b"
+                     r"|\bif\s+i'?m\s+(?:not\s+)?(?:mistaken|right|correct|wrong|remembering)\b"
+                     r"|\bif\s+i\s+(?:remember|recall)\b|\bi\s+(?:guess|suppose)\b")
 #: The little words a reply that is only a unit may carry around it.
 _REPLY_FILLER = frozenset({"no", "nope", "not", "sorry", "oh", "ah", "actually", "really", "it", "it's", "its",
                            "is", "in", "the", "all", "they're", "theyre", "are", "that's", "thats", "wait",

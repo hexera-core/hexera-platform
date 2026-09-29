@@ -192,15 +192,23 @@ async def test_a_confirmation_stored_without_its_scale_is_read_in_the_unit_it_re
 
 
 @pytest.mark.asyncio
-async def test_a_confirmation_that_records_neither_scale_nor_unit_changes_nothing(monkeypatch):
+async def test_a_confirmation_that_records_neither_scale_nor_unit_keeps_everything_but_its_sizes(monkeypatch):
+    """An older console's confirmation, with no scale and no unit: its sizes cannot be re-read,
+    and refusing the change would leave the user no way on. The unit changes, the sizes are
+    taken out (names, roles and the rest stand), and the user is asked for them in the new unit."""
     now_m = {"unit": "m", "scale_to_metres": 1.0, "basis": "user_confirmed"}
     repo, recorded = _wire(monkeypatch, stored={"confirmed.json": {**DUCT, "scale_to_m": None, "unit": None}},
                            current=now_m)
-    with pytest.raises(uch.UnitChangeError) as refused:
-        await uch.change_unit(None, _session(), owner_id="alice", organization_id="", unit=LengthUnit.inch,
-                              session_repo=repo)
-    assert refused.value.unscaled is True
-    assert recorded == [] and repo.bind_geometry_interpretation.await_count == 0
+    session = _session(messages=[{"role": "assistant", "content": CONFIRMED_MARK + " old"}])
+    change = await uch.change_unit(None, session, owner_id="alice", organization_id="", unit=LengthUnit.inch,
+                                   session_repo=repo)
+    assert recorded and recorded[0][0] is LengthUnit.inch
+    assert repo.set_intake_patches.await_args.args[2] == [{"name": "inlet", "type": "inlet"},
+                                                         {"name": "wall", "type": "wall"}]
+    declaration = repo.set_messages.await_args.args[2][0]["content"]
+    assert "inlet (inlet)" in declaration and "mm" not in declaration.split("The file is in")[0]
+    assert "ask the user for each opening's size and the reference length, in that unit" in declaration
+    assert change.sizes_dropped and "tell me each opening's size and the reference length in inches" in change.reply()
 
 
 @pytest.mark.asyncio
