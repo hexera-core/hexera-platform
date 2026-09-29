@@ -219,7 +219,9 @@ def test_the_polymesh_boundary_is_read_from_its_files_alone(tmp_path):
     assert faces.min() == 0 and faces.max() == 15
     out = P.passage_of_polymesh(tmp_path)
     assert out["passage_cells_across_local"]["points"] == 16
-    assert 0.3 < out["passage_radius"]["median"] < 0.7, "half of a unit cross-section"
+    # every wall point of a one-cell duct is a corner, whose chord runs the diagonal: half of
+    # a unit cross-section, up to sqrt(2)/2
+    assert 0.3 < out["passage_radius"]["median"] <= 0.7072, "half of a unit cross-section"
     wpts, wfaces = P.boundary_triangles_of_polymesh(pm, wall_only=True)
     assert len(wfaces) == 2 * 12 and len(wpts) == 16, "the twelve side quads are the wall"
 
