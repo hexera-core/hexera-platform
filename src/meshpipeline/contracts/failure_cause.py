@@ -13,8 +13,16 @@ there, and a retry spends another 13 minutes hitting the same wall.
 So each distinct cause has its own name here, its own sentence (what failed, with the numbers and
 the limit), its own next step, and a flag for whether another attempt could change the outcome.
 The gate that fails names the cause (engines/gates.py) and hands over the facts; this module only
-words them. The failure CATEGORY in application/final_result.py stays what it is - the coarse,
-persisted vocabulary - and the cause is the specific account beside it.
+words them.
+
+ONE VOCABULARY, THREE LEVELS, each naming a different thing and none restating another:
+* the failure CATEGORY (application/final_result.FailureCategory) - the coarse, persisted outcome
+  of the whole run (gate_failed, input_rejected, worker_lost, timed_out, ...);
+* the failure CLASS (errors.FailureClass) - whose problem a failure is, and the one sentence for
+  the categories that class owns (a refused input, a lost worker, a provider outage);
+* the failure CAUSE (here) - WHICH gate failure, when the category is gate_failed.
+Where a cause and a class describe the same thing, the class's sentence is the one said: a refused
+geometry is worded by errors.DOMAIN_REJECTED, never a second time here.
 """
 from __future__ import annotations
 
@@ -307,10 +315,11 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 "complete mesh to check. This is usually on our side, not your geometry's.",
                 f"You can run it again: {_RUN_AGAIN}.")
     if c is FailureCause.GEOMETRY_REJECTED:
-        reason = _clean_reason(f.get("reason"))
-        return ("The geometry was refused before any mesh was built"
-                + (f": {reason}." if reason else "."),
-                "Fix the geometry, or pick another engine, then run it again.")
+        # ONE sentence for a refused input, and errors.py owns it (FailureClass.DOMAIN_REJECTED,
+        # the class the input_rejected category renders): lead, the reason, the next step.
+        from meshpipeline.errors import FailureClass, user_message_for
+        return (user_message_for(FailureClass.DOMAIN_REJECTED,
+                                 reason=_clean_reason(f.get("reason"))), "")
     return "", ""
 
 

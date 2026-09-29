@@ -333,3 +333,26 @@ def test_a_mesh_on_disk_outranks_a_stale_refusal(quiet_executor, monkeypatch, tm
     assert calls == [1]
     assert out["executor_failed_gate"] == "finalize"
     assert out["executor_failure_cause"] == "engine_crashed"
+
+
+def test_the_run_mesh_name_check_leaves_its_refusal_for_the_executor(tmp_path):
+    """#86's pre-run name check refuses back to the builder; the same refusal is recorded, so a
+    loop that ends there is reported as the contract mismatch (with the spelling to use) and is
+    not retried, instead of as a mesher that "did not finish"."""
+    import json
+    from types import SimpleNamespace
+
+    from meshpipeline.agents.builder.tools.meshing import prepare_mesh_run
+
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "meshDict").write_text("x")
+    (tmp_path / "port_declaration.json").write_text(json.dumps([
+        {"name": "car wall", "type": "wall"}, {"name": "farfield", "type": "farfield"}]))
+    ctx = SimpleNamespace(workspace=tmp_path, engine="cfmesh", loop_deadline=None, geometry=None,
+                          require_geometry=lambda: None)
+    prepared = prepare_mesh_run(ctx)
+    assert prepared.refusal is not None and prepared.refusal["contract_unbuildable"] is True
+    rec = read_refusal(tmp_path)
+    assert rec is not None and rec.gate == "patch_contract"
+    assert rec.cause == FailureCause.CONTRACT_MISMATCH
+    assert rec.facts["renamed"] == {"car wall": "car_wall"}

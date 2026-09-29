@@ -178,6 +178,15 @@ class IntakeToolExecutor:
         # is what keeps that split from leaking into the rest of the system.
         from meshpipeline.agents.intake.vocabulary import normalize_tool_args
         args = normalize_tool_args(args)
+        # MESH-SAFE PATCH NAMES, at the same boundary and for the same reason: a name a person typed
+        # ("car wall") becomes the spelling a mesher can write ("car_wall") before the preview, the
+        # preview token, the approved snapshot, the builder payload and the manifest check see it,
+        # so none of them can disagree. The model is told the new spelling in the tool result.
+        from meshpipeline.contracts.patch_names import normalize_patches, rename_note
+        _renames: dict[str, str] = {}
+        if isinstance(args, dict) and "patches" in args:
+            _patches, _renames = normalize_patches(args.get("patches"))
+            args = {**args, "patches": _patches}
 
         before = st.authorization_signature()
         handler = getattr(self, f"_do_{tool}", None)
@@ -188,8 +197,11 @@ class IntakeToolExecutor:
                 content=f"Unknown tool {tool!r}. Available: {', '.join(INTAKE_CATEGORIES)}.")
         result = await handler(args)
         after = st.authorization_signature()
+        content = result.content
+        if _renames:
+            content = f"{rename_note(_renames)}\n\n{content}" if content else rename_note(_renames)
         return IntakeToolResult(
-            tool=result.tool, content=result.content, accepted=result.accepted,
+            tool=result.tool, content=content, accepted=result.accepted,
             advanced=result.advanced or (after != before), signature=after)
 
     # the seven tools

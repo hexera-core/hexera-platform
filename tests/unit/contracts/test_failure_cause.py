@@ -18,7 +18,9 @@ _OLD_HEADLINE = "required quality checks"
 
 def _say(cause, **facts) -> tuple[str, str]:
     what, nxt = describe(cause, facts, engine="snappyHexMesh")
-    assert what and nxt, f"{cause} must say what failed and what to do next"
+    assert what, f"{cause} must say what failed"
+    # a refused geometry's one sentence is errors.py's, and it carries its own next step
+    assert nxt or cause == FailureCause.GEOMETRY_REJECTED, f"{cause} must say what to do next"
     assert _OLD_HEADLINE not in what + nxt
     return what, nxt
 
@@ -105,11 +107,14 @@ class TestEachCauseHasItsOwnSentence:
         what, _ = _say(FailureCause.ENGINE_CRASHED)
         assert "snappyHexMesh" in what and "on our side" in what
 
-    def test_a_refused_geometry_keeps_the_reason_without_its_machine_tag(self):
-        what, nxt = _say(FailureCause.GEOMETRY_REJECTED,
-                         reason="[GEOMETRY_UNSUITABLE] the input surface self-intersects.")
-        assert "the input surface self-intersects" in what and "[" not in what
-        assert "Fix the geometry" in nxt
+    def test_a_refused_geometry_is_worded_once_by_the_domain_class(self):
+        # one vocabulary: the cause says what errors.DOMAIN_REJECTED says, nothing of its own
+        from meshpipeline.errors import FailureClass, user_message_for
+        what, _nxt = _say(FailureCause.GEOMETRY_REJECTED,
+                          reason="[GEOMETRY_UNSUITABLE] the input surface self-intersects.")
+        assert what == user_message_for(FailureClass.DOMAIN_REJECTED,
+                                        reason="the input surface self-intersects")
+        assert "[" not in what
 
     @pytest.mark.parametrize("cause", list(FailureCause))
     def test_every_cause_has_words_even_with_no_facts(self, cause):
