@@ -29,8 +29,9 @@ GRAZING = "grazing"
 #: wedge of angle a has faces about (90 - a) degrees out of true, and the snappy case refuses
 #: faces past 65 degrees (meshQualityControls maxNonOrtho) - so under 25 degrees the wedge
 #: cannot be filled with cells that pass the mesher's own check. Measured on the Ahmed variant
-#: (OpenFOAM 11, 1.4-2.3 mm cells at the contact): cut so the nose met the floor at 10-21
-#: degrees, about 250 faces along the contact were past 60 degrees; cut to 25 degrees, 6 were.
+#: (OpenFOAM 11, 1.4-2.3 mm cells at the contact, floor cut alone): cut so the nose met the
+#: floor at 10-21 degrees, about 250 faces along the contact were past 60 degrees; cut to 25
+#: degrees, 6 were.
 MIN_CONTACT_ANGLE_DEG = 25.0
 #: The contact is read this far above the lowest point, and a raised floor is raised at least
 #: this far. A share of the body's height, so it scales with the part: anything lower - a small
