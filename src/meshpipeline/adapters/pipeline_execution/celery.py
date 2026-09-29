@@ -16,14 +16,31 @@ from meshpipeline.application.pipeline_run import run_pipeline
 
 logger = logging.getLogger(__name__)
 
+#: A launch here is a message on the simulation queue, which a worker takes with nobody's help -
+#: so the stalled-job reaper may re-run a job through it (contracts/pipeline_execution).
+RUNS_WORK = True
+
 
 # The task identifier is PRESERVED deliberately: "worker.tasks.run_simulation" is the on-the-wire
 # name already enqueued on the broker queue, so renaming it for tidiness would orphan in-flight jobs
 # (a worker would never pick up a message addressed to the old name). This is compatibility, not cruft.
+#
+# ACKNOWLEDGED LATE - this task only, and why that is not the redelivery the rest of the app avoids.
+# Celery acks an early-acked task when it STARTS, which frees the worker's one prefetch slot, so a
+# worker busy with a mesh job immediately reserved the NEXT job and sat on it: invisible to the
+# queue-depth metric (it is no longer in the list), invisible to every idle worker, and waiting
+# behind a run that can take hours. When the busy worker's VM was then deleted, the reserved job
+# stayed in Redis's unacked set until the broker's one-hour visibility timeout put it back. That is
+# the hour two jobs spent "queued" on shared dev on 2026-09-29 (created 05:24, started 06:27;
+# created 06:27, started 07:28). Acked late, the running job holds the slot and nothing else is
+# reserved. The redelivery the early ack was chosen to prevent - a long job re-run from scratch
+# because it outran the visibility window - cannot happen: celery_app.py sets that window above the
+# pipeline's whole deadline. A job whose worker dies is re-run by the reaper, once, not by the broker.
 @celery_app.task(
     name="worker.tasks.run_simulation",
     bind=False,
     max_retries=0,
+    acks_late=True,
     soft_time_limit=86400,
     time_limit=90000,
 )

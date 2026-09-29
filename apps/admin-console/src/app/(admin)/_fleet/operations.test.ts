@@ -189,8 +189,8 @@ test("deletes an instance when the name was typed back", async () => {
 });
 
 test("says plainly that a delete cannot see work in flight", async () => {
-  // The console holds no database connection, so it cannot read job leases, and there is no
-  // drain contract. The result must not imply a check that was never performed.
+  // The console holds no database connection, so it cannot read job leases. The result must not
+  // imply a check that was never performed - only what the worker does with a job it holds.
   const h = harness();
   const result = await applyFleetOperation({
     ...h.deps,

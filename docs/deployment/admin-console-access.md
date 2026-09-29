@@ -286,18 +286,31 @@ permissions remain a non-goal:
 
 **The delete confirmation is blind, and the page says so.** The console holds no database
 connection, so it cannot read job leases and cannot tell you the worker you are about to remove is
-four hours into a mesh job. There is also no drain contract yet — the worker is not asked to finish
-first. Closing that gap needs either the read-only database connection or the drain work in
-build-out item 6; neither is in place.
+four hours into a mesh job. What it can tell you is what happens to that job: every worker VM runs
+`deploy/gcp/worker/shutdown.sh` as it goes down, which stops the worker container; the job sees the
+shutdown, releases its lease and goes back on the queue, and the next free worker starts it again
+from the beginning (`application/worker_handoff.py`). The work done so far is repeated, not lost,
+and the user is told the job moved. The same happens on autoscaler scale-in and on a fleet roll.
 
 **Who owns the scaling knobs.** The floor, ceiling, cooldown, jobs-per-instance and scale-in
 control belong to **this console**, not to the deploy. `create-worker-fleet.sh` sets them when it
 creates the autoscaler and does not reconcile them afterwards;
 `create-queue-depth-publisher.sh` still repoints the metric filter but reads the live numbers back
-and passes them through unchanged; the three Cloud Run scripts pass `--min-instances` /
-`--max-instances` only when creating a service. The `WORKER_MIG_*` and `*_MIN_INSTANCES` values in
-`generated.<env>.env` are therefore **creation defaults** — they stop describing the running system
-the moment anyone changes it here. The Fleet page is the authority after that.
+- the scale-in control included - and passes them through unchanged; the three Cloud Run scripts
+pass `--min-instances` / `--max-instances` only when creating a service. The `WORKER_MIG_*` and
+`*_MIN_INSTANCES` values in `generated.<env>.env` are therefore **creation defaults** — they stop
+describing the running system the moment anyone changes it here. The Fleet page is the authority
+after that. The one default the deploy fills in on a live group is the scale-in control, and only
+when the group has none: at most one instance removed per 30 minutes
+(`WORKER_SCALE_IN_MAX_REPLICAS`, `WORKER_SCALE_IN_WINDOW_SECONDS`).
+
+**What the fleet scales on.** `custom.googleapis.com/hexera/worker_demand` - jobs queued PLUS jobs
+running - not the queue depth. Sized on depth alone, the group shrank to its floor whenever a burst
+of queued jobs drained, and deleted VMs that were mid-job (shared dev, 2026-09-29: three jobs lost
+at 05:41, 06:39 and 07:32 UTC). The depth series is still published and is what the queue chart on
+this page shows. A Compute Engine group cannot be told which of its VMs is idle, so when demand
+drops by one it may still remove a busy VM; that job is handed back as above, and the scale-in
+control keeps it rare.
 
 
 ## 11. What the first real dev deploy found

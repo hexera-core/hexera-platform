@@ -86,8 +86,12 @@ WORKER_MIG_MIN_REPLICAS="${WORKER_MIG_MIN_REPLICAS:-0}"
 WORKER_MIG_MAX_REPLICAS="${WORKER_MIG_MAX_REPLICAS:-5}"
 WORKER_MIG_COOLDOWN_SECONDS="${WORKER_MIG_COOLDOWN_SECONDS:-180}"
 WORKER_JOBS_PER_INSTANCE="${WORKER_JOBS_PER_INSTANCE:-1}"
+# at most this many instances removed per window - see create-queue-depth-publisher.sh step 7
+WORKER_SCALE_IN_MAX_REPLICAS="${WORKER_SCALE_IN_MAX_REPLICAS:-1}"
+WORKER_SCALE_IN_WINDOW_SECONDS="${WORKER_SCALE_IN_WINDOW_SECONDS:-1800}"
 QUEUE_NAME="${QUEUE_NAME:-simulation_jobs}"
-METRIC="custom.googleapis.com/hexera/queue_depth"
+# queued + running, not queued alone - see create-queue-depth-publisher.sh for why
+METRIC="custom.googleapis.com/hexera/worker_demand"
 
 # rotation - see step 5 for why these values and not others
 WORKER_ROLLING_TYPE="${WORKER_ROLLING_TYPE:-proactive}"
@@ -221,6 +225,11 @@ fi
 
 STARTUP="${DEPLOY_DIR}/worker/startup.sh"
 [ -f "${STARTUP}" ] || die "worker startup script not found: ${STARTUP}"
+# THE SHUTDOWN SCRIPT - what lets a worker VM be deleted without taking its job with it. Compute
+# Engine runs it when the VM is stopped or deleted (autoscaler scale-in, a rolling update, an
+# operator): it stops the worker container, whose job then hands itself back to the queue.
+SHUTDOWN="${DEPLOY_DIR}/worker/shutdown.sh"
+[ -f "${SHUTDOWN}" ] || die "worker shutdown script not found: ${SHUTDOWN}"
 
 # Compute Engine is enabled HERE rather than in enable-apis.sh: that list is what EVERY deployment
 # needs, and a mesh-only deployment has no fleet at all.
@@ -333,7 +342,7 @@ DIGEST="${APP_IMAGE##*@sha256:}"
 SPEC_HASH="$(printf '%s\n' "${APP_IMAGE}" "${WORKER_MACHINE_TYPE}" "${WORKER_BOOT_DISK_GB}" \
   "${WORKER_BOOT_DISK_TYPE}" "${WORKER_IMAGE_FAMILY}" "${WORKER_IMAGE_PROJECT}" "${VPC_NETWORK}" \
   "${VPC_SUBNET}" "${WORKER_SA_EMAIL}" "${WORKER_SCOPES}" "${WORKER_METADATA[@]}" \
-  | cat - "${STARTUP}" \
+  | cat - "${STARTUP}" "${SHUTDOWN}" \
   | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:6])')"
 TEMPLATE="${WORKER_TEMPLATE_PREFIX:-${WORKER_MIG}-tpl}-${DIGEST:0:12}-${SPEC_HASH}"
 [ ${#TEMPLATE} -le 63 ] \
@@ -367,7 +376,7 @@ info "Creating instance template ${TEMPLATE}"
     --service-account "${WORKER_SA_EMAIL}" \
     --scopes "${WORKER_SCOPES}" \
     --labels "app=hexera,component=worker,version=0-0-1,deployment-id=${DEPLOYMENT_ID},managed-by=deploy" \
-    --metadata-from-file "startup-script=${STARTUP}" \
+    --metadata-from-file "startup-script=${STARTUP},shutdown-script=${SHUTDOWN}" \
     --metadata "^|^$(IFS='|'; printf '%s' "${WORKER_METADATA[*]}")"
   log "template        ${TEMPLATE}  (created - ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata, no value)"
 fi
@@ -388,9 +397,10 @@ fi
 #    PROACTIVE, not opportunistic. An opportunistic update only reaches instances the autoscaler
 #    happens to replace, so a warm pool that never scales would never receive a new digest at all -
 #    the rotation would silently not happen. The cost is that replacing an instance interrupts
-#    whatever it is running; the drain contract in item 6 of the build-out plan (graceful shutdown,
-#    lease-aware deletion, scale-in control) is what makes that safe, and until it lands
-#    WORKER_ROLLING_TYPE=opportunistic is the deliberate escape hatch for a deploy that must not
+#    whatever it is running. The shutdown script is what makes that survivable: the job on a
+#    replaced instance hands itself back to the queue and starts again on another worker, instead
+#    of being failed as "worker lost" half an hour later. It still starts again from the beginning,
+#    so WORKER_ROLLING_TYPE=opportunistic remains the escape hatch for a deploy that must not
 #    disturb a long job.
 if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" >/dev/null 2>&1; then
   CURRENT_TEMPLATE_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
@@ -498,7 +508,8 @@ else
     --cool-down-period "${WORKER_MIG_COOLDOWN_SECONDS}" \
     --update-stackdriver-metric "${METRIC}" \
     --stackdriver-metric-filter "${FILTER}" \
-    --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}"
+    --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}" \
+    --scale-in-control "max-scaled-in-replicas=${WORKER_SCALE_IN_MAX_REPLICAS},time-window=${WORKER_SCALE_IN_WINDOW_SECONDS}"
 fi
 
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
@@ -512,7 +523,7 @@ log "  template      ${TEMPLATE}  (${TEMPLATE_DISPOSITION})"
 log "  identity      ${WORKER_SA_EMAIL}"
 log "  image         ${APP_IMAGE}"
 log "  floor         ${FLOOR_STATE}"
-log "  ceiling       ${WORKER_MIG_MAX_REPLICAS} instances, one per ${WORKER_JOBS_PER_INSTANCE} queued job(s), cooldown ${WORKER_MIG_COOLDOWN_SECONDS}s"
+log "  ceiling       ${WORKER_MIG_MAX_REPLICAS} instances, one per ${WORKER_JOBS_PER_INSTANCE} job(s) queued or running, cooldown ${WORKER_MIG_COOLDOWN_SECONDS}s"
 log "  scaling       ${AUTOSCALING_DISPOSITION} - the floor/ceiling above are CREATION DEFAULTS; the"
 log "                live policy is the admin console's once the autoscaler exists"
 log "  credentials   ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata - the values are fetched per instance"

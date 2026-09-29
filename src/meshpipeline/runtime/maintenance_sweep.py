@@ -49,19 +49,24 @@ ELSEWHERE: dict[str, str] = {
 
 
 def bind_ports() -> None:
-    # THE TWO PORTS A SWEEP PUBLISHES THROUGH, and no more. install_adapters() would also bind the
+    # THE THREE PORTS A SWEEP WORKS THROUGH, and no more. install_adapters() would also bind the
     # model router, the mesh executor, the search provider and every Redis-backed capability -
     # each another setting this job would need, and another way for it to fail before reaping
     # anything. The database is not a port: persistence reads its settings directly.
     from meshpipeline.adapters.event_stream.redis import JobPublisher
     from meshpipeline.adapters.object_storage.factory import build_object_store
     from meshpipeline.contracts import event_stream, object_storage
+    from meshpipeline.runtime.composition import install_pipeline_launcher
 
     # The reaper's closing line to any client still streaming a dead job. Best effort inside the
     # reaper: a broker it cannot reach costs the line, never the reap.
     event_stream.set_publisher_factory(JobPublisher)
     # The upload purge and the orphan reconcile delete objects; the reaper never touches the store.
     object_storage.set_object_store(build_object_store())
+    # The reaper's one automatic re-run of a job whose worker was lost goes back on the queue the
+    # way the API put it there. The Celery launcher needs only the broker the publisher already
+    # reaches; on the deferred launcher the reaper fails the job as it always did.
+    install_pipeline_launcher()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -312,6 +312,13 @@ reproducible from nothing in `deploy/`, and currently the largest steady cost in
   drain-before-delete, worker-side graceful shutdown on the GCE preemption/shutdown hook,
   lease-aware deletion, and `autoscalingPolicy.scaleInControl` to bound how fast the fleet can
   shrink.
+  *Status 2026-09-29:* the fleet scales on `worker_demand` (queued + running, running counted by
+  each job's execution fence); every worker VM carries a shutdown script whose job hands itself
+  back to the queue (`application/worker_handoff.py`); the deploy fills in a scale-in control of
+  one instance per 30 minutes where none is set; and the reaper re-runs a job whose worker was
+  lost anyway, once. Still open: a handed-back job restarts from the beginning, because the
+  attempt workspace lives on the VM's own disk - resuming from the checkpoint needs it in durable
+  storage first; and the group, not us, picks which VM a scale-in removes.
 - **Stated, documented thresholds** rather than a bare `utilizationTarget: 1.0` — target depth
   per worker, cooldown, max scale-in per window, and the max replica count each environment is
   allowed to reach. The max is also the cost ceiling; it should be a deliberate number.

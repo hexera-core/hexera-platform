@@ -184,9 +184,17 @@ class _FakeCelery:
         return _decorator
 
 class _FakeSignal:
+    # Receivers are kept, like the options above, so a test can ask what a signal is wired to.
+    def __init__(self):
+        self.receivers: list = []
+
     def connect(self, fn=None, **k):
         if fn is None:
-            return lambda f: f
+            def _register(f):
+                self.receivers.append(f)
+                return f
+            return _register
+        self.receivers.append(fn)
         return fn
 
 _celery_mod  = types.ModuleType("celery")
@@ -197,6 +205,7 @@ _celery_signals.setup_logging           = _FakeSignal()
 _celery_signals.worker_init             = _FakeSignal()
 _celery_signals.worker_ready            = _FakeSignal()
 _celery_signals.worker_process_shutdown = _FakeSignal()
+_celery_signals.worker_shutting_down    = _FakeSignal()
 _celery_exc = types.ModuleType("celery.exceptions")
 class _FakeSoftTimeLimit(Exception): pass
 class _FakeTimeLimit(Exception): pass

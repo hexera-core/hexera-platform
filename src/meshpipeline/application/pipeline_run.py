@@ -16,6 +16,7 @@ import meshpipeline.agents.reviewer.settings as rcfg
 import meshpipeline.settings.policy as polcfg
 import meshpipeline.settings.providers as provcfg
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.application.worker_handoff import WorkerDraining
 
 logger = logging.getLogger(__name__)
 
@@ -745,10 +746,15 @@ async def _run_async(req: JobRequest) -> dict:
                 # Reviewer, checkpoint writes) reads it from this context - so the worker token
                 # reaches them WITHOUT ever entering PipelineState, the checkpoint, the export, or
                 # any log. The binding is always restored on exit.
+                #
+                # WATCHED FOR A DRAIN. A worker whose VM is being deleted (autoscaler scale-in, a
+                # fleet roll, an operator) stops the graph and raises WorkerDraining, which the
+                # handler at the bottom of this function turns into a hand-back - not a failure.
                 from meshpipeline.application.execution_fence import execution_ownership
+                from meshpipeline.application.worker_handoff import run_unless_draining
                 with execution_ownership(ownership, session_factory=AsyncSessionLocal):
-                    return await graph.ainvoke(await _graph_input(graph),
-                                               config=graph_config)
+                    return await run_unless_draining(
+                        graph.ainvoke(await _graph_input(graph), config=graph_config))
             finally:
                 _stop.set()
                 try:
@@ -964,6 +970,15 @@ async def _run_async(req: JobRequest) -> dict:
         # transactional outbox inside the atomic terminal transaction and delivered by the outbox
         # publisher (fast path above + a durable recovery sweep) - so the user's terminal message
         # survives this worker's death, and there is exactly one publisher of the terminal event.
+
+    except WorkerDraining:
+        # THIS WORKER IS BEING SHUT DOWN, and the graph was stopped for it. Not a failure: nothing
+        # terminal is recorded, the job goes back to the queue and the next worker runs it. Caught
+        # before the crash handler below, which would otherwise fail the job for a machine going
+        # away - the very outcome this path exists to prevent (application/worker_handoff.py).
+        from meshpipeline.application.worker_handoff import hand_back
+        # (Raised only from the graph run, which starts after the claim: `ownership` is bound.)
+        return await hand_back(AsyncSessionLocal, ownership, jlog=jlog)
 
     except Exception as exc:
         # A run that died still owes the user a truthful terminal record. Classification, the
