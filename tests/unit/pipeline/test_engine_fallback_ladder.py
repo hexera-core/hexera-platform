@@ -204,12 +204,28 @@ def test_the_run_ends_with_an_offer_that_states_the_change():
 
 
 def test_fewer_layers_is_offered_before_another_engine():
+    # the mesh carries the layer-inversion signature: folded prism layers
     st = _external(engine="snappy", retry_count=2, executor_failed_gate="quality_floor",
-                   request_txt="External aero around a wing, 8 prism layers, y+ 1.")
+                   request_txt="External aero around a wing, 8 prism layers, y+ 1.",
+                   mesh_manifest={"quality": {"fatal": ["negative-volume cells"]}})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     assert offer["kind"] == "fewer_layers"
     assert offer["layers_from"] == 8 and offer["layers_to"] == 4
     assert 'Reply "use 4 layers"' in offer["text"]
+
+
+@pytest.mark.parametrize("gate", ["quality_floor", "manifest_valid", "solvability"])
+def test_fewer_layers_needs_evidence_that_the_layers_were_to_blame(gate):
+    st = _external(engine="snappy", retry_count=2, executor_failed_gate=gate,
+                   request_txt="External aero around a wing, 8 prism layers, y+ 1.",
+                   mesh_manifest={"quality": {"fatal": [], "max_non_ortho": 71.0}})
+    offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
+    assert offer["kind"] == "engine", f"{gate} with no layer evidence offered fewer layers"
+    # a check the executor recorded that names the layers is evidence too (#89's facts)
+    named = lad.final_record({**st, "executor_failure_facts": {"checks": [
+        {"key": "layer_coverage_pct", "measured": 12.0}]}}, succeeded=False,
+        system_failure=False)["offer"]
+    assert named["kind"] == "fewer_layers"
 
 
 def test_fewer_layers_is_offered_for_a_review_only_when_the_review_faulted_layers():
@@ -405,6 +421,41 @@ def test_unreadable_provenance_is_the_users():
     assert engine_provenance([_complete("cfmesh", "suggested_confirmed")], "cfmesh",
                              dispute=True) == "dispute"
     assert engine_provenance([], "") == "system"
+
+
+def test_provenance_reaches_the_run_with_data_collection_off():
+    # with collection off no intake_complete is buffered; the approval's own provenance event is
+    import inspect
+
+    import meshpipeline.agents.intake.approval as ap
+    from meshpipeline.pipeline.state_factory import engine_provenance
+
+    ev = ap.engine_provenance_event({"mesh_engine": "cfmesh",
+                                     "engine_source": "suggested_confirmed",
+                                     "request_txt": "never carried"})
+    assert ev == {"type": "engine_provenance",
+                  "payload": {"mesh_engine": "cfmesh", "engine_source": "suggested_confirmed"}}
+    assert engine_provenance([ev], "cfmesh") == "suggested_confirmed"
+    # the dispatched provenance is the approved one: it wins over an older buffered submission
+    assert engine_provenance([_complete("cfmesh", "user_direct"), ev], "cfmesh") \
+        == "suggested_confirmed"
+    src = inspect.getsource(ap._build_dispatch_payload)
+    assert "engine_provenance_event(approved)" in src, "the dispatch no longer carries provenance"
+    assert "data_collection" not in src, "provenance must not depend on the collection mode"
+
+
+def test_an_admission_refusal_is_not_recorded_as_a_build():
+    st = _fluid_domain(engine="vmtk", engine_params={"wall_layers": "on"},
+                       retry_count=bcfg.MAX_BUILDER_RETRIES + 1, executor_failed_gate="geometry",
+                       geometry_unsuitable_reason="[GEOMETRY_UNSUITABLE] the surface self-"
+                                                  "intersects")
+    rec = lad.final_record(st, succeeded=False, system_failure=False)
+    assert rec["attempts"] == [{"attempt": 0, "engine": "vmtk", "kind": lad.ENGINE,
+                                "cause": "geometry",
+                                "reason": "it cannot take this geometry as it is",
+                                "refused_before_building": True}]
+    # and the refusal still ends with an out: another engine, differences stated
+    assert rec["offer"]["engine"] == "snappy" and rec["offer"]["same_contract"] is False
 
 
 def test_the_run_seeds_provenance_after_the_pin_and_the_dispute():

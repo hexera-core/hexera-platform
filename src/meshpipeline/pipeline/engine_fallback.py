@@ -354,10 +354,16 @@ def with_attempt(state: Mapping, failure: Failure | None) -> dict:
     rec.setdefault("approved", approved_engine(state))
     rec.setdefault("source", engine_source(state))
     attempts = [dict(a) for a in (rec.get("attempts") or []) if isinstance(a, Mapping)]
-    n = int(state.get("retry_count", 0) or 0)
-    if n > 0 and not any(int(a.get("attempt", -1)) == n for a in attempts):
+    # A GEOMETRY-ADMISSION REFUSAL builds nothing: it jumps retry_count to the exhausted value, and
+    # that number is not an attempt anyone ran. It is recorded as attempt 0 - the engine refused
+    # the input before the first build - so the history never shows a build that did not happen.
+    n = 0 if state.get("geometry_unsuitable_reason") else int(state.get("retry_count", 0) or 0)
+    if (n > 0 or state.get("geometry_unsuitable_reason")) and not any(
+            int(a.get("attempt", -1)) == n for a in attempts):
         entry: dict[str, Any] = {"attempt": n, "engine": str(state.get("engine") or "")}
         entry.update(failure.as_dict() if failure else {"kind": "passed"})
+        if n == 0:
+            entry["refused_before_building"] = True
         attempts.append(entry)
     rec["attempts"] = attempts
     rec.setdefault("switches", [])
@@ -478,15 +484,34 @@ def fresh_start_brief(frm: str, to: str, failure: Failure) -> str:
 # #
 
 #: The failures prism layers commonly cause: folded or squeezed layer cells fail the cell-quality
-#: bars, the trial solve, and the review of layer coverage. Only these earn a fewer-layers offer.
+#: bars, the trial solve, and the review of layer coverage. Only these CAN earn a fewer-layers
+#: offer, and only with measured evidence that the layers were to blame (_layers_are_to_blame).
 _LAYER_SHAPED = frozenset({"mesh_quality", "quality_floor", "manifest_valid", "not_solvable",
                            "solvability", "review"})
 
 
-def _review_faulted_layers(state: Mapping) -> bool:
-    return any(isinstance(f, Mapping) and f.get("passed") is False
-               and "layer" in str(f.get("axis_key") or "").lower()
-               for f in (state.get("reviewer_axis_findings") or []))
+def _layers_are_to_blame(state: Mapping) -> bool:
+    """EVIDENCE that the prism layers caused this failure, from what the run measured - never a
+    guess from the failure's class alone: the review failed a layer axis, the mesh carries the
+    layer-inversion signature (negative-volume or mis-oriented cells, which folding prism layers
+    produce - the snappy layer policy reads the same signature), or a failed check the executor
+    recorded names the layers. Without it no fewer-layers offer is made: telling a user that
+    fewer layers fixes a failure they did not cause sends them to approve the wrong change."""
+    if any(isinstance(f, Mapping) and f.get("passed") is False
+           and "layer" in str(f.get("axis_key") or "").lower()
+           for f in (state.get("reviewer_axis_findings") or [])):
+        return True
+    def _mapping(value: Any) -> Mapping:
+        return value if isinstance(value, Mapping) else {}
+
+    quality = _mapping(_mapping(state.get("mesh_manifest")).get("quality"))
+    facts = _mapping(state.get("executor_failure_facts"))
+    fatal = " ".join(str(x) for x in [*(quality.get("fatal") or []),
+                                      *(facts.get("fatal") or [])]).lower()
+    if "negative" in fatal or "orient" in fatal:
+        return True
+    return any(isinstance(c, Mapping) and "layer" in str(c.get("key") or "").lower()
+               for c in (facts.get("checks") or []))
 
 
 def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
@@ -495,10 +520,8 @@ def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
                        str(state.get("review_brief_txt", "") or ""))
     dm = get_spec(engine).delivered_mesh
     if (failure.cause not in _LAYER_SHAPED or not lr.count or lr.count < 2
-            or dm is None or not dm.prism_layers):
+            or dm is None or not dm.prism_layers or not _layers_are_to_blame(state)):
         return None
-    if failure.cause == "review" and not _review_faulted_layers(state):
-        return None                 # the review faulted something fewer layers would not fix
     fewer = max(1, lr.count // 2)
     return {"kind": "fewer_layers", "engine": engine, "same_contract": False,
             "layers_from": lr.count, "layers_to": fewer,

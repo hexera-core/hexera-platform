@@ -128,17 +128,20 @@ def engine_provenance(intake_events, pinned_engine: str, *, dispute: bool = Fals
     """WHO CHOSE THE ENGINE this run starts with: user_direct | suggested_confirmed | dispute |
     system.
 
-    The intake records it on the approved submission (the intake_complete event, which travels
-    with the dispatch in intake_events). The LAST such event is the approved one: every approval is
-    of the latest submission. Anything that cannot be read with certainty - no event, an event for
-    another engine, an unknown word - is the user's choice, because that is the reading that never
-    switches an engine on a guess."""
+    The approval dispatches it as an `engine_provenance` event appended to intake_events
+    (agents/intake/approval.engine_provenance_event), in every data-collection mode; a dispatch
+    written before that event existed still carries it on the approved submission's
+    intake_complete event when collection was on. The LAST such event is the approved one: every
+    approval is of the latest submission. Anything that cannot be read with certainty - no event,
+    an event for another engine, an unknown word - is the user's choice, because that is the
+    reading that never switches an engine on a guess."""
     if dispute:
         return "dispute"
     if not pinned_engine:
         return "system"
     for ev in reversed(list(intake_events or [])):
-        if not isinstance(ev, dict) or ev.get("type") != "intake_complete":
+        if not isinstance(ev, dict) or ev.get("type") not in ("engine_provenance",
+                                                               "intake_complete"):
             continue
         payload = ev.get("payload") or {}
         if not isinstance(payload, dict):

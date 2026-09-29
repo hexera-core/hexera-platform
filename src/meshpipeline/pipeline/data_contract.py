@@ -198,8 +198,9 @@ CONTRACT: tuple[ContractVar, ...] = (
                 "audits that inferred choices are proposed, never applied - and, in the "
                 "run, WHO chose it (plus dispute | system for a run the pipeline resolved): "
                 "the fallback ladder moves only an engine the user did not name. It reaches "
-                "the run inside the dispatched intake events (the approved submission's "
-                "intake_complete payload), read once by the application at seeding",
+                "the run inside the dispatched intake events (an engine_provenance event the "
+                "approval appends in every data-collection mode), read once by the "
+                "application at seeding",
         intake_field="engine_source", state_field="engine_source",
         corpus="qa: verifies the propose-and-confirm contract; training signal "
                "for intake's fallback behaviour; rides the intake_complete event "
@@ -342,6 +343,10 @@ CONTRACT: tuple[ContractVar, ...] = (
 # corpus event registry: every event type + which corpus purpose it serves
 EVENT_TYPES: dict[str, str] = {
     "intake_turn":        "training: one intake conversation turn",
+    "engine_provenance":  "qa: who chose the approved engine (user_direct | suggested_confirmed), "
+                          "appended to the dispatched intake events by the approval in every "
+                          "data-collection mode; the run reads it to decide whether the fallback "
+                          "ladder may move the engine",
     "intake_complete":    "training: intake's full structured handoff (incl. "
                           "engine_source provenance)",
     "web_search":         "training+qa: the search sub-agent's query, provider, "
