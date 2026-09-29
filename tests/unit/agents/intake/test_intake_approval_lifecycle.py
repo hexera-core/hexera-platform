@@ -249,6 +249,9 @@ def test_the_summary_names_the_answer_and_says_when_a_change_changed_nothing():
     # a summary withdrawn for a real change, then changed, does not claim nothing changed
     changed = {**withdrawn, "intent_fingerprint": "something else"}
     assert ap.NOTHING_CHANGED not in _submit_turn(changed)["intake_gate"]["approval"]["summary"]
+    # review on #92: the same run-determining intent but a different brief is a change too
+    rebriefed = {**withdrawn, "payload": {**withdrawn["payload"], "review_brief_txt": "a different brief"}}
+    assert ap.NOTHING_CHANGED not in _submit_turn(rebriefed)["intake_gate"]["approval"]["summary"]
 
 
 # chat routing: approval never reaches the model
@@ -315,7 +318,7 @@ def test_a_bare_approval_dispatches_with_zero_model_calls():
 
 
 @pytest.mark.parametrize("said", ["looks good", "sounds good to me, go for it", "ok", "yes go ahaed",
-                                  "That sounds great, let's do it!", "sure, whatever you think", "👍"])
+                                  "That sounds great, let's do it!", "fine by me", "👍"])
 def test_a_natural_yes_dispatches_with_zero_model_calls(said):
     # the grammar used to read each of these as a correction (or "ok" as a hedge): the approved
     # summary was thrown away and the user was shown another one

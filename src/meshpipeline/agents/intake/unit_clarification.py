@@ -61,6 +61,10 @@ _UNIT_SPELLINGS = ("millimetres", "millimeters", "millimetre", "millimeter", "ce
 _LONG_WORD = re.compile(r"[a-z]{4,}")
 
 
+#: Real words one slip from a unit spelling, never read as one.
+_NOT_UNITS = frozenset({"inched", "matters", "meteors", "centres", "centred", "metes", "meres", "mites"})
+
+
 def _respelled(low: str) -> str:
     """The text with each word one slip from a unit spelling written as that spelling."""
     from meshpipeline.agents.intake.consent import one_slip
@@ -69,7 +73,13 @@ def _respelled(low: str) -> str:
         # a letter too many only when it doubles one ("metrees"): "meteor" is not "meter"
         if len(w) == len(u) + 1:
             return any(w[:i] + w[i + 1:] == u and w[i] == w[i - 1] for i in range(1, len(w)))
-        return one_slip(w, u)
+        # two neighbours swapped ("metrse") at any length; a letter dropped or changed only in a
+        # word of six letters or more - "mere", "metro" and "inched" are words, not slips
+        if len(w) == len(u) and sorted(w) == sorted(u):
+            return one_slip(w, u)
+        if len(w) == len(u) - 1:                      # a letter dropped: "inchs", "metrs", not "mere"
+            return len(w) >= 5 and one_slip(w, u) and w not in _NOT_UNITS
+        return len(w) >= 6 and one_slip(w, u) and w not in _NOT_UNITS     # one changed: not "metro"
 
     def fix(m: re.Match) -> str:
         w = m.group(0)

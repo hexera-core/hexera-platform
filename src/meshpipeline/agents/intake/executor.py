@@ -514,8 +514,11 @@ class IntakeToolExecutor:
         # the approval this one replaces: withdrawn by the user's last message, and if that message
         # changed nothing at all, the summary says so instead of reappearing unexplained
         prior = st.approval or {}
+        # the WHOLE submission the same - requirements, review brief, label and every value - not
+        # only the run-determining intent: a changed brief is a change the user should see
         unchanged = (prior.get("status") == ap.INVALIDATED
-                     and prior.get("intent_fingerprint") == at.fingerprint(intent_canon))
+                     and prior.get("intent_fingerprint") == at.fingerprint(intent_canon)
+                     and prior.get("payload") == payload)
         st.submit_summary = (at.CONFIRM_REQUIREMENTS_ASK + "\n\n"
                              + (f"{ap.NOTHING_CHANGED} " if unchanged else "") + ap.PROCEED_ASK)
         st.approval = ap.create(

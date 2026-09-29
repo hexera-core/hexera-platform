@@ -1784,6 +1784,19 @@
   "roots": []
  },
  {
+  "context": "application/geometry_confirmation.py::declared_case::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "declared_case",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_RESTATES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/geometry_materializer.py::materialize::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_materializer.py",
   "qualname": "materialize",

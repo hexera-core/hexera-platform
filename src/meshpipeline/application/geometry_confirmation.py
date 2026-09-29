@@ -17,6 +17,17 @@ from typing import Any
 CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
 
 
+def renamed_openings_sentence(before, after) -> str:
+    """What the confirmation says when openings were named apart: "Openings shared a name, so
+    opening 7 is called Outlet_2 ...". Empty when nothing was renamed."""
+    moved = [(a.id, a.name) for b, a in zip(before, after) if a.name != b.name]
+    if not moved:
+        return ""
+    said = ", ".join(f"opening {i} is called {n}" for i, n in moved)
+    return (f"Openings shared a name, so {said} - tell the user this in your next reply; they can "
+            "rename it on the picture.")
+
+
 def distinct_opening_names(openings) -> list:
     """The openings with every real opening's name its own. Two that would reach a mesher as one
     name ("inlet" and "Inlet", "outlet 1" and "outlet_1") keep the first and number the rest
@@ -126,17 +137,34 @@ _DECLARED = re.compile(
     r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
 
 
+#: A user message that says what the file is or how the fluid moves - after the stage, a correction
+#: the stage's sentence no longer speaks for.
+_RESTATES = re.compile(
+    r"fluid[ -]?(?:volume|domain|region)|body[ -]?surface|solid[ -]?body|input[ _-]?kind|"
+    r"\b(?:file|part|geometry|model|it|this)(?:'s| is| was)\s+(?:actually\s+|really\s+)?(?:the |a |an |just )?"
+    r"(?:wall|walls|solid|surface|skin|shell|fluid|hollow|filled)\b|"
+    r"\bnot the (?:fluid|wall|solid|surface)|\b(?:internal|external) (?:flow|cfd)\b|"
+    r"flows? (?:through|around|over|past|inside)", re.IGNORECASE)
+
+
 def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
     """(purpose, input kind) as the user confirmed them on the stage - read back from this module's
     own sentence: a fluid flowing through the part is internal CFD, around it external CFD. None
-    when nothing was confirmed there. What an engine the model proposes must be able to mesh."""
-    for m in reversed(list(messages or [])):
+    when nothing was confirmed there, or when a later message of the user's speaks about what the
+    file is or how the fluid moves: the chat may have corrected the stage, and then the stage's
+    sentence is not the last word. What an engine the model proposes on its own must mesh."""
+    msgs = list(messages or [])
+    for i in range(len(msgs) - 1, -1, -1):
+        m = msgs[i]
         if isinstance(m, dict) and _is_declaration(m):
             found = _DECLARED.search(str(m.get("content", "")))
-            if found:
-                kind, flow = found.groups()
-                return ("internal_cfd" if flow == "through" else "external_cfd"), kind
-            return None
+            if not found:
+                return None
+            if any(isinstance(later, dict) and later.get("role") == "user"
+                   and _RESTATES.search(str(later.get("content", ""))) for later in msgs[i + 1:]):
+                return None
+            kind, flow = found.groups()
+            return ("internal_cfd" if flow == "through" else "external_cfd"), kind
     return None
 
 
@@ -252,5 +280,6 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
 
 
 __all__ = ["CONFIRMED_MARK", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
+           "renamed_openings_sentence",
            "patches_from", "replace_declaration",
            "reread_record", "sizeless_record", "unit_sentence", "with_declaration"]

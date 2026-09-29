@@ -32,8 +32,8 @@ YES_CORES = [
     "exactly", "all good", "fine", "fine by me", "works for me", "that works", "good to go", "agreed",
     "i agree", "accept", "i accept", "approved", "confirm", "confirmed", "lgtm", "perfect", "great",
     "alright", "absolutely", "definitely", "of course", "sure thing", "affirmative", "let's go",
-    "let's do it", "yes please", "please proceed", "yes please start it", "whatever you think",
-    "sure, whatever you think", "your call", "that's what i said", "as i said", "as shown",
+    "let's do it", "yes please", "please proceed", "yes please start it",
+    "that's what i said", "as i said", "as shown",
     "go ahead with that", "yes, run it", "yes, start the mesh", "👍", "ok, proceed", "yes proceed",
 ]
 OPENERS = ["", "yes, ", "ok ", "ok, ", "great, ", "perfect! ", "alright, ", "thanks, ", "cool, ", "yes yes, "]
@@ -199,3 +199,10 @@ def test_a_question_mark_anywhere_never_starts_a_run(said):
     # review on #92: with the engine's name dropped, a "?" that was mid-message must still ask
     assert ap.classify(said, engine="snappy") != ap.APPROVE_INTENT, said
     assert ap.classify(said) != ap.APPROVE_INTENT, said
+
+
+@pytest.mark.parametrize("said", ["your call", "up to you", "you decide", "whatever you think", "sure, whatever you think",
+                                  "whatever", "you pick"])
+def test_a_delegation_is_asked_once_more_never_a_go_ahead(said):
+    # review on #92: "your call" to "shall I start the run?" leaves the decision with the assistant
+    assert ap.classify(said) == ap.HEDGE_INTENT, said

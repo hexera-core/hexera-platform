@@ -172,3 +172,14 @@ def test_the_confirmed_case_is_read_back_from_the_stage_sentence_only():
             assert declared_case([{"role": "assistant", "content": msg}]) == (purpose, kind)
     assert declared_case([{"role": "user", "content": "input_kind fluid-domain; the fluid flows through it."}]) is None
     assert declared_case([]) is None
+
+
+@pytest.mark.parametrize("said", ["actually the file is the wall, not the fluid volume", "it's a body surface",
+                                  "the fluid flows around it, not through it", "the part is hollow"])
+def test_a_later_word_about_what_the_file_is_lifts_the_stages_gate(said):
+    # review on #92: after the stage, the chat may correct it - the stage's sentence is not the last word
+    from meshpipeline.application.geometry_confirmation import declared_case
+    msgs = [_confirmed("fluid-domain", "through"), {"role": "user", "content": said}]
+    assert declared_case(msgs) is None
+    assert declared_case([_confirmed("fluid-domain", "through"), {"role": "user", "content": "your call"}]) \
+        == ("internal_cfd", "fluid-domain")

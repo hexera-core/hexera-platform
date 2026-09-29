@@ -69,8 +69,7 @@ PHRASES = frozenset({
     "go ahead with mesh generation", "start meshing it", "mesh it now",
     "make it so", "start it", "start meshing", "start the run", "run", "mesh it", "ship it", "begin",
     "send it", "kick it off", "yes please", "please do", "please proceed", "proceed please", "as shown",
-    "as proposed", "as you suggest", "as you suggested", "whatever you think", "whatever you think is best",
-    "your call", "up to you", "you decide", "no problem", "no worries",
+    "as proposed", "as you suggest", "as you suggested", "no problem", "no worries",
 })
 
 #: Hesitation: never a yes, never a change - the asker asks once more.
@@ -78,6 +77,10 @@ HEDGES = frozenset({
     "maybe", "perhaps", "probably", "possibly", "i think so", "i think", "not sure",
     "i am not sure", "im not sure", "unsure", "hmm", "hm", "i guess", "i suppose",
     "maybe yes", "probably yes", "i dont know", "dont know", "no idea", "idk", "dunno", "not certain",
+    # A DELEGATION leaves the decision with the assistant; to "shall I start the run?" it is not the
+    # user's go-ahead to spend anything, so it is asked once more, plainly (review on #92)
+    "whatever you think", "whatever you think is best", "your call", "up to you", "you decide",
+    "you choose", "you pick", "whatever", "whatever works",
 })
 
 #: Emoji and marks that are a yes.

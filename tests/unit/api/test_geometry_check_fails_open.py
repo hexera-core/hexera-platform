@@ -316,6 +316,7 @@ async def test_openings_that_share_a_name_are_named_apart_not_refused(served, mo
     out = await route.confirm_check(SID, route.ConfirmIn(input_kind="fluid-domain", flow="internal", openings=ops,
                                                          scale_to_m=0.001, unit="mm"), "alice", "org-1")
     assert [p["name"] for p in out["patches"]] == ["outlet", "Outlet_2", "wall"]
+    assert "opening 7 is called Outlet_2" in out["message"]            # said, not silent
     assert [p["type"] for p in out["patches"]] == ["inlet", "outlet", "wall"]
 
 

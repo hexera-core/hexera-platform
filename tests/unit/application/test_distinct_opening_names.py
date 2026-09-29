@@ -43,3 +43,13 @@ def test_every_real_opening_ends_with_its_own_name_and_nothing_else_moves(openin
     # and the patches the intake reads carry exactly those names
     body = ConfirmIn(input_kind="body-surface", flow="internal", openings=out)
     assert [p["name"] for p in patches_from(body) if p["type"] != "wall"] == real
+
+
+def test_a_renamed_opening_is_said_never_silent():
+    # review on #92: the declaration the intake reads names every opening that was renamed
+    from meshpipeline.application.geometry_confirmation import renamed_openings_sentence
+    before = [ConfirmedOpening(id=6, name="outlet", role="inlet"), ConfirmedOpening(id=7, name="Outlet", role="outlet")]
+    after = distinct_opening_names(before)
+    said = renamed_openings_sentence(before, after)
+    assert "opening 7 is called Outlet_2" in said and "tell the user" in said
+    assert renamed_openings_sentence(before[:1], distinct_opening_names(before[:1])) == ""

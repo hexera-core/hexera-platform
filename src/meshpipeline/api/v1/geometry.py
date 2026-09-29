@@ -391,9 +391,11 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     # stickers "not_an_opening" and the stage then refused Proceed until the user renamed stickers
     # they were throwing away. Stickers marked not an opening never become patches, so their names
     # are not compared at all.
-    from meshpipeline.application.geometry_confirmation import distinct_opening_names
+    from meshpipeline.application.geometry_confirmation import distinct_opening_names, renamed_openings_sentence
 
-    body = body.model_copy(update={"openings": distinct_opening_names(body.openings)})
+    named_apart = distinct_opening_names(body.openings)
+    renamed = renamed_openings_sentence(body.openings, named_apart)
+    body = body.model_copy(update={"openings": named_apart})
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import check_object_key
 
@@ -424,6 +426,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     if in_force and body.unit != in_force:
         body = body.model_copy(update={"unit": in_force})
     message = confirmation_message(body)
+    if renamed:
+        message = f"{message} {renamed}"             # never silent: the intake tells the user
     patches = patches_from(body)
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has

@@ -186,3 +186,10 @@ def test_every_way_of_stating_the_unit_is_read_asked_or_not(said, unit):
     if said.lower().startswith(tuple(s.split("{")[0].lower() for s in _SAYINGS if not s.startswith("{"))) \
             or any(k in said.lower() for k in ("file", "units are", "it's in", "drawn in", "coordinates", "everything")):
         assert uc.stated_unit(said) is unit, said
+
+
+@pytest.mark.parametrize("said", ["it is a mere formality, no idea about units", "mere", "metro", "inched along",
+                                  "the metes and bounds", "a meteor"])
+def test_real_words_one_letter_from_a_unit_are_never_a_unit(said):
+    # review on #92: "mere" was repaired into "metre" and taken as the file's unit
+    assert uc.classify(said) is None, said
