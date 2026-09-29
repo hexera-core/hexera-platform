@@ -78,8 +78,11 @@ _CATEGORY_META: dict[FailureCategory, tuple[str, bool, bool, bool]] = {
         "The mesh could not be generated for this geometry.", False, True, False),
     FailureCategory.required_output_missing: (
         "The mesh run finished without producing the required output.", False, True, False),
+    # Only the fallback: a failed gate that names its cause is told as that cause (see
+    # render_message). This line no longer says "quality" - a naming mismatch reached users as
+    # "did not meet the required quality checks" when no quality check had failed (job ac1daa3e).
     FailureCategory.gate_failed: (
-        "The mesh did not meet the required quality checks.", True, True, False),
+        "The mesh did not pass one of its checks.", True, True, False),
     FailureCategory.input_rejected: (
         "The geometry cannot be meshed as it is.", False, False, True),
     FailureCategory.review_rejected: (
@@ -148,6 +151,18 @@ class FinalResult:
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
     finalized_at: str = ""
+    # WHAT ACTUALLY FAILED (contracts/failure_cause.py), beside the coarse category: the cause the
+    # failing gate named, the plain sentence saying it (names, numbers, the limit), and what the
+    # user can do next. Empty on success and wherever no gate named a cause, and then the message
+    # keeps the category's headline. Added without a schema bump: every field defaults, a reader
+    # of an older record reads '', and an older reader ignores keys it does not know.
+    failure_cause: str = ""
+    failure_detail: str = ""
+    failure_next_step: str = ""
+    # True when the retry policy ended the run early because another attempt could not change
+    # this cause (pipeline/graph.route_after_executor) - said in the message, so a stop after one
+    # attempt reads as a decision, not as a budget that ran out.
+    retry_skipped: bool = False
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -196,7 +211,11 @@ class FinalResult:
             delivered_types=list(d.get("delivered_types", [])),
             optional_warnings=list(d.get("optional_warnings", [])),
             missing_outputs=list(d.get("missing_outputs", [])),
-            finalized_at=d.get("finalized_at", ""))
+            finalized_at=d.get("finalized_at", ""),
+            failure_cause=str(d.get("failure_cause") or ""),
+            failure_detail=str(d.get("failure_detail") or ""),
+            failure_next_step=str(d.get("failure_next_step") or ""),
+            retry_skipped=bool(d.get("retry_skipped", False)))
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -235,6 +254,11 @@ def merge_durable_facts(*, approved: Mapping[str, Any] | None = None,
         # stage outcomes - only ever what a completed stage actually recorded
         "executor_success": bool(s.get("executor_success", False)),
         "failed_gate": _s(s, "executor_failed_gate"),
+        # what that gate said failed, and its facts - recorded by the same completed executor
+        # step as the gate key, so as durable as it is
+        "failure_cause": _s(s, "executor_failure_cause"),
+        "failure_facts": (dict(s["executor_failure_facts"])
+                          if isinstance(s.get("executor_failure_facts"), Mapping) else {}),
         "reviewer_verdict": _s(s, "reviewer_verdict"),
         "attempts": int(attempts),
     }
@@ -251,7 +275,9 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        required_ready: bool, delivered_types: list[str],
                        optional_warnings: list[str],
                        pipeline_timed_out: bool = False,
-                       requirement_caveats: list | None = None) -> FinalResult:
+                       requirement_caveats: list | None = None,
+                       failure_cause: str = "",
+                       failure_facts: Mapping | None = None) -> FinalResult:
     _verdict = (reviewer_verdict or "").strip().upper()
 
     # REVIEW-COMPLETION INVARIANT.
@@ -322,7 +348,22 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                                    required_ready=required_ready, attempts=attempts,
                                    attempts_max=attempts_max,
                                    pipeline_timed_out=pipeline_timed_out)
+    # THE CAUSE is told only where the category says a gate decided the outcome: the account
+    # belongs to the gate that failed on the final attempt, and nowhere else.
+    cause, detail, next_step = ("", "", "")
+    if cat is FailureCategory.gate_failed:
+        cause, detail, next_step = _cause_account(failed_gate, failure_cause, failure_facts,
+                                                  engine)
+    elif cat is FailureCategory.input_rejected:
+        # The admission refusal, split by WHOSE it is. Only a MEASURED refusal is the CAD's; a
+        # refusal of the DECLARED setup alone (a symmetry patch or a parameter this engine cannot
+        # build) is the request's, and a valid file must not be sent back for repair over it.
+        # Either way the recorded reason is said - it is the one thing the user can act on.
+        cat, cause, detail, next_step = _admission_account(failure_facts, engine)
+    from meshpipeline.contracts.failure_cause import retry_can_help
     return FinalResult(
+        failure_cause=cause, failure_detail=detail, failure_next_step=next_step,
+        retry_skipped=bool(cause) and not retry_can_help(cause, failure_facts),
         schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id, status=status,
         engine=engine, purpose=purpose, dimensionality=dimensionality,
         requested_mesh_fidelity=requested_mesh_fidelity,
@@ -410,6 +451,70 @@ def _derive_failure_category(*, executor_success: bool, verdict: ReviewVerdict |
         return (FailureCategory.attempts_exhausted if attempts_max and attempts >= attempts_max
                 else FailureCategory.native_execution_failed)
     return FailureCategory.internal_pipeline_failure
+
+
+def _cause_account(failed_gate: str, failure_cause: str, failure_facts: Mapping | None,
+                   engine: str) -> tuple[str, str, str]:
+    """(cause, what failed, what to do next) for a failed gate. The cause is the one the
+    executor recorded. A record without one (written before causes existed) falls back only for
+    the executor's single-cause seams - finalize, solvability, the domain and geometry checks. A
+    declared gate is never guessed from its key: one gate can mean several things (manifest_valid
+    covers a mesher that stopped, a boundary that is missing and a mesh over budget), and naming
+    the wrong one would be a new lie in place of the old vague sentence."""
+    from meshpipeline.contracts.failure_cause import SEAM_CAUSES, as_cause, describe
+    cause = as_cause(failure_cause)
+    facts: Mapping = failure_facts if isinstance(failure_facts, Mapping) else {}
+    if cause is None:
+        facts = {}
+        cause = SEAM_CAUSES.get(failed_gate)
+    if cause is None:
+        return "", "", ""
+    label = engine
+    try:
+        from meshpipeline.engines.registry import engine_label
+        label = engine_label(engine) or engine
+    except Exception:  # noqa: BLE001
+        pass
+    what, next_step = describe(cause, facts, engine=label)
+    return (cause.value, what, next_step) if what else ("", "", "")
+
+
+def _admission_account(failure_facts: Mapping | None,
+                       engine: str) -> tuple[FailureCategory, str, str, str]:
+    """(category, cause, what failed, next step) for a run admission refused before any build.
+    The phases come from node_geometry_admission; a record without them (written before they
+    were recorded) stays input_rejected with errors.py's sentence and no reason, as before."""
+    from meshpipeline.contracts.failure_cause import FailureCause, clean_reason, describe
+    facts: Mapping = failure_facts if isinstance(failure_facts, Mapping) else {}
+    phases = {str(p) for p in (facts.get("phases") or [])}
+    reason = clean_reason(facts.get("reason"))
+    declared_reason = clean_reason(facts.get("declared_reason"))
+    if phases and "measured" not in phases:
+        reason = declared_reason or reason
+        label = engine
+        try:
+            from meshpipeline.engines.registry import engine_label
+            label = engine_label(engine) or engine
+        except Exception:  # noqa: BLE001
+            pass
+        what = (f"The requested setup cannot be meshed{f' by {label}' if label else ''} as "
+                "specified" + (f": {reason}." if reason else ".") + " Your geometry was not "
+                "the problem.")
+        return (FailureCategory.incompatible_requirements, "", what,
+                "Tell me what to change in this chat - the setting, or the engine - and I "
+                "will set up a new run.")
+    if not reason:
+        return FailureCategory.input_rejected, "", "", ""
+    # the CAD's own reason when the record separates the kinds, else the joined one
+    measured_reason = clean_reason(facts.get("measured_reason")) or reason
+    what, _ = describe(FailureCause.GEOMETRY_REJECTED, {"reason": measured_reason},
+                       engine=engine)
+    if "declared" in phases and declared_reason:
+        # BOTH refused: fixing the file alone would meet the setup refusal on the next run, so
+        # the second change is named too
+        what += (f" The setup also needs a change before this can run: {declared_reason}. "
+                 "Tell me what to change in this chat when you upload the fixed file.")
+    return FailureCategory.input_rejected, FailureCause.GEOMETRY_REJECTED.value, what, ""
 
 
 def _render_fidelity(fr: FinalResult) -> str:
@@ -533,7 +638,23 @@ def _render_outcome(fr: FinalResult) -> str:
         # ONE SENTENCE OWNS these: whose problem it is and the next step, in errors.py's words.
         # The headline is not repeated in front of it - the class message already opens with it.
         lines.append("No downloadable mesh deliverable is available.")
-        lines.append(user_message_for(_CATEGORY_CLASS[cat]))
+        # the class's sentence with the recorded reason folded in (built by errors.py at
+        # terminal time), else the class's sentence alone
+        lines.append(fr.failure_detail or user_message_for(_CATEGORY_CLASS[cat]))
+        return "\n".join(lines)
+    if fr.failure_detail:
+        # WHAT ACTUALLY FAILED, in place of the category headline: "The boundary you approved
+        # as 'car wall' came out as 'car_wall' ..." rather than "did not meet the required
+        # quality checks" for a mesh whose quality nobody faulted. Then, when the retry policy
+        # stopped early, that it did and why - and the cause's own next step. (Only a failed
+        # GATE carries a cause; the class-owned categories above never reach here.)
+        from meshpipeline.contracts.failure_cause import RETRY_SKIPPED_NOTE
+        lines.append(fr.failure_detail)
+        lines.append("No downloadable mesh deliverable is available.")
+        if fr.retry_skipped:
+            lines.append(RETRY_SKIPPED_NOTE)
+        if fr.failure_next_step:
+            lines.append(fr.failure_next_step)
         return "\n".join(lines)
     lines.append(headline)
     lines.append("No downloadable mesh deliverable is available.")

@@ -20,7 +20,7 @@ _MAX_ITERS = 5000
 def check_solvability(workspace: Path, metrics_out: dict | None = None) -> tuple[bool, str]:
     # When a dict is supplied, residual/iters/n_cells/info are written into
     # it so the executor can persist the solvability curve, not just pass/fail.
-    # cfMesh produces a native OpenFOAM polyMesh (the solver mesh). We verify it
+    # snappyHexMesh produces a native OpenFOAM polyMesh (the solver mesh). We verify it
     # with checkMesh (fatal topology) AND by assembling + solving the discrete
     # pressure-Poisson operator (FV graph Laplacian) with PCG + AMG.
     if metrics_out is None:
@@ -30,7 +30,7 @@ def check_solvability(workspace: Path, metrics_out: dict | None = None) -> tuple
     if (workspace / "constant" / "polyMesh" / "owner").exists():
         return _check_polymesh_solvability(workspace, metrics_out)
     return False, ("[UNSOLVABLE] constant/polyMesh/owner is missing - the builder "
-                   "did not produce a valid cfMesh volume mesh")
+                   "did not produce a valid snappyHexMesh volume mesh")
 
 
 _FOAM_LIST_RE = re.compile(r"(?:^|\n)\s*(\d+)\s*\n\s*\(", re.MULTILINE)

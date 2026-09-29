@@ -13,6 +13,7 @@ import meshpipeline.agents.builder.settings as bcfg
 from meshpipeline.agents.builder.agent import node_builder
 from meshpipeline.agents.intake.agent import node_intake
 from meshpipeline.agents.reviewer.visual import node_reviewer
+from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.pipeline.classifier import node_classifier
 from meshpipeline.pipeline.engine_fallback import node_engine_fallback
@@ -132,6 +133,19 @@ def route_after_executor(
                 "ladder spent → reviewer (caveated delivery candidate) - job_id=%s",
                 len(caveats), state.get("job_id"))
         return "node_reviewer"
+
+    # RETRY ONLY WHAT A RETRY CAN FIX. Some failures are decided by inputs the next attempt
+    # receives unchanged: a case authored from the approval disagrees with it (the next attempt
+    # writes the same case), or the geometry was refused (the same file comes back). Job ac1daa3e
+    # spent a second 13-minute mesh on exactly such a failure. The cause the executor recorded
+    # decides; an unknown or absent cause keeps the ladder as it was.
+    _cause = state.get("executor_failure_cause", "") or ""
+    if not retry_can_help(_cause, state.get("executor_failure_facts") or {}):
+        logger.warning(
+            "route_after_executor: executor FAIL with cause %r, which another attempt cannot "
+            "change - not retrying (attempt=%d/%d) → END - job_id=%s",
+            _cause, retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+        return _END
 
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:
         logger.info(

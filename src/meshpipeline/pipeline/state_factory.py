@@ -66,6 +66,8 @@ def make_pipeline_state(
         "executor_output":       "",
         "executor_success":      False,
         "executor_failed_gate":  "",
+        "executor_failure_cause": "",
+        "executor_failure_facts": {},
         "mesh_manifest":         {},
         "reviewer_result":       "",
         "reviewer_verdict":      "",

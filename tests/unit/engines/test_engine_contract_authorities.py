@@ -300,7 +300,8 @@ def test_the_moved_contracts_keep_their_field_names():
 
     assert set(Criterion.__dataclass_fields__) == {
         "key", "label", "op", "threshold", "gating", "rationale", "evidence_url"}
-    assert set(GateSpec.__dataclass_fields__) == {"key", "check", "blocking", "section", "proves"}
+    assert set(GateSpec.__dataclass_fields__) == {"key", "check", "blocking", "section", "proves",
+                                                  "cause"}
     assert set(GateCtx.__dataclass_fields__) == {
         "workspace", "engine", "domain", "intake_patches", "engine_params", "manifest"}
     assert {"name", "validation_axis", "guidance", "requires", "visual_only"} <= set(

@@ -2885,6 +2885,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::note#7|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 7,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_op_begin::tool_call#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_op_begin",
@@ -2905,6 +2920,21 @@
   "qualname": "_op_end",
   "semantic": "tool_result",
   "method": "atool_result",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_preflight_stopped::error#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_preflight_stopped",
+  "semantic": "error",
+  "method": "aerror",
   "ordinal": 1,
   "receiver": "publish",
   "authority": "ExecutionEventPublisher",
@@ -3315,6 +3345,19 @@
   ]
  },
  {
+  "context": "pipeline/executor.py::_case_contract_refusal::error#1|NotAPublisher|not-a-publisher|",
+  "path": "pipeline/executor.py",
+  "qualname": "_case_contract_refusal",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "pipeline/executor.py::node_executor::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
   "path": "pipeline/executor.py",
   "qualname": "node_executor",
@@ -3405,25 +3448,27 @@
   ]
  },
  {
+  "context": "pipeline/executor.py::node_executor::check#7|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
+  "path": "pipeline/executor.py",
+  "qualname": "node_executor",
+  "semantic": "check",
+  "method": "acheck",
+  "ordinal": 7,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/executor.py::execution_publisher"
+  ]
+ },
+ {
   "context": "pipeline/executor.py::node_executor::error#1|NotAPublisher|not-a-publisher|",
   "path": "pipeline/executor.py",
   "qualname": "node_executor",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
-  "receiver": "logger",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
-  "context": "pipeline/executor.py::node_executor::error#2|NotAPublisher|not-a-publisher|",
-  "path": "pipeline/executor.py",
-  "qualname": "node_executor",
-  "semantic": "error",
-  "method": "error",
-  "ordinal": 2,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",

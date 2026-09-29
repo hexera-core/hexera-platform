@@ -120,12 +120,15 @@ _ALL_DIRECTIONS = ("upstream", "downstream", "lateral", "vertical")
 
 
 class ExtentVerdict:
-    __slots__ = ("status", "caveats", "detail")
+    __slots__ = ("status", "caveats", "detail", "misses")
 
-    def __init__(self, status: str, caveats: list, detail: str):
+    def __init__(self, status: str, caveats: list, detail: str, misses: list | None = None):
         self.status = status      # "na" | "unmeasured" | "pass" | "miss" | "block"
         self.caveats = caveats    # [{direction, requested, measured, units, ruler_m, ruler_source}]
         self.detail = detail
+        # every direction short of its request, blocked or near-missed alike:
+        # [{direction, requested, measured}] - what the user is told, in numbers
+        self.misses = list(misses or [])
 
 
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
@@ -196,6 +199,7 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
 
     caveats: list = []
     blocks: list = []
+    misses: list = []
     for k in _ALL_DIRECTIONS:
         rv = requested.get(k)
         if rv is None:
@@ -204,9 +208,11 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
         mv = margins[k]
         if mv <= 0:
             blocks.append(f"{k}: the domain box touches or clips the body")
+            misses.append({"direction": k, "requested": rv, "measured": round(mv, 4)})
             continue
         if mv >= rv * (1.0 - tol):
             continue                        # within tolerance, or over-delivered: never a defect
+        misses.append({"direction": k, "requested": rv, "measured": round(mv, 4)})
         if mv < rv * FLOOR_FRACTION:
             blocks.append(f"{k}: requested {rv:g}L, mesh has {mv:.3g}L - under half of what "
                           "was asked, which is a different domain, not a near-miss")
@@ -220,7 +226,7 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
             "[DOMAIN_EXTENT_BLOCK] " + "; ".join(blocks)
             + f" (measured in units of the approved reference length {r:.4g} m). Recompute the "
             "far-field box corners so every requested margin is met - do NOT shrink the "
-            "request to fit the box.")
+            "request to fit the box.", misses)
     if caveats:
         stated = "; ".join(f"{c['direction']}: requested {c['requested']:g}L, mesh has "
                            f"{c['measured']:g}L" for c in caveats)
@@ -229,5 +235,5 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
             f"[DOMAIN_EXTENT_MISMATCH] {stated} (tolerance {int(tol * 100)}%, measured in "
             f"units of the approved reference length {r:.4g} m). Rebuild with the box spanning "
             "the requested multiples; if attempts run out, the best quality-passing mesh is "
-            "delivered with this miss stated.")
+            "delivered with this miss stated.", misses)
     return ExtentVerdict("pass", [], "")

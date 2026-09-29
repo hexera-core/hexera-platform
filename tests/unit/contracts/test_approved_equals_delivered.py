@@ -896,10 +896,12 @@ def test_what_no_case_writer_can_build_is_refused_at_intake_with_the_way_on(worl
 
 def test_a_case_that_drops_an_approved_name_stops_before_the_mesher(world, monkeypatch):
     # the old far-field renderer, put back: the pre-flight must stop it in the first pass, with no
-    # re-plan and no mesher run, and the executor must end the job as an internal error naming it
+    # re-plan and no mesher run, and the executor must end the job as the contract mismatch it is
+    # - named, and not retried - with the operator's internal-defect record beside it
     import meshpipeline.engines.snappy.drivers as drv
     import meshpipeline.engines.snappy.planner as planner
-    from meshpipeline.errors import FailureClass, SystemFailure
+    import meshpipeline.errors as errors
+    from meshpipeline.errors import FailureClass
 
     monkeypatch.setattr("meshpipeline.engines.declared_boundary.farfield_name",
                         lambda *_a, **_k: "farfield")
@@ -927,8 +929,14 @@ def test_a_case_that_drops_an_approved_name_stops_before_the_mesher(world, monke
         return None
     monkeypatch.setattr(ex, "execution_publisher", lambda *a, **k: _Publish())
     monkeypatch.setattr(execution_fence, "assert_current_owner", _owner)
-    with pytest.raises(SystemFailure) as exc:
-        asyncio.run(ex.node_executor({"job_id": "j", "openfoam_workspace": str(ws),
-                                      "engine": "snappy"}))
-    assert exc.value.failure_class is FailureClass.INTERNAL
-    assert "freestream" in exc.value.operator_detail
+    dead: list = []
+    monkeypatch.setattr(errors, "record_dead_letter", lambda *a, **k: dead.append(a))
+    monkeypatch.setattr(ex, "TrainingLogger",
+                        type("_TL", (), {"__init__": lambda s, j: None,
+                                         "log": lambda s, *a, **k: None}))
+    out = asyncio.run(ex.node_executor({"job_id": "j", "openfoam_workspace": str(ws),
+                                        "engine": "snappy"}))
+    assert out["executor_failed_gate"] == "patch_contract"
+    assert out["executor_failure_cause"] == "contract_mismatch"
+    assert any("freestream" in p for p in out["executor_failure_facts"]["problems"])
+    assert dead and dead[0][1] is FailureClass.INTERNAL and "freestream" in dead[0][3]

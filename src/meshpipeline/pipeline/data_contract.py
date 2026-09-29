@@ -392,6 +392,11 @@ STATE_FIELDS: dict[str, str] = {
     "engine_params":         "engine-native declared parameters (see contract)",
     "openfoam_workspace":    "the attempt workspace directory the builder/executor share",
     "executor_failed_gate":  "the declared gate key that rejected the mesh (drives classification)",
+    "executor_failure_cause": "WHAT the failed gate says failed (contracts.failure_cause): names "
+                              "the cause in the user's message and lets the retry policy skip "
+                              "attempts that cannot change it",
+    "executor_failure_facts": "the plain facts behind that cause (names, counts, measured vs "
+                              "limit) the user's sentence is built from",
     "geometry_unsuitable_reason": "node_geometry_admission's reject reason: the input surface is "
                                   "unmeshable for the engine (e.g. self-intersecting) - routes to "
                                   "the executor short-circuit and the outcome turn",

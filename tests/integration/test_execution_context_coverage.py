@@ -52,8 +52,8 @@ def test_repeated_sites_in_one_definition_get_distinct_ordinals():
     # and the runtime index can tell them apart, by line, in the scanner's own AST order
     index = A.lines()
     keys = [k for k in index if k[:3] == ("pipeline/executor.py", "node_executor", "check")]
-    assert len({k[3] for k in keys}) == 6, "the six sites are not distinguishable at runtime"
-    assert {index[k] for k in keys} == {1, 2, 3, 4, 5, 6}
+    assert len({k[3] for k in keys}) == 7, "the seven sites are not distinguishable at runtime"
+    assert {index[k] for k in keys} == {1, 2, 3, 4, 5, 6, 7}
 
 
 # attribution controls
@@ -227,11 +227,13 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                      ("internal-refuse-binding", {"internal": True, "native_double": False,
                                                   "unbindable_patches": True}),
                      ("internal-thin-feature", {"internal": True, "native_double": False,
-                                                "thin_feature": True})):
+                                                "thin_feature": True}),
+                     ("domain-preflight", {"body": S._half_model, "native_double": False,
+                                         "domain_refused": True})):
         jobs.append((await step(f"snappy-driver:{name}",
                                 S._run(mp, tmp / f"snappy-{name}", **kw)))[0])
 
-    # The pipeline executor's own scenarios: five outcomes, because reaching all eleven of its
+    # The pipeline executor's own scenarios: six outcomes, because reaching all twelve of its
     # canonical sites means REACHING THE OUTCOMES, not calling the publisher eleven times.
     from tests.integration import test_pipeline_executor_ownership as X
 

@@ -169,6 +169,9 @@ class TerminalAssembly:
     pre_composed_message: str = ""
     #: machine-measured requirement near-misses for the delivered attempt ([] = fully conforming)
     requirement_caveats: list = field(default_factory=list)
+    #: what the failed gate said failed (contracts.failure_cause) and the facts behind it
+    failure_cause: str = ""
+    failure_facts: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -204,6 +207,8 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         attempts=assembly.attempts, attempts_max=assembly.attempts_max,
         required_ready=ready, delivered_types=delivered_types, optional_warnings=warnings,
         requirement_caveats=list(assembly.requirement_caveats or []),
+        failure_cause=assembly.failure_cause,
+        failure_facts=dict(assembly.failure_facts or {}),
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
         pipeline_timed_out=assembly.pipeline_timed_out)
@@ -411,6 +416,8 @@ async def finalize_crash(session_factory, exc: BaseException, *, job_id: str, ow
             approved_snapshot_id=facts["approved_snapshot_id"],
             executor_success=facts["executor_success"],
             reviewer_verdict=facts["reviewer_verdict"], failed_gate=facts["failed_gate"],
+            failure_cause=facts.get("failure_cause", ""),
+            failure_facts=dict(facts.get("failure_facts") or {}),
             api_failure=f"{cls.dependency}: crash", attempts=facts["attempts"])
         # DELIVERY IS NEVER ASSUMED on a crash: packaging runs only on a succeeded terminal status,
         # so readiness stays false and the deliverable stays missing.
