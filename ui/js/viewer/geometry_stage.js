@@ -17,8 +17,8 @@
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, bindUnit, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml, shown, unitOf }
-  from "../render/geometry_form.js";
+import { applyFlow, bindUnit, followSuggestion, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml,
+  shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
 
 let _vtkP = null;
 function loadVtk() {
@@ -138,7 +138,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     }
   }
   function stateBanner() {
-    if (unitNeeded) return ["The file does not say its unit, so millimetres is assumed: check the size beside the unit box below, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
+    if (unitNeeded) return ["The file does not say its unit: check the size beside the unit box below and pick the unit that makes it right, or answer in the chat. The names are the measuring step's own - fix them and proceed.", ""];
     if (naming) return ["Naming the openings… turn the part meanwhile, or fix the names and proceed now.", "busy"];
     if (stalled) return ["The naming is taking longer than usual. These names are the measuring step's own: fix them and proceed, or wait.", "warn"];
     return ["These names are the measuring step's own. Answer the question in the chat and I'll name the openings - or fix them here and proceed.", ""];
@@ -188,6 +188,13 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
         blank.focus();
         return;
       }
+      // THE UNIT IS PICKED, NOT PASSED: when the part's size makes the unit in effect doubtful
+      // ("117 mm" for a wind turbine blade) Proceed never takes either reading in silence
+      if (unitChoiceNeeded(p)) {
+        hint.textContent = unitChoiceHint(p);
+        const pick = form.querySelector(".gc-pick"); if (pick) pick.focus();
+        return;
+      }
       const body = readForm(form, p);
       btn.disabled = true; btn.textContent = "Confirming…";
       try {
@@ -212,6 +219,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     unitNeeded = !!d2.unit_needed;
     const q = d2.proposal || {};
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
+    followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
     if (d2.status === "scouted") {
       if (d2.naming_requested && !stalled) naming = true;
       noteAsked(d2);

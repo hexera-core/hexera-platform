@@ -92,13 +92,16 @@ async def test_a_format_carrying_no_unit_records_nothing(store, tmp_path):
         "an STL has no declared unit; recording one would be a guess presented as a fact")
 
 
-async def test_a_step_declaring_metres_is_left_for_the_user_to_confirm(store, tmp_path):
+async def test_a_well_formed_step_declaration_of_metres_is_recorded(store, tmp_path):
+    """The unit entity is read from the file's text, so a well-formed SI_UNIT($,.METRE.) is told
+    apart from OpenCASCADE's metre fallback for a broken one (the next test) and recorded like any
+    other declaration. The stage still doubts it beside the size when the part is implausible."""
     out = await _upload(write_step(tmp_path / "metre.step", "M"), store)
 
-    unit, basis, _, _ = await _session_scale(out.session_id)
-    assert unit is None and basis is None, (
-        "a STEP declaration of metres collides with the parser's failure default and must be "
-        "confirmed, not trusted")
+    unit, basis, scale, evidence = await _session_scale(out.session_id)
+    assert (unit, basis) == ("m", "file_declared")
+    assert scale == pytest.approx(1.0)
+    assert evidence == "declared in the file as metre"
 
 
 async def test_a_damaged_unit_context_is_left_for_the_user_to_confirm(store, tmp_path):

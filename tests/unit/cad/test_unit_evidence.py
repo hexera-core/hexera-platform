@@ -19,10 +19,14 @@ def test_a_positively_declared_step_unit_is_resolved(tmp_path, declared, expecte
     assert "declared in the file" in ev.detail
 
 
-def test_a_step_declaring_metres_is_not_trusted(tmp_path):
+def test_a_step_declaring_metres_is_read_as_metres(tmp_path):
+    """A well-formed SI_UNIT($,.METRE.) is metres. It used to be distrusted outright, because
+    OCC's FileUnits answers "metre" for a malformed unit too - so every file drawn in metres (the
+    IEA 15 MW blade's siblings, an ANSA car export, a turbine cascade) was read as millimetres.
+    The entity is read from the text now, so a malformed one is still refused (below)."""
     ev = read_declared_unit(write_step(tmp_path / "box_m.step", "M"))
-    assert not ev.resolved
-    assert ev.unit is None
+    assert ev.resolved and ev.unit is LengthUnit.metre
+    assert ev.detail == "declared in the file as metre"
 
 
 @pytest.mark.parametrize("how", ["malformed", "missing"])
@@ -77,22 +81,22 @@ def test_an_iges_with_a_model_scale_requires_clarification(tmp_path):
     assert "model scale" in ev.detail
 
 
-def test_more_than_one_representation_unit_cannot_auto_resolve(monkeypatch, tmp_path):
-    import meshpipeline.cad.unit_evidence as ue
+def test_more_than_one_representation_unit_cannot_auto_resolve(tmp_path):
+    """Two geometric contexts that assign different length units must not be collapsed into one
+    global reading: the user is asked."""
+    import re
 
     good = write_step(tmp_path / "mm.step", "MM")
-
-    class _TwoUnits:
-        def ReadFile(self, _p):
-            from OCP.IFSelect import IFSelect_RetDone
-            return IFSelect_RetDone
-
-        def FileUnits(self, lengths, _angles, _solids):
-            from OCP.TCollection import TCollection_AsciiString
-            lengths.Append(TCollection_AsciiString("millimetre"))
-            lengths.Append(TCollection_AsciiString("centimetre"))
-
-    monkeypatch.setattr(ue, "_step_reader", lambda: _TwoUnits(), raising=False)
-    ev = ue._step_evidence_with_reader(_TwoUnits(), good)
+    text = good.read_text(errors="replace")
+    ctx = re.search(r"#(\d+)\s*=\s*\(\s*GEOMETRIC_REPRESENTATION_CONTEXT[^;]*;", text)
+    assert ctx is not None
+    # a second context, assigning centimetres, beside the file's own millimetre one
+    extra = ("#900001=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.CENTI.,.METRE.));\n"
+             "#900002=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#900001))"
+             "REPRESENTATION_CONTEXT('two','3D'));\n")
+    two = tmp_path / "two.step"
+    two.write_text(text.replace("ENDSEC;\nEND-ISO", extra + "ENDSEC;\nEND-ISO"))
+    assert "#900002" in two.read_text()
+    ev = read_declared_unit(two)
     assert not ev.resolved
     assert "different length units" in ev.detail
