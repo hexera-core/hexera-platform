@@ -3,6 +3,7 @@
 # Boundaries: a Protocol and its binding; the local and Cloud Run implementations live in adapters/mesh_execution/.
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 #: The infrastructure failure the product already speaks. A run whose submission cannot be
@@ -14,6 +15,10 @@ from typing import Any, Protocol, runtime_checkable
 #: avoid describing an infrastructure fault as a geometry one. engines/ may not import
 #: application/, so a constant only application/ owned forced that edge.
 RC_INFRASTRUCTURE = -3
+
+#: A run REFUSED before launch because the written case does not build the patches the user
+#: approved (engines/case_contract.py). Not a mesh verdict and not an outage: nothing ran.
+RC_CASE_CONTRACT = -5
 
 
 #: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
@@ -150,10 +155,21 @@ class MeshExecutor(Protocol):
 
 _executor: MeshExecutor | None = None
 
+#: THE LAST CHECK BEFORE A MESHER STARTS: (workspace, engine) -> None to launch, or a refusal
+#: result shaped like a native one (rc RC_CASE_CONTRACT). Every engine's native run reaches the
+#: executor through run_mesh below, so a check here cannot be skipped by one engine forgetting
+#: it. Installed by the composition root beside the executor (engines/ may not be imported here).
+_launch_check: Callable[[Any, str], dict | None] | None = None
+
 
 def set_mesh_executor(executor: MeshExecutor | None) -> None:
     global _executor
     _executor = executor
+
+
+def set_launch_check(check: Callable[[Any, str], dict | None] | None) -> None:
+    global _launch_check
+    _launch_check = check
 
 
 def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
@@ -161,4 +177,8 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
         raise MeshExecutionError(
             "no MeshExecutor configured - the runtime composition root must call "
             "set_mesh_executor() before meshing")
+    if _launch_check is not None:
+        refusal = _launch_check(workspace, engine)
+        if refusal is not None:
+            return refusal
     return _executor.run(workspace, engine=engine, timeout=timeout)

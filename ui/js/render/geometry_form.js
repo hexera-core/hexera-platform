@@ -52,12 +52,46 @@ export function lengthWords(metres) {
   else if (metres >= 0.01) { v = metres * 100; u = "cm"; } else { v = metres * 1000; u = "mm"; }
   return `${fmt3(v)} ${u}`;
 }
-/** What the unit row says beside the box: on whose word the unit is, and how long the part then is. */
+const UNIT_WORDS = Object.fromEntries(UNITS);
+/** The other reading the server proposes, while it still stands: the part is implausible in the
+ *  unit in effect ("117 mm" for a wind turbine blade) and the user has not picked a unit yet. */
+export function unitChoiceNeeded(p) {
+  const s = p && p.unit_suggestion;
+  return !!(s && SCALE[s.unit] && !p.unit_touched && p.unit_basis !== "user_confirmed" && s.unit !== unitOf(p));
+}
+/** What the unit row says beside the box: on whose word the unit is, and how long the part then
+ *  is - and, when the size makes that unit doubtful, how long it would be in the other one. */
 export function unitHint(p) {
   const longest = Math.max(0, ...(p.size_mm || []).map((v) => raw(v, p)));
   const basis = { file_declared: "the file says so", user_confirmed: "confirmed", chosen: "your choice" }[p.unit_basis]
     || "the file does not say - check the size";
+  if (longest > 0 && unitChoiceNeeded(p)) {
+    const s = p.unit_suggestion;
+    return `${basis}, but ${s.why || "the size looks wrong"} · ${readingOf(p, unitOf(p))} long`
+      + ` - or ${readingOf(p, s.unit)} if the file is in ${UNIT_WORDS[s.unit]}. Pick one.`;
+  }
   return longest > 0 ? `${basis} · the part would be ${lengthWords(longest * SCALE[unitOf(p)])} long` : basis;
+}
+/** The part's length under one unit: the server's words for the two readings it compared ("117 mm",
+ *  "117 m"), else this form's own. */
+function readingOf(p, unit) {
+  const said = p.unit_suggestion && p.unit_suggestion.sizes && p.unit_suggestion.sizes[unit];
+  if (said) return said;
+  const longest = Math.max(0, ...(p.size_mm || []).map((v) => raw(v, p)));
+  return lengthWords(longest * (SCALE[unit] || 0));
+}
+/** The two readings as buttons, shown while the choice is open: pressing one sets the box. */
+function pickHtml(p) {
+  const longest = Math.max(0, ...(p.size_mm || []).map((v) => raw(v, p)));
+  const s = p.unit_suggestion || {};
+  if (!(longest > 0) || !SCALE[s.unit]) return `<span class="gc-unit-pick" hidden></span>`;
+  const btn = (u) => `<button class="gc-pick v-btn" type="button" data-unit="${u}">${esc(readingOf(p, u))} (${esc(UNIT_WORDS[u])})</button>`;
+  return `<span class="gc-unit-pick"${unitChoiceNeeded(p) ? "" : " hidden"}>${btn(unitOf(p))}${btn(s.unit)}</span>`;
+}
+/** What Proceed says when the unit is still open. */
+export function unitChoiceHint(p) {
+  const s = p.unit_suggestion || {};
+  return `Pick the file's unit first: is the part ${readingOf(p, unitOf(p))} or ${readingOf(p, s.unit)} long?`;
 }
 /* a name lands inside a double-quoted attribute; `esc` covers text, this covers the quote too,
    so a model-given label like 2" inlet neither ends the value early nor smuggles markup in */
@@ -101,7 +135,7 @@ export function formHtml(p) {
       <div class="rc-row"><div class="rc-k">On the ground</div><div class="rc-v"><label><input class="gc-ground" type="checkbox"${p.grounded ? " checked" : ""}> the part stands on the ground</label></div></div>
     </div>`;
   return `<div class="rc-row"><div class="rc-k">The file is</div><div class="rc-v">${sel("gc-sel gc-kind", KIND, p.input_kind)}</div></div>
-    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p))}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
+    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p))}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
     ${rows ? `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
@@ -132,16 +166,32 @@ export function applyFlow(root) {
 
 /** Keep the unit the user chooses in step everywhere a size is shown, and say what the part
  *  then is. Call once after the form is in the document; `p.unit` follows the box. */
+function showUnit(root, p) {
+  root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unitOf(p); });
+  root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unitOf(p)} across`; });
+  const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
+  const pick = root.querySelector(".gc-unit-pick");
+  if (pick) {
+    const html = pickHtml(p), box = document.createElement("span"); box.innerHTML = html;
+    const fresh = box.firstElementChild;
+    if (fresh) { pick.replaceWith(fresh); bindPick(root, p, fresh); }
+  }
+}
+function bindPick(root, p, pick) {
+  (pick || root.querySelector(".gc-unit-pick"))?.querySelectorAll(".gc-pick").forEach((b) => {
+    b.onclick = () => {
+      p.unit = b.dataset.unit; p.unit_basis = "chosen"; p.unit_touched = true;
+      const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = p.unit;
+      showUnit(root, p);
+    };
+  });
+}
 export function bindUnit(root, p) {
   const unitSel = root.querySelector(".gc-unit");
   if (!unitSel) return;
-  const show = () => {
-    root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unitOf(p); });
-    root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unitOf(p)} across`; });
-    const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
-  };
-  unitSel.addEventListener("change", () => { p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true; show(); });
-  show();
+  unitSel.addEventListener("change", () => { p.unit = unitSel.value; p.unit_basis = "chosen"; p.unit_touched = true; showUnit(root, p); });
+  bindPick(root, p);
+  showUnit(root, p);
 }
 
 /** A unit settled elsewhere - the chat - reaches a form the user has not set themselves. */
@@ -149,9 +199,16 @@ export function followUnit(root, p, unit, basis) {
   if (!unit || !SCALE[unit] || p.unit_touched || unit === p.unit) return;
   p.unit = unit; p.unit_basis = basis || "user_confirmed";
   const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = unit;
-  root.querySelectorAll(".gc-u").forEach((el) => { el.textContent = unit; });
-  root.querySelectorAll(".gc-dia").forEach((el) => { el.placeholder = `${unit} across`; });
-  const hint = root.querySelector(".gc-unit-hint"); if (hint) hint.textContent = unitHint(p);
+  showUnit(root, p);
+}
+
+/** The other reading, as the server now proposes it (the user's words arrived, the naming
+ *  answered, or the unit was settled and there is none) - redrawn on the unit row only. */
+export function followSuggestion(root, p, suggestion) {
+  const next = suggestion || null, was = p.unit_suggestion || null;
+  if (JSON.stringify(next) === JSON.stringify(was)) return;
+  p.unit_suggestion = next;
+  showUnit(root, p);
 }
 
 /** The external-flow answers as the form holds them now; the reference length typed in the

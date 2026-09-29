@@ -34,6 +34,34 @@ def _mesh_on_disk(engine: str, workspace) -> bool:
         return False
 
 
+def _case_contract_refusal(workspace, job_id: str):
+    """The patch-contract launch check's recorded refusal (engines/case_contract.py), as the one
+    pre-flight record the executor reports - gate patch_contract, cause contract_mismatch, its
+    own problem list as the facts. The operator record it always carried is kept: a dead letter
+    naming the mismatch as an INTERNAL defect, because the renderer that wrote the case is ours."""
+    from meshpipeline.engines.case_contract import refusal_of
+    refused = refusal_of(workspace)
+    if not refused:
+        return None
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    from meshpipeline.errors import FailureClass, record_dead_letter
+    problems = [str(p) for p in refused.get("problems") or []]
+    detail = "; ".join(problems)
+    logger.error("Executor: the written case does not match the approved patches - no mesh was "
+                 "run - job_id=%s: %s", job_id, detail)
+    record_dead_letter(job_id, FailureClass.INTERNAL, "case_contract",
+                       f"{refused.get('engine', '')} case written against the approved patch "
+                       f"contract does not match it: {detail}")
+    written = refused.get("written")
+    return PreflightRefusal(
+        gate="patch_contract", cause=FailureCause.CONTRACT_MISMATCH,
+        builder_text=f"[CASE_CONTRACT_MISMATCH] {detail}",
+        facts={"problems": problems,
+               "present": sorted(written) if isinstance(written, dict) else [],
+               "before_meshing": True})
+
+
 def _engine_label(state) -> str:
     try:
         from meshpipeline.engines.registry import engine_label
@@ -119,14 +147,19 @@ async def node_executor(state: PipelineState) -> dict:
             "executor_failure_facts": {},
         }
 
-    # A PRE-FLIGHT REFUSAL (engines/preflight.py): the builder found, before the mesher ran, that
-    # what it was about to mesh could not pass (a far-field box the extent gate would block, on
-    # every pass) and stopped - no mesh exists. That refusal is the failure, with its own gate and
-    # cause; finalizing the empty workspace would report a mesher that "did not finish" instead of
-    # what actually stopped the run. Honoured only while no mesh exists: a mesh on disk was built
-    # after the refusal was written and is judged as usual.
+    # A PRE-FLIGHT REFUSAL: the builder found, before the mesher ran, that what it was about to
+    # mesh could not pass, and stopped - no mesh exists. Two pre-flights record one:
+    #   * engines/preflight.py - a far-field box the extent gate would block on every pass, or an
+    #     approved name no mesher can write (the builder's run_mesh name check);
+    #   * engines/case_contract.py - the patch-contract launch check: the case OUR renderer wrote
+    #     does not build the patches the user approved. That is our defect, never the user's
+    #     input and never a mesh-quality verdict, and re-rendering writes the same case.
+    # Each is reported as the gate it stands in for, with its cause, so the user reads what was
+    # wrong and the retry policy skips what a retry cannot change - finalizing the empty
+    # workspace would report a mesher that "did not finish". Honoured only while no mesh exists:
+    # a mesh on disk was built after the refusal was written and is judged as usual.
     from meshpipeline.engines.preflight import read_refusal
-    _refusal = read_refusal(workspace)
+    _refusal = read_refusal(workspace) or _case_contract_refusal(workspace, job_id)
     if _refusal is not None and _mesh_on_disk(state.get("engine", ""), workspace):
         _refusal = None
     if _refusal is not None:

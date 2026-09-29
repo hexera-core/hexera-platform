@@ -727,6 +727,32 @@
   "roots": []
  },
  {
+  "context": "agents/intake/unit_clarification.py::stated_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "stated_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_UNSURE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/unit_clarification.py::stated_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "stated_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/loop/accounting.py::AgentRunAccountant.record_round::stage#1|NotAPublisher|not-a-publisher|",
   "path": "agents/loop/accounting.py",
   "qualname": "AgentRunAccountant.record_round",
@@ -2154,6 +2180,45 @@
   "roots": []
  },
  {
+  "context": "cad/step_units.py::_unit_metres::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/step_units.py",
+  "qualname": "_unit_metres",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_CONVERSION",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/step_units.py::_unit_metres::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/step_units.py",
+  "qualname": "_unit_metres",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_MEASURE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/step_units.py::_unit_metres::search#3|NotAPublisher|not-a-publisher|",
+  "path": "cad/step_units.py",
+  "qualname": "_unit_metres",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_SI",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "capture/source.py::select_export_source::error#1|NotAPublisher|not-a-publisher|",
   "path": "capture/source.py",
   "qualname": "select_export_source",
@@ -2249,6 +2314,84 @@
   "roots": [
    "agents/intake/agent.py::IntakeRequestPath"
   ]
+ },
+ {
+  "context": "contracts/unit_plausibility.py::expected_from_words::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/unit_plausibility.py",
+  "qualname": "expected_from_words",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_apply_create_patch::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_apply_create_patch",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_block::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_block",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_block_mesh_patches::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_block_mesh_patches",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_word::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_word",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::launch_check::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "launch_check",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "engines/cfmesh/deliverable.py::boundary_foam_types::search#1|NotAPublisher|not-a-publisher|",
@@ -2476,6 +2619,19 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#6|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 6,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::meshed#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
@@ -2609,6 +2765,19 @@
   "roots": [
    "engines/snappy/drivers.py::parameter"
   ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::error#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::meshed#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
@@ -3174,6 +3343,19 @@
   "roots": [
    "pipeline/engine_select.py::execution_publisher"
   ]
+ },
+ {
+  "context": "pipeline/executor.py::_case_contract_refusal::error#1|NotAPublisher|not-a-publisher|",
+  "path": "pipeline/executor.py",
+  "qualname": "_case_contract_refusal",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "pipeline/executor.py::node_executor::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",

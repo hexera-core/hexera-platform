@@ -231,12 +231,13 @@ async def _preflight_stopped(publish: ExecutionEventPublisher, workspace: Path,
 
 
 def _box_patch_names(patches: list) -> frozenset[str]:
-    """The external box's own patches: the far field, a declared ground plane and declared
-    symmetry planes. Everything else in the boundary is the body - its wall and any regions it
-    was split into - so this is what a count of the body's faces leaves out."""
-    names = {"farfield"}
-    names.update(str(p.get("name")) for p in patches
-                 if (p.get("type") or "").strip() == "symmetry" and p.get("name"))
+    """The external box's own patches: the far field (under its DECLARED name - the box writes it
+    under that name), a declared ground plane and declared symmetry planes. Everything else in the
+    boundary is the body - its wall and any regions it was split into - so this is what a count of
+    the body's faces leaves out."""
+    from meshpipeline.engines.declared_boundary import farfield_name, symmetry_names
+    names = {farfield_name(patches)}
+    names.update(symmetry_names(patches))
     ground = ground_patch_name(patches)
     if ground:
         names.add(ground)
@@ -357,6 +358,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             op_id="snappy:symmetry-detected" if symmetry is not None else "snappy:ground-plane")
     # the patches blockMesh makes from the BOX, not the body: none of their faces is the body's
     _box_patches = _box_patch_names(state.get("intake_patches") or [])
+    # the names the approved declaration gives the far field and the body's walls - the box and
+    # the staged surface are written under exactly these (engines/declared_boundary.py)
+    from meshpipeline.engines.declared_boundary import body_walls as _declared_body_walls
+    from meshpipeline.engines.declared_boundary import farfield_name as _farfield_name
+    _farfield = _farfield_name(state.get("intake_patches") or [])
+    _body_walls = _declared_body_walls(state.get("intake_patches") or [])
 
     plan = initial_plan
     # retry mode arrives with a prior failure but no pre-made plan → seed the first re-plan with it
@@ -450,24 +457,28 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                            wall_name=wall, stage=_esc_stage)
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
-                wall_patch=wall, farfield_patch="farfield", feature_angle=150,
+                wall_patch=wall, farfield_patch=_farfield, feature_angle=150,
                 reference_length_m=strategy.get("reference_length_m"),
-                region_labeler=LP.make_region_labeler(_policy, wall) if _policy else None)
+                region_labeler=LP.make_region_labeler(_policy, wall) if _policy else None,
+                body_walls=_body_walls or None)
             _policy = LP.reconcile_policy(_policy, prep.get("surface_regions") or [], wall)
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run, attempt)
-            # regions reach the dict ONLY for the policy's own synthetic split - a multi-solid
-            # input keeps rendering the single flattened wall entry it always has here
-            _dict_regions = (prep.get("surface_regions")
-                             if _policy is not None and _policy.mode == "split" else None)
+            # regions reach the dict whenever the staged surface carries them: the policy's own
+            # synthetic split, or the several walls the user declared on a multi-part surface.
+            # Left out, snappyHexMesh names each part <surface>_<part> and no approved name has
+            # faces. Only the policy's split is folded back after meshing.
+            _split = _policy is not None and _policy.mode == "split"
+            _dict_regions = prep.get("surface_regions") or None
             summary = R.render_snappy_case(
                 workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
                 analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
                 strategy=strategy, dimensionality=state.get("dimensionality", "3D"),
                 symmetry=symmetry, surface_regions=_dict_regions,
                 layer_counts=LP.layer_counts_for(_policy),
-                layer_overrides=LP.overrides_for(_policy), ground=_ground)
+                layer_overrides=LP.overrides_for(_policy), ground=_ground,
+                farfield=_farfield, class_regions=_split)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -483,6 +494,13 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             result = await _run_snappy_timed(
                 R, workspace, _cap, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
+            if result.get("case_contract_mismatch"):
+                # the pre-flight refused the case before snappyHexMesh started: the renderer
+                # did not write the approved patches, and a re-plan renders the same names. Stop
+                # - the executor ends the job on the recorded refusal.
+                logger.error("snappy pass %d: case refused by the patch-contract pre-flight - "
+                             "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
+                return False
             _meshed_any = True
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation
             # still owns the job and may accept, publish and record the result.
@@ -805,6 +823,10 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             result = await _run_snappy_timed(
                 R, workspace, _cap, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
+            if result.get("case_contract_mismatch"):
+                logger.error("internal pass %d: case refused by the patch-contract pre-flight - "
+                             "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
+                return False
             q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)

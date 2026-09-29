@@ -55,3 +55,5 @@ node_modules/
 # Subagent-driven-development scratch: ledgers, briefs, review packages.
 # Per-plan workspaces under .superpowers/sdd/<plan>/; the git history is the durable record.
 .superpowers/
+# the licensed CFD corpus, linked locally for tests/unit/cad/test_corpus_units.py
+tests/fixtures/external/corpus

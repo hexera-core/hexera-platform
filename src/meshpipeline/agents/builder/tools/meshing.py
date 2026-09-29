@@ -398,6 +398,22 @@ def execute_prepared_mesh_run(ctx: BuilderToolContext, prepared: PreparedMeshRun
             _hist_record(engine, _purpose, _mesh_seconds)
         except Exception:  # noqa: BLE001
             pass
+    if res.get("case_contract_mismatch"):
+        # REFUSED BEFORE LAUNCH (engines/case_contract.py): the written case does not build the
+        # approved patches, so no mesher ran. A spec the model wrote (gmsh's groups) is its to fix;
+        # a case the engine rendered from the contract is our defect, and re-configuring renders
+        # the same names - the job ends as an internal error either way if it is not fixed.
+        _mine = not res.get("internal_defect")
+        return {"success": False, "rc": res.get("rc"), "patch_contract_mismatch": True,
+                "mismatch": res.get("case_contract_mismatch"),
+                "guidance": ("Nothing was meshed: your spec does not build the approved patches "
+                             "exactly - " + "; ".join(res.get("case_contract_mismatch") or [])
+                             + ". Fix the group names/roles in your spec to match the patch "
+                               "contract, then run_mesh again."
+                             if _mine else
+                             "Nothing was meshed: the case rendered from the patch contract does "
+                             "not build the approved patches (an internal error, not your "
+                             "strategy). Do NOT reconfigure - STOP and end your turn.")}
     if res["timed_out"]:
         return {"success": False, "timed_out": True,
                 "guidance": f"meshing exceeded {_cap // 60} min - too fine. {_policy.timeout_hint}",

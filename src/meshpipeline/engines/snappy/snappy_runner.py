@@ -91,7 +91,7 @@ def prepare_surface(workspace, *, geometry_file: str,
                     domain_min=None, domain_max=None, wall_patch: str = "body",
                     farfield_patch: str = "farfield", feature_angle: float = 30.0,
                     mirror_y_half: bool = False, reference_length_m: float | None = None,
-                    region_labeler=None,
+                    region_labeler=None, body_walls: list | None = None,
                     bashrc: str = _DEFAULT_BASHRC) -> dict:
     ws = Path(workspace)
     body_stl = ws / geometry_file
@@ -101,9 +101,15 @@ def prepare_surface(workspace, *, geometry_file: str,
     # REGIONS the input already distinguishes. read_stl_triangles returns every triangle with the
     # solid boundaries dissolved, which is the right read for a body meshed as one wall and the
     # wrong one for a surface whose parts are named: the names are gone before snappyHexMesh, which
-    # can carry them, is ever asked. Read solids first and keep them when there is more than one.
+    # can carry them, is ever asked. Read solids first; the DECLARATION decides what they become
+    # (declared_boundary.stage_regions): one declared body wall makes them one wall under its
+    # name, several keep each part under the declared wall it matches. Writing the file's own
+    # spellings instead produced patches no approved name matched, and a full run that ended on
+    # "zero faces".
+    from meshpipeline.engines.declared_boundary import stage_regions
     solids = {n: drop_degenerate(v) for n, v in read_stl_solids(body_stl).items()}
     regions = {n: v for n, v in solids.items() if v} if len(solids) > 1 else {}
+    regions = stage_regions(regions, list(body_walls) if body_walls else [wall_patch])
     body = drop_degenerate(read_stl_triangles(body_stl))
     if mirror_y_half:
         body = body + mirror_y(body)
@@ -132,9 +138,10 @@ def prepare_surface(workspace, *, geometry_file: str,
     with (tri / surf_file).open("w") as fh:
         if regions:
             # ONE file, several named solids: the form snappyHexMesh reads region-wise. Written in
-            # the source's own order so the patches come back in the order the CAD declared them.
+            # the source's own order so the patches come back in the order the CAD declared them,
+            # each under the name stage_regions settled (already mesh-safe).
             for name, tris in regions.items():
-                _write_solid(fh, re.sub(r"[^A-Za-z0-9_]", "_", name) or name, tris)
+                _write_solid(fh, name, tris)
         else:
             _write_solid(fh, surf_name, body)
 
@@ -159,7 +166,7 @@ def prepare_surface(workspace, *, geometry_file: str,
 
     return {"surface_file": f"constant/triSurface/{surf_file}",
             "surface_name": surf_name, "feature_file": f"{surf_name}.eMesh",
-            "surface_regions": [re.sub(r"[^A-Za-z0-9_]", "_", n) or n for n in regions],
+            "surface_regions": list(regions),
             "body_bbox": [bb_min, bb_max]}
 
 
@@ -433,7 +440,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        surface_regions: list | None = None,
                        layer_counts: dict | None = None,
                        layer_overrides: dict | None = None,
-                       ground: str | None = None) -> dict:
+                       ground: str | None = None,
+                       farfield: str = "farfield",
+                       class_regions: bool = True) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -524,7 +533,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # claims it: a 2.5D slab's two sweep ends (both symmetryPlanes - emitting only one left the
     # second declared patch with zero faces), a half-model's cut (one symmetryPlane), and the floor
     # under a body on the ground (a wall, under the name the user declared). Unclaimed faces stay
-    # one farfield patch, in the order the all-farfield box has always listed them.
+    # one far-field patch, in the order the all-farfield box has always listed them, under the
+    # name the user DECLARED for the far field - written as `farfield` whatever they called it, a
+    # far field named "far_field" or "freestream" came back with zero faces after the whole run.
     _claims: list[tuple[str, str, str]] = []
     if symmetry and symmetry.get("slab"):
         _claims += [(symmetry["lo_name"], "symmetryPlane", _BOX_FACES[(symmetry["axis"], "min")]),
@@ -540,7 +551,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _claims.append((ground, "wall", _floor))
     _ff = "".join(f for f in _ALL_BOX_FACES if f not in {face for _, _, face in _claims})
     _boundary = ("boundary (" + " ".join(
-        [f"farfield {{ type patch; faces ({_ff}); }}"]
+        [f"{farfield or 'farfield'} {{ type patch; faces ({_ff}); }}"]
         + [f"{name} {{ type {kind}; faces ({face}); }}" for name, kind, face in _claims]) + ");")
     (ws / "system" / "blockMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="blockMeshDict")
@@ -625,7 +636,10 @@ mergeTolerance 1e-6; debug 0;
     # folds the class patches back into the declared wall, and the mesh that reaches the
     # manifest carries the boundary the user signed. Real CAD-named solids are never merged -
     # they are the user's own patches.
-    _synthetic = [r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor")]
+    # Only the layer policy's OWN split is folded back: a user who declared walls "car" and
+    # "car_thin" on a multi-part surface meant two patches, and merging them would drop one.
+    _synthetic = ([r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor")]
+                  if class_regions else [])
     _cp = ws / "system" / "createPatchDict"
     if _synthetic:
         _cp.write_text(
@@ -653,10 +667,13 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
                    surface=None) -> dict:
     from meshpipeline.cad.analysis import analyze_surface, recommend_refinement
     from meshpipeline.cad.prepared_surface import require_metre_surface
+    from meshpipeline.engines.declared_boundary import body_walls, farfield_name
     analysis = analyze_surface(require_metre_surface(surface, workspace, geometry_file))
     rec = recommend_refinement(analysis, max_cells=int(strategy.get("max_cells", 8_000_000)))
     # a declared ground plane is the box's floor, laid by the domain whichever path authors it
     ground = ground_patch_name(contract_patches)
+    # the far field and the body walls under the names the user approved - never the model's args
+    farfield = farfield_name(contract_patches)
     if args.get("domain_min") and args.get("domain_max"):
         dmin, dmax = list(args["domain_min"]), list(args["domain_max"])
         if ground:
@@ -665,12 +682,15 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         dmin, dmax = domain_from_strategy(analysis, strategy, ground=bool(ground))
     prep = prepare_surface(
         workspace, geometry_file=geometry_file, domain_min=dmin, domain_max=dmax,
-        wall_patch=wall_patch, farfield_patch=args.get("farfield_patch", "farfield"),
-        feature_angle=float(args.get("feature_angle", 150)))
+        wall_patch=wall_patch, farfield_patch=farfield,
+        feature_angle=float(args.get("feature_angle", 150)),
+        body_walls=body_walls(contract_patches) or None)
     summary = render_snappy_case(
         workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
         analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
-        strategy=strategy, dimensionality=args.get("dimensionality", "3D"), ground=ground)
+        strategy=strategy, dimensionality=args.get("dimensionality", "3D"), ground=ground,
+        surface_regions=prep.get("surface_regions") or None, farfield=farfield,
+        class_regions=False)
     return {"success": True, "wrote": ["system/blockMeshDict", "system/snappyHexMeshDict"],
             **summary,
             "next": "Dicts written (valid + clamped to the budget). Call run_mesh NOW to build "

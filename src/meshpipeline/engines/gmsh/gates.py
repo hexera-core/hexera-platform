@@ -140,11 +140,13 @@ def _gate_gmsh_region_contract(ctx: GateCtx) -> tuple[bool, str]:
     manifest = ctx.manifest_or_load()
     if not (manifest and ctx.intake_patches):
         return True, ""
+    # EVERY approved group is held to the deck, a `free` one included: a surface group the user
+    # named must exist whatever its role. What is let through is only an UNDECLARED free group -
+    # the leftover surfaces gmsh gathers into its default group - which no one approved or named.
+    declared = {str(p.get("name") or "").strip() for p in ctx.intake_patches}
     types = {n: r for n, r in (manifest.get("patch_types") or {}).items()
-             if r != "free"}
-    contracted = [p for p in ctx.intake_patches if p.get("type") != "free"]
-    if not contracted:
-        return True, ""
+             if r != "free" or n in declared}
+    contracted = list(ctx.intake_patches)
     from meshpipeline.engines.contract import check_contract
     from meshpipeline.engines.gates import facts_of
     ok, diag = check_contract(

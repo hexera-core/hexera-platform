@@ -198,6 +198,10 @@ def _contract(f: Mapping) -> tuple[str, str]:
                      "did not approve")
     for r in roles:
         parts.append(f"the mesh {'would have' if before else 'has'} no {r} boundary")
+    # the patch-contract launch check (engines/case_contract.py) states its own findings in plain
+    # words ("the approved patch 'freestream' (farfield) is not written - the case writes ...");
+    # they are said as written, the first few of them
+    parts += [str(p).strip().rstrip(".") for p in (f.get("problems") or [])[:3] if str(p).strip()]
     what = (_cap("; ".join(parts)) + ", so the mesh "
             + ("would not match" if before else "does not match") + " what you approved."
             if parts else

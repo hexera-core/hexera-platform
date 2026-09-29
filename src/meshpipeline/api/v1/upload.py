@@ -211,9 +211,11 @@ async def upload_step_file(
             # same transaction as the source, because a source with a verified declaration and no
             # interpretation would send the user a question the file already answered.
             # Unresolved is a legitimate, common outcome - STL and VTP carry no unit at all, and a
-            # STEP declaration that collides with the parser's own failure default is not evidence.
-            # Those leave the session without an interpretation so intake asks; nothing is guessed
-            # here, and no default is written.
+            # STEP unit entity that does not parse is not evidence (a well-formed metre is: the
+            # entity is read from the file's text, not from the parser's fallback). Those leave
+            # the session without an interpretation so the unit is proposed and confirmed; nothing
+            # is guessed here, and no default is written. A declaration the part's size makes
+            # implausible is doubted on the stage, beside the size, before anything is confirmed.
             interpretation_id = None
             evidence = _declared_unit_evidence(dest)
             if evidence is not None and evidence.resolved and evidence.unit is not None:
