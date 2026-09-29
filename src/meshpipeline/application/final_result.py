@@ -480,7 +480,9 @@ def _admission_account(failure_facts: Mapping | None,
     facts: Mapping = failure_facts if isinstance(failure_facts, Mapping) else {}
     phases = {str(p) for p in (facts.get("phases") or [])}
     reason = clean_reason(facts.get("reason"))
+    declared_reason = clean_reason(facts.get("declared_reason"))
     if phases and "measured" not in phases:
+        reason = declared_reason or reason
         label = engine
         try:
             from meshpipeline.engines.registry import engine_label
@@ -495,7 +497,15 @@ def _admission_account(failure_facts: Mapping | None,
                 "will set up a new run.")
     if not reason:
         return FailureCategory.input_rejected, "", "", ""
-    what, _ = describe(FailureCause.GEOMETRY_REJECTED, {"reason": reason}, engine=engine)
+    # the CAD's own reason when the record separates the kinds, else the joined one
+    measured_reason = clean_reason(facts.get("measured_reason")) or reason
+    what, _ = describe(FailureCause.GEOMETRY_REJECTED, {"reason": measured_reason},
+                       engine=engine)
+    if "declared" in phases and declared_reason:
+        # BOTH refused: fixing the file alone would meet the setup refusal on the next run, so
+        # the second change is named too
+        what += (f" The setup also needs a change before this can run: {declared_reason}. "
+                 "Tell me what to change in this chat when you upload the fixed file.")
     return FailureCategory.input_rejected, FailureCause.GEOMETRY_REJECTED.value, what, ""
 
 

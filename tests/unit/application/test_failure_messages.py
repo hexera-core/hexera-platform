@@ -149,10 +149,18 @@ def test_a_declared_setup_refusal_does_not_blame_a_valid_file():
     assert "the setting, or the engine" in msg
 
 
-def test_a_mixed_refusal_counts_as_the_cads():
+def test_a_mixed_refusal_names_both_changes():
+    # review: fixing the file alone would meet the setup refusal on the next run
     fr = _fail("geometry", FailureCause.GEOMETRY_REJECTED, {
-        "reason": "x", "phases": ["declared", "measured"]})
+        "reason": "the input surface self-intersects.  engine_params: bad layers value",
+        "phases": ["declared", "measured"],
+        "measured_reason": "the input surface self-intersects.",
+        "declared_reason": "engine_params: bad layers value"})
+    msg = render_message(fr)
     assert fr.failure_category == FailureCategory.input_rejected.value
+    assert "the problem is in the CAD file" in msg and "the input surface self-intersects" in msg
+    assert "Fix the geometry and upload it again." in msg
+    assert "The setup also needs a change before this can run: engine_params: bad layers value"         in msg
 
 
 def test_an_older_admission_record_keeps_the_class_sentence():

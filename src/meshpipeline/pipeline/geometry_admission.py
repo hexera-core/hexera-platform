@@ -133,7 +133,13 @@ async def node_geometry_admission(state: PipelineState) -> dict:
         # that self-intersects), a DECLARED one is the setup's (a symmetry patch or a parameter
         # this engine cannot build) - and telling a user to repair a valid file for a setting
         # they chose sends them to fix the wrong thing. The executor carries these facts on.
-        "executor_failure_facts": {"reason": reason[:600],
-                                   "phases": sorted({r.phase for r in rejections}),
-                                   "codes": [r.code for r in rejections]},
+        "executor_failure_facts": {
+            "reason": reason[:600],
+            "phases": sorted({r.phase for r in rejections}),
+            "codes": [r.code for r in rejections],
+            # each kind's own words, so a refusal of BOTH can name both changes it needs
+            "measured_reason": "  ".join(r.message for r in rejections
+                                         if r.phase == "measured")[:600],
+            "declared_reason": "  ".join(r.message for r in rejections
+                                         if r.phase != "measured")[:600]},
     }
