@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 
+from meshpipeline.agents.intake import consent as _consent
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.engines.registry import engine_label
 
@@ -125,6 +126,11 @@ def _tokens(engine: str, message: str, *, keep_engine: bool,
 
 
 def plain_assent(engine: str, message: str) -> bool:
+    # The intake's one consent reader first ("sounds good", "go for it", "yes go ahaed" are a yes
+    # to this question exactly as they are to the summary), then this question's own words, which
+    # may name the engine it proposed ("yes, snappyHexMesh", "use it").
+    if _consent.is_yes(message):
+        return True
     words = [w for w in _tokens(engine, message, keep_engine=False) if w not in _FILLER]
     return bool(words) and all(w in _ASSENT for w in words)
 

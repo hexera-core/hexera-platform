@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from tests._geometry_support import (
     interpretation_lookup,
     interpretation_ref,
@@ -280,6 +281,17 @@ def test_a_bare_approval_dispatches_with_zero_model_calls():
     resp, calls, _ = _route("yes, proceed", rec, sel)
     assert calls["dispatch"] == 1
     assert calls["intake"] == 0, "the model must not be called on a confirmation turn"
+    assert resp.done is True
+
+
+@pytest.mark.parametrize("said", ["looks good", "sounds good to me, go for it", "ok", "yes go ahaed",
+                                  "That sounds great, let's do it!", "sure, whatever you think", "👍"])
+def test_a_natural_yes_dispatches_with_zero_model_calls(said):
+    # the grammar used to read each of these as a correction (or "ok" as a hedge): the approved
+    # summary was thrown away and the user was shown another one
+    rec, sel = _approval(msg_count=1)
+    resp, calls, _ = _route(said, rec, sel)
+    assert calls["dispatch"] == 1 and calls["intake"] == 0, said
     assert resp.done is True
 
 
