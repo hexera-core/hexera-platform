@@ -47,7 +47,10 @@ def test_every_other_gate_is_still_gate_failed():
     for gate in ("patch_contract", "sicn_floor", "solvability", "mesh_quality"):
         fr = _build(failed_gate=gate)
         assert fr.failure_category == FailureCategory.gate_failed.value, gate
-        assert "quality checks" in render_message(fr)
+        # a gate is never told as "the required quality checks" any more (job ac1daa3e was a
+        # naming mismatch reported that way): a recorded cause names itself, and without one
+        # the fallback says only that a check failed
+        assert "required quality checks" not in render_message(fr)
 
 
 def test_a_refused_input_outranks_a_retained_verdict_and_a_timeout():
@@ -156,7 +159,7 @@ def test_a_class_owned_outcome_states_its_cause_once():
 
 def test_the_other_categories_keep_mains_next_step():
     msg = render_message(_build(failed_gate="sicn_floor"))
-    assert 'say "run it again"' in msg and "quality checks" in msg
+    assert 'say "run it again"' in msg and "did not pass one of its checks" in msg
 
 
 def test_a_cancelled_job_without_a_record_is_not_called_a_success():

@@ -16,7 +16,10 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 9   # v9: `dispute_flag_findings` + `builder_flag_responses` - the
+STATE_SCHEMA_VERSION = 10  # v10: `executor_failure_cause` + `executor_failure_facts` - WHAT the
+                           # failed gate says failed, typed, so the user is told the cause and the
+                           # retry policy skips what a retry cannot change.
+                           # v9: `dispute_flag_findings` + `builder_flag_responses` - the
                            # typed per-flag round trip for a human dispute.
                            # v7: reviewer emits `reviewer_axis_findings` (canonical typed LIST,
                            # + `reviewer_rebuild_required`; executor records
@@ -50,6 +53,8 @@ class PipelineState(TypedDict):
     executor_output:    str
     executor_success:   bool
     executor_failed_gate: str          # the DECLARED gate key that rejected (classifier routes on it)
+    executor_failure_cause: str        # contracts.failure_cause value: what that gate says failed
+    executor_failure_facts: dict       # the plain facts the user's sentence is built from
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
     mesh_manifest:      dict

@@ -412,7 +412,7 @@ def _install_thin_feature_double(monkeypatch) -> None:
 
 async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=None,
                internal=False, tessellate_fail=False, unbindable_patches=False,
-               thin_feature=False):
+               thin_feature=False, domain_refused=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
 
@@ -447,6 +447,11 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
         # a declaration no measured opening can satisfy: the seam must refuse pre-mesh
         st["intake_patches"] = [{"name": "wall", "type": "wall"},
                                 {"name": "feed", "type": "inlet", "diameter_mm": 10}]
+    if domain_refused:
+        # 20 body lengths of wake asked for; the planner's box keeps 4. The extent gate would
+        # block that box, so the domain pre-flight re-plans every pass and meshes none of them
+        st.update({"requested_extents": {"downstream": 20.0}, "reference_length_m": 1.0,
+                   "requirements_strict": True, "flow_axis": "+x"})
     graph = _graph(st)
     monkeypatch.setattr(gm, "build_graph",
                         lambda checkpointer: graph.compile(checkpointer=checkpointer))
@@ -486,7 +491,8 @@ def _canonical(rec: dict, *, accepted: bool) -> str:
                          ("internal:pass-open:", "note#2"),
                          ("internal:filling:", "note#4"),
                          ("internal:passes-exhausted", "note#3"),
-                         ("internal:thin-feature:", "note#7")):
+                         ("internal:thin-feature:", "note#7"),
+                         ("snappy:preflight-replan:", "note#7")):
         if op.startswith(prefix):
             return f"{fn}::{name}"
     if op.startswith(("snappy:pass-outcome:", "internal:pass-outcome:")):

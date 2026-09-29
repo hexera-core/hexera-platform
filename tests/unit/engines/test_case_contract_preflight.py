@@ -251,10 +251,15 @@ def test_the_composition_root_installs_the_pre_flight():
     assert "mesh_execution.set_launch_check(launch_check)" in src
 
 
-def test_the_executor_ends_a_refused_case_as_an_internal_error_naming_it(tmp_path, monkeypatch):
+def test_the_executor_ends_a_refused_case_as_a_contract_mismatch_naming_it(tmp_path, monkeypatch):
+    # The refusal is reported as the gate it stands in for, with its cause - so the user reads the
+    # mismatch and the retry policy ends the run (a re-render writes the same case) - and the
+    # operator record it always carried stays: a dead letter naming it as an INTERNAL defect.
+    import meshpipeline.errors as errors
     import meshpipeline.pipeline.executor as ex
     from meshpipeline.application import execution_fence
-    from meshpipeline.errors import FailureClass, SystemFailure
+    from meshpipeline.contracts.failure_cause import retry_can_help
+    from meshpipeline.errors import FailureClass
 
     class _Pub:
         def __getattr__(self, name):
@@ -266,13 +271,20 @@ def test_the_executor_ends_a_refused_case_as_an_internal_error_naming_it(tmp_pat
         return None
     monkeypatch.setattr(ex, "execution_publisher", lambda *a, **k: _Pub())
     monkeypatch.setattr(execution_fence, "assert_current_owner", _owner)
+    dead: list = []
+    monkeypatch.setattr(errors, "record_dead_letter", lambda *a, **k: dead.append(a))
+    monkeypatch.setattr(ex, "TrainingLogger",
+                        type("_TL", (), {"__init__": lambda s, j: None,
+                                         "log": lambda s, *a, **k: None}))
     (tmp_path / case_contract.REFUSAL_FACT).write_text(json.dumps(
         {"engine": "snappy", "problems": ["the approved patch 'freestream' is not written"]}))
-    with pytest.raises(SystemFailure) as exc:
-        asyncio.run(ex.node_executor({"job_id": "j", "openfoam_workspace": str(tmp_path),
-                                      "engine": "snappy"}))
-    assert exc.value.failure_class is FailureClass.INTERNAL
-    assert "freestream" in exc.value.operator_detail
+    out = asyncio.run(ex.node_executor({"job_id": "j", "openfoam_workspace": str(tmp_path),
+                                        "engine": "snappy"}))
+    assert out["executor_success"] is False and out["executor_failed_gate"] == "patch_contract"
+    assert out["executor_failure_cause"] == "contract_mismatch"
+    assert "freestream" in out["executor_failure_facts"]["problems"][0]
+    assert not retry_can_help(out["executor_failure_cause"], out["executor_failure_facts"])
+    assert dead and dead[0][1] is FailureClass.INTERNAL and "freestream" in dead[0][3]
 
 
 def test_vmtk_draws_the_wall_under_its_declared_name(tmp_path, monkeypatch):

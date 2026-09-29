@@ -13,7 +13,8 @@ SRC = pathlib.Path(executor_mod.__file__).resolve().parents[1]
 
 #: The owned phase: these run inside the graph, under the claim taken before it started.
 EXECUTION = {
-    "pipeline/executor.py": {"astage": 1, "anote": 4, "acheck": 6},
+    # 7th check: the gate a pre-flight refusal stands in for, reported as failed
+    "pipeline/executor.py": {"astage": 1, "anote": 4, "acheck": 7},
     "pipeline/engine_select.py": {"astage": 1, "anote": 1},
     "pipeline/geometry_admission.py": {"astage": 1, "anote": 1},
 }
@@ -60,8 +61,9 @@ def test_each_owned_module_publishes_exactly_its_gated_events(rel):
         f"  expected: {EXECUTION[rel]}\n  found:    {counted}")
 
 
-def test_the_pipeline_execution_closure_is_fifteen_sites():
-    assert sum(sum(v.values()) for v in EXECUTION.values()) == 15
+def test_the_pipeline_execution_closure_is_sixteen_sites():
+    # 16th: the executor reports the gate a pre-flight refusal stood in for
+    assert sum(sum(v.values()) for v in EXECUTION.values()) == 16
 
 
 @pytest.mark.parametrize("rel", sorted(EXECUTION))

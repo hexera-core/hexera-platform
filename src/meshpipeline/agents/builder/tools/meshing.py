@@ -283,11 +283,22 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     # travels beside the contract as port_declaration.json; refuse here, in seconds, instead.
     _unsafe = _unsafe_patch_names(workspace)
     if _unsafe:
+        from meshpipeline.contracts.failure_cause import FailureCause
         from meshpipeline.contracts.patch_names import mesh_safe as _mesh_safe
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _error = ("approved patch name(s) a mesher cannot write: " + ", ".join(
+            f"{n!r} (would need {_mesh_safe(n)!r})" for n in _unsafe))
+        # RECORDED for the executor too (engines/preflight.py), so a loop that ends here is
+        # reported as the contract mismatch it is - the names and the spelling to use, no retry -
+        # rather than as a mesher that "did not finish" on an empty workspace.
+        PreflightRefusal(
+            gate="patch_contract", cause=FailureCause.CONTRACT_MISMATCH,
+            builder_text=f"[PREFLIGHT_CONTRACT_MISMATCH] {_error}",
+            facts={"missing": list(_unsafe), "renamed": {n: _mesh_safe(n) for n in _unsafe},
+                   "before_meshing": True}).write(workspace)
         return PreparedMeshRun(refusal={
             "success": False, "contract_unbuildable": True,
-            "error": "approved patch name(s) a mesher cannot write: " + ", ".join(
-                f"{n!r} (would need {_mesh_safe(n)!r})" for n in _unsafe),
+            "error": _error,
             "guidance": "The approved patch contract itself cannot be built - no mesh setting "
                         "can fix a name. STOP and report it; do NOT run the mesher or retry."})
     # DETERMINISTIC INPUT-CONTRACT GATE (physical impossibility, not a strategy problem).

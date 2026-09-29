@@ -10,6 +10,7 @@ import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
 from meshpipeline.engines.port_binding import BindError as _PortBindError
+from meshpipeline.engines.preflight import PreflightRefusal, PreflightStop, check_domain
 from meshpipeline.engines.workspace_facts import contract_patches, read_purpose
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,37 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     return result
 
 
+def _domain_preflight(state, analysis: dict, dmin, dmax, *,
+                      grounded: bool) -> PreflightRefusal | None:
+    """The box about to be meshed, judged as the executor's typed extent gate will judge it -
+    same switch, same approved request and ruler, same strictness reading."""
+    requested, ruler = state.get("requested_extents"), state.get("reference_length_m")
+    if not (polcfg.DOMAIN_EXTENT_GATE_ENABLED and requested and ruler):
+        return None                  # the typed gate judges nothing either: no request, no ruler
+    if analysis.get("bbox_min") is None or analysis.get("bbox_max") is None:
+        return None
+    return check_domain(
+        requested=requested, reference_length_m=ruler,
+        # the executor reads an absent flag as lenient; so does this
+        strict=bool(state.get("requirements_strict")),
+        flow_axis=state.get("flow_axis"),
+        body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
+        domain_min=dmin, domain_max=dmax, grounded=grounded)
+
+
+async def _preflight_stopped(publish: ExecutionEventPublisher, workspace: Path,
+                             refusal: PreflightRefusal) -> None:
+    """Every pass was refused before meshing: record the refusal for the executor (which reports
+    it as the gate it stands in for), and tell the user now, in the words the final message will
+    use."""
+    from meshpipeline.contracts.failure_cause import describe
+    refusal.write(workspace)
+    what, _next = describe(refusal.cause, refusal.facts, engine="snappyHexMesh")
+    await publish.aerror(what or "Stopped before meshing: the planned mesh could not meet what "
+                                 "was approved.",
+                         op_id=f"snappy:preflight-refused:{refusal.gate}")
+
+
 def _box_patch_names(patches: list) -> frozenset[str]:
     """The external box's own patches: the far field (under its DECLARED name - the box writes it
     under that name), a declared ground plane and declared symmetry planes. Everything else in the
@@ -353,6 +385,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400  # per-mesh cap; stays under the Cloud Run Job task-timeout
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
+    _meshed_any = False                                # did any pass reach the mesher at all
+    _domain_refusal: PreflightRefusal | None = None    # the last box the pre-flight refused
 
     for attempt in range(1, max_attempts + 1):
         if plan is None:   # repair: re-plan WITH the previous plan + critique (iterate with memory)
@@ -408,6 +442,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                                 flow_axis=state.get("flow_axis"),
                                                 ruler_m=state.get("reference_length_m"),
                                                 ground=bool(_ground))
+            # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
+            # exactly this prepared box, so a box it would block is known now. Re-plan instead of
+            # meshing it (nothing is written yet, so the previous pass's files stay as they were).
+            _dom = _domain_preflight(state, analysis, dmin, dmax, grounded=bool(_ground))
+            if _dom is not None:
+                raise PreflightStop(_dom)
             wall = _contract_wall_patch(workspace) or "body"
             # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
             # (no thin features, policy off, no layers requested) authors the historical case
@@ -461,6 +501,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 logger.error("snappy pass %d: case refused by the patch-contract pre-flight - "
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
                 return False
+            _meshed_any = True
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation
             # still owns the job and may accept, publish and record the result.
             q = R.check_mesh(workspace)
@@ -477,6 +518,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # "failure" that is really supersession would keep a zombie worker meshing. A
             # refused publication says the same thing at the other boundary.
             raise
+        except PreflightStop as stop:
+            # The planned box would fail the extent gate. A re-plan CAN fix that, and costs a
+            # planner round rather than a mesh.
+            _domain_refusal = stop.refusal
+            await _op_end(publish, _mem, "author_configuration", {"stage": "preflight"}, False)
+            await publish.anote(f"Pass {attempt} not meshed - the planned far-field box is not "
+                                "the size you asked for; re-planning it first",
+                                op_id=f"snappy:preflight-replan:{attempt}")
+            feedback, plan = stop.refusal.builder_text, None
+            continue
         except Exception as exc:  # noqa: BLE001 - a config/run error is just a failed attempt
             logger.exception("snappy attempt %d errored - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, f"attempt errored: {type(exc).__name__}", {}, 0
@@ -526,6 +577,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         await publish.anote("Meshing passes exhausted - submitting the best mesh built "
                      "(valid, but not as clean as we aim for)",
                 op_id="snappy:passes-exhausted")
+    elif not _meshed_any and _domain_refusal is not None:
+        # Every pass was refused before meshing: say so, rather than let the executor find an
+        # empty workspace and report a mesher that "did not finish".
+        await _preflight_stopped(publish, workspace, _domain_refusal)
     return last_valid
 
 

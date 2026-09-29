@@ -3,9 +3,28 @@
 # Collaborates with: engines/base.py for the contract and pipeline/geometry_admission.py.
 from __future__ import annotations
 
+import re
+
+from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.gates import GateFeedback
+
 _SPANWISE_TYPES_2D = frozenset({"empty"})
 
 _SPANWISE_EMPTY_KEY = "<spanwise-empty>"
+
+_NOT_A_FOAM_WORD_CHAR = re.compile(r"[^A-Za-z0-9_]")
+
+
+def foam_spelling(name: str) -> str:
+    """The spelling the OpenFOAM case renderers write a patch name in: every character that is
+    not a letter, digit or underscore becomes an underscore ('car wall' -> 'car_wall'). Knowing it
+    is what lets a mismatch say 'you approved X, the mesher wrote Y' instead of only 'X is
+    missing'."""
+    return _NOT_A_FOAM_WORD_CHAR.sub("_", str(name)) or str(name)
+
+
+def _user_label(name: str) -> str:
+    return "frontAndBack (the spanwise empty patches)" if name == _SPANWISE_EMPTY_KEY else name
 
 
 def contract_applicable(intake_patches: list) -> bool:
@@ -72,10 +91,12 @@ def check_contract(
                 actual[n] = t
 
     if not actual:
-        return False, _format_diagnostic(
+        return False, GateFeedback(_format_diagnostic(
             declared, actual,
             extra_msg="Manifest is missing the patches array or patch_types map.",
-        )
+        ), cause=FailureCause.CONTRACT_MISMATCH, facts={
+            "missing": sorted(declared), "present": sorted(_names),
+            "renamed": _renamed(sorted(declared), _names)})
 
     declared_cmp = _collapse_spanwise_empty(declared)
     actual_cmp = _collapse_spanwise_empty(actual)
@@ -94,12 +115,26 @@ def check_contract(
     if not (missing or extra or mistyped):
         return True, ""
 
-    return False, _format_diagnostic(
+    return False, GateFeedback(_format_diagnostic(
         declared_cmp, actual_cmp,
         missing=sorted(missing),
         extra=sorted(extra),
         mistyped=mistyped,
-    )
+    ), cause=FailureCause.CONTRACT_MISMATCH, facts={
+        "missing": [_user_label(n) for n in sorted(missing)],
+        "extra": [_user_label(n) for n in sorted(extra)],
+        "mistyped": [{"name": _user_label(n), "declared": want, "got": got}
+                     for n, (want, got) in sorted(mistyped.items())],
+        "present": sorted(_names),
+        "renamed": _renamed(sorted(missing), _names)})
+
+
+def _renamed(missing: list[str], written: list[str]) -> dict[str, str]:
+    """{approved name: the name the mesher wrote instead}, for each missing name whose OpenFOAM
+    spelling is what the mesh carries - the one mismatch the user can route around today."""
+    have = set(written)
+    return {n: foam_spelling(n) for n in missing
+            if n != _SPANWISE_EMPTY_KEY and foam_spelling(n) != n and foam_spelling(n) in have}
 
 
 def _format_diagnostic(
