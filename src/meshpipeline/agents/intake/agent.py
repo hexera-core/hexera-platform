@@ -891,6 +891,11 @@ def _extract_reply(result: dict) -> str:
 
 
 
+def _declared_case(state_messages) -> tuple | None:
+    from meshpipeline.application.geometry_confirmation import declared_case
+    return declared_case(state_messages)
+
+
 async def node_intake(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
 
@@ -952,6 +957,7 @@ async def node_intake(state: PipelineState) -> dict:
         session_id=_ctx.session_id, owner_id=_ctx.owner_id, revision=_ctx.revision,
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         user_texts=turn.user_texts(state_messages),
+        declared_case=_declared_case(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval)
     _executor = IntakeToolExecutor(

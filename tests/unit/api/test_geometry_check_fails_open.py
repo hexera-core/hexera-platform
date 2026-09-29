@@ -302,6 +302,23 @@ async def test_a_unit_corrected_on_the_stage_is_recorded_and_the_sizes_re_read(s
     assert recorded == [] and "Part size: 7 x 7 x 117 mm" in out["message"]
 
 
+async def test_openings_that_share_a_name_are_named_apart_not_refused(served, monkeypatch):
+    """The intake soak: the check named five discarded stickers "not_an_opening", and Proceed was
+    refused ("Every opening needs its own name") until the user renamed stickers they were throwing
+    away. Discarded stickers are not compared; real openings that collide are numbered."""
+    served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = (await route._owned_session(SID, "alice", "org-1"))
+    _confirming(monkeypatch, session, {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm",
+                                       "scale_to_metres": 0.001, "basis": "file_declared", "evidence": "SI_UNIT"}, [])
+    ops = [route.ConfirmedOpening(id=i, name="not_an_opening", role="not_an_opening") for i in range(1, 6)]
+    ops += [route.ConfirmedOpening(id=6, name="outlet", role="inlet", diameter_mm=84.0, centroid_mm=[0.0, 0.0, 0.0]),
+            route.ConfirmedOpening(id=7, name="Outlet", role="outlet", diameter_mm=61.0, centroid_mm=[400.0, 0.0, 0.0])]
+    out = await route.confirm_check(SID, route.ConfirmIn(input_kind="fluid-domain", flow="internal", openings=ops,
+                                                         scale_to_m=0.001, unit="mm"), "alice", "org-1")
+    assert [p["name"] for p in out["patches"]] == ["outlet", "Outlet_2", "wall"]
+    assert [p["type"] for p in out["patches"]] == ["inlet", "outlet", "wall"]
+
+
 async def test_a_confirmation_whose_transaction_fails_takes_its_stored_copy_back(served, monkeypatch):
     """The stored copy goes first, the session's transaction second. A transaction that fails
     leaves no copy behind: the next read would otherwise report a confirmation that never

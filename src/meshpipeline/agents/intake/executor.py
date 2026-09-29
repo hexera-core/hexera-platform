@@ -97,6 +97,9 @@ class IntakeExecutionState:
     #: Every message the user wrote in this conversation, oldest first (the application's synthetic
     #: nudges excluded) - where an engine they chose before this turn is found.
     user_texts: tuple = ()
+    #: (purpose, input kind) the user confirmed on the geometry stage, or None: what an engine the
+    #: model proposes on its own must be able to mesh.
+    declared_case: tuple | None = None
     # The approved SOURCE, not a file. Intake binds which bytes were approved; it never
     # opens them, so it holds the reference and no path.
     source_ref: object | None = None
@@ -280,6 +283,26 @@ class IntakeToolExecutor:
                 f"has not named {shown} themselves. Do not switch engines for them - repair a "
                 "value that was your own and check again, or put the finding to the user with "
                 "the one revision that would pass; if they want alternatives they will ask."))
+        chosen_by_user = named_now or es.user_chose(eng, st.user_texts)
+        if not chosen_by_user and st.declared_case:
+            # AN ENGINE THE USER DID NOT NAME MUST BE ABLE TO MESH WHAT THEY CONFIRMED. The model
+            # proposed cfMesh for a fluid-volume file on its own; the admission then refused, and
+            # its way out was to relabel the confirmed fluid volume as a body surface - a fact the
+            # user never said - or to ask a user who had said "your call" which value to revise.
+            # The engine is the model's to change, the confirmed geometry is not.
+            purpose, kind = st.declared_case
+            verdict = preview_admission(eng, purpose, kind, dimensionality="3D")
+            if verdict.get("verdict") == "impossible":
+                able = [e for e in self._engines
+                        if preview_admission(e, purpose, kind, dimensionality="3D").get("verdict") != "impossible"]
+                shown = _vocab.to_display(_vocab.ENGINE, eng)
+                names = ", ".join(_vocab.to_display(_vocab.ENGINE, e) for e in able) or "none"
+                return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
+                    f"Not proposed: {shown} cannot mesh what the user confirmed on the geometry "
+                    f"stage ({_vocab.to_display(_vocab.INPUT_KIND, kind)}, "
+                    f"{_vocab.to_display(_vocab.PURPOSE, purpose)}), and the user did not ask for it. "
+                    f"Engines that can: {names}. Propose one of those instead; never ask the user to "
+                    "change the geometry they confirmed to suit an engine they did not choose."))
         # A NEW proposal invalidates the previous selection AND any admission preview or pending
         # canonical confirmation that the old selection authorized - including one obtained
         # EARLIER IN THIS SAME provider response.
@@ -295,7 +318,7 @@ class IntakeToolExecutor:
         # proof is in hand and asking again is a question with one answer, so the selection is
         # confirmed here instead of costing the user a round-trip. (A refusal still needs the name
         # in THIS message, above: an earlier naming is what the refusal was about.)
-        if named_now or es.user_chose(eng, st.user_texts):
+        if chosen_by_user:
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,
                             "expires_at": es.time.time() + es.CONFIRMED_TTL_S}

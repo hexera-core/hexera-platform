@@ -387,9 +387,13 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "This session has already been dispatched")
-    names = [o.name for o in body.openings]
-    if len(set(names)) != len(names):
-        raise HTTPException(422, "Every opening needs its own name")
+    # TWO OPENINGS WITH ONE NAME ARE NAMED APART, not refused: the check itself named five discarded
+    # stickers "not_an_opening" and the stage then refused Proceed until the user renamed stickers
+    # they were throwing away. Stickers marked not an opening never become patches, so their names
+    # are not compared at all.
+    from meshpipeline.application.geometry_confirmation import distinct_opening_names
+
+    body = body.model_copy(update={"openings": distinct_opening_names(body.openings)})
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import check_object_key
 

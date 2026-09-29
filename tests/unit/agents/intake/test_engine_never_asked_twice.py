@@ -119,3 +119,56 @@ def test_a_proposal_of_an_engine_the_user_moved_away_from_is_still_asked():
     ])
     assert out["intake_gate"]["selection"]["state"] == es.PROPOSED
     assert "Do you want to select snappyHexMesh?" in out["messages"][-1]["content"]
+
+
+# ------------------------------------------- an engine that cannot mesh what was confirmed ----
+def _confirmed(kind: str, flow: str) -> dict:
+    from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
+    return {"role": "assistant", "content": f"{CONFIRMED_MARK} the file is the fluid volume itself, input_kind "
+                                            f"{kind}; the fluid flows {flow} it. Openings: inlet (inlet); outlet (outlet)."}
+
+
+def test_the_model_never_proposes_an_engine_that_cannot_mesh_the_confirmed_geometry():
+    # the soak (straight_reducer_015_fluid, "your call"): cfMesh proposed for a fluid volume, then
+    # refused, then "change the input to a body surface?" to a user who had confirmed a fluid volume
+    messages = [_confirmed("fluid-domain", "through"),
+                {"role": "user", "content": "Your call, pick the normal thing."}]
+    out, seen = _run(messages, [
+        _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "cfmesh"}))]),
+        _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "snappy"}))]),
+        _resp(content="unreached"),
+    ])
+    assert "Not proposed: cfMesh cannot mesh what the user confirmed" in seen[0]["content"]
+    assert "snappyHexMesh" in seen[0]["content"] and "cfMesh" not in seen[0]["content"].split("Engines that can:")[1]
+    assert out["intake_gate"]["selection"]["engine"] == "snappy"
+
+
+def test_an_engine_the_user_named_is_theirs_even_when_it_cannot_mesh_it():
+    # their choice goes forward to the admission, which says why and what would pass
+    messages = [_confirmed("fluid-domain", "through"), {"role": "user", "content": "use cfMesh"}]
+    out, seen = _run(messages, [
+        _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "cfmesh"}))]),
+        _resp(content="cfMesh it is - checking it against your file next."),
+    ])
+    assert out["intake_gate"]["selection"]["engine"] == "cfmesh"
+
+
+@pytest.mark.parametrize("kind,flow,engine", [("body-surface", "through", "cfmesh"), ("solid-body", "around", "snappy"),
+                                              ("fluid-domain", "through", "snappy")])
+def test_an_engine_that_can_mesh_the_confirmed_geometry_is_proposed_as_before(kind, flow, engine):
+    out, _ = _run([_confirmed(kind, flow), {"role": "user", "content": "which one do you suggest?"}], [
+        _resp([_tool_call("propose_engine_selection", json.dumps({"engine": engine}))]),
+        _resp(content="unreached"),
+    ])
+    assert out["intake_gate"]["selection"]["state"] == es.PROPOSED and out["intake_gate"]["selection"]["engine"] == engine
+
+
+def test_the_confirmed_case_is_read_back_from_the_stage_sentence_only():
+    from meshpipeline.api.v1.geometry import ConfirmIn
+    from meshpipeline.application.geometry_confirmation import confirmation_message, declared_case
+    for kind in ("body-surface", "fluid-domain", "solid-body"):
+        for flow, purpose in (("internal", "internal_cfd"), ("external", "external_cfd")):
+            msg = confirmation_message(ConfirmIn(input_kind=kind, flow=flow, unit="mm"))
+            assert declared_case([{"role": "assistant", "content": msg}]) == (purpose, kind)
+    assert declared_case([{"role": "user", "content": "input_kind fluid-domain; the fluid flows through it."}]) is None
+    assert declared_case([]) is None

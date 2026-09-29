@@ -9,11 +9,43 @@
 # changed later, in the chat or on the stage).
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 
 #: How the confirmation announces itself in the conversation; the intake prompt block names it.
 CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
+
+
+def distinct_opening_names(openings) -> list:
+    """The openings with every real opening's name its own. Two that would reach a mesher as one
+    name ("inlet" and "Inlet", "outlet 1" and "outlet_1") keep the first and number the rest
+    ("inlet_2", "inlet_3") - what patch_names does for a declaration - instead of refusing the
+    confirmation. A sticker marked not an opening never becomes a patch, so its name is left as it
+    is and compared with nothing."""
+    from meshpipeline.contracts.patch_names import same_patch_name
+
+    longest = 40                                      # the stage form's name box (ConfirmedOpening)
+    out = []
+    kept: list[str] = []
+    for o in openings:
+        if getattr(o, "role", None) == "not_an_opening":
+            out.append(o)
+            continue
+        name = str(o.name)
+        if any(same_patch_name(name, k) for k in kept):
+            n = 2
+            while True:
+                suffix = f"_{n}"
+                candidate = f"{name[:longest - len(suffix)]}{suffix}"
+                if not any(same_patch_name(candidate, k) for k in kept):
+                    break
+                n += 1
+            o = o.model_copy(update={"name": candidate}) if hasattr(o, "model_copy") else {**o, "name": candidate}
+            name = candidate
+        kept.append(name)
+        out.append(o)
+    return out
 
 
 def unit_sentence(body) -> str:
@@ -88,6 +120,24 @@ def confirmation_message(body) -> str:
 
 def _is_declaration(m: dict) -> bool:
     return m.get("role") == "assistant" and str(m.get("content", "")).startswith(CONFIRMED_MARK)
+
+
+_DECLARED = re.compile(
+    r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
+
+
+def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
+    """(purpose, input kind) as the user confirmed them on the stage - read back from this module's
+    own sentence: a fluid flowing through the part is internal CFD, around it external CFD. None
+    when nothing was confirmed there. What an engine the model proposes must be able to mesh."""
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            found = _DECLARED.search(str(m.get("content", "")))
+            if found:
+                kind, flow = found.groups()
+                return ("internal_cfd" if flow == "through" else "external_cfd"), kind
+            return None
+    return None
 
 
 def with_declaration(messages: list[dict] | None, message: str) -> list[dict]:
@@ -201,5 +251,6 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
             **plain, "message": message, "patches": patches_from(body), "reread": {"sizes_dropped": True}}
 
 
-__all__ = ["CONFIRMED_MARK", "body_of", "confirmation_message", "patches_from", "replace_declaration",
+__all__ = ["CONFIRMED_MARK", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
+           "patches_from", "replace_declaration",
            "reread_record", "sizeless_record", "unit_sentence", "with_declaration"]
