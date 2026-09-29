@@ -202,10 +202,23 @@ SPEC = EngineSpec(
         # as the wall patch the user declared as ground (snappy_runner.domain_from_strategy and
         # render_snappy_case); the other five faces stay far field.
         supports_ground_plane=True,
-        # PROVEN end to end: a STEP whose parts are named tessellates to named STL solids, the
-        # dict declares them under regions{} with per-region patchInfo and layer entries, and
-        # snappyHexMesh returns them as separate wall patches carrying their prism layers.
+        # An input whose parts are separate named STL solids keeps them: prepare_surface stages
+        # each part under the declared wall it matches, the dict declares them under regions{}
+        # with per-region patchInfo and layer entries, and snappyHexMesh returns them as separate
+        # wall patches carrying their prism layers.
         supports_multiple_wall_patches=True,
+        # ...but a CAD file is tessellated as ONE surface (cad_tessellate.tessellate_to_stl), so
+        # the parts a STEP assembly names never reach the mesher apart. Only STL solids are kept.
+        keeps_regions_from=("stl-solids",),
+        # every staged part is a wall patch, so with several walls each part must be one of them
+        parts_become_walls=True,
+        # What this case writer builds. EXTERNAL: blockMesh's far field is one box, written as ONE
+        # patch under the declared far-field name; a symmetry plane is a half-model's cut (one) or
+        # a slab's two ends (two). INTERNAL: the carve delivers one wall and the declared ports -
+        # the port binder refuses any other role, so a symmetry or empty patch would stop the
+        # build after the job started.
+        boundary_limits=(("external", (("farfield", 1), ("symmetry", 2))),
+                         ("internal", (("wall", 1), ("symmetry", 0), ("empty", 0)))),
         validation_coverage=(
             _VC(_VA.INTEGRITY, "checkMesh fatal-topology (negative-volume / open / mis-oriented cells)",
                 "a fatal topological defect is universally invalid - blocked by the manifest_valid gate"),

@@ -81,7 +81,7 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
 def prepare_surface(workspace, *, geometry_file: str,
                     domain_min, domain_max, wall_patch: str = "body",
                     farfield_patch: str = "farfield", feature_angle: float = 30.0,
-                    mirror_y_half: bool = False,
+                    mirror_y_half: bool = False, body_walls: list | None = None,
                     bashrc: str = _DEFAULT_BASHRC) -> dict:
     ws = Path(workspace)
     body_stl = ws / geometry_file
@@ -91,9 +91,15 @@ def prepare_surface(workspace, *, geometry_file: str,
     # REGIONS the surface already names. read_stl_triangles dissolves the solid boundaries, which
     # is the right read for a body meshed as one wall and the wrong one for a surface whose parts
     # are named: renameBoundary below maps FMS solids to patch names, so a collapse here is what
-    # decides a multi-patch request can never be honoured - not any limit of cfMesh.
+    # decides a multi-patch request can never be honoured - not any limit of cfMesh. The
+    # DECLARATION decides what they become (declared_boundary.stage_regions): one declared body
+    # wall makes them one solid under its name, several keep each part under the declared wall it
+    # matches. Written under the file's own spellings, no renameBoundary entry matched them and
+    # every part landed in the default patch - "fixedWalls" - while the approved wall had no faces.
+    from meshpipeline.engines.declared_boundary import stage_regions
     solids = {n: drop_degenerate(v) for n, v in read_stl_solids(body_stl).items()}
     regions = {n: v for n, v in solids.items() if v} if len(solids) > 1 else {}
+    regions = stage_regions(regions, list(body_walls) if body_walls else [wall_patch])
     body = drop_degenerate(read_stl_triangles(body_stl))
     if mirror_y_half:
         body = body + mirror_y(body)
@@ -462,8 +468,9 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         dmin, dmax = args["domain_min"], args["domain_max"]
     else:
         dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy)
+    from meshpipeline.engines.declared_boundary import body_walls, farfield_name
     _patches = list(contract_patches or [])
-    _farfield = next((p["name"] for p in _patches if p["type"] != "wall"), "farfield")
+    _farfield = farfield_name(_patches)
     if not _patches:
         _patches = [{"name": wall_patch, "type": "wall"},
                     {"name": _farfield, "type": "farfield"}]
@@ -471,7 +478,8 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         workspace, geometry_file=geometry_file, domain_min=dmin, domain_max=dmax,
         wall_patch=wall_patch, farfield_patch=_farfield,
         feature_angle=float(args.get("feature_angle", 30.0)),
-        mirror_y_half=bool(args.get("mirror_y_half", False)))
+        mirror_y_half=bool(args.get("mirror_y_half", False)),
+        body_walls=body_walls(_patches) or None)
     summary = render_cfmesh_case(
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=analysis["L"],
@@ -503,6 +511,13 @@ def _configure_external_2d(workspace, *, geometry_file: str, strategy: dict, sur
                     {"name": _farfield, "type": "farfield"}]
 
     body = drop_degenerate(read_stl_triangles(ws / geometry_file))
+    # the profile's NAMED PARTS, staged under the declared walls exactly as the 3D path does
+    # (declared_boundary.stage_regions): written as one solid under the first wall, every other
+    # approved wall of a multi-element section came back with zero faces after the run
+    from meshpipeline.engines.declared_boundary import body_walls, stage_regions
+    _solids = {n: drop_degenerate(v) for n, v in read_stl_solids(ws / geometry_file).items()}
+    _regions = stage_regions({n: v for n, v in _solids.items() if v} if len(_solids) > 1 else {},
+                             body_walls(_inplane) or [wall_patch])
     zs = [v[2] for t in body for v in t]
     z0, z1 = min(zs), max(zs)
     if not (z1 - z0) > 0:
@@ -528,7 +543,11 @@ def _configure_external_2d(workspace, *, geometry_file: str, strategy: dict, sur
     ff = (_side((x0, y0), (x1, y0)) + _side((x1, y0), (x1, y1))
           + _side((x1, y1), (x0, y1)) + _side((x0, y1), (x0, y0)))
     with (ws / "geom.stl").open("w") as fh:
-        _write_solid(fh, wall_patch, body)
+        if _regions:
+            for _name, _tris in _regions.items():
+                _write_solid(fh, _name, _tris)
+        else:
+            _write_solid(fh, wall_patch, body)
         _write_solid(fh, _farfield, ff)
     (ws / "geom_box.json").write_text(json.dumps({
         "domain_min": [float(v) for v in dmin],

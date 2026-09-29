@@ -58,6 +58,23 @@ def category_of(tool: str) -> str:
     return INTAKE_CATEGORIES.get(tool, "unknown")
 
 
+def _normalize_declared_patches(args: dict):
+    """The declared patches as every later layer will read them. The PURPOSE decides which roles a
+    word may mean and whether a ground plane exists (only an external flow has a far-field box
+    with a floor); an unknown purpose applies the name rules alone and leaves types to the
+    validator."""
+    from meshpipeline.contracts.patch_names import normalize_declaration
+    from meshpipeline.engines.ground_plane import ground_rule
+    from meshpipeline.engines.purposes import PURPOSES, topology_of
+
+    purpose = str(args.get("purpose") or "").strip()
+    known = purpose in PURPOSES
+    return normalize_declaration(
+        args.get("patches"),
+        allowed_roles=PURPOSES[purpose].boundary_roles if known else None,
+        ground=ground_rule() if known and topology_of(purpose) == "external" else None)
+
+
 @dataclass(frozen=True)
 class IntakeToolResult:
 
@@ -178,15 +195,17 @@ class IntakeToolExecutor:
         # is what keeps that split from leaking into the rest of the system.
         from meshpipeline.agents.intake.vocabulary import normalize_tool_args
         args = normalize_tool_args(args)
-        # MESH-SAFE PATCH NAMES, at the same boundary and for the same reason: a name a person typed
-        # ("car wall") becomes the spelling a mesher can write ("car_wall") before the preview, the
-        # preview token, the approved snapshot, the builder payload and the manifest check see it,
-        # so none of them can disagree. The model is told the new spelling in the tool result.
-        from meshpipeline.contracts.patch_names import normalize_patches, rename_note
-        _renames: dict[str, str] = {}
+        # THE DECLARED PATCHES, at the same boundary and for the same reason: a name a person typed
+        # ("car wall") becomes the spelling a mesher can write ("car_wall"), a name a mesher keeps
+        # for itself ("outer") becomes the user's own, a boundary word becomes the role it means
+        # ("velocity inlet" -> inlet), and in an external flow a wall called "ground plane" or
+        # "floor" becomes the ground the domain lays - before the preview, the preview token, the
+        # approved snapshot, the builder payload and the manifest check see any of it, so none of
+        # them can disagree. The model is told every change in the tool result.
+        _changes = None
         if isinstance(args, dict) and "patches" in args:
-            _patches, _renames = normalize_patches(args.get("patches"))
-            args = {**args, "patches": _patches}
+            _changes = _normalize_declared_patches(args)
+            args = {**args, "patches": _changes.patches}
 
         before = st.authorization_signature()
         handler = getattr(self, f"_do_{tool}", None)
@@ -198,8 +217,10 @@ class IntakeToolExecutor:
         result = await handler(args)
         after = st.authorization_signature()
         content = result.content
-        if _renames:
-            content = f"{rename_note(_renames)}\n\n{content}" if content else rename_note(_renames)
+        if _changes is not None and _changes.changed:
+            from meshpipeline.contracts.patch_names import declaration_note
+            _note = declaration_note(_changes)
+            content = f"{_note}\n\n{content}" if content else _note
         return IntakeToolResult(
             tool=result.tool, content=content, accepted=result.accepted,
             advanced=result.advanced or (after != before), signature=after)

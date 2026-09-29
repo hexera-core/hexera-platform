@@ -24,11 +24,13 @@ _MANY = {"purpose": "external_cfd", "input_kind": "body-surface", "dimensionalit
 # Exactly one engine, discriminated by a real capability difference: snappy has no 2D path. This
 # used to lean on snappy refusing several wall patches, which it no longer does - and a fixture
 # that depends on an engine's weakness stops meaning anything the moment the weakness is fixed.
+# The 2D case carries ONE empty patch: cfMesh's cartesian2DMesh merges front and back into exactly
+# one, and two declared empty patches are refused at intake rather than by configure_mesh after
+# the job has started.
 _EXACTLY_ONE = {"purpose": "external_cfd", "input_kind": "body-surface", "dimensionality": "2D",
                 "patches": [{"name": "airfoil", "type": "wall"},
                             {"name": "farfield", "type": "farfield"},
-                            {"name": "front", "type": "empty"},
-                            {"name": "back", "type": "empty"}]}
+                            {"name": "frontAndBack", "type": "empty"}]}
 _NONE = {"purpose": "structural", "input_kind": "fluid-domain", "dimensionality": "3D",
          "patches": _FIVE}                           # nothing is compatible
 

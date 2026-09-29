@@ -111,6 +111,11 @@ def install_adapters() -> None:
     geometry_check.set_scout_enqueuer(_enqueue_geometry_scout)
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
     mesh_execution.set_mesh_executor(build_mesh_executor())
+    # THE PRE-FLIGHT: the written case is held to the approved patches before any mesher starts,
+    # so a name the case does not carry costs seconds and an internal error naming it - never a
+    # whole run that ends as "quality".
+    from meshpipeline.engines.case_contract import launch_check
+    mesh_execution.set_launch_check(launch_check)
     # Console sign-in. The product knows only `contracts.firebase_token.verify`; which identity
     # provider is behind it - and therefore which certificate endpoint and which claim
     # vocabulary - is settled here, once.
