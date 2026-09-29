@@ -16,6 +16,7 @@ from meshpipeline.agents.reviewer.visual import node_reviewer
 from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.pipeline.classifier import node_classifier
+from meshpipeline.pipeline.engine_fallback import node_engine_fallback
 from meshpipeline.pipeline.engine_select import node_engine_select
 from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
@@ -257,6 +258,7 @@ def build_graph(checkpointer):
     b.add_node("node_builder",         _fenced("node_builder", node_builder))
     b.add_node("node_executor",        _fenced("node_executor", node_executor))
     b.add_node("node_classifier",      _fenced("node_classifier", node_classifier))
+    b.add_node("node_engine_fallback", _fenced("node_engine_fallback", node_engine_fallback))
     b.add_node("node_reviewer",        _fenced("node_reviewer", node_reviewer))
     b.add_node("node_failure_handler", _fenced("node_failure_handler", node_failure_handler))
     b.add_node("node_infra_retry",     _fenced("node_infra_retry", node_infra_retry))
@@ -294,7 +296,11 @@ def build_graph(checkpointer):
             END:               END,
         },
     )
-    b.add_edge("node_classifier", "node_builder")
+    # THE FALLBACK LADDER sits between classifying a failure and the next attempt: it keeps the
+    # engine, or moves the run to the next engine that delivers the same approved mesh
+    # (pipeline/engine_fallback.py). It never ends a run, so its one edge is the builder.
+    b.add_edge("node_classifier", "node_engine_fallback")
+    b.add_edge("node_engine_fallback", "node_builder")
     b.add_conditional_edges(
         "node_reviewer",
         route_after_reviewer,

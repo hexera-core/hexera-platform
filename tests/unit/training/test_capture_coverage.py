@@ -30,8 +30,13 @@ def test_pinned_engine_emits_event_with_user_source(capture_authority, monkeypat
     assert out == {}
     evs = _events(capture_authority, "j1")
     assert evs[0]["event_type"] == "engine_select_run"
+    # who chose the engine and the ladder it could fall back to ride along: with no purpose
+    # declared there is no topology, so the ladder is the pinned engine alone
     assert evs[0]["payload"] == {"chosen": "snappy", "source": "user",
-                                 "model": None, "usage": None, "planner_required": True}
+                                 "model": None, "usage": None, "planner_required": True,
+                                 "engine_source": "",
+                                 "ladder": [{"engine": "snappy", "same_contract": True,
+                                             "changes": []}]}
 
 
 def test_dispute_pin_emits_event_with_dispute_source(capture_authority, monkeypatch, tmp_path):
@@ -60,9 +65,14 @@ def test_internal_purpose_force_emits_event(capture_authority, monkeypatch, tmp_
     from meshpipeline.pipeline.engine_select import node_engine_select
     asyncio.run(node_engine_select({"job_id": "j4", "purpose": "internal_cfd"}))
     pl = _events(capture_authority, "j4")[0]["payload"]
+    ladder = pl.pop("ladder")
     assert pl == {"chosen": default_engine(), "source": "topology_internal",
-                  "model": None, "usage": None, "planner_required": False}
+                  "model": None, "usage": None, "planner_required": False,
+                  "engine_source": ""}
     assert pl["chosen"] in engines_producing_topology("internal")
+    # the ladder starts at the chosen engine; every rung can build an internal flow
+    assert ladder[0] == {"engine": default_engine(), "same_contract": True, "changes": []}
+    assert {r["engine"] for r in ladder} <= set(engines_producing_topology("internal"))
 
 
 # planner_run events  #

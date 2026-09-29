@@ -131,6 +131,25 @@ class DownstreamTarget:
     solvers: tuple    # solvers/consumers that can read this mesh's delivered format(s)
 
 
+#: How closely a mesh's wall follows the body, weakest first. A body-fitted wall delivers
+#: everything a staircased one does and more, never the other way round.
+WALL_FITS: tuple[str, ...] = ("staircased", "body-fitted")
+CELL_KINDS: tuple[str, ...] = ("hex-dominant", "tetrahedral")
+
+
+@dataclass(frozen=True)
+class DeliveredMesh:
+    """WHAT THE USER RECEIVES from this engine, in the terms an approval can promise.
+
+    The fallback ladder (pipeline/engine_fallback.py) moves a run to another engine on its own
+    only when that engine delivers what the approved one would have: the same file, the same
+    kind of cells, a wall at least as true to the body, and prism layers where the brief asked
+    for them. Anything less is offered to the user, never delivered silently. Declared here
+    with the rest of the engine's capability, never inferred from its name."""
+
+    cells: str            # one of CELL_KINDS - what fills the volume
+    walls: str            # one of WALL_FITS - how the cells meet the body
+    prism_layers: bool    # can deliver the near-wall prism layers a brief asks for, reliably
 
 
 @dataclass(frozen=True)
@@ -350,6 +369,10 @@ class EngineSpec:
     # Structures descriptor prose so intake names the user's next step from a
     # declaration, not hardcoded OpenFOAM strings (consumer: agents.intake.outcome).
     downstream: DownstreamTarget | None = None
+    # WHAT THE DELIVERED MESH IS (cells, wall fit, prism layers) - the terms the fallback ladder
+    # compares two engines in before it lets one stand in for the other. Implemented rows declare
+    # it (test-enforced); an engine without it is never switched to without asking.
+    delivered_mesh: DeliveredMesh | None = None
     # Optional engine-owned hooks (consumers: builder_tools run_mesh
     # enrichment; agents.builder.agent build dispatch; the viewer surface endpoint).
     # None → generic behavior.

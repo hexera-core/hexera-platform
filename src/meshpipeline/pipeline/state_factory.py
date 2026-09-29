@@ -52,6 +52,10 @@ def make_pipeline_state(
         "geometry":              dict(geometry or {}),
         "domain":                domain,
         "engine":                engine,
+        # who chose it (the application seeds the real value) and the fallback ladder's record;
+        # an unknown source is never switched on its own
+        "engine_source":         "",
+        "engine_ladder":         {},
         "engine_params":         engine_params if engine_params is not None else {},
         # intake_gate: {"selection": …, "admission": …} - the confirmed engine selection and the
         # admission preview-TOKEN it backs (intake-only working key, not a graph PipelineState
@@ -106,7 +110,7 @@ def make_pipeline_state(
 # #
 # THE USER'S ENGINE IS THE RUN'S ENGINE.
 # Extracted from application/pipeline_run._run_async. The product invariant:
-#     The user-selected engine stays authoritative for the whole run and every continuation. The
+#     An engine the USER named stays authoritative for the whole run and every continuation. The
 #     pipeline never recommends, substitutes, defaults or infers one behind the user's back.
 # Two halves enforce it. This one PINS the selection into the run state; node_engine_select honours
 # the pin and hard-fails on a name no spec matches (an unknown pin once meant validating the mesh
@@ -114,7 +118,42 @@ def make_pipeline_state(
 # from the declared purpose - which is why the pin is written before the graph is ever built.
 # A dispute run deliberately overwrites this afterwards with the PARENT's engine: a rebuild must
 # use the mesher the delivered mesh came from. That ordering is the caller's and is asserted there.
+# The one exception is the fallback ladder (pipeline/engine_fallback.py), and it is narrow: an
+# engine the intake PROPOSED and the user confirmed may be replaced mid-run by another that
+# delivers the SAME approved mesh - said in the run's stream and its closing message, never behind
+# anyone's back. A user-named engine, a dispute's engine, or one whose provenance is unknown is
+# never replaced; its failure ends in an offer the user accepts in one sentence.
 # #
+
+
+def engine_provenance(intake_events, pinned_engine: str, *, dispute: bool = False) -> str:
+    """WHO CHOSE THE ENGINE this run starts with: user_direct | suggested_confirmed | dispute |
+    system.
+
+    The approval dispatches it as an `engine_provenance` event appended to intake_events
+    (agents/intake/approval.engine_provenance_event), in every data-collection mode; a dispatch
+    written before that event existed still carries it on the approved submission's
+    intake_complete event when collection was on. The LAST such event is the approved one: every
+    approval is of the latest submission. Anything that cannot be read with certainty - no event,
+    an event for another engine, an unknown word - is the user's choice, because that is the
+    reading that never switches an engine on a guess."""
+    if dispute:
+        return "dispute"
+    if not pinned_engine:
+        return "system"
+    for ev in reversed(list(intake_events or [])):
+        if not isinstance(ev, dict) or ev.get("type") not in ("engine_provenance",
+                                                               "intake_complete"):
+            continue
+        payload = ev.get("payload") or {}
+        if not isinstance(payload, dict):
+            break
+        source = str(payload.get("engine_source") or "").strip().lower()
+        same = str(payload.get("mesh_engine") or "").strip().lower() == pinned_engine
+        if same and source in ("user_direct", "suggested_confirmed"):
+            return source
+        break
+    return "user_direct"
 
 
 async def pin_selected_engine(state, mesh_engine: str, *, jlog,

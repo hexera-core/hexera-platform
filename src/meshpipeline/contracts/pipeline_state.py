@@ -16,7 +16,10 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 10  # v10: `executor_failure_cause` + `executor_failure_facts` - WHAT the
+STATE_SCHEMA_VERSION = 11  # v11: `engine_source` + `engine_ladder` - who chose the engine, and
+                           # the fallback ladder's record (every attempt's engine, each switch,
+                           # the offer a run ends with). Carries every v10 field.
+                           # v10: `executor_failure_cause` + `executor_failure_facts` - WHAT the
                            # failed gate says failed, typed, so the user is told the cause and the
                            # retry policy skips what a retry cannot change.
                            # v9: `dispute_flag_findings` + `builder_flag_responses` - the
@@ -32,7 +35,14 @@ STATE_SCHEMA_VERSION = 10  # v10: `executor_failure_cause` + `executor_failure_f
 
 class PipelineState(TypedDict):
     schema_version: int   # stamped by the worker; see STATE_SCHEMA_VERSION
-    engine:   str         # mesh engine chosen pre-job by node_engine_select
+    engine:   str         # mesh engine chosen pre-job by node_engine_select; moved only by
+                          # node_engine_fallback, to an engine delivering the same approved mesh
+    # WHO CHOSE THE ENGINE: user_direct | suggested_confirmed | dispute | system. Seeded by the
+    # application; decides whether the fallback ladder may move the run on its own.
+    engine_source: str
+    # THE FALLBACK LADDER'S RECORD (pipeline/engine_fallback.py): the approved engine, every
+    # attempt's engine and failure class, each switch and why, and the run's closing offer.
+    engine_ladder: dict
     messages: Annotated[list, add_messages]
     job_id:   str
     user_id:  str

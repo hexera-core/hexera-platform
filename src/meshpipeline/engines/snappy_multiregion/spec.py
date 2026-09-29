@@ -9,6 +9,7 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
     InputContract,
@@ -232,6 +233,8 @@ SPEC = EngineSpec(
             solvers=("chtMultiRegionFoam (conjugate heat transfer)",
                      "solids4Foam (fluid-structure interaction)"),
         ),
+        # per-region OpenFOAM hex-dominant meshes, snapped onto each region's surface
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
             # a multi-region build (background snappy + split of several regions)

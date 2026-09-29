@@ -19,7 +19,8 @@ START
          │                                       node_reviewer  ◄──────────── node_executor
          ▼                                            │                            │
         END                                           ├─► END (pass)                ├─► END
-                                                      ├─► node_classifier ──► node_builder
+                                                      ├─► node_classifier ──► node_engine_fallback
+                                                      │                          └─► node_builder
                                                       └─► node_failure_handler
 ```
 
@@ -122,8 +123,35 @@ attempt.
 another attempt is allowed. That is the routing function's decision, taken from the attempt
 budget.
 
-**Routing.** Always back to the builder. The retry loop is bounded; when attempts are exhausted
-the reviewer's routing sends the run to END rather than looping.
+**Routing.** Always to the fallback ladder, then the builder. The retry loop is bounded; when
+attempts are exhausted the reviewer's routing sends the run to END rather than looping.
+
+## node_engine_fallback: when another engine should take over
+
+**Responsibility.** Decide whether the next attempt stays on this engine or moves to another one
+that delivers the same approved mesh (`pipeline/engine_fallback.py`).
+
+An engine that cannot build a mesh at all (it stopped, timed out, or refused the input) moves at
+once. A mesh that failed a bar a retry might clear (cell quality, resolution, size, the trial
+solve, a lost boundary, review) is retried here while the shared attempts still leave every
+untried engine one attempt, and moves when they do not or when the same failure repeats. A
+failure no engine can change (the far-field size asked for, a boundary our own authoring wrote
+wrong) never moves the run.
+
+**Owns.** The ladder order per flow topology, the same-contract test between two engines, and the
+ladder record (`engine_ladder`): every attempt's engine and failure class, each switch and why,
+and the one offer a failed run ends with.
+
+**Boundaries.** It moves a run only to an engine that delivers what was approved: the same
+boundaries under the same admission rules, the same file and kind of cells, a wall at least as
+true to the body, and the prism layers the request asked for (`EngineSpec.delivered_mesh`). It
+never moves an engine the user named, or a dispute's engine. Anything less - tetrahedra for a
+hex-dominant mesh, no layers where layers were asked for, a staircased wall - is offered in the
+closing message, which the user accepts in one sentence. A switch spends one of the run's own
+attempts and needs the time for the new engine's run cap; `ENGINE_FALLBACK_ENABLED=false` keeps
+every run on its first engine.
+
+**Routing.** Always to the builder: a fresh build on the new engine, or an ordinary retry.
 
 ## node_reviewer: looking at the mesh
 

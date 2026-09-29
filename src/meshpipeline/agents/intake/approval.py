@@ -312,6 +312,18 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
     return job.id, snapshot, source_ref, interp_ref
 
 
+#: The dispatched record of who chose the approved engine (pipeline/state_factory.engine_provenance
+#: reads it). It rides the intake events because that channel already reaches every run, old or
+#: new worker alike, and it holds no user content: an engine key and one of two provenance words.
+ENGINE_PROVENANCE_EVENT = "engine_provenance"
+
+
+def engine_provenance_event(approved: dict) -> dict:
+    return {"type": ENGINE_PROVENANCE_EVENT,
+            "payload": {"mesh_engine": str(approved.get("mesh_engine") or "").strip().lower(),
+                        "engine_source": str(approved.get("engine_source") or "").strip().lower()}}
+
+
 def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snapshot: dict,
                             source_ref, interp_ref) -> dict:
     from meshpipeline.application.approved_patch_contract import ApprovedPatchContract
@@ -340,7 +352,10 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
         "mesh_engine": approved.get("mesh_engine", ""),
         "domain": approved.get("domain", ""),
         "engine_params": dict(approved.get("engine_params") or {}),
-        "intake_events": list(session.llm_metadata or []),
+        # the buffered intake records, then WHO CHOSE THE ENGINE, from the approval itself: the
+        # run's fallback ladder may move only an engine the user did not name, and the training
+        # records above are not buffered at all when data collection is off
+        "intake_events": list(session.llm_metadata or []) + [engine_provenance_event(approved)],
         "approved_snapshot_id": str(snapshot.get("id")),
         # THE typed, fingerprinted approved patch contract - built ONCE from the approved snapshot's
         # own declared patches, so the EXACT boundary set is verifiable at reconstruction and at

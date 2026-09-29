@@ -9,6 +9,7 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
     InputContract,
@@ -278,6 +279,8 @@ SPEC = EngineSpec(
             # FACTUAL consumers of a VTK-native tet volume mesh - not a domain claim
             solvers=("OpenFOAM", "SimVascular/svSolver", "FEniCS/dolfinx", "SU2", "Elmer"),
         ),
+        # a tetrahedral lumen fill with optional near-wall layers (the wall_layers param)
+        delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),
             # 50 MINUTES: at industry density (13 cells across, 5 layers) the sweep's largest case

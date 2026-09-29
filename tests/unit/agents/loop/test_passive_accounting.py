@@ -175,8 +175,9 @@ def test_the_state_carries_append_only_agent_run_history():
     import typing
 
     from meshpipeline.contracts import pipeline_state as ps
-    # v10 added the executor's failure cause and facts; the history field is unchanged
-    assert ps.STATE_SCHEMA_VERSION == 10
+    # v10 added the executor's failure cause and facts, v11 the fallback ladder's
+    # engine_source + engine_ladder; the history field is unchanged
+    assert ps.STATE_SCHEMA_VERSION == 11
     hints = typing.get_type_hints(ps.PipelineState, include_extras=True)
     import operator
     assert operator.add in hints["agent_run_records"].__metadata__, "history must be append-only"

@@ -9,6 +9,7 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
     InputContract,
@@ -227,6 +228,8 @@ SPEC = EngineSpec(
             # capability, not a domain claim (its .inp/.msh/.bdf/.unv exports)
             solvers=("CalculiX", "Abaqus", "Nastran", "SU2", "Elmer", "FEniCS/dolfinx"),
         ),
+        # a conformal tetrahedral deck; no prism-layer inflation on this path
+        delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=False),
         run_policy=RunPolicy(
             required_files=("gmsh_spec.json",),
             # 25 MINUTES: at industry density the passage field (driver.PASSAGE_CELLS_ACROSS)

@@ -195,20 +195,38 @@ CONTRACT: tuple[ContractVar, ...] = (
     ContractVar(
         concept="engine choice provenance",
         purpose="whether the engine was user_direct or suggested_confirmed - "
-                "audits that inferred choices are proposed, never applied",
-        intake_field="engine_source",
+                "audits that inferred choices are proposed, never applied - and, in the "
+                "run, WHO chose it (plus dispute | system for a run the pipeline resolved): "
+                "the fallback ladder moves only an engine the user did not name. It reaches "
+                "the run inside the dispatched intake events (an engine_provenance event the "
+                "approval appends in every data-collection mode), read once by the "
+                "application at seeding",
+        intake_field="engine_source", state_field="engine_source",
         corpus="qa: verifies the propose-and-confirm contract; training signal "
-               "for intake's fallback behaviour. Capture-only: rides the "
-               "intake_complete event payload, no session/state carrier needed",
+               "for intake's fallback behaviour; rides the intake_complete event "
+               "payload and every engine_select_run event",
     ),
     ContractVar(
         concept="engine (resolved)",
         purpose="the engine that actually RUNS - resolution of dispute pin > "
                 "user choice > declared-capability lookup > default; keys the "
-                "builder prompt/tools/runner/validator downstream",
+                "builder prompt/tools/runner/validator downstream. Mid-run the fallback "
+                "ladder may move it to an engine that delivers the SAME approved mesh "
+                "(never a user-named or dispute engine), so the delivered engine is "
+                "this field at the end of the run",
         state_field="engine",
         corpus="training+qa: engine_select_run event records chosen + source; "
                "record.json/labels.json carry it per sample",
+    ),
+    ContractVar(
+        concept="engine fallback ladder record",
+        purpose="the fallback ladder's durable record (pipeline/engine_fallback.py): the "
+                "approved engine, every attempt's engine and failure class, each switch and "
+                "why, the engine that built the delivered mesh, and - on a mesh failure - the "
+                "one offer the run ends with. Carried into the terminal result verbatim",
+        state_field="engine_ladder",
+        corpus="qa: which shapes need which rung - every engine a run tried and why it "
+               "left each one",
     ),
     ContractVar(
         concept="user dispute",
@@ -325,12 +343,18 @@ CONTRACT: tuple[ContractVar, ...] = (
 # corpus event registry: every event type + which corpus purpose it serves
 EVENT_TYPES: dict[str, str] = {
     "intake_turn":        "training: one intake conversation turn",
+    "engine_provenance":  "qa: who chose the approved engine (user_direct | suggested_confirmed), "
+                          "appended to the dispatched intake events by the approval in every "
+                          "data-collection mode; the run reads it to decide whether the fallback "
+                          "ladder may move the engine",
     "intake_complete":    "training: intake's full structured handoff (incl. "
                           "engine_source provenance)",
     "web_search":         "training+qa: the search sub-agent's query, provider, "
                           "distilled answer and usage",
     "engine_select_run":  "qa: which engine ran and WHY (user/dispute/internal/"
-                          "default) - deterministic, no model",
+                          "default, or fallback: a ladder switch, with the engine it left and "
+                          "the failure that moved it) plus who chose it and the ladder of "
+                          "rungs - deterministic, no model",
     "geometry_admission": "qa: input-contract admission verdict - when an engine's "
                           "measured input contract (e.g. self-intersection) rejected the "
                           "geometry before any build; deterministic, no model",
@@ -355,6 +379,10 @@ EVENT_TYPES: dict[str, str] = {
 STATE_FIELDS: dict[str, str] = {
     "schema_version":        "state schema version stamped by the worker (STATE_SCHEMA_VERSION)",
     "engine":                "the RESOLVED engine that runs (see 'engine (resolved)' above)",
+    "engine_source":         "who chose the engine: user_direct | suggested_confirmed | dispute | "
+                             "system (see 'engine choice provenance'); gates the fallback ladder",
+    "engine_ladder":         "the fallback ladder's record: attempts, switches, the closing offer "
+                             "(see 'engine fallback ladder record')",
     "messages":              "LangGraph message accumulator for the intake node",
     "job_id":                "job identity (see contract)",
     "user_id":               "owner identity (see contract; alias of owner_id)",
