@@ -17,7 +17,6 @@ import { acceptAttribute, isOfferable, loadIntakeFormats, supportedCopy }
 import { get as getState, set as setState } from "../core/state.js";
 
 
-const LARGE_FILE_BYTES = 500 * 1024 * 1024;
 const MAX_INPUT_HEIGHT = 140;
 
 const $ = (id) => document.getElementById(id);
@@ -73,14 +72,21 @@ async function upload(file) {
     deps.notice.show(supportedCopy(intake), "error");
     return;
   }
-  if (file.size > LARGE_FILE_BYTES) {
-    deps.notice.show("That file is very large (" + Math.round(file.size / 1048576)
-      + " MB). Uploads over ~500 MB may be rejected - try a decimated surface.", "warn");
-  }
+  // The size limit is the server's to state: a file over it is refused before a byte is sent, in
+  // words that say the limit and what to do instead.
   const btn = $("upload-btn"), lbl = $("file-label");
   btn.disabled = true; btn.textContent = "Uploading…"; lbl.textContent = file.name;
+  // A large file travels straight to storage and can take minutes, so the button counts it up,
+  // then says what happens while the server reads it back.
+  const progress = (p) => {
+    if (p.phase === "sending" && p.total) {
+      btn.textContent = "Uploading… " + Math.min(99, Math.floor((100 * p.sent) / p.total)) + "%";
+    } else if (p.phase === "checking") {
+      btn.textContent = "Checking the file…";
+    }
+  };
   try {
-    const d = await uploadGeometry(file);
+    const d = await uploadGeometry(file, { onProgress: progress });
     setState.sessionId(d.session_id);
     lbl.textContent = d.step_filename; lbl.className = "ready";
     // The geometry a session was opened on is FINAL: the intake conversation, the admission

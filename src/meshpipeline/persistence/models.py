@@ -519,6 +519,11 @@ class SourceObjectCleanup(Base):
     # Bounded: the sweep abandons a record once the budget is spent, so this cannot grow forever.
     retry_count: Mapped[int]       = mapped_column(Integer, nullable=False, server_default="0")
     last_error:  Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # NOT BEFORE. A direct upload's bytes travel from the client to the store on their own, for as
+    # long as the transfer takes, so its intent is held until they can no longer be arriving - the
+    # sweep must neither close it as "absent" nor delete the object mid-upload. NULL is due now,
+    # which is every multipart intent. Compared by the database (alembic 0010).
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:  Mapped[datetime]  = mapped_column(DateTime(timezone=True), server_default=func.now(),
                                                    onupdate=func.now())

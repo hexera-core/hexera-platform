@@ -66,6 +66,19 @@ class ObjectStore(Protocol):
 
     def create_download_url(self, *, object_key: str, expires_in: timedelta) -> str: ...
 
+    #: A URL a CLIENT can PUT one object's bytes to, straight into the store. It is how a large
+    #: upload avoids passing through a request body at all - a hosted front end caps those (Cloud
+    #: Run refuses an HTTP/1 request over 32 MiB before the application sees it). The URL is
+    #: signed for the address a client reaches the store on, grants a PUT of exactly this key and
+    #: nothing else, and must be STARTED before `expires_in` runs out. Whatever arrives is
+    #: untrusted until the caller has read it back and checked it.
+    def create_upload_url(self, *, object_key: str, expires_in: timedelta) -> str: ...
+
+    #: The stored object's size (and, where the provider offers one, its checksum), or
+    #: ObjectNotFound. Asked before an object a client wrote is read back, so an oversized or
+    #: empty one is refused without transferring it.
+    def stat_object(self, *, object_key: str) -> StoredObject: ...
+
     def delete_object(self, *, object_key: str) -> None: ...
 
     def exists(self, *, object_key: str) -> bool: ...

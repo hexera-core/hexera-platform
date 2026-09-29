@@ -73,6 +73,83 @@ def test_the_download_url_is_signed_for_the_address_the_browser_uses(monkeypatch
         f"{seen['endpoint']} yields a URL no browser can fetch")
 
 
+# THE DIRECT UPLOAD'S URL obeys the same rule: the client it is handed to is a browser or a script
+# outside this process's network, so it is signed for the public address.
+def test_the_upload_url_is_signed_for_the_address_the_client_uses(monkeypatch):
+    monkeypatch.setattr(provcfg, "MINIO_BUCKET", "mesh-artifacts")
+    monkeypatch.setattr(provcfg, "MINIO_ENDPOINT", "minio:9000")
+    monkeypatch.setattr(provcfg, "MINIO_PUBLIC_ENDPOINT", "localhost:9000")
+    from meshpipeline.adapters.object_storage.minio import MinioStore
+    seen = {}
+    store = MinioStore()
+
+    def _client(*, endpoint=None):
+        seen["endpoint"] = endpoint
+        return SimpleNamespace(presigned_put_object=lambda b, k, expires=None: seen.update(
+            put=(b, k, expires)) or "http://localhost:9000/signed-put")
+
+    monkeypatch.setattr(store, "_client", _client)
+    url = store.create_upload_url(object_key="sources/abc", expires_in=timedelta(minutes=30))
+    assert url == "http://localhost:9000/signed-put"
+    assert seen["endpoint"] == "localhost:9000"
+    assert seen["put"] == ("mesh-artifacts", "sources/abc", timedelta(minutes=30))
+
+
+def test_a_real_upload_url_is_a_sigv4_put_for_one_key_made_without_a_network_call(monkeypatch):
+    # Built by the real client, the way the hosted deployment is configured (Google Cloud Storage's
+    # S3-interoperability endpoint, TLS, an explicit region): signing is local arithmetic, so this
+    # proves no lookup call is needed and the URL names exactly the one object.
+    monkeypatch.setattr(provcfg, "MINIO_BUCKET", "hexera-test-artifacts")
+    monkeypatch.setattr(provcfg, "MINIO_PUBLIC_ENDPOINT", "storage.googleapis.com")
+    monkeypatch.setattr(provcfg, "MINIO_SECURE", True)
+    monkeypatch.setattr(provcfg, "MINIO_REGION", "us-central1")
+    monkeypatch.setattr(provcfg, "MINIO_ACCESS_KEY", "GOOG1ETESTACCESSID")
+    monkeypatch.setattr(provcfg, "MINIO_SECRET_KEY", "test-secret-not-real")
+    from urllib.parse import parse_qs, urlsplit
+
+    from meshpipeline.adapters.object_storage.minio import MinioStore
+    url = MinioStore().create_upload_url(object_key="sources/abc",
+                                         expires_in=timedelta(minutes=30))
+    parts = urlsplit(url)
+    query = parse_qs(parts.query)
+    assert parts.scheme == "https" and parts.netloc == "storage.googleapis.com"
+    assert parts.path == "/hexera-test-artifacts/sources/abc"
+    assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+    assert query["X-Amz-Expires"] == ["1800"]
+    assert query["X-Amz-SignedHeaders"] == ["host"], "only the host is signed; any Content-Type goes"
+    assert "us-central1" in query["X-Amz-Credential"][0]
+    assert "test-secret-not-real" not in url
+
+
+def test_stat_tells_a_missing_object_from_an_unreachable_store(monkeypatch):
+    from minio.error import S3Error
+
+    from meshpipeline.adapters.object_storage.minio import MinioStore
+    from meshpipeline.contracts.object_storage import ObjectNotFound, StorageError
+    store = MinioStore()
+
+    def missing(*_a, **_k):
+        raise S3Error("NoSuchKey", "gone", "sources/x", "r", "h", None)
+
+    monkeypatch.setattr(store, "_client", lambda **_: SimpleNamespace(stat_object=missing))
+    with pytest.raises(ObjectNotFound):
+        store.stat_object(object_key="sources/x")
+
+    def down(*_a, **_k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(store, "_client", lambda **_: SimpleNamespace(stat_object=down))
+    with pytest.raises(StorageError) as exc:
+        store.stat_object(object_key="sources/x")
+    assert not isinstance(exc.value, ObjectNotFound)
+
+    monkeypatch.setattr(store, "_client", lambda **_: SimpleNamespace(
+        stat_object=lambda b, k: SimpleNamespace(size=123, content_type="application/octet-stream",
+                                                 etag='"abc"')))
+    stored = store.stat_object(object_key="sources/x")
+    assert (stored.size_bytes, stored.checksum) == (123, "abc")
+
+
 # minio-py resolves a bucket's region with a live GetBucketLocation request before it signs,
 # unless it was given one. The signing client is deliberately built on an address THIS PROCESS may
 # not be able to reach, so that lookup is not merely slow there - it fails, and takes the whole

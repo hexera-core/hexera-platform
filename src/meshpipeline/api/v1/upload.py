@@ -37,6 +37,36 @@ _JOBS_DIR.mkdir(parents=True, exist_ok=True)
 # surface). The engine's staging seam converts between the surface formats it needs.
 _MAX_FILE_BYTES   = 500 * 1024 * 1024
 
+# The IGES unit is read by OpenCASCADE, which loads the whole model to answer - several times the
+# file's size in memory. Above this the upload does not ask it: the unit is left unresolved and is
+# confirmed in conversation, which is the ordinary outcome for any file that states no unit. STEP
+# is read from its text and has no such cost.
+_IGES_UNIT_READ_MAX_BYTES = 64 * 1024 * 1024
+
+
+def sanitised_upload_name(filename: str) -> tuple[str, str]:
+    """The name an upload is recorded under, and its lowercase suffix.
+
+    The client's name is never trusted as a path: the stem keeps only safe characters and is
+    capped, and only the suffix carries forward, because format dispatch keys off it. Shared by the
+    multipart and the direct upload, so both record a file under the same name.
+    """
+    import re as _re
+    raw = filename or ""
+    safe_stem = _re.sub(r"[^A-Za-z0-9_\-.]", "_", Path(raw).stem)[:64]
+    cleaned = safe_stem + Path(raw).suffix.lower()
+    return cleaned, Path(cleaned).suffix.lower()
+
+
+def has_step_header(staged: Path) -> bool:
+    """Whether a staged STEP file opens with the ISO-10303-21 header (after a BOM or whitespace)."""
+    with open(staged, "rb") as fh:
+        head = fh.read(64)
+    return head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"ISO-10303-21")
+
+
+STEP_HEADER_REFUSAL = "File does not appear to be a valid STEP file (missing ISO-10303-21 header)."
+
 
 
 class StepFileOut(BaseModel):
@@ -49,18 +79,21 @@ class StepFileOut(BaseModel):
 
 
 
-@router.post("/step-file", response_model=StepFileOut)
+@router.post(
+    "/step-file", response_model=StepFileOut,
+    description=(
+        "Upload a geometry file in the request body (multipart form field `file`). Suited to "
+        "files up to about 30 MB: a hosted deployment's front end refuses a larger request body "
+        "before it reaches the API (HTTP 413). For a larger file use the direct upload - "
+        "POST /api/v1/upload/direct, PUT the bytes to the `upload_url` it returns, then POST its "
+        "`finalize_url` - which answers exactly what this route answers."))
 async def upload_step_file(
     file:     UploadFile = File(..., description="Geometry file - a surface (.stl, .vtp) or CAD (.step/.stp, .iges/.igs). The selected engine's staging seam converts it to what that engine meshes."),
     owner_id: str        = Depends(owner_dep),
     plan:     str        = Depends(plan_dep),
     organization_id: str = Depends(org_dep),
 ):
-    filename = file.filename or ""
-    import re as _re
-    _safe_stem = _re.sub(r"[^A-Za-z0-9_\-.]", "_", Path(filename).stem)[:64]
-    filename   = _safe_stem + Path(filename).suffix.lower()
-    suffix = Path(filename).suffix.lower()
+    filename, suffix = sanitised_upload_name(file.filename or "")
     if suffix not in ACCEPTED_SUFFIXES:
         raise HTTPException(status_code=422, detail=unsupported_message(suffix))
 
@@ -113,14 +146,9 @@ async def upload_step_file(
 
     if suffix in (".step", ".stp"):
         try:
-            with open(dest, "rb") as _fh:
-                _header = _fh.read(64)
-            if not _header.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"ISO-10303-21"):
+            if not has_step_header(dest):
                 dest.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=400,
-                    detail="File does not appear to be a valid STEP file (missing ISO-10303-21 header).",
-                )
+                raise HTTPException(status_code=400, detail=STEP_HEADER_REFUSAL)
         except HTTPException:
             raise
         except Exception as exc:
@@ -316,7 +344,11 @@ def _enqueue_geometry_check(session_id: str, owner_id: str, *, source_payload: d
 
 def _declared_unit_evidence(staged: Path):
     try:
-        from meshpipeline.cad.unit_evidence import read_declared_unit
+        from meshpipeline.cad.unit_evidence import UnitEvidence, read_declared_unit
+        if (staged.suffix.lower() in (".iges", ".igs")
+                and staged.stat().st_size > _IGES_UNIT_READ_MAX_BYTES):
+            return UnitEvidence.unresolved(
+                "the IGES file is too large to read its unit at upload")
         return read_declared_unit(staged)
     except Exception as exc:  # noqa: BLE001 - unreadable evidence is "ask the user", not a 500
         logger.warning("upload_step_file: could not read the declared unit (%s); "
