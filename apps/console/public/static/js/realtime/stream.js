@@ -27,7 +27,7 @@ let backoff = BACKOFF_MIN;
 let cursor = 0;             // last seq RENDERED - handed back on reconnect
 let pollCount = 0;
 let pollFails = 0;
-let sinks = { onEvent() {}, onTerminal() {}, onPollTrouble() {}, onPollRecovered() {} };
+let sinks = { onEvent() {}, onTerminal() {}, onStatus() {}, onPollTrouble() {}, onPollRecovered() {} };
 
 export function configure(s) { sinks = { ...sinks, ...s }; }
 
@@ -48,6 +48,9 @@ export function start(since) {
   cursor = since || 0;
   connect();
   pollTimer = setInterval(poll, POLL_FAST_MS);
+  // The first status answers "has a worker picked this up yet?" - a job that will wait minutes
+  // for the fleet to wake should say so now, not after the first interval elapses.
+  poll();
 }
 
 async function connect() {
@@ -156,6 +159,8 @@ async function poll() {
   pollFails = 0;
   sinks.onPollRecovered();
   setState.jobStatus(job.status);
+  // every poll reports the durable status; the application decides what the header says
+  sinks.onStatus(job);
   if (isTerminal()) {
     clearInterval(pollTimer); pollTimer = null;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }

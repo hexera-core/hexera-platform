@@ -499,3 +499,28 @@ def test_a_ticket_cannot_be_issued_across_owners_and_never_reaches_a_frame(monke
         with client.websocket_connect(f"/api/v1/ws/{_VALID_JOB_ID}/stream?ticket={ticket}"):
             pass
     assert ei.value.code == 1008
+
+
+def test_a_reaped_job_closes_with_the_lost_worker_sentence(monkeypatch):
+    from meshpipeline.application.final_result import worker_lost_result
+    record = worker_lost_result(job_id=_VALID_JOB_ID, owner_id="user-1").to_dict()
+    _wire(monkeypatch, job=SimpleNamespace(owner_id="user-1", status=JobStatus.failed,
+                                           final_result=record))
+    client = TestClient(_app)
+    with client.websocket_connect(f"/api/v1/ws/{_VALID_JOB_ID}/stream") as ws:
+        frame = json.loads(ws.receive_text())
+        assert frame["type"] == "closing"
+        assert "Job already" not in frame["text"]
+        assert "worker" in frame["text"] and "lost" in frame["text"]
+        assert "run it again" in frame["text"]
+
+
+def test_a_failed_job_without_a_record_never_closes_with_a_shrug(monkeypatch):
+    _wire(monkeypatch, job=SimpleNamespace(owner_id="user-1", status=JobStatus.failed,
+                                           final_result=None))
+    client = TestClient(_app)
+    with client.websocket_connect(f"/api/v1/ws/{_VALID_JOB_ID}/stream") as ws:
+        frame = json.loads(ws.receive_text())
+        assert frame["type"] == "closing"
+        assert frame["text"] != "Job already failed."
+        assert "marked failed" in frame["text"] and "run it again" in frame["text"]

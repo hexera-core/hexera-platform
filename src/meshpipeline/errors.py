@@ -13,9 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 class FailureClass(str, enum.Enum):
-    # domain outcomes (the request/mesh is the issue; terminal, user-facing)
-    USER_INPUT       = "user_input"        # bad/unsupported request or geometry
-    DOMAIN_REJECTED  = "domain_rejected"   # reviewer FAIL / unsolvable / contract
+    # domain outcomes (the request/mesh is the issue; terminal, user-facing). Each says whose
+    # problem it is and what to do next: never "on our side, try again" for a file the user
+    # has to replace.
+    USER_INPUT       = "user_input"        # the upload is not usable as submitted (expired, no unit) - re-upload
+    DOMAIN_REJECTED  = "domain_rejected"   # the geometry itself cannot be meshed (self-intersecting, ...) - fix the CAD
     # The caller asked for something that is not theirs. Not a bad request and not a bug: saying
     # "your geometry is unsupported" would be false, and "we broke" would hide a real refusal.
     NOT_AUTHORIZED   = "not_authorized"
@@ -33,6 +35,16 @@ class FailureClass(str, enum.Enum):
     DEPENDENCY_DOWN    = "dependency_down"     # DB / Redis / MinIO / SearXNG unreachable
     RESOURCE           = "resource"            # OOM / timeout / subprocess killed
     INTERNAL           = "internal"            # unexpected bug
+    # The worker that held the job died (crash, preemption, a SIGKILL) and the reaper found the
+    # job still marked running long after any heartbeat. Nothing was judged about the mesh and
+    # nothing was wrong with the request: the run can simply be started again. Distinct from
+    # RESOURCE (a limit the job hit while running) and INTERNAL (a defect), which would each
+    # send the user or an operator looking for a cause that was never there.
+    WORKER_LOST        = "worker_lost"
+    # No worker ever picked the job up: it sat pending/queued past the reaper's ceiling (the
+    # fleet never woke, or its queue was never read). Also ours, also not the user's request -
+    # but no worker was LOST, so it is not WORKER_LOST.
+    NEVER_STARTED      = "never_started"
     # review evidence (we could not JUDGE the mesh; not the provider, not the mesh)
     # Telling a user "an AI service is unavailable" when the truth is "your mesh's quality
     # evidence was incomplete" is a lie that also hides a real quality signal. This is a
@@ -45,6 +57,7 @@ class FailureClass(str, enum.Enum):
             FailureClass.PROVIDER_TRANSIENT, FailureClass.PROVIDER_DOWN,
             FailureClass.DEPENDENCY_DOWN, FailureClass.RESOURCE, FailureClass.INTERNAL,
             FailureClass.REVIEW_EVIDENCE_MISSING, FailureClass.DATA_INTEGRITY,
+            FailureClass.WORKER_LOST, FailureClass.NEVER_STARTED,
         )
 
     @property
@@ -194,6 +207,36 @@ _USER_MESSAGES: dict[FailureClass, str] = {
         "so we stopped rather than mesh the wrong thing. This is on our side. Please "
         "upload the geometry again - we apologise for the inconvenience."
     ),
+    # Both next steps name what exists since the same conversation takes the next run once
+    # this one has ended (agents/intake/message.py): the words the console offers for it.
+    FailureClass.WORKER_LOST: (
+        "The worker running this job was lost before it finished, so the run was marked "
+        "failed. This is on our side, not your geometry or request - please try again: say "
+        "\"run it again\" in this chat to start a new run."
+    ),
+    FailureClass.NEVER_STARTED: (
+        "No worker picked this run up, so it never started and was marked failed. This is on "
+        "our side, not your geometry or request - please try again: say \"run it again\" in "
+        "this chat to start it again."
+    ),
+}
+
+# THE DOMAIN CLASSES: the problem is the user's input, so the sentence says so and names the
+# next step. Each is a (lead, next step) pair rather than one string because the raise site
+# knows the specific reason ("removed after its retention period", "the surface self-intersects")
+# and that reason belongs in the middle of the sentence, not bolted on after the next step.
+# Only these two classes ever carry a reason through to the user: for every system class the
+# detail is operator material (bucket names, provider errors, tracebacks) and stays redacted.
+_DOMAIN_MESSAGES: dict[FailureClass, tuple[str, str]] = {
+    FailureClass.USER_INPUT: (
+        "This run could not start because of the upload, not our systems",
+        "Upload the file again and start a new run.",
+    ),
+    FailureClass.DOMAIN_REJECTED: (
+        "This geometry cannot be meshed as it is - the problem is in the CAD file, not our "
+        "systems",
+        "Fix the geometry and upload it again.",
+    ),
 }
 
 _FAILED_REASON: dict[FailureClass, str] = {
@@ -208,10 +251,27 @@ _FAILED_REASON: dict[FailureClass, str] = {
     # both map onto EXISTING FailedReason values - a truthful new class needs no migration
     FailureClass.NOT_AUTHORIZED:          "unhandled",
     FailureClass.DATA_INTEGRITY:          "unhandled",
+    # The coarse column has no value for "the input was the problem"; `unhandled` is what the
+    # column already held for these (the default arm), stated here so the mapping is total.
+    FailureClass.USER_INPUT:              "unhandled",
+    # The geometry could not be meshed: the closest existing coarse value.
+    FailureClass.DOMAIN_REJECTED:         "mesh_generation",
+    # What the reaper has always stamped a job it failed with.
+    FailureClass.WORKER_LOST:             "unhandled",
+    FailureClass.NEVER_STARTED:           "unhandled",
 }
 
 
-def user_message_for(fc: FailureClass) -> str:
+def user_message_for(fc: FailureClass, *, reason: str = "") -> str:
+    """The one sentence a user may be shown for a failure class.
+
+    `reason` is folded in ONLY for the domain classes, where it is the user's own input
+    problem written for them at the raise site. For every system class it is ignored: that
+    detail is operator material and must never reach a browser."""
+    if fc in _DOMAIN_MESSAGES:
+        lead, next_step = _DOMAIN_MESSAGES[fc]
+        r = " ".join(str(reason or "").split()).rstrip(".")
+        return f"{lead}: {r}. {next_step}" if r else f"{lead}. {next_step}"
     return _USER_MESSAGES.get(fc, _USER_MESSAGES[FailureClass.INTERNAL])
 
 

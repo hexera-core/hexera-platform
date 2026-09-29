@@ -18,16 +18,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _publish_terminal_log(job_id: str) -> None:
+def _publish_terminal_log(job_id: str, closing_text: str = "") -> None:
     try:
         from meshpipeline.contracts.event_stream import publisher
         from meshpipeline.persistence.repositories.terminal_outbox_repository import (
             dedup_key_for,
         )
+        if not closing_text:
+            from meshpipeline.errors import FailureClass, user_message_for
+            closing_text = user_message_for(FailureClass.WORKER_LOST)
         # same terminal identity: a cleanup retry must not add a second ending
-        publisher(job_id).closing(
-            "This job stopped unexpectedly (the worker did not finish) and has been "
-            "marked failed. Please resubmit.", dedup_key_for(job_id))
+        publisher(job_id).closing(closing_text, dedup_key_for(job_id))
     except Exception as exc:
         logger.warning("reap_stalled_jobs: could not publish terminal log for %s: %s", job_id, exc)
 
@@ -176,6 +177,11 @@ async def _reap_stalled_async() -> dict:
     from sqlalchemy import select, update
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+    from meshpipeline.application.final_result import (
+        never_started_result,
+        render_message,
+        worker_lost_result,
+    )
     from meshpipeline.persistence.models import FailedReason, JobStatus, SimulationJob
 
     _engine = create_async_engine(provcfg.POSTGRES_DSN, echo=False, pool_size=2,
@@ -191,22 +197,38 @@ async def _reap_stalled_async() -> dict:
             )).scalars().all()
             for job in rows:
                 _was = job.status
-                # COMPARE-AND-SET on the exact stalled source states: a job that raced to a
+                # THE DURABLE ACCOUNT, by the rule that selected the row. The reaper used to stamp
+                # the status and nothing else, so once the event log expired the only thing left
+                # to show a returning user was "Job already failed." - a job read and a
+                # reconnecting socket both render this record instead (application/final_result).
+                # A RUNNING row (lease lapsed, or started long ago with none) had a worker that
+                # is gone; a PENDING/QUEUED row never had one, and is told so.
+                _never_started = _was in (JobStatus.pending, JobStatus.queued)
+                _record = (never_started_result if _never_started else worker_lost_result)(
+                    job_id=str(job.id), owner_id=str(getattr(job, "owner_id", "") or ""),
+                    attempts=int(getattr(job, "current_attempt", 0) or 0))
+                # COMPARE-AND-SET on the state the row was SELECTED in: a job that raced to a
                 # terminal result between the SELECT above and here is never overwritten by the
-                # reaper. The failure reason is stamped only when the reaper actually failed it.
+                # reaper, and neither is a pending job a worker claimed in that window - it is
+                # running now, and "no worker picked this run up" would be false of it. The
+                # failure reason is stamped only when the reaper actually failed it.
+                # (Spelled `in_([...])` over the one observed state: the architecture fitness
+                # suite recognises a status CAS by its `status.in_` predicate.)
                 res = await db.execute(
                     update(SimulationJob).where(
                         SimulationJob.id == job.id,
-                        SimulationJob.status.in_([JobStatus.running, JobStatus.pending, JobStatus.queued]),
+                        SimulationJob.status.in_([_was]),
                     ).values(
                         status=JobStatus.failed,
                         failed_reason=FailedReason.unhandled,
+                        final_result=_record.to_dict(),
                         ended_at=now,
                         updated_at=now,
                     )
                 )
                 if res.rowcount == 0:
-                    logger.info("reap_stalled_jobs: job %s reached terminal before reaping - left as-is", job.id)
+                    logger.info("reap_stalled_jobs: job %s moved on from %s before reaping - "
+                                "left as-is", job.id, _was)
                     continue
                 reaped.append(str(job.id))
                 logger.warning(
@@ -218,8 +240,8 @@ async def _reap_stalled_async() -> dict:
                 # Publish a TERMINAL log line so any live WebSocket client
                 # streaming this (crash-dropped) job receives a closing message and
                 # disconnects, instead of hanging forever waiting for output the
-                # dead worker will never produce.
-                _publish_terminal_log(str(job.id))
+                # dead worker will never produce. The SAME sentence the record renders.
+                _publish_terminal_log(str(job.id), render_message(_record))
             await db.commit()
     finally:
         await _engine.dispose()
