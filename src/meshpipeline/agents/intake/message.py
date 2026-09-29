@@ -278,7 +278,9 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         return changed
     approval = gate.get("approval")
     if ap.is_live(approval):
-        intent = ap.classify(inbound.content)
+        # the summary's own engine, named in the answer, is part of the yes, not a change
+        intent = ap.classify(inbound.content,
+                             engine=str(((approval or {}).get("payload") or {}).get("mesh_engine") or ""))
         if uc.needs_confirmation(locked):
             # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
             # (application/dispatch_contract refuses the pair), so an approval given while the

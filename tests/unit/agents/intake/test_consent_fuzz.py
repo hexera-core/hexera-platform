@@ -172,3 +172,22 @@ def test_a_protected_word_is_never_repaired_into_a_yes(word):
                                   "go ahead in five minutes", "fire it later", "yes but not yet"])
 def test_near_misses_that_mean_something_else_stay_what_they_are(said):
     assert ap.classify(said) != ap.APPROVE_INTENT, said
+
+
+@pytest.mark.parametrize("said", ["Yes, go ahead with snappyHexMesh.", "yes, snappy, go", "snappyHexMesh is fine, proceed",
+                                  "go ahead with snappyHexMesh please"])
+def test_naming_the_summarys_own_engine_is_part_of_the_yes(said):
+    assert ap.classify(said, engine="snappy") == ap.APPROVE_INTENT, said
+    # without the summary's engine the name is unexplained, and stays a change
+    assert ap.classify(said) == ap.CORRECTION_INTENT, said
+
+
+@pytest.mark.parametrize("said", ["Yes, go ahead with cfMesh.", "yes, but gmsh", "go ahead with snappyHexMesh multi-region"])
+def test_naming_another_engine_to_a_summary_is_a_change(said):
+    assert ap.classify(said, engine="snappy") == ap.CORRECTION_INTENT, said
+
+
+@pytest.mark.parametrize("said", ["Yes, go ahead and generate the mesh.", "Go ahead and generate the mesh.",
+                                  "confirmed pls go ahead n mesh it thx", "yes build the mesh", "mesh it now"])
+def test_asking_for_the_mesh_itself_is_a_yes(said):
+    assert ap.classify(said) == ap.APPROVE_INTENT, said

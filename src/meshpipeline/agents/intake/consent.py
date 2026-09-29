@@ -32,7 +32,7 @@ FILLER = frozenset({
     "please", "pls", "plz", "ok", "okay", "thanks", "thank", "thx", "ty", "you", "u", "alright", "right",
     "great", "perfect", "then", "now", "just", "lets", "let", "us", "s", "and", "cool", "awesome", "nice",
     "oh", "ah", "well", "hey", "hi", "so", "mate", "sir", "haha", "lol", "indeed", "much", "very",
-    "really", "totally", "all", "good",
+    "really", "totally", "all", "good", "n",
 })
 
 #: Filler words that are a yes when the whole answer is made of them: "ok", "perfect", "great!",
@@ -61,8 +61,12 @@ PHRASES = frozenset({
     "that sounds", "that looks", "that works", "works for me", "fine by me", "fine with me", "good to go",
     "that is it", "that is correct", "that is right", "that is fine", "that is what i said", "as i said",
     "that's it", "that's correct", "that's right", "that's fine", "that's what i said", "all set",
+    "it is fine", "it's fine", "it is correct", "it's correct",
     "go for it", "go on", "carry on", "continue", "go with that", "go with it", "lets go", "do that",
     "go ahead with that", "go ahead with it", "proceed with that", "proceed with it",
+    "generate the mesh", "generate it", "mesh generation", "make the mesh", "build the mesh",
+    "create the mesh", "run the mesh", "go ahead with the mesh", "proceed with the mesh",
+    "go ahead with mesh generation", "start meshing it", "mesh it now",
     "make it so", "start it", "start meshing", "start the run", "run", "mesh it", "ship it", "begin",
     "send it", "kick it off", "yes please", "please do", "please proceed", "proceed please", "as shown",
     "as proposed", "as you suggest", "as you suggested", "whatever you think", "whatever you think is best",
@@ -213,10 +217,27 @@ def _read(words: list[str], asked_back: bool) -> str:
     return OTHER
 
 
-def reading(message: str) -> str:
+def reading(message: str, *, named: tuple[str, ...] = ()) -> str:
     """APPROVE, HEDGE or OTHER for a whole message. A consent that ends in a question mark ("looks
-    good?") is asked back, so it is a hedge; a message one or two slips from consent is consent."""
+    good?") is asked back, so it is a hedge; a message one or two slips from consent is consent.
+    `named` are words the question itself already stands for - the engine the summary names - so
+    "yes, go ahead with snappyHexMesh" to a snappyHexMesh summary is a yes; any other name stays."""
     text = str(message or "")
+    names = sorted({str(n or "").strip() for n in named if str(n or "").strip()}, key=len, reverse=True)
+    if names:
+        # the name dropped, and the name read as "it" ("go ahead with it"): consent either way
+        verdicts = {_reading(_without(text, names, " ")), _reading(_without(text, names, " it "))}
+        return next((v for v in (APPROVE, HEDGE) if v in verdicts), OTHER)
+    return _reading(text)
+
+
+def _without(text: str, names, instead: str) -> str:
+    for name in names:
+        text = re.sub(rf"(?<![0-9a-z]){re.escape(name)}(?![0-9a-z])", instead, text, flags=re.IGNORECASE)
+    return text
+
+
+def _reading(text: str) -> str:
     asked_back = text.rstrip().endswith("?")
     words = _raw_words(text)
     first = _read(words, asked_back)

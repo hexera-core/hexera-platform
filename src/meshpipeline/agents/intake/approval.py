@@ -29,8 +29,14 @@ HEDGE_INTENT = "ambiguous"
 CORRECTION_INTENT = "correction"
 
 
-def classify(message: str) -> str:
-    reading = _consent.reading(message)
+def classify(message: str, engine: str = "") -> str:
+    """The user's answer to a summary. `engine` is the summary's own engine: naming it ("yes, go
+    ahead with snappyHexMesh") adds nothing to a yes, while naming another is a change."""
+    named: tuple[str, ...] = ()
+    if engine:
+        from meshpipeline.agents.intake import vocabulary as _vocab
+        named = (engine, _vocab.to_display(_vocab.ENGINE, engine))
+    reading = _consent.reading(message, named=named)
     if reading == _consent.APPROVE:
         return APPROVE_INTENT
     if reading == _consent.HEDGE:
