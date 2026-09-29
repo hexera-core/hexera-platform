@@ -504,8 +504,12 @@ async def _run_async(req: JobRequest) -> dict:
             max_redeliveries=rtcfg.CELERY_MAX_REDELIVERIES,
             deliveries=_incr_delivery_count(job_id))
         if _refusal is not None:
-            from meshpipeline.errors import FailureClass, user_message_for
-            _pub(job_id).closing(user_message_for(FailureClass.RESOURCE), _terminal_event_id(job_id))
+            # The closing is said only when the guard FAILED the job; a stale copy it dropped
+            # belongs to a run that is going on - or has ended - under its own authority.
+            if _refusal.status == "failed":
+                from meshpipeline.errors import FailureClass, user_message_for
+                _pub(job_id).closing(user_message_for(FailureClass.RESOURCE),
+                                     _terminal_event_id(job_id))
             await _worker_engine.dispose()
             return _refusal.detail
 
