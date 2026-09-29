@@ -58,9 +58,28 @@ class WorkerDraining(Exception):
     not a failure, and nothing terminal may be recorded for it."""
 
 
+async def _pause(seconds: float) -> None:
+    # A timer on the loop itself, not `asyncio.sleep`: this runs beside every graph, and a sleep
+    # that does not actually wait - a test replaces `asyncio.sleep` to skip provider backoff, and
+    # so could anything else - would turn the watch into a loop that never yields, and the graph
+    # it is watching would never run again.
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+
+    def _ring() -> None:
+        if not done.done():
+            done.set_result(None)
+
+    timer = loop.call_later(max(0.0, seconds), _ring)
+    try:
+        await done
+    finally:
+        timer.cancel()
+
+
 async def _wait_for_drain(poll_seconds: float) -> None:
     while not drain_requested():
-        await asyncio.sleep(poll_seconds)
+        await _pause(poll_seconds)
 
 
 async def run_unless_draining(work: Awaitable[T], *, poll_seconds: float = DRAIN_POLL_SECONDS,

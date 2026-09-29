@@ -85,6 +85,23 @@ async def test_a_step_that_swallows_the_cancel_is_handed_back_not_finalized():
         await run_unless_draining(swallows(), poll_seconds=0.005, cancel_grace_seconds=1)
 
 
+async def test_the_watch_never_starves_the_run_it_watches(monkeypatch):
+    # Suites that skip provider backoff replace asyncio.sleep with a coroutine that returns at
+    # once. A watch polling through it never yields, and the graph beside it never runs again -
+    # which hung the unit tier's terminal-matrix tests on the first CI run of this change.
+    async def _instant(*_a, **_k):
+        return None
+    monkeypatch.setattr(asyncio, "sleep", _instant)
+
+    async def waits_on_io():
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        loop.call_later(0.02, fut.set_result, "meshed")
+        return await fut
+    assert await asyncio.wait_for(run_unless_draining(waits_on_io(), poll_seconds=0.001),
+                                  timeout=5) == "meshed"
+
+
 async def test_a_run_that_fails_on_its_own_keeps_its_own_failure():
     async def broken():
         raise ValueError("the builder broke")
