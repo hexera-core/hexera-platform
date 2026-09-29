@@ -243,6 +243,22 @@ class PreparedMeshRun:
 
 # Everything `run_mesh` decided BEFORE it announced itself. Blocking (registry lookups, file
 # probes, the engine's own contract gate), so it stays off the event loop; it publishes nothing.
+def _unsafe_patch_names(workspace: Path) -> list[str]:
+    """The approved patch names in the workspace that no mesher can write (none when the run
+    carries no declaration)."""
+    from meshpipeline.contracts.patch_names import is_mesh_safe
+    path = workspace / "port_declaration.json"
+    if not path.exists():
+        return []
+    try:
+        declared = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [str(p.get("name")) for p in declared if isinstance(p, dict)
+            and isinstance(p.get("name"), str) and p["name"].strip()
+            and not is_mesh_safe(p["name"].strip())]
+
+
 def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     from meshpipeline.engines.registry import get_spec as _get_spec
     from meshpipeline.engines.runtime import get_engine
@@ -261,6 +277,19 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
             "success": False,
             "error": f"missing {', '.join(missing)} - run configure_mesh "
                      "first (it renders the case from your strategy)."})
+    # THE APPROVED PATCH NAMES, before any mesh runs. The intake makes every name mesh-safe, but a
+    # snapshot approved before that rule, or a direct caller, can still carry one a mesher cannot
+    # write - and the run then ends 26 minutes later as "patch has zero faces". The approved list
+    # travels beside the contract as port_declaration.json; refuse here, in seconds, instead.
+    _unsafe = _unsafe_patch_names(workspace)
+    if _unsafe:
+        from meshpipeline.contracts.patch_names import mesh_safe as _mesh_safe
+        return PreparedMeshRun(refusal={
+            "success": False, "contract_unbuildable": True,
+            "error": "approved patch name(s) a mesher cannot write: " + ", ".join(
+                f"{n!r} (would need {_mesh_safe(n)!r})" for n in _unsafe),
+            "guidance": "The approved patch contract itself cannot be built - no mesh setting "
+                        "can fix a name. STOP and report it; do NOT run the mesher or retry."})
     # DETERMINISTIC INPUT-CONTRACT GATE (physical impossibility, not a strategy problem).
     # Fires even if the builder never inspected the geometry - see input_contract_rejection.
     # (The node_builder pre-flight normally rejects such input before the loop even starts;
