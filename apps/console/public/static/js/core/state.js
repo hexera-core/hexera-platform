@@ -57,6 +57,20 @@ export function isTerminal() {
   return isTerminalStatus(state.jobStatus);
 }
 
+/** What the run header says while NO WORKER HAS THE JOB. The fleet scales to zero, so a fresh
+ *  job can sit `pending` for minutes while a VM boots; the backend puts its estimate on the
+ *  status (`worker_wake_minutes`, only in that state). Pure: (job) -> text, "" once a worker has
+ *  started or the job is past waiting. Nothing is invented - no estimate on the wire means the
+ *  line names the wait and no number. */
+export function waitingCopy(job) {
+  if (!job || job.started_at) return "";
+  if (job.status !== "pending" && job.status !== "queued") return "";
+  const m = Number(job.worker_wake_minutes);
+  return m > 0
+    ? `waiting for a worker to start (about ${m} minute${m === 1 ? "" : "s"})`
+    : "waiting for a worker to start";
+}
+
 /** Begin a new run on this page. Clears everything scoped to the previous one and leaves
  *  identity alone. Used by the deep link, by a finished chat turn, and by a re-review.
  *  `sessionId` is the conversation the run came from - the one a "run again" must go to. A run

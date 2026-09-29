@@ -15,7 +15,8 @@
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
 import { getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
-import { beginRun, get as getState, isTerminalStatus, set as setState } from "./core/state.js";
+import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
+  from "./core/state.js";
 import { Notice } from "./render/notice.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
   from "./render/stage.js";
@@ -67,6 +68,9 @@ configureStream({
     setPlaceholder("Run it again, or tell me what to change…");
     offerNewRun();
   },
+  // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
+  // worker has it the line goes back to "working…" and the timeline takes over.
+  onStatus: (job) => Stage.waiting(waitingCopy(job)),
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
   onPollRecovered: () => Notice.release("poll"),
@@ -197,6 +201,7 @@ function bootLive() {
     beginRun(deepLinkJob);
     setState.jobStatus(job.status);
     Stage.ensureProc();
+    Stage.waiting(waitingCopy(job));
     if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
       // keeping one is that a user can see HOW they got their mesh, not just that they got it.

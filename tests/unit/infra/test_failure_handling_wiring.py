@@ -79,10 +79,11 @@ async def test_the_reaper_marks_a_stalled_running_job_failed_not_requeued(monkey
     from meshpipeline.persistence.models import FailedReason, JobStatus
 
     stalled = SimpleNamespace(
-        id="job-stalled", status=JobStatus.running,
+        id="job-stalled", status=JobStatus.running, owner_id="owner-1", current_attempt=2,
         started_at=datetime.now(UTC) - timedelta(hours=9999),
         created_at=datetime.now(UTC) - timedelta(hours=9999))
     updates: list = []
+    published: list = []
 
     class _Result:
         rowcount = 1     # the reaper's CAS reads rowcount: 1 == it performed the transition
@@ -102,7 +103,8 @@ async def test_the_reaper_marks_a_stalled_running_job_failed_not_requeued(monkey
     monkeypatch.setattr(sa_aio, "create_async_engine",
                         lambda *a, **k: SimpleNamespace(dispose=_dispose))
     monkeypatch.setattr(sa_aio, "async_sessionmaker", lambda **k: (lambda: _Session()))
-    monkeypatch.setattr(cleanup, "_publish_terminal_log", lambda job_id: None)
+    monkeypatch.setattr(cleanup, "_publish_terminal_log",
+                        lambda job_id, text="": published.append((job_id, text)))
 
     result = await cleanup._reap_stalled_async()
 
@@ -112,6 +114,16 @@ async def test_the_reaper_marks_a_stalled_running_job_failed_not_requeued(monkey
     values = {col.name: getattr(bind, "value", bind) for col, bind in updates[0]._values.items()}
     assert values["status"] == JobStatus.failed
     assert values["failed_reason"] == FailedReason.unhandled
+    # THE DURABLE ACCOUNT. A reaped job used to carry no record, so once its event log expired
+    # the only thing left to show was "Job already failed." The record says the worker was lost.
+    record = values["final_result"]
+    assert record["failure_category"] == "worker_lost" and record["status"] == "failed"
+    assert record["owner_id"] == "owner-1" and record["attempts"] == 2
+    assert record["required_ready"] is False and record["reviewer_verdict"] is None
+    # ... and the live closing says the same thing as the record
+    assert published and published[0][0] == "job-stalled"
+    text = published[0][1]
+    assert "worker" in text and "lost" in text and "run it again" in text
 
 
 def test_delivery_counter_increments_and_fails_open():
@@ -173,3 +185,85 @@ def _reviewer_execution_publisher(monkeypatch):
     made = install(monkeypatch, _ep)
     monkeypatch.setattr(_visual, "execution_publisher", _ep.execution_publisher)
     return made
+
+
+async def _reap_one(monkeypatch, job):
+    """Run the reaper over one selected row; return (update values, where params, published)."""
+    from types import SimpleNamespace
+
+    import sqlalchemy.ext.asyncio as sa_aio
+    from sqlalchemy.sql.dml import Update
+
+    import meshpipeline.application.maintenance.cleanup as cleanup
+
+    updates: list = []
+    published: list = []
+
+    class _Result:
+        rowcount = 1
+        def scalars(self): return self
+        def all(self): return [job]
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def execute(self, stmt):
+            if isinstance(stmt, Update):
+                updates.append(stmt)
+            return _Result()
+        async def commit(self): pass
+
+    async def _dispose(): pass
+    monkeypatch.setattr(sa_aio, "create_async_engine",
+                        lambda *a, **k: SimpleNamespace(dispose=_dispose))
+    monkeypatch.setattr(sa_aio, "async_sessionmaker", lambda **k: (lambda: _Session()))
+    monkeypatch.setattr(cleanup, "_publish_terminal_log",
+                        lambda job_id, text="": published.append((job_id, text)))
+    await cleanup._reap_stalled_async()
+    assert len(updates) == 1
+    stmt = updates[0]
+    values = {col.name: getattr(bind, "value", bind) for col, bind in stmt._values.items()}
+    where = stmt.whereclause.compile()
+    # the status predicate's bound list: the states the compare-and-set accepts
+    guarded = [v for v in where.params.values() if isinstance(v, list)]
+    assert len(guarded) == 1, f"expected one status IN predicate, got {where.params}"
+    return values, str(where), guarded[0], published
+
+
+async def test_a_job_no_worker_ever_picked_up_is_not_told_its_worker_was_lost(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from meshpipeline.persistence.models import JobStatus
+
+    never = SimpleNamespace(
+        id="job-unclaimed", status=JobStatus.pending, owner_id="owner-1", current_attempt=0,
+        started_at=None, lease_expires_at=None,
+        created_at=datetime.now(UTC) - timedelta(hours=9999))
+    values, _where_sql, accepted, published = await _reap_one(monkeypatch, never)
+
+    assert values["status"] == JobStatus.failed
+    record = values["final_result"]
+    assert record["failure_category"] == "never_started", "an unclaimed job was blamed on a worker"
+    text = published[0][1]
+    assert "No worker picked this run up" in text and "lost" not in text
+    # the compare-and-set is on the state the row was SELECTED in: a pending job a worker claims
+    # in the window is running by then, and "no worker picked this run up" would be false of it
+    assert accepted == [JobStatus.pending], accepted
+
+
+async def test_a_running_job_whose_worker_is_gone_keeps_the_lost_worker_record(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from meshpipeline.persistence.models import JobStatus
+
+    gone = SimpleNamespace(
+        id="job-gone", status=JobStatus.running, owner_id="owner-1", current_attempt=1,
+        started_at=datetime.now(UTC) - timedelta(hours=1),
+        lease_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        created_at=datetime.now(UTC) - timedelta(hours=1))
+    values, _where_sql, accepted, published = await _reap_one(monkeypatch, gone)
+    assert values["final_result"]["failure_category"] == "worker_lost"
+    assert accepted == [JobStatus.running], accepted
+    assert "lost" in published[0][1]
