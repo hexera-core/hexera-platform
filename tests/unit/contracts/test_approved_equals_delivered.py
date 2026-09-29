@@ -175,6 +175,10 @@ def generate(rng: random.Random, combo) -> Scenario:
                 sc.parts = [rng.choice([n, n.upper(), n.replace(" ", "_")]) for n in wall_names]
                 if walls == 1:
                     sc.parts = sc.parts + ["wheels", "mirrors"]
+                elif rng.random() < 0.4:
+                    # a part no declared wall takes: only the user can say where it belongs
+                    sc.parts = sc.parts + ["tail fin"]
+                    sc.must_refuse = "a named part no declared wall takes"
             elif sc.upload == "step-assembly":
                 sc.parts = list(wall_names) + (["wheels"] if walls == 1 else [])
                 if walls > 1:

@@ -209,6 +209,8 @@ SPEC = EngineSpec(
         # ...but a CAD file is tessellated as ONE surface (cad_tessellate.tessellate_to_stl), so
         # the parts a STEP assembly names never reach the mesher apart. Only STL solids are kept.
         keeps_regions_from=("stl-solids",),
+        # every staged part is a wall patch, so with several walls each part must be one of them
+        parts_become_walls=True,
         # What this case writer builds. EXTERNAL: blockMesh's far field is one box, written as ONE
         # patch under the declared far-field name; a symmetry plane is a half-model's cut (one) or
         # a slab's two ends (two). INTERNAL: the carve delivers one wall and the declared ports -

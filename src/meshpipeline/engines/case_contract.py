@@ -1,6 +1,6 @@
 # Responsibility: Before any native mesher is launched, read the case the writer actually produced and hold it to the patch contract the user approved.
 # Owns: the per-engine reading of a written case into the boundary it will produce, the comparison with the approved contract, and the launch check.
-# Boundaries: it reads case files and the workspace's contract; it meshes nothing, repairs nothing and never guesses - a case it cannot read is not judged.
+# Boundaries: it reads case files and the workspace's contract; it meshes nothing, repairs nothing and never guesses - a covered case it cannot read is refused, and an engine it does not cover is not judged.
 # Collaborates with: contracts/mesh_execution.py (the one seam every native run passes through), engines/workspace_facts.py, and pipeline/executor.py, which ends the job on a recorded refusal.
 """The pre-flight: approved == written, checked in seconds instead of after a whole run.
 
@@ -60,9 +60,15 @@ class CaseBoundary:
     #: patches the engine writes for itself that end with no faces (the box an internal carve
     #: discards) - never the user's, never an extra
     engine_owned: frozenset[str] = frozenset()
-    #: roles the comparison leaves out on both sides (gmsh's "free" default group)
-    ignored_roles: frozenset[str] = frozenset()
+    #: a role whose UNDECLARED patches are not extras (gmsh gathers leftover surfaces into a
+    #: `free` default group no one named); a DECLARED patch of that role is checked like any other
+    undeclared_ok_roles: frozenset[str] = frozenset()
     notes: tuple[str, ...] = field(default_factory=tuple)
+
+
+class CaseUnreadable(Exception):
+    """A case this pre-flight covers, written, but not in a form it can read - judged, not
+    waved through: the launch is refused with the reason, before the mesher starts."""
 
 
 # OpenFOAM dictionary reading, just enough for the dicts this system renders
@@ -224,22 +230,25 @@ def _snappy_boundary(ws: Path) -> CaseBoundary | None:
     box = _block_mesh_patches(ws)
     shm = ws / "system" / "snappyHexMeshDict"
     if box is None or not shm.exists():
-        return None
+        raise CaseUnreadable("system/blockMeshDict or system/snappyHexMeshDict is missing")
     text = _strip_comments(shm.read_text(errors="replace"))
     geometry = _block(text, "geometry")
     surfaces = _block(text, "refinementSurfaces")
     if geometry is None or surfaces is None:
-        return None
+        raise CaseUnreadable("snappyHexMeshDict has no geometry or refinementSurfaces block")
     geo: dict[str, tuple[str, str]] = {}          # surface name -> (geometry key, entry body)
     for key, body in _entries(geometry):
         geo[_word(body, "name") or key] = (key, body)
     patches: dict[str, str] = {}
-    for surf, body in _entries(surfaces):
+    entries = _entries(surfaces)
+    if not entries:
+        raise CaseUnreadable("snappyHexMeshDict refines no surface, so it writes no body patch")
+    for surf, body in entries:
         if surf not in geo:
-            return None                          # a surface this reading does not understand
+            raise CaseUnreadable(f"refinement surface {surf!r} has no geometry entry")
         key, gbody = geo[surf]
         if (_word(gbody, "type") or "") != "triSurfaceMesh":
-            return None
+            raise CaseUnreadable(f"refinement surface {surf!r} is not a triSurfaceMesh")
         declared = {r: (_word(rb, "name") or r) for r, rb in _entries(_sub(gbody, "regions") or "")}
         region_types = {r: _patch_type(rb) for r, rb in _entries(_sub(body, "regions") or "")}
         surf_type = _patch_type(body) or "wall"
@@ -265,7 +274,7 @@ def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
     md = ws / "system" / "meshDict"
     surf = ws / "geom.stl"
     if not md.exists() or not surf.exists():
-        return None
+        raise CaseUnreadable("system/meshDict or geom.stl is missing")
     text = _strip_comments(md.read_text(errors="replace"))
     rb = _block(text, "renameBoundary") or ""
     default_name, default_type = _word(rb, "defaultName"), _word(rb, "defaultType") or "patch"
@@ -273,7 +282,7 @@ def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
                for k, v in _entries(_sub(rb, "newPatchNames") or "")}
     solids = stl_solid_names(surf)
     if not solids:
-        return None
+        raise CaseUnreadable("geom.stl names no solids (empty, or not ASCII)")
     patches: dict[str, str] = {}
     for s in solids:
         if s in renames:
@@ -291,30 +300,36 @@ def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
 
 def _gmsh_boundary(ws: Path) -> CaseBoundary | None:
     """The physical groups gmsh_spec.json asks for, by role. The builder model writes this spec,
-    so a mismatch is its to fix; the unassigned-surfaces default group is role "free", which the
-    patch gate leaves out, and so does this."""
+    so a mismatch is its to fix. Every APPROVED group is checked, a `free` one included; an
+    undeclared `free` group is the leftover surfaces gmsh gathers by default, not an extra - the
+    same rule the patch gate applies to the deck."""
     f = ws / "gmsh_spec.json"
     try:
         spec = json.loads(f.read_text())
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as exc:
+        raise CaseUnreadable(f"gmsh_spec.json is missing or not JSON ({exc})") from exc
     groups = spec.get("groups") if isinstance(spec, dict) else None
     if not isinstance(groups, list):
-        return None
+        raise CaseUnreadable("gmsh_spec.json has no groups list")
     patches = {str(g.get("name") or "").strip(): str(g.get("role") or "free").strip()
                for g in groups if isinstance(g, dict) and str(g.get("name") or "").strip()}
     return CaseBoundary(patches=patches, kind="roles", authored_by=BUILDER,
-                        ignored_roles=frozenset({"free"}))
+                        undeclared_ok_roles=frozenset({"free"}))
 
 
 def _vmtk_boundary(ws: Path) -> CaseBoundary | None:
     """The lumen wall and the ports the engine opened (vmtk_staging.json). The mesh carries the
-    wall as ONE entity, so only the first declared wall is delivered."""
+    wall as ONE entity, so only the first declared wall is delivered. A lumen surface uploaded
+    as-is is not staged by the engine at all - nothing names its caps before the run - so that
+    path is not judged here."""
     from meshpipeline.engines.workspace_facts import contract_patches
-    try:
-        staged = json.loads((ws / "vmtk_staging.json").read_text())
-    except (OSError, ValueError):
+    fact = ws / "vmtk_staging.json"
+    if not fact.exists():
         return None
+    try:
+        staged = json.loads(fact.read_text())
+    except (OSError, ValueError) as exc:
+        raise CaseUnreadable(f"vmtk_staging.json is not JSON ({exc})") from exc
     ports = staged.get("ports") if isinstance(staged, dict) else None
     if not isinstance(ports, list) or not ports:
         return None
@@ -341,18 +356,25 @@ def _topology(ws: Path) -> str:
     return read_flow_topology(ws)
 
 
+#: Who writes each covered engine's case - which says whose mistake an unreadable one is.
+_AUTHOR = {"snappy": RENDERER, "cfmesh": RENDERER, "gmsh": BUILDER, "vmtk": RENDERER}
+
+
 def read_case_boundary(workspace, engine: str) -> CaseBoundary | None:
-    """The boundary the written case will produce, or None when this engine's case cannot be read
-    (or is not there yet). Never raises: an unreadable case is simply not judged."""
+    """The boundary the written case will produce. None when this pre-flight does not judge the
+    engine or path (multi-region; a vmtk lumen uploaded as-is). A covered case that is not there,
+    or not readable, raises CaseUnreadable - it is refused, never waved through."""
     reader = _READERS.get(str(engine or "").strip().lower())
     if reader is None:
         return None
     try:
         return reader(Path(workspace))
-    except Exception:  # noqa: BLE001 - a reading this module cannot make is not a verdict
+    except CaseUnreadable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any reading failure is an unreadable case
         logger.warning("case contract: could not read the %s case in %s", engine, workspace,
                        exc_info=True)
-        return None
+        raise CaseUnreadable(f"{type(exc).__name__}: {exc}") from exc
 
 
 def compare(declared: list[dict], case: CaseBoundary) -> list[str]:
@@ -360,9 +382,8 @@ def compare(declared: list[dict], case: CaseBoundary) -> list[str]:
     problems: list[str] = []
     want = {str(p.get("name") or "").strip(): str(p.get("type") or "").strip()
             for p in declared if isinstance(p, dict) and str(p.get("name") or "").strip()}
-    want = {n: r for n, r in want.items() if r not in case.ignored_roles}
     have = {n: t for n, t in case.patches.items()
-            if not (case.kind == "roles" and t in case.ignored_roles)}
+            if not (case.kind == "roles" and t in case.undeclared_ok_roles and n not in want)}
     written = ", ".join(sorted(have)) or "nothing"
     for name, role in sorted(want.items()):
         if name not in have:
@@ -386,12 +407,19 @@ def compare(declared: list[dict], case: CaseBoundary) -> list[str]:
 
 def check(workspace, engine: str) -> tuple[list[str], CaseBoundary | None]:
     """(problems, the boundary read) for the case in `workspace`, against its patch contract.
-    No contract (a direct dispatch) or an unreadable case: nothing to hold it to - ([], ...)."""
+    No contract (a direct dispatch), or an engine/path this does not judge: ([], None). A covered
+    case that cannot be read is a problem in itself - the early diagnosis is the point, and a case
+    whose boundary nobody can state is not one to spend a run on."""
     from meshpipeline.engines.workspace_facts import contract_patches
     declared = contract_patches(workspace)
     if not declared:
         return [], None
-    case = read_case_boundary(workspace, engine)
+    try:
+        case = read_case_boundary(workspace, engine)
+    except CaseUnreadable as exc:
+        author = _AUTHOR.get(str(engine or "").strip().lower(), RENDERER)
+        return ([f"the written {engine} case could not be read to check it against the approved "
+                 f"patches: {exc}"], CaseBoundary(patches={}, authored_by=author))
     if case is None:
         return [], None
     return compare(declared, case), case
@@ -435,5 +463,5 @@ def launch_check(workspace, engine: str) -> dict | None:
             "case_contract_mismatch": problems, "internal_defect": internal}
 
 
-__all__ = ["BUILDER", "REFUSAL_FACT", "RENDERER", "CaseBoundary", "check", "compare",
-           "launch_check", "read_case_boundary", "refusal_of", "stl_solid_names"]
+__all__ = ["BUILDER", "REFUSAL_FACT", "RENDERER", "CaseBoundary", "CaseUnreadable", "check",
+           "compare", "launch_check", "read_case_boundary", "refusal_of", "stl_solid_names"]

@@ -210,6 +210,15 @@ def _unmatched_walls(evidence, walls: list[str]) -> list[str]:
     return [w for w in walls if not any(same_patch_name(w, n) for n in available)]
 
 
+def _unassigned_regions(evidence, walls: list[str]) -> list[str]:
+    # The file's named parts that no declared wall matches. On an engine whose staging writes every
+    # part as a wall patch, such a part becomes a patch nobody approved - and nothing but the user
+    # can say which wall it belongs to.
+    from meshpipeline.contracts.patch_names import same_patch_name
+    return [n for n in _region_names(evidence)
+            if not any(same_patch_name(w, n) for w in walls)]
+
+
 def _wall_limit(spec, evidence) -> int | None:
     return spec.boundary_limits_for(topology_of(evidence.purpose or "")).get("wall")
 
@@ -230,7 +239,11 @@ def _supplies_fewer_regions(spec, evidence, walls: list[str]) -> bool:
     # none, and refusing on silence would block a request that may be perfectly deliverable.
     if count is None:
         return False
-    return count < len(walls) or bool(_unmatched_walls(evidence, walls))
+    if count < len(walls) or _unmatched_walls(evidence, walls):
+        return True
+    # ...and, where every staged part becomes a wall, is every part one of the declared walls?
+    return bool(spec.parts_become_walls and _region_staged(spec, evidence)
+                and _unassigned_regions(evidence, walls))
 
 
 def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
@@ -260,6 +273,12 @@ def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
         return (f"Your geometry distinguishes {count} regions ({offered}), fewer than the "
                 f"{len(walls)} wall patches you declared. ")
     missing = _unmatched_walls(evidence, walls)
+    unassigned = _unassigned_regions(evidence, walls) if spec.parts_become_walls else []
+    if not missing and unassigned:
+        return (f"Your geometry names its parts {offered}; the walls you declared cover "
+                f"{len(_region_names(evidence)) - len(unassigned)} of them, so "
+                f"{', '.join(unassigned)} would become a patch nobody approved. Add a wall patch "
+                "for each of those parts too, if they are meant to be kept apart. ")
     # A count that fits but names that do not: the mesher writes each patch under its REGION's
     # name, so a part the file never names cannot come back under a name the user chose. Saying
     # which names the file does offer is the actionable half - they rename their declaration to
@@ -449,6 +468,11 @@ class EngineSpec:
     #: path to it cannot supply named regions, and naming the wrong one sends a user to revise a
     #: requirement that was fine.
     single_wall_patch_reason: str = ""
+    #: Whether this bundle's staging writes EVERY named part of the input surface as a wall patch
+    #: (declared_boundary.stage_regions: snappy, cfMesh). With several walls declared, a part none
+    #: of them matches would become a patch nobody approved, so admission asks about it. An engine
+    #: that assigns surfaces to groups itself (gmsh) leaves such parts to its default group.
+    parts_become_walls: bool = False
     #: Which kinds of region structure this bundle's STAGING keeps apart (cad/regions.py's
     #: region_source: "assembly" and "roots" for a CAD file's named parts, "stl-solids" for an STL's
     #: named solids). A region the staged surface no longer carries is one the mesher never sees, so

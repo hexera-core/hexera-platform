@@ -119,10 +119,72 @@ def test_a_wall_written_as_an_open_patch_is_a_departure(tmp_path):
     assert problems == ["'car' is written as OpenFOAM type patch, but was approved as a wall"]
 
 
-def test_a_case_it_cannot_read_is_not_judged(tmp_path):
+def test_an_engine_it_does_not_cover_is_not_judged(tmp_path):
     _contract(tmp_path, [("car", "wall")])
-    assert case_contract.check(tmp_path, "snappy") == ([], None)
-    assert case_contract.read_case_boundary(tmp_path, "snappy_multiregion") is None
+    assert case_contract.check(tmp_path, "snappy_multiregion") == ([], None)
+    # a vmtk lumen uploaded as-is: the engine staged no ports, so nothing names the caps yet
+    assert case_contract.check(tmp_path, "vmtk") == ([], None)
+
+
+@pytest.mark.parametrize("engine,author", [("snappy", "renderer"), ("cfmesh", "renderer"),
+                                           ("gmsh", "builder")])
+def test_a_covered_case_it_cannot_read_is_refused_not_waved_through(tmp_path, engine, author):
+    # Greptile on #88: an unreadable case produced no problems, so the mesher started anyway and
+    # the early diagnosis this exists for was lost
+    _contract(tmp_path, [("car", "wall"), ("farfield", "farfield")])
+    problems, case = case_contract.check(tmp_path, engine)
+    assert problems and "could not be read" in problems[0], problems
+    assert case is not None and case.authored_by == author
+
+
+def test_a_snappy_surface_it_does_not_understand_is_refused(tmp_path):
+    _snappy_case(tmp_path)
+    shm = tmp_path / "system" / "snappyHexMeshDict"
+    shm.write_text(shm.read_text().replace("type triSurfaceMesh", "type searchableBox"))
+    _contract(tmp_path, [("car", "wall"), ("farfield", "farfield")])
+    problems, _case = case_contract.check(tmp_path, "snappy")
+    assert any("not a triSurfaceMesh" in p for p in problems), problems
+
+
+# gmsh groups with role free
+
+def _gmsh(tmp_path, declared, groups):
+    _contract(tmp_path, declared)
+    (tmp_path / "gmsh_spec.json").write_text(json.dumps({"groups": [
+        {"name": n, "role": r, "surface_tags": [i + 1]} for i, (n, r) in enumerate(groups)]}))
+    return case_contract.check(tmp_path, "gmsh")[0]
+
+
+def test_an_approved_free_group_the_spec_leaves_out_is_a_departure(tmp_path):
+    # Greptile on #88: a named `free` group the user approved was skipped, so a deck without it
+    # passed both the pre-flight and the patch gate
+    problems = _gmsh(tmp_path, [("base", "fixed"), ("top", "load"), ("outer_skin", "free")],
+                     [("base", "fixed"), ("top", "load")])
+    assert any("'outer_skin'" in p and "not written" in p for p in problems), problems
+
+
+def test_the_leftover_free_group_nobody_named_is_not_an_extra(tmp_path):
+    assert _gmsh(tmp_path, [("base", "fixed"), ("top", "load")],
+                 [("base", "fixed"), ("top", "load"), ("free", "free")]) == []
+
+
+def _gmsh_gate(tmp_path, declared, delivered):
+    from meshpipeline.engines.gates import GateCtx
+    from meshpipeline.engines.gmsh.gates import _gate_gmsh_region_contract
+    (tmp_path / "mesh_manifest.json").write_text(json.dumps({
+        "patch_types": dict(delivered), "patches": {n: [] for n, _r in delivered}}))
+    ctx = GateCtx(workspace=tmp_path, engine="gmsh",
+                  intake_patches=[{"name": n, "type": r} for n, r in declared])
+    return _gate_gmsh_region_contract(ctx)[0]
+
+
+def test_the_gmsh_gate_holds_an_approved_free_group_to_the_deck(tmp_path):
+    declared = [("base", "fixed"), ("outer_skin", "free")]
+    assert _gmsh_gate(tmp_path, declared, [("base", "fixed"), ("free", "free")]) is False
+    assert _gmsh_gate(tmp_path, declared, [("base", "fixed"), ("outer_skin", "free"),
+                                           ("free", "free")]) is True
+    # nothing declared as free: the leftover default group is still not an extra
+    assert _gmsh_gate(tmp_path, [("base", "fixed")], [("base", "fixed"), ("free", "free")]) is True
 
 
 # the launch seam
@@ -297,6 +359,33 @@ def test_a_part_matches_the_declared_wall_it_became_at_the_boundary():
     assert "multiple_wall_patches_unsupported" not in _codes(
         "snappy", "external_cfd", [("Wing_Left", "wall"), ("Fuselage", "wall"),
                                    ("farfield", "farfield")], facts=facts)
+
+
+@pytest.mark.parametrize("engine", ["snappy", "cfmesh"])
+def test_a_named_part_no_declared_wall_takes_is_asked_about_at_intake(engine):
+    # Greptile on #88: two walls matching two of three named parts were admitted, the third part
+    # was staged as a patch nobody approved, and the pre-flight ended the job as an internal error
+    facts = {"region_names": ["wing", "fuselage", "tail"], "region_count": 3,
+             "region_source": "stl-solids"}
+    walls = [("wing", "wall"), ("fuselage", "wall"), ("farfield", "farfield")]
+    ev = AdmissionEvidence(engine=engine, purpose="external_cfd", input_kind="body-surface",
+                           dimensionality="3D", surface_analysis=facts,
+                           patches=tuple(PatchSummary(n, t) for n, t in walls))
+    rej = [r for r in get_spec(engine).admit(ev) if r.code == "multiple_wall_patches_unsupported"]
+    assert rej and "tail would become a patch nobody approved" in rej[0].message, rej
+    assert "ONE wall patch" in rej[0].message
+    # every part named by a declared wall: admitted
+    assert "multiple_wall_patches_unsupported" not in _codes(
+        engine, "external_cfd", [*walls[:2], ("tail", "wall"), ("farfield", "farfield")],
+        facts=facts)
+
+
+def test_an_engine_that_groups_surfaces_itself_leaves_extra_parts_to_its_default_group():
+    facts = {"region_names": ["wing", "fuselage", "tail"], "region_count": 3,
+             "region_source": "stl-solids"}
+    assert "multiple_wall_patches_unsupported" not in _codes(
+        "gmsh", "external_cfd", [("wing", "wall"), ("fuselage", "wall"), ("farfield", "farfield")],
+        ik="fluid-domain", facts=facts)
 
 
 def test_a_reserved_name_is_refused_by_every_engine():

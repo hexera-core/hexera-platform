@@ -165,6 +165,8 @@ SPEC = EngineSpec(
         # A CAD file is tessellated as ONE surface (cad_tessellate.tessellate_to_stl), so the
         # parts a STEP assembly names never reach geom.fms apart. Only STL solids are kept.
         keeps_regions_from=("stl-solids",),
+        # every staged part is a wall patch, so with several walls each part must be one of them
+        parts_become_walls=True,
         # What this case writer builds. EXTERNAL: the far field is one box surface written as the
         # first non-wall patch (one), and a 2D case merges its front and back into exactly one
         # empty patch. INTERNAL: the carve delivers one wall and the declared ports.
