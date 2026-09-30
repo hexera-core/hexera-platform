@@ -193,6 +193,10 @@ function initViewer(job,surf,uiCfg){
     pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
     pr.setAmbient(0.30);pr.setDiffuse(0.78);
     pr.setSpecular(0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
+    // DOUBLE-SIDED. An OpenFOAM boundary face points out of the FLUID, so a car's wall faces point
+    // into the car; with back faces culled the near side vanished and the viewer drew the inside of
+    // the body (a car read as an open tray). The depth test does the hiding instead.
+    if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
     ren.addActor(actor);
     const b=pd.getBounds();
     entries.push({actor,pd,patch:p.name,polys,pts,nCells,offsets:null,
@@ -379,7 +383,6 @@ function initViewer(job,surf,uiCfg){
         const pr=en.actor.getProperty(),isSel=!!(selPart&&selPart.entity===en.patch);
         en.actor.setVisibility(!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
-        if(pr.setBackfaceCulling)pr.setBackfaceCulling(s.opacity>=1);
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
         else{pr.setColor(s.base[0],s.base[1],s.base[2]);
@@ -444,8 +447,7 @@ function initViewer(job,surf,uiCfg){
                        el.nextElementSibling.textContent=el.value+'%';
                        entries.forEach(en=>{if(en.patch!==st[sel].entity)return;
                          const pr=en.actor.getProperty();
-                         pr.setOpacity(st[sel].opacity);
-                         if(pr.setBackfaceCulling)pr.setBackfaceCulling(st[sel].opacity>=1);});
+                         pr.setOpacity(st[sel].opacity);});
                        rw.render();};return;}
         el.onclick=()=>{
           if(a==='hide'){const s=st[sel];s.hidden=!s.hidden;
@@ -542,14 +544,26 @@ function initViewer(job,surf,uiCfg){
       const cid=Number(ids[0]);
       if(cid>=0&&cid<en.nCells)cb(en,cid);}).catch(()=>{});}
 
-  function cellNormal(en,cid){          // Newell normal of the picked polygon
-    const o=cellOffsets(en)[cid],n=en.polys[o];
-    let nx=0,ny=0,nz=0;
+  function newell(en,cid){              // twice the polygon's area vector, in its own vertex order
+    const o=cellOffsets(en)[cid],n=en.polys[o],P=en.pts;let nx=0,ny=0,nz=0;
     for(let j=1;j<=n;j++){const a=en.polys[o+j]*3,b=en.polys[o+(j%n)+1]*3;
-      const ax=en.pts[a],ay=en.pts[a+1],az=en.pts[a+2];
-      const bx=en.pts[b],by=en.pts[b+1],bz=en.pts[b+2];
-      nx+=(ay-by)*(az+bz);ny+=(az-bz)*(ax+bx);nz+=(ax-bx)*(ay+by);}
-    const L=Math.hypot(nx,ny,nz)||1;return [nx/L,ny/L,nz/L];}
+      nx+=(P[a+1]-P[b+1])*(P[a+2]+P[b+2]);ny+=(P[a+2]-P[b+2])*(P[a]+P[b]);
+      nz+=(P[a]-P[b])*(P[a+1]+P[b+1]);}
+    return [nx,ny,nz];}
+  // WHICH WAY IS OUT of a part. OpenFOAM turns a boundary face out of the fluid - into a car body -
+  // and an STL points wherever it was drawn, so each part's sense is read off the part itself: for a
+  // closed body the faces' reach from its centre is all one sign. A flat or open part (an inlet
+  // disc) reads near zero and keeps its own order.
+  function outSign(en){
+    if(en.outSign===undefined){const b=en.pd.getBounds(),c=[(b[0]+b[1])/2,(b[2]+b[3])/2,(b[4]+b[5])/2];
+      let s=0,a=0;const step=Math.max(1,Math.floor(en.nCells/4000));
+      for(let k=0;k<en.nCells;k+=step){const p=cellCenter(en,k),v=newell(en,k);
+        const d=(p[0]-c[0])*v[0]+(p[1]-c[1])*v[1]+(p[2]-c[2])*v[2];s+=d;a+=Math.abs(d);}
+      en.outSign=a>0&&s/a<-0.3?-1:1;en.outFirm=a>0&&Math.abs(s/a)>=0.3;}
+    return en.outSign;}
+  function cellNormal(en,cid){          // unit normal of the polygon, pointing out of its part
+    const v=newell(en,cid),s=outSign(en)/(Math.hypot(v[0],v[1],v[2])||1);
+    return [v[0]*s,v[1]*s,v[2]*s];}
   function ringPd(c,nrm,r){             // thin circle in the surface tangent plane
     let u=Math.abs(nrm[0])>0.9?[0,1,0]:[1,0,0];
     let ux=u[1]*nrm[2]-u[2]*nrm[1],uy=u[2]*nrm[0]-u[0]*nrm[2],uz=u[0]*nrm[1]-u[1]*nrm[0];
