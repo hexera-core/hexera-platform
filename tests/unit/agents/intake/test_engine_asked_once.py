@@ -83,7 +83,10 @@ _NOT_YES = ["use cfMesh", "no, cfMesh", "not that one", "no", "I'd rather not", 
             "cfMesh please", "no, use gmsh", "don't use snappy", "not snappyHexMesh", "wait",
             "is that the best one?", "why snappyHexMesh?", "your call, but not snappy",
             "you decide, but I don't want that", "whatever you think, but forget it",
-            "I don't know what snappyHexMesh is"]
+            "I don't know what snappyHexMesh is",
+            # uncertainty is not a hand-back (review on #108): the model answers it
+            "I don't know", "no idea", "no idea what a mesher is", "I don't know what that is",
+            "dunno"]
 
 
 def _answer(message: str) -> dict | None:
@@ -179,8 +182,36 @@ def test_a_reply_to_an_answer_of_the_engine_question_may_talk_about_it():
     asked = es.propose("snappy", session_id="s", owner_id="u", revision="r1", user_msg_count=1)
     why = "snappyHexMesh fits the cells to the curved wall, so the layers stay even. OK with it?"
     assert engine_nudge(why, selection=asked, latest_user_msg="why?", user_msg_count=2) is None
+    assert engine_nudge(why, selection=asked, latest_user_msg="hmm, I'd rather not", user_msg_count=2) is None
     assert engine_nudge(why, selection=asked, latest_user_msg="20 m/s",
                         user_msg_count=3) == turn.ENGINE_UNSETTLED_NUDGE
+
+
+def test_an_answer_to_something_else_gives_the_next_reply_no_pass():
+    # review on #108: "20 m/s" to the engine question leaves the proposal open; a reply that then
+    # carries the engine as an assumption is sent back to the one question like any other
+    asked = es.propose("snappy", session_id="s", owner_id="u", revision="r1", user_msg_count=1)
+    carried = _CARRYING[1].format(e="snappyHexMesh")
+    for said in ("20 m/s", "air, sea level", "the outlet is on the right"):
+        assert engine_nudge(carried, selection=asked, latest_user_msg=said,
+                            user_msg_count=2) == turn.ENGINE_UNSETTLED_NUDGE, said
+
+
+@pytest.mark.parametrize("reply,left", [
+    ("I'll carry forward snappyHexMesh as the unconfirmed engine assumption. Near-wall layers: 8 at y⁺ "
+     "30–300 - ok?", "Near-wall layers: 8 at y⁺ 30–300 - ok?"),
+    ("Good. Using snappyHexMesh, I'd refine the throat.\n\nPatches - I'd go with:\n1. `inlet`\n2. `outlet`\n"
+     "OK, or tell me what to change.",
+     "Good.\n\nPatches - I'd go with:\n1. `inlet`\n2. `outlet`\nOK, or tell me what to change."),
+    ("Flow conditions - I'd go with:\n1. Air at 15 °C\n2. 10 m/s at the inlet\nOK?",       # nothing to take out
+     "Flow conditions - I'd go with:\n1. Air at 15 °C\n2. 10 m/s at the inlet\nOK?"),
+    ("For the snappyHexMesh setup, should I use 10 prism layers?", None),                  # nothing would be left
+    ("Should snappyHexMesh refine the throat? I'd use 8 layers.", None),                   # the question went with it
+    ("I'll keep snappyHexMesh. Next I need the fluid.", "Next I need the fluid."),
+])
+def test_the_settled_engine_is_taken_out_of_a_reply_that_cannot_be_sent_back(reply, left):
+    from meshpipeline.agents.intake.loop_policy import without_engine_sentences
+    assert without_engine_sentences(reply) == left
 
 
 # ------------------------------------------------------------- whole conversations ----
@@ -289,6 +320,35 @@ def test_the_nozzle_conversation_replayed_asks_the_engine_once_and_never_again()
     # 5. Asked about it, the model may talk about it.
     answer = "snappyHexMesh fits the cells to the curved wall; cfMesh would staircase it. Keep it?"
     assert c.turn("why snappyHexMesh and not cfMesh?", _Model(_resp(content=answer))) == answer
+
+
+def _settled_conversation() -> _Conversation:
+    c = _Conversation()
+    c.turn("internal flow through this nozzle, air", _Model(
+        _resp([_tc("propose_engine_selection", {"engine": "snappy", "reason": _REASON})])))
+    c.turn("ok", _Model(_resp(content=_CLEAN[0])))
+    assert c.selection["state"] == es.CONFIRMED
+    return c
+
+
+def test_a_model_that_restates_the_engine_again_after_the_note_is_trimmed_not_delivered():
+    # review on #108: the note is sent once; the reply that comes back restating it is not delivered
+    # as written - its engine sentences are taken out, the question stays
+    c = _settled_conversation()
+    again = "I'll carry forward snappyHexMesh as the unconfirmed engine assumption. Near-wall layers: 8 - ok?"
+    reply = c.turn("yes, 20 m/s", _Model(_resp(content=again), clean=again))
+    assert reply == "Near-wall layers: 8 - ok?"
+    assert c.notes[-1] == turn.ENGINE_SETTLED_NUDGE
+
+
+def test_on_the_last_round_the_settled_engine_is_trimmed_without_a_note(monkeypatch):
+    # review on #108: with no round left to send it back in, the reply is still not delivered restating it
+    c = _settled_conversation()
+    monkeypatch.setattr(intake.icfg, "INTAKE_MAX_ROUNDS", 1)
+    again = "Using snappyHexMesh, I'd refine the throat. Should the outlet get a refinement zone too?"
+    reply = c.turn("yes, 20 m/s", _Model(_resp(content=again), clean="unreached"))
+    assert reply == "Should the outlet get a refinement zone too?"
+    assert c.notes == []
 
 
 def test_why_to_the_engine_question_gets_its_answer_end_to_end():

@@ -408,11 +408,15 @@ def leaves_it_to_us(engine: str, message: str) -> bool:
     # is the answer. Read by the intake's one deferral reader, never by a word list of this
     # module's - and never over a "no" aimed at the engine ("your call, but not snappyHexMesh").
     # A message that names an engine is about the engine ("I don't know what snappyHexMesh is"),
-    # not a hand-back: the plain reading below, or the model, answers it.
+    # not a hand-back: the plain reading below, or the model, answers it. Nor is uncertainty on
+    # its own (review on #108): "I don't know" or "no idea what a mesher is" says they are
+    # unsure, not that the choice is ours - the hand-back must still be there once the
+    # not-knowing is taken out.
     from meshpipeline.agents.intake.turn import defers_to_default
-    if not defers_to_default(message) or _vocab.engines_named_in(str(message or "")):
+    if _vocab.engines_named_in(str(message or "")):
         return False
-    return not declines(engine, _NOT_KNOWING.sub(" ", str(message or "")))
+    rest = _NOT_KNOWING.sub(" ", str(message or ""))
+    return defers_to_default(rest) and not declines(engine, rest)
 
 
 def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revision: str,

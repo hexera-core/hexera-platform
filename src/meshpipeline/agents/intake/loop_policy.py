@@ -106,8 +106,10 @@ def engine_nudge(reply: str, *, selection: dict | None, latest_user_msg: str,
     line (a soft limitation of the chosen engine is raised once before the summary, by name); the
     reply to the very message that settled it ("sure" -> "Gmsh it is. Flow speed?") - one
     acknowledgement is an answer, the same line on every later turn is the restating; and the
-    reply to an answer of the engine question itself ("why?" to "I'd mesh this with X ... OK?"),
-    whose subject is the engine whatever words the user chose."""
+    reply to a question about, or a no to, the engine question itself ("why?" or "I'd rather not"
+    to "I'd mesh this with X ... OK?"), whose subject is the engine whatever words the user
+    chose. An answer to something else ("20 m/s") leaves the proposal open and gets no pass
+    (review on #108): a reply carrying the engine then goes back to the one question."""
     from meshpipeline.agents.intake import engine_selection as es
     from meshpipeline.agents.intake import vocabulary as _vocab
 
@@ -116,7 +118,9 @@ def engine_nudge(reply: str, *, selection: dict | None, latest_user_msg: str,
         return None
     state = es.state_of(selection)
     if (state == es.PROPOSED and user_msg_count is not None
-            and int((selection or {}).get("proposed_msg_count", -2)) + 1 == int(user_msg_count)):
+            and int((selection or {}).get("proposed_msg_count", -2)) + 1 == int(user_msg_count)
+            and ("?" in str(latest_user_msg or "")
+                 or es.declines(str((selection or {}).get("engine") or ""), latest_user_msg))):
         return None
     if state == es.CONFIRMED:
         settled_now = revision is not None and (selection or {}).get("confirmed_revision") == revision
@@ -126,6 +130,34 @@ def engine_nudge(reply: str, *, selection: dict | None, latest_user_msg: str,
     if len(named) == 1:
         return turn.ENGINE_UNSETTLED_NUDGE
     return None
+
+
+#: Where one sentence ends and the next begins: a . ! or ? after a letter or a closing mark, then
+#: space. Not after a digit, so a numbered line ("1. Air at 15 °C") stays one sentence.
+_SENTENCE_BREAK = re.compile(r"(?:(?<=[^\W\d][.!?])|(?<=[)\]*`'\"”’][.!?]))\s+")
+
+
+def without_engine_sentences(reply: str) -> str | None:
+    """`reply` with every sentence that names an engine taken out - or None when nothing is left,
+    or the question the reply asked went out with the engine.
+
+    For the one reply the guard cannot send back - the last round of the turn, or a model that
+    restated the settled engine again after the note: "I'll carry forward snappyHexMesh as the
+    unconfirmed engine assumption. Near-wall layers: 8 at y⁺ 30–300 - ok?" reaches the user as
+    "Near-wall layers: 8 at y⁺ 30–300 - ok?" (review on #108)."""
+    from meshpipeline.agents.intake import vocabulary as _vocab
+
+    kept_lines: list[str] = []
+    for line in str(reply or "").split("\n"):
+        sentences = [s for s in _SENTENCE_BREAK.split(line) if s.strip()]
+        kept = [s for s in sentences if not _vocab.engines_named_in(s)]
+        if sentences and not kept:
+            continue                                   # the whole line was about the engine
+        kept_lines.append(" ".join(kept) if sentences else line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+    if not text or ("?" in str(reply or "") and "?" not in text):
+        return None
+    return text
 
 
 @dataclass
@@ -203,12 +235,20 @@ class IntakeLoopPolicy:
         may_retry = left is None or left > 0
         # The engine first: a reply carrying an unsettled engine is fixed by proposing it, which a
         # repeat nudge ("take your own proposal") would get wrong. Once, like the repeat below.
-        note = self._engine_note() if may_retry and self.engine_nudges == 0 else None
-        if note:
+        note = self._engine_note()
+        if note and may_retry and self.engine_nudges == 0:
             self.engine_nudges += 1
             logger.info("Intake: the reply names the engine the user did not bring up - sent "
                         "back once (%s)", "settled" if note == turn.ENGINE_SETTLED_NUDGE else "unsettled")
             return RoundDecision(message=note, complete=False)
+        if note == turn.ENGINE_SETTLED_NUDGE:
+            # No round to send it back in, or it came back restating again: the settled engine
+            # is taken out of the reply here, when a question is left to deliver.
+            trimmed = without_engine_sentences(self.plaintext_text)
+            if trimmed:
+                logger.info("Intake: the settled engine was restated again - its sentences "
+                            "were taken out of the reply")
+                self.plaintext_text = trimmed
         if (self.repeated_questions == 0 and may_retry
                 and repeats_a_question(self.plaintext_text, self.prior_questions)):
             self.repeated_questions += 1
@@ -278,4 +318,4 @@ class IntakeLoopPolicy:
 
 
 __all__ = ["REPEAT_THRESHOLD", "TERMINAL_PRIORITY", "IntakeLoopPolicy", "engine_nudge",
-           "repeats_a_question", "user_raised_the_engine"]
+           "repeats_a_question", "user_raised_the_engine", "without_engine_sentences"]
