@@ -17,8 +17,8 @@
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, bindUnit, followSuggestion, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml,
-  shown, tableHead, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+import { applyFlow, bindAxis, bindUnit, extentAlong, followSuggestion, followUnit, formHtml, markConfirmed, readExternal,
+  readForm, rowHtml, shown, tableHead, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
@@ -113,7 +113,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  applyFlow(form); bindUnit(panel, p);
+  applyFlow(form); bindUnit(panel, p); bindAxis(form, p);
   const banner = panel.querySelector(".gc-banner");
   /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
      point; the banner says what is happening around them - whether the file said its unit (a
@@ -253,10 +253,18 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$/.test(k))) : p2;
       // a unit the user set in the box outlives the re-draw; a served one fills an untouched box
       const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
-      Object.assign(p, words, { openings: merged }, chosen);
+      // so do the flow axis the user turned and the reference length they typed; an untyped
+      // length is the part's length along the axis that stands
+      const answered = {};
+      if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false });
+      if (p.reference_length_typed) answered.reference_length_mm = p.reference_length_mm;
+      Object.assign(p, words, { openings: merged }, chosen, answered);
+      if (p.flow_axis_touched && !p.reference_length_typed) {
+        const along = extentAlong(p, p.flow_axis); if (along !== null) p.reference_length_mm = along;
+      }
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindUnit(panel, p); bindProceed(); scene.rebind();
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); bindProceed(); scene.rebind();
       shown = "ready"; showBanner("");
     } else {
       const key = "failed|" + (d2.reason || "");

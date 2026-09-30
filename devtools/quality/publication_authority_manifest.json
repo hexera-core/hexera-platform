@@ -701,6 +701,32 @@
   ]
  },
  {
+  "context": "agents/intake/garbled.py::flaw::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/garbled.py",
+  "qualname": "flaw",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "pattern",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/garbled.py::flaw::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/garbled.py",
+  "qualname": "flaw",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "pattern",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/loop_policy.py::user_raised_the_engine::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/loop_policy.py",
   "qualname": "user_raised_the_engine",

@@ -17,8 +17,8 @@
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { prettyText } from "../core/engineering_text.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
-import { applyFlow, bindUnit, displayText, followSuggestion, followUnit, formHtml, markConfirmed, readForm, shown,
-  unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
+import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestion, followUnit, formHtml, markConfirmed,
+  readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -129,8 +129,8 @@ export const Stage = {
     if(this._gcEl)this._gcEl.remove();
     const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
     this.col().appendChild(g);this._gcEl=g;this._gcP=p;
-    if(was)this._gcRestore(g,was);
-    applyFlow(g);bindUnit(g,p);
+    if(was)this._gcRestore(g,was,p);
+    applyFlow(g);bindUnit(g,p);bindAxis(g,p);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
     btn.onclick=async()=>{
@@ -157,10 +157,14 @@ export const Stage = {
       // each field on its own: a row whose role was changed keeps the model's name when it lands
       const r={};if(name!==undefined&&name!==(o.name||''))r.name=name;if(role!==undefined&&role!==o.role)r.role=role;if(dia)r.dia=dia;
       if(Object.keys(r).length)rows[id]=r;});
-    return {kind:v('.gc-kind'),flow:v('.gc-flow'),unit:p&&p.unit_touched?p.unit:undefined,rows};},
-  _gcRestore(g,was){
+    return {kind:v('.gc-kind'),flow:v('.gc-flow'),unit:p&&p.unit_touched?p.unit:undefined,rows,
+            // the flow axis the user turned, and a reference length they typed (as typed, in the file's units)
+            axis:p&&p.flow_axis_touched?p.flow_axis:undefined,ref:p&&p.reference_length_typed?v('.gc-ref'):undefined};},
+  _gcRestore(g,was,p){
     const set=(sel,val)=>{const el=g.querySelector(sel);if(el&&val!==undefined)el.value=val;};
     set('.gc-kind',was.kind);set('.gc-flow',was.flow);
+    if(was.ref!==undefined){set('.gc-ref',was.ref);p.reference_length_typed=true;}
+    if(was.axis)followAxis(g,p,was.axis);        // an untyped reference length follows the user's axis
     Object.entries(was.rows).forEach(([id,r])=>{const tr=g.querySelector(`.gc-table tr[data-id="${id}"]`);if(!tr)return;
       const name=tr.querySelector('.gc-name'),role=tr.querySelector('.gc-role'),dia=tr.querySelector('.gc-dia');
       if(name&&r.name!==undefined)name.value=r.name;if(role&&r.role!==undefined)role.value=r.role;if(dia&&r.dia)dia.value=r.dia;});},

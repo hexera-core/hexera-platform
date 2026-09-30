@@ -57,6 +57,10 @@ class ConfirmIn(BaseModel):
     # far field reaches in those lengths, and whether the part stands on the ground
     flow_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z", "unknown"] | None = None
     reference_length_mm: float | None = Field(default=None, gt=0)
+    #: Whether the user typed the reference length themselves. Left false, a length that is the
+    #: part's extent along another axis than the flow's - the check's guess, left behind when the
+    #: axis was turned - is corrected to the length along the flow when the form is confirmed.
+    reference_length_typed: bool = False
     extents: dict[str, float] | None = None
     grounded: bool = False
     #: WHICH WAY IS UP: the axis of the part that points to the sky, as the stage proposed it or
@@ -435,9 +439,21 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         # what the check proposed, so the declaration and the views go by the same axis
         from meshpipeline.application.geometry_check import stored_up_axis
         body = body.model_copy(update={"up_axis": stored_up_axis(str(session_id), confirmed=False)})
+    # THE REFERENCE LENGTH FOLLOWS THE CONFIRMED AXIS. A form that turned the flow axis but kept
+    # the length the check measured along its guessed axis (a console from before the box
+    # followed the axis, or an API caller) would size the far field on the wrong length.
+    # Only the check's own guess is changed: the stored check says what it proposed.
+    from meshpipeline.application.geometry_confirmation import reference_length_along_the_flow, stored_lengths
+
+    reference_note = ""
+    if body.flow == "external" and not body.reference_length_typed:
+        stored_size, proposed = stored_lengths(_read_json(check_object_key(str(session_id), "scout.json")), scale)
+        body, reference_note = reference_length_along_the_flow(body, stored_size, proposed)
     message = confirmation_message(body)
     if renamed:
         message = f"{message} {renamed}"             # never silent: the intake tells the user
+    if reference_note:
+        message = f"{message} {reference_note}"      # said in the declaration, never silent
     patches = patches_from(body)
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has

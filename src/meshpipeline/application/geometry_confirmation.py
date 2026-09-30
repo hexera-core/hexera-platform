@@ -59,6 +59,87 @@ def distinct_opening_names(openings) -> list:
     return out
 
 
+def reference_length_along_the_flow(body, stored_size_mm=None, proposed_mm=None) -> tuple[Any, str]:
+    """The confirmation with its reference length along the confirmed flow axis, and the sentence
+    that says so - or the body as it came and "" when nothing needed changing.
+
+    The check fills the reference length with the part's length along the axis it guessed. A
+    console (or a caller) that sent the user's corrected axis with the guessed axis's length
+    untouched would size the far field on the wrong length: the NASA CRM read along +y and turned
+    to +x kept its 30.4 m span instead of its 64.6 m length, a far field half the size.
+
+    Only the check's own guess is ever changed. A length the user typed (`reference_length_typed`)
+    is theirs; so is one that is none of the lengths the check proposed (`proposed_mm`, in the
+    body's scale: the measuring step's, and the naming's that replaced it - a form drawn before
+    the naming landed still holds the first) - a caller that chose the car's width on purpose
+    sent a number the check never offered; and so is one that is no extent of the part at all.
+    With no proposal to compare with, the length being another axis's extent decides.
+    `stored_size_mm` is the part's size, in the body's scale, for a body that did not carry its
+    own. Never refuses: it corrects and says so."""
+    if getattr(body, "flow", None) != "external" or getattr(body, "reference_length_typed", False):
+        return body, ""
+    from meshpipeline.contracts.geometry_fields import length_of_another_axis, same_length
+
+    ref = getattr(body, "reference_length_mm", None)
+    offered = [float(p) for p in (proposed_mm or ())]
+    if offered and ref is not None and not any(same_length(float(ref), p) for p in offered):
+        return body, ""
+    size = getattr(body, "size_mm", None)
+    size = size if size and len(size) == 3 else stored_size_mm
+    found = length_of_another_axis(ref, getattr(body, "flow_axis", None), size)
+    if found is None:
+        return body, ""
+    along, other = found
+    was = float(body.reference_length_mm)
+    note = (f"The reference length on the form, {was:.0f} mm, was the part's length along {other} - "
+            "left from the check's first guess of the flow axis - so it is now the part's length "
+            f"along the flow, {along:.0f} mm, and the far-field margins are multiples of that. Tell "
+            "the user this in your next reply, and that they can give another reference length in "
+            "the chat if they want one.")
+    return body.model_copy(update={"reference_length_mm": along}), note
+
+
+def stored_lengths(stored_check: dict | None, scale_to_m: float) -> tuple[list[float] | None, tuple[float, ...]]:
+    """The part's size and every reference length the check proposed, from the stored check (read
+    under the scout's own scale), re-read in `scale_to_m` - what a confirmation is compared with.
+    The lengths are the stored proposal's and the measuring step's own guess, which the naming's
+    proposal replaced in the store but a form drawn before it landed still shows. The size is
+    None, and the lengths empty, when the check holds none."""
+    facts = (stored_check or {}).get("facts") or {}
+    proposal = (stored_check or {}).get("proposal") or {}
+    try:
+        was = float(facts.get("scale_to_m") or 0.001)     # what the scout and the form assume
+        k = float(scale_to_m) / was
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None, ()
+    try:
+        sizes: list[float] | None = [round(float(v) * k, 6) for v in (facts.get("size_mm") or proposal.get("size_mm") or [])]
+    except (TypeError, ValueError):
+        sizes = None
+    offered = []
+    for length in (proposal.get("reference_length_mm"), _measuring_steps_guess(facts)):
+        try:
+            if length:
+                offered.append(round(float(length) * k, 6))
+        except (TypeError, ValueError):
+            continue
+    return (sizes if sizes and len(sizes) == 3 else None), tuple(offered)
+
+
+def _measuring_steps_guess(facts: dict) -> float | None:
+    """The reference length the measuring step proposed before the naming answered: the part's
+    length along its own guess of the flow axis, across the up axis the shape alone decides -
+    what the scouted form showed. None when the facts cannot say."""
+    try:
+        from meshpipeline.application.geometry_check import decide_up
+        from meshpipeline.contracts.geometry_fields import external_defaults
+
+        up = decide_up(str(facts.get("flow") or ""), facts.get("up_evidence"), None)["up_axis"]
+        return float(external_defaults(facts, None, up)["reference_length_mm"])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
 def unit_sentence(body) -> str:
     """The file's unit as the user confirmed it, and the part's length in it - so the intake is
     told the scale in words instead of working it out from millimetres. Empty when the

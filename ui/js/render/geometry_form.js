@@ -216,6 +216,58 @@ export function followSuggestion(root, p, suggestion) {
   showUnit(root, p);
 }
 
+/** The part's length along a flow axis ("+x", "-y", ...), in the reading's millimetres, from the
+ *  proposal's size; null for "not sure" or a part with no size. */
+export function extentAlong(p, axis) {
+  const k = { x: 0, y: 1, z: 2 }[String(axis || "").slice(-1)];
+  const s = p && p.size_mm;
+  if (k === undefined || !/^[+-][xyz]$/.test(String(axis)) || !s || s.length !== 3) return null;
+  const v = Number(s[k]);
+  return v > 0 ? v : null;
+}
+
+/* THE REFERENCE LENGTH FOLLOWS THE FLOW AXIS. The check fills it with the part's length along the
+   axis it guessed; when that guess is wrong and the user turns the axis, the old length must not
+   stay behind - the far field is sized in reference lengths, so the NASA CRM read along its span
+   got a box half the size, with nothing on the form to say so. It follows the axis until the user
+   types a length of their own, which is theirs from then on (a blank box follows again). A turn
+   along the same line (+x to -x) is the same length and leaves the box as it stands. */
+
+/** Turn the form to a flow axis as the select does: the axis is the user's, and an untyped
+ *  reference length becomes the part's length along it. */
+export function followAxis(root, p, axis) {
+  const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref");
+  if (axisEl && axisEl.value !== axis) axisEl.value = axis;
+  const was = String(p.flow_axis || "");
+  p.flow_axis = axis; p.flow_axis_guessed = false; p.flow_axis_touched = true;
+  if (p.reference_length_typed || was.slice(-1) === String(axis).slice(-1)) return;
+  const along = extentAlong(p, axis);
+  if (along === null) return;                  // "not sure" keeps the length that stands
+  p.reference_length_mm = along;
+  if (refEl) refEl.value = exact(raw(along, p));
+}
+
+/** Keep the reference length in step with the axis select, and mark it the user's once they
+ *  type one. Call once after the form is in the document. */
+export function bindAxis(root, p) {
+  const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref");
+  if (axisEl) axisEl.addEventListener("change", () => followAxis(root, p, axisEl.value));
+  if (!refEl) return;
+  refEl.addEventListener("input", () => {
+    const v = num(refEl.value, 0);
+    p.reference_length_typed = v > 0;
+    if (v > 0) p.reference_length_mm = typed(v, p);
+  });
+  // a box left blank is the part's length along the flow again, shown as soon as the user leaves it
+  refEl.addEventListener("change", () => {
+    if (num(refEl.value, 0) > 0) return;
+    const along = extentAlong(p, axisEl ? axisEl.value : p.flow_axis);
+    if (along === null) return;
+    p.reference_length_mm = along;
+    refEl.value = exact(raw(along, p));
+  });
+}
+
 /** The external-flow answers as the form holds them now; the reference length typed in the
  *  file's units, read back in the reading's millimetres. */
 export function readExternal(root, p) {
@@ -223,8 +275,12 @@ export function readExternal(root, p) {
   // a margin below half a body length is no far field at all; a blank box keeps the default
   root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { ext[el.dataset.k] = Math.max(0.5, num(el.value, 5)); });
   const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref"), gEl = root.querySelector(".gc-ground");
-  return { flow_axis: axisEl ? axisEl.value : "unknown",
-           reference_length_mm: refEl && num(refEl.value, 0) > 0 ? typed(num(refEl.value, 0), p) : null,
+  const axis = axisEl ? axisEl.value : "unknown", ref = refEl ? num(refEl.value, 0) : 0;
+  return { flow_axis: axis,
+           // a blank box is the part's length along the flow, never no length at all
+           reference_length_mm: ref > 0 ? typed(ref, p) : extentAlong(p, axis),
+           // the server corrects a length left behind by a turned axis, never one the user typed
+           reference_length_typed: !!(p && p.reference_length_typed),
            extents: ext, grounded: !!(gEl && gEl.checked) };
 }
 

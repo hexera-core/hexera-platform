@@ -49,7 +49,8 @@ FIELDS: tuple[GeometryField, ...] = (
                   options=tuple((a, a) for a in AXES) + (("unknown", "not sure"),),
                   help="the direction the flow moves past the part"),
     GeometryField("reference_length_mm", "Reference length (mm)", "number", applies="external",
-                  help="the part's length along the flow; the margins below are multiples of it"),
+                  help="the part's length along the flow, following the flow axis until the user "
+                       "types their own; the margins below are multiples of it"),
     GeometryField("extents", "Far-field margins (body lengths)", "extents", applies="external",
                   help="upstream, downstream, to each side, above"),
     GeometryField("grounded", "The part stands on the ground", "bool", applies="external"),
@@ -84,6 +85,41 @@ def axis_of_longest_side(size_mm, up_axis: str = DEFAULT_UP) -> str:
 def length_along(size_mm, axis: str) -> float:
     idx = {"x": 0, "y": 1, "z": 2}.get(axis[-1:], 0)
     return float(size_mm[idx])
+
+
+#: How close a length must be to the part's extent along an axis to BE that extent: the proposal
+#: rounds it to 0.01 mm and a re-read in another unit to six decimals, so a thousandth of it is
+#: the same number, and a length the user chose is never that close by accident.
+_SAME_LENGTH = 1e-3
+
+
+def same_length(a: float, b: float) -> bool:
+    """Whether two lengths are the same number, to the rounding a length goes through."""
+    return abs(a - b) <= _SAME_LENGTH * max(abs(a), abs(b))
+
+
+def length_of_another_axis(reference_length_mm, flow_axis, size_mm) -> tuple[float, str] | None:
+    """THE REFERENCE LENGTH LEFT BEHIND BY A WRONG AXIS. The check fills the reference length with
+    the part's extent along the axis it guessed; a user who turns the axis keeps that number unless
+    something changes it, and the far field - sized in reference lengths - silently shrinks or
+    grows with it (the NASA CRM read along +y: its 30.4 m span instead of its 64.6 m length).
+
+    When `reference_length_mm` is the part's extent along an axis the flow does NOT travel along,
+    and not its extent along the flow, returns (the extent along the flow, the axis letter the
+    length belongs to). None when the length is the one along the flow, belongs to no axis (a
+    length the user chose, a chord), or cannot be compared: no length, an unsettled axis, no size."""
+    try:
+        ref = float(reference_length_mm)
+        sizes = [float(v) for v in size_mm]
+    except (TypeError, ValueError):
+        return None
+    k = {"x": 0, "y": 1, "z": 2}.get(str(flow_axis or "")[-1:]) if flow_axis in AXES else None
+    if k is None or len(sizes) != 3 or not ref > 0 or not sizes[k] > 0:
+        return None
+    if same_length(ref, sizes[k]):
+        return None
+    other = next((i for i in range(3) if i != k and same_length(ref, sizes[i])), None)
+    return None if other is None else (sizes[k], "xyz"[other])
 
 
 def external_defaults(facts: dict, flow_axis: str | None, up_axis: str = DEFAULT_UP) -> dict:
@@ -145,5 +181,6 @@ def external_declaration(body) -> list[str]:
 
 __all__ = ["AXES", "DEFAULT_EXTENTS", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
            "GROUND_NEEDS_Z_UP", "GeometryField", "UP_AXES", "axis_of_longest_side",
-           "external_declaration", "external_defaults", "form_spec", "length_along", "up_or_default"]
+           "external_declaration", "external_defaults", "form_spec", "length_along",
+           "length_of_another_axis", "same_length", "up_or_default"]
 _ = field  # dataclasses.field is imported for future registry entries with defaults
