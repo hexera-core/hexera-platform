@@ -108,7 +108,8 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                 # It reads the boundary files only and gives up past its own budget.
                 try:
                     from meshpipeline.engines.passage import passage_of_polymesh
-                    if (ws / "flow_topology").read_text().strip().lower() == "internal":
+                    from meshpipeline.engines.workspace_facts import read_flow_topology
+                    if read_flow_topology(ws) == "internal":
                         t2 = time.monotonic()
                         q.update(passage_of_polymesh(ws))
                         timing["passage_measure_s"] = round(time.monotonic() - t2, 1)

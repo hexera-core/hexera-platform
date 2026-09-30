@@ -16,7 +16,10 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 11  # v11: `engine_source` + `engine_ladder` - who chose the engine, and
+STATE_SCHEMA_VERSION = 12  # v12: `review_rerun_count` - reviews of the same validated mesh started
+                           # again after one ended without a verdict (node_review_retry).
+                           # Carries every v11 field.
+                           # v11: `engine_source` + `engine_ladder` - who chose the engine, and
                            # the fallback ladder's record (every attempt's engine, each switch,
                            # the offer a run ends with). Carries every v10 field.
                            # v10: `executor_failure_cause` + `executor_failure_facts` - WHAT the
@@ -97,6 +100,10 @@ class PipelineState(TypedDict):
     # brownout and re-run by node_infra_retry). Distinct from retry_count: an infra replay
     # re-runs the SAME mesh attempt number - it is not a new mesh attempt.
     infra_retry_count: int
+
+    # Reviews started again on the SAME validated mesh after one ended without a verdict
+    # (node_review_retry). Not a mesh attempt: retry_count is untouched and nothing is rebuilt.
+    review_rerun_count: int
 
     request_txt:      str
     review_brief_txt: str

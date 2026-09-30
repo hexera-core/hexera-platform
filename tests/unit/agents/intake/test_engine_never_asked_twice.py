@@ -109,7 +109,7 @@ def test_a_proposal_a_turn_after_the_user_named_the_engine_is_selected_not_asked
     assert "SELECTED" in seen[-1]["content"]
     sel = out["intake_gate"]["selection"]
     assert sel["engine"] == "snappy" and sel["state"] == es.CONFIRMED
-    assert "Do you want to select" not in out["messages"][-1]["content"]
+    assert "I'd mesh this with" not in out["messages"][-1]["content"]
 
 
 def test_a_proposal_of_an_engine_the_user_moved_away_from_is_still_asked():
@@ -121,7 +121,7 @@ def test_a_proposal_of_an_engine_the_user_moved_away_from_is_still_asked():
         _resp(content="unreached"),
     ])
     assert out["intake_gate"]["selection"]["state"] == es.PROPOSED
-    assert "Do you want to select snappyHexMesh?" in out["messages"][-1]["content"]
+    assert "I'd mesh this with snappyHexMesh" in out["messages"][-1]["content"]
 
 
 # ------------------------------------------- an engine that cannot mesh what was confirmed ----

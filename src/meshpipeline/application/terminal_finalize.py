@@ -172,6 +172,8 @@ class TerminalAssembly:
     #: what the failed gate said failed (contracts.failure_cause) and the facts behind it
     failure_cause: str = ""
     failure_facts: dict = field(default_factory=dict)
+    #: reviews started again on the same validated mesh (pipeline/graph.node_review_retry)
+    review_reruns: int = 0
 
 
 @dataclass(frozen=True)
@@ -209,6 +211,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         requirement_caveats=list(assembly.requirement_caveats or []),
         failure_cause=assembly.failure_cause,
         failure_facts=dict(assembly.failure_facts or {}),
+        review_reruns=assembly.review_reruns,
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
         pipeline_timed_out=assembly.pipeline_timed_out)
@@ -216,8 +219,16 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
+    # When the result itself names what failed (a review that did not conclude says which way it
+    # stopped), that account is the closing too: the chat and the job page must not tell the same
+    # failure two different ways.
+    # And a failure note never closes a run that DELIVERED: a review that did not finish on a
+    # validated mesh is delivered with its caveat (final_result.review_inconclusive_caveat) while
+    # the failure handler has already drafted "we could not verify your mesh".
     closing = (assembly.pre_composed_message
-               if (assembly.api_failure and assembly.pre_composed_message)
+               if (assembly.api_failure and assembly.pre_composed_message
+                   and not result.failure_detail
+                   and result.status != _fr.TerminalStatus.succeeded)
                else _fr.render_message(result))
     return TerminalResult(result, closing, delivered_types, ready)
 

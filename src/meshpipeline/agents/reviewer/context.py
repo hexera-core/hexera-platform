@@ -53,6 +53,32 @@ def workflow_line(engine: str, purpose_key: str) -> str:
     return line
 
 
+def patches_line(patch_names: list[str], renderable: list[str] | None) -> str:
+    """The boundaries the mesh has, and which of them the viewer can draw.
+
+    The manifest names every boundary - including the far-field box faces and a ground plane, which
+    no review geometry ever reaches. Listed without that, they read as things to go and look at:
+    job 53bbce4b asked the viewer for 'farfield' three rounds running, was refused each time, and
+    the review ended without a verdict on a mesh that had passed every gate. When the renderable
+    set is not known (None) the line is the plain list, as before."""
+    line = f"Patches: {', '.join(patch_names)}"
+    if not renderable:
+        # unknown, or an engine whose viewer names nothing: say nothing rather than "none can be
+        # shown", which would forbid the very inspections a verdict needs
+        return line
+    shown = [p for p in patch_names if p in renderable]
+    hidden = [p for p in patch_names if p not in renderable]
+    if not shown or not hidden:
+        # nothing hidden: nothing to say. Nothing shown: the viewer names its targets another way
+        # (gmsh groups, vmtk openings) - a claim that none of these can be drawn would be false
+        return line
+    return (f"{line}. The viewer can show: {', '.join(shown) or 'none'}. "
+            f"{', '.join(hidden)} carr{'ies' if len(hidden) == 1 else 'y'} no review geometry - "
+            "do not navigate to or toggle them; judge them from the measured numbers (the "
+            "Domain bbox above and the metrics on file), which are authoritative for the outer "
+            "boundary")
+
+
 def build_review_prompt(
     *,
     manifest: dict,
@@ -61,6 +87,7 @@ def build_review_prompt(
     step_basename: str,
     patch_names: list[str],
     patch_colour_legend: str,
+    renderable_patches: list[str] | None = None,
     patch_views: tuple = (),
     mesh_units: str,
     request: str,
@@ -173,7 +200,7 @@ def build_review_prompt(
 
     _meta: list[str] = []
     _meta.append(f"Geometry: {step_basename}")
-    _meta.append(f"Patches: {', '.join(patch_names)}")
+    _meta.append(patches_line(patch_names, renderable_patches))
     _meta.append(f"Patch colours: {patch_colour_legend}")
     _rcount = (manifest.get("quality", {}) or {}).get("regions")
     if _rcount is not None:

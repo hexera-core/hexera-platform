@@ -128,7 +128,9 @@ def test_a_stalled_review_produces_no_verdict_of_either_polarity(replay):
 def test_a_stalled_review_is_classified_as_an_application_side_failure(replay):
     from meshpipeline.errors import FailureClass, classify_api_failure
     out, rec, _served = replay
-    assert out.api_failure == "reviewer_evidence_missing"
+    # the loop ran and stalled: its own marker, so the pipeline can tell it from a pre-loop
+    # refusal and review the same mesh again (pipeline/graph.review_can_rerun)
+    assert out.api_failure == "reviewer_stalled"
     assert rec["failure_marker"] == out.api_failure
     fc = classify_api_failure(out.api_failure)
     assert fc is FailureClass.REVIEW_EVIDENCE_MISSING and fc.is_system

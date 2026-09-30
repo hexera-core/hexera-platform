@@ -280,7 +280,7 @@ def test_running_out_of_rounds_after_a_refusal_still_delivers_the_finding(monkey
 
 def test_after_a_refusal_the_model_may_not_switch_engines_for_the_user():
     # With the finding in hand the model proposes another engine the user never named. That would
-    # put "Selected engine: cfMesh" in front of a user who asked for snappyHexMesh, in the turn
+    # put "I'd mesh this with cfMesh" in front of a user who asked for snappyHexMesh, in the turn
     # that refused their setup. Refused; the confirmed selection stands; no engine is named.
     out, ncalls = _run(_five_walls_state(), [
         _resp([_tool_call("preview_selected_admission", _FIVE_ARGS),
@@ -293,7 +293,7 @@ def test_after_a_refusal_the_model_may_not_switch_engines_for_the_user():
     gate = out["intake_gate"]
     assert gate["selection"]["engine"] == "snappy" and gate["selection"]["state"] == es.CONFIRMED
     reply = out["messages"][-1]["content"]
-    assert "Selected engine" not in reply and _no_other_engine(reply, "snappy")
+    assert "I'd mesh this with" not in reply and _no_other_engine(reply, "snappy")
     assert reply.startswith("Only one wall patch")
 
 

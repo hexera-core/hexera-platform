@@ -270,11 +270,21 @@ class IntakeToolExecutor:
         if eng not in self._engines:
             return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
                 f"{eng!r} is not a registered engine. Available: {', '.join(self._engines)}."))
+        sel = st.selection or {}
+        if (es.state_of(sel) == es.CONFIRMED and sel.get("engine") == eng
+                and sel.get("session") == st.session_id and sel.get("owner") == st.owner_id):
+            # THE ENGINE IS ASKED ONCE. The user already confirmed this very engine - by naming
+            # it or by saying yes to the one question - so proposing it again is a question with
+            # one answer. It changes nothing: the selection, its preview and any summary stand.
+            return IntakeToolResult(tool="propose_engine_selection", accepted=True, content=(
+                f"{_vocab.to_display(_vocab.ENGINE, eng)} is already selected - the user confirmed "
+                "it. Do not ask about it or mention it again; carry on with the next thing you "
+                "need."))
         quote = str(args.get("user_named_verbatim") or "")
         named_now = es.user_named_engine(eng, quote, st.latest_user_msg)
         if st.admission_refusal is not None and not named_now:
             # A REFUSAL IS NOT ROUTED AROUND. With the finding in hand, the model may not switch
-            # the user to another engine on its own: the application's "Selected engine: X"
+            # the user to another engine on its own: the application's "I'd mesh this with X"
             # question would name a replacement the user never asked about, in the very turn
             # that refused their setup. Only an engine the user named themselves goes forward.
             shown = _vocab.to_display(_vocab.ENGINE, eng)
@@ -329,12 +339,12 @@ class IntakeToolExecutor:
                 content=(f"The user named {_vocab.to_display(_vocab.ENGINE, eng)} themselves, so it is SELECTED - "
                          "do not ask them to confirm it. Gather the remaining requirements and call "
                          "preview_selected_admission."))
-        st.selection_prompt = es.render_selection_statement(eng)
+        st.selection_prompt = es.render_selection_statement(eng, str(args.get("reason") or ""))
         logger.info("Intake: engine selection PROPOSED engine=%s - job_id=%s", eng, self._job_id)
         return IntakeToolResult(tool="propose_engine_selection", accepted=True, advanced=True,
-                                content=("Proposed. The application will ask the user to confirm "
-                                         "this engine; do not paraphrase it. Await their explicit "
-                                         "answer."))
+                                content=("Proposed. The application asks the user this one engine "
+                                         "question in its own words; do not paraphrase it or ask "
+                                         "it again. Await their answer."))
 
     async def _do_confirm_engine_selection(self, args: dict) -> IntakeToolResult:
         st = self.state

@@ -139,3 +139,44 @@ def test_gmsh_deterministic_path_on_real_geometry():
         workspace=ws, engine="gmsh",
         intake_patches=[{"name": "fixed_base", "type": "fixed"}]))
     assert ok, f"{key}: {fb}"
+
+
+def test_a_stalled_review_is_reviewed_again_and_its_verdict_ends_the_run(monkeypatch):
+    # The REAL compiled graph with every node stubbed: the Windsor run's shape (job 53bbce4b) - a
+    # validated mesh whose first review stalls - now ends on the second review's verdict instead of
+    # in the failure sink. The rerun rebuilds nothing: retry_count is the executor's, unchanged.
+    import asyncio
+
+    import meshpipeline.agents.reviewer.settings as rcfg
+    from meshpipeline.pipeline import graph as G
+
+    reviews: list[int] = []
+
+    async def _noop(state):
+        return {}
+
+    async def _executor(state):
+        return {"executor_success": True, "retry_count": 1}
+
+    async def _reviewer(state):
+        reviews.append(int(state.get("review_rerun_count", 0) or 0))
+        if len(reviews) == 1:
+            return {"api_failure": "reviewer_stalled"}
+        return {"reviewer_verdict": "PASS"}
+
+    for name in ("node_intake", "node_engine_select", "node_geometry_admission",
+                 "node_builder", "node_classifier", "node_engine_fallback"):
+        monkeypatch.setattr(G, name, _noop)
+    monkeypatch.setattr(G, "node_executor", _executor)
+    monkeypatch.setattr(G, "node_reviewer", _reviewer)
+    monkeypatch.setattr(rcfg, "REVIEWER_RERUN_MAX", 2)
+    monkeypatch.setattr(rcfg, "REVIEWER_RERUN_BACKOFF_S", 0)
+
+    g = G.build_graph(checkpointer=MemorySaver())
+    assert "node_review_retry" in set(g.get_graph().nodes)
+    final = asyncio.run(g.ainvoke(
+        {"job_id": "j-windsor", "retry_count": 0, "api_failure": ""},
+        config={"configurable": {"thread_id": "t-windsor"}}))
+    assert reviews == [0, 1], "the second review must know it is a rerun"
+    assert final["reviewer_verdict"] == "PASS" and not final.get("api_failure")
+    assert final["review_rerun_count"] == 1 and final["retry_count"] == 1

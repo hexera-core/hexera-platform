@@ -178,7 +178,7 @@ def test_submit_then_engine_proposal_invalidates_the_approval(h, monkeypatch):
     monkeypatch.setattr("meshpipeline.agents.intake.executor.es.propose",
                         lambda e, **k: {"id": "sel2", "engine": e})
     monkeypatch.setattr("meshpipeline.agents.intake.executor.es.render_selection_statement",
-                        lambda e: f"Selected engine: {e}")
+                        lambda e, reason="": f"Selected engine: {e}")
     p = _policy_for(st, monkeypatch)
     r = _drive(p, [_round(_tc("submit_requirements", mesh_engine="snappy"),
                           _tc("propose_engine_selection", engine="cfmesh"))], h, monkeypatch)
