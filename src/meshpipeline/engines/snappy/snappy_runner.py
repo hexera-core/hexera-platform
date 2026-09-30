@@ -92,6 +92,7 @@ def prepare_surface(workspace, *, geometry_file: str,
                     farfield_patch: str = "farfield", feature_angle: float = 30.0,
                     mirror_y_half: bool = False, reference_length_m: float | None = None,
                     region_labeler=None, body_walls: list | None = None,
+                    symmetry_faces: list | None = None,
                     bashrc: str = _DEFAULT_BASHRC) -> dict:
     ws = Path(workspace)
     body_stl = ws / geometry_file
@@ -157,11 +158,14 @@ def prepare_surface(workspace, *, geometry_file: str,
         # rejected a correct CRM domain twice - "requested 20c, mesh has 3.2c" where 3.2
         # body-lengths WAS 20 MAC. Null means the user quoted no reference, and the gate falls
         # back to the body length - the old behaviour exactly.
+        # The symmetry planes travel with the box too (symmetry_box_faces): the extent gate reads
+        # them to know which faces lie on the body by design and owe no margin.
         (ws / "geom_box.json").write_text(json.dumps({
             "domain_min": [float(v) for v in domain_min],
             "domain_max": [float(v) for v in domain_max],
             "reference_length_m": (float(reference_length_m)
                                    if reference_length_m else None),
+            "symmetry_faces": list(symmetry_faces or []),
         }))
 
     return {"surface_file": f"constant/triSurface/{surf_file}",
@@ -286,6 +290,20 @@ def detect_slab_symmetry(analysis: dict, lo_name: str, hi_name: str, *,
             "pos_hi": float(analysis["bbox_max"][best]),
             "lo_name": lo_name, "hi_name": hi_name,
             "cap_frac": best_score}
+
+
+def symmetry_box_faces(symmetry: dict | None) -> list[dict]:
+    """The box faces a detected symmetry claims, as [{patch, axis, side}] - the engine-neutral
+    record the extent gate reads (before meshing) and the manifest carries (after): ONE face for
+    a half model, the cut; BOTH ends of the sweep axis for a slab. These faces lie on the body by
+    design, so no far-field margin is owed on them."""
+    if not symmetry:
+        return []
+    ax = "xyz"[int(symmetry["axis"])]
+    if symmetry.get("slab"):
+        return [{"patch": str(symmetry["lo_name"]), "axis": ax, "side": "min"},
+                {"patch": str(symmetry["hi_name"]), "axis": ax, "side": "max"}]
+    return [{"patch": str(symmetry["name"]), "axis": ax, "side": str(symmetry["side"])}]
 
 
 def _extent_of(analysis: dict) -> list[float]:

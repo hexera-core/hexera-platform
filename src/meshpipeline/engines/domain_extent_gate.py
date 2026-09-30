@@ -11,6 +11,72 @@ logger = logging.getLogger(__name__)
 
 _KEYS = ("upstream", "downstream", "lateral")
 
+# #
+# SYMMETRY PLANES. A half model is cut on a plane and meshed on one side, with a symmetry plane on
+# the cut; a 2.5D slab has one on each end of its sweep. Like the floor under a grounded body,
+# such a face sits ON the body by design: it is not far field, and no margin is owed on it. The
+# builder that placed the planes records them (the manifest's geometry.symmetry_faces, the snappy
+# pre-flight's own list) as [{patch, axis, side}], and the gate reads them from there - it never
+# guesses which face "looks like" a cut, so a plane on the wrong face is still caught.
+# #
+
+#: how close the body must lie to a symmetry face to sit on it, as a fraction of the body's
+#: diagonal - the tolerance the half-model detector calls a face the cut with
+#: (snappy_runner.detect_symmetry_plane measures 0.005 of the longest extent, never more than this)
+SEAT_TOL_FRACTION = 0.005
+
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+_SIDES = ("min", "max")
+
+
+def _face(j: int, side: str) -> str:
+    return f"{'xyz'[j]}-{side}"
+
+
+def _symmetry_seats(faces) -> dict[tuple[int, str], str]:
+    """(axis index, side) -> patch name for every recorded symmetry face. Rows that do not name
+    an axis and a side are ignored rather than guessed."""
+    out: dict[tuple[int, str], str] = {}
+    for f in faces or ():
+        if not isinstance(f, dict):
+            continue
+        ax, side = f.get("axis"), str(f.get("side") or "").strip().lower()
+        if isinstance(ax, str):
+            j = _AXIS_INDEX.get(ax.strip().lower()[-1:])
+        elif isinstance(ax, int) and not isinstance(ax, bool) and 0 <= ax <= 2:
+            j = ax
+        else:
+            j = None
+        if j is None or side not in _SIDES:
+            continue
+        out[(j, side)] = str(f.get("patch") or f.get("name") or "symmetry")
+    return out
+
+
+def _gap(box: dict, body: dict, j: int, side: str) -> float:
+    """The room between the body and one box face, in metres; zero or less touches or clips."""
+    n = "xyz"[j]
+    return (float(body[f"{n}min"]) - float(box[f"{n}min"]) if side == "min"
+            else float(box[f"{n}max"]) - float(body[f"{n}max"]))
+
+
+def _sits_on(box: dict, body: dict, j: int, side: str) -> bool:
+    # the diagonal over the axes the record carries (a legacy 2-axis body box still has a size)
+    diag = sum((float(body[f"{n}max"]) - float(body[f"{n}min"])) ** 2 for n in "xyz"
+               if f"{n}min" in body and f"{n}max" in body) ** 0.5
+    return abs(_gap(box, body, j, side)) <= SEAT_TOL_FRACTION * diag
+
+
+def manifest_symmetry_faces(manifest: dict | None) -> list:
+    """The symmetry planes a built mesh's box carries, as its builder recorded them. Read from the
+    manifest, so a gate judges the mesh that was actually built; none for an internal flow."""
+    m = manifest or {}
+    if str(m.get("flow_topology") or "") == "internal":
+        return []
+    faces = (m.get("geometry") or {}).get("symmetry_faces")
+    return list(faces) if isinstance(faces, list) else []
+
+
 _EXPLICIT_RE = {
     "upstream":   re.compile(r"D_UPSTREAM\s*[=:]\s*([\d.]+)", re.I),
     "downstream": re.compile(r"D_DOWNSTREAM\s*[=:]\s*([\d.]+)", re.I),
@@ -53,7 +119,13 @@ def _applied_multipliers(geom: dict) -> dict | None:
             return None
         up   = (float(body["xmin"]) - float(box["xmin"])) / c
         down = (float(box["xmax"])  - float(body["xmax"])) / c
-        lat  = (float(body["ymin"]) - float(box["ymin"])) / c
+        # lateral is the y room, read on y-min as it always was - unless the body sits on a
+        # symmetry plane there (a half model cut on y = 0), whose room is on the other side.
+        sits = {s for (j, s) in _symmetry_seats(geom.get("symmetry_faces"))
+                if j == 1 and _sits_on(box, body, 1, s)}
+        lat: float | None = (float(body["ymin"]) - float(box["ymin"])) / c
+        if "min" in sits:
+            lat = None if "max" in sits else (float(box["ymax"]) - float(body["ymax"])) / c
         return {"upstream": up, "downstream": down, "lateral": lat}
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
         return None
@@ -127,51 +199,90 @@ class ExtentVerdict:
         self.caveats = caveats    # [{direction, requested, measured, units, ruler_m, ruler_source}]
         self.detail = detail
         # every direction short of its request, blocked or near-missed alike:
-        # [{direction, requested, measured}] - what the user is told, in numbers
+        # [{direction, requested, measured}] - what the user is told, in numbers. A box that
+        # touches the body also names the face ("y-min"), and, when a symmetry plane is misplaced,
+        # the plane (symmetry_patch, symmetry_face, crosses).
         self.misses = list(misses or [])
 
 
-_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+class _Room:
+    """One direction's margin in ruler units, the box face it was read on, and - when that face
+    touches the body - why, in words and as facts for the user's sentence."""
+    __slots__ = ("margin", "face", "why", "facts")
+
+    def __init__(self, margin: float, face: str, why: str = "", facts: dict | None = None):
+        self.margin, self.face, self.why, self.facts = margin, face, why, dict(facts or {})
 
 
 def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None,
-                  grounded: bool = False) -> dict:
+                  grounded: bool = False, symmetry_faces=None) -> dict:
     """Margins in ruler units, oriented by the DECLARED flow axis. No declaration keeps the
     legacy assume-X convention byte-for-byte (pre-v5 behaviour, documented). Sign matters:
     flow -y puts downstream at ymin. Lateral/vertical are the remaining axes in (x, y, z)
-    order, each taken as the SMALLER of its two sides - except the vertical of a body on the
-    ground, whose floor sits on the body by design: its margin is the room ABOVE, which is
-    what the user was asked for ('5 above')."""
+    order, each taken as the SMALLER of its open sides.
+
+    A face that sits on the body by design is not an open side: the floor under a body on the
+    ground (its vertical is the room ABOVE, which is what the user was asked for: '5 above'),
+    and a symmetry plane the body lies on - a half model's lateral is the room on the side away
+    from its cut. A direction with no open side at all (a slab, a symmetry plane on each end of
+    its sweep) has no margin to judge and reads None. A symmetry plane never excuses the flow
+    axis: a half model is cut along the flow, and a plane facing the flow or the wake is wrong."""
     ax = (flow_axis or "+x").strip().lower()
     sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
     i = _AXIS_INDEX[letter]
-    names = "xyz"
-    lo = (float(body[f"{names[i]}min"]) - float(box[f"{names[i]}min"])) / r
-    hi = (float(box[f"{names[i]}max"]) - float(body[f"{names[i]}max"])) / r
-    up, down = (lo, hi) if sign == "+" else (hi, lo)
+    seats = _symmetry_seats(symmetry_faces)
+    seated = {k for k in seats if k[0] != i and _sits_on(box, body, *k)}
+    if grounded and i != VERTICAL_AXIS:
+        seated.add((VERTICAL_AXIS, "min"))       # the floor: on the body whatever the gap
+
+    def _why(j: int, side: str) -> tuple[str, dict]:
+        here = seats.get((j, side))
+        if here is not None and j == i:
+            return (f" - the symmetry plane '{here}' was put across the flow there, and a half "
+                    "model is cut along the flow, never across it",
+                    {"symmetry_patch": here, "symmetry_face": _face(j, side)})
+        if here is not None:
+            return (f" - the body crosses the symmetry plane '{here}' there; a half model lies "
+                    "wholly on one side of its cut",
+                    {"symmetry_patch": here, "symmetry_face": _face(j, side), "crosses": True})
+        unused = [(k, n) for k, n in seats.items() if k not in seated]
+        if unused:
+            (uj, us), name = unused[0]
+            return (f" - that face is far field, while the symmetry plane '{name}' was put on "
+                    f"the {_face(uj, us)} face, which the body does not lie on; a half model's "
+                    "symmetry plane has to be the face it was cut on",
+                    {"symmetry_patch": name, "symmetry_face": _face(uj, us)})
+        return "", {}
+
+    def _room(j: int, sides: tuple[str, ...]) -> _Room | None:
+        open_sides = [(_gap(box, body, j, s) / r, s) for s in sides if (j, s) not in seated]
+        if not open_sides:
+            return None
+        g, s = min(open_sides)
+        why, facts = _why(j, s) if g <= 0 else ("", {})
+        return _Room(g, _face(j, s), why, facts)
+
+    up_side, down_side = ("min", "max") if sign == "+" else ("max", "min")
     rest = [j for j in range(3) if j != i]
-    def _min_side(j: int) -> float:
-        n = names[j]
-        return min((float(body[f"{n}min"]) - float(box[f"{n}min"])) / r,
-                   (float(box[f"{n}max"]) - float(body[f"{n}max"])) / r)
-    def _above(j: int) -> float:
-        n = names[j]
-        return (float(box[f"{n}max"]) - float(body[f"{n}max"])) / r
-    vertical = (_above(rest[1]) if grounded and rest[1] == VERTICAL_AXIS
-                else _min_side(rest[1]))
-    return {"upstream": up, "downstream": down,
-            "lateral": _min_side(rest[0]), "vertical": vertical}
+    return {"upstream": _room(i, (up_side,)), "downstream": _room(i, (down_side,)),
+            "lateral": _room(rest[0], _SIDES), "vertical": _room(rest[1], _SIDES)}
 
 
 def evaluate_domain_extents(requested: dict | None, reference_length_m: float | None,
                             manifest: dict, tol: float = 0.15,
                             flow_axis: str | None = None,
-                            grounded: bool | None = None) -> ExtentVerdict:
+                            grounded: bool | None = None,
+                            symmetry_faces: list | None = None) -> ExtentVerdict:
     # A body on the ground is read off the mesh that was built (its manifest carries the ground
     # wall), unless the caller says. The floor touches the body on purpose; judging the gap
     # under it would block every grounded mesh as "the domain box touches the body".
     if grounded is None:
         grounded = manifest_is_grounded(manifest)
+    # The same for a symmetry plane: a half model lies on its cut, and judging the gap there
+    # blocked every half model (job 011e1fe0, the CRM high-lift airliner: "the box touches the
+    # body on the lateral side", on both attempts, before a single mesh).
+    if symmetry_faces is None:
+        symmetry_faces = manifest_symmetry_faces(manifest)
     if (not isinstance(requested, dict)
             or not any(v is not None for v in requested.values())
             or not reference_length_m):
@@ -189,7 +300,8 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
         r = float(reference_length_m)
         if r <= 0:
             raise ValueError("nonpositive ruler")
-        margins = _axis_margins(box, body, r, flow_axis, grounded=bool(grounded))
+        margins = _axis_margins(box, body, r, flow_axis, grounded=bool(grounded),
+                                symmetry_faces=symmetry_faces)
     except Exception:  # noqa: BLE001 - no measurable box/body: honesty demands "unmeasured"
         return ExtentVerdict(
             "unmeasured", [],
@@ -205,10 +317,15 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
         if rv is None:
             continue
         rv = float(rv)
-        mv = margins[k]
+        room = margins[k]
+        if room is None:
+            continue    # a symmetry plane on each side, both on the body: a slab has no margin here
+        mv = room.margin
         if mv <= 0:
-            blocks.append(f"{k}: the domain box touches or clips the body")
-            misses.append({"direction": k, "requested": rv, "measured": round(mv, 4)})
+            blocks.append(f"{k}: the domain box touches or clips the body on its {room.face} "
+                          f"face{room.why}")
+            misses.append({"direction": k, "requested": rv, "measured": round(mv, 4),
+                           "face": room.face, **room.facts})
             continue
         if mv >= rv * (1.0 - tol):
             continue                        # within tolerance, or over-delivered: never a defect
@@ -221,12 +338,15 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
                             "units": "reference_lengths", "ruler_m": r,
                             "ruler_source": "user_stated"})
     if blocks:
+        placed = any(m.get("symmetry_patch") for m in misses)
         return ExtentVerdict(
             "block", [],
             "[DOMAIN_EXTENT_BLOCK] " + "; ".join(blocks)
-            + f" (measured in units of the approved reference length {r:.4g} m). Recompute the "
-            "far-field box corners so every requested margin is met - do NOT shrink the "
-            "request to fit the box.", misses)
+            + f" (measured in units of the approved reference length {r:.4g} m). "
+            + ("The symmetry plane is not where the body was cut, and no far-field margin can "
+               "change that - the plane has to be placed on the cut face." if placed else
+               "Recompute the far-field box corners so every requested margin is met - do NOT "
+               "shrink the request to fit the box."), misses)
     if caveats:
         stated = "; ".join(f"{c['direction']}: requested {c['requested']:g}L, mesh has "
                            f"{c['measured']:g}L" for c in caveats)

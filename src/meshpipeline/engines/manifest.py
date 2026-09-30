@@ -102,7 +102,7 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
                    requested_box=None, mesh_units: str,
                    mesh_mode: str = "cfmesh",
                    engine_params: dict | None = None, flow_topology: str = "",
-                   reference_length=None) -> dict:
+                   reference_length=None, symmetry_faces: list | None = None) -> dict:
     # STATED, NOT DEFAULTED. `mesh_units` is keyword-only and has no default, so an engine that
     # forgets it fails here - before any deliverable is announced - rather than writing a manifest
     # whose unit each consumer then guessed differently. Validated at the point of writing because
@@ -135,6 +135,10 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     else:
         geometry["domain_box"] = {"xmin": x0, "xmax": x1, "ymin": y0,
                                   "ymax": y1, "zmin": z0, "zmax": z1}
+    # the box faces that are symmetry planes ([{patch, axis, side}], as the builder placed them):
+    # they lie on the body by design, so the extent gate owes them no margin. Empty for a box
+    # whose every face is far field (or floor).
+    geometry["symmetry_faces"] = [dict(f) for f in (symmetry_faces or []) if isinstance(f, dict)]
     if body_bbox:
         (bx0, by0, bz0), (bx1, by1, bz1) = body_bbox
         geometry["body_box"] = {"xmin": bx0, "xmax": bx1, "ymin": by0,

@@ -462,11 +462,12 @@ class EngineSpec:
 
     # PRODUCIBLE PATCH TYPES - a `symmetry` role is a valid EXTERNAL/INTERNAL CFD boundary
     # (it lives in the purpose vocabulary), but producing one requires the engine to mesh
-    # only half the domain with a symmetryPlane on the cut. No engine does that yet - snappy
-    # builds an all-farfield box - so a declared symmetry patch would mesh, fail the patch
+    # only half the domain with a symmetryPlane on the cut. Only snappy does (a half model's cut,
+    # a slab's two ends); an engine whose box is all far field would mesh, fail the patch
     # contract with "zero faces: [symmetry]", and burn every retry. Declared here (default
-    # False) so intake rejects it BEFORE any compute; flip True on the engine that implements
-    # half-domain symmetry meshing (which then also needs a half-model geometry check).
+    # False) so intake rejects it BEFORE any compute. An engine that flips it True must also
+    # record the planes it places in the manifest (geometry.symmetry_faces), or the extent gate
+    # will judge the cut as far field touching the body.
     supports_symmetry_plane: bool = False
     # GROUND PLANE - a body standing on the ground (a car on a road) needs the far-field box's
     # floor laid at the body's lowest point and written as a wall patch named ground
