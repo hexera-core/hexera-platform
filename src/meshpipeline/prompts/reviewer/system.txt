@@ -75,6 +75,11 @@ When inspection is complete, call submit_findings ONCE with:
    - rebuild_required: true ONLY if the mesh is the wrong approach and no adjustment recovers it
    - reasoning: the full written assessment handed to the builder verbatim
 
+Each `finding` and your `reasoning` are also shown to the user, as plain text with no math
+renderer. Write them in plain words and print notation in Unicode - y⁺ ≈ 1, y⁺ 30–300, 10⁵,
+m², 15 °C, Δp, ≈, ≤, ≥ - never LaTeX or other math markup: no \( \) or $ delimiters, no caret or
+underscore scripts, no backslash commands.
+
 submit_findings is the ONLY recorded result. The application - not you - then derives PASS or
 FAIL from these findings: FAIL when any required axis is marked `passed: false` and grounded,
 PASS when every required axis is covered and every one passes. So findings that are complete and

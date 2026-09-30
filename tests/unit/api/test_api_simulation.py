@@ -95,6 +95,18 @@ async def test_a_started_job_carries_no_wake_estimate(monkeypatch):
     assert (await _get(_make_mock_job())).json()["worker_wake_minutes"] is None   # succeeded
 
 
+async def test_the_reviewers_reasoning_is_served_as_plain_engineering_text(monkeypatch):
+    # the reviewer model's own words go on the result card; LaTeX in them is made plain there
+    review = {"verdict": "FAIL",
+              "reasoning": r"First cell at \(y^+ \approx 80\) on `wing_1`, outside \(30\text{–}300\)."}
+
+    async def _vdata(*_a, **_k):
+        return {"review": review}
+    monkeypatch.setattr(sim_module, "_viewer_data_or_empty", _vdata)
+    body = (await _get(_make_mock_job())).json()
+    assert body["reviewer_reasoning"] == "First cell at y⁺ ≈ 80 on `wing_1`, outside 30–300."
+
+
 def test_the_wake_estimate_is_pure_over_the_row_and_zero_hides_it(monkeypatch):
     import meshpipeline.settings.runtime as rtcfg
     from meshpipeline.api.v1.simulation import worker_wake_estimate

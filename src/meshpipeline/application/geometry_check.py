@@ -378,6 +378,9 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # the same skin, stored for the stage the user turns the part in
         skin_key = check_object_key(session_id, "skin.json")
         _store_json(skin_key, skin_payload(skin))
+        # which way the part stands up, as far as its shape says: the code's half of the up
+        # proposal, weighed against the pictures once the model has seen them
+        facts["up_evidence"] = read_up_evidence(skin)
         shots = render_snapshots(skin, facts["openings"], work / "pictures")
 
         store = get_object_store()
@@ -385,9 +388,33 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         for s in shots:
             key = check_object_key(session_id, f"{s.name}.png")
             store.upload_file(local_path=s.path, object_key=key)
-            snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing)})
-    return {"status": STATUS_SCOUTED, "named": False, "facts": facts, "proposal": _proposal(facts, None),
-            "snapshots": snapshots, "skin_key": skin_key, "source": ref.to_payload()}
+            # the camera goes with the picture: "the nose is at the left of the top picture" is
+            # read through it
+            snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing),
+                              "direction": list(s.direction), "up": list(s.up)})
+        upright = _store_upright_sheet(session_id, skin, work, store)
+    result = {"status": STATUS_SCOUTED, "named": False, "facts": facts, "proposal": _proposal(facts, None),
+              "snapshots": snapshots, "skin_key": skin_key, "source": ref.to_payload()}
+    if upright is not None:
+        result["upright_sheet"] = upright
+    return result
+
+
+def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict | None:
+    """The six-way picture the naming asks which way is up from, stored beside the others but not
+    among them: it is for that one question, never for the card or the naming. None when it could
+    not be drawn - the shape's reading and the file as drawn still stand."""
+    from meshpipeline.render.scout_snapshots import render_upright_sheet
+
+    try:
+        sheet = render_upright_sheet(skin, work / "pictures" / "upright.png")
+        key = check_object_key(session_id, "upright.png")
+        store.upload_file(local_path=sheet.path, object_key=key)
+    except Exception as exc:  # noqa: BLE001 - one question fewer, never a failed scout
+        logger.warning("geometry check: the six-way picture could not be drawn (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        return None
+    return {"object_key": key, "order": list(sheet.order)}
 
 
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
@@ -467,12 +494,48 @@ def _prepared_coordinates(path: Path, interp_ref, ref):
     return from_occ_transfer(interp, parser_applied_unit(path)), note
 
 
+def read_up_evidence(skin: Path) -> dict:
+    """The code's reading of which way the part stands up (cad/up_axis), from the skin the
+    pictures are drawn from. A shape it cannot read says so; it never fails the scout."""
+    try:
+        import numpy as np
+
+        from meshpipeline.cad.stl_io import read_stl_triangles
+        from meshpipeline.cad.up_axis import read_up, too_many
+
+        # THE BOUND, before a byte is read: a binary STL is 84 bytes and 50 per triangle (a text
+        # one more), so its size caps the count - a huge skin is never loaded just to be skipped
+        over = too_many((Path(skin).stat().st_size - 84) // 50)
+        if over is not None:
+            return over.as_dict()
+        return read_up(np.asarray(read_stl_triangles(Path(skin)), dtype=float)).as_dict()
+    except Exception as exc:  # noqa: BLE001 - the pictures and the user still settle it
+        logger.warning("geometry check: which way is up could not be read from the shape (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        return {"axis": None, "confidence": 0.0, "reason": f"the shape could not be read ({type(exc).__name__})"}
+
+
 # ----------------------------------------------------------------------------- the naming ----
 @dataclass(frozen=True)
 class _Shot:
     name: str
     path: Path
     facing: list
+    direction: tuple | None = None      # where the camera looked, and which way was up on the
+    up: tuple | None = None             # picture: what "left" and "top" of it mean in the part
+
+
+def _shot_of(record: dict, path: Path) -> _Shot:
+    """A stored picture, with the camera it was drawn with. A picture stored before its camera
+    was recorded beside it is one of the named views, whose cameras are fixed; a close-up from
+    then has none, and nothing is read through it."""
+    from meshpipeline.render.scout_snapshots import global_view
+
+    direction, up = record.get("direction"), record.get("up")
+    if not (direction and up):
+        direction, up = global_view(str(record.get("name"))) or (None, None)
+    return _Shot(name=record["name"], path=path, facing=list(record.get("facing") or []),
+                 direction=tuple(direction) if direction else None, up=tuple(up) if up else None)
 
 
 def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
@@ -546,9 +609,19 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
             except Exception as exc:  # noqa: BLE001 - a missing picture costs one view, not the naming
                 logger.warning("geometry naming: picture %s unavailable (%s)", s["name"], exc)
                 continue
-            shots.append(_Shot(name=s["name"], path=dest, facing=list(s.get("facing") or [])))
+            shots.append(_shot_of(s, dest))
         vision = _name_with_vision(facts, shots, purpose_text=purpose_text, session_id=session_id,
                                    owner_id=owner_id)
+        # WHICH WAY IS UP, by the pictures: asked only of a body the fluid flows around, once the
+        # model has said what it is - the name is what lets it place a car it cannot place cold
+        if "error" not in vision and _proposal(facts, vision)["flow"] == "external":
+            seen = _upright_by_pictures(stored, tmp, part=str(vision.get("part") or ""),
+                                        purpose_text=purpose_text, session_id=session_id, owner_id=owner_id)
+            # a question that failed is its own failure, never the naming's: under "error" it
+            # would make the whole answer read as unavailable
+            if "error" in seen:
+                seen = {"up_error": seen["error"]}
+            vision.update(seen)
     proposal = _proposal(facts, vision)
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
@@ -771,6 +844,161 @@ def _flow_from_nose(answer: dict, shots=()) -> dict:
     return answer
 
 
+# ----------------------------------------------------------------------- which way is up ----
+#: THE ONE QUESTION the model is asked about which way is up, over one picture: the part six
+#: times, each panel turned so a different axis points up, the way the console's Up control turns
+#: the camera (render/scout_snapshots.render_upright_sheet). Asked only of a body in a flow, and
+#: only for things with an obvious top: asked of a wing on its own or a nacelle, the model picked
+#: a panel with 0.9 confidence anyway.
+UP_PANELS = ("A", "B", "C", "D", "E", "F")
+UP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "pick_upright",
+        "description": "Say which panel shows the part the right way up, or none.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "panel": {"type": "string", "enum": [*UP_PANELS, "none"],
+                          "description": "The panel that shows the part the right way up; none when it has no "
+                                         "right way up or you cannot tell."},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "why": {"type": "string", "description": "One plain sentence: what shows it."},
+            },
+            "required": ["panel", "confidence"],
+        },
+    },
+}
+
+_UP_SYSTEM = (
+    "The picture shows one CAD part six times, in panels A to F, each turned a different way up. "
+    "Only if the part is a thing with an obvious top and bottom - a car, truck, bus, train, motorbike, "
+    "a whole aircraft with its fuselage, a ship, a building or a group of buildings - say which panel "
+    "shows it the right way up: its top (roof, canopy, tail fin, deck) towards the top of the panel, "
+    "and what it rests on (wheels, mounting struts or stilts, landing gear, a base) at the bottom. For "
+    "anything else - a wing on its own, a nacelle or pod, a pipe or fitting, a duct, a rotor or "
+    "propeller, a plain block, a teardrop, a nose cone - answer none: it has no right way up. If you "
+    "cannot tell, answer none. Answer by calling pick_upright."
+)
+
+
+def _up_words(part: str, purpose_text: str) -> str:
+    """What the model is told beside the six-way picture: what the part was named from its other
+    pictures, and what the user said. Asked cold, the model called the SAE car body "a CAD part"
+    and would not place it; told it is a car body, it picked the right panel."""
+    lines = []
+    if part:
+        lines.append(f"The part was named from its other pictures: {part.strip()[:80]}.")
+    if purpose_text:
+        lines.append(f"The user said: {purpose_text.strip()[:600]}")
+    lines.append("Which panel shows it the right way up?")
+    return "\n".join(lines)
+
+
+def _upright_answer(answer: dict, order) -> dict:
+    """The model's panel as an up axis - {up_axis, up_confidence, up_from} - or {} for none."""
+    from meshpipeline.contracts.geometry_fields import UP_AXES
+
+    panel = str(answer.get("panel") or "").strip().upper()
+    if panel not in UP_PANELS or UP_PANELS.index(panel) >= len(order):
+        return {}
+    axis = str(order[UP_PANELS.index(panel)])
+    if axis not in UP_AXES:
+        return {}
+    try:
+        conf = max(0.0, min(1.0, float(answer.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        conf = 0.0
+    return {"up_axis": axis, "up_confidence": round(conf, 2), "up_panel": panel,
+            "up_from": f"in the pictures it looks the right way up with {axis} up"}
+
+
+def _up_with_vision(sheet: Path, order, *, part: str, purpose_text: str, session_id: str,
+                    owner_id: str) -> dict:
+    """The model's reading of which way is up from the six-way picture - {up_axis, up_confidence,
+    up_from}, {} when it says the part has none, or {error} - never raised: the shape's reading
+    and the file as drawn are always there underneath."""
+    from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
+
+    async def _ask():
+        from meshpipeline.contracts import model_inference as llm_router
+
+        content = [{"type": "text", "text": _up_words(part, purpose_text)}, _image_part(sheet)]
+        messages = [{"role": "system", "content": _UP_SYSTEM}, {"role": "user", "content": content}]
+        result = await llm_router.call_reviewer_with_tools(messages, [UP_TOOL], job_id=session_id,
+                                                           user_id=owner_id)
+        for call in result.tool_calls:
+            if call.name == "pick_upright":
+                return _upright_answer(json.loads(call.arguments), order)
+        return {"error": "the model answered without picking a panel"}
+
+    try:
+        answer = asyncio.run(asyncio.wait_for(_ask(), timeout=GEOMETRY_CHECK_VISION_TIMEOUT_S))
+    except Exception as exc:  # noqa: BLE001 - provider weather; the shape still says what it can
+        logger.warning("geometry check: which way is up unavailable from the pictures (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        return {"error": f"{type(exc).__name__}"}
+    return answer if isinstance(answer, dict) else {"error": "malformed answer"}
+
+
+def _upright_by_pictures(stored: dict, tmp, *, part: str, purpose_text: str, session_id: str,
+                         owner_id: str) -> dict:
+    """Bring the scout's six-way picture back and ask it; {} when the scout drew none."""
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    sheet = stored.get("upright_sheet") or {}
+    if not sheet.get("object_key"):
+        return {}
+    dest = Path(tmp) / "upright.png"
+    try:
+        get_object_store().download_file(object_key=sheet["object_key"], destination=dest)
+    except Exception as exc:  # noqa: BLE001 - one picture fewer, never a failed naming
+        logger.warning("geometry naming: the six-way picture is unavailable (%s)", exc)
+        return {}
+    return _up_with_vision(dest, sheet.get("order") or [], part=part, purpose_text=purpose_text,
+                           session_id=session_id, owner_id=owner_id)
+
+
+#: How sure a reading must be to turn a part. The shape's are 0.75 (a scene) and 0.8 (feet). The
+#: model, asked about a body the shape says nothing about, must be surer: it names a panel with
+#: confidence where a person would hesitate.
+CODE_TURNS_AT, MODEL_TURNS_AT = 0.6, 0.8
+
+
+def decide_up(flow: str, code: dict | None, vision: dict | None) -> dict:
+    """WHICH WAY IS UP, decided by the code from both readings: the shape's (cad/up_axis) and the
+    pictures' (_up_with_vision). They agree: that, surer. The shape found feet or a scene: that -
+    a measured contact outranks a picture read (the shape's reading was never wrong on 89 corpus
+    parts turned all six ways; the model took the Ahmed body's stilts for a roof rack). The shape is
+    silent and the model is sure: the model. Anything else: +z, the file as drawn - never a guess.
+    A part the fluid flows through keeps +z: which way is up changes nothing about its mesh."""
+    from meshpipeline.contracts.geometry_fields import DEFAULT_UP, UP_AXES
+
+    def said(axis, conf, words):
+        return {"up_axis": axis, "up_axis_confidence": round(float(conf), 2), "up_axis_from": words}
+
+    if flow != "external":
+        return said(DEFAULT_UP, 0.0, "as drawn: the fluid flows through the part")
+    code, vision = code or {}, vision or {}
+    c_axis = code.get("axis") if code.get("axis") in UP_AXES else None
+    v_axis = vision.get("up_axis") if vision.get("up_axis") in UP_AXES else None
+    try:
+        c_conf = float(code.get("confidence") or 0.0)
+        v_conf = float(vision.get("up_confidence") or 0.0)
+    except (TypeError, ValueError):
+        c_conf = v_conf = 0.0
+    shape = str(code.get("reason") or "")
+    if c_axis and v_axis == c_axis:
+        return said(c_axis, 1.0 - (1.0 - c_conf) * (1.0 - v_conf), f"{shape}, and the pictures agree")
+    if c_axis and c_conf >= CODE_TURNS_AT:
+        if v_axis:
+            return said(c_axis, 0.75 * c_conf, f"{shape} (in the pictures it looked {v_axis} up)")
+        return said(c_axis, c_conf, shape)
+    if v_axis and v_conf >= MODEL_TURNS_AT:
+        return said(v_axis, v_conf, str(vision.get("up_from") or f"it looks the right way up with {v_axis} up"))
+    return said(DEFAULT_UP, 0.0, "as drawn: nothing says otherwise")
+
+
 def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str, owner_id: str) -> dict:
     """The vision model's naming, or an empty dict with a note when it could not be had. The
     check never fails on this step: the code's own names are always there underneath."""
@@ -802,8 +1030,6 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     """What the user is shown: the code's positions and sizes, the model's names and roles where
     it gave them for a sticker that exists, and the kind and flow from whichever is surer. With
     no vision answer yet (the scout alone) the names are the code's and nothing says otherwise."""
-    from meshpipeline.contracts.geometry_fields import external_defaults
-
     proposal = {
         "part": (vision or {}).get("part") or "",
         "input_kind": facts["input_kind"], "flow": facts["flow"],
@@ -817,12 +1043,10 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
     if vision is None:
-        proposal.update(external_defaults(facts, None))
-        return proposal
+        return _upright(proposal, facts, None, None)
     if "error" in vision:
         proposal["notes"].append("the picture-naming step was unavailable; names are the measuring step's own")
-        proposal.update(external_defaults(facts, None))
-        return proposal
+        return _upright(proposal, facts, None, None)
     by_id = {o["id"]: o for o in proposal["openings"]}
     for named in vision.get("openings") or []:
         o = by_id.get(int(named.get("id", -1)))
@@ -847,14 +1071,48 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
             proposal["input_kind"] = vision["input_kind"]
         if vision.get("flow") in ("internal", "external"):
             proposal["flow"] = vision["flow"]
-    proposal.update(external_defaults(facts, vision.get("flow_axis")))
     if vision.get("notes"):
         proposal["notes"].append(str(vision["notes"])[:300])
+    return _upright(proposal, facts, vision, vision.get("flow_axis"))
+
+
+def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:
+    """The proposal with which way is up decided (decide_up), and the external-flow facts read
+    across it: the flow's guess along the longest horizontal side, and the ground only where the
+    measuring step looked for it. A part drawn another way up says so in the notes."""
+    from meshpipeline.contracts.geometry_fields import DEFAULT_UP, external_defaults
+
+    up = decide_up(proposal["flow"], facts.get("up_evidence"), vision)
+    proposal.update(up)
+    proposal.update(external_defaults(facts, flow_axis, up["up_axis"]))
+    if up["up_axis"] != DEFAULT_UP:
+        proposal["notes"].append(f"Up is {up['up_axis'].upper()}: {up['up_axis_from']}.")
     return proposal
 
 
 # kept for callers and tests that knew the check by its first name
 _merge = _proposal
+
+
+def stored_up_axis(session_id: str, *, confirmed: bool = True) -> str | None:
+    """Which way is up for a session's part, for the views that draw it: what the user confirmed
+    on the geometry check, else what the check proposed (only that, with `confirmed=False`); None
+    when neither says. Display only - it turns the camera, never the file or the mesh."""
+    from meshpipeline.contracts.geometry_fields import UP_AXES
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    store = get_object_store()
+    for name in ("confirmed.json", "scout.json") if confirmed else ("scout.json",):
+        try:
+            stored = json.loads(store.get_bytes(object_key=check_object_key(session_id, name)))
+        except ObjectNotFound:
+            continue
+        if not isinstance(stored, dict):
+            continue
+        axis = stored.get("up_axis") if name == "confirmed.json" else (stored.get("proposal") or {}).get("up_axis")
+        if axis in UP_AXES:
+            return str(axis)
+    return None
 
 
 def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = "") -> dict | None:

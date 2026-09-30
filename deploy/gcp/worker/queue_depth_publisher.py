@@ -70,6 +70,7 @@ import datetime
 import json
 import logging
 import os
+import urllib.error
 import urllib.request
 
 logger = logging.getLogger("queue_depth_publisher")
@@ -312,8 +313,27 @@ def publish(depths: dict[str, int], *, project_id: str, namespace: str, location
                  "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - fixed API host
-        resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - fixed API host
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        # Two publishers can land in the same few seconds - the deploy's first run and the
+        # scheduled tick, which is every two minutes. Cloud Monitoring then refuses the later
+        # point ("written more frequently than the maximum sampling period" / "out of order").
+        # The series already holds a point from that moment, which is all a run is for.
+        if exc.code == 400 and _is_concurrent_write(detail):
+            logger.warning("another publisher wrote these series moments ago; keeping its point (%s)",
+                           detail[:300])
+            return
+        raise RuntimeError(f"Cloud Monitoring refused the write: HTTP {exc.code}: {detail[:1000]}") from exc
+
+
+def _is_concurrent_write(detail: str) -> bool:
+    d = detail.lower()
+    return ("more frequently than the maximum sampling period" in d
+            or "points must be written in order" in d
+            or "out of order" in d)
 
 
 def main() -> None:

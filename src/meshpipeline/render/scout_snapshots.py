@@ -61,6 +61,27 @@ def camera_words(direction) -> str:
     return f"({d[0]:.1f}, {d[1]:.1f}, {d[2]:.1f})"
 
 
+def camera_up(direction) -> tuple[float, float, float]:
+    """Which way is up on a picture looking along `direction`: +Z, unless the camera looks along
+    Z itself, when +Y is."""
+    return (0.0, 0.0, 1.0) if abs(direction[2]) < 0.9 else (0.0, 1.0, 0.0)
+
+
+#: THE PICTURES OF THE WHOLE PART and where each camera looks, in the order they are drawn. The
+#: overview is the iso view, translucent and with the openings' names.
+_ISO = _unit((-1.0, -1.0, -0.8))
+GLOBAL_VIEWS: dict[str, tuple[float, ...]] = {
+    "overview": _ISO, "iso": _ISO, "top": (0.0, 0.0, -1.0), "front": (0.0, 1.0, 0.0),
+    "side": (-1.0, 0.0, 0.0), "end": (1.0, 0.0, 0.0)}
+
+
+def global_view(name: str):
+    """(direction, up) of a named picture of the whole part, or None for a close-up - what a
+    picture stored before its camera was recorded beside it was drawn with."""
+    direction = GLOBAL_VIEWS.get(name)
+    return None if direction is None else (tuple(direction), camera_up(direction))
+
+
 def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str = "") -> list[Snapshot]:
     """Pictures of the skin with a numbered sticker on every opening.
 
@@ -104,7 +125,7 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
                                 point_size=1, always_visible=True, show_points=False)
         pl.camera.position = position
         pl.camera.focal_point = focus if focus is not None else centre
-        up = (0.0, 0.0, 1.0) if abs(direction[2]) < 0.9 else (0.0, 1.0, 0.0)
+        up = camera_up(direction)
         pl.camera.up = up
         pl.reset_camera()  # type: ignore[call-arg]
         pl.camera.zoom(zoom)
@@ -124,15 +145,12 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
     numbers = [str(i) for i in ids]
     named = [f"{i}  {o.get('name') or ''}".strip() for i, o in zip(ids, openings)]
     shots: list[Snapshot] = []
-    iso = _unit((-1.0, -1.0, -0.8))
     far = 2.2 * diag
-    # THE OVERVIEW: the user's picture - translucent so every sticker shows, names on the stickers
-    shots.append(shoot("overview", tuple(centre[k] - iso[k] * far for k in range(3)), iso, named,
-                       translucent=True))
-    for name, direction in (("iso", iso), ("top", (0.0, 0.0, -1.0)), ("front", (0.0, 1.0, 0.0)),
-                            ("side", (-1.0, 0.0, 0.0)), ("end", (1.0, 0.0, 0.0))):
+    for name, direction in GLOBAL_VIEWS.items():
         position = tuple(centre[k] - direction[k] * far for k in range(3))
-        shots.append(shoot(name, position, direction, numbers))
+        # THE OVERVIEW is the user's picture - translucent so every sticker shows, names on them
+        shots.append(shoot(name, position, direction, named if name == "overview" else numbers,
+                           translucent=name == "overview"))
     # CLOSE-UPS: straight into each mouth from outside, framed on the mouth
     for o, n, p in list(zip(openings, normals, pts))[:MAX_CLOSEUPS]:
         direction = tuple(-c for c in n)
@@ -140,3 +158,51 @@ def render_snapshots(skin_stl, openings: list[dict], out_dir, *, part_label: str
         shots.append(shoot(f"opening-{int(o['id'])}", position, direction, numbers, zoom=1.6,
                            focus=tuple(p)))
     return shots
+
+
+@dataclass(frozen=True)
+class UprightSheet:
+    path: Path
+    order: tuple[str, ...]    # the up axis each panel, A to F, was drawn with
+
+
+#: The drawing-office three-quarter view the stage opens with, for a part standing +z up: from
+#: the front left, a little above.
+STAGE_VIEW = (-1.0, -1.0, 0.8)
+
+
+def render_upright_sheet(skin_stl, out_path, *, order=None) -> UprightSheet:
+    """THE SIX-WAY PICTURE the model is asked which way up a part is from: the part six times in
+    panels A to F, each drawn with a different axis pointing up the panel, from the quarter the
+    stage opens on - turned the way the console's Up control turns its camera, so the panel the
+    model picks is the view the user then gets. No stickers, no axis marker: nothing but the shape
+    to judge by."""
+    import numpy as np
+    import pyvista as pv
+
+    from meshpipeline.cad.up_axis import UP_AXES, turn
+
+    order = tuple(order or UP_AXES)
+    pv.OFF_SCREEN = True
+    skin = pv.read(str(skin_stl))
+    if skin.n_points == 0:
+        raise ValueError("the part's skin has no surface to draw")
+    b = skin.bounds
+    diag = math.sqrt((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2) or 1.0
+    centre = np.asarray(skin.center, dtype=float)
+    pl = pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)
+    for i, axis in enumerate(order):
+        pl.subplot(i // 3, i % 3)
+        pl.set_background("white")  # type: ignore[arg-type]
+        pl.add_mesh(skin, color=BODY, smooth_shading=True, specular=0.2)
+        d = np.asarray(turn(axis, STAGE_VIEW))
+        pl.camera.position = tuple(centre + d / np.linalg.norm(d) * 2.5 * diag)
+        pl.camera.focal_point = tuple(centre)
+        pl.camera.up = turn(axis, (0.0, 0.0, 1.0))
+        pl.reset_camera()  # type: ignore[call-arg]
+        pl.add_text("ABCDEF"[i], position="upper_left", font_size=22, color="black")
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pl.screenshot(str(out_path))
+    pl.close()
+    return UprightSheet(path=out_path, order=order)

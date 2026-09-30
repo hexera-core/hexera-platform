@@ -16,6 +16,7 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
+import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml } from "./view_controls.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -36,8 +37,15 @@ function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
-const _EDGE_HEAT=[0.47,0.51,0.57];     /* soft grey while the faces carry colour: the data reads through */
+/* THE CELLS STAY VISIBLE UNDER THE COLOURS. A line cannot be drawn thinner than a pixel, so the
+   edges step back by contrast instead: a grey-blue a shade below the scale's calm end - barely
+   off it at full view, where a dense mesh has more line than face on screen, and a little firmer
+   close up, where every cell is there to count. With "near the limit only" on, the resting faces
+   are dark, and their edges a shade above them. */
+const _EDGE_HEAT_FAR=[0.74,0.785,0.845],_EDGE_HEAT_NEAR=[0.60,0.65,0.72];
+const _EDGE_HEAT_DIM=[0.33,0.35,0.38];
 const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
+const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
 export async function openViewer(job,anchorEl,opts){
@@ -46,21 +54,26 @@ export async function openViewer(job,anchorEl,opts){
   const box=document.createElement('div');box.className='viewer';box.id='viewer-'+job;
   const _m=opts.metrics||{};
   const _dl=(opts.files||[]).filter(f=>f.type!=='video');
-  const _dlHtml=_dl.length?_dl.map(f=>{
+  // the case the user asked for leads; the previews follow it
+  const _dlHtml=_dl.slice().sort((a,b)=>(b.type==='mesh_bundle')-(a.type==='mesh_bundle')).map(f=>{
       const primary=f.type==='mesh_bundle'?' primary':'';
       return `<a class="v-dlbtn${primary}" href="${esc(f.url||'#')}" download target="_blank" rel="noopener">
-                <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join(''):'';
+                <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join('');
+  const upAxis=savedUp('job',job)||'+z';
+  // THE PANEL READS TOP TO BOTTOM the way the result is used: the verdict and the download, the
+  // mesh's own figures, its parts, and last the way to ask for a change - beside the marks it sends.
   box.innerHTML=`<div class="v-bar">
-      <div class="v-row">
-        <b>${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
-        <span class="v-meta">
-          ${opts.unreviewed
-            ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
-            : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
-          ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
-        </span>
-        <span style="flex:1"></span>
-        <div class="v-dl">${_dlHtml}</div>
+      <div class="v-sec v-head">
+        <div class="v-row v-titlerow">
+          <b class="v-title">${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
+          <span class="v-meta">
+            ${opts.unreviewed
+              ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
+              : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
+            ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
+          </span>
+        </div>
+        <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
         <b>Every validity gate passed</b> - the mesh is structurally sound and solvable.
@@ -72,39 +85,41 @@ export async function openViewer(job,anchorEl,opts){
           re-reviewed against <i>your</i> bar and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
-      <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
-      <div class="v-row">
-        <button class="v-btn" id="v-selbtn-${job}">Mark region</button>
-        <span class="v-brush" title="region size - scales with your zoom">region
-          <input type="range" id="v-brush-${job}" min="2" max="30" value="8">
-          <span id="v-brushlbl-${job}"></span></span>
-        <button class="v-btn" id="v-clearbtn-${job}" disabled>Clear marks</button>
-        <span style="flex:1"></span>
-        <button class="v-btn" id="v-fitbtn-${job}">Fit</button>
-        </div>
-      <div class="v-row v-act">
-        <button class="v-btn primary" id="v-submit-${job}">Request a change…</button>
-        <span class="v-cost">a change request re-runs the pipeline - minutes, not seconds</span>
-      </div>
+      <div class="v-sec v-dl">${_dlHtml}</div>
+      <div class="v-facts" id="v-facts-${job}"></div>
       <!-- MESH PARTS: every selectable entity the loaded case actually declares -
            boundary patches, regions, cell zones, face zones, layer groups. The list
            is read from the mesh payload, so a part appears because the case has it. -->
-      <div class="v-facts" id="v-facts-${job}"></div>
       <div class="v-bnd" id="v-bnd-${job}">
         <div class="v-bnd-head">
           <span class="v-bnd-lbl">Mesh parts</span>
           <span class="v-bnd-count" id="v-bnd-count-${job}"></span>
           <span style="flex:1"></span>
-          <button class="v-bnd-act" id="v-bnd-restore-${job}">Restore full mesh</button>
+          <button class="v-bnd-act v-quiet" id="v-bnd-restore-${job}">Restore full mesh</button>
         </div>
         <div class="v-bnd-cols">
           <div class="v-bnd-list" id="v-bnd-chips-${job}"></div>
           <div class="v-bnd-insp" id="v-bnd-note-${job}"></div>
         </div>
+      </div>
+      <div class="v-sec v-review">
+        <div class="v-sec-h">Changes</div>
+        <div class="v-row">
+          <button class="v-btn" id="v-selbtn-${job}">Mark region</button>
+          <span class="v-brush" title="region size - scales with your zoom">Size
+            <input type="range" id="v-brush-${job}" min="2" max="30" value="8" aria-label="region size">
+            <span id="v-brushlbl-${job}"></span></span>
+        </div>
+        <div class="v-row v-act">
+          <button class="v-btn" id="v-submit-${job}">Request a change…</button>
+          <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
+        </div>
+        <p class="v-cost">A change request re-runs the pipeline - minutes, not seconds.</p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
-      <div class="v-hint" id="v-hint-${job}">rotate: drag · zoom: wheel or right-drag · pan: shift+drag</div>
+      <div class="v-tools">${upSelectHtml('v-up-'+job,upAxis)}<button class="v-btn v-tool" id="v-fitbtn-${job}" type="button" title="Frame the whole mesh">Fit</button></div>
+      <div class="v-hint" id="v-hint-${job}">${MOUSE_HINT}</div>
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
   // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
@@ -167,6 +182,7 @@ function initViewer(job,surf,uiCfg){
   grw.resize();
   const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
   host.addEventListener('contextmenu',e=>e.preventDefault());
+  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
@@ -210,8 +226,14 @@ function initViewer(job,surf,uiCfg){
   const cam=ren.getActiveCamera();
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
-  // aircraft on their side in the mesh viewer.
-  cam.setFocalPoint(0,0,0);cam.setPosition(1,-1,0.7);cam.setViewUp(0,0,1);
+  // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
+  // user last set it for this job (the "Up" control on the canvas).
+  const VIEW_DIR=[1,-1,0.7];
+  const upSel=document.getElementById('v-up-'+job);
+  cam.setFocalPoint(0,0,0);cam.setPosition(...VIEW_DIR);cam.setViewUp(0,0,1);
+  // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
+  if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
+  orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
   ren.resetCamera();rw.render();
   const _bs=ren.computeVisiblePropBounds();
   const diag=Math.max(Math.hypot(_bs[1]-_bs[0],_bs[3]-_bs[2],_bs[5]-_bs[4]),1e-9);
@@ -223,6 +245,13 @@ function initViewer(job,surf,uiCfg){
                    :totalFaces.toLocaleString()+' boundary faces';
 
   document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
+  // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
+  function setUp(axis){
+    orient(cam,axis,VIEW_DIR);ren.resetCamera();clampCam();rw.render();
+    if(upSel&&upSel.value!==axis)upSel.value=axis;
+    saveUp('job',job,axis);}
+  if(upSel)upSel.onchange=()=>setUp(upSel.value);
+  shield(host.querySelector('.v-tools'));
 
  /* camera envelope: adaptive zoom caps computed from the real cells
      Full fidelity always - edges always on, full resolution. Instead of
@@ -411,32 +440,31 @@ function initViewer(job,surf,uiCfg){
     function inspect(p){
       if(!p){
         const off=parts.filter(x=>x.renderable&&st[x.id].hidden).map(x=>x.label);
-        return `<div class="ins-empty">Select a part to inspect it.<br>`
+        return `<div class="ins-empty">Select a part to inspect it.`
           +`<span>${parts.length} selectable entities were read from this case.</span>`
-          +(off.length?`<span class="ins-off">hidden · ${off.map(esc).join(' · ')}</span>`:'')
+          +(off.length?`<span class="ins-off">Hidden: ${off.map(esc).join(', ')}</span>`:'')
           +`</div>`;
       }
       const rend=p.renderable,s=st[p.id];
       const rows=Object.entries(p.meta||{}).filter(([k])=>k!=='name'&&k!=='role')
         .filter(([,v])=>v!==null&&v!==undefined)
-        .map(([k,v])=>`<div class="ins-cell"><div class="ins-k">${esc(k.replace(/_/g,' '))}</div>`
-          +`<div class="ins-v">${esc(Array.isArray(v)?v.join(', ')
-             :(typeof v==='number'?v.toLocaleString():String(v)))}</div></div>`).join('');
-      return `<div class="ins-eyebrow">Selected part</div>
-        <div class="ins-top"><span class="ins-nm">${esc(p.label)}</span>
+        .map(([k,v])=>`<div class="ins-cell"><dt class="ins-k">${esc(k.replace(/_/g,' '))}</dt>`
+          +`<dd class="ins-v">${esc(Array.isArray(v)?v.join(', ')
+             :(typeof v==='number'?v.toLocaleString():String(v)))}</dd></div>`).join('');
+      return `<div class="ins-top"><span class="ins-nm">${esc(p.label)}</span>
           <span class="ins-badge">${esc(p.role||p.kind)}</span></div>
-        <div class="ins-grid">
-          <div class="ins-cell"><div class="ins-k">kind</div>
-            <div class="ins-v">${esc(kindLabel(p.kind))}</div></div>
-          <div class="ins-cell"><div class="ins-k">declared type</div>
-            <div class="ins-v">${esc(p.role||'-')}</div></div>
+        <dl class="ins-grid">
+          <div class="ins-cell"><dt class="ins-k">kind</dt>
+            <dd class="ins-v">${esc(kindLabel(p.kind))}</dd></div>
+          <div class="ins-cell"><dt class="ins-k">declared type</dt>
+            <dd class="ins-v">${esc(p.role||'-')}</dd></div>
           ${rows}
-        </div>
+        </dl>
         ${rend?`<div class="ins-acts">
           <button class="v-bnd-act on" data-a="hl">Highlighted</button>
           <button class="v-bnd-act${s.hidden?' on':''}" data-a="hide">${s.hidden?'Show':'Hide'}</button>
           <button class="v-bnd-act${isolated?' on':''}" data-a="iso">Isolate</button>
-          <label class="v-bnd-op">opacity
+          <label class="v-bnd-op">Opacity
             <input type="range" data-a="op" min="10" max="100" value="${Math.round(s.opacity*100)}">
             <span>${Math.round(s.opacity*100)}%</span></label>
         </div>`
@@ -530,8 +558,8 @@ function initViewer(job,surf,uiCfg){
   function setMarkMode(on){markMode=on;selBtn.classList.toggle('armed',on);
     selBtn.textContent=on?'Marking… (click the mesh)':'Mark region';
     host.style.cursor=on?'crosshair':'';
-    hintEl.textContent=on?'click a spot on the mesh to mark it · drag still rotates'
-                         :'rotate: drag · zoom: wheel or right-drag · pan: shift+drag';}
+    hintEl.textContent=on?'Click a spot on the mesh to mark it · Drag still rotates'
+                         :(activeMetric?HEAT_HINT:MOUSE_HINT);}
   selBtn.onclick=()=>setMarkMode(!markMode);
 
   function pickCell(e,cb){
@@ -643,7 +671,7 @@ function initViewer(job,surf,uiCfg){
   host.addEventListener('pointerdown',e=>{downXY=[e.clientX,e.clientY];},true);
   host.addEventListener('pointerup',e=>{
     if(!markMode||!downXY)return;
-    if(e.target&&e.target.classList&&e.target.classList.contains('v-pin'))return;
+    if(e.target&&e.target.closest&&e.target.closest('.v-pin,.v-tools,.v-legend,.v-probe,.v-heatctl'))return;
     if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
     pickCell(e,placeMarker);},true);
 
@@ -655,6 +683,8 @@ function initViewer(job,surf,uiCfg){
     submitBtn.textContent=flags.length
       ?`Send ${flags.length} mark${flags.length>1?'s':''} for re-review`
       :'Request a change…';
+    // with marks placed, sending them is the next step, so it takes the accent
+    submitBtn.classList.toggle('primary',flags.length>0);
     flagsEl.innerHTML=flags.length
       ?'<b>Marked regions</b><div class="v-fhint">The reviewer will inspect each marked spot on the delivered mesh. Add a note to say what looks wrong there.</div>':'';
     flags.forEach((f,i)=>{
@@ -670,8 +700,8 @@ function initViewer(job,surf,uiCfg){
             :(f.note?`<div class="f-note">${esc(f.note)}</div>`
                     :'<div class="f-note empty">Add a note describing the issue…</div>'))
         +'</div>'
-        +'<span class="fx" title="edit note" style="color:#8fa3bd">✎</span>'
-        +'<span class="fx" title="remove">✕</span>';
+        +'<span class="fx fx-edit" title="edit note">✎</span>'
+        +'<span class="fx fx-del" title="remove">✕</span>';
       const emptyNote=d.querySelector('.f-note.empty');
       if(emptyNote)emptyNote.onclick=()=>editNote(f);
       const [editEl,delEl]=d.querySelectorAll('.fx');
@@ -719,39 +749,76 @@ function initViewer(job,surf,uiCfg){
     const _ar=surf.quality_fields&&surf.quality_fields.metrics&&surf.quality_fields.metrics.aspect_ratio;
     if(_ar&&!('max_aspect_ratio' in q)&&typeof _ar.max==='number')q.max_aspect_ratio=Number(_ar.max.toFixed(2));
     if(!host||!Object.keys(q).length)return;
-    const LBL={cells:'cells',faces:'faces',hexahedra:'hexahedra',polyhedra:'polyhedra',
-               prisms:'prisms',pyramids:'pyramids',tetrahedra:'tetrahedra',
-               regions:'mesh regions',max_non_ortho:'max non-orthogonality',
-               max_skewness:'max skewness',max_aspect_ratio:'max aspect ratio',skew_faces:'skewed faces',
-               avg_non_ortho:'mean non-orthogonality'};
-    const ORDER=['cells','faces','hexahedra','polyhedra','prisms','pyramids','tetrahedra',
-                 'regions','max_non_ortho','max_skewness','max_aspect_ratio','skew_faces','avg_non_ortho'];
-    const keys=ORDER.filter(k=>k in q)
-      .concat(Object.keys(q).filter(k=>!ORDER.includes(k)&&k!=='units'&&k!=='engine'));
-    if(!keys.length)return;
-    const cell=k=>{
-      const v=q[k];
-      // integers read as counts; a measured value reads to a few figures, and a
-      // very small one reads in exponent form rather than a run of zeroes
-      const shown=typeof v!=='number' ? String(v)
-        : Number.isInteger(v) ? v.toLocaleString()
-        : (Math.abs(v)>0&&Math.abs(v)<0.001) ? v.toExponential(2)
-        : Number(v.toPrecision(6)).toLocaleString(undefined,{maximumFractionDigits:6});
-      const suffix=k==='max_non_ortho'||k==='avg_non_ortho'?'<small>°</small>':'';
-      const of=k==='skew_faces'&&typeof q.faces==='number'
-        ? `<small> of ${q.faces.toLocaleString()}</small>`:'';
-      return `<div class="mx-c" data-key="${esc(k)}"><div class="mx-k">${esc(LBL[k]||k.replace(/_/g,' '))}</div>`
-            +`<div class="mx-v">${shown}${suffix}${of}</div></div>`;};
+    // GROUPED, the way the figures are read: how big the mesh is, what its cells are, how good
+    // they are. A zero that only says "nothing is wrong" (no skewed faces, a skew fraction of 0)
+    // is folded into the figure it qualifies instead of taking a cell of its own.
+    const SIZE=[['cells','Cells'],['faces','Faces'],['regions','Regions']];
+    const TYPES=[['hexahedra','Hexahedra'],['polyhedra','Polyhedra'],['prisms','Prisms'],
+                 ['pyramids','Pyramids'],['tetrahedra','Tetrahedra']];
+    const QUALITY=[['max_non_ortho','Max non-orthogonality','°'],['max_skewness','Max skewness',''],
+                   ['max_aspect_ratio','Max aspect ratio','']];
+    const FOLDED=['avg_non_ortho','skew_faces','skew_fraction'];
+    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine']);
+    const isNum=v=>typeof v==='number'&&isFinite(v);
+    // integers read as counts; a measured value to two decimals, and a very small one in
+    // exponent form rather than a run of zeroes
+    const show=v=>!isNum(v) ? esc(String(v))
+      : Number.isInteger(v) ? v.toLocaleString()
+      : (Math.abs(v)>0&&Math.abs(v)<0.001) ? v.toExponential(2)
+      : v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const has=k=>k in q&&q[k]!==null&&q[k]!==undefined;
+    const stat=([k,l])=>`<div class="mx-c mx-stat" data-key="${k}"><div class="mx-v">${show(q[k])}</div>`
+      +`<div class="mx-k">${l}</div></div>`;
+    // cell types: each as its share of the cells, so a hex-dominant mesh reads at a glance
+    const total=isNum(q.cells)&&q.cells>0?q.cells:0;
+    const type=([k,l])=>{const v=q[k],pct=total&&isNum(v)?Math.max(0,Math.min(100,100*v/total)):null;
+      return `<div class="mx-c mx-row mx-type" data-key="${k}"><div class="mx-k">${l}</div>`
+        +`<div class="mx-v">${show(v)}</div>`
+        +(pct===null?'':`<div class="mx-pct">${pct>0&&pct<1?'&lt;1':Math.round(pct)}%</div>`
+          +`<div class="mx-bar"><i style="width:${pct.toFixed(1)}%"></i></div>`)+`</div>`;};
+    const row=(k,l,unit,sub)=>`<div class="mx-c mx-row mx-q" data-key="${esc(k)}"><div class="mx-k">${esc(l)}</div>`
+      +`<div class="mx-v">${show(q[k])}${unit?`<small>${unit}</small>`:''}</div>`
+      +(sub?`<div class="mx-sub">${sub}</div>`:'')+`</div>`;
+    // the share of faces that are skewed, when there are any
+    const frac=isNum(q.skew_fraction)&&q.skew_fraction>0?`(${Number((q.skew_fraction*100).toPrecision(2))}%)`:'';
+    const ofFaces=isNum(q.faces)?`of ${q.faces.toLocaleString()}`:'';
+    const skewNote=()=>{
+      if(!isNum(q.skew_faces))return frac?`Skewed: ${frac.slice(1,-1)} of faces`:'';
+      if(q.skew_faces===0)return 'No skewed faces';
+      return [`${q.skew_faces.toLocaleString()} skewed face${q.skew_faces!==1?'s':''}`,ofFaces,frac]
+        .filter(Boolean).join(' ');};
+    const quality=[];
+    if(has('max_non_ortho'))quality.push(row('max_non_ortho','Max non-orthogonality','°',
+      has('avg_non_ortho')?`Mean ${show(q.avg_non_ortho)}°`:''));
+    else if(has('avg_non_ortho'))quality.push(row('avg_non_ortho','Mean non-orthogonality','°'));
+    // skewness: the max with the skewed faces under it; without a max, the count and its share
+    // stand on their own - nothing the engine reported is dropped
+    if(has('max_skewness'))quality.push(row('max_skewness','Max skewness','',skewNote()));
+    else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',[ofFaces,frac].filter(Boolean).join(' ')));
+    else if(has('skew_fraction'))quality.push(row('skew_fraction','Skew fraction',''));
+    if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
+    // anything the backend declared that this build has no name for still reaches the user
+    const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
+    const sizes=SIZE.filter(([k])=>has(k)),types=TYPES.filter(([k])=>has(k));
+    const group=(title,body)=>body?`<div class="mx-group"><div class="mx-gh">${title}</div>${body}</div>`:'';
+    if(!sizes.length&&!types.length&&!quality.length&&!other.length)return;
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
       +(q.units?`<span class="eng">${esc(q.units)}</span>`:'')
-      +`</div><div class="mx-grid">${keys.map(cell).join('')}</div></div>`;
+      +`</div>`
+      +(sizes.length?`<div class="mx-size">${sizes.map(stat).join('')}</div>`:'')
+      +group('Cell types',types.map(type).join(''))
+      +group('Quality',quality.join(''))
+      +group('Other',other.join(''))
+      +`</div>`;
   })();
 
-  document.getElementById('v-status-'+job).textContent=
+  const statusEl=document.getElementById('v-status-'+job);
+  statusEl.textContent=
     (surf.is_mesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
+  statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
 
   /* support/debug hook (read-only-ish; used by headless verification) */
   window._vdbg=window._vdbg||{};
@@ -764,6 +831,9 @@ function initViewer(job,surf,uiCfg){
       return stats?stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/d:null;},
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
     markers:()=>flags.length,up:()=>cam.getViewUp().slice(),
+    upAxis:()=>upSel?upSel.value:'+z',setUp:axis=>setUp(axis),
+    view:()=>({focal:cam.getFocalPoint().slice(),position:cam.getPosition().slice(),
+               dir:cam.getDirectionOfProjection().slice()}),
     render:()=>rw.render()};
 
   /* PARAVIEW EXPORT - the same boundary and the same per-face numbers as a legacy VTK file,
@@ -866,16 +936,24 @@ function initViewer(job,surf,uiCfg){
     function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
       return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
 
-    /* THE EDGES STEP BACK. At full view a dense mesh has more hairline than face on screen, and the
-       lines paint the part their own colour; with the data on they are drawn only once a typical
-       face spans EDGE_PX on screen, and then in a soft grey the colours read through. Off, they
-       come back exactly as the parts panel draws them. */
-    const EDGE_PX=9;
-    let edgesOn=true;
-    function setEdges(on){if(on===edgesOn)return;edgesOn=on;
-      entries.forEach(en=>en.actor.getProperty().setEdgeVisibility(on));}
-    function heatEdges(){if(activeMetric)
-      setEdges(faceTyp()*(host.clientHeight||1)/(2*camDist()*tanHalf())>=EDGE_PX);}
+    /* THE CELLS STAY IN VIEW. With the data on, the edges are drawn at every zoom, in a colour a
+       shade off the faces' own (_EDGE_HEAT_FAR at full view, _EDGE_HEAT_NEAR close up), so a dense
+       mesh reads as a faint grid over the colours rather than lines painted over them, and close up
+       every cell is there to count. Off, they come back exactly as the parts panel draws them. */
+    function heatEdgeCol(){
+      if(nearOnly)return _EDGE_HEAT_DIM;
+      // how many screen pixels a typical face spans: ~3 at full view on a big mesh, 15+ close up
+      const px=faceTyp()*(host.clientHeight||1)/(2*camDist()*tanHalf());
+      const t=Math.round(20*Math.max(0,Math.min(1,(px-3)/12)))/20;   // in steps, so a turn does not repaint
+      return _EDGE_HEAT_FAR.map((a,i)=>a+(_EDGE_HEAT_NEAR[i]-a)*t);}
+    // follow the zoom: every part but a selected one (it keeps its orange edge) takes the new shade
+    function heatEdges(){
+      if(!activeMetric)return;
+      const c=heatEdgeCol();if(c.every((v,i)=>Math.abs(v-edgeCol[i])<1e-3))return;
+      edgeCol=c;
+      entries.forEach(en=>{const pr=en.actor.getProperty(),e=pr.getEdgeColor();
+        if(Math.abs(e[0]-_SEL_EDGE[0])<1e-3&&Math.abs(e[1]-_SEL_EDGE[1])<1e-3)return;
+        pr.setEdgeColor(c[0],c[1],c[2]);});}
 
     /* THE WORST SPOTS, on every mesh. The payload's hotspots are the faces OVER the bar, worst first
        - a mesh that passes has none. So the list starts with them and goes on with the drawn faces
@@ -1023,6 +1101,7 @@ function initViewer(job,surf,uiCfg){
       if(!(e.target&&e.target.closest&&e.target.closest('.v-legend,.v-probe')))cancelFly();},true);
     host.addEventListener('wheel',()=>cancelFly(),{capture:true,passive:true});
     document.getElementById('v-fitbtn-'+job).addEventListener('click',()=>cancelFly());
+    if(upSel)upSel.addEventListener('change',()=>cancelFly());
 
     /* THE WALKER - "Worst spot" steps through the list, worst first, on every mesh: flies to the
        spot keeping the view direction (a spot on the far side is seen from its own side, a grazing
@@ -1093,6 +1172,10 @@ function initViewer(job,surf,uiCfg){
       if(activeMetric&&curRp){paintFaces(activeMetric,curRp);
         const bt=legend&&legend.querySelector('.v-only');
         if(bt){bt.classList.toggle('on',nearOnly);bt.setAttribute('aria-pressed',String(nearOnly));}
+        // the edges follow the faces they sit on: faint over the colours, faint over the grey
+        edgeCol=heatEdgeCol();
+        if(repaintParts)repaintParts();
+        else entries.forEach(en=>{en.actor.getProperty().setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
         rw.render();}
       return nearOnly;}
 
@@ -1106,10 +1189,9 @@ function initViewer(job,surf,uiCfg){
       paintFaces(m,rp);
       if(legend){legend.remove();legend=null;}
       clearHot();hideProbe();
-      // the edges step back while the faces carry the data, and are handed back through the parts
+      // the edges go faint while the faces carry the data, and are handed back through the parts
       // panel when it is switched off, so a selected part keeps its selection edge
-      edgeCol=rp?_EDGE_HEAT:_EDGE;
-      if(rp)heatEdges();else setEdges(true);
+      edgeCol=rp?heatEdgeCol():_EDGE;
       spots=[];spotSig='';
       if(rp){spots=buildSpots(m);spotSig=m+'#'+shownSig();}
       if(repaintParts)repaintParts();
@@ -1118,7 +1200,8 @@ function initViewer(job,surf,uiCfg){
         legend=document.createElement('div');legend.className='v-legend';
         // an instrument scale: the bar stands upright beside the viewport, the limit is a
         // tick with its value, the top of the bar is a third past the limit
-        legend.innerHTML=`<b>${esc(md.label)}</b>`
+        legend.innerHTML=`<span class="lg-h"><b>${esc(md.label)}</b>`
+            +`<button class="x" type="button" title="turn colouring off" aria-label="Turn colouring off">✕</button></span>`
           +`<span class="scale"><span class="ticks">`
             +`<span style="bottom:100%">${esc(fmt(m,rp.hi))}</span>`
             +(rp.open?'':`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`)
@@ -1135,33 +1218,38 @@ function initViewer(job,surf,uiCfg){
             +(hasNear(m)
                ?`<button class="v-btn v-only" aria-pressed="false" title="grey out every face below `
                  +`${esc(fmt(m,NEAR*md.limit))} (80% of the limit)">Near the limit only</button>`:'')
-          +`</span>`
-          +`<span class="x" title="turn colouring off">✕</span>`;
+          +`</span>`;
         legend.querySelector('.x').onclick=()=>setMetric(null);
         legend.querySelector('.v-walk').onclick=()=>focusSpot(walkIdx+1);
         const ob=legend.querySelector('.v-only');if(ob)ob.onclick=()=>setNearOnly(!nearOnly);
         // a press on the scale is not the start of an orbit
         legend.addEventListener('pointerdown',e=>e.stopPropagation());
-        host.appendChild(legend);walkLabel();
-        hintEl.textContent='click a face to see its numbers · drag still rotates';}
-      else hintEl.textContent='rotate: drag · zoom: wheel or right-drag · pan: shift+drag';
-      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`)
-        .forEach(c=>c.classList.toggle('on',c.dataset.metric===m));
+        host.appendChild(legend);walkLabel();}
+      if(!markMode)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
+      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`).forEach(c=>{
+        const on=c.dataset.metric===m;c.classList.toggle('on',on);
+        if(!c.classList.contains('mx-c'))return;
+        c.setAttribute('aria-pressed',String(on));
+        const t=c.querySelector('.mx-show-t');if(t)t.textContent=on?'Showing':'Show on mesh';});
       rw.render();}
 
-    // the figures are the controls; a payload with no figures block gets a plain text one
+    // the figures are the controls - each one that has a field says so, with a small swatch of the
+    // colour scale; a payload with no figures block gets a plain text one
     const facts=document.getElementById('v-facts-'+job);
     let wired=0;
     if(facts)avail.forEach(m=>{
       const cell=[...facts.querySelectorAll('.mx-c')].find(c=>c.dataset.key===META[m].fact);
       if(!cell)return;
-      cell.classList.add('live');cell.dataset.metric=m;cell.title='colour the mesh by this';
+      cell.classList.add('live');cell.dataset.metric=m;cell.title='Colour the mesh by this';
+      cell.setAttribute('role','button');cell.tabIndex=0;cell.setAttribute('aria-pressed','false');
+      cell.insertAdjacentHTML('beforeend',
+        '<span class="mx-show"><i class="mx-ramp" aria-hidden="true"></i><span class="mx-show-t">Show on mesh</span></span>');
       cell.onclick=()=>setMetric(m);wired++;});
     if(wired<avail.length){
       const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
-      ctl.innerHTML='colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+      ctl.innerHTML='Colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
       ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
-      host.appendChild(ctl);}
+      shield(ctl);host.appendChild(ctl);}
 
     /* CLICK TO EXPLAIN. A click on a coloured face says what its number is, whether it clears
        the gate's bar, what the cell behind it is, and the likely reason - then offers to mark
@@ -1180,6 +1268,7 @@ function initViewer(job,surf,uiCfg){
         +`<button class="v-btn" data-a="close">Close</button></div>`;
       if(onMark)probeEl.querySelector('[data-a=mark]').onclick=()=>{onMark();hideProbe();};
       probeEl.querySelector('[data-a=close]').onclick=hideProbe;
+      shield(probeEl);                 // a press on the card is not the start of an orbit
       host.appendChild(probeEl);}
     function showProbe(en,cid,head){
       hideProbe();
@@ -1189,14 +1278,17 @@ function initViewer(job,surf,uiCfg){
       const over=have.filter(m=>en.q[m][cid]>qf.metrics[m].limit);
       lastProbe={patch:en.patch,cell:cid,cellFaces:cf,over,
                  values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
-      const rows=have.map(m=>{const v=en.q[m][cid],md=qf.metrics[m],bad=v>md.limit;
-        return `<div><b>${esc(md.label)}</b> ${esc(fmt(m,v))} `
-          +`<span class="${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}).join('');
+      const rows=have.map(m=>probeRow(m,en.q[m][cid])).join('');
       probeEl=document.createElement('div');probeEl.className='v-probe';
-      probeEl.innerHTML=`<div class="pk">${head?esc(head)+' · ':''}${esc(en.patch)} · face ${cid.toLocaleString()}</div>${rows}`
-        +(cf!=null?`<div>cell behind it: ${cf}-face ${shapeOf(cf)}</div>`:'')
+      probeEl.innerHTML=`<div class="pk">${head?esc(head)+' · ':''}${esc(en.patch)} · face ${cid.toLocaleString()}</div>`
+        +`<div class="pr-rows">${rows}</div>`
+        +(cf!=null?`<div class="pr-cell">cell behind it: ${cf}-face ${shapeOf(cf)}</div>`:'')
         +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'');
       probeActs(()=>placeMarker(en,cid));}
+    // one reading: what it is, its value, and where it sits against the gate's bar
+    function probeRow(m,v){const md=qf.metrics[m],bad=v>md.limit;
+      return `<div class="pr"><span class="pr-k">${esc(md.label)}</span><span class="pr-v">${esc(fmt(m,v))}</span>`
+        +`<span class="pr-s ${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
     // a payload hotspot on an inner face has no polygon on screen: its own reading, in the same card
     function showSpotCard(s,at,head){
       hideProbe();
@@ -1204,19 +1296,18 @@ function initViewer(job,surf,uiCfg){
       lastProbe={patch:s.patch,cell:null,cellFaces:cf,over:bad?[m]:[],values:{[m]:s.value},hotspot:true};
       probeEl=document.createElement('div');probeEl.className='v-probe';
       probeEl.innerHTML=`<div class="pk">${esc(head)} · ${s.patch?esc(s.patch):'inside the mesh'}</div>`
-        +`<div><b>${esc(md.label)}</b> ${esc(fmt(m,s.value))} `
-        +`<span class="${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`
-        +(cf!=null?`<div>cell: ${cf}-face ${shapeOf(cf)}</div>`:'')
+        +`<div class="pr-rows">${probeRow(m,s.value)}</div>`
+        +(cf!=null?`<div class="pr-cell">cell: ${cf}-face ${shapeOf(cf)}</div>`:'')
         +(bad?`<div class="why">likely: ${esc(why(cf,''))}</div>`:'');
       probeActs(at?()=>placeMarker(at.en,at.cid):null);}
     host.addEventListener('pointerup',e=>{
       if(markMode||!activeMetric||!downXY)return;
-      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl'))return;
+      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl,.v-tools'))return;
       if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
       pickCell(e,(en,cid)=>showProbe(en,cid));},true);
-    // hiding, showing or isolating a part changes what the spots and the edge density are read from
-    onPartsPainted=()=>{if(!activeMetric)return;refreshSpots();heatEdges();};
-    // every camera move: edges in or out with the face density, beads held to their screen size
+    // hiding, showing or isolating a part changes what the spots are read from
+    onPartsPainted=()=>{if(!activeMetric)return;refreshSpots();};
+    // every camera move: the edges' shade follows the zoom, the beads hold their screen size
     cam.onModified(()=>{if(activeMetric){heatEdges();scaleHot();}});
 
     /* support/debug hook - lets the browser tier drive the heatmap without pixel picking; the demo

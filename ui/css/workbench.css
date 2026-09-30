@@ -53,9 +53,7 @@
 #workbench .viewer .v-flags{grid-column:2;grid-row:2;max-height:38vh;overflow-y:auto;
   border-left:1px solid var(--border)}
 #workbench .viewer .v-bnd-cols{grid-template-columns:1fr}
-#workbench .viewer .v-bnd-list{border-right:0;border-bottom:1px solid var(--border);max-height:220px}
-#workbench .viewer .mx-grid{grid-template-columns:repeat(2,1fr)}
-#workbench .viewer .v-dl{flex-wrap:wrap}
+#workbench .viewer .v-bnd-list{border-right:0;max-height:220px}
 
 /* the header control that folds the drawer - only shown once there is a workbench */
 #wb-toggle{cursor:pointer}

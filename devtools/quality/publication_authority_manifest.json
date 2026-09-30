@@ -2491,6 +2491,45 @@
   "roots": []
  },
  {
+  "context": "contracts/engineering_text.py::_free::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/engineering_text.py",
+  "qualname": "_free",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_DOLLAR_IS_MATH",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/engineering_text.py::_script::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/engineering_text.py",
+  "qualname": "_script",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_LOWER_AFTER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/engineering_text.py::plain::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/engineering_text.py",
+  "qualname": "plain",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_TRIGGER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "contracts/intake_formats.py::refusal_suffix::search#1|NotAPublisher|not-a-publisher|",
   "path": "contracts/intake_formats.py",
   "qualname": "refusal_suffix",
@@ -3906,6 +3945,21 @@
   "gated_required": false,
   "roots": [
    "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))"
+  ]
+ },
+ {
+  "context": "render/scout_snapshots.py::render_upright_sheet::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)",
+  "path": "render/scout_snapshots.py",
+  "qualname": "render_upright_sheet",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)"
   ]
  },
  {

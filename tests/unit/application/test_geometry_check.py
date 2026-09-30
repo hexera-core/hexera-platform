@@ -206,6 +206,8 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
         return Path(dest)
     monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
     monkeypatch.setattr(snaps_mod, "render_snapshots", lambda skin, openings, out: [])
+    monkeypatch.setattr(snaps_mod, "render_upright_sheet",
+                        lambda skin, out, **k: (_ for _ in ()).throw(RuntimeError("nothing is drawn in this test")))
 
     source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/elbow.step", "sha256": "0" * 64,
               "size_bytes": 4, "original_filename": "elbow.step", "suffix_hint": ".step"}

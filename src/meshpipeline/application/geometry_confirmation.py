@@ -219,7 +219,7 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
                                          "height_mm": None}
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
-                                     "grounded": False, "scale_to_m": None, "unit": None}
+                                     "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None}
 
 
 def body_of(record: dict) -> SimpleNamespace:

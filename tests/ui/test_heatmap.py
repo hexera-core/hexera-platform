@@ -123,9 +123,11 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert after["active"] == "non_ortho" and after["legend"] is True
     assert after["hotspots"] == 1, "exactly one face is over the bar"
     assert "65.0°" in after["legendText"] and "1 face over" in after["legendText"]
-    assert "click a face" in after["hint"] and after["onCells"] == 1
-    # the calm end reads as a lit surface, not a dark one; the edges step back
+    assert "Click a face" in after["hint"] and after["onCells"] == 1
+    # the calm end reads as a lit surface, not a dark one; the cells stay in view at every zoom,
+    # their edges in a faint colour a shade off the faces rather than the plain view's dark line
     assert after["calm"] == CALM, after
+    assert after["edges"]["on"] is True, after
     assert after["edges"]["color"] != pytest.approx(PLAIN_EDGE), after
     # the walker is on the scale, and so is the grey-out: a face sits past 80% of the bar
     assert after["walk"].startswith("Worst spot") and after["walkN"] == "0 / 1", after
@@ -232,7 +234,7 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert off["active"] is None and off["legend"] is False and off["hotspots"] == 0
     assert off["ring"] == 0 and off["flying"] is False and off["colour"] is None, off
     assert off["edges"]["on"] is True and off["edges"]["color"] == pytest.approx(PLAIN_EDGE), off
-    assert "rotate: drag" in off["hint"]
+    assert "Rotate: drag" in off["hint"]
     assert_clean(live, "the viewer with the heatmap")
 
 

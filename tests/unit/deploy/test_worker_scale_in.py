@@ -347,3 +347,36 @@ def test_the_containers_carry_the_same_budget_when_docker_stops_them_first():
                         if ln.startswith(f"docker run -d --name {name} "))
         given = _seconds(r"--stop-timeout (\d+)", run_line)
         assert given == _seconds(rf"docker stop --time (\d+) {name}\b", shutdown), name
+
+
+def _refusing_urlopen(mod, code: int, message: str):
+    import io
+
+    def _urlopen(req, timeout=None):
+        raise mod.urllib.error.HTTPError(req.full_url, code, "Bad Request", {},
+                                         io.BytesIO(json.dumps({"error": {"message": message}}).encode()))
+    return _urlopen
+
+
+@pytest.mark.parametrize("message", [
+    "One or more TimeSeries could not be written: One or more points were written more frequently "
+    "than the maximum sampling period configured for the metric.",
+    "One or more TimeSeries could not be written: Points must be written in order.",
+])
+def test_a_point_another_publisher_just_wrote_is_not_a_failure(monkeypatch, message):
+    # 2026-09-30 10:16 on shared dev: the fleet deploy's first run landed seconds after the
+    # scheduled tick, Cloud Monitoring refused the later point with a 400, and the deploy failed
+    # at "the queue-depth publisher failed its first run". The series already had its point.
+    mod = _publisher(monkeypatch, {"QUEUE_NAME": "simulation_jobs"})
+    monkeypatch.setattr(mod, "_access_token", lambda: "t")
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _refusing_urlopen(mod, 400, message))
+    mod.publish({"simulation_jobs": 0}, project_id="p", namespace="dev", location="z", running=0)
+
+
+def test_any_other_refusal_still_fails_and_says_why(monkeypatch):
+    mod = _publisher(monkeypatch, {"QUEUE_NAME": "simulation_jobs"})
+    monkeypatch.setattr(mod, "_access_token", lambda: "t")
+    monkeypatch.setattr(mod.urllib.request, "urlopen",
+                        _refusing_urlopen(mod, 400, "Field timeSeries[0].metric.type had an invalid value"))
+    with pytest.raises(RuntimeError, match="HTTP 400: .*invalid value"):
+        mod.publish({"simulation_jobs": 0}, project_id="p", namespace="dev", location="z", running=0)

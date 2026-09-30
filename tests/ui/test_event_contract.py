@@ -129,9 +129,10 @@ def test_the_browser_can_render_everything_the_backend_publishes(live, event_voc
         "a stage the UI has no word for must degrade to English, not require a UI release"
 
 
-def test_a_tool_call_is_labelled_TOOL_CALL_and_reasoning_fills_one_card(live):
-    # What the label SAYS, read off the rendered page rather than the source. The tag is uppercased
-    # by the stylesheet, so the text a user sees is not the text the template holds.
+def test_a_tool_call_is_labelled_tool_call_and_reasoning_fills_one_card(live):
+    # What the label SAYS, read off the rendered page rather than the source. A stylesheet can
+    # uppercase the tag, so the text a user sees is not always the text the template holds; the
+    # console sets its labels in sentence case, so it reads "tool call".
     out = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount();                       // a clean stage, in the page's own #stage element
@@ -149,7 +150,7 @@ def test_a_tool_call_is_labelled_TOOL_CALL_and_reasoning_fills_one_card(live):
       return {shown, cards: cards.length,
               body: cards.length ? cards[cards.length-1].querySelector('.body').textContent : ''};
     })()""")
-    assert out["shown"] == "TOOL CALL", f"a tool call is labelled {out['shown']!r}"
+    assert out["shown"] == "tool call", f"a tool call is labelled {out['shown']!r}"
     assert out["cards"] == 1, f"streamed reasoning drew {out['cards']} cards instead of filling one"
     assert out["body"] == "Checking the budget."
 

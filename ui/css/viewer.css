@@ -35,11 +35,11 @@
 .v-axes{font-family:var(--mono);font-size:11.5px;color:#f0b46b}
 .v-reason{margin-top:7px;padding:8px 10px;border-left:2px solid #4a3a2a;background:#171319;color:#b9aa93;font-size:12px}
 .v-why-act{display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap;color:#c9bba6}
-.v-loading{position:absolute;inset:0;display:flex;flex-direction:column;gap:13px;align-items:center;justify-content:center;color:#3d4b5f;font-size:13px;z-index:8;background:#c9d6e2}
+.v-loading{position:absolute;inset:0;display:flex;flex-direction:column;gap:13px;align-items:center;justify-content:center;color:var(--text-faint);font-size:13px;z-index:8;background:var(--viewer-canvas)}
 .v-spin{width:34px;height:34px;border-radius:50%;border:3px solid rgba(59,84,116,.22);border-top-color:#3b82f6;animation:vspin .85s linear infinite}
 @keyframes vspin{to{transform:rotate(360deg)}}
 .v-btn:disabled{opacity:.38;cursor:default}
-.v-canvas{position:relative;height:min(68vh,760px);min-height:420px;background:#c9d6e2;overflow:hidden}
+.v-canvas{position:relative;height:min(68vh,760px);min-height:420px;background:var(--viewer-canvas);overflow:hidden}
 .v-canvas canvas{display:block}
 .v-hint{position:absolute;left:10px;bottom:8px;font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.62);padding:4px 10px;border-radius:7px;pointer-events:none;z-index:5}
 .v-count{position:absolute;right:10px;bottom:8px;font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.62);padding:4px 10px;border-radius:7px;pointer-events:none;z-index:5}
@@ -77,11 +77,8 @@
 .f-edit:focus{outline:none;border-color:#3b82f6}
 
 /* QUALITY HEATMAP - the figures are the controls; the legend and the probe live on the canvas.
-   The interface stays grey: the only colour on screen is the data on the mesh. */
-.mx-c.live{cursor:pointer;border-radius:8px;transition:background .12s,box-shadow .12s}
-.mx-c.live:hover{background:#1d232d}
-.mx-c.live.on{background:#1f2633;box-shadow:inset 0 -2px 0 #9aa4b4}
-.mx-c.live .mx-k::after{content:' · colour';color:#5b6b83;font-size:10px;letter-spacing:.02em}
+   The interface stays grey: the only colour on screen is the data on the mesh. The figure rows,
+   the scale and the readout are dressed in theme.css. */
 .v-heatctl{position:absolute;left:10px;top:10px;font-size:11.5px;color:#cfd8e3;background:rgba(8,12,20,.62);padding:4px 10px;border-radius:7px;z-index:5}
 .v-heatctl a{cursor:pointer;color:#dfe5ee;text-decoration:underline dotted #5b6b83}
 .v-heatctl a.on{color:#fff;text-decoration:underline solid #cfd8e3}
@@ -106,25 +103,13 @@
 
 /* THE GEOMETRY STAGE - the part with a numbered sticker on every opening, the form beside it.
    The pins are the yellow of the check's pictures; the selected one wears the product's orange. */
-.gc-stage .gc-panel{gap:10px}
-.gc-stage .gc-lead{font-size:12.5px;color:#9aa4b4;line-height:1.55}
-.gc-stage .gc-lead b{color:#f2f5f9}
-.gc-stage .rc-row{display:flex;gap:10px;align-items:center;padding:4px 0}
-.gc-stage .rc-k{flex:none;width:96px;font-size:11.5px;color:#8b96a7}
+.gc-stage .rc-row{display:flex;align-items:center}
+.gc-stage .rc-k{flex:none}
 .gc-stage .rc-v{flex:1;min-width:0}
 .gc-stage .gc-sel{width:100%}
-.gc-stage .gc-table{font-size:12px;table-layout:auto}
-.gc-stage .gc-table th,.gc-stage .gc-table td{padding:4px 5px}
+.gc-stage .gc-table{table-layout:auto}
 .gc-stage .gc-name{min-width:64px}
-.gc-stage .gc-role{padding:3px 4px}
 .gc-stage .gc-pos{display:none}
-.gc-stage .gc-table .gc-n{cursor:pointer}
-.gc-stage .gc-table .gc-n:hover{text-decoration:underline}
-.gc-stage .gc-table tr.sel td{background:rgba(255,79,0,.14)}
-.gc-stage .gc-actions{padding:10px 0 0;border-top:1px solid #222834}
-.gc-pin{background:#ffd400;color:#14171c;font-weight:700;border-color:rgba(255,255,255,.95)}
-.gc-pin.sel{background:#ff4f00;color:#fff}
-.gc-fit{position:absolute;right:10px;top:10px;z-index:5}
 
 /* a body in a flow: the far-field answers, shown only when the flow is around the part */
 .gc-ext[hidden],.gc-int[hidden]{display:none!important}
@@ -145,8 +130,7 @@
 .gc-axes .ax{stroke:#cbd5e1;stroke-width:1.3;stroke-linecap:round}
 .gc-axes .ax-l{fill:#cbd5e1;font:11px/1 Geist,Arial,sans-serif;text-anchor:middle;dominant-baseline:middle}
 .gc-axes .back{opacity:.38}
-.gc-banner{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid #3a4657;border-radius:8px;background:#1d232d;color:#dfe5ee;font-size:12.5px}
-.gc-banner.warn{border-color:#7a5a2a;background:#2a2118;color:#f0d9b5}
+.gc-banner{display:flex;align-items:center}
 .gc-banner[hidden]{display:none}
 .gc-spin{width:12px;height:12px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#ffd400;animation:vspin .9s linear infinite;flex:none}
 .gc-banner .gc-spin{display:none}
