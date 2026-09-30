@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from meshpipeline.application.artifact_policy import required_output_classes
+from meshpipeline.contracts import engineering_text
 from meshpipeline.contracts.review_outcome import ReviewExecution, ReviewVerdict
 from meshpipeline.errors import FailureClass, user_message_for
 
@@ -591,7 +592,9 @@ def _render_outcome(fr: FinalResult) -> str:
                                 f"{v.get('target')} target layers "
                                 f"({v.get('coverage_pct')}% of target thickness)")
                     if c.get("finding"):
-                        lines.append(f"    Reviewer's finding: {c['finding']}")
+                        # the reviewer model's own words: its math markup made plain
+                        lines.append("    Reviewer's finding: "
+                                     + engineering_text.plain(str(c["finding"])))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
