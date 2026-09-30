@@ -222,9 +222,13 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
     # When the result itself names what failed (a review that did not conclude says which way it
     # stopped), that account is the closing too: the chat and the job page must not tell the same
     # failure two different ways.
+    # And a failure note never closes a run that DELIVERED: a review that did not finish on a
+    # validated mesh is delivered with its caveat (final_result.review_inconclusive_caveat) while
+    # the failure handler has already drafted "we could not verify your mesh".
     closing = (assembly.pre_composed_message
                if (assembly.api_failure and assembly.pre_composed_message
-                   and not result.failure_detail)
+                   and not result.failure_detail
+                   and result.status != _fr.TerminalStatus.succeeded)
                else _fr.render_message(result))
     return TerminalResult(result, closing, delivered_types, ready)
 

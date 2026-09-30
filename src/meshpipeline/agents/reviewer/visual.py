@@ -390,8 +390,8 @@ def _nonverdict_note(marker: str) -> str:
                 "our side, not your mesh's.")
     if _is_provider_failure(marker):
         return ("The review service is temporarily unavailable. This is a problem on our side.")
-    return ("The mesh could not be fully verified from the available evidence, so it was not "
-            "accepted. This is a problem on our side.")
+    return ("The review could not judge the mesh from the evidence it had, so it reached no "
+            "verdict. This is a problem on our side.")
 
 
 def _is_provider_failure(marker: str) -> bool:

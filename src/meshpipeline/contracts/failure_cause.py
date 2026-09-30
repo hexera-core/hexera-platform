@@ -301,9 +301,14 @@ _REVIEW_STOPPED = {
 }
 
 
+def review_stopped_reason(marker: object) -> str:
+    """Why a review stopped without a verdict, in plain words, from the marker it ended with."""
+    return _REVIEW_STOPPED.get(str(marker or "").strip(),
+                               "the AI service that reviews the mesh was not available")
+
+
 def _review(f: Mapping) -> tuple[str, str]:
-    marker = str(f.get("marker") or "").strip()
-    why = _REVIEW_STOPPED.get(marker, "the AI service that reviews the mesh was not available")
+    why = review_stopped_reason(f.get("marker"))
     reruns = f.get("reruns")
     n = int(reruns) if isinstance(reruns, int) and not isinstance(reruns, bool) else 0
     if f.get("validated"):
@@ -391,4 +396,4 @@ def describe(cause: object, facts: Mapping | None = None, *,
 
 
 __all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "FailureCause", "as_cause", "clean_reason",
-           "describe", "retry_can_help"]
+           "describe", "retry_can_help", "review_stopped_reason"]

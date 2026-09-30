@@ -328,6 +328,14 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
             raise ValueError(
                 "succeeded with a FAIL review verdict requires a kind='layer_coverage' "
                 "caveat - refusing to build a contradictory FinalResult")
+        # The same for a review that did not finish: a delivery without a verdict is lawful only
+        # when it SAYS so, through its typed caveat (review_inconclusive_caveat).
+        if execution is ReviewExecution.failed_to_complete and not any(
+                isinstance(c, dict) and c.get("kind") == REVIEW_INCONCLUSIVE
+                for c in (requirement_caveats or [])):
+            raise ValueError(
+                "succeeded with a review that did not finish requires a "
+                f"kind='{REVIEW_INCONCLUSIVE}' caveat - refusing to deliver it unstated")
         return FinalResult(
             requirement_caveats=list(requirement_caveats or []),
             schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id,
@@ -582,6 +590,7 @@ def _render_outcome(fr: FinalResult) -> str:
                      for c in fr.requirement_caveats}
             lines.append("Delivered with stated deviations from your request:"
                          if kinds == {"domain_extent"} else
+                         "Delivered with a stated caveat:" if kinds == {REVIEW_INCONCLUSIVE} else
                          "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -615,6 +624,8 @@ def _render_outcome(fr: FinalResult) -> str:
                                 f"({v.get('coverage_pct')}% of target thickness)")
                     if c.get("finding"):
                         lines.append(f"    Reviewer's finding: {c['finding']}")
+                elif kind == REVIEW_INCONCLUSIVE:
+                    lines.append(_review_caveat_line(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
@@ -622,6 +633,10 @@ def _render_outcome(fr: FinalResult) -> str:
                 lines.append("Every mesh-quality check passed; only the margins above fell "
                              "short of the request. Rebuild with relaxed constraints if "
                              "they matter for your analysis.")
+            elif kinds == {REVIEW_INCONCLUSIVE}:
+                # true by construction: the caveat is granted only on a mesh the executor
+                # validated with no gate failed (review_inconclusive_caveat)
+                lines.append(REVIEW_INCONCLUSIVE_CLOSING)
             else:
                 # NEVER claim every check passed when a layer caveat exists: the pipeline's
                 # own quality review judged layer coverage short of its bar. 'Solver-ready'
@@ -641,6 +656,8 @@ def _render_outcome(fr: FinalResult) -> str:
                      "Required deliverable: prepared")
         if fr.reviewer_verdict is ReviewVerdict.passed:
             lines.append("Review: passed")
+        elif fr.review_execution is ReviewExecution.failed_to_complete:
+            lines.append("Review: did not finish (see above)")
         if fr.optional_warnings:
             lines.append("Note: an optional preview could not be prepared, but your mesh is ready.")
         return "\n".join(lines)
@@ -762,6 +779,8 @@ class RunOutcome:
     is_dispute: bool = False
     axis_findings: tuple = ()
     quality: Any = None
+    #: reviews started again on the same validated mesh (pipeline/graph.node_review_retry)
+    review_reruns: int = 0
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
@@ -780,6 +799,7 @@ class RunOutcome:
                    engine=str(state.get("engine", "") or ""),
                    flow_topology=str(state.get("flow_topology", "") or ""),
                    is_dispute=bool(state.get("user_dispute") or {}),
+                   review_reruns=int(state.get("review_rerun_count", 0) or 0),
                    axis_findings=tuple(state.get("reviewer_axis_findings") or ()),
                    quality=dict((manifest.get("quality") or {})
                                 if isinstance(manifest, Mapping) else {}))
@@ -859,6 +879,55 @@ def layer_coverage_caveat(outcome: RunOutcome) -> dict | None:
     }
 
 
+#: The caveat kind a delivery carries when its review did not finish.
+REVIEW_INCONCLUSIVE = "review_inconclusive"
+
+#: What a review-inconclusive delivery closes with - true by construction, because the caveat is
+#: granted only on a mesh the executor validated with no gate failed.
+REVIEW_INCONCLUSIVE_CLOSING = (
+    "Every automatic check on the mesh passed - it is sound, its cells clear this engine's "
+    "quality bars and every boundary you named is there with the right type - so it is "
+    "delivered. Look it over yourself before you rely on it, or say \"run it again\" for a new "
+    "run.")
+
+
+def _review_caveat_line(c: Mapping) -> str:
+    from meshpipeline.contracts.failure_cause import review_stopped_reason
+    n = c.get("reruns")
+    n = n if isinstance(n, int) and not isinstance(n, bool) else 0
+    again = ({1: " (it was started again once)", 2: " (it was started again twice)"}.get(
+        n, f" (it was started again {n} times)") if n > 0 else "")
+    return (f"  - the final visual review did not finish{again}: "
+            f"{review_stopped_reason(c.get('marker'))}. So no reviewer has looked at this mesh "
+            "against your brief. That is on our side, not your geometry's.")
+
+
+def review_inconclusive_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for delivering a mesh whose REVIEW did not finish - used by
+    derive_terminal_status to grant `succeeded` and by terminal assembly to author the caveat, so
+    the two can never disagree.
+
+    A review is the soft assurance layer over hard checks that already passed. When it stops
+    without a verdict (it stalled, ran out of time, its renderer or model provider dropped out)
+    and the reruns (pipeline/graph.node_review_retry) could not get one either, the mesh is not
+    at fault: job 53bbce4b's 2.49M-cell Windsor mesh passed every gate and a trial solve and was
+    reported "something went wrong on our side". A good mesh is never an internal failure: it is
+    delivered, and the delivery says plainly that no review concluded and why.
+
+    Refused (the run stays a failure, told as review_incomplete) unless every fact holds: the
+    non-verdict is the REVIEWER's own marker; the executor validated THIS mesh; no gate failed;
+    and it is not a dispute - there the engineer's own flags need a judgement nobody made."""
+    raw = str(outcome.api_failure or "").strip()
+    if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
+        raw = raw[len("<<API_FAILURE:"):-2].strip()
+    if not raw.startswith("reviewer_"):
+        return None
+    if not outcome.executor_success or outcome.failed_gate or outcome.is_dispute:
+        return None
+    return {"kind": REVIEW_INCONCLUSIVE, "marker": raw,
+            "reruns": max(0, int(outcome.review_reruns or 0))}
+
+
 @dataclass(frozen=True)
 class StatusDecision:
 
@@ -872,6 +941,18 @@ class StatusDecision:
 
 def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusDecision:
     from meshpipeline.persistence.models import FailedReason, JobStatus
+
+    if outcome.api_failure and review_inconclusive_caveat(outcome) is not None:
+        # DELIVERED, REVIEW INCONCLUSIVE: the mesh passed every hard check and only the review
+        # could not conclude (see the predicate). Still counted, so operators see how often.
+        jlog.warning("terminal status: delivered with the review inconclusive (%s) - the mesh "
+                     "passed every gate (job_id=%s)", outcome.api_failure, job_id)
+        try:
+            from meshpipeline.metrics import inc as _minc
+            _minc("review_inconclusive_delivery", "pipeline")
+        except Exception:                      # noqa: BLE001 - metrics never change a verdict
+            pass
+        return StatusDecision(JobStatus.succeeded, None)
 
     if outcome.api_failure:
         # SYSTEM failure (a dependency could not do its job). Classify it for the precise DB reason
