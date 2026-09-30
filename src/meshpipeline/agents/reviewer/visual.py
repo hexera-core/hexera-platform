@@ -238,8 +238,11 @@ async def node_reviewer(state: PipelineState) -> dict:
                 step_basename=inputs.step_basename,
                 patch_names=list((manifest.get("patches") or {}).keys()),
                 # what the viewer can actually draw - the manifest also names boundaries (the far
-                # field, a ground plane) that no review geometry reaches
-                renderable_patches=list(getattr(opening, "patch_names", None) or ()),
+                # field, a ground plane) that no review geometry reaches. The session's ENTITIES,
+                # the same set toggle_patch and go_to_coordinates screen against: an engine whose
+                # targets are groups or openings (gmsh, vmtk) has no PATCH targets at all, and an
+                # empty set would read as "nothing here can be shown". None when unknown.
+                renderable_patches=await _viewer_entities(runtime),
                 patch_colour_legend=opening.patch_colour_legend,
                 patch_views=opening.patch_views,
                 mesh_units=inputs.mesh_units,
@@ -302,6 +305,18 @@ def _reviewer_return(**fields) -> dict:
             "truth, approved intent, triage, artifact readiness and final_result belong to other "
             "owners.")
     return dict(fields)
+
+
+async def _viewer_entities(runtime) -> list[str] | None:
+    """The names the viewer can toggle and frame, or None when the runtime does not say."""
+    caps = getattr(runtime, "capabilities", None)
+    if caps is None:
+        return None
+    try:
+        return list((await caps()).entities) or None
+    except Exception:  # noqa: BLE001 - a prompt hint must never cost the review
+        logger.warning("Reviewer: viewer entities unavailable for the prompt", exc_info=True)
+        return None
 
 
 def _findings_dump(plan, ledger, outcome: UnifiedReviewOutcome, attempt: int) -> list[dict]:

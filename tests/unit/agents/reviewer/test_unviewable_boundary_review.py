@@ -199,6 +199,10 @@ def test_the_prompt_is_unchanged_when_every_patch_is_viewable_or_nothing_is_know
     from meshpipeline.agents.reviewer.context import patches_line
     assert patches_line(["inlet", "wall"], ["inlet", "wall"]) == "Patches: inlet, wall"
     assert patches_line(["inlet", "wall"], None) == "Patches: inlet, wall"
+    # an engine whose viewer names no patch at all (gmsh groups, vmtk openings) is not told
+    # that nothing can be shown - that would forbid the inspections a verdict needs
+    assert patches_line(["inlet", "wall"], []) == "Patches: inlet, wall"
+    assert patches_line(["inlet", "wall"], ["group_1", "group_2"]) == "Patches: inlet, wall"
 
 
 def test_a_missing_patch_inspection_names_the_tool_that_makes_one():

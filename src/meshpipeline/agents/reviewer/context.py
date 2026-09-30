@@ -62,11 +62,15 @@ def patches_line(patch_names: list[str], renderable: list[str] | None) -> str:
     the review ended without a verdict on a mesh that had passed every gate. When the renderable
     set is not known (None) the line is the plain list, as before."""
     line = f"Patches: {', '.join(patch_names)}"
-    if renderable is None:
+    if not renderable:
+        # unknown, or an engine whose viewer names nothing: say nothing rather than "none can be
+        # shown", which would forbid the very inspections a verdict needs
         return line
-    shown = [p for p in patch_names if p in renderable] or list(renderable)
+    shown = [p for p in patch_names if p in renderable]
     hidden = [p for p in patch_names if p not in renderable]
-    if not hidden:
+    if not shown or not hidden:
+        # nothing hidden: nothing to say. Nothing shown: the viewer names its targets another way
+        # (gmsh groups, vmtk openings) - a claim that none of these can be drawn would be false
         return line
     return (f"{line}. The viewer can show: {', '.join(shown) or 'none'}. "
             f"{', '.join(hidden)} carr{'ies' if len(hidden) == 1 else 'y'} no review geometry - "

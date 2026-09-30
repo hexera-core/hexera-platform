@@ -93,12 +93,24 @@ def review_can_rerun(state: PipelineState) -> bool:
         return False
     if int(state.get("review_rerun_count", 0) or 0) >= rcfg.REVIEWER_RERUN_MAX:
         return False
+    transient = classify_api_failure(marker).is_retryable
+    if not (marker in RERUNNABLE_MARKERS or transient):
+        return False
     deadline = state.get("pipeline_deadline_epoch")
     if deadline:
-        from meshpipeline.application.pipeline_budget import is_exhausted
-        if is_exhausted(float(deadline)):
+        # Only when a review still fits: the backoff (a transient failure waits it out first)
+        # plus a window a review can actually use. Otherwise the job would sleep through the
+        # rest of its time and start a review that runs out at once.
+        from meshpipeline.application.pipeline_budget import remaining_seconds
+        wait = rcfg.REVIEWER_RERUN_BACKOFF_S if transient else 0
+        if remaining_seconds(float(deadline)) <= wait + REVIEW_RERUN_MIN_WINDOW_S:
             return False
-    return marker in RERUNNABLE_MARKERS or classify_api_failure(marker).is_retryable
+    return True
+
+
+#: The least time a rerun review is started with. A review that opens its renderer and makes a
+#: few model rounds needs minutes, not seconds; below this the run's own timeout is the truthful end.
+REVIEW_RERUN_MIN_WINDOW_S = 300
 
 
 async def node_review_retry(state: PipelineState) -> dict:
