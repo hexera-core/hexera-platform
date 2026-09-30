@@ -453,9 +453,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     if renamed:
         message = f"{message} {renamed}"             # never silent: the intake tells the user
     if reference_note:
-        logger.info("geometry check: the reference length followed the confirmed flow axis - session_id=%s",
-                    session_id)
-        message = f"{message} {reference_note}"
+        message = f"{message} {reference_note}"      # said in the declaration, never silent
     patches = patches_from(body)
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has
