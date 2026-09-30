@@ -110,12 +110,17 @@ export function rowHtml(o, p) {
     ? `<input class="gc-num gc-dia" type="number" min="0" step="any" placeholder="${unitOf(p)} across" aria-label="diameter of opening ${id}">`
     : o.shape === "circle" ? `${esc(shown(o.diameter_mm, p))} ${sym(p)} across` : `${esc(shown(o.width_mm, p))} x ${esc(shown(o.height_mm, p))} ${sym(p)}`;
   const at = (o.centroid_mm || []).map((v) => shown(v, p)).join(", ");
-  return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}">${id}</td>
+  return `<tr data-id="${id}"${o.added ? ' data-added="1"' : ""}><td class="gc-n" title="opening ${id}"><span class="gc-badge">${id}</span></td>
       <td><input class="gc-name" value="${attr(o.name || "")}" maxlength="40" aria-label="name of opening ${id}"></td>
       <td>${sel("gc-role", ROLES, o.role)}</td>
       <td class="gc-dim">${size}</td><td class="gc-dim gc-pos">(${esc(at)}) ${sym(p)}</td>
       <td class="gc-conf" title="how sure the check is">${o.added ? "you" : Math.round((o.confidence || 0) * 100) + "%"}</td>
       <td class="gc-del"><button class="gc-x" type="button" title="remove this opening" aria-label="remove opening ${id}">×</button></td></tr>`;
+}
+
+/** The openings table's header row - one copy, for the form and for the first opening added. */
+export function tableHead() {
+  return `<thead><tr><th>#</th><th>Name</th><th>Role</th><th>Size</th><th class="gc-pos">Position</th><th>Sure</th><th></th></tr></thead>`;
 }
 
 /** The form for one proposal: the kind and flow selects, the openings table, the notes, and the
@@ -138,7 +143,7 @@ export function formHtml(p) {
     <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p))}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
-    ${rows ? `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+    ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`
            : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
     <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><span class="gc-tools-hint">then click the part where it is</span></div>
     </div>

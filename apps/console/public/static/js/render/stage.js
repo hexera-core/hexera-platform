@@ -45,13 +45,13 @@ export const Stage = {
   // it - the picker offered it, the server accepted it, and only this sentence disagreed. The
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
-  mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><span id="empty-lead">Upload geometry to begin.</span><br><span id="empty-formats"></span>Hexera will guide you through the simulation setup.</div></div></div>';
+  mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
     this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
   setSupportedCopy(text){const el=document.getElementById('empty-formats');
-    if(el)el.innerHTML=text?String(text).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'<br>':'';},
+    if(el)el.innerHTML=text?String(text).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])):'';},
   col(){return document.getElementById('cc');},
   scrollBottom(){const s=document.querySelector('#stage .scroll');if(s)s.scrollTop=s.scrollHeight;},
   clearEmpty(){document.getElementById('empty')?.remove();},

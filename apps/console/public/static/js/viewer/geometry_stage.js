@@ -18,7 +18,8 @@
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
 import { applyFlow, bindUnit, followSuggestion, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml,
-  shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+  shown, tableHead, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
 function loadVtk() {
@@ -79,9 +80,9 @@ function takeOver(box, anchorEl) {
 
 function leadHtml(p) {
   const size = (p.size_mm || []).map((v) => shown(v, p)).join(" x ");
-  return `<b>${esc(p.part || "the part")}</b>${size ? ` · ${esc(size)} <span class="gc-u">${unitOf(p)}</span>` : ""}<br>
-    Turn the part and click a sticker to select its row. Fix any name or role, add or remove a
-    sticker, then proceed: the questions that follow skip everything confirmed here.`;
+  return `<div class="gc-part"><b>${esc(p.part || "the part")}</b>${size ? `<span class="gc-size">${esc(size)} <span class="gc-u">${unitOf(p)}</span></span>` : ""}</div>
+    <p>Turn the part and click a sticker to select its row. Fix any name or role, add or remove a
+    sticker, then proceed: the questions that follow skip everything confirmed here.</p>`;
 }
 
 /** Open the check as a stage. `d` is the check the API served (its `proposal` is what is shown;
@@ -97,13 +98,14 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
   box.innerHTML = `<div class="v-bar gc-panel">
-      <div class="v-row"><b>Geometry check</b><span class="v-meta">what Hexera sees</span></div>
+      <div class="v-row v-titlerow"><b class="v-title">Geometry check</b><span class="v-meta">what Hexera sees</span></div>
       <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span><span class="gc-banner-act"></span></div>
       <div class="gc-lead">${leadHtml(p)}</div>
       <div class="gc-form">${formHtml(p)}</div>
     </div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
       <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
         ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
       </svg>
@@ -282,6 +284,7 @@ function initScene(sessionId, box, surf, p) {
     apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
   grw.resize();
   host.addEventListener("contextmenu", (e) => e.preventDefault());
+  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
   /* THE LIGHTS: a key from the upper left, a fill from the right and a faint rim from behind,
      all riding with the camera, so a turned part is always lit the way a CAD viewer lights it */
@@ -350,15 +353,25 @@ function initScene(sessionId, box, surf, p) {
     const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
     if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
     rw.render(); }
-  /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part */
+  /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part, with the axis the
+     user says is up pointing up - the one they set for this check, else the one the check
+     proposes (p.up_axis), else +Z */
+  const upSel = box.querySelector("#gs-up-" + sessionId);
+  let upAxis = (upSel && upSel.value) || "+z";
   function iso() {
     cam.setPosition(centre[0] - diag, centre[1] - diag, centre[2] + 0.8 * diag);
     cam.setFocalPoint(...centre); cam.setViewUp(0, 0, 1);
+    orient(cam, upAxis, [-1, -1, 0.8]);
     fit();
   }
   const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
   ro.observe(host);
-  host.addEventListener("pointerdown", () => { touched = true; }, true);
+  host.addEventListener("pointerdown", (e) => { if (!(e.target.closest && e.target.closest(".v-tools"))) touched = true; }, true);
+  const tools = box.querySelector(".v-tools");
+  shield(tools);
+  if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
+  const fitBtn = box.querySelector("#gs-fit-" + sessionId);
+  if (fitBtn) fitBtn.onclick = () => iso();
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -408,7 +421,9 @@ function initScene(sessionId, box, surf, p) {
     const { c, n } = pn.o;
     cam.setFocalPoint(c[0], c[1], c[2]);
     cam.setPosition(c[0] + n[0] * 0.9 * diag, c[1] + n[1] * 0.9 * diag, c[2] + n[2] * 0.9 * diag);
-    cam.setViewUp(...(Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0]));
+    // the chosen up stays up, unless the mouth faces straight along it
+    const u = upVector(upAxis), along = Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]);
+    cam.setViewUp(...(along < 0.9 ? u : (Math.abs(u[2]) > 0.5 ? [0, 1, 0] : [0, 0, 1])));
     ren.resetCameraClippingRange(); cam.zoom(1.6); rw.render();
     touched = true;
     if (sel !== id) select(id);
@@ -489,7 +504,7 @@ function initScene(sessionId, box, surf, p) {
     else {
       // the first opening on a part that had none: the table takes the "no openings" note's
       // place, and the Add button beside it stays
-      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o, p)}</tbody></table>`;
+      const table = `<table class="gc-table">${tableHead()}<tbody>${rowHtml(o, p)}</tbody></table>`;
       const note = form.querySelector(".gc-int .gc-note");
       if (note) note.outerHTML = table; else form.querySelector(".gc-int").insertAdjacentHTML("afterbegin", table);
     }
@@ -504,7 +519,7 @@ function initScene(sessionId, box, surf, p) {
   host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
     if (!addMode || !downXY) return;
-    if (e.target && e.target.classList && e.target.classList.contains("gc-pin")) return;
+    if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
     pick(e, ({ c, n }) => { add(c, n); setAddMode(false); });
   }, true);
@@ -638,6 +653,7 @@ function initScene(sessionId, box, surf, p) {
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
     camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
+    upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
     render: () => rw.render(),
   };
   return {
