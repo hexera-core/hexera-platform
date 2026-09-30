@@ -812,8 +812,8 @@ def _block_propose_first() -> str:
         "correct one value, not write everything out. So every question you ask comes with the "
         "answer you would give yourself, read from what is already known - the file, the geometry "
         "check, the stated purpose, earlier answers, the engine's own defaults - and ends by asking "
-        "whether it is right. For example: 'Fluid and conditions? I would go with air at 15 C and "
-        "sea-level pressure, 10 m/s, k-omega SST with wall functions at y+ 30 to 300 - ok, or tell "
+        "whether it is right. For example: 'Fluid and conditions? I would go with air at 15 °C and "
+        "sea-level pressure, 10 m/s, k-ω SST with wall functions at y⁺ 30–300 - ok, or tell "
         "me what differs.' A proposal is NOT a recorded value: record only what the user states or "
         "confirms; an 'ok' confirms the proposal exactly as you stated it, and you then carry those "
         "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
@@ -827,7 +827,7 @@ def _block_propose_first() -> str:
         "something else, take your own proposal, note it in request_txt as an assumption the user "
         "did not state, and move on. Never ask the same question twice, in any wording, and never "
         "re-ask what the user has already answered - the application watches for a repeated "
-        "question and sends it back to you to move on. Near-wall treatment (the y+ band, the "
+        "question and sends it back to you to move on. Near-wall treatment (the y⁺ band, the "
         "first-layer thickness, the layer count), patch names and refinement zones are courtesy "
         "questions: one question, one proposal, and never a reason to hold a submission. The same "
         "holds after an admission refusal: whatever you must ask the user carries your proposed "
@@ -843,6 +843,24 @@ def _block_propose_first() -> str:
     )
 
 
+def _block_plain_text() -> str:
+    # The chat has no math renderer, and must not pull one in. A reply the model wrote in LaTeX
+    # reached a demo as \(y^+=30\text{-}300\). The application also makes any markup that still
+    # slips through plain (contracts/engineering_text.py), but that is the safety net, not the rule.
+    return (
+        "\n\nHOW YOUR WORDS ARE SHOWN - PLAIN TEXT, NEVER MATH MARKUP:\n"
+        "Your reply is shown as plain text with light markdown (**bold**, lists, `code`). The chat "
+        "has no math renderer, so LaTeX reaches the user as raw symbols: never write it. No "
+        "\\( \\) or \\[ \\] or $ $ delimiters, no ^{...} or _{...}, no \\text{...}, \\approx, "
+        "\\times, \\omega or any other backslash command. Write numbers, units and symbols the way "
+        "they are printed, in Unicode: 10⁵ and 2.5 × 10⁶, m², s⁻¹, 15 °C, 210 GPa, Δp, μm, ≈, ≤, "
+        "≥, ±; for a flow case y⁺ = 30–300 or y⁺ ≈ 1, and k-ω SST or k-ε. Put a space between a "
+        "number and its unit (40 m/s, 32 mm) and an en dash in a range (30–300). Backticks are "
+        "ONLY for patch names and file names (`inlet_1`, `wing.step`) - never around numbers, "
+        "units or symbols."
+    )
+
+
 INTAKE_PROMPT_BLOCKS: tuple = (
     ("quality_criteria", "evidence-backed production-grade bars the intake can cite",
      _block_quality_criteria),
@@ -852,6 +870,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_geometry_check),
     ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; engine and unit never proposed",
      _block_propose_first),
+    ("plain_text", "replies are plain text: no LaTeX or math markup; Unicode for superscripts, symbols and units; backticks only for patch and file names",
+     _block_plain_text),
 )
 
 

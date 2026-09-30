@@ -12,6 +12,7 @@ from meshpipeline.agents.intake.diagnostics import IntakeRunExtension
 from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of
 from meshpipeline.agents.loop.accounting import ToolInvocation
 from meshpipeline.agents.loop.driver import RoundDecision, ToolOutcome
+from meshpipeline.contracts import engineering_text
 from meshpipeline.contracts.agent_loop import (
     AgentRole,
     LoopExit,
@@ -42,7 +43,10 @@ REPEAT_THRESHOLD = 0.6
 
 
 def _words(text: str) -> frozenset[str]:
-    return frozenset(w for w in re.sub(r"[^0-9a-z+]+", " ", str(text or "").casefold()).split()
+    # Both sides in one spelling: a question stored before replies were made plain still carries
+    # its LaTeX, and \(y^+\) must count as the same word as y⁺.
+    plain = engineering_text.plain(str(text or ""))
+    return frozenset(w for w in re.sub(r"[^0-9a-z+]+", " ", plain.casefold()).split()
                      if w not in _STOP)
 
 
@@ -153,7 +157,10 @@ class IntakeLoopPolicy:
         return ToolOutcome(content=terminal, accepted=True, terminal=True, payload=terminal)
 
     def note_round(self, round_result: Any) -> None:
-        self.plaintext_text = (round_result.assistant_text or "").strip()
+        # The model's words enter here and nowhere else, so this is where its math markup becomes
+        # plain engineering text: \(y^+=30\text{–}300\) reaches the chat, the session and the
+        # repeat check above as "y⁺ = 30–300". Backticked patch and file names stay verbatim.
+        self.plaintext_text = engineering_text.plain((round_result.assistant_text or "").strip())
         self.finish_reason = round_result.finish_reason or "unknown"
         self.input_tokens = round_result.input_tokens
         self.output_tokens = round_result.output_tokens

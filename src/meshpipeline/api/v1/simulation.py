@@ -23,6 +23,7 @@ from meshpipeline.api.schemas.job import (
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application import spend_gate
 from meshpipeline.application.job_service import JobService
+from meshpipeline.contracts import engineering_text
 from meshpipeline.persistence.models import ArtifactType
 from meshpipeline.persistence.session import get_db
 
@@ -268,7 +269,8 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             artifacts=artifacts_out,
             mesh_available=bool(_vdata.get("mesh_available")),
             reviewer_verdict=_review.get("verdict"),
-            reviewer_reasoning=_review.get("reasoning", ""),
+            # the reviewer model's own words, shown on the result card: its math markup made plain
+            reviewer_reasoning=engineering_text.plain(_review.get("reasoning", "")),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,

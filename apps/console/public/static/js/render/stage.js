@@ -15,6 +15,7 @@
  * stage <-> viewer cycle.
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
+import { prettyText } from "../core/engineering_text.js";
 import { laneLabel, reasoningHeader } from "../core/events.js";
 import { applyFlow, bindUnit, displayText, followSuggestion, followUnit, formHtml, markConfirmed, readForm, shown,
   unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
@@ -58,9 +59,12 @@ export const Stage = {
   // one that took the request also delivers the result, so the default names it
   // rather than leaving a generic "Assistant" to sign off the run. `who` only
   // overrides that when some other party is speaking.
+  // Assistant text is shown as an engineer prints it (prettyText): y⁺ = 30–300 rather than the
+  // \(y^+=30\text{–}300\) an older stored reply may carry, and 40 m/s never split across a line.
+  // The user's own words are shown exactly as they typed them.
   chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
-    else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(displayText(text))}</div>`;
+    else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
     this.col().appendChild(g);this.scrollBottom();},
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
