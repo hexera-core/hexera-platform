@@ -3909,6 +3909,21 @@
   ]
  },
  {
+  "context": "render/scout_snapshots.py::render_upright_sheet::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)",
+  "path": "render/scout_snapshots.py",
+  "qualname": "render_upright_sheet",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)"
+  ]
+ },
+ {
   "context": "runtime/observability/sentry.py::setup_sentry::error#1|NotAPublisher|not-a-publisher|",
   "path": "runtime/observability/sentry.py",
   "qualname": "setup_sentry",

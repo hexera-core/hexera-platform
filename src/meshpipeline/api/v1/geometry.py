@@ -59,6 +59,10 @@ class ConfirmIn(BaseModel):
     reference_length_mm: float | None = Field(default=None, gt=0)
     extents: dict[str, float] | None = None
     grounded: bool = False
+    #: WHICH WAY IS UP: the axis of the part that points to the sky, as the stage proposed it or
+    #: the user turned it. It turns the views of the part and of its mesh, never the file; left
+    #: out, the part is shown as drawn (+z).
+    up_axis: Literal["+z", "-z", "+y", "-y", "+x", "-x"] | None = None
     #: THE SCALE THE NUMBERS WERE READ UNDER: metres per unit of the file, as the scout assumed
     #: it when the form was drawn (served on the proposal, sent back with it). A triangle file's
     #: numbers are read as millimetres until the unit is confirmed; when the confirmed unit
@@ -229,6 +233,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                  "url": store.create_download_url(object_key=s["object_key"], expires_in=_PICTURE_URL_TTL)}
                 for s in payload.get("snapshots", [])]
         payload.pop("snapshots", None)
+        payload.pop("upright_sheet", None)  # the six-way picture is the model's question, not the card's
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
         payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
     confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
@@ -425,6 +430,11 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     in_force = corrected or (str(interpretation["unit"]) if interpretation else None)
     if in_force and body.unit != in_force:
         body = body.model_copy(update={"unit": in_force})
+    if body.up_axis is None:
+        # a form that did not say which way is up (a console from before the Up control) confirms
+        # what the check proposed, so the declaration and the views go by the same axis
+        from meshpipeline.application.geometry_check import stored_up_axis
+        body = body.model_copy(update={"up_axis": stored_up_axis(str(session_id), confirmed=False)})
     message = confirmation_message(body)
     if renamed:
         message = f"{message} {renamed}"             # never silent: the intake tells the user

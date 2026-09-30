@@ -241,6 +241,10 @@ export function readForm(root, p) {
                  // in, for the server to record the unit and re-read every length in it
                  scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m), unit: unitOf(p) };
   if (flow === "external") Object.assign(body, readExternal(root, p));
+  // WHICH WAY IS UP: the stage's Up control where it has one, else what the check proposed
+  const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
+  const up = (upSel && upSel.value) || p.up_axis;
+  if (up) body.up_axis = up;
   return body;
 }
 
