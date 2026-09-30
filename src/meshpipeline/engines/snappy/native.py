@@ -201,7 +201,11 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                     # flow_gates.resolution_floor holds 12 at the narrowest wall
                     try:
                         from meshpipeline.engines.passage import passage_of_polymesh
-                        if (ws / "flow_topology").read_text().strip().lower() == "internal":
+                        from meshpipeline.engines.workspace_facts import read_flow_topology
+                        # the fact the driver ships in the payload (drivers.REMOTE_WORKSPACE_FACTS);
+                        # read through the one reader, so a workspace without it is "not internal"
+                        # rather than a traceback after every mesh
+                        if read_flow_topology(ws) == "internal":
                             q.update(passage_of_polymesh(ws))
                     except Exception:  # noqa: BLE001 - evidence, not a verdict
                         logger.warning("passage measure after meshing failed; omitted",

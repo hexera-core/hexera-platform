@@ -507,6 +507,10 @@ INVENTORY: list[Group] = [
                help="replays of a builder attempt killed by a TRANSIENT system failure; 0 disables"),
         EnvVar("BUILDER_INFRA_RETRY_BACKOFF_S", "90", kind="int",
                help="wait before an infra replay - long enough to outlive a provider brownout"),
+        EnvVar("REVIEWER_RERUN_MAX", "2", kind="int",
+               help="reviews of an already-validated mesh started again after one ended without a verdict (stalled, out of rounds, renderer or provider down); nothing is rebuilt; per job; 0 disables"),
+        EnvVar("REVIEWER_RERUN_BACKOFF_S", "90", kind="int",
+               help="wait before a review rerun after a TRANSIENT provider or dependency failure; a stalled review starts again at once"),
     ]),
 
     Group("Web search sizing", vars=[

@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (234 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (236 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -621,6 +621,8 @@ Every supported setting (234 entries). `template` settings are the ones `.env.ex
 | `DEEPINFRA_WRITE_TIMEOUT` | template | app |  |
 | `MAX_BUILDER_RETRIES` | template | app |  |
 | `MAX_SNAPPY_ATTEMPTS` | template | app |  |
+| `REVIEWER_RERUN_BACKOFF_S` | template | app |  |
+| `REVIEWER_RERUN_MAX` | template | app |  |
 | `TAVILY_API_KEY` | template | app | yes |
 | `WEB_SEARCH_MAX_RESULTS` | template | app |  |
 | `WEB_SEARCH_TIMEOUT` | template | app |  |

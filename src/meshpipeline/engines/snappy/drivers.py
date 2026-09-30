@@ -141,7 +141,18 @@ def _native_payload_members(workspace) -> list[str]:
     members = ["system"]
     members += sorted(p.relative_to(ws).as_posix()
                       for p in (ws / "constant" / "triSurface").glob("*.stl"))
+    # THE FACTS THE REMOTE READS. native.py measures the passage beside the mesh when the
+    # workspace says the flow is internal - and it reads that from the `flow_topology` file.
+    # Left out of this list, the file never reached the mesher: every Cloud Run execution logged
+    # a FileNotFoundError traceback after meshing, and no internal-flow snappy mesh built there
+    # was ever measured, so the resolution floor that reads the measure judged nothing.
+    members += [f for f in REMOTE_WORKSPACE_FACTS if (ws / f).is_file()]
     return members
+
+
+#: Workspace fact files the REMOTE side of a native snappy run reads (engines/snappy/native.py).
+#: Each must travel in the submission payload, or the remote reads a workspace without it.
+REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology",)
 
 
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,

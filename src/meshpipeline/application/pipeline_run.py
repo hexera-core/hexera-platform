@@ -840,6 +840,9 @@ async def _run_async(req: JobRequest) -> dict:
         # executor caveat branch, the classifier near-miss branch, the reviewer's
         # adjudicated-deviations block) is never exposed to a layer caveat.
         _layer_caveat = layer_coverage_caveat(_run_outcome)
+        # and the review-inconclusive caveat, from the predicate that grants its delivery
+        from meshpipeline.application.final_result import review_inconclusive_caveat
+        _review_caveat = review_inconclusive_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -962,6 +965,7 @@ async def _run_async(req: JobRequest) -> dict:
                 failure_cause=str(final_state.get("executor_failure_cause", "") or ""),
                 failure_facts=dict(final_state.get("executor_failure_facts") or {}),
                 api_failure=api_failure,
+                review_reruns=int(final_state.get("review_rerun_count", 0) or 0),
                 attempts=int(final_state.get("retry_count", 0) or 0),
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_timed_out,
@@ -971,7 +975,8 @@ async def _run_async(req: JobRequest) -> dict:
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),
                 requirement_caveats=(list(final_state.get("requirement_caveats") or [])
-                                     + ([_layer_caveat] if _layer_caveat else [])),
+                                     + ([_layer_caveat] if _layer_caveat else [])
+                                     + ([_review_caveat] if _review_caveat else [])),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:
