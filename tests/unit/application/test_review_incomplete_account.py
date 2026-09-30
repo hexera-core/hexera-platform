@@ -153,6 +153,8 @@ def test_the_windsor_mesh_is_delivered_with_the_review_stated():
     assert msg.startswith("Delivered with a stated caveat:")
     assert "did not finish (it was started again twice)" in msg
     assert "stopped making progress" in msg and "on our side" in msg
+    # the reviewer did look - it is the verdict that was never reached
+    assert "no review verdict was reached" in msg
     assert "Every automatic check on the mesh passed" in msg
     assert "Review: did not finish" in msg and "Review: passed" not in msg
     assert _GENERIC not in msg

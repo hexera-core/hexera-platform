@@ -127,6 +127,13 @@ async def node_review_retry(state: PipelineState) -> dict:
     marker = str(state.get("api_failure") or "")
     rerun = int(state.get("review_rerun_count", 0) or 0) + 1
     wait = rcfg.REVIEWER_RERUN_BACKOFF_S if classify_api_failure(marker).is_retryable else 0
+    deadline = state.get("pipeline_deadline_epoch")
+    if deadline and wait > 0:
+        # never sleep into the window the rerun review needs (admission already checked it fits;
+        # this holds it if time passed between the route and here)
+        from meshpipeline.application.pipeline_budget import remaining_seconds
+        wait = int(max(0.0, min(float(wait), remaining_seconds(float(deadline))
+                                - REVIEW_RERUN_MIN_WINDOW_S)))
     logger.warning(
         "node_review_retry: review ended without a verdict ('%s') - rerun %d/%d on the same "
         "mesh after %ds - job_id=%s", marker, rerun, rcfg.REVIEWER_RERUN_MAX, wait, job_id)

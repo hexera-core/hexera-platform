@@ -898,8 +898,8 @@ def _review_caveat_line(c: Mapping) -> str:
     again = ({1: " (it was started again once)", 2: " (it was started again twice)"}.get(
         n, f" (it was started again {n} times)") if n > 0 else "")
     return (f"  - the final visual review did not finish{again}: "
-            f"{review_stopped_reason(c.get('marker'))}. So no reviewer has looked at this mesh "
-            "against your brief. That is on our side, not your geometry's.")
+            f"{review_stopped_reason(c.get('marker'))}. So no review verdict was reached on this "
+            "mesh against your brief. That is on our side, not your geometry's.")
 
 
 def review_inconclusive_caveat(outcome: RunOutcome) -> dict | None:

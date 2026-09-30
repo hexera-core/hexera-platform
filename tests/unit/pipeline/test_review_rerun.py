@@ -117,6 +117,19 @@ def test_a_stalled_review_starts_again_at_once_and_a_transient_one_waits():
         assert slept == [90]
 
 
+def test_the_wait_never_eats_the_window_the_rerun_needs():
+    slept: list[float] = []
+
+    async def _sleep(s):
+        slept.append(s)
+
+    with patch.object(rcfg, "REVIEWER_RERUN_BACKOFF_S", 90), patch("asyncio.sleep", _sleep):
+        left = G.REVIEW_RERUN_MIN_WINDOW_S + 30
+        asyncio.run(G.node_review_retry({**_VALIDATED, "api_failure": "reviewer_timeout",
+                                         "pipeline_deadline_epoch": time.time() + left}))
+    assert slept and slept[0] <= 30
+
+
 def test_the_graph_wires_the_rerun_back_to_the_reviewer():
     class _RecordingGraph:
         def __init__(self, *a, **k):
