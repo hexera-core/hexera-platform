@@ -239,14 +239,34 @@ def _quality(f: Mapping) -> tuple[str, str]:
             "example a finer mesh near sharp edges, or fewer boundary layers.")
 
 
+def _touch_phrase(m: Mapping, d: object) -> tuple[str, bool]:
+    """A box that touches the body, said plainly - and, when a symmetry plane is misplaced,
+    where it is and where it has to be. The flag says a symmetry plane is the cause."""
+    sp, sf, face = m.get("symmetry_patch"), m.get("symmetry_face"), m.get("face")
+    if not sp:
+        return f"the box touches the body on the {d} side", False
+    if m.get("crosses"):
+        return (f"the body crosses the symmetry plane '{sp}' on the {d} side, and a half model "
+                "has to lie wholly on one side of its cut"), True
+    if sf and sf == face:
+        return (f"the symmetry plane '{sp}' was put across the flow, on the {d} side, but a "
+                "half model is cut along the flow"), True
+    return (f"the box touches the body on the {d} side ({face}), but the symmetry plane "
+            f"'{sp}' is on the {sf} face - it has to be on the face the model was cut on"), True
+
+
 def _domain(f: Mapping) -> tuple[str, str]:
     bits: list[str] = []
+    misplaced = False
     for m in (f.get("misses") or []):
         if not isinstance(m, Mapping):
             continue
         d, req, meas = m.get("direction"), m.get("requested"), m.get("measured")
-        if isinstance(meas, (int, float)) and not isinstance(meas, bool) and meas <= 0:
-            bits.append(f"the box touches the body on the {d} side")
+        if m.get("symmetry_patch") or (isinstance(meas, (int, float))
+                                       and not isinstance(meas, bool) and meas <= 0):
+            phrase, sym = _touch_phrase(m, d)
+            bits.append(phrase)
+            misplaced = misplaced or sym
         elif isinstance(req, (int, float)) and isinstance(meas, (int, float)):
             bits.append(f"{d} is {float(meas):.3g} reference lengths where you asked for "
                         f"{float(req):g}")
@@ -254,6 +274,10 @@ def _domain(f: Mapping) -> tuple[str, str]:
             + (": " + "; ".join(bits) if bits else "") + ".")
     if f.get("before_meshing"):
         what += " We caught it before meshing, so no time was spent on a mesh."
+    if misplaced:
+        # running it again rebuilds the same box: the out is where the plane goes
+        return what, ("Tell me which face the model was cut on, so the symmetry plane goes "
+                      "there, or mesh the whole model without a symmetry plane.")
     return what, (f"You can run it again ({_RUN_AGAIN}), or change the far-field sizes you "
                   "asked for.")
 

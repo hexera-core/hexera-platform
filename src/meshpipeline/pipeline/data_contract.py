@@ -481,6 +481,9 @@ MANIFEST_KEYS: dict[str, str] = {
     "geometry.box_zmin":     "actual meshed extent",
     "geometry.box_zmax":     "actual meshed extent",
     "geometry.domain_box":   "REQUESTED far-field box - what the A1 extent gate measures",
+    "geometry.symmetry_faces": "the box faces that are symmetry planes, [{patch, axis, side}] "
+                               "(a half model's cut; a slab's two sweep ends) - they lie on "
+                               "the body by design, so the extent gate owes them no margin",
     "geometry.reference_length": "the ruler the extent gate divides by: the USER's stated "
                                  "reference length in metres, else the streamwise body extent",
     "geometry.reference_length_source": "user_stated | body_streamwise_extent - which of the "

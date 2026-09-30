@@ -200,9 +200,11 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
 
 
 def _domain_preflight(state, analysis: dict, dmin, dmax, *,
-                      grounded: bool) -> PreflightRefusal | None:
+                      grounded: bool, symmetry_faces: list | None = None
+                      ) -> PreflightRefusal | None:
     """The box about to be meshed, judged as the executor's typed extent gate will judge it -
-    same switch, same approved request and ruler, same strictness reading."""
+    same switch, same approved request and ruler, same strictness reading, and the same faces
+    that lie on the body by design (the floor, the symmetry planes the manifest will record)."""
     requested, ruler = state.get("requested_extents"), state.get("reference_length_m")
     if not (polcfg.DOMAIN_EXTENT_GATE_ENABLED and requested and ruler):
         return None                  # the typed gate judges nothing either: no request, no ruler
@@ -214,7 +216,7 @@ def _domain_preflight(state, analysis: dict, dmin, dmax, *,
         strict=bool(state.get("requirements_strict")),
         flow_axis=state.get("flow_axis"),
         body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
-        domain_min=dmin, domain_max=dmax, grounded=grounded)
+        domain_min=dmin, domain_max=dmax, grounded=grounded, symmetry_faces=symmetry_faces)
 
 
 async def _preflight_stopped(publish: ExecutionEventPublisher, workspace: Path,
@@ -307,7 +309,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         # every publication here is a certified user-facing message, and two ways of saying
         # "symmetry could not be placed" is one more than the reader needs.
         symmetry = (R.detect_slab_symmetry(analysis, _sym_names[0], _sym_names[1]) if _slab
-                    else R.detect_symmetry_plane(analysis, _sym_names[0]))
+                    else R.detect_symmetry_plane(analysis, _sym_names[0],
+                                                 flow_axis=state.get("flow_axis")))
         if symmetry is None:
             _refusal_op = "snappy:symmetry-unusable"
             _refusal = (
@@ -358,6 +361,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             op_id="snappy:symmetry-detected" if symmetry is not None else "snappy:ground-plane")
     # the patches blockMesh makes from the BOX, not the body: none of their faces is the body's
     _box_patches = _box_patch_names(state.get("intake_patches") or [])
+    # the box faces the symmetry claims - they lie on the body by design, so the extent gate owes
+    # them no margin: judged here before meshing, and recorded for the manifest after it
+    _sym_faces = R.symmetry_box_faces(symmetry)
     # the names the approved declaration gives the far field and the body's walls - the box and
     # the staged surface are written under exactly these (engines/declared_boundary.py)
     from meshpipeline.engines.declared_boundary import body_walls as _declared_body_walls
@@ -445,7 +451,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
             # exactly this prepared box, so a box it would block is known now. Re-plan instead of
             # meshing it (nothing is written yet, so the previous pass's files stay as they were).
-            _dom = _domain_preflight(state, analysis, dmin, dmax, grounded=bool(_ground))
+            _dom = _domain_preflight(state, analysis, dmin, dmax, grounded=bool(_ground),
+                                     symmetry_faces=_sym_faces)
             if _dom is not None:
                 raise PreflightStop(_dom)
             wall = _contract_wall_patch(workspace) or "body"
@@ -460,7 +467,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 wall_patch=wall, farfield_patch=_farfield, feature_angle=150,
                 reference_length_m=strategy.get("reference_length_m"),
                 region_labeler=LP.make_region_labeler(_policy, wall) if _policy else None,
-                body_walls=_body_walls or None)
+                body_walls=_body_walls or None, symmetry_faces=_sym_faces)
             _policy = LP.reconcile_policy(_policy, prep.get("surface_regions") or [], wall)
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")

@@ -132,7 +132,7 @@ _MF_DYNAMIC = {"patches", "patch_types", "patch_face_counts",
                "engine_params"}
 # Structures documented wholly in their own registry entry - not walked into.
 _MF_OPAQUE = {"quality_criteria.criteria", "geometry.domain_box",
-              "geometry.body_box", "validation.warnings"}
+              "geometry.body_box", "geometry.symmetry_faces", "validation.warnings"}
 
 
 def _walk_manifest(node, prefix: str, out: set) -> None:
