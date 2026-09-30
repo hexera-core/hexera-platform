@@ -42,11 +42,16 @@ _MIN_WORDS = 4
 REPEAT_THRESHOLD = 0.6
 
 
+#: What separates two words. A word keeps its superscript digits and signs and its Greek letters,
+#: so 10⁵ is not 10⁶, y⁺ is not y, and k-ω is not k-ε.
+_WORD_BREAK = re.compile(r"(?:[^\w+⁺⁻₊₋]|_)+")
+
+
 def _words(text: str) -> frozenset[str]:
     # Both sides in one spelling: a question stored before replies were made plain still carries
     # its LaTeX, and \(y^+\) must count as the same word as y⁺.
     plain = engineering_text.plain(str(text or ""))
-    return frozenset(w for w in re.sub(r"[^0-9a-z+]+", " ", plain.casefold()).split()
+    return frozenset(w for w in _WORD_BREAK.sub(" ", plain.casefold()).split()
                      if w not in _STOP)
 
 

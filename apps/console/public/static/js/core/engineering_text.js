@@ -72,6 +72,7 @@ const MATH_WRAPPERS = new Set([
 const FRACTIONS = new Set(["frac", "dfrac", "tfrac"]);
 const VULGAR = new Map(Object.entries({
   "1/2": "½", "1/3": "⅓", "2/3": "⅔", "1/4": "¼", "3/4": "¾", "1/5": "⅕", "1/6": "⅙", "1/8": "⅛"}));
+const ROOTS = new Map([["", "√"], ["2", "√"], ["3", "∛"], ["4", "∜"]]);
 const OPERATOR_NAMES = new Set([
   "sin", "cos", "tan", "sec", "csc", "cot", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
   "exp", "log", "ln", "lg", "max", "min", "sup", "inf", "lim", "det", "arg", "dim", "gcd"]);
@@ -113,7 +114,9 @@ const LETTER = /^[A-Za-z]/;
 const ALNUM = /^[A-Za-z0-9]/;
 
 const RELATION = /[ \t\n]*([=≈≃≅≡≤≥≠<>~≪≫∝→←⇒↔×])[ \t\n]*/g;
-const MATH_DASH = /([0-9]) ?([–-]) ?([0-9])/g;
+// an en dash, or a hyphen spaced on one side only, is a range; a hyphen spaced on both is a minus
+const MATH_EN_DASH = /([0-9]) ?– ?([0-9])/g;
+const MATH_LOPSIDED_HYPHEN = /([0-9])(?: -|- )([0-9])/g;
 const NUMBER_END = new RegExp("^[0-9" + SUPERSCRIPT_DIGITS + "]$");
 const SPACED_OPERATORS = new Set("+-−±");
 const DEGREE_UNIT = /°[ \t]+([CFK])(?![A-Za-z])/g;
@@ -192,7 +195,8 @@ function strip(s) {
 function math(body) {
   let t = render(body, true);
   t = t.replace(RELATION, " $1 ");
-  t = t.replace(MATH_DASH, "$1$2$3");
+  t = t.replace(MATH_EN_DASH, "$1–$2");
+  t = t.replace(MATH_LOPSIDED_HYPHEN, "$1-$2");
   t = t.replace(DEGREE_UNIT, "°$1");
   return strip(t.replace(SPACES, " "));
 }
@@ -304,11 +308,17 @@ function controlWord(src, word, j, isMath) {
     return [math(value[1]) + " " + math(unit[1]), unit[2]];
   }
   if (word === "sqrt") {
+    let root = "√";
     const k = skipWs(src, j);
-    if (k < src.length && src[k] === "[" && src.indexOf("]", k) !== -1) j = src.indexOf("]", k) + 1;
+    if (k < src.length && src[k] === "[" && src.indexOf("]", k) !== -1) {
+      const close = src.indexOf("]", k);
+      const index = math(src.slice(k + 1, close));      // \sqrt[3]{8} is ∛8, never √8
+      root = ROOTS.get(index) || raise(index) + "√";
+      j = close + 1;
+    }
     const a = arg(src, j);
     if (!a) return null;
-    return ["√" + operand(math(a[1])), a[2]];
+    return [root + operand(math(a[1])), a[2]];
   }
   if (ACCENTS.has(word)) {
     const a = arg(src, j);

@@ -75,3 +75,13 @@ def test_a_question_asked_in_latex_is_the_same_question_in_unicode():
     asked = "Wall treatment? I would use wall functions at \\(y^+ \\approx 30\\text{–}300\\) - ok?"
     again = "Wall treatment? I would use wall functions at y⁺ ≈ 30–300 - ok?"
     assert repeats_a_question(again, (asked,))
+
+
+def test_questions_that_differ_only_in_a_superscript_or_a_greek_letter_are_different_questions():
+    # Made plain, 10^5 and 10^6 are 10⁵ and 10⁶, and k-omega and k-epsilon are k-ω and k-ε. A word
+    # that lost its superscript or its Greek letter would make them one question, and the repeat
+    # guard would tell the model to move on instead of asking for the value the user must give.
+    assert not repeats_a_question("Reynolds number 10^6 - ok?", ("Reynolds number 10^5 - ok?",))
+    assert not repeats_a_question("Should I use k-epsilon with wall functions - ok?",
+                                  ("Should I use k-omega SST with wall functions - ok?",))
+    assert repeats_a_question("Reynolds number 10^6 - ok?", ("Reynolds number \\(10^6\\) - ok?",))

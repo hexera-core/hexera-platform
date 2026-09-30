@@ -104,6 +104,7 @@ _FRACTIONS: Final = frozenset(("frac", "dfrac", "tfrac"))
 _VULGAR: Final[dict[tuple[str, str], str]] = {
     ("1", "2"): "½", ("1", "3"): "⅓", ("2", "3"): "⅔", ("1", "4"): "¼", ("3", "4"): "¾",
     ("1", "5"): "⅕", ("1", "6"): "⅙", ("1", "8"): "⅛"}
+_ROOTS: Final[dict[str, str]] = {"": "√", "2": "√", "3": "∛", "4": "∜"}
 _OPERATOR_NAMES: Final = frozenset((
     "sin", "cos", "tan", "sec", "csc", "cot", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
     "exp", "log", "ln", "lg", "max", "min", "sup", "inf", "lim", "det", "arg", "dim", "gcd"))
@@ -153,8 +154,11 @@ _ALNUM = re.compile(r"[A-Za-z0-9]", re.A)
 
 # math: the spacing LaTeX gives relations and a multiplication cross
 _RELATION = re.compile(r"[ \t\n]*([=≈≃≅≡≤≥≠<>~≪≫∝→←⇒↔×])[ \t\n]*", re.A)
-#: In math a dash between two numbers is a range, however it was spaced: 30 \text{–} 300.
-_MATH_DASH = re.compile(r"([0-9]) ?([–-]) ?([0-9])", re.A)
+#: In math an en dash between two numbers is a range however it was spaced (30 \text{–} 300), and
+#: so is a hyphen spaced on one side only - the trace of \text{-} between spaced numbers. A hyphen
+#: spaced on BOTH sides is the writer's minus, a subtraction: 40 - 5 stays 40 - 5, never 40–5.
+_MATH_EN_DASH = re.compile(r"([0-9]) ?– ?([0-9])", re.A)
+_MATH_LOPSIDED_HYPHEN = re.compile(r"([0-9])(?: -|- )([0-9])", re.A)
 _NUMBER_END = re.compile(r"[0-9" + _SUPERSCRIPT_DIGITS + r"]", re.A)
 _SPACED_OPERATORS: Final = frozenset("+-−±")
 _DEGREE_UNIT = re.compile(r"°[ \t]+([CFK])(?![A-Za-z])", re.A)
@@ -217,7 +221,8 @@ def _free(s: str) -> str:
 def _math(body: str) -> str:
     t = _render(body, math=True)
     t = _RELATION.sub(r" \1 ", t)
-    t = _MATH_DASH.sub(r"\1\2\3", t)
+    t = _MATH_EN_DASH.sub(r"\1–\2", t)
+    t = _MATH_LOPSIDED_HYPHEN.sub(r"\1-\2", t)
     t = _DEGREE_UNIT.sub(r"°\1", t)
     return _SPACES.sub(" ", t).strip(_WS)
 
@@ -349,13 +354,17 @@ def _control_word(src: str, word: str, j: int, *, math: bool) -> tuple[str, int]
             return None
         return f"{_math(value[1])} {_math(unit[1])}", unit[2]
     if word == "sqrt":
+        root = "√"
         k = _skip_ws(src, j)
         if k < len(src) and src[k] == "[" and "]" in src[k:]:
-            j = src.index("]", k) + 1       # the root's index is dropped: √ reads as the root
+            close = src.index("]", k)
+            index = _math(src[k + 1:close])     # \sqrt[3]{8} is ∛8, \sqrt[n]{x} is ⁿ√x - never √
+            root = _ROOTS.get(index) or _raise(index) + "√"
+            j = close + 1
         a = _arg(src, j)
         if a is None:
             return None
-        return "√" + _operand(_math(a[1])), a[2]
+        return root + _operand(_math(a[1])), a[2]
     if word in _ACCENTS:
         a = _arg(src, j)
         if a is None:
