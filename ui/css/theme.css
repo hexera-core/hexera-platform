@@ -460,6 +460,13 @@ header{height:48px}
 .v-legend .ok{color:var(--ok)}
 .v-legend .x{position:absolute;top:6px;right:8px;color:var(--text-faint);padding:0}
 .v-legend .x:hover{color:var(--text)}
+/* the walker and the grey-out sit under the scale, full width, in the same instrument type */
+.v-legend .acts{display:flex;flex-direction:column;align-items:stretch;gap:5px;align-self:stretch;
+  margin-top:3px}
+.v-legend .acts .v-btn{display:flex;justify-content:space-between;gap:12px;padding:5px 9px;
+  border-radius:2px;font-family:var(--mono);font-size:10.5px;background:rgba(238,235,225,.04)}
+.v-legend .v-walk-n{color:var(--text-muted);font-variant-numeric:tabular-nums}
+.v-legend .v-only.on{border-color:var(--gold);color:var(--gold);background:var(--gold-soft)}
 
 /* the probe: a data card, not a bubble */
 .v-probe{background:rgba(6,4,2,.9);border:1px solid var(--border);border-radius:2px;
