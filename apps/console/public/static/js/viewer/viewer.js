@@ -931,9 +931,9 @@ function initViewer(job,surf,uiCfg){
       return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
 
     /* THE CELLS STAY IN VIEW. With the data on, the edges are drawn at every zoom, in a colour a
-       shade off the faces' own (_EDGE_HEAT), so at full view a dense mesh reads as a faint grid over
-       the colours rather than lines painted over them, and close up every cell is there to count.
-       Off, they come back exactly as the parts panel draws them. */
+       shade off the faces' own (_EDGE_HEAT_FAR at full view, _EDGE_HEAT_NEAR close up), so a dense
+       mesh reads as a faint grid over the colours rather than lines painted over them, and close up
+       every cell is there to count. Off, they come back exactly as the parts panel draws them. */
     function heatEdgeCol(){
       if(nearOnly)return _EDGE_HEAT_DIM;
       // how many screen pixels a typical face spans: ~3 at full view on a big mesh, 15+ close up
