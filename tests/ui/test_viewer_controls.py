@@ -87,3 +87,23 @@ def test_right_drag_pans_left_drag_turns_and_the_up_axis_is_the_users(live, tmp_
     assert chip["label"] == "Max non-orthogonality", chip
     assert chip["on"] == "Showing" and chip["pressed"] == "true" and chip["again"] == "Show on mesh", chip
     assert_clean(live, "the viewer's camera controls")
+
+
+def test_the_way_up_the_check_proposed_opens_the_viewer_until_the_user_chooses_another(live, tmp_path):
+    # the geometry check proposes which axis is up (surf.up_axis); with nothing stored for the job
+    # the viewer opens that way up, and a choice the user stored for the job still wins
+    live.evaluate("localStorage.removeItem('hexera.view-up.job.up-job'); "
+                  "localStorage.setItem('hexera.view-up.job.kept-job', '+y')")
+    proposed = _payload(tmp_path)
+    proposed["up_axis"] = "-z"
+    _open(live, proposed, "up-job")
+    _open(live, dict(proposed), "kept-job")
+    got = live.evaluate("""(() => ({
+      proposed: {sel: document.getElementById('v-up-up-job').value, up: window._vdbg['up-job'].up()},
+      kept: {sel: document.getElementById('v-up-kept-job').value, up: window._vdbg['kept-job'].up()}}))()""")
+    assert got["proposed"]["sel"] == "-z", got
+    assert got["proposed"]["up"] == pytest.approx([0, 0, -1], abs=1e-6), got
+    assert got["kept"]["sel"] == "+y", got
+    assert got["kept"]["up"] == pytest.approx([0, 1, 0], abs=1e-6), got
+    live.evaluate("localStorage.removeItem('hexera.view-up.job.kept-job')")
+    assert_clean(live, "the viewer opening the proposed way up")

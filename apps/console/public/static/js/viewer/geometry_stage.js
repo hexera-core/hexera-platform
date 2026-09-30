@@ -19,7 +19,7 @@ import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
 import { applyFlow, bindUnit, followSuggestion, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml,
   shown, tableHead, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindMouse, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
 function loadVtk() {
@@ -105,7 +105,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     </div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
-      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || "+z")}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
       <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
         ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
       </svg>
@@ -354,7 +354,8 @@ function initScene(sessionId, box, surf, p) {
     if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
     rw.render(); }
   /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part, with the axis the
-     user says is up pointing up (+Z unless they set another for this check) */
+     user says is up pointing up - the one they set for this check, else the one the check
+     proposes (p.up_axis), else +Z */
   const upSel = box.querySelector("#gs-up-" + sessionId);
   let upAxis = (upSel && upSel.value) || "+z";
   function iso() {

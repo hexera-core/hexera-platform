@@ -16,7 +16,7 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
-import { MOUSE_HINT, bindMouse, orient, saveUp, savedUp, shield, upSelectHtml } from "./view_controls.js";
+import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml } from "./view_controls.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -231,6 +231,8 @@ function initViewer(job,surf,uiCfg){
   const VIEW_DIR=[1,-1,0.7];
   const upSel=document.getElementById('v-up-'+job);
   cam.setFocalPoint(0,0,0);cam.setPosition(...VIEW_DIR);cam.setViewUp(0,0,1);
+  // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
+  if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
   orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
   ren.resetCamera();rw.render();
   const _bs=ren.computeVisiblePropBounds();
