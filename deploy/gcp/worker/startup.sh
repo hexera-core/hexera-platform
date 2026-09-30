@@ -100,11 +100,17 @@ WORKER_UID="$(docker run --rm --entrypoint id "${WORKER_IMAGE}" -u 2>/dev/null |
 mkdir -p /var/lib/hexera/workspaces /var/lib/hexera/data
 chown "${WORKER_UID}:${WORKER_UID}" /var/lib/hexera/workspaces /var/lib/hexera/data
 
+# BOTH CONTAINERS CARRY THE VM'S HOSTNAME, so their celery node names are celery@<vm> and
+# geometry@<vm> rather than two unrelated container ids. An idle simulation worker about to remove
+# its own VM (src/meshpipeline/runtime/idle_retire.py) asks geometry@<its own hostname> whether it
+# is running a check first - which only works if that name is predictable from inside the container.
+WORKER_HOSTNAME="$(hostname)"
+
 # --stop-timeout: when the VM is deleted, docker's own shutdown may stop this container before the
 # shutdown script does (shutdown.sh). Docker's default is 10 seconds and then SIGKILL; this gives
 # the running job the same 75 seconds to hand itself back to the queue whichever stop comes first.
 docker rm -f hexera-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-worker --restart always --stop-timeout 75 \
+docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname "${WORKER_HOSTNAME}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \
@@ -124,7 +130,7 @@ docker run -d --name hexera-worker --restart always --stop-timeout 75 \
 # capacity lever, not the fleet's size (create-queue-depth-publisher.sh publishes this queue's
 # depth beside the fleet's, and scales on the fleet's alone).
 docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 \
+docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 --hostname "${WORKER_HOSTNAME}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \

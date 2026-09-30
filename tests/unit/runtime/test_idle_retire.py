@@ -116,9 +116,14 @@ class _Tap:
     def __init__(self, events, holding=0):
         self.events, self.held, self.consuming = events, holding, True
         self.on_stop = None     # a job that lands while the drain is under way
+        self.neighbour = None   # the geometry worker on the same VM: None = nobody answered
 
     def holding(self):
         return self.held
+
+    def neighbour_holding(self):
+        self.events.append("ask_neighbour")
+        return self.neighbour
 
     def taking(self):
         return self.consuming
@@ -177,10 +182,29 @@ def test_a_clean_drain_comes_before_the_removal():
     r, clock, _tap = _retirer(events, group_states=[_group()])
     clock.t += 10 * MIN
     assert r.tick() is Action.RETIRE
-    # lock, stop taking, (confirm, settle), look again under the lock, THEN remove - and the lock
-    # is held past the removal so the next worker reads a group that already counts it
-    assert events == ["state", f"lock:{ir.RETIRE_LOCK_SECONDS}", "stop_taking", "state",
-                      "remove_self"]
+    # lock, stop taking, (confirm, settle), ask the geometry worker, look again under the lock,
+    # THEN remove - and the lock is held past the removal so the next worker reads a group that
+    # already counts it
+    assert events == ["state", f"lock:{ir.RETIRE_LOCK_SECONDS}", "stop_taking", "ask_neighbour",
+                      "state", "remove_self"]
+
+
+def test_a_geometry_check_running_on_the_same_vm_keeps_it():
+    # the check was already taken; it would go down with the VM
+    events: list[str] = []
+    r, clock, tap = _retirer(events, group_states=[_group()])
+    tap.neighbour = 1
+    clock.t += 10 * MIN
+    assert r.tick() is Action.STAY
+    assert "remove_self" not in events and events[-2:] == ["resume_taking", "unlock"]
+
+
+def test_a_geometry_worker_that_does_not_answer_does_not_hold_the_vm():
+    events: list[str] = []
+    r, clock, tap = _retirer(events, group_states=[_group()])
+    tap.neighbour = None
+    clock.t += 10 * MIN
+    assert r.tick() is Action.RETIRE
 
 
 def test_a_worker_holding_a_job_makes_no_call_at_all():
@@ -373,6 +397,25 @@ def test_the_grant_command_is_the_one_the_deploy_prints():
             "compute.autoscalers.get") in cmd
     assert ("--member serviceAccount:224734058693-compute@developer.gserviceaccount.com "
             "--role projects/hexera-dev/roles/hexeraWorkerSelfRetire") in cmd
+    # `;` so a role left by a half-finished grant does not skip the binding (and PowerShell runs it)
+    assert " ; gcloud projects add-iam-policy-binding" in cmd and "&&" not in cmd
+
+
+def test_a_metadata_hiccup_at_start_is_asked_again_not_given_up(monkeypatch):
+    calls = {"n": 0}
+
+    def _flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("metadata server slow")
+        return _IDENT
+    monkeypatch.setattr(ir, "IDENTITY_RETRY_SECONDS", 0.01)
+    assert ir._resolve_identity(_flaky, threading.Event()) == _IDENT
+    assert calls["n"] == 3
+    # ...and a stop while waiting ends it cleanly
+    stop = threading.Event()
+    stop.set()
+    assert ir._resolve_identity(lambda: (_ for _ in ()).throw(OSError("down")), stop) is None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -467,6 +510,45 @@ def test_the_celery_tap_counts_every_received_job_and_drains_through_the_event_l
     tap.resume_taking()
     assert tap._consumer.scheduled == [("cancel_task_queue", ("simulation_jobs",)),
                                        ("add_task_queue", ("simulation_jobs",))]
+
+
+def test_the_celery_tap_asks_the_geometry_worker_on_its_own_vm(monkeypatch):
+    import socket
+    import types
+
+    from meshpipeline.runtime import celery_worker
+    asked: list = []
+
+    def _app(replies=None, boom=False):
+        def inspect(destination, timeout):
+            asked.append(destination)
+
+            def active():
+                if boom:
+                    raise ConnectionError("broker away")
+                return replies
+            return types.SimpleNamespace(active=active)
+        return types.SimpleNamespace(control=types.SimpleNamespace(inspect=inspect))
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "dev-workers-w95h")
+    tap = _tap({"simulation_jobs"})
+    monkeypatch.setattr(celery_worker, "celery_app", _app({"geometry@dev-workers-w95h": [{}, {}]}))
+    assert tap.neighbour_holding() == 2
+    assert asked[-1] == ["geometry@dev-workers-w95h"]
+    monkeypatch.setattr(celery_worker, "celery_app", _app({}))
+    assert tap.neighbour_holding() is None
+    monkeypatch.setattr(celery_worker, "celery_app", _app(boom=True))
+    assert tap.neighbour_holding() is None
+
+
+def test_both_containers_carry_the_vms_hostname_so_the_geometry_worker_can_be_asked():
+    from pathlib import Path
+    startup = (Path(ir.__file__).parents[3] / "deploy" / "gcp" / "worker" / "startup.sh").read_text(
+        encoding="utf-8")
+    for name in ("hexera-worker", "hexera-geometry-worker"):
+        line = next(ln for ln in startup.splitlines() if ln.startswith(f"docker run -d --name {name} "))
+        assert '--hostname "${WORKER_HOSTNAME}"' in line, name
+    assert "--hostname geometry@%h" in startup
 
 
 def test_the_worker_starts_it_when_ready():

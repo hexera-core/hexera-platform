@@ -193,7 +193,8 @@ def test_the_workers_are_granted_exactly_the_right_to_manage_their_own_group(run
 def test_a_deployer_that_cannot_grant_prints_the_one_command_and_carries_on(run):
     # shared dev's github-deployer holds neither iam.roles.create nor the project's setIamPolicy
     done, calls = run("create-worker-fleet.sh",
-                      fake={**_NEW, "FAKE_ROLE_CREATE_RC": "1", "FAKE_ROLE_UPDATE_RC": "1"})
+                      fake={**_NEW, "FAKE_ROLE_CREATE_RC": "1", "FAKE_ROLE_UPDATE_RC": "1",
+                            "FAKE_BIND_RC": "1"})
     assert done.returncode == 0, done.stderr
     from meshpipeline.runtime.idle_retire import Identity
     worker_says = Identity(project="fake-proj", zone="us-central1-a", instance="i", group="t-workers",
@@ -207,7 +208,18 @@ def test_a_deployer_that_cannot_grant_prints_the_one_command_and_carries_on(run)
 def test_a_refused_binding_is_reported_too(run):
     done, _calls = run("create-worker-fleet.sh", fake={**_NEW, "FAKE_BIND_RC": "1"})
     assert done.returncode == 0, done.stderr
-    assert "gcloud projects add-iam-policy-binding fake-proj" in done.stderr
+    # `;` - the role this run may already have created must not stop the owner's binding
+    assert "--stage GA ; gcloud projects add-iam-policy-binding fake-proj" in done.stderr
+
+
+def test_the_binding_is_the_verdict_not_the_role(run):
+    # an owner created the role once; the deployer can neither create nor update it, but the binding
+    # is what grants anything - made, it is a success and nothing is printed
+    done, calls = run("create-worker-fleet.sh",
+                      fake={**_NEW, "FAKE_ROLE_CREATE_RC": "1", "FAKE_ROLE_UPDATE_RC": "1"})
+    assert done.returncode == 0, done.stderr
+    assert _lines(calls, "projects add-iam-policy-binding")
+    assert "could not grant" not in done.stderr
 
 
 # ---------------------------------------------------------------------------------------------

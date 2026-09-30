@@ -313,18 +313,31 @@ WORKER_SCOPES="${WORKER_SCOPES:-https://www.googleapis.com/auth/cloud-platform}"
 #     owner runs ONCE. Without the grant nothing breaks and no job is lost: each worker logs the same
 #     command, stays up, and the group simply does not shrink or move onto a new template until the
 #     grant exists - it takes effect at once, with no redeploy.
+#
+#     ITS REACH. The binding is on the project, unconditioned: IAM Conditions do not list instance
+#     group managers among the resource types they can match, and a condition that silently matched
+#     nothing would stop every fleet shrinking. So every VM running as this identity may resize or
+#     recreate ANY group in the project - on shared dev that is the three worker fleets (dev,
+#     dev-areen, dev-pranav), whose VMs are the only ones on the default compute account. A fleet
+#     with its own WORKER_SERVICE_ACCOUNT confines it to that fleet's VMs.
+#
+#     The printed command joins its two halves with `;`, not `&&`: after a half-finished earlier
+#     attempt the role already exists, its create fails, and the binding must still be made.
 SELF_RETIRE_ROLE_REF="projects/${GCP_PROJECT_ID}/roles/${WORKER_SELF_RETIRE_ROLE}"
-SELF_RETIRE_GRANT_CMD="gcloud iam roles create ${WORKER_SELF_RETIRE_ROLE} --project ${GCP_PROJECT_ID} --title 'Hexera worker self-retire' --permissions ${SELF_RETIRE_PERMISSIONS} --stage GA && gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member serviceAccount:${WORKER_SA_EMAIL} --role ${SELF_RETIRE_ROLE_REF} --condition None"
+SELF_RETIRE_GRANT_CMD="gcloud iam roles create ${WORKER_SELF_RETIRE_ROLE} --project ${GCP_PROJECT_ID} --title 'Hexera worker self-retire' --permissions ${SELF_RETIRE_PERMISSIONS} --stage GA ; gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member serviceAccount:${WORKER_SA_EMAIL} --role ${SELF_RETIRE_ROLE_REF} --condition None"
 if [ "${WORKER_SELF_RETIRE}" = true ]; then
-  if { gc iam roles create "${WORKER_SELF_RETIRE_ROLE}" \
-         --title "Hexera worker self-retire" \
-         --description "Lets an idle worker remove or recreate its own VM in its managed instance group" \
-         --permissions "${SELF_RETIRE_PERMISSIONS}" --stage GA >/dev/null 2>&1 \
-       || gc iam roles update "${WORKER_SELF_RETIRE_ROLE}" \
-         --permissions "${SELF_RETIRE_PERMISSIONS}" >/dev/null 2>&1; } \
-     && gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
-         --member "serviceAccount:${WORKER_SA_EMAIL}" \
-         --role "${SELF_RETIRE_ROLE_REF}" --condition None >/dev/null 2>&1; then
+  # The role: created, or brought up to date when it exists. Either may be refused; the BINDING is
+  # the verdict, because a role that exists but is bound to nobody grants nothing.
+  gc iam roles create "${WORKER_SELF_RETIRE_ROLE}" \
+      --title "Hexera worker self-retire" \
+      --description "Lets an idle worker remove or recreate its own VM in its managed instance group" \
+      --permissions "${SELF_RETIRE_PERMISSIONS}" --stage GA >/dev/null 2>&1 \
+    || gc iam roles update "${WORKER_SELF_RETIRE_ROLE}" \
+      --permissions "${SELF_RETIRE_PERMISSIONS}" >/dev/null 2>&1 \
+    || true
+  if gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" \
+       --role "${SELF_RETIRE_ROLE_REF}" --condition None >/dev/null 2>&1; then
     log "project += ${SELF_RETIRE_ROLE_REF} -> ${WORKER_SA_EMAIL}"
   else
     warn "could not grant ${WORKER_SA_EMAIL} the right to remove its own VM from ${WORKER_MIG}

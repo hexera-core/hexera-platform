@@ -35,7 +35,8 @@ THE ORDER IS THE SAFETY PROPERTY - a clean drain first:
      from a group one above its floor;
   3. stop taking work (cancel the consumer on the sizing queue) and confirm the consumer stopped;
   4. wait a moment, then check again that this worker holds nothing - a job that arrived between
-     the idle check and the cancel is kept and run here, and the retire is called off;
+     the idle check and the cancel is kept and run here, and the retire is called off - and that
+     the geometry-check worker on the same VM is running nothing either;
   5. read the group again under the lock, and only then remove or recycle this VM.
 Any failure after step 3 resumes taking work. A VM whose removal was accepted but which is still
 running ten minutes later also resumes, so a worker can never sit alive and deaf.
@@ -179,6 +180,7 @@ class WorkerTap(Protocol):
     def taking(self) -> bool: ...        # is it consuming that queue right now?
     def stop_taking(self) -> None: ...
     def resume_taking(self) -> None: ...
+    def neighbour_holding(self) -> int | None: ...  # checks the geometry worker on this VM is running
 
 
 class Group(Protocol):
@@ -253,11 +255,14 @@ class Identity:
                    template=template, service_account=account)
 
     def grant_command(self) -> str:
-        """The one command an owner runs once. The same text create-worker-fleet.sh prints."""
+        """The one command an owner runs once. The same text create-worker-fleet.sh prints.
+
+        `;`, not `&&`: when the role already exists (a half-finished earlier grant) its create fails,
+        and the binding must still be made. It also runs unchanged in PowerShell."""
         role = f"projects/{self.project}/roles/{SELF_RETIRE_ROLE}"
         return (f"gcloud iam roles create {SELF_RETIRE_ROLE} --project {self.project} "
                 f"--title 'Hexera worker self-retire' --permissions {','.join(REQUIRED_PERMISSIONS)} "
-                f"--stage GA && gcloud projects add-iam-policy-binding {self.project} "
+                f"--stage GA ; gcloud projects add-iam-policy-binding {self.project} "
                 f"--member serviceAccount:{self.service_account or '<worker service account>'} "
                 f"--role {role} --condition None")
 
@@ -473,6 +478,15 @@ class IdleRetirer:
                 logger.info("idle self-retire: a job arrived while draining - keeping it, staying")
                 self._idle_since = self._clock()
                 return Action.STAY
+            # The geometry worker beside this one goes down with the VM, and a check it has
+            # already taken would be lost with it. Nobody answering is not a reason to stay: a VM
+            # with no geometry worker, or one too broken to answer, has nothing it could finish.
+            checks = self._tap.neighbour_holding()
+            if checks:
+                logger.info("idle self-retire: the geometry worker on this VM is running %d "
+                            "check(s) - staying", checks)
+                self._backoff(GROUP_RECHECK_SECONDS)
+                return Action.STAY
             group = self._group.state()          # fresh, under the lock
             again, why = decide(holding=holding, idle_seconds=self.idle_seconds,
                                 idle_limit_seconds=self._idle_limit, group=group,
@@ -528,6 +542,26 @@ class IdleRetirer:
 
 
 _STOP = threading.Event()
+#: The first wait before asking the metadata server again, doubling up to IDENTITY_RETRY_MAX_SECONDS.
+IDENTITY_RETRY_SECONDS = 15.0
+IDENTITY_RETRY_MAX_SECONDS = 300.0
+
+
+def _resolve_identity(identity: Callable[[], Identity | None],
+                      stop: threading.Event) -> Identity | None:
+    """This VM's identity - asked again, for as long as it takes, when the metadata server fails
+    part-way. `from_metadata` answers None only when this is definitely not a group's VM; an
+    exception is a failed question, and a worker that gave up on it would never retire again."""
+    delay = IDENTITY_RETRY_SECONDS
+    while True:
+        try:
+            return identity()
+        except Exception as exc:  # noqa: BLE001 - asked again below
+            logger.warning("idle self-retire: could not read this VM's identity (%s) - asking again "
+                           "in %.0fs", type(exc).__name__, delay)
+        if stop.wait(delay):
+            return None
+        delay = min(delay * 2, IDENTITY_RETRY_MAX_SECONDS)
 
 
 def start_idle_retire(tap: WorkerTap, *, minutes: int | None = None,
@@ -547,7 +581,7 @@ def start_idle_retire(tap: WorkerTap, *, minutes: int | None = None,
             return None
 
         def _main() -> None:
-            ident = identity()
+            ident = _resolve_identity(identity, _STOP)
             if ident is None:
                 logger.info("idle self-retire: not a managed-instance-group VM - off")
                 return

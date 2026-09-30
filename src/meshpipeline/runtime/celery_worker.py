@@ -98,6 +98,23 @@ class CeleryTap:
     def resume_taking(self) -> None:
         self._consumer.call_soon(self._consumer.add_task_queue, self._queue)
 
+    def neighbour_holding(self, timeout: float = 3.0) -> int | None:
+        """How many checks the geometry worker on this VM is running - it goes down with the VM too.
+
+        Asked of `geometry@<this hostname>` over celery's own inspect channel: deploy/gcp/worker/
+        startup.sh gives both containers the VM's hostname so that name is known here. None when
+        nobody answers - on a VM with no geometry worker, or one too broken to answer, which then has
+        nothing running it could finish."""
+        import socket
+        node = f"geometry@{socket.gethostname()}"
+        try:
+            replies = celery_app.control.inspect(destination=[node], timeout=timeout).active() or {}
+        except Exception:  # noqa: BLE001 - an unanswerable question is "nobody answered"
+            return None
+        if node not in replies:
+            return None
+        return len(replies[node] or [])
+
 
 @worker_ready.connect
 def _on_worker_ready(sender=None, **kwargs):
