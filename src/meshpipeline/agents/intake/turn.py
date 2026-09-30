@@ -32,9 +32,34 @@ BUDGET_NUDGE = (
 #: takes its own proposal and moves on rather than asking a third time.
 REPEAT_NUDGE = (
     "[SYSTEM] You have already asked the user this, and their reply was their one answer to it. "
-    "Do not ask it again in any wording. Take your own proposal for it, note in request_txt that "
-    "it is an assumption the user did not state, and move on: ask the next thing you genuinely "
-    "need (with a proposed answer), or call submit_requirements if nothing required is missing."
+    "Do not ask it again in any wording. Take your own proposal for it - request_txt notes it as "
+    "assumed, not stated by the user; your reply just uses it and never calls it an assumption - "
+    "and move on: ask the next thing you genuinely need (with a proposed answer), or call "
+    "submit_requirements if nothing required is missing. The ENGINE is never taken this way: if "
+    "that was the question, call propose_engine_selection with the engine you would use."
+)
+
+#: Sent back into the loop, once per turn, when a finished reply names the engine the user has
+#: already settled while they did not bring it up (agents/intake/loop_policy.py). A real session
+#: opened three replies in a row with "I'll carry forward snappyHexMesh as the unconfirmed engine
+#: assumption ..." - the user reads the engine once, in the question that settles it, and in the
+#: summary they approve.
+ENGINE_SETTLED_NUDGE = (
+    "[SYSTEM] The engine is already settled - the user chose it earlier in this conversation. "
+    "Do not mention it again: no restating it, no 'for the <engine> setup', no 'using <engine>', "
+    "no note that it is assumed. Rewrite your reply without any engine name and ask only the "
+    "next thing you need."
+)
+
+#: The same guard when NO engine is settled and the reply names one: the model was carrying an
+#: engine the user never chose ("I'll record snappyHexMesh as the meshing-engine assumption"),
+#: or asking about it in its own words. The engine is settled by the application's one question.
+ENGINE_UNSETTLED_NUDGE = (
+    "[SYSTEM] Do not write an engine into your reply: the user has not chosen one, and the engine "
+    "is never assumed or carried as 'unconfirmed'. If you know what the mesh is for, call "
+    "propose_engine_selection now with the engine you would use and a one-line `reason` - the "
+    "application asks the user once, in its own words. Otherwise leave the engine out and ask "
+    "the next thing you need."
 )
 
 #: Put in front of the model, before it answers, when the user's latest message hands the open
@@ -46,16 +71,19 @@ DEFAULT_NUDGE = (
     "do not tell them a value cannot be defaulted - every value can. Choose the sensible default "
     "yourself: for a choice between named candidates, the first one you listed unless the "
     "geometry says otherwise; for a number, the engine's own default or the value you already "
-    "proposed. State it in ONE line as an assumption, carry it into request_txt as 'assumed, not "
-    "stated by the user', and continue with the next thing you genuinely need - or call "
-    "submit_requirements if nothing required is missing. The two standing exceptions hold: the "
-    "ENGINE is proposed and confirmed, never defaulted, and the file's UNIT is asked, never "
-    "guessed."
+    "proposed. Say which in ONE short plain line ('I'll use the left opening as the second "
+    "inlet.') - never call it an assumption in the reply - carry it into request_txt as "
+    "'assumed, not stated by the user', and continue with the next thing you genuinely need - or "
+    "call submit_requirements if nothing required is missing. The two standing exceptions hold: "
+    "the ENGINE is proposed and confirmed, never defaulted (if the open question was the engine, "
+    "call propose_engine_selection with the one you would use), and the file's UNIT is asked, "
+    "never guessed."
 )
 
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
-SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE)
+SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, ENGINE_SETTLED_NUDGE,
+                    ENGINE_UNSETTLED_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells
@@ -213,8 +241,10 @@ def unsettled_reply(state, exit_reason=None) -> str:
     # while its approval is live - an expired one is not a question anyone is waiting on.
     from meshpipeline.agents.intake import approval as ap
     from meshpipeline.agents.intake import engine_selection as es
+    from meshpipeline.agents.intake import vocabulary as _vocab
     selection = state.selection or {}
-    engine = str(selection.get("engine") or "").strip()
+    # the name the user reads, never the registry key ("snappy")
+    engine = _vocab.to_display(_vocab.ENGINE, str(selection.get("engine") or "").strip())
     chosen = es.state_of(selection)
     if ap.is_live(state.approval):
         ask = "say 'go ahead' to run the summary above, or tell me what to change,"

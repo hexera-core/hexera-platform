@@ -78,6 +78,56 @@ def repeats_a_question(candidate: str, prior: tuple[str, ...] | list[str]) -> bo
     return False
 
 
+#: Words that make the engine the subject of the user's message, besides an engine's own name.
+_ENGINE_TALK = re.compile(r"\b(?:engines?|meshers?|toolchains?|meshing (?:tool|program|software)s?)\b",
+                          re.IGNORECASE)
+
+
+def user_raised_the_engine(text: str) -> bool:
+    """Whether the user's message is about the engine - names one, or asks about the mesher."""
+    from meshpipeline.agents.intake import vocabulary as _vocab
+    return bool(_vocab.engines_named_in(str(text or ""))) or bool(_ENGINE_TALK.search(str(text or "")))
+
+
+def engine_nudge(reply: str, *, selection: dict | None, latest_user_msg: str,
+                 revision: str | None = None, user_msg_count: int | None = None) -> str | None:
+    """The note a finished reply earns for how it speaks of the engine, or None.
+
+    The engine is settled by ONE question - the application's own, with the model's reason -
+    and after that the user reads it again only in the summary they approve. A real session
+    opened three replies in a row with it instead: "I'll record snappyHexMesh as the meshing-
+    engine assumption", "I'll use snappyHexMesh as an unstated assumption", "I'll carry forward
+    snappyHexMesh as the unconfirmed engine assumption". So a reply that names an engine while
+    the user did not bring engines up is sent back: with the engine settled, to leave it out;
+    with nothing settled and ONE engine named (carried as an assumption, or asked in the model's
+    own words), to propose it through the one question instead.
+
+    Left alone: a reply listing several engines (a menu, not an engine carried); a "Heads-up:"
+    line (a soft limitation of the chosen engine is raised once before the summary, by name); the
+    reply to the very message that settled it ("sure" -> "Gmsh it is. Flow speed?") - one
+    acknowledgement is an answer, the same line on every later turn is the restating; and the
+    reply to an answer of the engine question itself ("why?" to "I'd mesh this with X ... OK?"),
+    whose subject is the engine whatever words the user chose."""
+    from meshpipeline.agents.intake import engine_selection as es
+    from meshpipeline.agents.intake import vocabulary as _vocab
+
+    named = _vocab.engines_named_in(str(reply or ""))
+    if not named or user_raised_the_engine(latest_user_msg):
+        return None
+    state = es.state_of(selection)
+    if (state == es.PROPOSED and user_msg_count is not None
+            and int((selection or {}).get("proposed_msg_count", -2)) + 1 == int(user_msg_count)):
+        return None
+    if state == es.CONFIRMED:
+        settled_now = revision is not None and (selection or {}).get("confirmed_revision") == revision
+        if settled_now or "heads-up" in str(reply).casefold():
+            return None
+        return turn.ENGINE_SETTLED_NUDGE
+    if len(named) == 1:
+        return turn.ENGINE_UNSETTLED_NUDGE
+    return None
+
+
 @dataclass
 class IntakeLoopPolicy:
 
@@ -87,9 +137,13 @@ class IntakeLoopPolicy:
     role: AgentRole = AgentRole.intake
     #: What the assistant has already said in this conversation - the questions already asked.
     prior_questions: tuple[str, ...] = ()
+    #: Whether a reply is held to "the engine is asked once, then left alone" (`engine_nudge`).
+    #: Off for the turn after a run has ended, where the last run's engine is the subject.
+    engine_guard: bool = True
 
     malformed_calls: int = 0
     repeated_questions: int = 0                # replies sent back for asking the same thing again
+    engine_nudges: int = 0                     # replies sent back for how they spoke of the engine
     plaintext_text: str = ""                   # the model's reply, returned - never diagnosed
     finish_reason: str = ""
     input_tokens: int = 0
@@ -146,7 +200,16 @@ class IntakeLoopPolicy:
         # second reply is delivered as written. And only while another round may start: a nudge
         # the budget cannot honour would end the turn with no reply at all.
         left = tally.remaining_rounds(self.limits_)
-        if (self.repeated_questions == 0 and (left is None or left > 0)
+        may_retry = left is None or left > 0
+        # The engine first: a reply carrying an unsettled engine is fixed by proposing it, which a
+        # repeat nudge ("take your own proposal") would get wrong. Once, like the repeat below.
+        note = self._engine_note() if may_retry and self.engine_nudges == 0 else None
+        if note:
+            self.engine_nudges += 1
+            logger.info("Intake: the reply names the engine the user did not bring up - sent "
+                        "back once (%s)", "settled" if note == turn.ENGINE_SETTLED_NUDGE else "unsettled")
+            return RoundDecision(message=note, complete=False)
+        if (self.repeated_questions == 0 and may_retry
                 and repeats_a_question(self.plaintext_text, self.prior_questions)):
             self.repeated_questions += 1
             logger.info("Intake: the reply asks a question the user was already asked - sent "
@@ -154,6 +217,17 @@ class IntakeLoopPolicy:
             return RoundDecision(message=turn.REPEAT_NUDGE, complete=False)
         return RoundDecision(message="", complete=True, payload=self.plaintext_text,
                              exit=LoopExit.turn_complete)
+
+    def _engine_note(self) -> str | None:
+        st = self.exec_state
+        # Not when the engine is the business of the turn: a comparison the user asked for, or a
+        # refusal of the selected engine (its reply is checked by refusal.settle).
+        if (not self.engine_guard or st.recommended_this_turn or st.rec_authorized
+                or st.admission_refusal is not None):
+            return None
+        return engine_nudge(self.plaintext_text, selection=st.selection,
+                            latest_user_msg=st.latest_user_msg, revision=st.revision,
+                            user_msg_count=st.user_msg_count)
 
     async def close_out(self, tally: LoopTally) -> ToolOutcome | None:
         terminal = self.resolve_terminal()
@@ -199,7 +273,9 @@ class IntakeLoopPolicy:
             approval_state=str((st.approval or {}).get("status", "") or ""),
             recommendation_turn=st.recommended_this_turn,
             canonical_revision=str(st.revision or ""),
-            repeated_questions=self.repeated_questions)
+            repeated_questions=self.repeated_questions,
+            engine_nudges=self.engine_nudges)
 
 
-__all__ = ["REPEAT_THRESHOLD", "TERMINAL_PRIORITY", "IntakeLoopPolicy", "repeats_a_question"]
+__all__ = ["REPEAT_THRESHOLD", "TERMINAL_PRIORITY", "IntakeLoopPolicy", "engine_nudge",
+           "repeats_a_question", "user_raised_the_engine"]

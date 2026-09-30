@@ -1,6 +1,7 @@
 # Responsibility: Propose, confirm and verify which engine the user chose.
 # Boundaries: a user-named engine is honoured only when the user actually named it, and a plain
 # yes binds to the engine the application proposed - never to one the model would rather have.
+# The engine is asked ONCE, as the application's own one-line question with the model's reason.
 from __future__ import annotations
 
 import re
@@ -394,6 +395,26 @@ def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
     return _confirmed(sel, revision), ""
 
 
+#: "I don't know" in front of a delegation is not a refusal: "I don't know, your call" hands the
+#: choice back. Taken out before the message is read for a real "no" to the engine.
+_NOT_KNOWING = re.compile(
+    r"\b(?:i\s+)?(?:do\s+not|don['’]?t)\s+know\b|\bno\s+(?:idea|clue)\b", re.IGNORECASE)
+
+
+def leaves_it_to_us(engine: str, message: str) -> bool:
+    # "your call", "you decide", "I don't know, whatever you think": the question named one engine
+    # and the user handed the choice back, so the engine it named stands. To the summary a
+    # delegation is no go-ahead to spend anything (consent.HEDGES); to a proposal of one engine it
+    # is the answer. Read by the intake's one deferral reader, never by a word list of this
+    # module's - and never over a "no" aimed at the engine ("your call, but not snappyHexMesh").
+    # A message that names an engine is about the engine ("I don't know what snappyHexMesh is"),
+    # not a hand-back: the plain reading below, or the model, answers it.
+    from meshpipeline.agents.intake.turn import defers_to_default
+    if not defers_to_default(message) or _vocab.engines_named_in(str(message or "")):
+        return False
+    return not declines(engine, _NOT_KNOWING.sub(" ", str(message or "")))
+
+
 def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
                       latest_user_message: str, user_msg_count: int) -> dict | None:
     # The application reads a plain yes to its own question ITSELF, before the model runs. The
@@ -405,9 +426,11 @@ def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revis
     if not ok or sel is None:
         return None
     engine = str(sel.get("engine") or "")
-    if names_another_engine(engine, latest_user_message) or declines(engine, latest_user_message):
+    if names_another_engine(engine, latest_user_message):
         return None
-    if not plain_assent(engine, latest_user_message):
+    if leaves_it_to_us(engine, latest_user_message):
+        return _confirmed(sel, revision)
+    if declines(engine, latest_user_message) or not plain_assent(engine, latest_user_message):
         return None
     return _confirmed(sel, revision)
 
@@ -430,8 +453,37 @@ def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,
     return True, ""
 
 
-def render_selection_statement(engine: str) -> str:
+#: Past this a "reason" is no longer one line a person reads in passing.
+REASON_MAX_CHARS = 160
+
+
+def proposal_reason(engine: str, reason) -> str:
+    """The model's one-line reason for proposing `engine`, as the question will print it - or ""
+    when it cannot go in front of the user as written: empty, too long, a question of its own, or
+    naming another engine (the question offers ONE engine; alternatives are for when the user
+    asks)."""
+    from meshpipeline.contracts.engineering_text import plain
+
+    text = re.sub(r"\s+", " ", plain(str(reason or ""))).strip().strip(" .;:,-–—")
+    text = re.sub(r"^(?:because|since|as)\s+", "", text, flags=re.IGNORECASE)
+    if not text or len(text) > REASON_MAX_CHARS or "?" in text:
+        return ""
+    if _vocab.engines_named_in(text, (engine or "").strip().lower()):
+        return ""
+    if len(text) > 1 and text[0].isupper() and text[1].islower():
+        text = text[0].lower() + text[1:]     # "It fits ..." reads on after the colon; "CFD" stays
+    return text
+
+
+def render_selection_statement(engine: str, reason: str = "") -> str:
+    """The ONE engine question: the engine, why it suits this part, and a plain way to say no.
+
+    It used to read "Selected engine: X. This is a proposal, not a selection - nothing has been
+    selected yet and nothing will be meshed. Do you want to select X?" - three sentences of
+    bookkeeping around a yes/no, and no reason at all. A plain yes (or "your call") to it is read
+    by the application before the model runs (`confirm_by_assent`); naming another engine is a
+    new choice."""
     shown = engine_label(engine)
-    return (f"Selected engine: {shown}\n\n"
-            "This is a proposal, not a selection - nothing has been selected yet and nothing will "
-            f"be meshed. Do you want to select {shown}?")
+    why = proposal_reason(engine, reason)
+    opening = f"I'd mesh this with {shown}: {why}." if why else f"I'd mesh this with {shown}."
+    return f"{opening} OK, or do you use a different mesher?"
