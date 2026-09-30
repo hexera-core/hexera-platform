@@ -457,6 +457,7 @@ INVENTORY: list[Group] = [
         EnvVar("REQUIRE_DURABLE_CHECKPOINTER", "", kind="bool", help="forced on outside development; leave blank"),
         EnvVar("PIPELINE_BACKEND", "celery", help="which execution backend the run is attributed to"),
         EnvVar("WORKER_WAKE_MINUTES", "8", kind="int", help="how long a worker takes to pick a job up when the fleet is scaled to zero (autoscaler reaction + VM boot + image pull); the console shows 'waiting for a worker to start (about N minutes)' while a job is pending. 0 hides the estimate"),
+        EnvVar("WORKER_IDLE_RETIRE_MINUTES", "10", kind="int", help="a fleet worker that has held no job this long removes its own VM from the managed instance group, when the group is larger than the autoscaler recommends and above its floor; the autoscaler only scales out, so a VM running a job is never the one removed. 0 turns it off (then nothing shrinks the group)"),
     ]),
 
     Group("Safety switches", note="On by default. Each one is a gate that refuses bad geometry or unsafe generated work; turn one off only with a measured reason.", vars=[

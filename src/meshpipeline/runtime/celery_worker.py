@@ -61,11 +61,54 @@ def _on_worker_shutting_down(**kwargs):
     request_drain()
 
 
+class CeleryTap:
+    """This worker's own view of its work, from inside its MAIN process (runtime/idle_retire.py).
+
+    `celery.worker.state.reserved_requests` holds every task this worker has received and not yet
+    finished - the running one included - and the main process keeps it even when the task runs in
+    a prefork pool process. The consumer is the one `worker_ready` hands over; `call_soon` is
+    kombu's thread-safe way into its event loop, and is exactly what `celery control
+    cancel_consumer` / `add_consumer` do, without the broker round trip."""
+
+    def __init__(self, consumer, queue: str = "simulation_jobs") -> None:
+        self._consumer = consumer
+        self._queue = queue
+
+    def holding(self) -> int:
+        from celery.worker import state
+        return len(state.reserved_requests)
+
+    def taking(self) -> bool:
+        task_consumer = getattr(self._consumer, "task_consumer", None)
+        return bool(task_consumer is not None and task_consumer.consuming_from(self._queue))
+
+    def configured(self) -> bool:
+        """Does this worker consume the sizing queue at all (`--queues simulation_jobs`)?"""
+        if self.taking():
+            return True
+        try:
+            selected = self._consumer.app.amqp.queues.consume_from
+        except AttributeError:
+            return False
+        return bool(selected) and self._queue in selected
+
+    def stop_taking(self) -> None:
+        self._consumer.call_soon(self._consumer.cancel_task_queue, self._queue)
+
+    def resume_taking(self) -> None:
+        self._consumer.call_soon(self._consumer.add_task_queue, self._queue)
+
+
 @worker_ready.connect
-def _on_worker_ready(**kwargs):
+def _on_worker_ready(sender=None, **kwargs):
     # Main process: serve the aggregated multiprocess registry over HTTP.
     from meshpipeline.runtime.metrics_server import start_worker_metrics_server
     start_worker_metrics_server()
+    # ...and, on a fleet VM, watch for idleness: the autoscaler only scales OUT, so an idle worker
+    # removes its own VM from the group rather than letting the group pick a busy one
+    # (runtime/idle_retire.py). `sender` is the consumer; a no-op everywhere but a fleet VM.
+    from meshpipeline.runtime.idle_retire import SIZING_QUEUE, start_idle_retire
+    start_idle_retire(CeleryTap(sender, SIZING_QUEUE))
 
 
 @worker_process_shutdown.connect

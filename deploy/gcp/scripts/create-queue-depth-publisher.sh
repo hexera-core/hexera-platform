@@ -202,10 +202,12 @@ log "schedule ${QD_SCHEDULER}  ${SCHEDULE}  -> ${QD_JOB}"
 #
 #    THE MINIMUM IS NOT LOWERED HERE. Scale-to-zero is possible: demand is published whether or not
 #    an instance exists, and it now counts work in flight, so the group is never sized below the
-#    jobs it is running. Which instance a scale-in removes is still the group's choice, not ours -
-#    a Compute Engine group cannot be told which of its VMs is idle - so a job on the removed VM
-#    hands itself back and runs again elsewhere (deploy/gcp/worker/shutdown.sh), and the scale-in
-#    control below keeps that rare. The floor belongs to the admin console like the rest.
+#    jobs it is running. Which instance an AUTOSCALER scale-in removes is the group's choice - a
+#    Compute Engine group cannot be told which of its VMs is idle - and on 2026-09-30 it chose the
+#    busy one twice in half an hour. So the autoscaler now only scales out, and an idle worker
+#    removes its own VM (create-worker-fleet.sh WORKER_SELF_RETIRE, runtime/idle_retire.py); the
+#    mode is carried through below. A job on a VM that goes away anyway still hands itself back
+#    (deploy/gcp/worker/shutdown.sh). The floor belongs to the admin console like the rest.
 FILTER="resource.type = \"generic_task\""
 FILTER="${FILTER} AND resource.labels.location = \"${WORKER_MIG_ZONE}\""
 FILTER="${FILTER} AND resource.labels.namespace = \"${DEPLOYMENT_ID}\""
@@ -230,7 +232,9 @@ as_field() {
 }
 LIVE_MIN=""; LIVE_MAX=""; LIVE_COOLDOWN=""; LIVE_ASSIGNMENT=""
 LIVE_SCALE_IN_FIXED=""; LIVE_SCALE_IN_PERCENT=""; LIVE_SCALE_IN_WINDOW=""; LIVE_METRICS=""
+LIVE_MODE=""
 if [ -n "$(as_field autoscaler.name)" ]; then
+  LIVE_MODE="$(as_field autoscaler.autoscalingPolicy.mode)"
   LIVE_METRICS="$(as_field 'autoscaler.autoscalingPolicy.customMetricUtilizations[].metric')"
   LIVE_MIN="$(as_field autoscaler.autoscalingPolicy.minNumReplicas)"
   LIVE_MAX="$(as_field autoscaler.autoscalingPolicy.maxNumReplicas)"
@@ -262,6 +266,18 @@ elif [ -n "${LIVE_SCALE_IN_PERCENT}" ]; then
 else
   AS_SCALE_IN="max-scaled-in-replicas=${WORKER_SCALE_IN_MAX_REPLICAS:-1},time-window=${AS_SCALE_IN_WINDOW}"
 fi
+
+# THE MODE, carried through - and it matters more than anything above. `set-autoscaling` writes
+# mode ON unless told otherwise, and ON is the autoscaler choosing which VM to delete, busy or not.
+# create-worker-fleet.sh sets `only-scale-out` when the workers remove themselves once idle
+# (WORKER_SELF_RETIRE, runtime/idle_retire.py); a rewrite here that dropped it would hand scale-in
+# back to the autoscaler on every deploy of this stage. The scale-in control above is still carried
+# through: it does nothing while the mode is only-scale-out, and is in place if the mode goes back.
+case "${LIVE_MODE}" in
+  ONLY_SCALE_OUT|ONLY_UP) AS_MODE=only-scale-out ;;
+  OFF) AS_MODE=off ;;
+  *) AS_MODE=on ;;
+esac
 
 # THE DEPTH METRIC IS RETIRED FROM THE POLICY, not left beside the demand metric. `set-autoscaling`
 # MERGES custom metrics - `--update-stackdriver-metric` replaces the entry of the same name and
@@ -314,8 +330,9 @@ gc compute instance-groups managed set-autoscaling "${WORKER_MIG}" \
   --stackdriver-metric-filter "${FILTER}" \
   --stackdriver-metric-single-instance-assignment "${AS_ASSIGNMENT}" \
   --scale-in-control "${AS_SCALE_IN}" \
+  --mode "${AS_MODE}" \
   ${AS_RETIRE[@]+"${AS_RETIRE[@]}"}
 log "autoscaler: ${AS_MIN}..${AS_MAX} instances,"
 log "  one instance per ${AS_ASSIGNMENT} job queued or running, cooldown ${AS_COOLDOWN}s"
-log "  scale-in control ${AS_SCALE_IN}"
+log "  mode ${AS_MODE}, scale-in control ${AS_SCALE_IN}"
 log "done"

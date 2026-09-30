@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that FIRST sizes it.
-# Owns: template naming, the rolling update that moves an existing group onto a new digest, and the fleet's SHAPE.
+# Owns: template naming, the rolling update that moves an existing group onto a new digest, the fleet's SHAPE, and
+#       whether the autoscaler removes VMs or the idle workers remove themselves (its MODE, and the grant that needs).
 # Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted;
-#             an existing autoscaler's policy belongs to the admin console and is not reconciled here.
+#             an existing autoscaler's SIZING belongs to the admin console and is not reconciled here.
 
 # Provision the WORKER FLEET: a digest-pinned instance template, the managed instance group that
 # runs it, and the autoscaler that sizes the group from the queue-depth metric.
@@ -23,7 +24,9 @@
 #
 # WHO OWNS THE SCALING KNOBS. The floor, the ceiling, the cooldown and the jobs-per-instance
 # assignment belong to the ADMIN CONSOLE once the autoscaler exists. This script sets them when it
-# CREATES the autoscaler and never touches them again - see step 6.
+# CREATES the autoscaler and never touches them again - see step 6. The autoscaler's MODE is not one
+# of them: whether it may remove VMs follows from what the workers on the new template can do, so
+# step 6 sets it on every run (WORKER_SELF_RETIRE).
 #
 # The reason is that two writers of one policy is a race whose loser is silent. Before this split,
 # every run of this script re-applied whatever `generated.<env>.env` said, so a warm floor raised
@@ -93,8 +96,29 @@ QUEUE_NAME="${QUEUE_NAME:-simulation_jobs}"
 # queued + running, not queued alone - see create-queue-depth-publisher.sh for why
 METRIC="custom.googleapis.com/hexera/worker_demand"
 
-# rotation - see step 5 for why these values and not others
-WORKER_ROLLING_TYPE="${WORKER_ROLLING_TYPE:-proactive}"
+# WHO REMOVES A WORKER VM. `true`: the autoscaler only scales OUT, and a worker that has held no
+# job for WORKER_IDLE_RETIRE_MINUTES removes its own VM (src/meshpipeline/runtime/idle_retire.py).
+# `false`: the autoscaler scales in by itself, at most WORKER_SCALE_IN_MAX_REPLICAS per window.
+#
+# WHY `true`. A Compute Engine group that scales in picks the VM to delete, and it cannot be told
+# which VMs are idle. Shared dev, 2026-09-30: the rehearsal job bc5ddb08 lost its VM at 08:29:52
+# (autoscaler 3 -> 2) and again at 09:00:13 (2 -> 1, 21 s after the 30-minute scale-in window
+# ran out) - both times the group deleted the busy VM and kept the idle one, on a demand figure that
+# was right. Only the VM knows it is idle, so the VM decides. `false` is the escape hatch for a
+# deployment whose owner will not grant the workers the right to remove themselves (step 1b): its
+# fleet shrinks again, and a job on a VM it picks is handed back and started over.
+WORKER_SELF_RETIRE="${WORKER_SELF_RETIRE:-true}"
+case "${WORKER_SELF_RETIRE}" in
+  true|false) ;;
+  *) die "WORKER_SELF_RETIRE must be true or false, got '${WORKER_SELF_RETIRE}'" ;;
+esac
+# The custom role that grant is made of - three permissions, on the project, for the worker identity.
+WORKER_SELF_RETIRE_ROLE="${WORKER_SELF_RETIRE_ROLE:-hexeraWorkerSelfRetire}"
+SELF_RETIRE_PERMISSIONS="compute.instanceGroupManagers.get,compute.instanceGroupManagers.update,compute.autoscalers.get"
+
+# rotation - see step 5 for why these values and not others. WORKER_ROLLING_TYPE is CHOSEN in step 5
+# unless it is set here: proactive or opportunistic, forced.
+WORKER_ROLLING_TYPE="${WORKER_ROLLING_TYPE:-}"
 WORKER_ROLLING_MAX_SURGE="${WORKER_ROLLING_MAX_SURGE:-1}"
 WORKER_ROLLING_MAX_UNAVAILABLE="${WORKER_ROLLING_MAX_UNAVAILABLE:-0}"
 WORKER_ROLLING_MIN_READY_SECONDS="${WORKER_ROLLING_MIN_READY_SECONDS:-180}"
@@ -211,6 +235,11 @@ if [ "${WORKER_MIG_MIN_REPLICAS}" -ge 1 ] && [ "${WORKER_ROLLING_MAX_UNAVAILABLE
    below its warm-pool floor of ${WORKER_MIG_MIN_REPLICAS} during a rotation, which is the one thing
    the floor exists to prevent. Leave it at 0 and let maxSurge create the replacement first."
 fi
+case "${WORKER_ROLLING_TYPE}" in
+  ""|proactive|opportunistic) ;;
+  *) die "WORKER_ROLLING_TYPE must be proactive or opportunistic (or unset, to let step 5 choose),
+   got '${WORKER_ROLLING_TYPE}'" ;;
+esac
 if [ "${WORKER_ROLLING_MAX_SURGE}" -eq 0 ] && [ "${WORKER_ROLLING_MAX_UNAVAILABLE}" -eq 0 ]; then
   die "maxSurge and maxUnavailable are both 0 - a rolling update with neither can never replace an
    instance. Compute Engine rejects it, and so does this."
@@ -269,6 +298,43 @@ else
        workers an identity of their own."
 fi
 WORKER_SCOPES="${WORKER_SCOPES:-https://www.googleapis.com/auth/cloud-platform}"
+
+# 1b) THE RIGHT TO LEAVE. A worker removes its own VM from the group (deleteInstances) or recreates
+#     it on the group's current template (recreateInstances) - both are
+#     compute.instanceGroupManagers.update on the group - after reading the group and its autoscaler
+#     (.get on each). A custom role holds exactly those three rather than
+#     roles/compute.instanceAdmin.v1, which would let every VM running as this identity create and
+#     delete any VM in the project; on a fleet running as the DEFAULT compute account that is every
+#     VM here.
+#
+#     A DEPLOY IDENTITY USUALLY CANNOT GRANT IT: creating a role needs iam.roles.create and binding
+#     it needs the project's setIamPolicy, which a deployer is deliberately not given (shared dev's
+#     github-deployer holds neither). So it is attempted, and a refusal prints the one command an
+#     owner runs ONCE. Without the grant nothing breaks and no job is lost: each worker logs the same
+#     command, stays up, and the group simply does not shrink or move onto a new template until the
+#     grant exists - it takes effect at once, with no redeploy.
+SELF_RETIRE_ROLE_REF="projects/${GCP_PROJECT_ID}/roles/${WORKER_SELF_RETIRE_ROLE}"
+SELF_RETIRE_GRANT_CMD="gcloud iam roles create ${WORKER_SELF_RETIRE_ROLE} --project ${GCP_PROJECT_ID} --title 'Hexera worker self-retire' --permissions ${SELF_RETIRE_PERMISSIONS} --stage GA && gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member serviceAccount:${WORKER_SA_EMAIL} --role ${SELF_RETIRE_ROLE_REF} --condition None"
+if [ "${WORKER_SELF_RETIRE}" = true ]; then
+  if { gc iam roles create "${WORKER_SELF_RETIRE_ROLE}" \
+         --title "Hexera worker self-retire" \
+         --description "Lets an idle worker remove or recreate its own VM in its managed instance group" \
+         --permissions "${SELF_RETIRE_PERMISSIONS}" --stage GA >/dev/null 2>&1 \
+       || gc iam roles update "${WORKER_SELF_RETIRE_ROLE}" \
+         --permissions "${SELF_RETIRE_PERMISSIONS}" >/dev/null 2>&1; } \
+     && gc projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+         --member "serviceAccount:${WORKER_SA_EMAIL}" \
+         --role "${SELF_RETIRE_ROLE_REF}" --condition None >/dev/null 2>&1; then
+    log "project += ${SELF_RETIRE_ROLE_REF} -> ${WORKER_SA_EMAIL}"
+  else
+    warn "could not grant ${WORKER_SA_EMAIL} the right to remove its own VM from ${WORKER_MIG}
+       (${SELF_RETIRE_PERMISSIONS}). This deploy identity cannot change project IAM. If an owner
+       has already granted it, nothing more is needed. If not, idle workers stay up and say so in
+       their logs, and the group neither shrinks nor moves onto a new template until an owner runs,
+       ONCE:
+         ${SELF_RETIRE_GRANT_CMD}"
+  fi
+fi
 
 # 2) the credentials the instance will fetch, BY NAME. Each entry is
 #    `METADATA_KEY:ENV_VAR_HOLDING_THE_SECRET_NAME`, and the metadata keys are exactly the five
@@ -339,9 +405,20 @@ done
 #    fleet instead of being silently ignored until the next image build. The digest is in the name
 #    in the clear because that is the thing an operator reads a template name to learn.
 DIGEST="${APP_IMAGE##*@sha256:}"
+# THE SELF-RETIRE MARK. A label on the template saying "VMs made from this retire themselves when
+# idle" - step 5 reads it off the group's CURRENT template to decide whether the workers already
+# running can be trusted to move themselves onto the new one. A worker built before
+# runtime/idle_retire.py existed cannot, and no label says it can. Part of the hash below, so turning
+# WORKER_SELF_RETIRE off or on is a new template, never a relabelled old one.
+if [ "${WORKER_SELF_RETIRE}" = true ]; then
+  SELF_RETIRE_LABEL=",self-retire=v1"
+else
+  SELF_RETIRE_LABEL=""
+fi
 SPEC_HASH="$(printf '%s\n' "${APP_IMAGE}" "${WORKER_MACHINE_TYPE}" "${WORKER_BOOT_DISK_GB}" \
   "${WORKER_BOOT_DISK_TYPE}" "${WORKER_IMAGE_FAMILY}" "${WORKER_IMAGE_PROJECT}" "${VPC_NETWORK}" \
   "${VPC_SUBNET}" "${WORKER_SA_EMAIL}" "${WORKER_SCOPES}" "${WORKER_METADATA[@]}" \
+  "${SELF_RETIRE_LABEL}" \
   | cat - "${STARTUP}" "${SHUTDOWN}" \
   | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:6])')"
 TEMPLATE="${WORKER_TEMPLATE_PREFIX:-${WORKER_MIG}-tpl}-${DIGEST:0:12}-${SPEC_HASH}"
@@ -375,7 +452,7 @@ info "Creating instance template ${TEMPLATE}"
     --no-address \
     --service-account "${WORKER_SA_EMAIL}" \
     --scopes "${WORKER_SCOPES}" \
-    --labels "app=hexera,component=worker,version=0-0-1,deployment-id=${DEPLOYMENT_ID},managed-by=deploy" \
+    --labels "app=hexera,component=worker,version=0-0-1,deployment-id=${DEPLOYMENT_ID},managed-by=deploy${SELF_RETIRE_LABEL}" \
     --metadata-from-file "startup-script=${STARTUP},shutdown-script=${SHUTDOWN}" \
     --metadata "^|^$(IFS='|'; printf '%s' "${WORKER_METADATA[*]}")"
   log "template        ${TEMPLATE}  (created - ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata, no value)"
@@ -394,14 +471,23 @@ fi
 #    a readiness delay the group would count it as available and delete the instance that actually
 #    was.
 #
-#    PROACTIVE, not opportunistic. An opportunistic update only reaches instances the autoscaler
-#    happens to replace, so a warm pool that never scales would never receive a new digest at all -
-#    the rotation would silently not happen. The cost is that replacing an instance interrupts
-#    whatever it is running. The shutdown script is what makes that survivable: the job on a
-#    replaced instance hands itself back to the queue and starts again on another worker, instead
-#    of being failed as "worker lost" half an hour later. It still starts again from the beginning,
-#    so WORKER_ROLLING_TYPE=opportunistic remains the escape hatch for a deploy that must not
-#    disturb a long job.
+#    OPPORTUNISTIC WHEN THE RUNNING WORKERS CAN MOVE THEMSELVES, PROACTIVE WHEN THEY CANNOT.
+#
+#    A proactive roll replaces VMs whatever they are running. Shared dev, 2026-09-30 08:57:57: a
+#    fleet deploy (run 36690862673) replaced the VM running the rehearsal job bc5ddb08 mid-mesh; the
+#    job was handed back (deploy/gcp/worker/shutdown.sh) and started again from the beginning on
+#    another VM - the second of its three moves that morning. Survivable, not acceptable.
+#
+#    An opportunistic roll only sets the template NEW VMs start on. On its own that never reaches a
+#    warm pool that does not scale, so the rotation would silently not happen - which is why this
+#    was proactive. What changes that is runtime/idle_retire.py: a worker on an outdated template
+#    recreates its own VM on the current one as soon as it is idle, one worker at a time. A busy
+#    worker finishes its job on the code it started with, then moves.
+#
+#    That holds only for workers that HAVE that code, so the choice is made off the template the
+#    group runs NOW: its `self-retire` label (step 4) says its VMs move themselves. A group still on a
+#    template without it - the first deploy after this change, or WORKER_SELF_RETIRE=false - is
+#    rolled proactively, one last time. WORKER_ROLLING_TYPE forces either.
 if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" >/dev/null 2>&1; then
   CURRENT_TEMPLATE_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
     --zone "${WORKER_MIG_ZONE}" --format='value(versions[0].instanceTemplate)' 2>/dev/null || true)"
@@ -413,7 +499,24 @@ if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_
     log "fleet           ${WORKER_MIG}  (reused - already on ${TEMPLATE})"
   else
     MIG_DISPOSITION=rolled
-    info "Rolling ${WORKER_MIG} from ${CURRENT_TEMPLATE:-<unknown>} onto ${TEMPLATE}"
+    if [ -n "${WORKER_ROLLING_TYPE}" ]; then
+      ROLL_REASON="forced by WORKER_ROLLING_TYPE"
+    else
+      CURRENT_SELF_RETIRES=""
+      if [ -n "${CURRENT_TEMPLATE}" ]; then
+        CURRENT_SELF_RETIRES="$(gc compute instance-templates describe "${CURRENT_TEMPLATE}" \
+          --format='value(properties.labels.self-retire)' 2>/dev/null || true)"
+      fi
+      if [ "${WORKER_SELF_RETIRE}" = true ] && [ -n "${CURRENT_SELF_RETIRES}" ]; then
+        WORKER_ROLLING_TYPE=opportunistic
+        ROLL_REASON="the running workers move themselves once idle - none is replaced mid-job"
+      else
+        WORKER_ROLLING_TYPE=proactive
+        ROLL_REASON="the running workers cannot move themselves - a job on a replaced VM is handed back and starts again"
+      fi
+    fi
+    info "Rolling ${WORKER_MIG} from ${CURRENT_TEMPLATE:-<unknown>} onto ${TEMPLATE} (${WORKER_ROLLING_TYPE})"
+    log "roll: ${ROLL_REASON}"
     # MIN-READY IS SET THROUGH THE API, NOT THE CLI. `--min-ready` was a flag on
     # `rolling-action start-update` and gcloud has removed it - it is absent from the GA track, from
     # beta, and from `instance-groups managed update`'s `--update-policy-*` family, which exposes
@@ -489,6 +592,39 @@ FILTER="${FILTER} AND resource.labels.task_id = \"${QUEUE_NAME}\""
 AUTOSCALER_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
   --zone "${WORKER_MIG_ZONE}" --format='value(status.autoscaler)' 2>/dev/null || true)"
 
+# THE MODE IS NOT A SIZING KNOB, and it is the one part of the policy this stage owns. Whether the
+# autoscaler may remove VMs depends on whether the workers remove themselves, which is a property
+# of the template this stage just rolled onto - so it is set HERE, on every run, and nothing else in
+# the policy is touched. `only-scale-out` still grows the group on demand and still holds the floor;
+# it never picks a VM to delete. The admin console writes the policy back whole, mode included, so a
+# console edit keeps it; create-queue-depth-publisher.sh carries it through its own rewrite.
+if [ "${WORKER_SELF_RETIRE}" = true ]; then
+  AS_MODE=only-scale-out
+  AS_MODE_API=ONLY_SCALE_OUT
+else
+  AS_MODE=on
+  AS_MODE_API=ON
+fi
+
+if [ -n "${AUTOSCALER_URL}" ]; then
+  LIVE_MODE="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
+    --zone "${WORKER_MIG_ZONE}" --format='value(autoscaler.autoscalingPolicy.mode)' 2>/dev/null || true)"
+  if [ "${LIVE_MODE}" = OFF ]; then
+    # switched off by hand - an operator decision, and not this stage's to undo
+    log "autoscaler mode OFF (left as set) - the group's size is fixed until someone turns it back on"
+  elif [ "${LIVE_MODE}" = "${AS_MODE_API}" ]; then
+    log "autoscaler mode ${AS_MODE_API} (unchanged)"
+  elif gc compute instance-groups managed update-autoscaling "${WORKER_MIG}" \
+         --zone "${WORKER_MIG_ZONE}" --mode "${AS_MODE}" >/dev/null; then
+    log "autoscaler mode ${LIVE_MODE:-<unread>} -> ${AS_MODE_API}"
+  else
+    warn "could not set the autoscaler for ${WORKER_MIG} to --mode ${AS_MODE}. It keeps its current
+       mode (${LIVE_MODE:-unknown}); if that is ON, it can still delete a VM that is running a job.
+       Set it by hand:
+         gcloud compute instance-groups managed update-autoscaling ${WORKER_MIG} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID} --mode ${AS_MODE}"
+  fi
+fi
+
 if [ -n "${AUTOSCALER_URL}" ]; then
   AUTOSCALING_DISPOSITION="left to the console"
   info "Leaving the autoscaling policy for ${WORKER_MIG} alone"
@@ -509,7 +645,8 @@ else
     --update-stackdriver-metric "${METRIC}" \
     --stackdriver-metric-filter "${FILTER}" \
     --stackdriver-metric-single-instance-assignment "${WORKER_JOBS_PER_INSTANCE}" \
-    --scale-in-control "max-scaled-in-replicas=${WORKER_SCALE_IN_MAX_REPLICAS},time-window=${WORKER_SCALE_IN_WINDOW_SECONDS}"
+    --scale-in-control "max-scaled-in-replicas=${WORKER_SCALE_IN_MAX_REPLICAS},time-window=${WORKER_SCALE_IN_WINDOW_SECONDS}" \
+    --mode "${AS_MODE}"
 fi
 
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
@@ -526,5 +663,11 @@ log "  floor         ${FLOOR_STATE}"
 log "  ceiling       ${WORKER_MIG_MAX_REPLICAS} instances, one per ${WORKER_JOBS_PER_INSTANCE} job(s) queued or running, cooldown ${WORKER_MIG_COOLDOWN_SECONDS}s"
 log "  scaling       ${AUTOSCALING_DISPOSITION} - the floor/ceiling above are CREATION DEFAULTS; the"
 log "                live policy is the admin console's once the autoscaler exists"
+if [ "${WORKER_SELF_RETIRE}" = true ]; then
+  log "  scale-in      by the idle workers themselves - the autoscaler only scales out, so a VM running"
+  log "                a job is never the one removed (runtime/idle_retire.py; needs ${SELF_RETIRE_ROLE_REF})"
+else
+  log "  scale-in      by the autoscaler, at most ${WORKER_SCALE_IN_MAX_REPLICAS} per ${WORKER_SCALE_IN_WINDOW_SECONDS}s - it may pick a busy VM"
+fi
 log "  credentials   ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata - the values are fetched per instance"
 log "done"

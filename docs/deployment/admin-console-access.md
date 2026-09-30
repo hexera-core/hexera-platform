@@ -308,9 +308,27 @@ when the group has none: at most one instance removed per 30 minutes
 running - not the queue depth. Sized on depth alone, the group shrank to its floor whenever a burst
 of queued jobs drained, and deleted VMs that were mid-job (shared dev, 2026-09-29: three jobs lost
 at 05:41, 06:39 and 07:32 UTC). The depth series is still published and is what the queue chart on
-this page shows. A Compute Engine group cannot be told which of its VMs is idle, so when demand
-drops by one it may still remove a busy VM; that job is handed back as above, and the scale-in
-control keeps it rare.
+this page shows.
+
+**Who removes a worker VM: the idle worker, not the autoscaler.** A Compute Engine group cannot be
+told which of its VMs is idle, and on shared dev (2026-09-30) its scale-in removed the busy VM twice
+in half an hour, with the scale-in control in place. So the autoscaler's mode is `ONLY_SCALE_OUT`:
+it still adds VMs as demand rises and still holds the floor, but never deletes one. A worker that
+has held no job for `WORKER_IDLE_RETIRE_MINUTES` (default 10) removes its own VM when the group is
+above its floor, after it has stopped taking work and checked it is still empty
+(`src/meshpipeline/runtime/idle_retire.py`). The mode is set by `create-worker-fleet.sh`
+(`WORKER_SELF_RETIRE`, default `true`) and carried through every rewrite; a console edit writes the
+policy back whole, mode included. The scale-in control above does nothing in this mode. The workers
+need one grant for this - `projects/<project>/roles/hexeraWorkerSelfRetire` on the worker identity
+(`compute.instanceGroupManagers.get/update`, `compute.autoscalers.get`) - which the fleet deploy
+attempts and, if the deploy identity cannot change IAM, prints for an owner to run once. Without it
+the workers say so in their logs and the group does not shrink.
+
+**A fleet roll no longer replaces a busy worker.** Once the group runs workers that can move
+themselves (their template carries the `self-retire` label), a fleet deploy rolls
+OPPORTUNISTICALLY: new VMs start on the new template, and a worker on the old one recreates its own
+VM as soon as it is idle. The first roll onto such workers is still proactive, because the workers
+it replaces cannot move themselves.
 
 
 ## 11. What the first real dev deploy found

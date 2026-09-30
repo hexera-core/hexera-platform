@@ -115,6 +115,15 @@ WS_MAX_SESSION_SECONDS: int = int(optional_env("WS_MAX_SESSION_SECONDS", "3000")
 # the console can say "waiting for a worker to start (about N minutes)" instead of a silent
 # spinner; 0 hides the estimate.
 WORKER_WAKE_MINUTES: int = int(optional_env("WORKER_WAKE_MINUTES", "8"))
+# How long a fleet worker holds no job before it removes its own VM from the managed instance
+# group (runtime/idle_retire.py). The autoscaler only scales OUT: it cannot tell an idle VM from a
+# busy one, so removal is left to the VM that knows. 0 turns self-removal off - then nothing
+# shrinks a scale-out-only group, which is why that is not the default.
+WORKER_IDLE_RETIRE_MINUTES: int = int(optional_env("WORKER_IDLE_RETIRE_MINUTES", "10"))
+if WORKER_IDLE_RETIRE_MINUTES < 0:
+    from meshpipeline.settings.env import ConfigurationError as _CE
+    raise _CE(f"WORKER_IDLE_RETIRE_MINUTES must be 0 (off) or a number of minutes, got "
+              f"{WORKER_IDLE_RETIRE_MINUTES}")
 # Hard cap on any single builder tool result fed back into the LLM context (context-blowup guard).
 MAX_TOOL_OUTPUT_CHARS: int = int(optional_env("MAX_TOOL_OUTPUT_CHARS", "16000"))
 
