@@ -501,8 +501,13 @@ def read_up_evidence(skin: Path) -> dict:
         import numpy as np
 
         from meshpipeline.cad.stl_io import read_stl_triangles
-        from meshpipeline.cad.up_axis import read_up
+        from meshpipeline.cad.up_axis import read_up, too_many
 
+        # THE BOUND, before a byte is read: a binary STL is 84 bytes and 50 per triangle (a text
+        # one more), so its size caps the count - a huge skin is never loaded just to be skipped
+        over = too_many((Path(skin).stat().st_size - 84) // 50)
+        if over is not None:
+            return over.as_dict()
         return read_up(np.asarray(read_stl_triangles(Path(skin)), dtype=float)).as_dict()
     except Exception as exc:  # noqa: BLE001 - the pictures and the user still settle it
         logger.warning("geometry check: which way is up could not be read from the shape (%s: %s)",

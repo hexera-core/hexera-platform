@@ -387,6 +387,22 @@ def test_a_shape_that_cannot_be_read_never_fails_the_scout(tmp_path):
     assert reading["axis"] is None and "could not be read" in reading["reason"]
 
 
+def test_a_skin_past_the_bound_is_skipped_before_it_is_loaded(tmp_path, monkeypatch):
+    """The reading is optional: a skin too big to read quickly is judged by its file size and never
+    loaded - the pictures decide."""
+    import meshpipeline.cad.stl_io as stl_io
+    import meshpipeline.cad.up_axis as ua
+    from meshpipeline.cad.stl_io import _box_triangles, write_stl_binary
+
+    skin = tmp_path / "skin.stl"
+    write_stl_binary(skin, _box_triangles((0, 0, 0), (1, 1, 1)))          # 12 triangles
+    monkeypatch.setattr(ua, "MAX_TRIANGLES", 10)
+    monkeypatch.setattr(stl_io, "read_stl_triangles",
+                        lambda path: (_ for _ in ()).throw(AssertionError("the skin was loaded")))
+    reading = gc.read_up_evidence(skin)
+    assert reading["axis"] is None and "too many triangles (12)" in reading["reason"]
+
+
 # --------------------------------------------------------------------- back out for the views ----
 def _stored(monkeypatch, **objects) -> None:
     store = _Store({gc.check_object_key("s1", name): json.dumps(v).encode() for name, v in objects.items()})

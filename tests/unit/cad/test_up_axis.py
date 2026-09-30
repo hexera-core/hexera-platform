@@ -181,6 +181,14 @@ def test_two_ends_that_both_look_like_feet_say_nothing():
     assert up_from_ends(ends).axis is None
 
 
+def test_a_part_past_the_bound_is_not_read_and_leaves_it_to_the_pictures(monkeypatch):
+    import meshpipeline.cad.up_axis as ua
+
+    monkeypatch.setattr(ua, "MAX_TRIANGLES", 100)
+    reading = read_up(TURN["-z"](_car_on_struts()))
+    assert reading.axis is None and "too many triangles" in reading.reason
+
+
 def test_an_empty_part_is_read_as_saying_nothing():
     assert read_up(np.zeros((0, 3, 3))).axis is None
     assert opposite("+z") == "-z" and opposite("-x") == "+x"

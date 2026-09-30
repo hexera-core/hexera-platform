@@ -321,7 +321,7 @@ async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) ->
         from meshpipeline.application.geometry_check import stored_up_axis
         return await asyncio.to_thread(stored_up_axis, session_id)
     except Exception as exc:  # noqa: BLE001 - a view preference never costs the user their mesh
-        logger.info("surface: which way is up unavailable for job %s (%s)", job_id, type(exc).__name__)
+        logger.info("surface: which way is up unavailable (%s)", type(exc).__name__)
         return None
 
 

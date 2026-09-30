@@ -24,6 +24,11 @@ SAMPLES = 60_000
 GRID = 96
 #: A piece of the band with fewer points than this is a stray sample, not a contact.
 MIN_CONTACT_POINTS = 3
+#: THE BOUND. Past this many triangles the shape is not read at all: this reading is optional and
+#: must never be what makes a big upload's check late or short of memory. The largest corpus
+#: files read well inside it (the buildings block, 400,000 triangles, in under two seconds; the
+#: CAD skins are a picture's tessellation, a few thousand).
+MAX_TRIANGLES = 1_000_000
 
 #: LEGS - wheels, struts, stilts, feet: three or more separate contacts, spread over at least
 #: LEGS_SPREAD of the footprint one way and LEGS_SPREAD_OTHER the other (the Windsor body's stilts
@@ -202,12 +207,20 @@ def up_from_ends(ends: dict) -> UpReading:
     return UpReading(best[1], best[0], best[2], ends)
 
 
+def too_many(n_triangles: int) -> UpReading | None:
+    """The reading for a part past the bound - the pictures decide - or None when it is within."""
+    if n_triangles <= MAX_TRIANGLES:
+        return None
+    return UpReading(None, 0.0, f"too many triangles ({n_triangles:,}) to read quickly; the pictures decide")
+
+
 def read_up(tris) -> UpReading:
     """The code's reading of which way the part stands up, from its triangles."""
     tris = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
     if len(tris) == 0:
         return UpReading(None, 0.0, "the part has no surface to read")
-    return up_from_ends(read_ends(tris))
+    return too_many(len(tris)) or up_from_ends(read_ends(tris))
 
 
-__all__ = ["DEFAULT_UP", "UP_AXES", "UpReading", "opposite", "read_ends", "read_up", "turn", "up_from_ends"]
+__all__ = ["DEFAULT_UP", "MAX_TRIANGLES", "UP_AXES", "UpReading", "opposite", "read_ends", "read_up", "too_many", "turn",
+           "up_from_ends"]
