@@ -20,7 +20,9 @@ ONE VOCABULARY, THREE LEVELS, each naming a different thing and none restating a
   of the whole run (gate_failed, input_rejected, worker_lost, timed_out, ...);
 * the failure CLASS (errors.FailureClass) - whose problem a failure is, and the one sentence for
   the categories that class owns (a refused input, a lost worker, a provider outage);
-* the failure CAUSE (here) - WHICH gate failure, when the category is gate_failed.
+* the failure CAUSE (here) - WHICH gate failure, when the category is gate_failed; and, when the
+  review of a mesh did not conclude (internal_pipeline_failure), that it did not and why - so our
+  own failure still names what failed instead of "something went wrong on our side".
 Where a cause and a class describe the same thing, the class's sentence is the one said: a refused
 geometry is worded by errors.DOMAIN_REJECTED, never a second time here.
 """
@@ -63,6 +65,12 @@ class FailureCause(StrEnum):
     ENGINE_CRASHED = "engine_crashed"
     #: The input geometry was refused before any mesh was built. Facts: reason.
     GEOMETRY_REJECTED = "geometry_rejected"
+    #: The review of the mesh stopped before it reached a verdict - our failure, never a statement
+    #: about the mesh. Job 53bbce4b built a mesh that passed every gate and a trial solve, the
+    #: review stalled, and the user was told only "something went wrong on our side". Facts:
+    #: marker (which way the review stopped), validated (the executor validated the mesh first),
+    #: reruns (how many times the review was already started again on the same mesh).
+    REVIEW_INCOMPLETE = "review_incomplete"
 
 
 #: The causes another builder attempt cannot change. A contract mismatch is authored from the
@@ -282,6 +290,35 @@ def _domain(f: Mapping) -> tuple[str, str]:
                   "asked for.")
 
 
+#: Why a review stopped, by the marker it ended with (agents/reviewer/loop_policy), in words.
+_REVIEW_STOPPED = {
+    "reviewer_stalled": "the reviewer stopped making progress before it reached a verdict",
+    "reviewer_exhausted": "the reviewer used up its time before it reached a verdict",
+    "reviewer_render_unavailable": ("the tool that draws the mesh for the reviewer was not "
+                                    "available"),
+    # also every pre-loop refusal: a malformed plan, a missing measurement or view or target
+    "reviewer_evidence_missing": "the review did not have everything it needs to judge the mesh",
+}
+
+
+def _review(f: Mapping) -> tuple[str, str]:
+    marker = str(f.get("marker") or "").strip()
+    why = _REVIEW_STOPPED.get(marker, "the AI service that reviews the mesh was not available")
+    reruns = f.get("reruns")
+    n = int(reruns) if isinstance(reruns, int) and not isinstance(reruns, bool) else 0
+    if f.get("validated"):
+        what = ("Your mesh was built and passed every automatic check, but our final review of "
+                f"it did not finish: {why}.")
+    else:
+        what = f"Our review of the mesh could not run: {why}."
+    if n:
+        times = {1: "once", 2: "twice"}.get(n, f"{n} times")
+        what += f" We started the review again on the same mesh {times}, and it stopped again."
+    what += " That is on our side, not a problem with your geometry or your request."
+    return what, (f"You can run it again ({_RUN_AGAIN}) with the same request - nothing needs to "
+                  "change.")
+
+
 def describe(cause: object, facts: Mapping | None = None, *,
              engine: str = "") -> tuple[str, str]:
     """(what failed, what the user can do next) - each one or two plain sentences. An unknown
@@ -342,6 +379,8 @@ def describe(cause: object, facts: Mapping | None = None, *,
         return (f"The mesher{who} stopped before it finished writing the mesh, so there was no "
                 "complete mesh to check. This is usually on our side, not your geometry's.",
                 f"You can run it again: {_RUN_AGAIN}.")
+    if c is FailureCause.REVIEW_INCOMPLETE:
+        return _review(f)
     if c is FailureCause.GEOMETRY_REJECTED:
         # ONE sentence for a refused input, and errors.py owns it (FailureClass.DOMAIN_REJECTED,
         # the class the input_rejected category renders): lead, the reason, the next step.

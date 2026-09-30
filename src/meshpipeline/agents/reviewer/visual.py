@@ -19,6 +19,7 @@ from meshpipeline.agents.reviewer.eligibility import (
     validate_plan,
 )
 from meshpipeline.agents.reviewer.interaction_inputs import VisualReviewInteractionInputs
+from meshpipeline.agents.reviewer.loop_policy import MARKER_STALLED
 from meshpipeline.agents.reviewer.persist import save_review_artifacts
 from meshpipeline.agents.reviewer.render_runtime import open_runtime
 from meshpipeline.agents.reviewer.unified import UnifiedReviewOutcome, run_unified_review
@@ -96,14 +97,23 @@ async def node_reviewer(state: PipelineState) -> dict:
     purpose       = state.get("purpose", "")
     engine_params = state.get("engine_params", {}) or {}
     retry_count   = state.get("retry_count", 0)
-    review_save_dir = workspace / f"review_{retry_count + 1}"
-    logger.info("Reviewer: starting - job_id=%s engine=%s attempt=%d", job_id, engine, retry_count)
+    # A RERUN reviews the same mesh again after a review that ended without a verdict
+    # (pipeline/graph.node_review_retry). Its trail, its event ids and its words are its own.
+    rerun = int(state.get("review_rerun_count", 0) or 0)
+    _scope = f"{retry_count}" + (f":rerun{rerun}" if rerun else "")
+    review_save_dir = workspace / (f"review_{retry_count + 1}"
+                                   + (f"_rerun{rerun}" if rerun else ""))
+    logger.info("Reviewer: starting - job_id=%s engine=%s attempt=%d rerun=%d",
+                job_id, engine, retry_count, rerun)
 
     # THE reviewer's execution publisher. The review runs inside the graph, under the
     # claim taken before it started, so every event it publishes is ownership-checked.
     _publish = execution_publisher(job_id, agent="reviewer")
-    await _publish.astage(op_id=f"inspect:{retry_count}")
-    await _publish.anote("Inspecting the mesh against your brief", op_id=f"inspect:{retry_count}")
+    await _publish.astage(op_id=f"inspect:{_scope}")
+    await _publish.anote("Inspecting the mesh against your brief" if not rerun else
+                         "The last review stopped before it reached a verdict - reviewing the "
+                         "same mesh again (nothing is rebuilt)",
+                         op_id=f"inspect:{_scope}")
 
     def _read_txt(filename: str) -> str:
         p = workspace / filename
@@ -130,7 +140,7 @@ async def node_reviewer(state: PipelineState) -> dict:
     if state.get("executor_success") is not True:
         return await _early_nonverdict(
             job_id=job_id, publish=_publish, review_save_dir=review_save_dir,
-            manifest=manifest, retry_count=retry_count,
+            manifest=manifest, retry_count=retry_count, rerun=rerun,
             marker="reviewer_evidence_missing",
             note="The mesh could not be verified because its execution was not validated. "
                  "This is a problem on our side - please try again.",
@@ -158,6 +168,7 @@ async def node_reviewer(state: PipelineState) -> dict:
         prior_flag_findings=HF.findings_from_state(state.get("dispute_flag_findings")),
         builder_flag_responses=HF.responses_from_state(state.get("builder_flag_responses")),
         prior_reviewer_feedback=str(state.get("reviewer_feedback") or ""),
+        rerun=rerun,
     )
 
     ok, problems = validate_plan(spec, plan)
@@ -202,7 +213,7 @@ async def node_reviewer(state: PipelineState) -> dict:
             # handed the image - so the bytes never enter the public backlog at all.
             # Raw mode publishes it, sanitized, through the same event.
             await _publish_inspection_image(_publish, opening.initial_screenshot_b64,
-                                      op_id=f"opening-render:{retry_count}")
+                                      op_id=f"opening-render:{_scope}")
 
             # EXPECTED-TARGET-MISSING pre-check: an engine-RESOLVED obligation that discovery cannot
             # satisfy - whole-kind absence OR partial loss (3 groups expected, 1 discovered) - is
@@ -226,6 +237,9 @@ async def node_reviewer(state: PipelineState) -> dict:
                 workspace=workspace,
                 step_basename=inputs.step_basename,
                 patch_names=list((manifest.get("patches") or {}).keys()),
+                # what the viewer can actually draw - the manifest also names boundaries (the far
+                # field, a ground plane) that no review geometry reaches
+                renderable_patches=list(getattr(opening, "patch_names", None) or ()),
                 patch_colour_legend=opening.patch_colour_legend,
                 patch_views=opening.patch_views,
                 mesh_units=inputs.mesh_units,
@@ -248,7 +262,7 @@ async def node_reviewer(state: PipelineState) -> dict:
                 total_timeout_s=rcfg.REVIEWER_TOTAL_TIMEOUT_SECONDS,
                 pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),
                 job_id=job_id, user_id=inputs.user_id, publish=_publish, obligations=obligations,
-                attempt=inputs.retry_count,
+                attempt=inputs.retry_count, rerun=inputs.rerun,
                 user_dispute=inputs.user_dispute, dispute_phase=inputs.dispute_phase)
     except ReviewRenderError as exc:
         return await _render_failure_result(inputs, exc)
@@ -347,19 +361,28 @@ async def _translate_outcome(inputs: VisualReviewInteractionInputs,
 
 
 def _nonverdict_note(marker: str) -> str:
+    # What happened, and nothing about what to do next: a review that stopped this way may be
+    # started again on the same mesh (pipeline/graph.node_review_retry), and the terminal message
+    # owns the next step if it is not.
     if marker in ("reviewer_render_unavailable",):
         return ("Visual verification could not be completed because the mesh rendering step was "
-                "unavailable. This is a problem on our side - please try again.")
+                "unavailable. This is a problem on our side.")
+    if marker == MARKER_STALLED:
+        return ("The review stopped making progress before it reached a verdict. This is a "
+                "problem on our side, not your mesh's.")
+    if marker == "reviewer_exhausted":
+        return ("The review ran out of time before it reached a verdict. This is a problem on "
+                "our side, not your mesh's.")
     if _is_provider_failure(marker):
-        return ("The review service is temporarily unavailable. This is a problem on our side - "
-                "please try again.")
+        return ("The review service is temporarily unavailable. This is a problem on our side.")
     return ("The mesh could not be fully verified from the available evidence, so it was not "
-            "accepted. This is a problem on our side - please try again.")
+            "accepted. This is a problem on our side.")
 
 
 def _is_provider_failure(marker: str) -> bool:
     return marker not in {
         "reviewer_render_unavailable", "reviewer_evidence_missing", "reviewer_exhausted",
+        MARKER_STALLED,
     }
 
 
@@ -371,14 +394,16 @@ class _EarlyRefusalInputs:
     review_save_dir: Path
     manifest: dict
     retry_count: int
+    rerun: int = 0
 
 
 async def _early_nonverdict(*, job_id: str, publish: ExecutionEventPublisher,
                             review_save_dir: Path, manifest: dict,
-                      retry_count: int, marker: str, note: str, chain: str) -> dict:
+                      retry_count: int, marker: str, note: str, chain: str,
+                      rerun: int = 0) -> dict:
     return await _nonverdict(
         _EarlyRefusalInputs(job_id=job_id, publish=publish, review_save_dir=review_save_dir,
-                            manifest=manifest, retry_count=retry_count),
+                            manifest=manifest, retry_count=retry_count, rerun=rerun),
         marker, note, chain)
 
 
@@ -386,7 +411,9 @@ async def _nonverdict(inputs: VisualReviewInteractionInputs | _EarlyRefusalInput
                       note: str, chain: str,
                 *, tool_calls: int = 0, messages: list | None = None) -> dict:
     # the marker names WHICH non-verdict this is; the attempt separates genuine retries
-    await inputs.publish.awarn(note, op_id=f"nonverdict:{marker}:{inputs.retry_count}")
+    _rerun = int(getattr(inputs, "rerun", 0) or 0)
+    await inputs.publish.awarn(note, op_id=f"nonverdict:{marker}:{inputs.retry_count}"
+                                           + (f":rerun{_rerun}" if _rerun else ""))
     try:
         if messages:
             save_review_artifacts(inputs.review_save_dir, messages, None, inputs.manifest,

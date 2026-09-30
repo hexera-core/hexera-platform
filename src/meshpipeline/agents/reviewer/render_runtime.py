@@ -174,6 +174,22 @@ class ReviewerRenderRuntime:
         span = _required_float(args.get("span"), 1000.0)
         preset = args.get("preset")
         patch_name = args.get("patch_name")
+        if patch_name:
+            # The same screen toggle_patch applies, for the same reason. A manifest names boundaries
+            # no review geometry ever reaches (the far-field box, a ground plane), the reviewer is
+            # told their names, and asking to isolate one used to come back as a bare "unknown
+            # patch" with no way forward. Job 53bbce4b asked for 'farfield' three times running,
+            # each refusal counted as a round without progress, and the review ended with no
+            # verdict on a mesh that had passed every gate. The refusal names the way out.
+            renderable = list((await self.capabilities()).entities)
+            if patch_name not in renderable:
+                return (
+                    f"Patch '{patch_name}' carries no review geometry and cannot be shown, so no "
+                    f"view was taken. Renderable patches: {', '.join(renderable) or 'none'}. "
+                    f"Judge '{patch_name}' from the measured numbers instead - the Domain bbox "
+                    "for the outer boundary and the metrics already on file - or call "
+                    "go_to_coordinates again without patch_name."
+                )
         ev = await self._exec(RenderCommand(
             kind=CommandKind.GO_TO_COORDINATES, coordinates=(x, y, z), span=span,
             view_id=preset or "", entity_id=patch_name or ""))

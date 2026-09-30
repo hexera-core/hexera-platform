@@ -60,6 +60,10 @@ class VisualReviewInteractionInputs:
     prior_flag_findings: tuple = ()
     builder_flag_responses: tuple = ()
     prior_reviewer_feedback: str = ""
+    # How many times this attempt's review already ended without a verdict and was started again
+    # (pipeline/graph.node_review_retry). 0 on every first review; it keeps a rerun's event
+    # identities apart from those of the review it replaces.
+    rerun: int = 0
 
     def __post_init__(self) -> None:
         for name in ("job_id", "mesh_units"):

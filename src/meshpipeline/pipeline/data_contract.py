@@ -430,6 +430,7 @@ STATE_FIELDS: dict[str, str] = {
     "solvability_failed":    "cheap solvability gate outcome (deterministic guardrail)",
     "api_failure":           "provider failure marker for honest failure taxonomy",
     "infra_retry_count":     "transient-infra replay counter: same mesh attempt re-run after a provider/dependency brownout (node_infra_retry)",
+    "review_rerun_count":    "reviews of the same validated mesh started again after one ended without a verdict (node_review_retry); not a mesh attempt",
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
     "intake_patches":        "patch contract (see contract)",

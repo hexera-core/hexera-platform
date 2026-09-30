@@ -277,7 +277,8 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        pipeline_timed_out: bool = False,
                        requirement_caveats: list | None = None,
                        failure_cause: str = "",
-                       failure_facts: Mapping | None = None) -> FinalResult:
+                       failure_facts: Mapping | None = None,
+                       review_reruns: int = 0) -> FinalResult:
     _verdict = (reviewer_verdict or "").strip().upper()
 
     # REVIEW-COMPLETION INVARIANT.
@@ -288,7 +289,8 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
     # attempt produced no eligible verdict, and any verdict still in state was RETAINED from an
     # earlier attempt (the graph carries reviewer_verdict forward across retries).
     # A retained verdict must never be reported as this run's judgement of the mesh.
-    _reviewer_marker = (api_failure or "").startswith("reviewer_")
+    # bare or router-wrapped (`<<API_FAILURE:reviewer_timeout>>`), the reviewer's own marker
+    _reviewer_marker = _bare_marker(api_failure).startswith("reviewer_")
     if api_failure and (_reviewer_marker or _verdict in ("PASS", "FAIL")):
         # The review RAN and did not conclude: either a reviewer-owned failure marker, or a
         # verdict retained from an earlier attempt that this one did not reproduce. Either way
@@ -360,6 +362,20 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         # build) is the request's, and a valid file must not be sent back for repair over it.
         # Either way the recorded reason is said - it is the one thing the user can act on.
         cat, cause, detail, next_step = _admission_account(failure_facts, engine)
+    elif (cat is FailureCategory.internal_pipeline_failure
+          and execution is ReviewExecution.failed_to_complete
+          and _bare_marker(api_failure).startswith("reviewer_")):
+        # OUR failure still names what failed. The review did not conclude, so nothing may be said
+        # about the mesh - but "something went wrong on our side" says nothing at all, and the
+        # user of job 53bbce4b read it after a mesh had passed every gate. Which way the review
+        # stopped, and whether it was already started again, is known here. Only for the
+        # reviewer's OWN marker: a verdict retained from an earlier attempt beside a builder's
+        # provider failure is failed_to_complete too, and there the review never ran at all.
+        from meshpipeline.contracts.failure_cause import FailureCause, describe
+        _facts = {"marker": _bare_marker(api_failure), "validated": bool(executor_success),
+                  "reruns": max(0, int(review_reruns or 0))}
+        detail, next_step = describe(FailureCause.REVIEW_INCOMPLETE, _facts)
+        cause, failure_facts = FailureCause.REVIEW_INCOMPLETE.value, _facts
     from meshpipeline.contracts.failure_cause import retry_can_help
     return FinalResult(
         failure_cause=cause, failure_detail=detail, failure_next_step=next_step,
@@ -379,6 +395,13 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         # disagreed with the policy the moment a second required class was added.
         missing_outputs=list(required_output_classes(engine)),
         finalized_at=datetime.now(UTC).isoformat())
+
+
+def _bare_marker(api_failure: str) -> str:
+    raw = str(api_failure or "").strip()
+    if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
+        raw = raw[len("<<API_FAILURE:"):-2].strip()
+    return raw
 
 
 #: The first line of every cancelled verdict. The owner asked; nothing broke.

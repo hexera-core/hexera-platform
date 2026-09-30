@@ -92,6 +92,9 @@ _LADDER_CLASS: dict[FailureCause, str] = {
     FailureCause.BOUNDARY_TYPE: NEVER,
     FailureCause.DOMAIN_EXTENT: NEVER,
     FailureCause.REGION_SPLIT: NEVER,
+    # the review of a validated mesh did not finish: our reviewer's failing, which the same mesh
+    # from another engine would meet again - never a reason to leave the engine
+    FailureCause.REVIEW_INCOMPLETE: NEVER,
 }
 #: The causes the retry policy calls hopeless that another ENGINE still changes. A refused
 #: geometry is the same file on the next attempt - but a different engine has a different input
@@ -114,6 +117,7 @@ _REASON_BY_CAUSE: dict[FailureCause, str] = {
     FailureCause.BOUNDARY_TYPE: "a boundary came out with the wrong type",
     FailureCause.DOMAIN_EXTENT: "the far-field domain came out short of the size you asked for",
     FailureCause.REGION_SPLIT: "the parts did not come out as separate meshes",
+    FailureCause.REVIEW_INCOMPLETE: "the review of its mesh did not finish",
 }
 _REASON_REVIEW = "the mesh did not pass review"
 _REASON_GENERIC = "it did not produce a mesh that passed its checks"

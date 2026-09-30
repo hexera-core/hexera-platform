@@ -263,8 +263,20 @@ def _check_obligation(o, ledger: EvidenceLedger) -> list[str]:
     have = len(ledger.usable_inspections_of_kind(o.kind))
     need = max(o.min_count, 1)
     if have < need:
-        reasons.append(f"expected {need} {o.kind.value} inspection(s), have {have}{prov}")
+        # Say HOW, as the exact-id order above does. Framing a patch with go_to_coordinates is
+        # not an inspection of it; toggling it is - and the reviewer is steered to the framing
+        # call first (PATCH VIEWS), so without the tool named it cannot tell why it was refused.
+        how = _HOW_TO_INSPECT.get(o.kind.value, "")
+        reasons.append(f"expected {need} {o.kind.value} inspection(s), have {have}{prov}"
+                       + (f" - {how}, then cite the t- id it returns" if how else ""))
     return reasons
+
+
+#: How an inspection of a target kind is produced, for the obligation reasons above.
+_HOW_TO_INSPECT = {
+    "patch": "inspect one with toggle_patch on a patch the viewer can show",
+    "region": "inspect one with inspect_region on a declared slice",
+}
 
 
 def missing_target_obligations(obligations, discovered_ids: dict) -> list[str]:

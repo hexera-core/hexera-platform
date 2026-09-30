@@ -569,8 +569,10 @@ def test_unified_blocks_pass_on_a_failed_gate_then_exhausts_to_non_verdict():
         provider_call=_scripted_provider(script), max_rounds=12, job_id="j"))
     # PASS never becomes eligible (gate failed) -> truthful non-verdict, NOT a fabricated verdict.
     # The identical resubmission now ends the review through no-progress rather than burning the
-    # whole round budget; the outcome is the same truthful non-verdict either way.
-    assert out.verdict == "" and out.api_failure == "reviewer_evidence_missing"
+    # whole round budget; the outcome is the same truthful non-verdict either way. The loop RAN
+    # and stalled, so it carries the stall's own marker (reviewer_stalled), which the pipeline can
+    # rerun - not the pre-loop reviewer_evidence_missing, which it cannot.
+    assert out.verdict == "" and out.api_failure == "reviewer_stalled"
     assert out.failure_class == "eligibility_non_convergence"
     assert out.llm_rounds < 12, "an unchanged resubmission must not consume the whole budget"
 

@@ -962,6 +962,7 @@ async def _run_async(req: JobRequest) -> dict:
                 failure_cause=str(final_state.get("executor_failure_cause", "") or ""),
                 failure_facts=dict(final_state.get("executor_failure_facts") or {}),
                 api_failure=api_failure,
+                review_reruns=int(final_state.get("review_rerun_count", 0) or 0),
                 attempts=int(final_state.get("retry_count", 0) or 0),
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_timed_out,

@@ -74,6 +74,55 @@ async def node_infra_retry(state: PipelineState) -> dict:
             "retry_count": max(0, int(state.get("retry_count", 1) or 1) - 1)}
 
 
+def review_can_rerun(state: PipelineState) -> bool:
+    """Whether a review that ended WITHOUT a verdict is started again on the same mesh.
+
+    Only a mesh the executor validated is reviewed again - there is nothing else to judge - and
+    only for a non-verdict another look can change: the conversation stalled or ran out of rounds,
+    the renderer fell over, or a provider or dependency browned out. A pre-loop refusal (a malformed
+    assurance plan, missing deterministic evidence, absent review targets) and a provider that is
+    down for good repeat identically, so they go to the sink as before. Bounded per job by
+    REVIEWER_RERUN_MAX and by the run's own deadline."""
+    import meshpipeline.agents.reviewer.settings as rcfg
+    from meshpipeline.agents.reviewer.loop_policy import RERUNNABLE_MARKERS
+    from meshpipeline.errors import classify_api_failure
+    marker = str(state.get("api_failure") or "").strip()
+    if marker.startswith("<<API_FAILURE:") and marker.endswith(">>"):
+        marker = marker[len("<<API_FAILURE:"):-2].strip()
+    if not marker or state.get("executor_success") is not True:
+        return False
+    if int(state.get("review_rerun_count", 0) or 0) >= rcfg.REVIEWER_RERUN_MAX:
+        return False
+    deadline = state.get("pipeline_deadline_epoch")
+    if deadline:
+        from meshpipeline.application.pipeline_budget import is_exhausted
+        if is_exhausted(float(deadline)):
+            return False
+    return marker in RERUNNABLE_MARKERS or classify_api_failure(marker).is_retryable
+
+
+async def node_review_retry(state: PipelineState) -> dict:
+    """A review of a VALIDATED mesh ended without a verdict. Start it again on the same mesh: no
+    rebuild, no new mesh attempt (retry_count is untouched), only a fresh review. After a transient
+    provider or dependency failure it first waits the brownout out; a stalled review starts again
+    at once. The reviewer says so itself when it opens (agents/reviewer/visual.py), so this node
+    publishes nothing. Admission is route_after_reviewer's job (review_can_rerun)."""
+    import asyncio
+
+    import meshpipeline.agents.reviewer.settings as rcfg
+    from meshpipeline.errors import classify_api_failure
+    job_id = state.get("job_id", "unknown")
+    marker = str(state.get("api_failure") or "")
+    rerun = int(state.get("review_rerun_count", 0) or 0) + 1
+    wait = rcfg.REVIEWER_RERUN_BACKOFF_S if classify_api_failure(marker).is_retryable else 0
+    logger.warning(
+        "node_review_retry: review ended without a verdict ('%s') - rerun %d/%d on the same "
+        "mesh after %ds - job_id=%s", marker, rerun, rcfg.REVIEWER_RERUN_MAX, wait, job_id)
+    if wait > 0:
+        await asyncio.sleep(wait)
+    return {"api_failure": "", "review_rerun_count": rerun}
+
+
 def route_after_builder(
     state: PipelineState,
 ) -> Literal["node_executor", "node_failure_handler", "node_infra_retry"]:
@@ -171,8 +220,12 @@ def route_after_executor(
 
 def route_after_reviewer(
     state: PipelineState,
-) -> Literal["__end__", "node_classifier", "node_failure_handler"]:
+) -> Literal["__end__", "node_classifier", "node_failure_handler", "node_review_retry"]:
     if state.get("api_failure"):
+        # A review that could not conclude says nothing about the mesh. When another look can
+        # change that, look again rather than throw away a mesh that passed every gate.
+        if review_can_rerun(state):
+            return "node_review_retry"
         return "node_failure_handler"
 
     verdict     = state.get("reviewer_verdict", Verdict.FAIL)
@@ -262,6 +315,7 @@ def build_graph(checkpointer):
     b.add_node("node_reviewer",        _fenced("node_reviewer", node_reviewer))
     b.add_node("node_failure_handler", _fenced("node_failure_handler", node_failure_handler))
     b.add_node("node_infra_retry",     _fenced("node_infra_retry", node_infra_retry))
+    b.add_node("node_review_retry",    _fenced("node_review_retry", node_review_retry))
 
     b.add_edge(START, "node_intake")
     b.add_conditional_edges(
@@ -308,8 +362,10 @@ def build_graph(checkpointer):
             END:                    END,
             "node_classifier":      "node_classifier",
             "node_failure_handler": "node_failure_handler",
+            "node_review_retry":    "node_review_retry",
         },
     )
+    b.add_edge("node_review_retry", "node_reviewer")
     b.add_edge("node_failure_handler", END)
 
     return b.compile(checkpointer=checkpointer)
