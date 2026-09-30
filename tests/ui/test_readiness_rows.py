@@ -195,6 +195,32 @@ def test_k14_capability_copy_comes_from_the_server_not_a_hardcoded_list(live):
     assert_clean(live, "capability copy")
 
 
+def test_k14_a_native_cad_file_can_be_picked_and_is_told_how_to_export_a_step(live):
+    # The picker OFFERS native CAD, so a SolidWorks part is not hidden without a reason; dropping
+    # one shows the server's own refusal word for word, and it stays long enough to act on.
+    seen = live.evaluate("""(async () => {
+      const served = (await (await fetch('/api/v1/client-config')).json()).intake;
+      const F = await import('/static/js/shell/intake_formats.js');
+      await F.loadIntakeFormats();
+      await new Promise(r => setTimeout(r, 300));     // mountComposer fills the accept list
+      const dt = new DataTransfer();
+      dt.items.add(new File(['native bytes'], 'bracket.SLDPRT'));
+      document.body.dispatchEvent(new DragEvent('drop',
+        {dataTransfer: dt, bubbles: true, cancelable: true}));
+      await new Promise(r => setTimeout(r, 7500));    // past the fade an ordinary notice has
+      const n = document.getElementById('notice');
+      return {accept: document.getElementById('step-file-input').getAttribute('accept'),
+              expected: served.native_cad['.sldprt'],
+              shown: n.querySelector('.nt-msg') ? n.querySelector('.nt-msg').textContent : '',
+              visible: n.className.includes('show')};
+    })()""")
+    assert ".sldprt" in seen["accept"].split(",") and ".step" in seen["accept"].split(","), seen
+    assert seen["expected"].startswith("Hexera can't open SolidWorks files"), seen
+    assert seen["shown"] == seen["expected"], f"the refusal was not the server's: {seen}"
+    assert seen["visible"], "the export instructions faded before they could be followed"
+    assert_clean(live, "the native CAD refusal")
+
+
 # keyboard-only operation, tab order and focus restoration
 # k12 proves the primary controls carry accessible names and can take focus. These close what it
 # did not: that a keyboard alone drives the workflow, that Tab visits the controls in the order the

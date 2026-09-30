@@ -228,6 +228,19 @@ async def test_begin_refuses_a_suffix_the_product_does_not_accept(world, name):
     assert world.intents == {}
 
 
+@pytest.mark.parametrize("name,tool", [
+    ("fuselage.SLDASM", "SolidWorks"), ("wing.CATProduct", "CATIA"), ("duct.asm.4", "Creo"),
+])
+async def test_begin_refuses_native_cad_before_a_byte_moves_and_says_how_to_export(world, name, tool):
+    # a 300 MB native assembly is exactly the file that takes the direct route; it must hear
+    # which export to upload instead before it spends minutes travelling to storage
+    resp = await _begin(name=name, size=300 * 1024 * 1024)
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail.startswith("Hexera can't open ") and tool in detail and "STEP" in detail
+    assert world.intents == {}
+
+
 async def test_begin_refuses_an_empty_file(world):
     resp = await _begin(size=0)
     assert resp.status_code == 422 and "empty" in resp.json()["detail"].lower()
