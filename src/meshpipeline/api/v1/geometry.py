@@ -442,17 +442,19 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     # THE REFERENCE LENGTH FOLLOWS THE CONFIRMED AXIS. A form that turned the flow axis but kept
     # the length the check measured along its guessed axis (a console from before the box
     # followed the axis, or an API caller) would size the far field on the wrong length.
-    from meshpipeline.application.geometry_confirmation import reference_length_along_the_flow, size_in_scale
+    # Only the check's own guess is changed: the stored check says what it proposed.
+    from meshpipeline.application.geometry_confirmation import reference_length_along_the_flow, stored_lengths
 
-    stored_size = (size_in_scale(_read_json(check_object_key(str(session_id), "scout.json")), scale)
-                   if body.flow == "external" and not (body.size_mm and len(body.size_mm) == 3) else None)
-    body, reference_note = reference_length_along_the_flow(body, stored_size)
+    reference_note = ""
+    if body.flow == "external" and not body.reference_length_typed:
+        stored_size, proposed = stored_lengths(_read_json(check_object_key(str(session_id), "scout.json")), scale)
+        body, reference_note = reference_length_along_the_flow(body, stored_size, proposed)
     message = confirmation_message(body)
     if renamed:
         message = f"{message} {renamed}"             # never silent: the intake tells the user
     if reference_note:
-        logger.info("geometry check: the reference length followed the confirmed flow axis %s - session_id=%s",
-                    body.flow_axis, session_id)
+        logger.info("geometry check: the reference length followed the confirmed flow axis - session_id=%s",
+                    session_id)
         message = f"{message} {reference_note}"
     patches = patches_from(body)
 

@@ -93,6 +93,11 @@ def length_along(size_mm, axis: str) -> float:
 _SAME_LENGTH = 1e-3
 
 
+def same_length(a: float, b: float) -> bool:
+    """Whether two lengths are the same number, to the rounding a length goes through."""
+    return abs(a - b) <= _SAME_LENGTH * max(abs(a), abs(b))
+
+
 def length_of_another_axis(reference_length_mm, flow_axis, size_mm) -> tuple[float, str] | None:
     """THE REFERENCE LENGTH LEFT BEHIND BY A WRONG AXIS. The check fills the reference length with
     the part's extent along the axis it guessed; a user who turns the axis keeps that number unless
@@ -111,13 +116,9 @@ def length_of_another_axis(reference_length_mm, flow_axis, size_mm) -> tuple[flo
     k = {"x": 0, "y": 1, "z": 2}.get(str(flow_axis or "")[-1:]) if flow_axis in AXES else None
     if k is None or len(sizes) != 3 or not ref > 0 or not sizes[k] > 0:
         return None
-
-    def same(a: float, b: float) -> bool:
-        return abs(a - b) <= _SAME_LENGTH * max(abs(a), abs(b))
-
-    if same(ref, sizes[k]):
+    if same_length(ref, sizes[k]):
         return None
-    other = next((i for i in range(3) if i != k and same(ref, sizes[i])), None)
+    other = next((i for i in range(3) if i != k and same_length(ref, sizes[i])), None)
     return None if other is None else (sizes[k], "xyz"[other])
 
 
@@ -181,5 +182,5 @@ def external_declaration(body) -> list[str]:
 __all__ = ["AXES", "DEFAULT_EXTENTS", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
            "GROUND_NEEDS_Z_UP", "GeometryField", "UP_AXES", "axis_of_longest_side",
            "external_declaration", "external_defaults", "form_spec", "length_along",
-           "length_of_another_axis", "up_or_default"]
+           "length_of_another_axis", "same_length", "up_or_default"]
 _ = field  # dataclasses.field is imported for future registry entries with defaults

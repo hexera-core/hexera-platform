@@ -59,25 +59,32 @@ def distinct_opening_names(openings) -> list:
     return out
 
 
-def reference_length_along_the_flow(body, stored_size_mm=None) -> tuple[Any, str]:
+def reference_length_along_the_flow(body, stored_size_mm=None, proposed_mm=None) -> tuple[Any, str]:
     """The confirmation with its reference length along the confirmed flow axis, and the sentence
     that says so - or the body as it came and "" when nothing needed changing.
 
     The check fills the reference length with the part's length along the axis it guessed. A
     console (or a caller) that sent the user's corrected axis with the guessed axis's length
     untouched would size the far field on the wrong length: the NASA CRM read along +y and turned
-    to +x kept its 30.4 m span instead of its 64.6 m length, a far field half the size. A length
-    the user typed themselves (`reference_length_typed`) is theirs and is never changed; nor is
-    one that is no extent of the part at all. `stored_size_mm` is the part's size, in the scale
-    the body is in, for a body that did not carry its own. Never refuses: it corrects and says so."""
+    to +x kept its 30.4 m span instead of its 64.6 m length, a far field half the size.
+
+    Only the check's own guess is ever changed. A length the user typed (`reference_length_typed`)
+    is theirs; so is one that is not the length the check proposed (`proposed_mm`, in the body's
+    scale) - a caller that chose the car's width on purpose sent a number the check never
+    offered; and so is one that is no extent of the part at all. With no proposal to compare
+    with, the length being another axis's extent decides. `stored_size_mm` is the part's size,
+    in the body's scale, for a body that did not carry its own. Never refuses: it corrects and
+    says so."""
     if getattr(body, "flow", None) != "external" or getattr(body, "reference_length_typed", False):
         return body, ""
-    from meshpipeline.contracts.geometry_fields import length_of_another_axis
+    from meshpipeline.contracts.geometry_fields import length_of_another_axis, same_length
 
+    ref = getattr(body, "reference_length_mm", None)
+    if proposed_mm is not None and ref is not None and not same_length(float(ref), float(proposed_mm)):
+        return body, ""
     size = getattr(body, "size_mm", None)
     size = size if size and len(size) == 3 else stored_size_mm
-    found = length_of_another_axis(getattr(body, "reference_length_mm", None),
-                                   getattr(body, "flow_axis", None), size)
+    found = length_of_another_axis(ref, getattr(body, "flow_axis", None), size)
     if found is None:
         return body, ""
     along, other = found
@@ -85,26 +92,31 @@ def reference_length_along_the_flow(body, stored_size_mm=None) -> tuple[Any, str
     note = (f"The reference length on the form, {was:.0f} mm, was the part's length along {other} - "
             "left from the check's first guess of the flow axis - so it is now the part's length "
             f"along the flow, {along:.0f} mm, and the far-field margins are multiples of that. Tell "
-            "the user this in your next reply; they can type their own reference length on the "
-            "picture.")
+            "the user this in your next reply, and that they can give another reference length in "
+            "the chat if they want one.")
     return body.model_copy(update={"reference_length_mm": along}), note
 
 
-def size_in_scale(stored_check: dict | None, scale_to_m: float) -> list[float] | None:
-    """The part's size from the stored check (the scout's facts, read under their own scale),
-    re-read in `scale_to_m` - for a confirmation that did not carry the size itself. None when
-    the check holds no size."""
+def stored_lengths(stored_check: dict | None, scale_to_m: float) -> tuple[list[float] | None, float | None]:
+    """The part's size and the reference length the check proposed, from the stored check (read
+    under the scout's own scale), re-read in `scale_to_m` - what a confirmation is compared with.
+    Either is None when the check holds none."""
     facts = (stored_check or {}).get("facts") or {}
-    size = facts.get("size_mm") or ((stored_check or {}).get("proposal") or {}).get("size_mm") or []
+    proposal = (stored_check or {}).get("proposal") or {}
     try:
-        sizes = [float(v) for v in size]
         was = float(facts.get("scale_to_m") or 0.001)     # what the scout and the form assume
+        k = float(scale_to_m) / was
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None, None
+    try:
+        sizes: list[float] | None = [round(float(v) * k, 6) for v in (facts.get("size_mm") or proposal.get("size_mm") or [])]
     except (TypeError, ValueError):
-        return None
-    if len(sizes) != 3 or not was > 0 or not scale_to_m:
-        return None
-    k = float(scale_to_m) / was
-    return [round(v * k, 6) for v in sizes]
+        sizes = None
+    try:
+        proposed = round(float(proposal["reference_length_mm"]) * k, 6) if proposal.get("reference_length_mm") else None
+    except (TypeError, ValueError):
+        proposed = None
+    return (sizes if sizes and len(sizes) == 3 else None), proposed
 
 
 def unit_sentence(body) -> str:

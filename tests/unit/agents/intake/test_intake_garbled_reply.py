@@ -66,6 +66,8 @@ def test_no_finished_reply_in_the_transcripts_is_caught(reply):
     "```\nnSurfaceLayers  5;\nexpansionRatio  1.2;\n```\nThose are the layer settings - ok?",
     "Use `inlet  duct` as written.",
     "The reference length is 4200 mm.  The far field is 5 lengths upstream.",
+    "Extend the refinement zone around it 5 mm beyond the edge - ok?",
+    "I thought about it 2 ways: a half model with symmetry, or the full aircraft. Which do you want?",
 ])
 def test_ordinary_engineering_prose_is_left_alone(reply):
     assert flaw(reply) is None, flaw(reply)

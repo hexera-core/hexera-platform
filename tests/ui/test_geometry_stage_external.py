@@ -144,6 +144,25 @@ def test_a_reference_length_the_user_typed_stays_theirs_when_the_axis_turns(live
     assert body["flow_axis"] == "+y" and body["reference_length_mm"] == 2700 and body["reference_length_typed"] is True
 
 
+def test_a_reference_length_box_left_blank_is_the_length_along_the_flow(live):
+    """Clearing a typed length hands the box back to the axis: it shows the part's length along
+    the flow when the user leaves it, and a blank box is never confirmed as no length at all."""
+    _open_stage(live, _check())
+    state = live.evaluate(f"""(() => {{
+      const root = document.getElementById('gstage-{SESSION}');
+      const ref = root.querySelector('.gc-ref');
+      ref.value = '2700'; ref.dispatchEvent(new Event('input', {{bubbles: true}}));
+      const axis = root.querySelector('.gc-axis'); axis.value = '+y'; axis.dispatchEvent(new Event('change', {{bubbles: true}}));
+      ref.value = ''; ref.dispatchEvent(new Event('input', {{bubbles: true}}));
+      const blank = ref.value;
+      ref.dispatchEvent(new Event('change', {{bubbles: true}}));      // the user leaves the box
+      return {{blank, left: ref.value}};
+    }})()""")
+    assert state == {"blank": "", "left": "1800"}, state
+    body = _proceed(live)
+    assert body["flow_axis"] == "+y" and body["reference_length_mm"] == 1800 and body["reference_length_typed"] is False
+
+
 def test_switching_the_flow_swaps_the_table_for_the_far_field_on_the_card(live):
     # the card is the stage's fallback and shares the form: the same switch must work there
     check = _check(); check["proposal"]["flow"] = "internal"; check["skin"] = False

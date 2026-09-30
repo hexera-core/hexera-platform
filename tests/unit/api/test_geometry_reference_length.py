@@ -16,7 +16,7 @@ import pytest
 import meshpipeline.settings.geometry_check as gcfg
 from meshpipeline.api.v1 import geometry as route
 from meshpipeline.application import geometry_hold as gh
-from meshpipeline.application.geometry_confirmation import reference_length_along_the_flow, size_in_scale
+from meshpipeline.application.geometry_confirmation import reference_length_along_the_flow, stored_lengths
 from meshpipeline.contracts import object_storage
 from meshpipeline.contracts.geometry_fields import length_of_another_axis
 
@@ -71,6 +71,15 @@ def test_a_length_the_user_typed_is_theirs_and_an_internal_flow_is_not_read():
     assert reference_length_along_the_flow(internal) == (internal, "")
 
 
+def test_only_the_length_the_check_proposed_is_ever_changed():
+    # the check proposed the span (along its +y guess) and the caller kept it: corrected
+    assert reference_length_along_the_flow(_external(), proposed_mm=30386.0)[0].reference_length_mm == 64593.0
+    # a caller that sent the car's width on purpose, where the check had proposed its length,
+    # chose it: an old console or an API caller cannot say "typed", but the number says it
+    car = _external(size_mm=SAE, flow_axis="-x", reference_length_mm=320.0)
+    assert reference_length_along_the_flow(car, proposed_mm=840.0) == (car, "")
+
+
 def test_a_body_without_its_size_is_read_against_the_stored_check():
     body = _external(size_mm=None)
     fixed, note = reference_length_along_the_flow(body, CRM)
@@ -78,13 +87,15 @@ def test_a_body_without_its_size_is_read_against_the_stored_check():
     assert reference_length_along_the_flow(body, None) == (body, "")
 
 
-def test_the_stored_size_is_re_read_in_the_scale_the_confirmation_is_in():
+def test_the_stored_lengths_are_re_read_in_the_scale_the_confirmation_is_in():
     # the scout read the file as millimetres; the user confirmed inches
-    stored = {"facts": {"size_mm": [v / 25.4 for v in CRM], "scale_to_m": 0.001}}
-    assert size_in_scale(stored, 0.0254) == pytest.approx(CRM, rel=1e-9)
-    assert size_in_scale({"facts": {"size_mm": [1, 2, 3]}}, 0.001) == [1.0, 2.0, 3.0]   # no scale: mm
-    assert size_in_scale({"proposal": {"size_mm": [1, 2, 3]}}, 0.01) == [10.0, 20.0, 30.0]
-    assert size_in_scale(None, 0.001) is None and size_in_scale({"facts": {}}, 0.001) is None
+    stored = {"facts": {"size_mm": [v / 25.4 for v in CRM], "scale_to_m": 0.001},
+              "proposal": {"reference_length_mm": 30386.0 / 25.4}}
+    size, proposed = stored_lengths(stored, 0.0254)
+    assert size == pytest.approx(CRM, rel=1e-9) and proposed == pytest.approx(30386.0, rel=1e-9)
+    assert stored_lengths({"facts": {"size_mm": [1, 2, 3]}}, 0.001) == ([1.0, 2.0, 3.0], None)  # no scale: mm
+    assert stored_lengths({"proposal": {"size_mm": [1, 2, 3]}}, 0.01) == ([10.0, 20.0, 30.0], None)
+    assert stored_lengths(None, 0.001) == (None, None) and stored_lengths({"facts": {}}, 0.001) == (None, None)
 
 
 # ---------------------------------------------------------------------- the confirm route ----
@@ -177,6 +188,10 @@ async def test_a_length_the_user_typed_or_along_the_flow_is_confirmed_as_given(c
     out = await route.confirm_check(SID, _external(scale_to_m=0.0254, unit="in", reference_length_mm=64593.0),
                                     "alice", "org-1")
     assert "Reference length: 64593 mm" in out["message"] and "was the part's length" not in out["message"]
+    # another axis's extent the check never proposed (the height): a caller's choice, kept
+    out = await route.confirm_check(SID, _external(scale_to_m=0.0254, unit="in", reference_length_mm=18621.0),
+                                    "alice", "org-1")
+    assert "Reference length: 18621 mm" in out["message"] and "was the part's length" not in out["message"]
 
 
 @pytest.mark.asyncio

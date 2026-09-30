@@ -252,10 +252,19 @@ export function followAxis(root, p, axis) {
 export function bindAxis(root, p) {
   const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref");
   if (axisEl) axisEl.addEventListener("change", () => followAxis(root, p, axisEl.value));
-  if (refEl) refEl.addEventListener("input", () => {
+  if (!refEl) return;
+  refEl.addEventListener("input", () => {
     const v = num(refEl.value, 0);
     p.reference_length_typed = v > 0;
     if (v > 0) p.reference_length_mm = typed(v, p);
+  });
+  // a box left blank is the part's length along the flow again, shown as soon as the user leaves it
+  refEl.addEventListener("change", () => {
+    if (num(refEl.value, 0) > 0) return;
+    const along = extentAlong(p, axisEl ? axisEl.value : p.flow_axis);
+    if (along === null) return;
+    p.reference_length_mm = along;
+    refEl.value = exact(raw(along, p));
   });
 }
 
@@ -266,8 +275,10 @@ export function readExternal(root, p) {
   // a margin below half a body length is no far field at all; a blank box keeps the default
   root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { ext[el.dataset.k] = Math.max(0.5, num(el.value, 5)); });
   const axisEl = root.querySelector(".gc-axis"), refEl = root.querySelector(".gc-ref"), gEl = root.querySelector(".gc-ground");
-  return { flow_axis: axisEl ? axisEl.value : "unknown",
-           reference_length_mm: refEl && num(refEl.value, 0) > 0 ? typed(num(refEl.value, 0), p) : null,
+  const axis = axisEl ? axisEl.value : "unknown", ref = refEl ? num(refEl.value, 0) : 0;
+  return { flow_axis: axis,
+           // a blank box is the part's length along the flow, never no length at all
+           reference_length_mm: ref > 0 ? typed(ref, p) : extentAlong(p, axis),
            // the server corrects a length left behind by a turned axis, never one the user typed
            reference_length_typed: !!(p && p.reference_length_typed),
            extents: ext, grounded: !!(gEl && gEl.checked) };

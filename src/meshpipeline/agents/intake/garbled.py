@@ -48,8 +48,9 @@ _ABBREVIATIONS = frozenset(("e.g", "i.e", "etc", "approx", "vs", "cf", "ca", "in
 #: Two spaces between words in the middle of a line: where a value stood before it went missing
 #: ("about  layer inflation", "and approximately  prism layers", "30–300,  nSurfaceLayers").
 _GAP = re.compile(r"[a-z,] {2,}[a-z]")
-#: A hedge, then "it", then a number: "approximately it 5 prism layers".
-_HEDGE_IT = re.compile(r"\b(?:about|approximately|around|roughly) +it +[0-9]")
+#: A hedge, then "it", then a number: "approximately it 5 prism layers". Only the hedges that
+#: cannot take "it" as their object: "refine around it 5 mm beyond the edge" is a sentence.
+_HEDGE_IT = re.compile(r"\b(?:approximately|roughly) +it +[0-9]")
 
 _FENCE = re.compile(r"```.*?```", re.S)
 _INLINE = re.compile(r"`[^`\n]*`")
