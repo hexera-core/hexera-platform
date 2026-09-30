@@ -94,7 +94,7 @@ def _assert_recommendation_only(out, reply):
     assert not out.get("request_txt") and not out.get("mesh_engine"), "nothing may be submitted"
     assert out.get("dispatch_confirmed") is False
     assert "Shall I proceed with mesh generation" not in reply, "no confirmation-to-mesh prompt"
-    assert "Selected engine:" not in reply, "a comparison must not present a selection"
+    assert "I'd mesh this with" not in reply, "a comparison must not present a selection"
 
 
 # the intent gate itself (turn-scoped, fail-closed)
