@@ -53,9 +53,21 @@ DEFAULT_NUDGE = (
     "guessed."
 )
 
+#: Sent back into the loop, once per turn, when a finished reply is not fit to send - the model's
+#: own planning notes leaked into it, or a hole where a value belongs (agents/intake/garbled.py).
+#: Real replies reached a demo as "about Layer? Need avoid unclear. say 8 prism layers" and
+#: "about  layer inflation".
+GARBLED_NUDGE = (
+    "[SYSTEM] Your reply was not sent: part of it is not written for the user - a note to "
+    "yourself (like 'Need avoid unclear. say 8 prism layers') or a gap where a value belongs "
+    "(like 'about  layers', the number missing). Write the same reply again as finished "
+    "sentences for the user: every value you propose written out as a number, and nothing "
+    "addressed to yourself."
+)
+
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
-SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE)
+SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, GARBLED_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells

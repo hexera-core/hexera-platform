@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from meshpipeline.agents.intake import turn
+from meshpipeline.agents.intake import garbled, turn
 from meshpipeline.agents.intake.diagnostics import IntakeRunExtension
 from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of
 from meshpipeline.agents.loop.accounting import ToolInvocation
@@ -89,6 +89,7 @@ class IntakeLoopPolicy:
     prior_questions: tuple[str, ...] = ()
 
     malformed_calls: int = 0
+    garbled_replies: int = 0                   # replies sent back for a planning note or a hole
     repeated_questions: int = 0                # replies sent back for asking the same thing again
     plaintext_text: str = ""                   # the model's reply, returned - never diagnosed
     finish_reason: str = ""
@@ -139,6 +140,19 @@ class IntakeLoopPolicy:
         return None
 
     def on_plaintext(self, tally: LoopTally) -> RoundDecision:
+        # A REPLY NOT FIT TO SEND goes back ONCE for a clean rewrite, before anything else reads
+        # it: the model's own planning notes ("about Layer? Need avoid unclear. say 8 prism
+        # layers") or a hole where a value belongs ("about  layer inflation") reached a demo as
+        # written. Once, and only while another round may start, as the repeat rule below: a
+        # rewrite that is still garbled is delivered rather than leave the user with no reply.
+        rounds_left = tally.remaining_rounds(self.limits_)
+        if self.garbled_replies == 0 and (rounds_left is None or rounds_left > 0):
+            found = garbled.flaw(self.plaintext_text)
+            if found is not None:
+                self.garbled_replies += 1
+                logger.info("Intake: the reply is not fit to send (%s: %s) - sent back once for a "
+                            "clean rewrite", found.kind, found.rule)
+                return RoundDecision(message=turn.GARBLED_NUDGE, complete=False)
         # THE SAME QUESTION IS NEVER ASKED TWICE - enforced here, not left to the prompt. A reply
         # that asks what the user was already asked is sent back ONCE, inside the turn, with the
         # rule: their reply was their answer, take your own proposal and move on. Once, so a model
@@ -198,6 +212,7 @@ class IntakeLoopPolicy:
                              else ("proposed" if st.selection else "")),
             approval_state=str((st.approval or {}).get("status", "") or ""),
             recommendation_turn=st.recommended_this_turn,
+            garbled_replies=self.garbled_replies,
             canonical_revision=str(st.revision or ""),
             repeated_questions=self.repeated_questions)
 

@@ -59,6 +59,54 @@ def distinct_opening_names(openings) -> list:
     return out
 
 
+def reference_length_along_the_flow(body, stored_size_mm=None) -> tuple[Any, str]:
+    """The confirmation with its reference length along the confirmed flow axis, and the sentence
+    that says so - or the body as it came and "" when nothing needed changing.
+
+    The check fills the reference length with the part's length along the axis it guessed. A
+    console (or a caller) that sent the user's corrected axis with the guessed axis's length
+    untouched would size the far field on the wrong length: the NASA CRM read along +y and turned
+    to +x kept its 30.4 m span instead of its 64.6 m length, a far field half the size. A length
+    the user typed themselves (`reference_length_typed`) is theirs and is never changed; nor is
+    one that is no extent of the part at all. `stored_size_mm` is the part's size, in the scale
+    the body is in, for a body that did not carry its own. Never refuses: it corrects and says so."""
+    if getattr(body, "flow", None) != "external" or getattr(body, "reference_length_typed", False):
+        return body, ""
+    from meshpipeline.contracts.geometry_fields import length_of_another_axis
+
+    size = getattr(body, "size_mm", None)
+    size = size if size and len(size) == 3 else stored_size_mm
+    found = length_of_another_axis(getattr(body, "reference_length_mm", None),
+                                   getattr(body, "flow_axis", None), size)
+    if found is None:
+        return body, ""
+    along, other = found
+    was = float(body.reference_length_mm)
+    note = (f"The reference length on the form, {was:.0f} mm, was the part's length along {other} - "
+            "left from the check's first guess of the flow axis - so it is now the part's length "
+            f"along the flow, {along:.0f} mm, and the far-field margins are multiples of that. Tell "
+            "the user this in your next reply; they can type their own reference length on the "
+            "picture.")
+    return body.model_copy(update={"reference_length_mm": along}), note
+
+
+def size_in_scale(stored_check: dict | None, scale_to_m: float) -> list[float] | None:
+    """The part's size from the stored check (the scout's facts, read under their own scale),
+    re-read in `scale_to_m` - for a confirmation that did not carry the size itself. None when
+    the check holds no size."""
+    facts = (stored_check or {}).get("facts") or {}
+    size = facts.get("size_mm") or ((stored_check or {}).get("proposal") or {}).get("size_mm") or []
+    try:
+        sizes = [float(v) for v in size]
+        was = float(facts.get("scale_to_m") or 0.001)     # what the scout and the form assume
+    except (TypeError, ValueError):
+        return None
+    if len(sizes) != 3 or not was > 0 or not scale_to_m:
+        return None
+    k = float(scale_to_m) / was
+    return [round(v * k, 6) for v in sizes]
+
+
 def unit_sentence(body) -> str:
     """The file's unit as the user confirmed it, and the part's length in it - so the intake is
     told the scale in words instead of working it out from millimetres. Empty when the

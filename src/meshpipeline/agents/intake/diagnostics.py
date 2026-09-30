@@ -19,6 +19,7 @@ class IntakeRunExtension:
     selection_state: str = ""                 # "", "proposed", "confirmed"
     approval_state: str = ""                  # "", "awaiting", "approved"
     recommendation_turn: bool = False
+    garbled_replies: int = 0                  # replies sent back for a planning note or a hole
     canonical_revision: str = ""              # the app-computed revision id, not the payload
     repeated_questions: int = 0               # replies sent back for asking the same thing again
 
@@ -32,6 +33,7 @@ class IntakeRunExtension:
             "selection_state": self.selection_state,
             "approval_state": self.approval_state,
             "recommendation_turn": self.recommendation_turn,
+            "garbled_replies": self.garbled_replies,
             "canonical_revision": self.canonical_revision,
             "repeated_questions": self.repeated_questions,
         }
