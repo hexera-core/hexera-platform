@@ -230,7 +230,8 @@ _ALL_BOX_FACES = ["(0 3 2 1)", "(4 5 6 7)", "(0 1 5 4)", "(2 3 7 6)", "(1 2 6 5)
 
 
 def detect_symmetry_plane(analysis: dict, sym_name: str, *, tol_frac: float = 0.005,
-                          min_cap_frac: float = 0.005) -> dict | None:
+                          min_cap_frac: float = 0.005,
+                          flow_axis: str | None = None) -> dict | None:
     if not sym_name:
         return None
     bmin, bmax = analysis["bbox_min"], analysis["bbox_max"]
@@ -246,12 +247,22 @@ def detect_symmetry_plane(analysis: dict, sym_name: str, *, tol_frac: float = 0.
             return True                    # no measurement available - preserve prior behaviour
         return float(caps[ax].get(side, 0.0)) >= min_cap_frac
 
+    # A half model is cut ALONG the flow, never across it: the declared flow axis is not a
+    # candidate. A car whose flat rear base sits on x = 0 would otherwise be "cut" on its own
+    # base - found first, because x is tried first - and meshed with no wake.
+    _fa = str(flow_axis or "").strip().lower()[-1:]
+    skip = {"x": 0, "y": 1, "z": 2}.get(_fa)
     for ax in range(3):
+        if ax == skip:
+            continue
         lo, hi = float(bmin[ax]), float(bmax[ax])
+        # The plane is laid ON the cut face - the flat cap at the bounding-box plane - not at an
+        # idealised 0: a cut a hair off zero (tessellation, a CAD export) is then neither clipped
+        # by the box nor separated from its plane by a sliver of fluid.
         if abs(lo) < tol < hi and _has_cap(ax, "min"):    # sits on the plane at 0, extends positive
-            return {"axis": ax, "pos": 0.0, "side": "min", "name": sym_name}
+            return {"axis": ax, "pos": lo, "side": "min", "name": sym_name}
         if abs(hi) < tol and lo < -tol and _has_cap(ax, "max"):  # on the plane at 0, extends negative
-            return {"axis": ax, "pos": 0.0, "side": "max", "name": sym_name}
+            return {"axis": ax, "pos": hi, "side": "max", "name": sym_name}
     return None                            # straddles the centreline - no half-model plane
 
 

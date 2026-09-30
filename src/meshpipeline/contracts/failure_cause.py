@@ -249,8 +249,8 @@ def _touch_phrase(m: Mapping, d: object) -> tuple[str, bool]:
         return (f"the body crosses the symmetry plane '{sp}' on the {d} side, and a half model "
                 "has to lie wholly on one side of its cut"), True
     if sf and sf == face:
-        return (f"the symmetry plane '{sp}' was put across the flow ({d}), but a half model is "
-                "cut along the flow"), True
+        return (f"the symmetry plane '{sp}' was put across the flow, on the {d} side, but a "
+                "half model is cut along the flow"), True
     return (f"the box touches the body on the {d} side ({face}), but the symmetry plane "
             f"'{sp}' is on the {sf} face - it has to be on the face the model was cut on"), True
 
@@ -262,7 +262,8 @@ def _domain(f: Mapping) -> tuple[str, str]:
         if not isinstance(m, Mapping):
             continue
         d, req, meas = m.get("direction"), m.get("requested"), m.get("measured")
-        if isinstance(meas, (int, float)) and not isinstance(meas, bool) and meas <= 0:
+        if m.get("symmetry_patch") or (isinstance(meas, (int, float))
+                                       and not isinstance(meas, bool) and meas <= 0):
             phrase, sym = _touch_phrase(m, d)
             bits.append(phrase)
             misplaced = misplaced or sym

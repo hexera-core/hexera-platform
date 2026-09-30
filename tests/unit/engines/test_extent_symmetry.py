@@ -57,18 +57,40 @@ def _crm_box():
 class TestTheHalfModelBox:
     def test_the_cut_is_found_on_y_min(self):
         sym, _dmin, _dmax = _crm_box()
-        assert sym == {"axis": 1, "pos": 0.0, "side": "min", "name": "symmetry"}
+        # laid on the cut face itself (0.65 micrometres under y = 0), not an idealised 0
+        assert sym == {"axis": 1, "pos": CRM["bbox_min"][1], "side": "min", "name": "symmetry"}
         assert R.symmetry_box_faces(sym) == CUT
 
     def test_the_symmetry_face_is_the_cut_plane_and_every_other_face_is_far(self):
         _sym, dmin, dmax = _crm_box()
         lo, hi = CRM["bbox_min"], CRM["bbox_max"]
-        assert dmin[1] == 0.0                                     # on the cut, y = 0
+        assert dmin[1] == lo[1] == pytest.approx(0.0, abs=1e-6)   # on the cut, y = 0
         assert dmax[1] == pytest.approx(hi[1] + 5 * RULER)        # 5 lengths beyond the tip
         assert dmin[0] == pytest.approx(lo[0] - 5 * RULER)       # upstream
         assert dmax[0] == pytest.approx(hi[0] + 10 * RULER)      # downstream
         assert dmin[2] == pytest.approx(lo[2] - 5 * RULER)       # below
         assert dmax[2] == pytest.approx(hi[2] + 5 * RULER)       # above
+
+    def test_a_cut_a_hair_off_zero_gets_its_plane_on_the_cut_not_through_the_body(self):
+        # a 2 m half body whose cut came out 0.4 mm below y = 0: a plane at 0 would slice it
+        a = {"bbox_min": [0.0, -0.0004, -0.5], "bbox_max": [2.0, 0.8, 0.5], "L": 2.0}
+        sym = R.detect_symmetry_plane(a, "symmetry", flow_axis="+x")
+        assert sym is not None and sym["pos"] == -0.0004
+        dmin, dmax = R.domain_from_strategy(a, MARGINS, sym, flow_axis="+x", ruler_m=1.0)
+        assert dmin[1] == -0.0004
+        assert check_domain(requested=ASKED, reference_length_m=1.0, strict=True, flow_axis="+x",
+                            body_min=a["bbox_min"], body_max=a["bbox_max"], domain_min=dmin,
+                            domain_max=dmax, grounded=False,
+                            symmetry_faces=R.symmetry_box_faces(sym)) is None
+
+    def test_the_flow_axis_is_never_taken_for_the_cut(self):
+        # a half car: its flat rear base sits on x = 0 (the first axis tried), its cut on y = 0
+        car = {"bbox_min": [-1.044, 0.0, 0.05], "bbox_max": [0.0, 0.1945, 0.338], "L": 1.044,
+               "axis_caps": [{"min": 0.0, "max": 0.08}, {"min": 0.3, "max": 0.0},
+                             {"min": 0.0, "max": 0.1}]}
+        assert R.detect_symmetry_plane(car, "symmetry")["axis"] == 0     # blind: the base
+        sym = R.detect_symmetry_plane(car, "symmetry", flow_axis="+x")
+        assert sym == {"axis": 1, "pos": 0.0, "side": "min", "name": "symmetry"}
 
     def test_a_slab_claims_both_ends_of_its_sweep(self):
         slab = {"slab": True, "axis": 2, "pos_lo": 0.0, "pos_hi": 1.0,
@@ -175,13 +197,31 @@ class TestAPlaneOnTheWrongFace:
         what, _ = describe(FailureCause.DOMAIN_EXTENT, {"misses": v.misses})
         assert "crosses the symmetry plane 'symmetry' on the lateral side" in what
 
-    def test_a_plane_across_the_flow_is_never_excused(self):
-        # a half model is cut along the flow: a symmetry plane on the upstream face is wrong
+    def test_a_body_a_hair_through_its_plane_is_refused_not_meshed_short(self):
+        # the CRM reaching 0.1 m through y = 0: inside the detector's 0.005 L, but the box would
+        # slice 0.1 m off the fuselage. Float noise (the real file's 0.65 micrometres) passes.
+        _sym, dmin, dmax = _crm_box()
+        dmin = [dmin[0], 0.0, dmin[2]]
+        lo = [CRM["bbox_min"][0], -0.1, CRM["bbox_min"][2]]
+        m = _manifest(dmin, dmax, lo, CRM["bbox_max"], symmetry_faces=CUT)
+        v = evaluate_domain_extents(ASKED, RULER, m, flow_axis="+x")
+        assert v.status == "block" and "crosses the symmetry plane 'symmetry'" in v.detail
+        noise = [CRM["bbox_min"][0], -6.5e-7, CRM["bbox_min"][2]]
+        m = _manifest(dmin, dmax, noise, CRM["bbox_max"], symmetry_faces=CUT)
+        assert evaluate_domain_extents(ASKED, RULER, m, flow_axis="+x").status == "pass"
+
+    @pytest.mark.parametrize("asked", [ASKED, {"lateral": 5.0, "vertical": 5.0}])
+    def test_a_plane_across_the_flow_is_never_excused(self, asked):
+        # a half model is cut along the flow: a symmetry plane on the upstream face is wrong,
+        # whether or not the approval asked for upstream room
         lo, hi = [0.0, -1.0, -1.0], [10.0, 1.0, 1.0]
         m = _manifest([0.0, -5 * RULER, -5 * RULER], [10 + 10 * RULER, 1 + 5 * RULER, 1 + 5 * RULER],
                       lo, hi, symmetry_faces=[{"patch": "symmetry", "axis": "x", "side": "min"}])
-        v = evaluate_domain_extents(ASKED, RULER, m, flow_axis="+x")
+        v = evaluate_domain_extents(asked, RULER, m, flow_axis="+x")
         assert v.status == "block" and "upstream" in v.detail and "across the flow" in v.detail
+        what, nxt = describe(FailureCause.DOMAIN_EXTENT, {"misses": v.misses})
+        assert "'symmetry' was put across the flow, on the upstream side" in what
+        assert "which face the model was cut on" in nxt
 
 
 # a 2.5D slab: a symmetry plane on each end of the sweep

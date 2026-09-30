@@ -309,7 +309,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         # every publication here is a certified user-facing message, and two ways of saying
         # "symmetry could not be placed" is one more than the reader needs.
         symmetry = (R.detect_slab_symmetry(analysis, _sym_names[0], _sym_names[1]) if _slab
-                    else R.detect_symmetry_plane(analysis, _sym_names[0]))
+                    else R.detect_symmetry_plane(analysis, _sym_names[0],
+                                                 flow_axis=state.get("flow_axis")))
         if symmetry is None:
             _refusal_op = "snappy:symmetry-unusable"
             _refusal = (

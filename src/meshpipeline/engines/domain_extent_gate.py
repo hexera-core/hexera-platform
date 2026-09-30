@@ -20,10 +20,14 @@ _KEYS = ("upstream", "downstream", "lateral")
 # guesses which face "looks like" a cut, so a plane on the wrong face is still caught.
 # #
 
-#: how close the body must lie to a symmetry face to sit on it, as a fraction of the body's
-#: diagonal - the tolerance the half-model detector calls a face the cut with
+#: how far a symmetry face may stand off the body and still be its cut, as a fraction of the
+#: body's diagonal - the tolerance the half-model detector calls a face the cut with
 #: (snappy_runner.detect_symmetry_plane measures 0.005 of the longest extent, never more than this)
 SEAT_TOL_FRACTION = 0.005
+#: how far the body may reach THROUGH its symmetry plane: float noise only. The box cuts off
+#: whatever lies beyond the plane, so a body crossing it by more is refused, not meshed short.
+#: The snappy builder lays the plane on the cut face itself, so a real half model sits at zero.
+CLIP_TOL_FRACTION = 1e-4
 
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 _SIDES = ("min", "max")
@@ -64,7 +68,16 @@ def _sits_on(box: dict, body: dict, j: int, side: str) -> bool:
     # the diagonal over the axes the record carries (a legacy 2-axis body box still has a size)
     diag = sum((float(body[f"{n}max"]) - float(body[f"{n}min"])) ** 2 for n in "xyz"
                if f"{n}min" in body and f"{n}max" in body) ** 0.5
-    return abs(_gap(box, body, j, side)) <= SEAT_TOL_FRACTION * diag
+    return (-CLIP_TOL_FRACTION * diag <= _gap(box, body, j, side)
+            <= SEAT_TOL_FRACTION * diag)
+
+
+def _flow_sides(flow_axis: str | None) -> tuple[int, str, str]:
+    """(flow axis index, upstream side, downstream side). No declaration is the legacy +x."""
+    ax = (flow_axis or "+x").strip().lower()
+    sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
+    up, down = ("min", "max") if sign == "+" else ("max", "min")
+    return _AXIS_INDEX[letter], up, down
 
 
 def manifest_symmetry_faces(manifest: dict | None) -> list:
@@ -226,10 +239,9 @@ def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None,
     and a symmetry plane the body lies on - a half model's lateral is the room on the side away
     from its cut. A direction with no open side at all (a slab, a symmetry plane on each end of
     its sweep) has no margin to judge and reads None. A symmetry plane never excuses the flow
-    axis: a half model is cut along the flow, and a plane facing the flow or the wake is wrong."""
-    ax = (flow_axis or "+x").strip().lower()
-    sign, letter = (ax[0], ax[1]) if ax[0] in "+-" else ("+", ax[0])
-    i = _AXIS_INDEX[letter]
+    axis: a half model is cut along the flow, and a plane facing the flow or the wake is wrong
+    (evaluate_domain_extents refuses one whatever was requested)."""
+    i, up_side, down_side = _flow_sides(flow_axis)
     seats = _symmetry_seats(symmetry_faces)
     seated = {k for k in seats if k[0] != i and _sits_on(box, body, *k)}
     if grounded and i != VERTICAL_AXIS:
@@ -237,15 +249,11 @@ def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None,
 
     def _why(j: int, side: str) -> tuple[str, dict]:
         here = seats.get((j, side))
-        if here is not None and j == i:
-            return (f" - the symmetry plane '{here}' was put across the flow there, and a half "
-                    "model is cut along the flow, never across it",
-                    {"symmetry_patch": here, "symmetry_face": _face(j, side)})
-        if here is not None:
+        if here is not None and j != i:
             return (f" - the body crosses the symmetry plane '{here}' there; a half model lies "
                     "wholly on one side of its cut",
                     {"symmetry_patch": here, "symmetry_face": _face(j, side), "crosses": True})
-        unused = [(k, n) for k, n in seats.items() if k not in seated]
+        unused = [(k, n) for k, n in seats.items() if k not in seated and k[0] != i]
         if unused:
             (uj, us), name = unused[0]
             return (f" - that face is far field, while the symmetry plane '{name}' was put on "
@@ -262,7 +270,6 @@ def _axis_margins(box: dict, body: dict, r: float, flow_axis: str | None,
         why, facts = _why(j, s) if g <= 0 else ("", {})
         return _Room(g, _face(j, s), why, facts)
 
-    up_side, down_side = ("min", "max") if sign == "+" else ("max", "min")
     rest = [j for j in range(3) if j != i]
     return {"upstream": _room(i, (up_side,)), "downstream": _room(i, (down_side,)),
             "lateral": _room(rest[0], _SIDES), "vertical": _room(rest[1], _SIDES)}
@@ -312,9 +319,24 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
     caveats: list = []
     blocks: list = []
     misses: list = []
+    # A symmetry plane on the inflow or the outflow face is refused whatever was requested: a
+    # half model is cut along the flow, and a plane across it leaves no far field on that side.
+    i, up_side, down_side = _flow_sides(flow_axis)
+    across: set[str] = set()
+    for k, side in (("upstream", up_side), ("downstream", down_side)):
+        name = _symmetry_seats(symmetry_faces).get((i, side))
+        if name is None:
+            continue
+        across.add(k)
+        room, f = margins[k], _face(i, side)
+        blocks.append(f"{k}: the symmetry plane '{name}' is the {f} face, across the flow - a "
+                      "half model is cut along the flow, never across it")
+        misses.append({"direction": k, "requested": requested.get(k),
+                       "measured": round(room.margin, 4) if room is not None else None,
+                       "face": f, "symmetry_patch": name, "symmetry_face": f})
     for k in _ALL_DIRECTIONS:
         rv = requested.get(k)
-        if rv is None:
+        if rv is None or k in across:
             continue
         rv = float(rv)
         room = margins[k]
