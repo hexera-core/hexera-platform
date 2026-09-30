@@ -156,6 +156,33 @@ def _artifact_label(artifact_type, engine: str) -> str:
     return _t.replace("_", " ").capitalize()
 
 
+#: The durable record's verdict, in the words the job status has always served.
+_SERVED_VERDICT = {"passed": "PASS", "failed": "FAIL"}
+
+
+def served_review(final_result: dict | None, review: dict) -> dict:
+    """The review the job status serves - its verdict, and the reviewer's words that go with it.
+
+    Once a job is finalized, its durable record (final_result) is the one authority on whether a
+    review concluded and what it concluded. The viewer payload's `review` block is only a copy of
+    the last review's verdict.json, and a review that ended WITHOUT a verdict used to write "FAIL"
+    there: job 4f18812f was delivered with its review unfinished (final_result.reviewer_verdict
+    null) and its status read "FAIL". So a finalized job serves a verdict, reasoning and findings
+    only when its record says the review COMPLETED, and the verdict is the record's own. Before a
+    record exists the payload is all there is, and only a real PASS or FAIL in it is served."""
+    review = review if isinstance(review, dict) else {}
+    if not isinstance(final_result, dict) or not final_result:
+        if review.get("verdict") in ("PASS", "FAIL"):
+            return review
+        return {**review, "verdict": None}
+    verdict = _SERVED_VERDICT.get(str(final_result.get("reviewer_verdict") or ""))
+    if final_result.get("review_execution") != "completed" or verdict is None:
+        # no concluded review on this run: nothing to judge by, so no verdict and no findings -
+        # a retained earlier review's words must not read as this run's judgement either
+        return {}
+    return {**review, "verdict": verdict}
+
+
 def _failed_concerns(review: dict, engine: str) -> list[str]:
     findings = review.get("axis_findings") or []
     if isinstance(findings, list):
@@ -262,12 +289,13 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 )
             )
 
-        _review = _vdata.get("review") or {}
         # The DURABLE application-rendered terminal verdict (never model prose), reproduced from the
         # persisted final_result so a restarted API returns the same result.
         _fr_dict = getattr(job, "final_result", None)
         if not isinstance(_fr_dict, dict):
             _fr_dict = None
+        # the verdict, reasoning and findings served beside it must agree with that record
+        _review = served_review(_fr_dict, _vdata.get("review") or {})
         _final_message = None
         if _fr_dict:
             try:
