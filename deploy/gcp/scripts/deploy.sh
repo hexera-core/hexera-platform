@@ -293,7 +293,10 @@ fi
 # with either tier, because the API serves the same page and issues the signed URLs. Idempotent: an
 # unchanged rule is left as it is.
 if want images || want console; then
-  bash "${S}/apply-upload-cors.sh"
+  # Best effort: a failure here must not stop the rest of the deploy - large console uploads just
+  # wait for the rule, and the script says how to apply it by hand.
+  bash "${S}/apply-upload-cors.sh" || warn "the browser-upload CORS step failed - files over 20 MB
+       cannot be uploaded from the console until it succeeds; rerun: bash deploy/gcp/scripts/apply-upload-cors.sh"
 else
   skipped console "the artifacts bucket's browser-upload CORS rule is left as it is"
 fi

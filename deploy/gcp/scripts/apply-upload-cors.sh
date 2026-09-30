@@ -83,9 +83,13 @@ for o in origins:
     print(f"  allowed origin  {o}", file=sys.stderr)
 ours = {"origin": origins, "method": ["PUT"], "responseHeader": ["Content-Type"],
         "maxAgeSeconds": 3600}
+# A bucket with no CORS rule describes as JSON null (or {"cors_config": null}), not as {}.
 try:
-    current = json.loads(live or "{}").get("cors_config") or []
+    doc = json.loads(live or "{}")
 except ValueError:
+    doc = {}
+current = (doc.get("cors_config") if isinstance(doc, dict) else None) or []
+if not isinstance(current, list):
     current = []
 def is_ours(entry):
     return (sorted(entry.get("method") or []) == ["PUT"]
