@@ -104,9 +104,8 @@ def test_an_engine_the_model_proposes_on_its_own_is_only_proposed_with_the_canon
     out = _run(state, [_resp([_tc("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
                        _resp(content="never reached - the app asks for confirmation")])
     reply = out["messages"][-1]["content"]
-    # the statement shows the name a user reads; `gmsh` is the internal key
-    assert "Selected engine: Gmsh" in reply
-    assert "not a selection" in reply and "nothing will be meshed" in reply
+    # the application's one engine question, with the name a user reads; `gmsh` is the internal key
+    assert reply == "I'd mesh this with Gmsh. OK, or do you use a different mesher?"
     gate = out["intake_gate"]
     assert gate["selection"]["state"] == es.PROPOSED and gate["selection"]["engine"] == "gmsh"
     assert gate["admission"] is None
@@ -120,7 +119,7 @@ def test_an_engine_the_user_named_is_selected_without_asking_them_again():
                                      _resp(content="Gmsh it is - checking the setup next.")])
     gate = out["intake_gate"]
     assert gate["selection"]["state"] == es.CONFIRMED and gate["selection"]["engine"] == "gmsh"
-    assert "Do you want to select" not in out["messages"][-1]["content"]
+    assert "I'd mesh this with" not in out["messages"][-1]["content"]
     assert gate["admission"] is None and out.get("dispatch_confirmed") is False
 
 

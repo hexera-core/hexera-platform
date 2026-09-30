@@ -28,8 +28,9 @@ _HOLE = ("I would use wall functions with y⁺ = 30–300, about  layer inflatio
          "the nose, wing and tail leading/trailing edges. Is that setup acceptable, or what should I change?")
 _STRAY = ("**Proposal:** wall functions with y⁺ = 30–300 and approximately it 5 prism layers on the shell and "
           "tube walls. Confirm this or specify a resolved-wall target such as y⁺ ≈ 1.")
-_CLEAN = ("For the snappyHexMesh setup, I propose wall functions with y⁺ = 30–300 and 8 prism layers on "
-          "`blade`, with refinement at the leading and trailing edges - ok, or tell me what differs.")
+# no engine named: since #108 a reply that names one the user did not bring up is sent back for that
+_CLEAN = ("Near the wall, I propose wall functions with y⁺ = 30–300 and 8 prism layers on `blade`, with "
+          "refinement at the leading and trailing edges - ok, or tell me what differs.")
 
 
 # ------------------------------------------------------------------------------- the rule ----

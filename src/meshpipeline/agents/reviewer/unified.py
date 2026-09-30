@@ -17,6 +17,7 @@ from meshpipeline.agents.reviewer.eligibility import (
 from meshpipeline.agents.reviewer.loop_policy import (
     MARKER_EVIDENCE_MISSING,
     MARKER_EXHAUSTED,
+    MARKER_STALLED,
     REVIEWER_NO_PROGRESS_THRESHOLD,
     ReviewLoopPolicy,
 )
@@ -315,6 +316,7 @@ async def run_unified_review(
     attempt: int = 0,
     user_dispute=None,
     dispute_phase: str = "",
+    rerun: int = 0,
 ) -> UnifiedReviewOutcome:
     # Part 6: refuse to call the provider when required deterministic evidence is missing. That is
     # an assurance-evidence failure, never provider downtime.
@@ -370,8 +372,14 @@ async def run_unified_review(
         # Structured tool_call/tool_result now carry every tool the reviewer runs, with
         # its own public label. The old per-round `action` list said the same thing in
         # weaker words and would double every row on the timeline.
+        # A RERUN of the same attempt's review (pipeline/graph.node_review_retry) gets its own
+        # trace scope: round and tool-call ids are built from role, attempt and round, so a second
+        # review of the same attempt would otherwise reuse the first one's ids and its cards would
+        # land on top of the stalled review's instead of after them.
         execution_trace=(ExecutionTraceContext(publisher=publish, job_id=str(job_id),
-                                              role="reviewer", attempt=int(attempt))
+                                              role=("reviewer" if not rerun
+                                                    else f"reviewer-rerun{int(rerun)}"),
+                                              attempt=int(attempt))
                          if publish is not None else None),
         provider_failure_marker=_marker_for_exit)
 
@@ -383,7 +391,9 @@ def _marker_for_exit(exit_reason: LoopExit) -> str:
     if exit_reason is LoopExit.deadline_exhausted:
         return MARKER_EXHAUSTED
     if exit_reason is LoopExit.no_progress:
-        return MARKER_EVIDENCE_MISSING
+        # the conversation ran and stalled - a fresh review of the same mesh can get past that,
+        # unlike the pre-loop refusals that share MARKER_EVIDENCE_MISSING (see loop_policy)
+        return MARKER_STALLED
     if exit_reason is LoopExit.rounds_exhausted:
         return MARKER_EXHAUSTED
     return MARKER_EVIDENCE_MISSING

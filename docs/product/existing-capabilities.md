@@ -159,7 +159,12 @@ the builder grading its own homework.
 Up to 3 build attempts (`MAX_BUILDER_RETRIES=1` → +2). The pipeline records why each attempt
 failed and which gate rejected it. Transient infrastructure failures are replayed separately
 from mesh failures (`node_infra_retry`), and a deterministic repeat halts early rather than
-burning attempts.
+burning attempts. A review that ends without a verdict on a mesh that already passed every gate
+(it stalled, ran out of time, or its renderer or provider dropped out) is started again on the
+same mesh (`node_review_retry`, `REVIEWER_RERUN_MAX`) instead of failing the job. If it still
+cannot finish, the mesh is delivered with that stated - the review did not finish, and why - and
+never reported as an internal failure (a dispute, whose flags need a judgement, stays a failure
+that names the review).
 
 **Nothing shows the user this story.** "Attempt 1 sealed a port; attempt 2 refined it and
 passed" is available and unsurfaced.

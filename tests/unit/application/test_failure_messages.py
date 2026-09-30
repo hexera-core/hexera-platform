@@ -104,7 +104,9 @@ def test_a_review_that_did_not_conclude_is_not_blamed_on_a_gate():
     fr = _fail("patch_contract", FailureCause.CONTRACT_MISMATCH, {"missing": ["x"]},
                api_failure="reviewer_evidence_missing")
     assert fr.failure_category == FailureCategory.internal_pipeline_failure.value
-    assert fr.failure_cause == "" and "'x'" not in render_message(fr)
+    # the gate's cause is not told - the review is: it is what did not finish
+    assert fr.failure_cause == "review_incomplete" and "'x'" not in render_message(fr)
+    assert "review" in fr.failure_detail and "on our side" in fr.failure_detail
 
 
 def test_a_crash_keeps_the_cause_the_checkpoint_recorded():
