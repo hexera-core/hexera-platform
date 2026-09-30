@@ -763,7 +763,7 @@ function initViewer(job,surf,uiCfg){
       const d=Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;
       return stats?stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/d:null;},
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
-    markers:()=>flags.length,
+    markers:()=>flags.length,up:()=>cam.getViewUp().slice(),
     render:()=>rw.render()};
 
   /* PARAVIEW EXPORT - the same boundary and the same per-face numbers as a legacy VTK file,

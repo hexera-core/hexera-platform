@@ -95,6 +95,15 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert sorted(state["live"]) == ["aspect_ratio", "non_ortho", "skewness"], state
     assert state["active"] is None and state["legend"] is False
 
+    # the viewer opens z-up, as CAD is drawn, and Fit keeps it that way
+    up = live.evaluate(f"""(() => {{
+      const v = window._vdbg['{JOB}'], open = v.up();
+      document.getElementById('v-fitbtn-{JOB}').click();
+      return {{open, fit: v.up()}};
+    }})()""")
+    assert up["open"] == pytest.approx([0, 0, 1], abs=1e-9), up
+    assert up["fit"] == pytest.approx([0, 0, 1], abs=1e-9), up
+
     # clicking the non-orthogonality figure colours the mesh, draws the legend, marks the one
     # face over the bar, and switches the hint to the probe
     after = live.evaluate(f"""(() => {{
