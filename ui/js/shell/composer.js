@@ -12,7 +12,7 @@
  */
 import { confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadGeometry }
   from "../api/endpoints.js";
-import { acceptAttribute, isOfferable, loadIntakeFormats, supportedCopy }
+import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
 
@@ -69,7 +69,10 @@ async function upload(file) {
   // never becomes the security boundary.
   const intake = await loadIntakeFormats();
   if (!isOfferable(file.name, intake)) {
-    deps.notice.show(supportedCopy(intake), "error");
+    // A native CAD file (a SolidWorks part, a Creo assembly...) is told which export to upload
+    // instead, in the server's own words. It stays until dismissed or the next upload: the user
+    // may be off exporting the STEP while it is there to read.
+    deps.notice.show(refusalCopy(file.name, intake), "error", { sticky: true });
     return;
   }
   // The size limit is the server's to state: a file over it is refused before a byte is sent, in
@@ -101,7 +104,9 @@ async function upload(file) {
   } catch (e) {
     btn.disabled = false; btn.textContent = "Upload geometry";
     lbl.textContent = "No geometry file selected"; lbl.className = "";
-    if (e.status !== 401) deps.notice.show("Upload failed: " + e.message, "error");
+    // stays until dismissed or the next upload: a refusal says what to do instead, and that
+    // takes longer to read, and to act on, than a notice that fades
+    if (e.status !== 401) deps.notice.show("Upload failed: " + e.message, "error", { sticky: true });
   }
 }
 

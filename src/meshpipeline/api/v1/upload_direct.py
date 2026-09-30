@@ -43,6 +43,7 @@ from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.api.v1 import upload as _multipart
 from meshpipeline.contracts.intake_formats import (
     ACCEPTED_SUFFIXES,
+    refusal_suffix,
     staged_name_for,
     unsupported_message,
 )
@@ -125,7 +126,7 @@ def _too_large(size: int) -> str:
 def _checked_name(filename: str) -> tuple[str, str]:
     cleaned, suffix = _multipart.sanitised_upload_name(filename)
     if suffix not in ACCEPTED_SUFFIXES:
-        raise HTTPException(status_code=422, detail=unsupported_message(suffix))
+        raise HTTPException(status_code=422, detail=unsupported_message(refusal_suffix(cleaned)))
     return cleaned, suffix
 
 

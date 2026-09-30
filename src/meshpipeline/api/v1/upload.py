@@ -14,6 +14,7 @@ import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.contracts.intake_formats import (
     ACCEPTED_SUFFIXES,
+    refusal_suffix,
     staged_name_for,
     unsupported_message,
 )
@@ -95,7 +96,7 @@ async def upload_step_file(
 ):
     filename, suffix = sanitised_upload_name(file.filename or "")
     if suffix not in ACCEPTED_SUFFIXES:
-        raise HTTPException(status_code=422, detail=unsupported_message(suffix))
+        raise HTTPException(status_code=422, detail=unsupported_message(refusal_suffix(filename)))
 
     try:
         from meshpipeline.application.job_service import JobService
