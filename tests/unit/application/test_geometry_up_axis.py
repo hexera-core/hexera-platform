@@ -235,7 +235,7 @@ def _scouted_car(sid: str) -> dict:
             "upright_sheet": {"object_key": sheet, "order": ORDER}}
 
 
-def _naming(monkeypatch, sid: str, vision: dict):
+def _naming(monkeypatch, sid: str, vision: dict, up_answer: dict | None = None):
     store = _Store({gc.check_object_key(sid, "scout.json"): json.dumps(_scouted_car(sid)).encode(),
                     gc.check_object_key(sid, "upright.png"): b"png"})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
@@ -244,9 +244,20 @@ def _naming(monkeypatch, sid: str, vision: dict):
 
     def _up(sheet, order, **k):
         asked.append({"order": list(order), **k})
-        return _picked("-z", 0.95)
+        return dict(up_answer) if up_answer is not None else _picked("-z", 0.95)
     monkeypatch.setattr(gc, "_up_with_vision", _up)
     return store, asked
+
+
+def test_an_up_question_that_fails_never_costs_the_naming(monkeypatch):
+    """The provider times out on the six-way question after naming the part: the names stand, and
+    the shape alone says which way is up."""
+    sid = "abcdef12-9999"
+    _naming(monkeypatch, sid, _vision(part="car body"), up_answer={"error": "TimeoutError"})
+    result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="the SAE car")
+    assert result["status"] == "ready" and result["proposal"]["vision_available"] is True
+    assert result["proposal"]["part"] == "car body" and result["vision"]["up_error"] == "TimeoutError"
+    assert result["proposal"]["up_axis"] == "-z" and result["proposal"]["up_axis_confidence"] == 0.8
 
 
 def test_the_naming_asks_which_way_is_up_of_a_body_in_a_flow_with_its_name(monkeypatch):

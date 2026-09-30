@@ -610,9 +610,13 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         # WHICH WAY IS UP, by the pictures: asked only of a body the fluid flows around, once the
         # model has said what it is - the name is what lets it place a car it cannot place cold
         if "error" not in vision and _proposal(facts, vision)["flow"] == "external":
-            vision.update(_upright_by_pictures(stored, tmp, part=str(vision.get("part") or ""),
-                                               purpose_text=purpose_text, session_id=session_id,
-                                               owner_id=owner_id))
+            seen = _upright_by_pictures(stored, tmp, part=str(vision.get("part") or ""),
+                                        purpose_text=purpose_text, session_id=session_id, owner_id=owner_id)
+            # a question that failed is its own failure, never the naming's: under "error" it
+            # would make the whole answer read as unavailable
+            if "error" in seen:
+                seen = {"up_error": seen["error"]}
+            vision.update(seen)
     proposal = _proposal(facts, vision)
     # what the scout stored, minus the fields write_status writes itself: the status, the clock,
     # and the session id - which it also takes as its first argument
