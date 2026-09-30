@@ -777,19 +777,23 @@ function initViewer(job,surf,uiCfg){
     const row=(k,l,unit,sub)=>`<div class="mx-c mx-row mx-q" data-key="${esc(k)}"><div class="mx-k">${esc(l)}</div>`
       +`<div class="mx-v">${show(q[k])}${unit?`<small>${unit}</small>`:''}</div>`
       +(sub?`<div class="mx-sub">${sub}</div>`:'')+`</div>`;
+    // the share of faces that are skewed, when there are any
+    const frac=isNum(q.skew_fraction)&&q.skew_fraction>0?`(${Number((q.skew_fraction*100).toPrecision(2))}%)`:'';
+    const ofFaces=isNum(q.faces)?`of ${q.faces.toLocaleString()}`:'';
     const skewNote=()=>{
-      if(!isNum(q.skew_faces))return '';
+      if(!isNum(q.skew_faces))return frac?`Skewed: ${frac.slice(1,-1)} of faces`:'';
       if(q.skew_faces===0)return 'No skewed faces';
-      const frac=isNum(q.skew_fraction)&&q.skew_fraction>0?` (${Number((q.skew_fraction*100).toPrecision(2))}%)`:'';
-      return `${q.skew_faces.toLocaleString()} skewed face${q.skew_faces!==1?'s':''}`
-        +(isNum(q.faces)?` of ${q.faces.toLocaleString()}`:'')+frac;};
+      return [`${q.skew_faces.toLocaleString()} skewed face${q.skew_faces!==1?'s':''}`,ofFaces,frac]
+        .filter(Boolean).join(' ');};
     const quality=[];
     if(has('max_non_ortho'))quality.push(row('max_non_ortho','Max non-orthogonality','°',
       has('avg_non_ortho')?`Mean ${show(q.avg_non_ortho)}°`:''));
     else if(has('avg_non_ortho'))quality.push(row('avg_non_ortho','Mean non-orthogonality','°'));
+    // skewness: the max with the skewed faces under it; without a max, the count and its share
+    // stand on their own - nothing the engine reported is dropped
     if(has('max_skewness'))quality.push(row('max_skewness','Max skewness','',skewNote()));
-    else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',
-      isNum(q.faces)?`of ${q.faces.toLocaleString()}`:''));
+    else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',[ofFaces,frac].filter(Boolean).join(' ')));
+    else if(has('skew_fraction'))quality.push(row('skew_fraction','Skew fraction',''));
     if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
     // anything the backend declared that this build has no name for still reaches the user
     const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
