@@ -201,7 +201,10 @@ function initViewer(job,surf,uiCfg){
 
   let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
   const cam=ren.getActiveCamera();
-  cam.azimuth(45);cam.elevation(25);
+  // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
+  // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
+  // aircraft on their side in the mesh viewer.
+  cam.setFocalPoint(0,0,0);cam.setPosition(1,-1,0.7);cam.setViewUp(0,0,1);
   ren.resetCamera();rw.render();
   const _bs=ren.computeVisiblePropBounds();
   const diag=Math.max(Math.hypot(_bs[1]-_bs[0],_bs[3]-_bs[2],_bs[5]-_bs[4]),1e-9);
