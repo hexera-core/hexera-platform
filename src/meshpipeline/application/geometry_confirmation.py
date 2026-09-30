@@ -24,8 +24,8 @@ def renamed_openings_sentence(before, after) -> str:
     if not moved:
         return ""
     said = ", ".join(f"opening {i} is called {n}" for i, n in moved)
-    return (f"Openings shared a name, so {said} - tell the user this in your next reply; they can "
-            "rename it on the picture.")
+    # the chat shows the whole confirmation to the user, so this says it to them, not to the model
+    return f"Openings shared a name, so {said}; any of them can be renamed on the picture."
 
 
 def distinct_opening_names(openings) -> list:
@@ -91,11 +91,11 @@ def reference_length_along_the_flow(body, stored_size_mm=None, proposed_mm=None)
         return body, ""
     along, other = found
     was = float(body.reference_length_mm)
+    # the chat shows the whole confirmation to the user, so this says it to them, not to the model
     note = (f"The reference length on the form, {was:.0f} mm, was the part's length along {other} - "
             "left from the check's first guess of the flow axis - so it is now the part's length "
-            f"along the flow, {along:.0f} mm, and the far-field margins are multiples of that. Tell "
-            "the user this in your next reply, and that they can give another reference length in "
-            "the chat if they want one.")
+            f"along the flow, {along:.0f} mm, and the far-field margins are multiples of that. "
+            "Another reference length can be given in the chat.")
     return body.model_copy(update={"reference_length_mm": along}), note
 
 
