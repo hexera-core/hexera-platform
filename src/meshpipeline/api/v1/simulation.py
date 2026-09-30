@@ -302,7 +302,29 @@ async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     surface = data.get("surface")
     if not surface:
         raise HTTPException(404, "No renderable surface was delivered for this job")
-    return {"job_id": str(job_id), **surface}
+    out = {"job_id": str(job_id), **surface}
+    up = await _up_axis_of(job_id, owner_id, organization_id)
+    if up:
+        out["up_axis"] = up
+    return out
+
+
+async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> str | None:
+    """Which way is up for the part a job meshed - what the user confirmed on its geometry check,
+    else what the check proposed - for the viewer to open with. None when the job had no check or
+    it cannot be read: the viewer then opens z-up, as it always has. Display only."""
+    try:
+        async with get_db() as db:
+            job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+        payload = (getattr(job, "dispatch_payload", None) or {}) if job is not None else {}
+        session_id = str(payload.get("session_id") or "") if isinstance(payload, dict) else ""
+        if not session_id:
+            return None
+        from meshpipeline.application.geometry_check import stored_up_axis
+        return await asyncio.to_thread(stored_up_axis, session_id)
+    except Exception as exc:  # noqa: BLE001 - a view preference never costs the user their mesh
+        logger.info("surface: which way is up unavailable (%s)", type(exc).__name__)
+        return None
 
 
 @router.get("/{job_id}/surface.vtk")
