@@ -12,9 +12,11 @@ from meshpipeline.agents.intake import turn
 from meshpipeline.agents.intake.executor import IntakeExecutionState
 from meshpipeline.agents.intake.loop_policy import IntakeLoopPolicy, repeats_a_question
 from meshpipeline.contracts.agent_loop import LoopTally
+from meshpipeline.contracts.engineering_text import plain
 
 # The question a real session asked four times in a row because the user's replies did not match
-# what the model wanted to hear.
+# what the model wanted to hear. A reply is delivered as the model wrote it, made plain - y+ 30-300
+# reaches the user as y⁺ 30–300 - so the delivered text is compared with plain(reply).
 _Q = ("Should I treat the pipe wall as hydraulically smooth (no roughness), with a first-layer "
       "thickness sized for y+ 30-300 and 5 prism layers - ok?")
 _Q_REWORDED = ("To confirm: hydraulically smooth pipe wall, first-layer thickness for y+ 30-300, "
@@ -94,7 +96,7 @@ def test_the_second_reply_is_delivered_whatever_it_says():
     assert p.on_plaintext(LoopTally(rounds=1)).complete is False
     p.note_round(_round(_Q))
     d = p.on_plaintext(LoopTally(rounds=2))
-    assert d.complete is True and d.payload == _Q
+    assert d.complete is True and d.payload == plain(_Q)
     assert p.repeated_questions == 1
 
 
@@ -108,7 +110,7 @@ def test_no_nudge_on_the_last_permitted_round():
                          limits_=LoopLimits(max_rounds=1))
     p.note_round(_round(_Q))
     d = p.on_plaintext(LoopTally(rounds=1))          # the round just taken was the only one
-    assert d.complete is True and d.payload == _Q and p.repeated_questions == 0
+    assert d.complete is True and d.payload == plain(_Q) and p.repeated_questions == 0
 
     p2 = IntakeLoopPolicy(exec_state=st, executor=None, prior_questions=(_Q,),
                           limits_=LoopLimits(max_rounds=2))
@@ -193,21 +195,21 @@ def test_asking_again_is_sent_back_and_the_moved_on_reply_is_delivered():
     out, calls = _run(dict(_STATE), [_resp(content=_Q_REWORDED), _resp(content=_MOVED_ON)])
     assert len(calls) == 2, "the repeat was not sent back"
     assert calls[1][-1] == {"role": "user", "content": turn.REPEAT_NUDGE}
-    assert out["messages"][-1]["content"] == _MOVED_ON
+    assert out["messages"][-1]["content"] == plain(_MOVED_ON)
     assert out.get("dispatch_confirmed") is False
 
 
 def test_a_reply_that_moves_on_is_delivered_in_one_round():
     out, calls = _run(dict(_STATE), [_resp(content=_MOVED_ON)])
     assert len(calls) == 1
-    assert out["messages"][-1]["content"] == _MOVED_ON
+    assert out["messages"][-1]["content"] == plain(_MOVED_ON)
 
 
 def test_a_repeat_on_the_last_round_is_delivered_not_silence(monkeypatch):
     monkeypatch.setattr(intake.icfg, "INTAKE_MAX_ROUNDS", 1)
     out, calls = _run(dict(_STATE), [_resp(content=_Q_REWORDED), _resp(content=_MOVED_ON)])
     assert len(calls) == 1
-    assert out["messages"][-1]["content"] == _Q_REWORDED, "the user got no reply at all"
+    assert out["messages"][-1]["content"] == plain(_Q_REWORDED), "the user got no reply at all"
 
 
 def test_the_nudge_is_not_persisted_as_a_conversation_message():
@@ -225,13 +227,13 @@ def test_the_propose_first_block_reads_a_plain_yes_and_moves_on_after_one_unclea
     low = block.lower()
     assert "never ask the same question twice" in low
     assert "one answer" in low and "move on" in low
-    for courtesy in ("y+", "first-layer thickness", "layer count", "patch names"):
+    for courtesy in ("y⁺", "first-layer thickness", "layer count", "patch names"):
         assert courtesy in low, courtesy
     assert "never a reason to hold a submission" in low
 
 
-def test_the_prompt_blocks_are_the_registered_four():
+def test_the_prompt_blocks_are_the_registered_ones():
     assert [b[0] for b in intake.INTAKE_PROMPT_BLOCKS] == [
-        "quality_criteria", "engine_first", "geometry_check", "propose_first"]
+        "quality_criteria", "engine_first", "geometry_check", "propose_first", "plain_text"]
     assert "propose_first" in {b[0] for b in intake.INTAKE_PROMPT_BLOCKS}
     assert intake._block_propose_first() in intake.compose_intake_system()

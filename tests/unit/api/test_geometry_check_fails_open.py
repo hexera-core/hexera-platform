@@ -320,6 +320,26 @@ async def test_openings_that_share_a_name_are_named_apart_not_refused(served, mo
     assert [p["type"] for p in out["patches"]] == ["inlet", "outlet", "wall"]
 
 
+async def test_a_form_that_does_not_say_which_way_is_up_confirms_what_the_check_proposed(served, monkeypatch):
+    """A car drawn upside down, confirmed from a console with no Up control: the proposal's -z is
+    what is recorded, and the ground it stands on is not laid on its roof - it is meshed free in
+    the flow, and the intake is told why."""
+    scouted = dict(_scouted(), proposal={"openings": [], "up_axis": "-z"})
+    store = served({"scout.json": scouted}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = await route._owned_session(SID, "alice", "org-1")
+    _confirming(monkeypatch, session, {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm",
+                                       "scale_to_metres": 0.001, "basis": "file_declared", "evidence": "SI_UNIT"}, [])
+    body = route.ConfirmIn(input_kind="solid-body", flow="external", flow_axis="+x", grounded=True,
+                           reference_length_mm=840.0, scale_to_m=0.001, unit="mm")
+    out = await route.confirm_check(SID, body, "alice", "org-1")
+    assert json.loads(store.objects[_key("confirmed.json")])["up_axis"] == "-z"
+    assert "drawn with -z up" in out["message"] and "wall patch named ground" not in out["message"]
+    # the user's own answer is what counts once they give one
+    out = await route.confirm_check(SID, body.model_copy(update={"up_axis": "+z"}), "alice", "org-1")
+    assert json.loads(store.objects[_key("confirmed.json")])["up_axis"] == "+z"
+    assert "wall patch named ground" in out["message"]
+
+
 async def test_a_confirmation_whose_transaction_fails_takes_its_stored_copy_back(served, monkeypatch):
     """The stored copy goes first, the session's transaction second. A transaction that fails
     leaves no copy behind: the next read would otherwise report a confirmation that never
