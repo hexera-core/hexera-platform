@@ -37,13 +37,9 @@ function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
-/* THE CELLS STAY VISIBLE UNDER THE COLOURS. A line cannot be drawn thinner than a pixel, so the
-   edges step back by contrast instead: a grey-blue a shade below the scale's calm end - barely
-   off it at full view, where a dense mesh has more line than face on screen, and a little firmer
-   close up, where every cell is there to count. With "near the limit only" on, the resting faces
-   are dark, and their edges a shade above them. */
-const _EDGE_HEAT_FAR=[0.74,0.785,0.845],_EDGE_HEAT_NEAR=[0.60,0.65,0.72];
-const _EDGE_HEAT_DIM=[0.33,0.35,0.38];
+/* darker while the faces carry colour, so every cell still reads against the data (the original
+   heatmap's edge, 12% lighter along with the rest of its scale) */
+const _EDGE_HEAT=[0.19,0.17,0.15];
 const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
@@ -219,10 +215,10 @@ function initViewer(job,surf,uiCfg){
       diag:Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4])});
     totalFaces+=nCells;});
 
-  let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap softens it
-  // the parts panel's own repaint, and a listener for it: the heatmap hands edges back through the
-  // panel (so a selected part keeps its selection edge) and re-reads what is on screen after it
-  let repaintParts=null,onPartsPainted=null;
+  let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
+  // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
+  // part keeps its selection edge
+  let repaintParts=null;
   const cam=ren.getActiveCamera();
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
@@ -430,7 +426,6 @@ function initViewer(job,surf,uiCfg){
       });
       note.innerHTML=inspect(selPart);
       wire();
-      if(onPartsPainted)onPartsPainted();
     }
     repaintParts=paint;
 
@@ -861,8 +856,8 @@ function initViewer(job,surf,uiCfg){
 
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
      The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
-     surface reader's own filter), the bar the engine's gate judges against, and the worst
-     spots. The delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
+     surface reader's own filter) and the bar the engine's gate judges against. The
+     delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
      aspect-ratio numbers become clickable when fields exist for them - clicking a number shows where it
      lives. Nothing here touches the geometry: colouring is cell scalars on the same immutable
      actors, and turning it off restores exactly the property colours the parts panel set. */
@@ -886,15 +881,11 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    /* READABLE ON A GOOD MESH. Almost every face of a mesh that passes sits near 0, so the calm end
-       is a light, lit grey-blue - the part reads as a clean surface, brighter than the plain view -
-       and the colour warms through amber (80% of the bar) and international orange (the bar) to
-       crimson past it. The old deep-steel calm end turned a good mesh into a dark silhouette on the
-       dark canvas, and a click on its figure looked like it did nothing. */
-    const STOPS=[[0,[206,217,230]],[0.5,[158,184,214]],[0.8,[255,176,64]],[1.0,[255,79,0]]];
-    const PAST=[178,18,42];
-    const NEAR=0.8;                  // "near the limit": the amber stop, and where the grey-out cuts
-    const NEUTRAL=[66,70,76];        // flat dark grey for the faces "near the limit only" rests
+    /* the console's original ramp, every colour 12% lighter: deep steel below, the wireframe blue
+       through the calm range, warming to amber and international orange at the bar, crimson past
+       it. The colour is the surface's own - nothing is drawn on top of the mesh. */
+    const STOPS=[[0,[78,102,130]],[0.5,[122,156,196]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
+    const PAST=[168,31,25];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
       // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
       // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
@@ -913,290 +904,31 @@ function initViewer(job,surf,uiCfg){
       return {color,hi,lo,open,css,limitPct:pc(lim)};}
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
 
-    /* WHAT IS ON SCREEN. Sizes come from the drawn faces of the parts that are showing, not from
-       the whole case: a hidden farfield box is ten times the part and carries the mesh's coarsest
-       cells, so the case-wide typical cell made a marker on a car the size of its bonnet. */
-    const shown=()=>entries.filter(en=>en.actor.getVisibility());
-    const shownSig=()=>shown().map(en=>en.patch).join('|');
-    const faceSize=(en,cid)=>{const v=newell(en,cid);return Math.sqrt(0.5*Math.hypot(v[0],v[1],v[2]));};
-    let _typ=null;
-    function faceTyp(){              // the median drawn face of the parts on screen, sampled
-      const sig=shownSig();if(_typ&&_typ.sig===sig)return _typ.v;
-      const vis=shown(),tot=vis.reduce((a,en)=>a+en.nCells,0),step=Math.max(1,Math.floor(tot/3000)),s=[];
-      vis.forEach(en=>{for(let c=0;c<en.nCells;c+=step)s.push(faceSize(en,c));});
-      s.sort((a,b)=>a-b);
-      const v=(s.length&&s[s.length>>1])||(stats&&stats.typ)||diag*0.005;
-      _typ={sig,v};return v;}
-    function shownDiag(){const vis=shown();if(!vis.length)return diag;
-      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
-      vis.forEach(en=>{const e=en.pd.getBounds();
-        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],e[k]);b[k+1]=Math.max(b[k+1],e[k+1]);}});
-      return Math.max(Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]),1e-9);}
-    const tanHalf=()=>Math.tan(cam.getViewAngle()*Math.PI/360);
-    function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
-      return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
-
-    /* THE CELLS STAY IN VIEW. With the data on, the edges are drawn at every zoom, in a colour a
-       shade off the faces' own (_EDGE_HEAT_FAR at full view, _EDGE_HEAT_NEAR close up), so a dense
-       mesh reads as a faint grid over the colours rather than lines painted over them, and close up
-       every cell is there to count. Off, they come back exactly as the parts panel draws them. */
-    function heatEdgeCol(){
-      if(nearOnly)return _EDGE_HEAT_DIM;
-      // how many screen pixels a typical face spans: ~3 at full view on a big mesh, 15+ close up
-      const px=faceTyp()*(host.clientHeight||1)/(2*camDist()*tanHalf());
-      const t=Math.round(20*Math.max(0,Math.min(1,(px-3)/12)))/20;   // in steps, so a turn does not repaint
-      return _EDGE_HEAT_FAR.map((a,i)=>a+(_EDGE_HEAT_NEAR[i]-a)*t);}
-    // follow the zoom: every part but a selected one (it keeps its orange edge) takes the new shade
-    function heatEdges(){
-      if(!activeMetric)return;
-      const c=heatEdgeCol();if(c.every((v,i)=>Math.abs(v-edgeCol[i])<1e-3))return;
-      edgeCol=c;
-      entries.forEach(en=>{const pr=en.actor.getProperty(),e=pr.getEdgeColor();
-        if(Math.abs(e[0]-_SEL_EDGE[0])<1e-3&&Math.abs(e[1]-_SEL_EDGE[1])<1e-3)return;
-        pr.setEdgeColor(c[0],c[1],c[2]);});}
-
-    /* THE WORST SPOTS, on every mesh. The payload's hotspots are the faces OVER the bar, worst first
-       - a mesh that passes has none. So the list starts with them and goes on with the drawn faces
-       themselves: the highest-reading faces of the parts on screen, one per neighbourhood, worst
-       first, up to 60. A good mesh therefore still shows where its worst cells are. */
-    const MAX_SPOTS=60;
-    let spots=[],spotSig='';
-    function buildSpots(m){
-      const vis=shown(),out=[],lim=qf.metrics[m].limit;
-      const sep=Math.max(4*faceTyp(),0.02*shownDiag()),sep2=sep*sep;
-      const taken=(x,y,z)=>out.some(s=>(s.x-x)**2+(s.y-y)**2+(s.z-z)**2<sep2);
-      (qf.hotspots||[]).forEach(h=>{
-        if(h.metric!==m||out.length>=MAX_SPOTS)return;
-        if(h.patch&&!vis.some(en=>en.patch===h.patch))return;   // a hidden part's would mark empty space
-        if(taken(h.x,h.y,h.z))return;
-        out.push({x:h.x,y:h.y,z:h.z,value:h.value,patch:h.patch||null,cellFaces:h.cell_faces,
-                  over:h.value>lim,en:null,cid:-1});});
-      // the drawn faces: a histogram finds the reading the top ~2000 sit above, and only those sort
-      let lo=Infinity,hi=-Infinity;
-      vis.forEach(en=>{const v=en.q[m];if(v)for(let i=0;i<v.length;i++){const x=v[i];
-        if(x<lo)lo=x;if(x>hi)hi=x;}});
-      if(out.length<MAX_SPOTS&&hi>=lo){
-        const B=1024,hist=new Uint32Array(B),w=(hi-lo)||1;
-        const bin=x=>Math.min(B-1,Math.max(0,Math.floor((x-lo)/w*B)));
-        vis.forEach(en=>{const v=en.q[m];if(v)for(let i=0;i<v.length;i++)if(v[i]===v[i])hist[bin(v[i])]++;});
-        let k=B-1,above=0;while(k>0&&above+hist[k]<2000){above+=hist[k];k--;}
-        let room=Math.max(0,4000-above);const cand=[];
-        vis.forEach(en=>{const v=en.q[m];if(v)for(let i=0;i<v.length;i++){const x=v[i];if(x!==x)continue;
-          const b=bin(x);if(b>k||(b===k&&room-->0))cand.push([x,en,i]);}});
-        cand.sort((a,b)=>b[0]-a[0]);
-        // a drawn face past the bar reads its cell's worst face, which the payload already lists
-        // as a hotspot: it would only be the same bad cell again
-        const listed=(qf.hotspots||[]).some(h=>h.metric===m);
-        for(const [v,en,cid] of cand){if(out.length>=MAX_SPOTS)break;
-          if(listed&&v>lim)continue;
-          const p=cellCenter(en,cid);if(taken(p[0],p[1],p[2]))continue;
-          out.push({x:p[0],y:p[1],z:p[2],value:v,patch:en.patch,
-                    cellFaces:en.cellFaces?en.cellFaces[cid]:null,over:v>lim,en,cid});}}
-      return out;}
-    // the drawn face nearest a point, among the parts on screen (a payload hotspot carries a place,
-    // not a polygon index)
-    function centres(en){if(!en.ctr){const C=new Float32Array(en.nCells*3);
-        for(let c=0;c<en.nCells;c++){const p=cellCenter(en,c);C[c*3]=p[0];C[c*3+1]=p[1];C[c*3+2]=p[2];}
-        en.ctr=C;}
-      return en.ctr;}
-    function nearestFace(s){let best=null,bd=Infinity;
-      shown().forEach(en=>{const C=centres(en);
-        for(let c=0;c<en.nCells;c++){const dx=C[c*3]-s.x,dy=C[c*3+1]-s.y,dz=C[c*3+2]-s.z,d=dx*dx+dy*dy+dz*dz;
-          if(d<bd){bd=d;best={en,cid:c};}}});
-      return best?Object.assign(best,{dist:Math.sqrt(bd)}):null;}
-
-    /* THE MARKERS read at full view: the larger of 1.6 typical faces and 0.6% of what is on screen,
-       and never more than BEAD_PX across on screen, so zooming in does not grow them over the very
-       cells they point at. A spot past the bar is crimson; one near it (above 80%) wears the
-       scale's own colour for its reading, so the beads say where the worst cells are on a mesh that
-       passes as well. The spot the walker is on gives its bead up to the ring. */
-    const BEAD_PX=7;
-    const hotActors=[],hotOf=[];let hotR=0,unitBead=null;   // hotOf[k]: the spot bead k marks
-    function clearHot(){hotActors.forEach(a=>ren.removeActor(a));hotActors.length=0;hotOf.length=0;}
-    function scaleHot(){if(!hotActors.length)return;
-      const perPx=2*camDist()*tanHalf()/(host.clientHeight||600),r=Math.min(hotR,BEAD_PX*perPx);
-      hotActors.forEach(a=>{const s=a.getScale();if(Math.abs(s[0]-r)>r*0.01)a.setScale(r,r,r);});
-      // the spot the walker is on gives its bead up to the ring - while the ring is big enough to see
-      const cur=focusActors.length&&focusR/perPx>=2*BEAD_PX?walkIdx:-1;
-      hotActors.forEach((a,k)=>{const on=hotOf[k]!==cur;if(a.getVisibility()!==on)a.setVisibility(on);});}
-    function showHot(m){clearHot();
-      const md=qf.metrics[m],rp=ramp(m),rgb=[0,0,0];
-      hotR=Math.max(1.6*faceTyp(),0.006*shownDiag());
-      if(!unitBead){unitBead=vtk.Rendering.Core.vtkMapper.newInstance();unitBead.setInputData(spherePd(0,0,0,1));}
-      spots.forEach((s,i)=>{
-        if(!(s.over||(!rp.open&&s.value>=NEAR*md.limit)))return;
-        if(s.over){rgb[0]=224;rgb[1]=36;rgb[2]=40;}else rp.color(s.value,rgb,0);
-        const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(unitBead);ac.setPickable(false);
-        ac.setPosition(s.x,s.y,s.z);
-        const pp=ac.getProperty();pp.setColor(rgb[0]/255,rgb[1]/255,rgb[2]/255);
-        pp.setAmbient(0.55);pp.setDiffuse(0.6);pp.setSpecular(0.3);pp.setSpecularPower(24);
-        ren.addActor(ac);hotActors.push(ac);hotOf.push(i);});
-      scaleHot();}
-
-    /* THE CURRENT SPOT: a quiet target ring lying on the surface - white between two dark bands, so
-       it reads on the pale calm colour and on the warm one alike. */
-    let focusActors=[],focusR=0;
-    function clearFocus(){focusActors.forEach(a=>ren.removeActor(a));focusActors=[];scaleHot();}
-    function annulusPd(c,nrm,r0,r1){
-      let ux=Math.abs(nrm[0])>0.9?0:1,uy=Math.abs(nrm[0])>0.9?1:0,uz=0;
-      let ax=uy*nrm[2]-uz*nrm[1],ay=uz*nrm[0]-ux*nrm[2],az=ux*nrm[1]-uy*nrm[0];
-      const al=Math.hypot(ax,ay,az)||1;ax/=al;ay/=al;az/=al;
-      const bx=nrm[1]*az-nrm[2]*ay,by=nrm[2]*ax-nrm[0]*az,bz=nrm[0]*ay-nrm[1]*ax;
-      const lift=r1*0.06,cx=c[0]+nrm[0]*lift,cy=c[1]+nrm[1]*lift,cz=c[2]+nrm[2]*lift;
-      const N=72,pts=new Float32Array(N*6),polys=new Uint32Array(N*5);
-      for(let i=0;i<N;i++){const t=2*Math.PI*i/N,co=Math.cos(t),si=Math.sin(t);
-        [r0,r1].forEach((r,k)=>{const o=(i*2+k)*3;
-          pts[o]=cx+(ax*co+bx*si)*r;pts[o+1]=cy+(ay*co+by*si)*r;pts[o+2]=cz+(az*co+bz*si)*r;});
-        const j=(i+1)%N;polys.set([4,i*2,i*2+1,j*2+1,j*2],i*5);}
-      const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
-      pd.getPoints().setData(pts,3);pd.getPolys().setData(polys);
-      return pd;}
-    function showFocus(c,nrm,r){clearFocus();focusR=r;
-      [[0.70,0.82,[0.03,0.04,0.06]],[0.82,1.0,[1,1,1]],[1.0,1.13,[0.03,0.04,0.06]]].forEach(([a,b,col])=>{
-        const mp=vtk.Rendering.Core.vtkMapper.newInstance();mp.setInputData(annulusPd(c,nrm,a*r,b*r));
-        const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mp);ac.setPickable(false);
-        const pp=ac.getProperty();pp.setColor(col[0],col[1],col[2]);
-        pp.setAmbient(1.0);pp.setDiffuse(0.0);pp.setLighting(false);
-        if(pp.setBackfaceCulling)pp.setBackfaceCulling(false);
-        ren.addActor(ac);focusActors.push(ac);});
-      scaleHot();}
-
-    /* THE FLIGHT. The camera glides to a spot over FLY_MS - focal point straight, distance
-       geometric so a long zoom feels even, direction turned about one axis - rather than jumping,
-       so the viewer keeps their bearings. Any drag, wheel or Fit takes the camera back at once. */
-    const FLY_MS=800;
-    let fly=null;
-    function cancelFly(){if(fly){const f=fly;fly=null;f.resolve(false);}}
-    const ease=t=>t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
-    function flyTo(tf,dir,dist){
-      cancelFly();
-      const f0=cam.getFocalPoint().slice(),p0=cam.getPosition().slice();
-      const v0=[p0[0]-f0[0],p0[1]-f0[1],p0[2]-f0[2]],d0=Math.hypot(v0[0],v0[1],v0[2])||1e-9;
-      for(let k=0;k<3;k++)v0[k]/=d0;
-      // the turn: about the axis square to both directions (about the view-up for a half turn)
-      const ang=Math.acos(Math.max(-1,Math.min(1,v0[0]*dir[0]+v0[1]*dir[1]+v0[2]*dir[2])));
-      let ax=[v0[1]*dir[2]-v0[2]*dir[1],v0[2]*dir[0]-v0[0]*dir[2],v0[0]*dir[1]-v0[1]*dir[0]];
-      if(Math.hypot(ax[0],ax[1],ax[2])<1e-6){const u=cam.getViewUp(),d=u[0]*v0[0]+u[1]*v0[1]+u[2]*v0[2];
-        ax=[u[0]-d*v0[0],u[1]-d*v0[1],u[2]-d*v0[2]];}
-      const al=Math.hypot(ax[0],ax[1],ax[2])||1;ax=ax.map(x=>x/al);
-      const kx=[ax[1]*v0[2]-ax[2]*v0[1],ax[2]*v0[0]-ax[0]*v0[2],ax[0]*v0[1]-ax[1]*v0[0]];
-      const calm=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      const dur=calm?0:FLY_MS,t0=performance.now();
-      const me={};me.done=new Promise(r=>{me.resolve=r;});fly=me;
-      const place=e=>{
-        const co=Math.cos(ang*e),si=Math.sin(ang*e),d=d0*Math.pow(dist/d0,e);
-        const v=[0,1,2].map(k=>v0[k]*co+kx[k]*si),f=[0,1,2].map(k=>f0[k]+(tf[k]-f0[k])*e);
-        _clamping=true;
-        try{cam.setFocalPoint(f[0],f[1],f[2]);cam.setPosition(f[0]+v[0]*d,f[1]+v[1]*d,f[2]+v[2]*d);
-            cam.orthogonalizeViewUp();}
-        finally{_clamping=false;}
-        clampCam();ren.resetCameraClippingRange();rw.render();};
-      const land=()=>{if(fly!==me)return;place(1);fly=null;me.resolve(true);};
-      const step=()=>{if(fly!==me)return;const t=dur?(performance.now()-t0)/dur:1;
-        if(t>=1){land();return;}place(ease(t));requestAnimationFrame(step);};
-      setTimeout(land,dur+300);      // a backgrounded tab gets no animation frames: land anyway
-      step();
-      return me.done;}
-    host.addEventListener('pointerdown',e=>{
-      if(!(e.target&&e.target.closest&&e.target.closest('.v-legend,.v-probe')))cancelFly();},true);
-    host.addEventListener('wheel',()=>cancelFly(),{capture:true,passive:true});
-    document.getElementById('v-fitbtn-'+job).addEventListener('click',()=>cancelFly());
-    if(upSel)upSel.addEventListener('change',()=>cancelFly());
-
-    /* THE WALKER - "Worst spot" steps through the list, worst first, on every mesh: flies to the
-       spot keeping the view direction (a spot on the far side is seen from its own side, a grazing
-       one a little more square-on), stops where the cells around it read as cells, lights it, and
-       opens the same readout a click on that face opens. */
-    const WORK_PX=26;                // CSS px the spot's face spans on arrival
-    let walkIdx=-1,lastFocus=null;
-    function workDist(size){const r=capRange();
-      const d=size*(host.clientHeight||600)/(2*tanHalf()*WORK_PX);
-      return Math.max(r[0],Math.min(r[1],d,_fitDist*0.5));}
-    function refreshSpots(){const m=activeMetric;if(!m)return;
-      const sig=m+'#'+shownSig();if(sig===spotSig)return;
-      spots=buildSpots(m);spotSig=sig;walkIdx=-1;showHot(m);walkLabel();}
-    function walkLabel(){const n=legend&&legend.querySelector('.v-walk-n');
-      if(n)n.textContent=`${walkIdx+1} / ${spots.length}`;
-      const b=legend&&legend.querySelector('.v-walk');if(b)b.disabled=!spots.length;}
-    function focusSpot(i){
-      if(!activeMetric)return null;
-      refreshSpots();if(!spots.length)return null;
-      walkIdx=((i%spots.length)+spots.length)%spots.length;
-      const s=spots[walkIdx],typ=faceTyp();
-      // the spot's own face: known for a drawn-face spot; for a payload hotspot, the drawn face at
-      // its centre on its own part. An inner face has none - the nearest one only orients the view.
-      let face=s.en?{en:s.en,cid:s.cid}:null,near=null;
-      if(!face){near=nearestFace(s);
-        if(near&&s.patch&&near.en.patch===s.patch&&near.dist<=0.5*faceSize(near.en,near.cid))face=near;}
-      const at=face||(near&&near.dist<=4*typ?near:null);
-      const nrm=at?cellNormal(at.en,at.cid):null;
-      const size=Math.min(2*typ,Math.max(0.5*typ,at?faceSize(at.en,at.cid):typ));
-      const f=cam.getFocalPoint(),p=cam.getPosition();
-      let v=[p[0]-f[0],p[1]-f[1],p[2]-f[2]];const L=Math.hypot(v[0],v[1],v[2])||1;v=v.map(x=>x/L);
-      if(nrm){let dp=v[0]*nrm[0]+v[1]*nrm[1]+v[2]*nrm[2];
-        // a part with no firm outside (a flat inlet disc) is seen from whichever side faces us
-        if(dp<0&&!at.en.outFirm){nrm[0]=-nrm[0];nrm[1]=-nrm[1];nrm[2]=-nrm[2];dp=-dp;}
-        if(dp<0){v=v.map((x,k)=>x-2*dp*nrm[k]);dp=-dp;}
-        if(dp<0.55){v=v.map((x,k)=>x+(0.55-dp)*nrm[k]);const l=Math.hypot(v[0],v[1],v[2])||1;v=v.map(x=>x/l);}}
-      const d=workDist(size);
-      flyTo([s.x,s.y,s.z],v,d);
-      showFocus([s.x,s.y,s.z],nrm||v,0.045*2*d*tanHalf());
-      const head=`worst spot ${walkIdx+1} / ${spots.length}`;
-      if(face)showProbe(face.en,face.cid,head);else showSpotCard(s,at,head);
-      walkLabel();
-      lastFocus={index:walkIdx,n:spots.length,x:s.x,y:s.y,z:s.z,patch:s.patch,value:s.value,over:s.over,
-                 face:face?{patch:face.en.patch,cell:face.cid}:null};
-      return lastFocus;}
-
-    /* NEAR THE LIMIT ONLY. On a big mesh the faces that matter are a few hundred of millions; with
-       the switch on, every face below 80% of the bar goes one flat dark grey and the warm ones are
-       the only colour left. A per-viewer preference; nothing in the payload changes. */
-    let nearOnly=false,curRp=null;
-    function paintFaces(m,rp){const cut=m?NEAR*qf.metrics[m].limit:0;
+    let legend=null,probeEl=null;
+    function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
+    function setMetric(m){
+      if(m===activeMetric)m=null;
+      activeMetric=m;
+      const rp=m?ramp(m):null;
       entries.forEach(en=>{const mp=en.actor.getMapper();
         if(rp&&en.q[m]){
           const v=en.q[m],rgb=new Uint8Array(v.length*3);
-          for(let i=0;i<v.length;i++){
-            if(nearOnly&&!(v[i]>=cut)){rgb[i*3]=NEUTRAL[0];rgb[i*3+1]=NEUTRAL[1];rgb[i*3+2]=NEUTRAL[2];}
-            else rp.color(v[i],rgb,i*3);}
+          for(let i=0;i<v.length;i++)rp.color(v[i],rgb,i*3);
           en.pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
             {name:'quality',values:rgb,numberOfComponents:3}));
           mp.setScalarModeToUseCellData();mp.setColorModeToDirectScalars();
           if(mp.setInterpolateScalarsBeforeMapping)mp.setInterpolateScalarsBeforeMapping(false);
           mp.setScalarVisibility(true);}
-        else mp.setScalarVisibility(false);});}
-    function hasNear(m){const md=qf.metrics[m];if(!(md.limit>0))return false;const cut=NEAR*md.limit;
-      return entries.some(en=>{const v=en.q[m];if(!v)return false;
-        for(let i=0;i<v.length;i++)if(v[i]>=cut)return true;return false;});}
-    function setNearOnly(b){nearOnly=!!b;
-      if(activeMetric&&curRp){paintFaces(activeMetric,curRp);
-        const bt=legend&&legend.querySelector('.v-only');
-        if(bt){bt.classList.toggle('on',nearOnly);bt.setAttribute('aria-pressed',String(nearOnly));}
-        // the edges follow the faces they sit on: faint over the colours, faint over the grey
-        edgeCol=heatEdgeCol();
-        if(repaintParts)repaintParts();
-        else entries.forEach(en=>{en.actor.getProperty().setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
-        rw.render();}
-      return nearOnly;}
-
-    let legend=null,probeEl=null;
-    function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
-    function setMetric(m){
-      if(m===activeMetric)m=null;
-      cancelFly();clearFocus();
-      activeMetric=m;nearOnly=false;walkIdx=-1;lastFocus=null;
-      const rp=m?ramp(m):null;curRp=rp;
-      paintFaces(m,rp);
+        else mp.setScalarVisibility(false);});
       if(legend){legend.remove();legend=null;}
-      clearHot();hideProbe();
-      // the edges go faint while the faces carry the data, and are handed back through the parts
-      // panel when it is switched off, so a selected part keeps its selection edge
-      edgeCol=rp?heatEdgeCol():_EDGE;
-      spots=[];spotSig='';
-      if(rp){spots=buildSpots(m);spotSig=m+'#'+shownSig();}
+      hideProbe();
+      // the edges darken while the faces carry the data, so every cell still reads, and are handed
+      // back through the parts panel when it is switched off, so a selected part keeps its
+      // selection edge
+      edgeCol=rp?_EDGE_HEAT:_EDGE;
       if(repaintParts)repaintParts();
       else entries.forEach(en=>{en.actor.getProperty().setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
-      if(rp){const md=qf.metrics[m];showHot(m);
+      if(rp){const md=qf.metrics[m];
         legend=document.createElement('div');legend.className='v-legend';
         // an instrument scale: the bar stands upright beside the viewport, the limit is a
         // tick with its value, the top of the bar is a third past the limit
@@ -1211,20 +943,11 @@ function initViewer(job,surf,uiCfg){
           +(md.n_over
              ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
              :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
-                     :`<span class="ok">none over</span>`)
-          +`<span class="acts">`
-            +`<button class="v-btn v-walk" title="fly to the next worst spot, worst first">`
-              +`Worst spot <span class="v-walk-n">0 / ${spots.length}</span></button>`
-            +(hasNear(m)
-               ?`<button class="v-btn v-only" aria-pressed="false" title="grey out every face below `
-                 +`${esc(fmt(m,NEAR*md.limit))} (80% of the limit)">Near the limit only</button>`:'')
-          +`</span>`;
+                     :`<span class="ok">none over</span>`);
         legend.querySelector('.x').onclick=()=>setMetric(null);
-        legend.querySelector('.v-walk').onclick=()=>focusSpot(walkIdx+1);
-        const ob=legend.querySelector('.v-only');if(ob)ob.onclick=()=>setNearOnly(!nearOnly);
         // a press on the scale is not the start of an orbit
         legend.addEventListener('pointerdown',e=>e.stopPropagation());
-        host.appendChild(legend);walkLabel();}
+        host.appendChild(legend);}
       if(!markMode)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
       document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`).forEach(c=>{
         const on=c.dataset.metric===m;c.classList.toggle('on',on);
@@ -1270,7 +993,7 @@ function initViewer(job,surf,uiCfg){
       probeEl.querySelector('[data-a=close]').onclick=hideProbe;
       shield(probeEl);                 // a press on the card is not the start of an orbit
       host.appendChild(probeEl);}
-    function showProbe(en,cid,head){
+    function showProbe(en,cid){
       hideProbe();
       const role=((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'';
       const cf=en.cellFaces?en.cellFaces[cid]:null;
@@ -1280,7 +1003,7 @@ function initViewer(job,surf,uiCfg){
                  values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
       const rows=have.map(m=>probeRow(m,en.q[m][cid])).join('');
       probeEl=document.createElement('div');probeEl.className='v-probe';
-      probeEl.innerHTML=`<div class="pk">${head?esc(head)+' · ':''}${esc(en.patch)} · face ${cid.toLocaleString()}</div>`
+      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>`
         +`<div class="pr-rows">${rows}</div>`
         +(cf!=null?`<div class="pr-cell">cell behind it: ${cf}-face ${shapeOf(cf)}</div>`:'')
         +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'');
@@ -1289,40 +1012,20 @@ function initViewer(job,surf,uiCfg){
     function probeRow(m,v){const md=qf.metrics[m],bad=v>md.limit;
       return `<div class="pr"><span class="pr-k">${esc(md.label)}</span><span class="pr-v">${esc(fmt(m,v))}</span>`
         +`<span class="pr-s ${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
-    // a payload hotspot on an inner face has no polygon on screen: its own reading, in the same card
-    function showSpotCard(s,at,head){
-      hideProbe();
-      const m=activeMetric,md=qf.metrics[m],bad=s.value>md.limit,cf=s.cellFaces;
-      lastProbe={patch:s.patch,cell:null,cellFaces:cf,over:bad?[m]:[],values:{[m]:s.value},hotspot:true};
-      probeEl=document.createElement('div');probeEl.className='v-probe';
-      probeEl.innerHTML=`<div class="pk">${esc(head)} · ${s.patch?esc(s.patch):'inside the mesh'}</div>`
-        +`<div class="pr-rows">${probeRow(m,s.value)}</div>`
-        +(cf!=null?`<div class="pr-cell">cell: ${cf}-face ${shapeOf(cf)}</div>`:'')
-        +(bad?`<div class="why">likely: ${esc(why(cf,''))}</div>`:'');
-      probeActs(at?()=>placeMarker(at.en,at.cid):null);}
     host.addEventListener('pointerup',e=>{
       if(markMode||!activeMetric||!downXY)return;
       if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl,.v-tools'))return;
       if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
       pickCell(e,(en,cid)=>showProbe(en,cid));},true);
-    // hiding, showing or isolating a part changes what the spots are read from
-    onPartsPainted=()=>{if(!activeMetric)return;refreshSpots();};
-    // every camera move: the edges' shade follows the zoom, the beads hold their screen size
-    cam.onModified(()=>{if(activeMetric){heatEdges();scaleHot();}});
 
     /* support/debug hook - lets the browser tier drive the heatmap without pixel picking; the demo
-       recorder clicks the real buttons */
+       recorder clicks the real buttons. `extras` counts what is drawn besides the mesh's own parts
+       and the user's marks: the heatmap draws nothing on top of the mesh, so it stays 0. */
     window._vdbg[job+':heat']={metrics:avail,set:setMetric,active:()=>activeMetric,
       probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
-      last:()=>lastProbe,legend:()=>!!legend,hotspots:()=>hotActors.length,
-      wired:()=>wired,
-      walk:()=>focusSpot(walkIdx+1),
-      only:b=>setNearOnly(b===undefined?!nearOnly:b),
-      nearOnly:()=>nearOnly,
-      spots:()=>spots.map(s=>({x:s.x,y:s.y,z:s.z,value:s.value,patch:s.patch,over:s.over})),
-      focus:()=>lastFocus,focal:()=>cam.getFocalPoint(),dist:()=>camDist(),
-      flying:()=>!!fly,settled:()=>fly?fly.done:Promise.resolve(true),
-      ring:()=>focusActors.length,
+      last:()=>lastProbe,legend:()=>!!legend,wired:()=>wired,
+      extras:()=>ren.getActors().filter(a=>!entries.some(en=>en.actor===a)
+        &&!flags.some(f=>f.actors.includes(a))).length,
       edges:()=>{const pp=entries[0].actor.getProperty();return {on:!!pp.getEdgeVisibility(),color:pp.getEdgeColor()};},
       colorOf:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(!en)return null;
         const sc=en.pd.getCellData().getScalars();if(!sc||!en.actor.getMapper().getScalarVisibility())return null;
