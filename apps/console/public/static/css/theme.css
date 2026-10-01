@@ -538,6 +538,36 @@ th,td{border-color:var(--border)}
 .v-legend .over{color:var(--danger)}
 .v-legend .ok{color:var(--ok)}
 
+/* problem areas: the bad cells gathered into places under the scale, worst first. Quiet rows -
+   the only colour is the orange of a count over the limit; the chosen row takes a faint wash */
+.v-legend{width:244px;max-height:calc(100% - 64px);overflow-y:auto;overscroll-behavior:contain}
+.v-legend .v-areas{display:flex;flex-direction:column;gap:1px;margin-top:6px;padding-top:10px;
+  border-top:1px solid var(--divider);white-space:normal}
+.v-legend .ar-h{display:flex;align-items:center;gap:8px;margin:0 0 4px;color:var(--text-muted);
+  font:500 var(--fs-xs)/1.3 var(--sans);white-space:nowrap}
+.v-legend .ar-n{margin:4px 0 0 6px;color:var(--text-faint);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+.v-legend .v-only{flex:none;margin-left:auto;height:22px;padding:0 8px;border:1px solid var(--border);
+  border-radius:var(--r-sm);background:transparent;color:var(--text-muted);font:500 var(--fs-xs)/1 var(--sans);
+  cursor:pointer}
+.v-legend .v-only:hover{border-color:var(--border-strong);color:var(--text)}
+.v-legend .v-only[aria-pressed="true"]{border-color:var(--border-strong);background:var(--hover);color:var(--text)}
+.v-legend .v-area{display:grid;grid-template-columns:12px minmax(0,1fr) auto;column-gap:8px;align-items:baseline;
+  width:100%;padding:5px 6px;border:1px solid transparent;border-radius:var(--r-md);background:transparent;
+  color:var(--text-muted);font:var(--fs-sm)/1.35 var(--sans);text-align:left;cursor:pointer}
+.v-legend .v-area:hover{background:var(--hover)}
+.v-legend .v-area[aria-pressed="true"]{border-color:var(--border);background:rgba(238,235,225,.06)}
+.v-legend .v-area:focus-visible,.v-legend .v-only:focus-visible{outline:1px solid var(--border-strong);outline-offset:1px}
+.v-legend .ar-i{color:var(--text-faint);font-variant-numeric:tabular-nums}
+.v-legend .v-area[aria-pressed="true"] .ar-i{color:var(--text)}
+.v-legend .ar-b{min-width:0}
+.v-legend .ar-t{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v-legend .ar-p{color:var(--text)}
+.v-legend .ar-w{color:var(--text-faint)}
+.v-legend .ar-c{display:block;color:var(--text-faint);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+.v-legend .ar-over{color:var(--accent-hover)}
+.v-legend .ar-v{color:var(--text);font-variant-numeric:tabular-nums}
+.v-legend .ar-none{margin:0;color:var(--text-faint);font-size:var(--fs-xs);line-height:1.4}
+
 /* the readout: what the face reads, against the bar, and why it likely does */
 .v-probe{right:12px;top:12px;max-width:340px;padding:12px 14px;border:1px solid var(--border);
   border-radius:10px;background:rgba(13,13,12,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);

@@ -16,6 +16,8 @@ JOB = "heat-job"
 CALM = [92, 120, 152]
 HEAT_EDGE = [0.24, 0.23, 0.22]
 PLAIN_EDGE = [0.27, 0.25, 0.22]
+# the flat grey "Only bad cells" rests every face below 80% of the limit in - viewer.js's NEUTRAL
+NEUTRAL = [84, 87, 92]
 
 
 def _payload(tmp_path, shear: float = ROW_SHEAR) -> dict:
@@ -115,15 +117,19 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
                buttons: lg ? [...lg.querySelectorAll('button')].map(b => b.className) : [],
                hint: document.getElementById('v-hint-{JOB}').textContent,
                onCells: document.querySelectorAll('#v-facts-{JOB} .mx-c.live.on').length,
-               calm: h.colorOf('inlet', 0), edges: h.edges()}};
+               calm: h.colorOf('inlet', 0), edges: h.edges(), areas: h.areas()}};
     }})()""")
     assert after["active"] == "non_ortho" and after["legend"] is True
     assert "65.0°" in after["legendText"] and "1 face over" in after["legendText"]
     assert "Click a face" in after["hint"] and after["onCells"] == 1
-    # the colour is the surface's own: nothing is drawn on top of the mesh - no markers, no walker,
-    # no grey-out switch - and the scale's only control is the one that turns it off
+    # the colour is the surface's own: nothing is drawn on top of the mesh. The scale's controls are
+    # the one that turns it off, "Only bad cells", and the one problem area the sheared cells make
     assert after["extras"] == 0, after
-    assert after["buttons"] == ["x"], after
+    assert after["buttons"] == ["x", "v-only", "v-area"], after
+    assert len(after["areas"]) == 1, after
+    area = after["areas"][0]
+    assert area["worst"] == pytest.approx(ROW_SHEAR_NON_ORTHO_DEG, abs=0.1), area
+    assert area["over"] > 0 and area["near"] == 0 and area["index"] == 0, area
     # the console's original deep-steel calm end, and dark edges so every cell reads under the data
     assert after["calm"] == CALM, after
     assert after["edges"]["on"] is True, after
@@ -205,15 +211,131 @@ def test_a_mesh_that_passes_reads_calm_with_nothing_drawn_on_it(live, tmp_path):
       document.querySelector('#v-facts-good-job .mx-c.live[data-metric=non_ortho]').click();
       const h = window._vdbg['good-job:heat'];
       const lg = document.querySelector('#viewer-good-job .v-legend');
+      const box = lg.querySelector('.v-areas');
       return {text: lg.textContent, extras: h.extras(), calm: h.colorOf('inlet', 0),
-              outlet: h.colorOf('outlet', 0), edges: h.edges(),
+              outlet: h.colorOf('outlet', 0), edges: h.edges(), areas: h.areas(),
+              empty: box ? box.textContent : null,
               buttons: [...lg.querySelectorAll('button')].map(b => b.className)};
     })()""")
     assert "none over" in state["text"] and state["buttons"] == ["x"], state
+    # no problem areas: one quiet line, no list and no "Only bad cells" switch
+    assert state["areas"] == [], state
+    assert state["empty"].strip() == "No problem areas: every cell is well inside the limit", state
     assert state["extras"] == 0, state
     assert state["calm"] == CALM and state["outlet"] == CALM, state
     assert state["edges"]["on"] is True and state["edges"]["color"] == pytest.approx(HEAT_EDGE), state
     assert_clean(live, "the heatmap on a mesh that passes")
+
+
+PLATE_NX, PLATE_NY = 60, 20
+
+
+def _plate_payload() -> dict:
+    """A flat plate of unit squares with two bad places on it, far apart: two faces over the 65
+    degree bar inside a ring of ten faces near it (56 degrees, above 80% of the bar), and nine
+    faces near it only (60 degrees). Every other face reads 10 degrees."""
+    import base64
+
+    import numpy as np
+    nx, ny = PLATE_NX, PLATE_NY
+    xs, ys = np.meshgrid(np.arange(nx + 1, dtype=np.float32), np.arange(ny + 1, dtype=np.float32))
+    pts = np.stack([xs.ravel(), ys.ravel(), np.zeros(xs.size, dtype=np.float32)], axis=1)
+    polys: list[int] = []
+    vals: list[float] = []
+    for j in range(ny):
+        for i in range(nx):
+            a = j * (nx + 1) + i
+            polys += [4, a, a + 1, a + nx + 2, a + nx + 1]
+            v = 10.0
+            if 9 <= i <= 12 and 9 <= j <= 11:
+                v = 56.0
+            if i in (10, 11) and j == 10:
+                v = 70.0
+            if 44 <= i <= 46 and 9 <= j <= 11:
+                v = 60.0
+            vals.append(v)
+
+    def b64(a) -> str:
+        return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode("ascii")
+    n = nx * ny
+    return {"kind": "polymesh", "is_mesh": True, "mesh_units": "m", "cell_count": n, "parts": [],
+            "patches": [{"name": "plate", "type": "wall", "face_count": n, "points_b64": b64(pts),
+                         "polys_b64": b64(np.array(polys, dtype=np.uint32))}],
+            "quality": {"cells": n, "max_non_ortho": 70.0},
+            "quality_fields": {
+                "basis": "owner_cell_max",
+                "metrics": {"non_ortho": {"label": "non-orthogonality", "unit": "°", "limit": 65.0,
+                                          "max": 70.0, "n_over": 2, "n_faces": n}},
+                "patches": {"plate": {"non_ortho_b64": b64(np.array(vals, dtype=np.float32)), "count": n}},
+                "hotspots": []}}
+
+
+def _face(i: int, j: int) -> int:
+    return j * PLATE_NX + i
+
+
+def test_problem_areas_gather_the_bad_faces_and_take_the_camera_there(live):
+    _open(live, _plate_payload(), "plate-job")
+    # the faces over and near the bar are gathered into places, worst first, under the scale
+    st = live.evaluate("""(() => {
+      const h = window._vdbg['plate-job:heat']; h.set('non_ortho');
+      const box = document.querySelector('#viewer-plate-job .v-legend .v-areas');
+      return {areas: h.areas(), total: h.totalAreas(), extras: h.extras(),
+              text: box ? box.textContent : '',
+              items: [...box.querySelectorAll('button.v-area')]
+                .map(b => [b.dataset.index, b.getAttribute('aria-pressed')]),
+              only: box.querySelector('button.v-only').getAttribute('aria-pressed')};
+    })()""")
+    areas = st["areas"]
+    assert [(a["over"], a["near"]) for a in areas] == [(2, 10), (0, 9)], st
+    assert areas[0]["worst"] == pytest.approx(70.0) and areas[1]["worst"] == pytest.approx(60.0), st
+    assert {a["patch"] for a in areas} == {"plate"} and all(a["hint"] for a in areas), st
+    assert areas[0]["centre"] == pytest.approx([11.0, 10.5, 0.0], abs=0.75), st
+    assert areas[1]["centre"] == pytest.approx([45.5, 10.5, 0.0], abs=0.75), st
+    assert st["total"] == 2 and st["extras"] == 0, st
+    assert "Problem areas" in st["text"] and "2 over the limit · 10 near" in st["text"], st
+    assert "9 near the limit" in st["text"] and "70.0°" in st["text"], st
+    assert st["items"] == [["0", "false"], ["1", "false"]] and st["only"] == "false", st
+
+    # a click on the second area glides the camera there - centred on it, close enough that its
+    # cells read as cells - and marks it as the one chosen; nothing is drawn on the mesh
+    moving = live.evaluate("""(() => {
+      document.querySelector('#viewer-plate-job button.v-area[data-index="1"]').click();
+      return window._vdbg['plate-job:heat'].flying();
+    })()""")
+    assert moving is True
+    live.wait_for("!window._vdbg['plate-job:heat'].flying()", timeout=10, what="the glide to land")
+    moved = live.evaluate("""(() => { const h = window._vdbg['plate-job:heat'];
+      return {focal: h.focal(), px: h.cellPx(1), sel: h.selected(), extras: h.extras(),
+              pressed: [...document.querySelectorAll('#viewer-plate-job button.v-area')]
+                .map(b => b.getAttribute('aria-pressed'))}; })()""")
+    assert moved["focal"] == pytest.approx(areas[1]["centre"], abs=1e-6), moved
+    assert 12 <= moved["px"] <= 20.5, moved
+    assert moved["sel"] == 1 and moved["pressed"] == ["false", "true"] and moved["extras"] == 0, moved
+    # the API the demo recorder drives: goArea resolves when the camera has landed
+    landed = live.evaluate("window._vdbg['plate-job:heat'].goArea(0)", timeout=15)
+    back = live.evaluate("window._vdbg['plate-job:heat'].focal()")
+    assert landed is True and back == pytest.approx(areas[0]["centre"], abs=1e-6), back
+
+    # "Only bad cells" greys every face below 80% of the bar and leaves the bad ones coloured;
+    # pressed again, the colours come back
+    grey = live.evaluate(f"""(() => {{
+      const h = window._vdbg['plate-job:heat'], btn = () => document.querySelector('#viewer-plate-job button.v-only');
+      const good = {_face(30, 2)}, near = {_face(9, 10)}, over = {_face(10, 10)};
+      const before = {{good: h.colorOf('plate', good), near: h.colorOf('plate', near), over: h.colorOf('plate', over)}};
+      btn().click();
+      const on = {{good: h.colorOf('plate', good), near: h.colorOf('plate', near), over: h.colorOf('plate', over),
+                  pressed: btn().getAttribute('aria-pressed'), state: h.onlyBad()}};
+      btn().click();
+      return {{before, on, back: h.colorOf('plate', good), state: h.onlyBad(),
+               pressed: btn().getAttribute('aria-pressed')}};
+    }})()""")
+    assert grey["on"]["good"] == NEUTRAL and grey["on"]["pressed"] == "true" and grey["on"]["state"] is True, grey
+    assert grey["on"]["near"] == grey["before"]["near"] != NEUTRAL, grey
+    assert grey["on"]["over"] == grey["before"]["over"] != NEUTRAL, grey
+    assert grey["back"] == grey["before"]["good"] != NEUTRAL, grey
+    assert grey["state"] is False and grey["pressed"] == "false", grey
+    assert_clean(live, "the problem areas")
 
 
 def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_path):
