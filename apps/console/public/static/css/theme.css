@@ -406,7 +406,7 @@ th,td{border-color:var(--border)}
   padding:2px 6px;border-radius:var(--r-sm);color:var(--text-faint);font:500 var(--fs-xs)/1.4 var(--sans);
   white-space:nowrap}
 .mx-ramp{width:16px;height:6px;border-radius:2px;
-  background:linear-gradient(90deg,#4e6682,#7a9cc4 45%,#ffa85a 75%,#ff5800)}
+  background:linear-gradient(90deg,#5c7898,#8eb2da 45%,#ffa85a 75%,#ff5800)}
 .mx-c.live:hover .mx-show{background:var(--hover);color:var(--text)}
 .mx-c.live.on .mx-show{background:transparent;color:var(--accent-hover)}
 .mx table{width:100%;margin:0;border-collapse:collapse;border-top:1px solid var(--divider);font-size:var(--fs-md)}

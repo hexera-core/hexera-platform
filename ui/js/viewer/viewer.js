@@ -38,8 +38,8 @@ const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
 /* darker while the faces carry colour, so every cell still reads against the data (the original
-   heatmap's edge, 12% lighter along with the rest of its scale) */
-const _EDGE_HEAT=[0.19,0.17,0.15];
+   heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
+const _EDGE_HEAT=[0.24,0.23,0.22];
 const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
@@ -881,10 +881,10 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    /* the console's original ramp, every colour 12% lighter: deep steel below, the wireframe blue
-       through the calm range, warming to amber and international orange at the bar, crimson past
-       it. The colour is the surface's own - nothing is drawn on top of the mesh. */
-    const STOPS=[[0,[78,102,130]],[0.5,[122,156,196]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
+    /* the console's original ramp, its calm blues about 30% lighter (Areen, 2026-10-01):
+       steel below, the wireframe blue through the calm range, warming to amber and
+       international orange at the bar, crimson past it. The colour is the surface's own - nothing is drawn on top of the mesh. */
+    const STOPS=[[0,[92,120,152]],[0.5,[142,178,218]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
     const PAST=[168,31,25];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
       // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
