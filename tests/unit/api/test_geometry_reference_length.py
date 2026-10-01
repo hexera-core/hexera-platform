@@ -60,7 +60,9 @@ def test_the_confirmation_is_corrected_and_says_so():
     body, note = reference_length_along_the_flow(_external())
     assert body.reference_length_mm == 64593.0
     assert "30386 mm, was the part's length along y" in note and "64593 mm" in note
-    assert "Tell the user" in note
+    assert "Another reference length can be given in the chat." in note
+    # the chat shows the confirmation to the user: it speaks to them, never to the model
+    assert "tell the user" not in note.lower() and "next reply" not in note
 
 
 def test_a_length_the_user_typed_is_theirs_and_an_internal_flow_is_not_read():
@@ -181,6 +183,7 @@ async def test_the_crm_turned_to_x_is_confirmed_on_its_length_not_its_span(confi
     out = await route.confirm_check(SID, _external(scale_to_m=0.0254, unit="in"), "alice", "org-1")
     assert "Reference length: 64593 mm along the flow." in out["message"]
     assert "was the part's length along y" in out["message"]            # said, never silent
+    assert "tell the user" not in out["message"].lower()                 # to the user, not the model
     assert _recorded(store)["reference_length_mm"] == 64593.0
 
 

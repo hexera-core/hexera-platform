@@ -451,7 +451,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         body, reference_note = reference_length_along_the_flow(body, stored_size, proposed)
     message = confirmation_message(body)
     if renamed:
-        message = f"{message} {renamed}"             # never silent: the intake tells the user
+        message = f"{message} {renamed}"             # never silent: the chat shows it
     if reference_note:
         message = f"{message} {reference_note}"      # said in the declaration, never silent
     patches = patches_from(body)

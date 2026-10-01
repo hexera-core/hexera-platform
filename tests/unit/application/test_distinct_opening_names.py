@@ -51,5 +51,7 @@ def test_a_renamed_opening_is_said_never_silent():
     before = [ConfirmedOpening(id=6, name="outlet", role="inlet"), ConfirmedOpening(id=7, name="Outlet", role="outlet")]
     after = distinct_opening_names(before)
     said = renamed_openings_sentence(before, after)
-    assert "opening 7 is called Outlet_2" in said and "tell the user" in said
+    assert "opening 7 is called Outlet_2" in said and "renamed on the picture" in said
+    # the chat shows the confirmation to the user: it speaks to them, never to the model
+    assert "tell the user" not in said.lower() and "next reply" not in said
     assert renamed_openings_sentence(before[:1], distinct_opening_names(before[:1])) == ""
