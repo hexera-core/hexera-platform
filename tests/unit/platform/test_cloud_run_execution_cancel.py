@@ -16,7 +16,11 @@ import meshpipeline.adapters.mesh_execution.cloud_run_client as crc
 import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution import gcs_exchange
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import coordinates_for
-from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE, abandonment_watch
+from meshpipeline.contracts.mesh_execution import (
+    RC_INFRASTRUCTURE,
+    RC_TIMED_OUT,
+    abandonment_watch,
+)
 
 OPERATION = "projects/hexera-dev/locations/us-central1/operations/0b5c-op"
 EXECUTION = "projects/hexera-dev/locations/us-central1/jobs/dev-mesh/executions/dev-mesh-796ll"
@@ -37,29 +41,25 @@ class _Response:
 
 
 class _Http:
-    """The two Cloud Run calls a cancel can make, recorded; the request code that builds them is
-    the adapter's own."""
+    """Cloud Run's side of the POSTs, recorded; the request code that builds them is the
+    adapter's own."""
 
     def __init__(self, monkeypatch):
         self.posts: list[dict] = []
-        self.gets: list[dict] = []
+        self.tokens = 0
         self.post_outcome: object = _Response(200, {"name": "projects/p/locations/l/operations/c"})
-        self.get_outcome: object = _Response(200, {"metadata": {"name": EXECUTION}})
-        monkeypatch.setattr(crc, "_access_token", lambda: "test-token")
+        monkeypatch.setattr(crc, "_access_token", self._token)
         monkeypatch.setattr(requests, "post", self._post)
-        monkeypatch.setattr(requests, "get", self._get)
+
+    def _token(self):
+        self.tokens += 1
+        return "test-token"
 
     def _post(self, url, **kwargs):
         self.posts.append({"url": url, **kwargs})
         if isinstance(self.post_outcome, Exception):
             raise self.post_outcome
         return self.post_outcome
-
-    def _get(self, url, **kwargs):
-        self.gets.append({"url": url, **kwargs})
-        if isinstance(self.get_outcome, Exception):
-            raise self.get_outcome
-        return self.get_outcome
 
 
 @pytest.fixture()
@@ -108,7 +108,7 @@ def test_a_cancel_posts_to_the_named_execution(http, caplog):
     caplog.set_level(logging.WARNING, logger=crc.__name__)
     ref = crc.CloudRunOperationReference(OPERATION, EXECUTION)
     assert crc.cancel_execution(ref, engine="snappy", why="the job was cancelled") is True
-    assert len(http.posts) == 1 and http.gets == []
+    assert len(http.posts) == 1
     call = http.posts[0]
     assert call["url"] == f"https://run.googleapis.com/v2/{EXECUTION}:cancel"
     assert call["headers"] == {"Authorization": "Bearer test-token"}
@@ -116,23 +116,14 @@ def test_a_cancel_posts_to_the_named_execution(http, caplog):
     assert "dev-mesh-796ll" in caplog.text and "cancelled" in caplog.text
 
 
-def test_an_unnamed_execution_is_looked_up_from_its_operation_first(http):
-    ref = crc.CloudRunOperationReference(OPERATION)
-    assert crc.cancel_execution(ref, engine="snappy", why="deadline") is True
-    assert [g["url"] for g in http.gets] == [f"https://run.googleapis.com/v2/{OPERATION}"]
-    assert [p["url"] for p in http.posts] == [f"https://run.googleapis.com/v2/{EXECUTION}:cancel"]
-
-
-@pytest.mark.parametrize("lookup", [
-    _Response(403),                                     # the narrow role has no operations.get
-    _Response(200, {"metadata": {"name": "garbage"}}),  # an answer that names no execution
-    requests.exceptions.ConnectionError("reset"),
-])
-def test_an_execution_that_cannot_be_named_is_not_cancelled_and_nothing_raises(http, lookup):
-    http.get_outcome = lookup
+def test_an_unnamed_execution_is_not_cancelled_and_nothing_is_called(http, caplog):
+    # Looking it up would need run.operations.get, which the narrow invoker role does not have;
+    # the run is left to finish, said plainly, and no credential is even minted.
+    caplog.set_level(logging.WARNING, logger=crc.__name__)
     ref = crc.CloudRunOperationReference(OPERATION)
     assert crc.cancel_execution(ref, engine="snappy", why="deadline") is False
-    assert http.posts == [], "a cancel was sent without knowing which execution it names"
+    assert http.posts == [] and http.tokens == 0
+    assert "NOT cancelled" in caplog.text
 
 
 @pytest.mark.parametrize("outcome", [
@@ -283,7 +274,10 @@ def test_the_worker_deadline_cancels_the_execution_instead_of_leaving_it_running
     assert len(exchange["cancels"]) == 1
     name, why = exchange["cancels"][0]
     assert name == EXECUTION and "deadline" in why
-    assert out["rc"] == -3 and "no result within" in out["log_tail"]
+    # and the answer is still the timeout the driver re-plans smaller on, reference and all
+    assert out["rc"] == RC_TIMED_OUT and out["timed_out"] is True
+    assert out["log_tail"].startswith(crc.RESULT_TIMEOUT_MARKER)
+    assert out["provider_reference"] == OPERATION
 
 
 def test_a_cancel_that_does_not_land_never_changes_the_answer(exchange, monkeypatch):

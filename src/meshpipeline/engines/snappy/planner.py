@@ -106,6 +106,69 @@ def clamp_cell_budget(raw: object, *, ceiling: int, default: int = 4_000_000) ->
     return min(iv, ceiling)
 
 
+#: After a pass runs out of time the next one must be MEANINGFULLY smaller. The wall cell of an
+#: internal plan is bore / cells_across_diameter and the near-wall cells dominate, so the count
+#: goes with cells_across squared: 0.7 of it is about half the cells. A proposal already at or
+#: below the COARSER_ENOUGH fraction of the timed-out value (about 28% fewer cells across, or a
+#: 40% smaller budget) is accepted as it stands.
+TIMEOUT_CELLS_ACROSS_FACTOR = 0.7
+TIMEOUT_BUDGET_FACTOR = 0.5
+COARSER_ENOUGH_CELLS_ACROSS = 0.85
+COARSER_ENOUGH_BUDGET = 0.6
+_MIN_CELLS_ACROSS = 8                    # the internal driver's own floor (drivers.py)
+_MIN_TIMEOUT_BUDGET = 200_000
+
+
+def coarsen_after_timeout(timed_out: dict, proposed: dict, *, ceiling: int,
+                          internal: bool) -> tuple[dict, list[str]]:
+    """The plan for the pass after one that RAN OUT OF TIME - never the same mesh again.
+
+    Job 470c3eb9: snappyHexMesh ran 50 minutes, the result was reported as "never started",
+    the planner was told to resubmit unchanged, and pass 2 rebuilt the identical case for
+    another 50 minutes. Left to the model, a timeout is not reliably answered with a smaller
+    mesh, so it is enforced here, by arithmetic, against the plan that timed out:
+
+    - the proposal is kept when it is already meaningfully coarser - fewer cells across the bore
+      (internal) or a much smaller cell budget;
+    - otherwise the timed-out plan's resolution is cut to about half the cells: cells across
+      the bore x0.7 (internal; the wall cell grows ~1.4x) and the cell budget x0.5, which also
+      halves what local thin-feature refinement may spend. Lowering surface_level alone is
+      NOT coarser here: the internal wall cell is bore / cells_across whatever the level.
+
+    Returns (strategy, changes): `changes` names each value cut, in plain words, empty when the
+    proposal stood. When nothing is left to cut (cells across already at its floor and the
+    budget at its own), the strategy comes back unchanged with no changes - the caller's
+    identical-case stop then refuses to run it again.
+    """
+    out = dict(proposed or {})
+    t_budget = clamp_cell_budget((timed_out or {}).get("max_cells"), ceiling=ceiling)
+    p_budget = clamp_cell_budget(out.get("max_cells"), ceiling=ceiling)
+
+    def _ca(plan: dict) -> int:
+        try:
+            return max(_MIN_CELLS_ACROSS, int(plan.get("cells_across_diameter", 24)))
+        except (TypeError, ValueError):
+            return 24
+
+    t_ca, p_ca = _ca(timed_out or {}), _ca(out)
+    coarser = p_budget <= COARSER_ENOUGH_BUDGET * t_budget
+    if internal:
+        coarser = coarser or p_ca <= int(COARSER_ENOUGH_CELLS_ACROSS * t_ca)
+    if coarser:
+        return out, []
+    changes: list[str] = []
+    if internal:
+        ca = max(_MIN_CELLS_ACROSS, min(p_ca, int(TIMEOUT_CELLS_ACROSS_FACTOR * t_ca)))
+        if ca < t_ca:
+            out["cells_across_diameter"] = ca
+            changes.append(f"cells across the bore cut from {t_ca} to {ca}")
+    budget = max(_MIN_TIMEOUT_BUDGET, min(p_budget, int(TIMEOUT_BUDGET_FACTOR * t_budget)))
+    if budget < t_budget:
+        out["max_cells"] = budget
+        changes.append(f"cell budget cut from {t_budget / 1e6:.2g} M to {budget / 1e6:.2g} M")
+    return out, changes
+
+
 def _log_plan_event(job_id: str, payload: dict, op_id: str = "",
                     attempt: int | None = None) -> None:
     try:

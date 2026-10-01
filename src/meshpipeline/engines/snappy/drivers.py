@@ -170,6 +170,107 @@ def _stop_on_repeated_case(workspace: Path, reviewed: Path | None, *, job_id: st
     raise ReviewedCaseRepeats(str(reviewed))
 
 
+# ---- a pass that ran out of time is never rebuilt as it was -------------------------------------
+# Job 470c3eb9: pass 1 ran snappyHexMesh for 50 minutes and timed out, the re-plan returned the
+# same plan, and pass 2 spent another 50 minutes on the identical case. After a timeout the next
+# pass is made coarser by arithmetic (planner.coarsen_after_timeout), and - as the review-retry
+# stop above does for a rejected mesh - a case byte-identical to the one that timed out is never
+# run again.
+
+#: The plan of the last pass that RAN OUT OF TIME, kept beside the attempt's plan memory so a
+#: retry attempt (a fresh attempt_N workspace) starts below it too.
+_TIMED_OUT_PLAN = ".timed_out_plan.json"
+
+
+class TimedOutCaseRepeats(Exception):
+    """Raised between authoring a pass and starting the mesher: the case is byte-identical to the
+    one whose run just ran out of time, and nothing was left to make coarser."""
+
+
+def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
+    import json as _json
+    try:
+        (Path(workspace) / _TIMED_OUT_PLAN).write_text(_json.dumps(strategy, default=str))
+    except Exception:  # noqa: BLE001 - durable memory is best-effort; the in-run one still holds
+        logger.warning("could not record the timed-out plan in %s", workspace, exc_info=True)
+
+
+def _sibling_timed_out_plan(workspace: Path) -> dict | None:
+    """The newest EARLIER attempt's timed-out plan, else None. Siblings only: this workspace's
+    own record belongs to a pass of this very attempt, which the running driver holds in memory,
+    and a re-executed node must re-derive its passes exactly as before."""
+    import json as _json
+    import re as _re
+
+    m = _re.fullmatch(r"attempt_(\d+)", Path(workspace).name)
+    if m is None:
+        return None
+    for n in range(int(m.group(1)) - 1, 0, -1):
+        try:
+            plan = _json.loads(
+                (Path(workspace).parent / f"attempt_{n}" / _TIMED_OUT_PLAN).read_text())
+        # an absent record is the ordinary case (that attempt never timed out)
+        except Exception:  # noqa: BLE001,S112
+            continue
+        if isinstance(plan, dict):
+            return plan
+    return None
+
+
+def _case_snapshot(workspace: Path) -> dict[str, bytes] | None:
+    """The authored files that decide the mesh, byte for byte. None when the case is incomplete
+    or unreadable - which is never "the same case"."""
+    snap: dict[str, bytes] = {}
+    try:
+        for rel in _CASE_FILES:
+            p = Path(workspace) / rel
+            if p.exists():
+                snap[rel] = p.read_bytes()
+    except OSError:
+        return None
+    return snap if all(r in snap for r in _CASE_FILES[:2]) else None
+
+
+def _repeats_timed_out_case(workspace: Path, timed_out_case: dict[str, bytes] | None) -> bool:
+    if timed_out_case is None:
+        return False
+    now = _case_snapshot(workspace)
+    return now is not None and now == timed_out_case
+
+
+def _coarsen_after_timeout(timed_out: dict | None, strategy: dict, *,
+                           internal: bool) -> tuple[dict, str]:
+    """The strategy for a pass that follows a timeout, and the plain-words list of what was cut
+    ('' when nothing was: no timeout, or the re-plan was already coarser)."""
+    if timed_out is None:
+        return strategy, ""
+    from meshpipeline.engines.snappy.planner import coarsen_after_timeout
+    out, cuts = coarsen_after_timeout(timed_out, strategy, ceiling=polcfg.CELL_HARD_LIMIT,
+                                      internal=internal)
+    if cuts:
+        logger.info("pass after a timeout: the re-plan was not coarser - %s", "; ".join(cuts))
+    return out, "; ".join(cuts)
+
+
+def _mm(metres: float) -> str:
+    """A length for a person: never "0.0 mm" for something real and small."""
+    v = float(metres) * 1000.0
+    return f"{v:.1f} mm" if v >= 1.0 else f"{v:.2g} mm"
+
+
+def _shortfall(shape: str, reason: str, *, timed_out: bool, minutes: float,
+               repeat: bool, last: bool = False) -> str:
+    """The rest of "Pass N ..." for a pass that did not produce a production-grade mesh, in
+    plain words. A run that ran out of time says so - it is not "no cells, 0 faces"."""
+    if repeat:
+        return ("not run - it would rebuild, unchanged, the mesh that just ran out of time, and "
+                "nothing is left to make coarser; stopping the meshing passes here")
+    if timed_out:
+        return (f"ran out of time - snappyHexMesh did not finish within {minutes:.0f} min; "
+                + ("no meshing passes left" if last else "re-planning a coarser mesh"))
+    return f"fell short - {shape}; re-planning ({reason[:60]})"
+
+
 def _write_plan_memory(workspace: Path, strategy: dict) -> None:
     import json as _json
     import os as _os
@@ -336,6 +437,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                       initial_plan: dict | None,
                                       run: BuilderDriverRun) -> bool:
     import json as _json
+    import time as _time
 
     from meshpipeline.cad.analysis import analyze_surface, recommend_refinement
 
@@ -466,8 +568,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
     _meshed_any = False                                # did any pass reach the mesher at all
     _domain_refusal: PreflightRefusal | None = None    # the last box the pre-flight refused
+    # the plan (and authored case) of the last pass that RAN OUT OF TIME - see the internal build
+    _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
+    _timeout_case: dict[str, bytes] | None = None
 
     for attempt in range(1, max_attempts + 1):
+        _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
         if plan is None:   # repair: re-plan WITH the previous plan + critique (iterate with memory)
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
@@ -484,13 +590,18 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             plan = _po.plan
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
+        # after a timeout the next mesh is SMALLER (here the lever is the cell budget, which sets
+        # the refinement levels), whatever the re-plan proposed
+        strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=False)
         previous_plan = strategy                       # remember for the next repair
         _policy = None                                 # this pass's local layer policy, if any
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
-                        f"{str(strategy.get('approach', 'default strategy'))[:80]}",
+                        f"{str(strategy.get('approach', 'default strategy'))[:80]}"
+                        + (f" - made coarser because the last pass ran out of time: "
+                           f"{_coarsened}" if _coarsened else ""),
                 op_id=f"snappy:pass-open:{attempt}")
         try:
             # CONFIGURE (deterministic)
@@ -571,13 +682,18 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # rebuild the rejected mesh: stop here, before the mesher is paid for again.
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"external pass {attempt}")
+            # ... and the same for a case that just ran out of time
+            if _repeats_timed_out_case(workspace, _timeout_case):
+                raise TimedOutCaseRepeats(f"external pass {attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
                             f"{summary['surface_level']}, {summary['n_layers']} boundary layers",
                     op_id=f"snappy:carving:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
+            _t_mesh = _time.monotonic()
             result = await _run_snappy_timed(
                 R, workspace, _cap, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
+            _mesh_minutes = (_time.monotonic() - _t_mesh) / 60.0
             if result.get("case_contract_mismatch"):
                 # the pre-flight refused the case before snappyHexMesh started: the renderer
                 # did not write the approved patches, and a re-plan renders the same names. Stop
@@ -586,6 +702,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
                 return False
             _meshed_any = True
+            if result.get("timed_out"):
+                # ran out of time: no later pass (or attempt) meshes this, or anything as big
+                _timed_out_now = True
+                _timeout_ref = dict(strategy)          # carries the budget actually used
+                _timeout_case = _case_snapshot(workspace)
+                _write_timed_out_plan(workspace, _timeout_ref)
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation
             # still owns the job and may accept, publish and record the result.
             q = R.check_mesh(workspace)
@@ -613,6 +735,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 op_id=f"snappy:preflight-replan:{attempt}")
             feedback, plan = stop.refusal.builder_text, None
             continue
+        except TimedOutCaseRepeats:
+            # nothing was left to make coarser: not run, and the passes stop here
+            logger.warning("snappy pass %d authored the case that just timed out, byte for byte "
+                           "- not meshing it again - job_id=%s", attempt, job_id)
+            production, reason, q, wall_faces = False, "", {}, 0
+            _repeat_stop = True
         except Exception as exc:  # noqa: BLE001 - a config/run error is just a failed attempt
             logger.exception("snappy attempt %d errored - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, f"attempt errored: {type(exc).__name__}", {}, 0
@@ -644,11 +772,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await publish.anote(f"Pass {attempt} produced a production-grade mesh - {_shape}",
                     op_id=f"snappy:pass-outcome:{attempt}")
         else:
-            await publish.anote(f"Pass {attempt} fell short - {_shape}; "
-                    + (_esc_note if _esc_note else f"re-planning ({reason[:60]})"),
+            await publish.anote(f"Pass {attempt} "
+                    + (f"fell short - {_shape}; {_esc_note}" if _esc_note else
+                       _shortfall(_shape, reason, timed_out=_timed_out_now,
+                                  minutes=_mesh_minutes, repeat=_repeat_stop,
+                                  last=attempt == max_attempts)),
                     op_id=f"snappy:pass-outcome:{attempt}")
         if production:
             return True                    # valid mesh is in the workspace; executor takes over
+        if _repeat_stop:
+            break
         if _esc_note:
             feedback, plan = reason, strategy   # deterministic retry: same plan, escalated policy
         else:
@@ -702,6 +835,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     import asyncio as _asyncio
     import json as _json
     import math as _math
+    import time as _time
 
     from meshpipeline.engines.snappy import snappy_runner as R
     from meshpipeline.engines.snappy.planner import clamp_cell_budget, plan_with_accounting
@@ -803,8 +937,13 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     _cap = 2400
     _reviewed_ws = _reviewed_workspace(state)   # the mesh a review just rejected, on its retry
     last_valid = False
+    # the plan (and authored case) of the last pass that RAN OUT OF TIME: every later pass is
+    # held below it, and never rebuilds it byte for byte. Seeded from an earlier attempt's record.
+    _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
+    _timeout_case: dict[str, bytes] | None = None
 
     for attempt in range(1, max_attempts + 1):
+        _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
         if plan is None:
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
@@ -818,6 +957,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             plan = _po.plan
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
+        # after a timeout the next mesh is SMALLER, whatever the re-plan proposed
+        strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=True)
         previous_plan = strategy
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
@@ -858,6 +999,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
         # measurement failure degrades to "no thin features", never to a guess.
         _wall_cell = bore_D / cells_across
+        # the values this pass actually meshes with - what a timeout is measured against
+        _effective = {**strategy, "max_cells": _budget, "cells_across_diameter": cells_across}
         _thin_regions: list = []
         try:
             from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
@@ -873,15 +1016,27 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
             _thin_regions = []
-        if _thin_regions:
-            _t0 = _thin_regions[0]
+        # what the probe left out to keep the budget (cad/thin_features.ThinRegions); a plain
+        # list carries none
+        _thin_note = str(getattr(_thin_regions, "note", "") or "")
+        if _thin_regions or _thin_note:
+            # the thinnest REAL reading among the regions refined (or found, when none could be):
+            # faces lying on each other are filtered out by the probe and never reach this text
+            _t_min = (min(float(r.get("thinnest_m") or 0.0) for r in _thin_regions)
+                      if _thin_regions else float(getattr(_thin_regions, "thinnest_m", 0) or 0))
             await publish.anote(
-                f"Thin feature detected - {_t0['thinnest_m'] * 1000:.1f} mm across, finer "
-                f"than the {_wall_cell * 1000:.1f} mm wall cell; refining locally so it is "
-                f"captured", op_id=f"internal:thin-feature:{attempt}")
+                f"Thin feature detected - {_mm(_t_min)} across, finer than the "
+                f"{_wall_cell * 1000:.1f} mm wall cell; "
+                + ("not refined locally" if not _thin_regions
+                   else "refining locally so it is captured" if not _thin_note
+                   else "refining locally as far as the cell budget allows")
+                + (f" ({_thin_note})" if _thin_note else ""),
+                op_id=f"internal:thin-feature:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
-                     f"{str(strategy.get('approach', 'default strategy'))[:80]}",
+                     f"{str(strategy.get('approach', 'default strategy'))[:80]}"
+                     + (f" - made coarser because the last pass ran out of time: {_coarsened}"
+                        if _coarsened else ""),
                 op_id=f"internal:pass-open:{attempt}")
         try:
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
@@ -903,18 +1058,29 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 thin_regions=_thin_regions)
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
+            if _repeats_timed_out_case(workspace, _timeout_case):
+                raise TimedOutCaseRepeats(f"internal pass {attempt}")
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers",
                     op_id=f"internal:filling:{attempt}")
             run.note_authoring()
+            _t_mesh = _time.monotonic()
             result = await _run_snappy_timed(
                 R, workspace, _cap, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
+            _mesh_minutes = (_time.monotonic() - _t_mesh) / 60.0
             if result.get("case_contract_mismatch"):
                 logger.error("internal pass %d: case refused by the patch-contract pre-flight - "
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
                 return False
+            if result.get("timed_out"):
+                # THE MESHER RAN OUT OF TIME. Remember exactly what ran, so no later pass - nor
+                # a later attempt - meshes it, or anything as fine, again.
+                _timed_out_now = True
+                _timeout_ref = dict(_effective)
+                _timeout_case = _case_snapshot(workspace)
+                _write_timed_out_plan(workspace, _timeout_ref)
             q = R.check_mesh(workspace)
             await publish.ameshed(q.get("cells"))
             fc = R._patch_face_counts(workspace)
@@ -950,6 +1116,13 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             run.note_native_run(produced_usable_mesh=last_valid)
         except (_fence.StaleWorkerFenced, StaleExecutionPublish, ReviewedCaseRepeats):
             raise                      # supersession stops the invocation; see the external build
+        except TimedOutCaseRepeats:
+            # nothing was left to make coarser: the pass would rebuild, byte for byte, the case
+            # that just ran out of time. Not run - the passes stop here instead of burning another.
+            logger.warning("internal pass %d authored the case that just timed out, byte for "
+                           "byte - not meshing it again - job_id=%s", attempt, job_id)
+            production, reason, q, wall_faces = False, "", {}, 0
+            _repeat_stop = True
         except Exception as exc:  # noqa: BLE001
             logger.exception("internal attempt %d errored - job_id=%s", attempt, job_id)
             production, reason, q, wall_faces = False, f"attempt errored: {type(exc).__name__}", {}, 0
@@ -963,10 +1136,15 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             await publish.anote(f"Pass {attempt} produced a production-grade mesh - {_shape}",
                     op_id=f"internal:pass-outcome:{attempt}")
         else:
-            await publish.anote(f"Pass {attempt} fell short - {_shape}; re-planning ({reason[:60]})",
+            await publish.anote(f"Pass {attempt} "
+                                + _shortfall(_shape, reason, timed_out=_timed_out_now,
+                                             minutes=_mesh_minutes, repeat=_repeat_stop,
+                                             last=attempt == max_attempts),
                     op_id=f"internal:pass-outcome:{attempt}")
         if production:
             return True
+        if _repeat_stop:
+            break
         feedback, plan = reason, None
 
     logger.warning("internal build exhausted %d attempts - job_id=%s (last_valid=%s)",

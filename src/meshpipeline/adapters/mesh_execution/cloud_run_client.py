@@ -19,6 +19,7 @@ from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
 )
 from meshpipeline.contracts.mesh_execution import (
     RC_INFRASTRUCTURE,
+    RC_TIMED_OUT,
     SubmissionIndeterminate,
     abandonment_reason,
 )
@@ -151,6 +152,7 @@ class CloudRunOperationReference:
     #: own answer carries it; reading it there keeps the cancel to `run.executions.cancel`, which
     #: the narrowest invoker role (roles/run.jobsExecutorWithOverrides, apply-iam.sh) holds -
     #: looking the operation up later would need `run.operations.get`, which that role does not.
+    #: Kept in memory only: provider_reference stays the operation name.
     execution_name: str = ""
 
     @property
@@ -183,7 +185,7 @@ def _operation_reference(response, *, engine: str) -> CloudRunOperationReference
             "long-running operation resource; the provider may have accepted it")
     expected_location = str(provcfg.GCP_REGION or "").strip()
     # Optional, never a reason to doubt the acceptance: the operation name alone proves it, so a
-    # missing or unrecognised metadata block only means a cancel will have to look the run up.
+    # missing or unrecognised metadata block only means this run cannot be cancelled by name.
     meta = body.get("metadata") if isinstance(body, dict) else None
     execution = str(meta.get("name", "") or "").strip() if isinstance(meta, dict) else ""
     reference = CloudRunOperationReference(
@@ -221,19 +223,6 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
     return _operation_reference(resp, engine=engine)
 
 
-def _execution_of(operation: CloudRunOperationReference, auth: dict) -> str:
-    # The fallback for an acceptance that did not name its execution: the operation's metadata is
-    # the Execution. Needs run.operations.get, which the narrowest invoker role lacks - so a 403
-    # here is expected there, and is reported as "not cancelled" like any other refusal.
-    import requests as _rq
-    resp = _rq.get(f"https://run.googleapis.com/v2/{operation.operation_name}",
-                   headers=auth, timeout=30)
-    resp.raise_for_status()
-    meta = (resp.json() or {}).get("metadata")
-    name = str(meta.get("name", "") or "").strip() if isinstance(meta, dict) else ""
-    return name if _EXECUTION_NAME.match(name) else ""
-
-
 def cancel_execution(operation: CloudRunOperationReference, *, engine: str, why: str) -> bool:
     """Stop a Cloud Run execution whose result nobody will collect. True when Cloud Run took the
     cancel.
@@ -243,23 +232,24 @@ def cancel_execution(operation: CloudRunOperationReference, *, engine: str, why:
     that did not land would only lose the reason it was given up. A cancel that does not land
     leaves the execution to finish on its own, which is what happened before this existed - so it
     is logged loudly enough to find, never escalated. The provider's message is never logged; the
-    status code and the execution's short name are what an operator acts on."""
+    status code and the execution's short name are what an operator acts on.
+
+    An acceptance that did not name its execution is not looked up: that needs run.operations.get,
+    which the narrowest invoker role does not have, and RunJob always names it."""
     import requests as _rq
+    short = operation.execution_id
+    if not short:
+        logger.warning("Cloud Run execution for %s NOT cancelled (%s): the run's acceptance did "
+                       "not name its execution; it finishes on its own", engine, why)
+        return False
     try:
-        auth = {"Authorization": f"Bearer {_access_token()}"}
-        execution = operation.execution_name or _execution_of(operation, auth)
-        if not execution:
-            logger.warning("Cloud Run execution for %s NOT cancelled (%s): the run's execution "
-                           "name is unknown; it finishes on its own", engine, why)
-            return False
-        resp = _rq.post(f"https://run.googleapis.com/v2/{execution}:cancel", json={},
-                        headers=auth, timeout=30)
+        resp = _rq.post(f"https://run.googleapis.com/v2/{operation.execution_name}:cancel",
+                        json={}, headers={"Authorization": f"Bearer {_access_token()}"},
+                        timeout=30)
     except Exception as exc:  # noqa: BLE001 - see the docstring: best effort, never raised
         logger.warning("Cloud Run execution %s for %s NOT cancelled (%s): %s; it finishes on its "
-                       "own", operation.execution_id or "(unnamed)", engine, why,
-                       type(exc).__name__)
+                       "own", short, engine, why, type(exc).__name__)
         return False
-    short = execution.rsplit("/", 1)[-1]
     if 200 <= resp.status_code < 300:
         logger.warning("Cloud Run execution %s for %s cancelled: %s", short, engine, why)
         return True
@@ -272,6 +262,29 @@ def _fail(engine: str, detail: str) -> dict:
     logger.error("Cloud Run mesh FAILED for %s: %s", engine, detail)
     return {"rc": -3, "timed_out": False,
             "log_tail": f"[CLOUD_RUN_FAILED] {engine}: {detail}"}
+
+
+RESULT_TIMEOUT_MARKER = "[CLOUD_RUN_TIMEOUT]"
+
+
+def _timed_out(engine: str, deadline_s: float,
+               operation: CloudRunOperationReference | None) -> dict:
+    """The run was DISPATCHED - this worker's submission was accepted, or a previous worker's was
+    and this one is collecting it - and no result came back by the deadline. That is a run that
+    ran out of time, not one that never started: job 470c3eb9's snappyHexMesh ran the full 50
+    minutes twice, each time reported as "INFRASTRUCTURE failure - the mesh run never started",
+    and the planner, told to resubmit the plan unchanged, did exactly that.
+
+    TIMED OUT, so every judge reads it before the exit code and asks for a smaller mesh. The
+    operation reference travels back so the claim records the submission as accepted: a
+    replacement worker then collects this run's late result instead of starting another."""
+    minutes = max(0, int(round(float(deadline_s) / 60.0)))
+    logger.warning("Cloud Run mesh TIMED OUT for %s: no result within %ss", engine, deadline_s)
+    return {"rc": RC_TIMED_OUT, "timed_out": True,
+            "provider_reference": operation.operation_name if operation else "",
+            "log_tail": (f"{RESULT_TIMEOUT_MARKER} {engine}: the mesh run ran out of time - no "
+                         f"result after {minutes} min. It was dispatched and did not finish in "
+                         "time; the mesh is too big or too slow for the budget.")}
 
 
 RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
@@ -357,13 +370,20 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
 
         result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600)
         if result is None:
+            # Reached only once the run is dispatched (a refused or ambiguous submission raised
+            # above), so this is a run out of time, never one that did not start.
+            #
             # THIS WORKER'S deadline, not the execution's: the job's own task timeout is set at
-            # deploy and may run well past it. Nobody reads a result after this return, so the
-            # execution is stopped rather than left running unread.
+            # deploy and runs well past it. The execution already had its whole mesh budget plus
+            # ten minutes, and the driver answers a timeout with a SMALLER mesh, not by waiting
+            # longer - so it is stopped rather than left running unread. The reference still
+            # travels back (the claim records the run as accepted, exactly as before); the one
+            # price is that a same-identity replay collecting it waits out its own deadline for a
+            # late result that will not come, and then reads the same timeout.
             if operation is not None:
                 cancel_execution(operation, engine=engine,
                                  why=f"no result within the {timeout + 600}s deadline")
-            return _fail(engine, f"no result within {timeout + 600}s deadline")
+            return _timed_out(engine, timeout + 600, operation)
         # A recognised mesh result, checked rather than assumed. Anything else - a JSON scalar, a
         # list, a document without the verdict - is an exchange we do not understand, and the one
         # safe reading of that is "not collected", so the objects stay for someone who can.
