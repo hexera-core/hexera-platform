@@ -79,6 +79,64 @@ def patches_line(patch_names: list[str], renderable: list[str] | None) -> str:
             "boundary")
 
 
+def layer_policy_line(pol: dict) -> str:
+    """The thin-feature layer policy, stated as what was actually AUTHORED.
+
+    The old line said every policy "DELIBERATELY reduced" the thin and razor areas. That is false
+    for a uniform policy, which asks every face for the full count (the class split could not be
+    staged on the surface - the half-CRM is one: one `aircraft` patch with five layers asked of
+    all of it), and for a whole-wall escalation it hid that the well-proportioned surface was cut
+    too.
+    A reviewer told of a reduction it could not find in the numbers judged the layer axis against
+    a policy that did not exist."""
+    classes = {c: v for c, v in (pol.get("classes") or {}).items() if isinstance(v, dict)}
+    try:
+        req = int(pol.get("requested_layers") or 0)
+    except (TypeError, ValueError):
+        req = 0
+
+    def _n(c: str) -> int:
+        try:
+            return int(classes.get(c, {}).get("n_layers") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _pct(c: str) -> float:
+        try:
+            return round(float(classes.get(c, {}).get("area_frac") or 0) * 100, 1)
+        except (TypeError, ValueError):
+            return 0.0
+
+    cls = "; ".join(f"{c}: {_n(c)} layers over {_pct(c)}% of the wall area" for c in classes)
+    head = (f"Local layer policy (thin-feature classifier, mode {pol.get('mode')}, escalation "
+            f"stage {pol.get('escalation_stage', 0)}): ")
+    sharp = round(_pct("thin") + _pct("razor"), 1)
+    dominant = next(iter((pol.get("region_patches") or {}).values()), "")
+    if pol.get("mode") == "global" and dominant in classes and req and _n(dominant) < req:
+        return (head + f"almost the whole wall is locally thin or razor-sharp ({cls}), so the "
+                f"WHOLE wall carries the {dominant} count of {_n(dominant)} layers instead of the "
+                f"requested {req}. That is a reported engineering trade, not a silent collapse; "
+                f"judge the coverage against the counts actually authored here.")
+    if "normal" in classes and req and _n("normal") < req:
+        return (head + f"the requested {req} layers were lowered on the WHOLE wall, not only at "
+                f"thin features, after full stacks folded on an earlier pass - {cls}. That is a "
+                f"reported engineering trade, not a silent collapse; judge the coverage against "
+                f"the counts actually authored here.")
+    if not req or not any(_n(c) < req for c in ("thin", "razor") if c in classes):
+        return (head + f"every face was asked for the full {req} layers - no class carries fewer "
+                f"in this run ({cls}). {sharp}% of the wall is locally thin or razor-sharp; there "
+                f"the layer controls let a stack thin out instead of folding, and the mesher sheds "
+                f"layers on such features by design. So coverage missing on those features is the "
+                f"expected outcome, not a silent collapse - but nothing was deliberately removed, "
+                f"so do not credit a reduction this policy did not make.")
+    return (head + f"the requested {req} layers were kept on well-proportioned surface and "
+            f"DELIBERATELY reduced where the geometry is locally thin or razor-sharp - {cls}. "
+            f"Judge the layer axis AGAINST this declared policy: an area classified thin/razor "
+            f"carrying its reduced count is a reported engineering trade (folding full-height "
+            f"prisms there inverts cells), not a silent collapse. Coverage missing OUTSIDE the "
+            f"declared thin/razor fraction is still a real finding.")
+
+
 def build_review_prompt(
     *,
     manifest: dict,
@@ -244,19 +302,7 @@ def build_review_prompt(
             f"poor; weigh it against the workflow's y+ target.)")
     _lpol = _q.get("layer_policy")
     if isinstance(_lpol, dict) and _lpol.get("classes"):
-        _cls = "; ".join(
-            f"{_cn}: {_cv.get('n_layers')} layers over {round((_cv.get('area_frac') or 0) * 100, 1)}%"
-            f" of the wall area"
-            for _cn, _cv in (_lpol.get("classes") or {}).items())
-        _meta.append(
-            f"Local layer policy (thin-feature classifier, mode {_lpol.get('mode')}, escalation "
-            f"stage {_lpol.get('escalation_stage', 0)}): the requested "
-            f"{_lpol.get('requested_layers')} layers were kept on well-proportioned surface and "
-            f"DELIBERATELY reduced where the geometry is locally thin or razor-sharp - {_cls}. "
-            f"Judge the layer axis AGAINST this declared policy: an area classified thin/razor "
-            f"carrying its reduced count is a reported engineering trade (folding full-height "
-            f"prisms there inverts cells), not a silent collapse. Coverage missing OUTSIDE the "
-            f"declared thin/razor fraction is still a real finding.")
+        _meta.append(layer_policy_line(_lpol))
     mesh_meta = "  " + "\n  ".join(_meta)
 
     _gb = (manifest.get("geometry", {}) or {}).get("body_box")

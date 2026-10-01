@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 # The Builder's terminal contract. Imported from the Builder envelope so the two
 # strategies cannot drift into two spellings of "the Builder finished with a mesh".
-from meshpipeline.agents.builder.driver_run import BuilderDriverRun
+from meshpipeline.agents.builder.driver_run import (
+    STOP_REVIEWED_CASE_REPEATS,
+    BuilderDriverRun,
+    review_caused_retry,
+)
 from meshpipeline.contracts import execution_guard as _fence
 from meshpipeline.contracts.event_stream import (
     ExecutionEventPublisher,
@@ -107,6 +111,63 @@ def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
         if not missing:
             break
     return out
+
+
+#: The authored files that decide a snappy mesh: the background box, the mesher's dictionary and
+#: the local layer policy (which also decides how the staged surface is split into classes). The
+#: geometry itself is the same file on every attempt of a run.
+_CASE_FILES = ("system/blockMeshDict", "system/snappyHexMeshDict", "layer_policy.json")
+
+
+class ReviewedCaseRepeats(Exception):
+    """Raised between authoring a pass and starting the mesher: this retry was caused by a review
+    rejection and authored exactly the case whose mesh that review rejected."""
+
+
+def _reviewed_workspace(state) -> Path | None:
+    """The workspace of the mesh a review just rejected, when THIS attempt is the retry that
+    rejection caused - else None. A dispute rebuild is the engineer asking for a new mesh, and is
+    never stopped here."""
+    st = state or {}
+    if not review_caused_retry(st):
+        return None
+    prev = str(st.get("openfoam_workspace") or "")
+    return Path(prev) if prev and Path(prev).is_dir() else None
+
+
+def _repeats_reviewed_case(workspace: Path, reviewed: Path | None) -> bool:
+    """True only when the case just authored is byte-identical to the reviewed one. Fail-safe:
+    any file missing on either side, or unreadable, is "not the same" and the pass meshes."""
+    if reviewed is None:
+        return False
+    try:
+        if Path(reviewed).resolve() == Path(workspace).resolve():
+            return False
+        compared = 0
+        for rel in _CASE_FILES:
+            mine, theirs = Path(workspace) / rel, Path(reviewed) / rel
+            if mine.exists() != theirs.exists():
+                return False
+            if mine.exists():
+                if mine.read_bytes() != theirs.read_bytes():
+                    return False
+                compared += 1
+        # both dictionaries must be there: an absent case is never "the same case"
+        return compared >= 2 and all((Path(workspace) / r).exists() for r in _CASE_FILES[:2])
+    except OSError:
+        return False
+
+
+def _stop_on_repeated_case(workspace: Path, reviewed: Path | None, *, job_id: str,
+                           where: str) -> None:
+    """Refuse to mesh a case the review already rejected. Called after the pass is authored and
+    before the mesher starts; raises ReviewedCaseRepeats when the case repeats. The user is told
+    why by node_builder, which owns the attempt's closing note."""
+    if not _repeats_reviewed_case(workspace, reviewed):
+        return
+    logger.warning("review retry authored the case the review rejected (%s), byte for byte, at "
+                   "%s - not meshing it again - job_id=%s", reviewed, where, job_id)
+    raise ReviewedCaseRepeats(str(reviewed))
 
 
 def _write_plan_memory(workspace: Path, strategy: dict) -> None:
@@ -401,6 +462,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         previous_plan = _sibling_plan_memory(workspace)
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400  # per-mesh cap; stays under the Cloud Run Job task-timeout
+    _reviewed_ws = _reviewed_workspace(state)   # the mesh a review just rejected, on its retry
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
     _meshed_any = False                                # did any pass reach the mesher at all
     _domain_refusal: PreflightRefusal | None = None    # the last box the pre-flight refused
@@ -505,6 +567,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await _op_end(publish, _spec, "validate_configuration",
                     {"surface_level": summary.get("surface_level")}, True)
             run.note_authoring()
+            # A retry the review caused that wrote the very case the review rejected would only
+            # rebuild the rejected mesh: stop here, before the mesher is paid for again.
+            _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
+                                   where=f"external pass {attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
                             f"{summary['surface_level']}, {summary['n_layers']} boundary layers",
                     op_id=f"snappy:carving:{attempt}")
@@ -531,10 +597,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             production, reason = _judge_snappy(result, q, wall_faces)
             last_valid = bool(result.get("rc") == 0 and wall_faces > 0 and not q.get("fatal"))
             run.note_native_run(produced_usable_mesh=last_valid)
-        except (_fence.StaleWorkerFenced, StaleExecutionPublish):
+        except (_fence.StaleWorkerFenced, StaleExecutionPublish, ReviewedCaseRepeats):
             # NOT a failed attempt. A newer generation owns this job; re-planning against a
             # "failure" that is really supersession would keep a zombie worker meshing. A
-            # refused publication says the same thing at the other boundary.
+            # refused publication says the same thing at the other boundary. A repeated
+            # reviewed case is a stop the driver's caller ends the run on, not a pass to re-plan.
             raise
         except PreflightStop as stop:
             # The planned box would fail the extent gate. A re-plan CAN fix that, and costs a
@@ -734,6 +801,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         previous_plan = _sibling_plan_memory(workspace)
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
     _cap = 2400
+    _reviewed_ws = _reviewed_workspace(state)   # the mesh a review just rejected, on its retry
     last_valid = False
 
     for attempt in range(1, max_attempts + 1):
@@ -833,6 +901,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 max_cells=_budget, quality=quality,
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
                 thin_regions=_thin_regions)
+            _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
+                                   where=f"internal pass {attempt}")
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers",
@@ -878,7 +948,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 else:
                     (workspace / ".sealed_ports.json").unlink(missing_ok=True)
             run.note_native_run(produced_usable_mesh=last_valid)
-        except (_fence.StaleWorkerFenced, StaleExecutionPublish):
+        except (_fence.StaleWorkerFenced, StaleExecutionPublish, ReviewedCaseRepeats):
             raise                      # supersession stops the invocation; see the external build
         except Exception as exc:  # noqa: BLE001
             logger.exception("internal attempt %d errored - job_id=%s", attempt, job_id)
@@ -999,15 +1069,23 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             publish=publish, attempt=_attempt_of(state), plan_call=run.plan_call_index)
         plan = _po.plan
         run.note_plan_round(_po.round)
-    if state.get("flow_topology") == "internal":
-        ok = await _build_internal_deterministic(
-            workspace, state, job_id=job_id, publish=publish,
-            source_path=source_path, initial_plan=plan, run=run)
-        note = "internal build exhausted attempts - delivering best-effort mesh"
-    else:
-        ok = await _build_snappy_deterministic(
-            workspace, state, job_id=job_id, publish=publish, initial_plan=plan, run=run)
-        note = "snappy build exhausted attempts - delivering best-effort mesh"
+    try:
+        if state.get("flow_topology") == "internal":
+            ok = await _build_internal_deterministic(
+                workspace, state, job_id=job_id, publish=publish,
+                source_path=source_path, initial_plan=plan, run=run)
+            note = "internal build exhausted attempts - delivering best-effort mesh"
+        else:
+            ok = await _build_snappy_deterministic(
+                workspace, state, job_id=job_id, publish=publish, initial_plan=plan, run=run)
+            note = "snappy build exhausted attempts - delivering best-effort mesh"
+    except ReviewedCaseRepeats:
+        # Nothing was built and nothing failed: the retry would rebuild the mesh the review just
+        # rejected. The caller ends the run on that review (agents/builder/agent.py).
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=False,
+                              failure_marker=STOP_REVIEWED_CASE_REPEATS)
+        return False, STOP_REVIEWED_CASE_REPEATS, outcome
     # The LAST fence: a superseded worker must not return Builder success, however much work it
     # completed. Past this point the outcome is this generation's to deliver.
     await run.fence("deliver builder outcome")

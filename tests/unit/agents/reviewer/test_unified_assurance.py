@@ -724,8 +724,10 @@ def test_the_unified_tool_set_uses_evidence_linked_findings():
     assert "submit_findings" in names
     sf = next(t for t in UNIFIED_TOOLS if t["function"]["name"] == "submit_findings")
     item = sf["function"]["parameters"]["properties"]["axis_findings"]["items"]["properties"]
-    # `satisfied` is the per-axis judgement the application derives the verdict from
-    assert set(item) == {"axis_key", "finding", "evidence_ids", "passed"}
+    # `satisfied` is the per-axis judgement the application derives the verdict from; the judgement
+    # fields say what a finding that did not pass claims and asks for (agents/reviewer/review_policy)
+    assert set(item) == {"axis_key", "finding", "evidence_ids", "passed", "brief_requirement",
+                         "wrong_problem", "severity", "builder_change", "change_request"}
     assert set(sf["function"]["parameters"]["properties"]["axis_findings"]["items"]
                ["required"]) == {"axis_key", "finding", "evidence_ids", "passed"}
 

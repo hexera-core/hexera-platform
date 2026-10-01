@@ -20,6 +20,9 @@ EXPECTED_ALLOW_LIST = frozenset({
     # v8: the Reviewer's OWN canonical accountability record. Append-only history about the
     # review's execution - it carries no downstream truth and is never read back as a verdict.
     "agent_run_records",
+    # this run's concluded reviews (one per reviewed mesh): an identical mesh keeps its review, and
+    # the run delivers its best gate-passing mesh - the Reviewer's own record of what it judged
+    "review_history",
 })
 
 # truth owned by other stages - the Reviewer must never be able to return any of these.
@@ -36,7 +39,7 @@ FORBIDDEN_KEYS = frozenset({
 # the artifact is known to exist (so before its unit can be read). It builds no state of its
 # own - it forwards to the same constructor - so it belongs on this list.
 _RETURN_BUILDERS = {"_reviewer_return", "_translate_outcome", "_nonverdict",
-                    "_early_nonverdict", "_render_failure_result"}
+                    "_early_nonverdict", "_render_failure_result", "_reuse_review"}
 
 
 # static: the production allow-list is exactly what we intend

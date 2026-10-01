@@ -65,6 +65,8 @@ export async function openViewer(job,anchorEl,opts){
           <span class="v-meta">
             ${opts.unreviewed
               ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
+              : opts.concerns
+              ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
               : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
             ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
           </span>
@@ -81,6 +83,14 @@ export async function openViewer(job,anchorEl,opts){
           re-reviewed against <i>your</i> bar and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
+      ${opts.concerns?`<div class="v-why v-concerns">
+        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable, so it is
+        delivered. The reviewer left these points open; weigh them before you rely on the results:
+        ${(opts.concerns||[]).length
+          ? '<ul class="v-concern-list">'+(opts.concerns||[]).map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>'
+          : ''}
+        ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        </div>`:''}
       <div class="v-sec v-dl">${_dlHtml}</div>
       <div class="v-facts" id="v-facts-${job}"></div>
       <!-- MESH PARTS: every selectable entity the loaded case actually declares -

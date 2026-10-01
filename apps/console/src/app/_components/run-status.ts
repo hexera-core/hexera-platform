@@ -10,8 +10,23 @@ const MARKS: Record<string, string> = {
 /** The class a status word wears. Meaning is carried by the WORD as well as the mark; the class
  *  only adds the mark, and an unrecognised status still renders as a neutral row rather than
  *  breaking the table. JobStatus can gain a member without this file changing. */
-export function statusClass(status: string): string {
+export function statusClass(status: string, reviewOutcome?: string | null): string {
+  // A run delivered with the review's points left open is a delivery, never a plain pass: it
+  // wears the warning mark beside its word.
+  if (status === "succeeded" && reviewOutcome === "delivered_with_concerns") {
+    return "status status--warn";
+  }
   return MARKS[status] ?? "status";
+}
+
+/** The word a run's status column shows. `succeeded` stays the API's word, except for a run the
+ *  review left points open on: that one says it was delivered with concerns, so a list never reads
+ *  it as a pass. */
+export function statusLabel(status: string, reviewOutcome?: string | null): string {
+  if (status === "succeeded" && reviewOutcome === "delivered_with_concerns") {
+    return "delivered with concerns";
+  }
+  return status;
 }
 
 /** How long a finished run took, in whole units.

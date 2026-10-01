@@ -30,11 +30,15 @@ def section_for_gate(engine: str, gate_key: str) -> str:
 
 
 def failed_axes(axis_findings: list | None) -> list[str]:
-    if isinstance(axis_findings, list):
-        return sorted(
-            str(f.get("axis_key", "")) for f in axis_findings
-            if isinstance(f, dict) and f.get("passed") is False and f.get("axis_key"))
-    return []
+    """The axes the next attempt is asked to change. A judged review (agents/reviewer/review_policy)
+    asks only through the findings it allowed to request a rebuild - a concern is not a request; an
+    unjudged record keeps the old meaning, every axis that did not pass."""
+    if not isinstance(axis_findings, list):
+        return []
+    rows = [f for f in axis_findings if isinstance(f, dict) and f.get("axis_key")]
+    judged = any("improve" in f for f in rows)
+    return sorted(str(f.get("axis_key", "")) for f in rows
+                  if f.get("passed") is False and (not judged or f.get("improve") is True))
 
 
 async def node_classifier(state: PipelineState) -> dict:

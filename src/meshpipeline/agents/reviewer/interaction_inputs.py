@@ -64,6 +64,18 @@ class VisualReviewInteractionInputs:
     # (pipeline/graph.node_review_retry). 0 on every first review; it keeps a rerun's event
     # identities apart from those of the review it replaces.
     rerun: int = 0
+    # WHAT THE APPLICATION JUDGES THE FINDINGS AGAINST (agents/reviewer/review_policy): the text a
+    # finding may quote (request, acceptance criteria and the confirmed setup), the builder's levers,
+    # and the measurements that can veto a wrong-problem claim.
+    brief_text: str = ""
+    levers: tuple = ()
+    #: (name, value) pairs - review_policy.measurements_from, frozen with the rest of the inputs
+    measured: tuple = ()
+    # This run's earlier concluded reviews, and the identity of what THIS one is shown - so an
+    # identical mesh with identical evidence is never judged twice.
+    evidence_key: str = ""
+    review_history: tuple = ()
+    requirement_caveats: tuple = ()
 
     def __post_init__(self) -> None:
         for name in ("job_id", "mesh_units"):

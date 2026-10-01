@@ -832,14 +832,22 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.application.final_result import (
             RunOutcome,
             derive_terminal_status,
-            layer_coverage_caveat,
+            review_blocking,
+            review_concerns_caveat,
         )
+
+        # DELIVER, DON'T DISCARD: when the run built more than one gate-passing, reviewed mesh and
+        # a later attempt did worse (a gate failed, or its review left more open), the run is
+        # moved onto its best one before anything below reads it (application/review_delivery).
+        from meshpipeline.application.review_delivery import select as _select_delivery
+        final_state = _select_delivery(final_state)
         _run_outcome = RunOutcome.from_graph_state(final_state)
         # Authored HERE and only here, from the SAME predicate that grants the status - the
         # graph state's requirement_caveats never carries it, so mid-run routing (the
         # executor caveat branch, the classifier near-miss branch, the reviewer's
-        # adjudicated-deviations block) is never exposed to a layer caveat.
-        _layer_caveat = layer_coverage_caveat(_run_outcome)
+        # adjudicated-deviations block) is never exposed to a review caveat.
+        _concerns_caveat = review_concerns_caveat(_run_outcome)
+        _review_blocking = review_blocking(_run_outcome)
         # and the review-inconclusive caveat, from the predicate that grants its delivery
         from meshpipeline.application.final_result import review_inconclusive_caveat
         _review_caveat = review_inconclusive_caveat(_run_outcome)
@@ -975,8 +983,9 @@ async def _run_async(req: JobRequest) -> dict:
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),
                 requirement_caveats=(list(final_state.get("requirement_caveats") or [])
-                                     + ([_layer_caveat] if _layer_caveat else [])
+                                     + ([_concerns_caveat] if _concerns_caveat else [])
                                      + ([_review_caveat] if _review_caveat else [])),
+                review_blocking=list(_review_blocking),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:

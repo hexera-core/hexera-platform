@@ -437,14 +437,17 @@ export const Stage = {
   final(data){Object.keys(this.nodes).forEach(k=>this.done(k));
     const cancelled=!!data.cancelled;
     if(this.proc){this.proc.classList.add('done');
+      const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
       this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':cancelled?'Run cancelled':'Run ended';
-      this.proc.querySelector('#proc-sub').textContent=data.pass?'completed':cancelled?'cancelled by you':'failed';
+      this.proc.querySelector('#proc-sub').textContent=concerns?'delivered with concerns':data.pass?'completed':cancelled?'cancelled by you':'failed';
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
       const att=data.attempts>0?`${data.attempts} attempt${data.attempts!==1?'s':''}`:'';
-      const pill=data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
-      v.innerHTML=`<span class="pill${data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
+      // a delivered mesh whose review left points open is never stamped PASS
+      const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
+      const pill=concerns?'DELIVERED WITH CONCERNS':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
+      v.innerHTML=`<span class="pill${concerns?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       n.body.appendChild(v);this.done('result');}
 

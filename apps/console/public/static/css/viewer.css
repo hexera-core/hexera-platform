@@ -21,6 +21,7 @@
 .v-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:11px;
   font-weight:700;letter-spacing:.05em;background:rgba(52,211,153,.14);color:#34d399;border:1px solid rgba(52,211,153,.3)}
 .v-pill.fail{background:rgba(239,68,68,.14);color:#f87171;border-color:rgba(239,68,68,.3)}
+.v-pill.concerns{background:rgba(241,189,99,.14);color:#f1bd63;border-color:rgba(241,189,99,.32)}
 .v-dl{display:flex;gap:7px;align-items:center}
 .v-dlbtn{display:inline-flex;flex-direction:column;gap:1px;padding:6px 12px;border:1px solid #3a4657;border-radius:8px;
   background:#1d232d;color:#dfe5ee;text-decoration:none;font-size:12px;line-height:1.25;transition:border-color .12s,background .12s}

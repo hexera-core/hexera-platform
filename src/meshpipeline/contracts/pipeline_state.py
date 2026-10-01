@@ -134,6 +134,16 @@ class PipelineState(TypedDict):
     requirement_caveats: list
 
     builder_noop_count:     int
+    # The Builder's declared STOP (agents/builder/driver_run.STOP_*), "" otherwise: it built
+    # nothing on purpose because another attempt provably cannot change the outcome - a review's
+    # retry that wrote exactly the case the review rejected. The graph ends the run on the verdict
+    # already reached instead of validating and reviewing the same mesh again.
+    builder_stop:           str
+    # This run's CONCLUDED reviews, one per reviewed mesh (reviewer-owned, append-only): the
+    # attempt, its workspace, the identity of the evidence it was shown, the verdict and the judged
+    # findings. An identical mesh keeps its review instead of being judged twice, and the run
+    # delivers its best gate-passing mesh when a later attempt did worse (application/review_delivery).
+    review_history:         list
     # Aggregate Builder budget: epoch deadline covering ALL attempts of one run. Set once on the
     # first attempt, carried across retries, never reset - so the sum of attempts cannot exceed it.
     builder_deadline_epoch: float

@@ -283,6 +283,50 @@ def test_fewer_layers_is_offered_for_a_review_only_when_the_review_faulted_layer
     assert domain["kind"] == "engine", "fewer layers was offered for a review about the domain"
 
 
+def test_fewer_layers_is_not_offered_when_the_review_failed_more_than_the_layers():
+    # job e0fa8ad0: prism coverage AND wake resolution failed, and the run offered fewer layers -
+    # which cannot touch the wake
+    base = {"engine": "snappy", "retry_count": 3, "executor_success": True,
+            "executor_failed_gate": "", "reviewer_verdict": "FAIL",
+            "request_txt": "Takeoff aero, 5 prism layers, wall functions."}
+    offer = lad.final_record(_external(**base, reviewer_axis_findings=[
+        {"axis_key": "prism_layer_coverage", "passed": False},
+        {"axis_key": "wake_resolution", "passed": False},
+        {"axis_key": "surface_capture", "passed": True}]),
+        succeeded=False, system_failure=False)["offer"]
+    assert offer is None or offer["kind"] != "fewer_layers"
+
+
+def test_a_review_offer_names_the_review_never_a_mesher_that_could_not_finish():
+    base = {"engine": "snappy", "retry_count": 3, "executor_success": True,
+            "executor_failed_gate": "", "reviewer_verdict": "FAIL",
+            "request_txt": "Takeoff aero, 5 prism layers, wall functions."}
+    layers = lad.final_record(_external(**base, reviewer_axis_findings=[
+        {"axis_key": "prism_layer_coverage", "passed": False}]),
+        succeeded=False, system_failure=False)["offer"]
+    assert layers["kind"] == "fewer_layers" and layers["layers_to"] == 2
+    assert "could not finish" not in layers["text"]
+    assert layers["text"].startswith("snappyHexMesh built the mesh and it passed every automatic "
+                                     "check, but the review found its 5 near-wall layers")
+    assert 'Reply "use 2 layers"' in layers["text"]
+    # a gate failure keeps the mesher-could-not-finish wording, which is true there
+    gate = lad.final_record(_external(
+        engine="snappy", retry_count=2, executor_failed_gate="quality_floor",
+        request_txt="External aero around a wing, 8 prism layers, y+ 1.",
+        mesh_manifest={"quality": {"fatal": ["negative-volume cells"]}}),
+        succeeded=False, system_failure=False)["offer"]
+    assert gate["text"].startswith("snappyHexMesh could not finish this mesh with the 8")
+    # an engine offer after a review says the mesh was built and reviewed, not unmeshable
+    domain = lad.final_record(_external(**base, reviewer_axis_findings=[
+        {"axis_key": "farfield_clearance", "passed": False}]),
+        succeeded=False, system_failure=False)["offer"]
+    assert domain["kind"] == "engine"
+    assert domain["text"].startswith("snappyHexMesh built a mesh that passed every automatic "
+                                     "check, but the review found it represents a different "
+                                     "problem than you asked for.")
+    assert "could not mesh this shape" not in domain["text"]
+
+
 def test_after_a_switch_the_offer_names_every_engine_that_failed():
     st = _external(engine="snappy", retry_count=2, executor_failed_gate="finalize",
                    engine_ladder={"approved": "cfmesh", "source": lad.SOURCE_SUGGESTED,

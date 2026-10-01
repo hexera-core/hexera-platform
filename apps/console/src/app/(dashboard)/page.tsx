@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { formatDuration, runTitle, statusClass } from "@/app/_components/run-status";
+import { formatDuration, runTitle, statusClass, statusLabel } from "@/app/_components/run-status";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -13,6 +13,7 @@ type Run = {
   is_rerun: boolean;
   created_at: string | null;
   ended_at: string | null;
+  review_outcome?: string | null;
 };
 
 export default async function OverviewPage() {
@@ -90,7 +91,9 @@ export default async function OverviewPage() {
               {runs.items.map((run) => (
                 <tr key={run.id}>
                   <td>
-                    <span className={statusClass(run.status)}>{run.status}</span>
+                    <span className={statusClass(run.status, run.review_outcome)}>
+                      {statusLabel(run.status, run.review_outcome)}
+                    </span>
                   </td>
                   <td>
                     <Link href={`/runs/${run.id}`}>{runTitle(run)}</Link>

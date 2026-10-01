@@ -138,15 +138,24 @@ def test_a_non_wall_patch_with_zero_target_is_ignored():
 
 
 def test_surface_capture_failure_with_domain_caveats_never_caveats_layers():
-    # the naive-predicate hole: exhausted FAIL with surface_capture failed and domain
-    # caveats sitting in state must stay a terminal failure
+    # the naive-predicate hole: a FAIL with surface_capture failed is never waived as a LAYER
+    # caveat. Since 2026-10-01 the review cannot fail a gate-passing mesh at all unless a finding
+    # makes it the wrong problem (agents/reviewer/review_policy): it is delivered with every open
+    # point listed under the general review caveat - surface capture included - never as a pass.
+    from meshpipeline.application.final_result import review_concerns_caveat
     findings = [
         {"axis_key": "surface_capture", "passed": False, "attempt": 3},
         {"axis_key": "prism_layer_coverage", "passed": False, "attempt": 3},
     ]
     out = _outcome(reviewer_axis_findings=findings)
     assert layer_coverage_caveat(out) is None
-    assert not derive_terminal_status(out, job_id="j", jlog=jlog).succeeded
+    assert derive_terminal_status(out, job_id="j", jlog=jlog).succeeded
+    listed = {i["axis_key"] for i in review_concerns_caveat(out)["items"]}
+    assert listed == {"surface_capture", "prism_layer_coverage"}
+    # a CONFIRMED wrong-problem finding is the one review outcome that still fails the run
+    findings[0].update({"blocking": "shape_changed", "improve": False})
+    wrong = _outcome(reviewer_axis_findings=findings)
+    assert not derive_terminal_status(wrong, job_id="j", jlog=jlog).succeeded
 
 
 # the terminal record and its message

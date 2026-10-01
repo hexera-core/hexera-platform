@@ -35,7 +35,11 @@ from meshpipeline.agents.builder.context import (  # noqa: F401
     _count_tokens,
     _get_tokenizer,
 )
-from meshpipeline.agents.builder.driver_run import BuilderDriverRun  # noqa: F401
+from meshpipeline.agents.builder.driver_run import (
+    STOP_REVIEWED_CASE_REPEATS,
+    BuilderDriverRun,  # noqa: F401
+    review_caused_retry,
+)
 from meshpipeline.agents.builder.loop import _run_tool_loop  # noqa: F401
 from meshpipeline.agents.builder.messages import _build_initial_messages  # noqa: F401
 from meshpipeline.agents.builder.tools import (  # noqa: F401
@@ -86,12 +90,13 @@ async def node_builder(state: PipelineState) -> dict:
     budget = budget_mod.settle(carried_epoch=state.get("builder_deadline_epoch", 0.0),
                                pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"))
 
-    def _patch(*, retry_count: int, noop_count: int = 0, api_failure: str = "") -> dict:
+    def _patch(*, retry_count: int, noop_count: int = 0, api_failure: str = "",
+               stop: str = "", workspace: str = "") -> dict:
         return turn_patch.TurnPatch(
-            workspace=str(attempt.workspace), request_txt=attempt.request_txt,
+            workspace=workspace or str(attempt.workspace), request_txt=attempt.request_txt,
             review_brief_txt=attempt.review_brief_txt, deadline_epoch=budget.deadline_epoch,
             retry_count=retry_count, noop_count=noop_count, api_failure=api_failure,
-            flag_responses=attempt_mod.flag_responses(attempt.workspace)).state()
+            flag_responses=attempt_mod.flag_responses(attempt.workspace), stop=stop).state()
 
     if budget.exhausted:
         # Aggregate budget exhausted: fail TRUTHFULLY without another expensive attempt. Nothing
@@ -140,23 +145,60 @@ async def node_builder(state: PipelineState) -> dict:
         # An API failure routes to the failure sink; execution truth is the executor's to write.
         return _patch(retry_count=attempt.retry_count, api_failure=outcome.api_failure)
 
-    verdict = noop_mod.assess(
-        before=authored_before,
-        after=noop_mod.authored_digest(attempt.workspace, attempt.engine) if authored_before else "",
-        carried_count=state.get("builder_noop_count", 0),
-        retry_count=attempt.retry_count)
-    if verdict.repeated:
-        logger.warning("Builder retry no-op: authored mesh spec unchanged - hash=%s "
-                       "consecutive_noops=%d - job_id=%s",
-                       authored_before, verdict.consecutive, job_id)
-    if verdict.budget_exhausted:
-        logger.error("Builder: %d consecutive no-ops - exhausting retry budget - job_id=%s",
-                     verdict.consecutive, job_id)
+    # A STOP: the retry a review rejection caused wrote exactly the case that review rejected, so
+    # the driver built nothing. No attempt is spent - the attempt counter and the workspace stay on
+    # the reviewed mesh, so the run ends on the verdict, findings and mesh that review actually
+    # judged, not on an empty workspace the executor would report as a mesher crash.
+    stopped = outcome.repeats_reviewed_case
+    verdict: noop_mod.NoopVerdict | None = None
+    if stopped:
+        logger.warning("Builder stop: retry %d would rebuild the mesh the review rejected - "
+                       "ending on that review - job_id=%s", attempt.retry_count, job_id)
+    else:
+        verdict = noop_mod.assess(
+            before=authored_before,
+            after=(noop_mod.authored_digest(attempt.workspace, attempt.engine)
+                   if authored_before else ""),
+            carried_count=state.get("builder_noop_count", 0),
+            retry_count=attempt.retry_count)
+        if verdict.repeated:
+            logger.warning("Builder retry no-op: authored mesh spec unchanged - hash=%s "
+                           "consecutive_noops=%d - job_id=%s",
+                           authored_before, verdict.consecutive, job_id)
+            if review_caused_retry(state):
+                # THE SAME STOP, for any engine: the retry a review asked for authored exactly the
+                # case that review saw. An engine without a pre-mesh check (the tool loop) has
+                # already re-run its mesher by now, but its mesh is the one already reviewed - the
+                # run ends on that review instead of validating and judging it again.
+                stopped, verdict = True, None
+                logger.warning("Builder stop: review retry %d authored the reviewed case again - "
+                               "ending on that review - job_id=%s", attempt.retry_count, job_id)
+        if verdict is not None and verdict.budget_exhausted:
+            logger.error("Builder: %d consecutive no-ops - exhausting retry budget - job_id=%s",
+                         verdict.consecutive, job_id)
+        logger.info("Builder finished - job_id=%s mode=%s attempt=%d workspace=%s",
+                    job_id, mode, attempt.retry_count, attempt.workspace)
 
-    logger.info("Builder finished - job_id=%s mode=%s attempt=%d workspace=%s",
-                job_id, mode, attempt.retry_count, attempt.workspace)
-    await _publish.anote(f"Mesh built - {len(attempt.tool_calls)} steps",
-                         op_id=f"built:{attempt.retry_count}")
+    # THE ATTEMPT'S ONE CLOSING NOTE, whichever way it ended. An engine's deterministic driver
+    # takes no tool steps, so "0 steps" read as "did nothing" on every snappy attempt - count
+    # steps only where there are steps to count.
+    _steps = len(attempt.tool_calls)
+    await _publish.anote(
+        _REVIEWED_CASE_REPEATS_NOTE if stopped
+        else (f"Mesh built - {_steps} steps" if _steps else "Mesh built"),
+        op_id=f"{'review-repeat-stop' if stopped else 'built'}:{attempt.retry_count}")
 
     attempt_capture.record_attempt(job_id, attempt=attempt, outcome=outcome, noop=verdict)
+    if verdict is None:
+        return _patch(retry_count=int(state.get("retry_count", 0) or 0),
+                      noop_count=state.get("builder_noop_count", 0),
+                      workspace=str(state.get("openfoam_workspace") or ""),
+                      stop=STOP_REVIEWED_CASE_REPEATS)
     return _patch(retry_count=verdict.retry_count, noop_count=verdict.consecutive)
+
+
+#: What the user reads when a review's retry would have rebuilt the mesh that review rejected.
+_REVIEWED_CASE_REPEATS_NOTE = (
+    "Stopping: the review asked for changes this rebuild cannot make - the revised plan writes "
+    "exactly the mesh the review just rejected. Building it again would only repeat that mesh, "
+    "so this run ends on that review.")
