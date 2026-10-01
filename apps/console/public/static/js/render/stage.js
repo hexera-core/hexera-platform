@@ -409,15 +409,31 @@ export const Stage = {
     r.innerHTML=`<div class="e-rat"><div class="rat-c">${esc(ev.conclusion||'')}</div>`
       +(ev.because?`<div class="rat-w">${esc(ev.because)}</div>`:'')+`</div>`;
     n.body.appendChild(r);this.scroll(n);},
+  // THE REVIEWER'S PICTURES: one small grid under the reviewer's steps, three to a row, filled as
+  // the pictures arrive. It sits outside the scrolling step list, so a picture is never pushed out
+  // of sight by the steps that follow it; past a few rows the grid scrolls on its own.
   screenshot(b64){const n=this.node('reviewer');
-    // a reconnect replays the backlog; the same render must not stack up
+    // a live event can arrive twice; the same render must not stack up. A PNG's last bytes hold
+    // its final data checksum, so two different renders of the same size are still told apart.
+    const s=String(b64),k=s.length+':'+s.slice(-64);
     n.shots=n.shots||new Set();
-    const k=String(b64).slice(0,64)+':'+String(b64).length;
     if(n.shots.has(k))return;
     n.shots.add(k);
-    const w=document.createElement('div');w.className='e-shot';
-    const im=document.createElement('img');im.src='data:image/png;base64,'+b64;im.onclick=()=>openLightbox(im.src);
-    w.appendChild(im);n.body.appendChild(w);this.scroll(n);},
+    if(!n.gallery){const g=document.createElement('div');g.className='e-shots';
+      g.innerHTML='<div class="e-shots-h">Pictures<span class="e-shots-n"></span></div><div class="e-shots-grid"></div>';
+      n.el.querySelector('.tl-body').appendChild(g);
+      n.gallery={count:g.querySelector('.e-shots-n'),grid:g.querySelector('.e-shots-grid')};}
+    const {grid,count}=n.gallery;
+    // follow the newest picture only when the reader is not looking further up the grid
+    const follow=grid.scrollHeight-grid.scrollTop-grid.clientHeight<8;
+    const b=document.createElement('button');b.type='button';b.className='e-shot';
+    b.setAttribute('aria-label',`Enlarge picture ${n.shots.size}`);
+    const im=document.createElement('img');im.alt='';im.src='data:image/png;base64,'+s;
+    b.onclick=()=>openLightbox(im.src);
+    b.appendChild(im);grid.appendChild(b);
+    count.textContent=String(n.shots.size);
+    if(follow)grid.scrollTop=grid.scrollHeight;
+    this.scrollBottom();},
   final(data){Object.keys(this.nodes).forEach(k=>this.done(k));
     const cancelled=!!data.cancelled;
     if(this.proc){this.proc.classList.add('done');
