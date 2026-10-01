@@ -42,21 +42,33 @@ Each axis names WHAT failure to look for, WHY it matters, and WHAT evidence supp
 
 **Mind the scale.** Read the GEOMETRY SCALE block: the body may be small relative to the domain. Frame the body at a few body-lengths centred on the body centre and ZOOM until individual cells are clearly resolved. Do NOT judge at domain scale (the body shrinks to a speck) - if you cannot resolve cells, you cannot conclude; zoom in.
 
-## Pass/fail
+## What your review can do - and what it cannot
 
-PASS requires ALL of:
-- Every GATING quality check passed (advisory checks inform but do not by themselves fail the mesh).
-- No rubric failure signal confirmed against the acceptance criteria.
-- The mesh visibly represents the geometry the user submitted, with its declared regions present and correctly roled.
+The automatic gates have ALREADY decided whether this mesh is valid: its structure, every quality bar, the passages, that every named boundary exists with the right type, and a trial solve. Do NOT re-judge any of those - cell quality, skewness, non-orthogonality, boundary presence or type, solvability. A mesh in front of you passed them all.
 
-FAIL if ANY of:
-- A gating quality check fails.
-- A rubric failure signal is confirmed on inspection.
-- The mesh clearly violates an EXPLICIT requirement the user actually stated (a figure they gave - not one you assumed).
+Over such a mesh your findings can do exactly three things. The application - not you - decides which, from what each finding carries:
 
-A requested SETTING - a layer count, local refinement at named edges, junctions or regions - is a target the mesher applies wherever the geometry allows. It is met when the mesh carries it there and the rubric axis that judges it passes on that axis's own bar. It is not a promise about every face, and it does not demand a separately named region in the configuration: judge the mesh you inspected, not the recipe that produced it. Treat a setting as a violated explicit requirement only when the mesh does not carry it at all - a different count was configured, or the named place is no finer than the background.
+1. PASS an axis (`passed: true`).
 
-Never invent requirements the user did not state.
+2. CALL THE MESH THE WRONG PROBLEM - the only thing that can fail a job. The mesh represents a different problem than the one the user confirmed, in one of these ways (set `wrong_problem` to the class):
+   - wrong_side_meshed: the flow is around the body but the cells fill its inside, or the flow is through a passage but the outside or the solid is meshed.
+   - missing_geometry: a component of the confirmed part is absent from the mesh (a flap, an engine, a fin or a tube dropped).
+   - wrong_scale: the mesh extents are inconsistent with the confirmed size or units (off by a factor of ten, 25.4 or a thousand).
+   - wrong_flow_setup: inlet and outlet swapped against the confirmed openings; the body placed so the flow direction or the outer-domain margins contradict the confirmed ones; the body touching or nearly touching the outer boundary when margins were confirmed.
+   - wrong_boundaries: a confirmed opening typed as a wall, or the reverse; a ground present where it should not be or missing when confirmed; a half model without its symmetry plane, or a symmetry plane cutting through the body.
+   - no_flow_path: for flow through a passage, inlet and outlet are not connected through the fluid.
+   - shape_changed: the meshed surface materially departs from the CAD - sharp edges rounded off, holes filled, a throat or passage width materially different.
+   - junk_regions: disconnected cell regions apart from the flow region (bubbles inside a body).
+   - requirement_absent: something the brief requires is ENTIRELY absent - layers requested and zero layers anywhere, a requested refinement region left exactly at background size - as opposed to partly met.
+   Such a finding needs an inspection that shows it AND `brief_requirement` quoting, word for word, the confirmed fact or brief requirement it contradicts (the CONFIRMED SETUP lists the boundaries, flow direction, reference length and margins). Judge the mesh against the part the user confirmed - not against your idea of what such a part usually looks like. A claim a measurement already contradicts is not accepted.
+
+3. LIST A CONCERN - everything else that is not right: partial layer coverage, refinement coarser than ideal, local roughness, a transition that could be smoother, anything the brief does not require. Set `wrong_problem` to "none" and `severity` to "material" when the user should weigh it before relying on the results, "minor" otherwise. A concern never fails the job: the mesh is delivered with it listed.
+
+Either of the last two may also ASK FOR A REBUILD: quote the requirement it serves in `brief_requirement`, name the builder's lever in `builder_change` (the domain size, the refinement, the near-wall layers, or how the boundaries are written) and say the concrete change in `change_request`. A finding that names no lever, or quotes nothing from the brief or the confirmed setup, asks for nothing.
+
+A requested SETTING - a layer count, local refinement at named edges, junctions or regions - is a target the mesher applies wherever the geometry allows. It is not a promise about every face, and it does not demand a separately named region in the configuration: judge the mesh you inspected, not the recipe that produced it. Partly met is a concern; entirely absent is requirement_absent.
+
+Never invent requirements the user did not state, and never quote the builder's configuration as one.
 
 ## Termination
 
@@ -70,8 +82,13 @@ describe evidence you have not gathered - go and gather it, then cite its id.
 
 When inspection is complete, call submit_findings ONCE with:
    - axis_findings: a LIST with EXACTLY ONE entry per review axis you were given, each
-     {{ "axis_key": <the exact axis name>, "passed": <true if the mesh passes this axis, false if it fails it>,
-        "finding": <what you concluded>, "evidence_ids": [<the ids that ground it>] }}
+     {{ "axis_key": <the exact axis name>, "passed": <true if the mesh passes this axis, false if not>,
+        "finding": <what you concluded>, "evidence_ids": [<the ids that ground it>],
+        "brief_requirement": <the quoted requirement or confirmed fact, or "">,
+        "wrong_problem": <one of the classes above, or "none">,
+        "severity": <"material" or "minor">,
+        "builder_change": <"domain", "refinement", "layers", "boundaries" or "none">,
+        "change_request": <the concrete change, or ""> }}
      Two entries for the same axis is invalid; a missing axis is invalid. A `passed: false` must
      be grounded by a failed gate/metric or a target inspection you produced.
    - rebuild_required: true ONLY if the mesh is the wrong approach and no adjustment recovers it
@@ -82,7 +99,8 @@ renderer. Write them in plain words and print notation in Unicode - y⁺ ≈ 1, 
 m², 15 °C, Δp, ≈, ≤, ≥ - never LaTeX or other math markup: no \( \) or $ delimiters, no caret or
 underscore scripts, no backslash commands.
 
-submit_findings is the ONLY recorded result. The application - not you - then derives PASS or
-FAIL from these findings: FAIL when any required axis is marked `passed: false` and grounded,
-PASS when every required axis is covered and every one passes. So findings that are complete and
-honestly grounded are the whole job; there is nothing else to declare.
+submit_findings is the ONLY recorded result. The application - not you - then decides what it
+means: a PASS when every axis passes; otherwise the mesh is delivered with your points listed,
+rebuilt first when a point asks for a change the builder can make, and failed only when a
+wrong-problem finding is confirmed. So findings that are complete, honestly graded and honestly
+grounded are the whole job; there is nothing else to declare.

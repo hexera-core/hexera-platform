@@ -99,6 +99,7 @@ def make_pipeline_state(
         "mesh_fidelity_source":    mesh_fidelity_source,
         "builder_noop_count":    0,
         "builder_stop":          "",
+        "review_history":        [],
         "agent_model_configs":   agent_model_configs if agent_model_configs is not None else {},
         "user_dispute":          user_dispute if user_dispute is not None else {},
         # Empty until the phase that owns each one runs; never seeded from a caller, so a

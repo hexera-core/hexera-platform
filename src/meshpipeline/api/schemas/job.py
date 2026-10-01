@@ -47,6 +47,12 @@ class JobStatus_(BaseModel):
     # from durable state - never model prose. Present once the job is finalized; survives restart.
     final_message: str | None = None
     final_result: dict | None = None
+    # WHAT THE REVIEW CAME TO, in one word (application/final_result.REVIEW_OUTCOMES): "passed",
+    # "delivered_with_concerns" (a succeeded run whose review left points open - never a pass),
+    # "review_inconclusive", or "wrong_problem" (the only way a review fails a run). None before
+    # the run ends, or when no review outcome applies. `review_concerns` lists the open points.
+    review_outcome: str | None = None
+    review_concerns: list[str] = []
     # WHY THE OWNER CANCELLED, in their words. Set only on a `cancelled` job, and only when they
     # gave one; the closing line itself is the final_message, the same on every surface.
     cancel_reason: str | None = None

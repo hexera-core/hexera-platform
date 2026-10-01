@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatDuration, runTitle, statusClass } from "./run-status";
+import { formatDuration, runTitle, statusClass, statusLabel } from "./run-status";
 
 test("statusClass maps each terminal state to its own mark", () => {
   assert.equal(statusClass("succeeded"), "status status--ok");
@@ -45,4 +45,13 @@ test("runTitle names an unlabelled re-review instead of calling it untitled", ()
 
 test("runTitle still says untitled for a genuinely unlabelled first run", () => {
   assert.equal(runTitle({ task_label: null, is_rerun: false }), "Untitled study");
+});
+
+test("a run delivered with the review's concerns never reads as a plain success", () => {
+  assert.equal(statusLabel("succeeded", "delivered_with_concerns"), "delivered with concerns");
+  assert.equal(statusClass("succeeded", "delivered_with_concerns"), "status status--warn");
+  assert.equal(statusLabel("succeeded", "passed"), "succeeded");
+  assert.equal(statusClass("succeeded", "passed"), "status status--ok");
+  assert.equal(statusLabel("failed", "wrong_problem"), "failed");
+  assert.equal(statusLabel("running"), "running");
 });

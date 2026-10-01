@@ -79,36 +79,6 @@ def patches_line(patch_names: list[str], renderable: list[str] | None) -> str:
             "boundary")
 
 
-#: The coverage bands the reviewer has always been shown. Internal flow keeps exactly this
-#: wording: wall-bounded internal flow leans harder on its layers, and it reviews well today.
-_LAYER_GUIDE = ("(Rough guide: >=70% is good, 40-70% partial, <40% poor; weigh it against the "
-                "workflow's y+ target.)")
-
-#: The SAME bands for external flow, with the line between pass and fail stated. Without it a
-#: literal model read "partial" plus "the user asked for 5 layers" as a missed requirement and
-#: failed it - but not every time: job 4d8b318d failed 59.6% coverage on its first attempt and
-#: passed the same 59.6% on its third, and jobs 1341acf4 (59.8%) and f439cc3f (74.5%) passed the
-#: same parts first time on the previous reviewer model. A requested count is a target the
-#: mesher grows where the geometry allows; it never lands on every face of a high-lift wing.
-#: This is the review's own bar. The terminal layer-caveat floor (settings.policy) is a separate
-#: delivery waiver and is not read here.
-_LAYER_GUIDE_EXTERNAL = (
-    "How to grade it: a requested layer COUNT is what the mesher grows wherever the geometry "
-    "allows - it never grows the full stack on every face, so an average below the requested "
-    "count is NOT by itself a missed requirement. >=70% is good. 40-70% is partial - the usual "
-    "result on a complex body (slats, flaps, sharp trailing edges, tight junctions) - and it "
-    "PASSES this axis for a wall-function case (y+ 30-300) or one that names no y+ target; say in "
-    "the finding that the coverage is partial. FAIL the axis only when coverage is below 40%, when "
-    "one wall patch is near zero while the others are covered, or when the brief asks for "
-    "wall-resolved layers (y+ about 1) and coverage is below 70%.")
-
-
-def layer_grading(purpose: str) -> str:
-    """How the measured layer coverage is graded, by the workflow's flow topology."""
-    from meshpipeline.engines.purposes import topology_of
-    return _LAYER_GUIDE_EXTERNAL if topology_of(purpose or "") == "external" else _LAYER_GUIDE
-
-
 def layer_policy_line(pol: dict) -> str:
     """The thin-feature layer policy, stated as what was actually AUTHORED.
 
@@ -328,7 +298,8 @@ def build_review_prompt(
             f"{_pp}). This is the AUTHORITATIVE figure for the prism-layer axis. The layer band is "
             f"~1e-4 of the body length, far too thin to resolve in a whole-body render, so DO NOT "
             f"conclude 'no layers' from a slice where the near-wall looks like a dense/black region "
-            f"- judge coverage from THIS number. {layer_grading(purpose)}")
+            f"- judge coverage from THIS number. (Rough guide: >=70% is good, 40-70% partial, <40% "
+            f"poor; weigh it against the workflow's y+ target.)")
     _lpol = _q.get("layer_policy")
     if isinstance(_lpol, dict) and _lpol.get("classes"):
         _meta.append(layer_policy_line(_lpol))

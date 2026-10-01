@@ -115,11 +115,7 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
                   "looks dense/black - cite the number. Then interpret whether that coverage is "
                   "adequate for the near-wall resolution the workflow needs, and whether the "
                   "missing fraction is in tolerable places (sharp trailing edge, tight concave "
-                  "junction) rather than across whole patches (the per-patch numbers show WHERE). "
-                  "A requested layer count is the target the mesher grows wherever the geometry "
-                  "allows, not a promise for every face: an average below it is the normal outcome "
-                  "on a complex body and is graded by the coverage guide in the mesh info - never "
-                  "fail this axis for the average count alone."),
+                  "junction) rather than across whole patches (the per-patch numbers show WHERE)."),
         concern="The boundary layer does not cover enough of the wall to trust near-wall results",
         failure_signals=("measured coverage too low for the near-wall resolution the workflow needs",
                          "a whole wall patch near zero coverage while others are covered",

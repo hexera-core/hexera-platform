@@ -35,6 +35,16 @@ class AxisFinding:
     # covers the whole mesh and exists only once eligibility accepts the submission. A `False`
     # must be GROUNDED, or the submission is rejected.
     passed: bool = True
+    # WHAT A FINDING THAT DID NOT PASS CLAIMS AND ASKS FOR (agents/reviewer/review_policy.py): the
+    # brief requirement or confirmed fact it misses, quoted; the wrong-problem class it claims, if
+    # any; the builder lever that changes it and the change itself; and how prominent a concern it
+    # is. The APPLICATION decides what each may do - only a confirmed wrong-problem class can fail a
+    # job, only a cited, actionable finding can ask for a rebuild, everything else is a concern.
+    brief_requirement: str = ""
+    wrong_problem: str = ""
+    builder_change: str = ""
+    change_request: str = ""
+    severity: str = ""
 
 
 class Eligibility(str, Enum):

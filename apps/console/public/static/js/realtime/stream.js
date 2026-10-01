@@ -186,5 +186,9 @@ export function terminalResult(job, outcomeText) {
     verdict: job.reviewer_verdict || "",
     findings: job.reviewer_findings || [],
     reasoning: job.reviewer_reasoning || "",
+    // what the review came to, said by the API: a delivered mesh whose review left points open is
+    // "delivered_with_concerns" - never shown as a pass - and carries those points
+    reviewOutcome: job.review_outcome || "",
+    concerns: job.review_concerns || [],
   };
 }

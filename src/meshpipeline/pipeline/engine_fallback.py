@@ -530,13 +530,47 @@ def _layers_are_to_blame(state: Mapping) -> bool:
 
 
 def _review_failed_only_layers(state: Mapping) -> bool:
-    """The review's failed criteria are ALL layer criteria. Fewer layers can only rescue a review
-    whose every complaint is about the layers: job e0fa8ad0 failed prism coverage AND wake
-    resolution, and was offered fewer layers - which does nothing for the wake."""
-    failed = [str(f.get("axis_key") or "").lower()
-              for f in (state.get("reviewer_axis_findings") or [])
-              if isinstance(f, Mapping) and f.get("passed") is False]
+    """The review's material findings are ALL about the layers. Fewer layers can only answer a
+    review whose every complaint that counts is about the layers: job e0fa8ad0 failed prism
+    coverage AND wake resolution, and was offered fewer layers - which does nothing for the wake.
+    A judged review (agents/reviewer/review_policy) counts what failed the run - its wrong-problem
+    findings; an unjudged record counts every axis that did not pass."""
+    rows = [f for f in (state.get("reviewer_axis_findings") or [])
+            if isinstance(f, Mapping) and f.get("passed") is False]
+    if any("blocking" in f for f in rows):
+        rows = [f for f in rows if f.get("blocking")]
+    failed = [str(f.get("axis_key") or "").lower() for f in rows]
     return bool(failed) and all("layer" in k for k in failed)
+
+
+def improvement_offer(state: Mapping) -> dict | None:
+    """AN OPTIONAL IMPROVEMENT beside a DELIVERED mesh: when every point the review left open is
+    about the near-wall layers, the same mesh with fewer layers - offered, never run. A mesh with
+    nothing left open, or open points elsewhere, carries no offer."""
+    from meshpipeline.engines.registry import get_spec
+    engine = str(state.get("engine") or "")
+    open_points = [str(f.get("axis_key") or "").lower()
+                   for f in (state.get("reviewer_axis_findings") or [])
+                   if isinstance(f, Mapping) and f.get("passed") is False]
+    if not open_points or not all("layer" in k for k in open_points):
+        return None
+    lr = layer_request(str(state.get("request_txt", "") or ""),
+                       str(state.get("review_brief_txt", "") or ""))
+    try:
+        dm = get_spec(engine).delivered_mesh
+    except Exception:  # noqa: BLE001 - an unknown engine offers nothing
+        return None
+    if not lr.count or lr.count < 2 or dm is None or not dm.prism_layers:
+        return None
+    fewer = max(1, lr.count // 2)
+    return {"kind": "fewer_layers", "engine": engine, "same_contract": False, "optional": True,
+            "layers_from": lr.count, "layers_to": fewer,
+            "changes": [f"{fewer} near-wall layers instead of {lr.count}"],
+            "reply": f"use {fewer} layers",
+            "text": (f"Optional: the review's open points are all about the {lr.count} near-wall "
+                     f"layers. Fewer layers usually cover more of the wall - I can build the same "
+                     f"mesh with {fewer} layers instead (same boundaries, same units). Reply "
+                     f"\"use {fewer} layers\" if you want that run.")}
 
 
 def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
@@ -554,8 +588,8 @@ def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
     # automatic check; telling that user the mesher "could not finish" it with their layers sent
     # them to approve a change for a failure that never occurred.
     why = (f"{engine_label(engine)} built the mesh and it passed every automatic check, but the "
-           f"review found its {lr.count} near-wall layers covered too little of the wall. Fewer "
-           "layers usually cover more of it."
+           f"review found its {lr.count} near-wall layers missing from the wall. Fewer layers "
+           "usually grow where a full stack cannot."
            if failure.cause == "review" else
            f"{engine_label(engine)} could not finish this mesh with the {lr.count} near-wall "
            f"layers you asked for: {failure.reason}. Fewer layers usually fixes this.")
@@ -590,9 +624,10 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
            f"None of {', '.join(names[:-1])} and {names[-1]} could")
     head = f"{who} mesh this shape: {failure.reason}."
     if failure.cause == "review" and len(names) == 1:
-        # the mesh exists and passed every gate - "could not mesh this shape" says it does not
-        head = (f"{names[0]} built a mesh that passed every automatic check, but it did not pass "
-                "review.")
+        # the mesh exists and passed every gate - "could not mesh this shape" says it does not. A
+        # review fails a run only when the mesh is the wrong problem (review_policy.WRONG_PROBLEM).
+        head = (f"{names[0]} built a mesh that passed every automatic check, but the review found "
+                "it represents a different problem than you asked for.")
     if same:
         to = same[0].engine
         why = (f"You chose {engine_label(engine)}, so I did not switch engines without asking."
@@ -623,8 +658,9 @@ def final_record(state: Mapping, *, succeeded: bool, system_failure: bool) -> di
     failure = None if succeeded else classify(state)
     rec = with_attempt(state, failure)
     rec["delivered_by"] = str(state.get("engine") or "") if succeeded else ""
-    rec["offer"] = (None if (succeeded or system_failure)
-                    else offer(state, rec))
+    # A delivered mesh carries at most an OPTIONAL improvement; a failed run the one offer.
+    rec["offer"] = (improvement_offer(state) if succeeded else
+                    None if system_failure else offer(state, rec))
     return rec
 
 

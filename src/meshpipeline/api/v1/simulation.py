@@ -207,8 +207,26 @@ async def list_jobs(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = 
             "ended_at": row[0].ended_at.isoformat() if row[0].ended_at else None,
             "attempts": row[0].current_attempt,
             "failed_reason": getattr(row[0].failed_reason, "value", row[0].failed_reason),
+            # "delivered_with_concerns" beside `succeeded` - a run list must not read as a pass
+            "review_outcome": _review_outcome(getattr(row[0], "final_result", None)),
         },
         key=lambda row: (row[0].created_at, row[0].id))
+
+
+def _review_outcome(final_result) -> str | None:
+    from meshpipeline.application.final_result import review_outcome_of
+    try:
+        return review_outcome_of(final_result if isinstance(final_result, dict) else None)
+    except Exception:  # noqa: BLE001 - an old or malformed record never breaks a read
+        return None
+
+
+def _review_concerns(final_result) -> list[str]:
+    from meshpipeline.application.final_result import review_concerns_of
+    try:
+        return review_concerns_of(final_result if isinstance(final_result, dict) else None)
+    except Exception:  # noqa: BLE001 - an old or malformed record never breaks a read
+        return []
 
 
 @router.get("/{job_id}", response_model=JobStatus_)
@@ -274,6 +292,8 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,
+            review_outcome=_review_outcome(_fr_dict),
+            review_concerns=_review_concerns(_fr_dict),
             # a string or nothing: a row from before the column carries none, and a test double must
             # not be able to smuggle an object into the wire contract
             cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)

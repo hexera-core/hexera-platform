@@ -289,6 +289,8 @@ th,td{border-color:var(--border)}
   background:currentColor;flex:none}
 .tl-verd .pill.fail,.v-pill.fail{background:var(--danger-soft);color:var(--danger)}
 .tl-verd .pill.cancelled{background:var(--surface-2);color:var(--text-faint)}
+.tl-verd .pill.concerns,.v-pill.concerns{background:var(--warn-soft);color:var(--warn)}
+.v-concern-list{margin:6px 0 4px 18px;padding:0;color:var(--warn)}
 .tl-verd .mt{color:var(--text-faint);font:var(--fs-sm)/1 var(--sans)}
 
 /* mesh progress: elapsed against a real bound - orange while running, green once it lands */

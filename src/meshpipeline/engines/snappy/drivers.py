@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 # The Builder's terminal contract. Imported from the Builder envelope so the two
 # strategies cannot drift into two spellings of "the Builder finished with a mesh".
-from meshpipeline.agents.builder.driver_run import STOP_REVIEWED_CASE_REPEATS, BuilderDriverRun
+from meshpipeline.agents.builder.driver_run import (
+    STOP_REVIEWED_CASE_REPEATS,
+    BuilderDriverRun,
+    review_caused_retry,
+)
 from meshpipeline.contracts import execution_guard as _fence
 from meshpipeline.contracts.event_stream import (
     ExecutionEventPublisher,
@@ -125,8 +129,7 @@ def _reviewed_workspace(state) -> Path | None:
     rejection caused - else None. A dispute rebuild is the engineer asking for a new mesh, and is
     never stopped here."""
     st = state or {}
-    if ((st.get("classifier_result") or {}).get("error_source") != "reviewer_fail"
-            or st.get("user_dispute")):
+    if not review_caused_retry(st):
         return None
     prev = str(st.get("openfoam_workspace") or "")
     return Path(prev) if prev and Path(prev).is_dir() else None

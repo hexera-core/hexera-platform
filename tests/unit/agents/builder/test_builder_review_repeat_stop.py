@@ -132,3 +132,54 @@ def test_the_graph_wires_an_end_after_the_builder():
     # every value the route can return has an edge - a missing END would fail at run time
     assert set(targets) >= {"node_executor", "node_failure_handler", "node_infra_retry",
                             g.END}
+
+
+# THE SAME STOP FOR EVERY ENGINE. An engine without a pre-mesh check (the tool loop) is caught after
+# its attempt: the case it authored is the one the review already saw.
+
+_CASE = {"system/blockMeshDict": "box 1 2 3\n", "system/snappyHexMeshDict": "layers 5\n"}
+
+
+def _authoring_driver(files: dict, called: list):
+    async def _drive(workspace, state, *, job_id, publish, source_path, run):
+        called.append(workspace)
+        for rel, text in files.items():
+            p = workspace / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text)
+        return True, "submit_mesh:success", run.outcome(produced_deliverable=True)
+    return _drive
+
+
+def _reviewed_case(st: dict) -> None:
+    from pathlib import Path
+    for rel, text in _CASE.items():
+        p = Path(st["openfoam_workspace"]) / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+
+def test_a_retry_that_authored_the_reviewed_case_again_stops_for_any_engine(
+        tmp_path, monkeypatch, published):
+    st = _review_retry(tmp_path)
+    _reviewed_case(st)
+    out = _run(st, _authoring_driver(_CASE, []), monkeypatch)
+    assert out["builder_stop"] == STOP_REVIEWED_CASE_REPEATS
+    assert out["retry_count"] == 2 and out["openfoam_workspace"] == st["openfoam_workspace"]
+    assert _notes(published)[-1].startswith("Stopping:")
+
+
+def test_a_retry_that_changed_the_case_goes_on(tmp_path, monkeypatch, published):
+    st = _review_retry(tmp_path)
+    _reviewed_case(st)
+    changed = {**_CASE, "system/snappyHexMeshDict": "layers 3\n"}
+    out = _run(st, _authoring_driver(changed, []), monkeypatch)
+    assert "builder_stop" not in out and out["retry_count"] == 3
+
+
+def test_a_gate_retry_with_the_same_case_is_not_this_stop(tmp_path, monkeypatch, published):
+    # a gate's identical rejection has its own no-progress stop; this one is the review's
+    st = _review_retry(tmp_path, classifier_result={"error_source": "executor_fail"})
+    _reviewed_case(st)
+    out = _run(st, _authoring_driver(_CASE, []), monkeypatch)
+    assert "builder_stop" not in out

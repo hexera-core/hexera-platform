@@ -178,12 +178,32 @@ def terminal_failure(publish: Any, *, classification: str = "") -> None:
 
 
 async def areviewer_verdict(publish: ExecutionEventPublisher, *, passed: bool,
-                            failed_axes: tuple[str, ...] = ()) -> None:
+                            failed_axes: tuple[str, ...] = (),
+                            rebuild_axes: tuple[str, ...] | None = None,
+                            blocking_axes: tuple[str, ...] = ()) -> None:
     if passed:
         await _asay(publish, "The mesh meets your brief.",
                     "every acceptance criterion the brief set was checked and met")
-    else:
-        axes = ", ".join(a.replace("_", " ") for a in failed_axes if a)
+        return
+    def _words(keys) -> str:
+        return ", ".join(a.replace("_", " ") for a in keys if a)
+    if rebuild_axes is None:
+        # a caller that has not judged its findings (agents/reviewer/review_policy) says it as before
+        axes = _words(failed_axes)
         await _asay(publish, "The mesh does not meet your brief yet.",
                     f"these criteria were not met: {axes}" if axes
                     else "at least one acceptance criterion was not met")
+        return
+    # A JUDGED review: only a confirmed wrong-problem finding says the mesh is wrong; anything else
+    # is a request for a buildable change or a concern the delivery will list.
+    if blocking_axes:
+        await _asay(publish, "The mesh looks like a different problem than you asked for.",
+                    f"the review found this on: {_words(blocking_axes)}")
+    elif rebuild_axes:
+        await _asay(publish, "The reviewer asked for a rebuild with a specific change.",
+                    f"it named a change the builder can make for: {_words(rebuild_axes)}")
+    else:
+        await _asay(publish, "The reviewer noted concerns; the mesh will be delivered with them "
+                             "listed.",
+                    f"noted on: {_words(failed_axes)}" if failed_axes
+                    else "none of them asks for a change the builder can make")

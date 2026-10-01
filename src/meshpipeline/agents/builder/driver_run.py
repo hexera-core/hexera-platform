@@ -146,5 +146,13 @@ TERMINAL_SUCCESS = "submit_mesh:success"
 STOP_REVIEWED_CASE_REPEATS = "reviewed_case_repeats"
 
 
+def review_caused_retry(state) -> bool:
+    """This attempt is the retry a concluded review asked for - not a gate failure's, not an
+    engine switch's, and not a dispute rebuild (the engineer asked for a new mesh there)."""
+    st = state or {}
+    return ((st.get("classifier_result") or {}).get("error_source") == "reviewer_fail"
+            and not st.get("user_dispute"))
+
+
 __all__ = ["STOP_REVIEWED_CASE_REPEATS", "STRATEGY_CANONICAL_LOOP", "STRATEGY_ENGINE_DRIVER",
-           "TERMINAL_SUCCESS", "BuildDriverOutcome", "BuilderDriverRun"]
+           "TERMINAL_SUCCESS", "BuildDriverOutcome", "BuilderDriverRun", "review_caused_retry"]

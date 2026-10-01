@@ -37,7 +37,7 @@ export function laneLabel(agent) {
 function verdictText(verdict) {
   return verdict === "PASS"
     ? "Verdict: the mesh meets your brief"
-    : "Verdict: the mesh does not meet your brief yet";
+    : "Verdict: the reviewer left points open (see the outcome)";
 }
 
 /** Which lane an event belongs to, given the lane the stream was last in.

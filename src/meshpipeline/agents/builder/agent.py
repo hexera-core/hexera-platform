@@ -35,7 +35,11 @@ from meshpipeline.agents.builder.context import (  # noqa: F401
     _count_tokens,
     _get_tokenizer,
 )
-from meshpipeline.agents.builder.driver_run import BuilderDriverRun  # noqa: F401
+from meshpipeline.agents.builder.driver_run import (
+    STOP_REVIEWED_CASE_REPEATS,
+    BuilderDriverRun,  # noqa: F401
+    review_caused_retry,
+)
 from meshpipeline.agents.builder.loop import _run_tool_loop  # noqa: F401
 from meshpipeline.agents.builder.messages import _build_initial_messages  # noqa: F401
 from meshpipeline.agents.builder.tools import (  # noqa: F401
@@ -161,7 +165,15 @@ async def node_builder(state: PipelineState) -> dict:
             logger.warning("Builder retry no-op: authored mesh spec unchanged - hash=%s "
                            "consecutive_noops=%d - job_id=%s",
                            authored_before, verdict.consecutive, job_id)
-        if verdict.budget_exhausted:
+            if review_caused_retry(state):
+                # THE SAME STOP, for any engine: the retry a review asked for authored exactly the
+                # case that review saw. An engine without a pre-mesh check (the tool loop) has
+                # already re-run its mesher by now, but its mesh is the one already reviewed - the
+                # run ends on that review instead of validating and judging it again.
+                stopped, verdict = True, None
+                logger.warning("Builder stop: review retry %d authored the reviewed case again - "
+                               "ending on that review - job_id=%s", attempt.retry_count, job_id)
+        if verdict is not None and verdict.budget_exhausted:
             logger.error("Builder: %d consecutive no-ops - exhausting retry budget - job_id=%s",
                          verdict.consecutive, job_id)
         logger.info("Builder finished - job_id=%s mode=%s attempt=%d workspace=%s",
@@ -181,7 +193,7 @@ async def node_builder(state: PipelineState) -> dict:
         return _patch(retry_count=int(state.get("retry_count", 0) or 0),
                       noop_count=state.get("builder_noop_count", 0),
                       workspace=str(state.get("openfoam_workspace") or ""),
-                      stop=outcome.driver_stop)
+                      stop=STOP_REVIEWED_CASE_REPEATS)
     return _patch(retry_count=verdict.retry_count, noop_count=verdict.consecutive)
 
 

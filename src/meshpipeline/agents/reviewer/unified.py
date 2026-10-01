@@ -23,6 +23,7 @@ from meshpipeline.agents.reviewer.loop_policy import (
     ReviewLoopPolicy,
 )
 from meshpipeline.agents.reviewer.render_runtime import ReviewerRenderRuntime
+from meshpipeline.agents.reviewer.review_policy import WRONG_PROBLEM as _WRONG_PROBLEM
 from meshpipeline.agents.reviewer.tools import REVIEWER_TOOLS
 from meshpipeline.contracts import rationale as _rationale
 from meshpipeline.contracts.agent_loop import AgentRole, LoopExit, LoopLimits
@@ -59,6 +60,8 @@ def _tool_name(tool: Any) -> str:
 
 _VIEWER_TOOLS = [t for t in REVIEWER_TOOLS if _tool_name(t) in _VIEWER_TOOL_NAMES]
 
+_WRONG_PROBLEM_KEYS = list(_WRONG_PROBLEM)
+
 _SUBMIT_FINDINGS_TOOL = {
     "type": "function",
     "function": {
@@ -90,10 +93,46 @@ _SUBMIT_FINDINGS_TOOL = {
                             "passed": {
                                 "type": "boolean",
                                 "description": ("true if the mesh PASSES this axis, false if it "
-                                                "fails it. A false must be grounded by a failed "
+                                                "does not. A false must be grounded by a failed "
                                                 "gate/metric or a target inspection you produced "
                                                 "- an unsupported false is rejected.")},
+                            "brief_requirement": {
+                                "type": "string",
+                                "description": ("For an axis that does not pass: the requirement "
+                                                "from the USER REQUEST, the ACCEPTANCE CRITERIA "
+                                                "or the CONFIRMED SETUP that this misses or "
+                                                "contradicts, quoted word for word. Empty when "
+                                                "none states it - the finding is then a concern "
+                                                "listed for the user. Empty on a passing axis.")},
+                            "wrong_problem": {
+                                "type": "string",
+                                "enum": [*_WRONG_PROBLEM_KEYS, "none"],
+                                "description": ("ONLY when the mesh represents a different problem "
+                                                "than the one confirmed: which way. 'none' for "
+                                                "anything merely imperfect - partial, coarser "
+                                                "than ideal, locally rough - and on a passing "
+                                                "axis.")},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["minor", "material"],
+                                "description": ("For an axis that does not pass: 'material' when "
+                                                "the user should weigh it before relying on the "
+                                                "results, else 'minor'.")},
+                            "builder_change": {
+                                "type": "string",
+                                "enum": ["domain", "refinement", "layers", "boundaries", "none"],
+                                "description": ("The builder lever that would fix it: the domain "
+                                                "size, the refinement, the near-wall layers, or "
+                                                "how the boundaries are written. 'none' when no "
+                                                "lever addresses it, and on a passing axis.")},
+                            "change_request": {
+                                "type": "string",
+                                "description": ("The concrete change you ask the builder to make "
+                                                "with that lever. Empty for a concern or a "
+                                                "passing axis.")},
                         },
+                        # The judgement fields are OPTIONAL on purpose (FINDING_OPTIONAL): a
+                        # finding that leaves them out is a concern, never a malformed payload.
                         "required": ["axis_key", "finding", "evidence_ids", "passed"],
                         "additionalProperties": False,
                     },
@@ -101,7 +140,8 @@ _SUBMIT_FINDINGS_TOOL = {
                 "rebuild_required": {
                     "type": "boolean",
                     "description": ("true ONLY if the mesh is the wrong approach and no adjustment "
-                                    "recovers it; always false on PASS."),
+                                    "recovers it; always false on PASS. It never fails the job: "
+                                    "the mesh is still delivered if no rebuild does better."),
                 },
                 "reasoning": {
                     "type": "string",
@@ -186,6 +226,9 @@ class UnifiedReviewOutcome:
     rebuild_required: bool = False
     findings: tuple[AxisFinding, ...] = ()
     flag_findings: tuple = ()          # per human flag; empty on a normal run
+    # {axis_key: review_policy.Judgement} for every finding that did not pass - which ask for a
+    # rebuild and which are concerns. Empty on a PASS and on every non-verdict.
+    judgements: dict = field(default_factory=dict)
     tool_calls: int = 0
     api_failure: str = ""                    # non-empty => non-verdict; the marker
     failure_class: str = ""                  # truthful classification for a non-verdict
@@ -216,9 +259,14 @@ def record_operation_evidence(ledger: EvidenceLedger, ev, inventory: dict, opera
                                   image_ok=True)
 
 
-# The COMPLETE set of properties one axis finding may carry. Anything else - including the
-# retired `satisfied` - is an unknown field and rejects the submission.
+# The properties one axis finding MUST carry. Anything outside these and FINDING_OPTIONAL - including
+# the retired `satisfied` - is an unknown field and rejects the submission.
 FINDING_FIELDS = frozenset({"axis_key", "finding", "evidence_ids", "passed"})
+# What a finding that did not pass asks for (review_policy). Read leniently: absent, or not a
+# string, is the same as empty - and a finding without them is a concern, never a parse error, so a
+# missing citation can only make a review MORE lenient, never stall it.
+FINDING_OPTIONAL = frozenset({"brief_requirement", "wrong_problem", "severity", "builder_change",
+                              "change_request"})
 
 
 def parse_findings(args: dict) -> tuple[tuple[AxisFinding, ...], tuple[str, ...]]:
@@ -234,10 +282,11 @@ def parse_findings(args: dict) -> tuple[tuple[AxisFinding, ...], tuple[str, ...]
             problems.append(f"{where} must be an object, got {type(f).__name__}")
             continue
 
-        unknown = sorted(set(f) - FINDING_FIELDS)
+        unknown = sorted(set(f) - FINDING_FIELDS - FINDING_OPTIONAL)
         if unknown:
             problems.append(f"{where} has unknown field(s) {', '.join(unknown)} - the only "
-                            f"accepted fields are {', '.join(sorted(FINDING_FIELDS))}")
+                            f"accepted fields are "
+                            f"{', '.join(sorted(FINDING_FIELDS | FINDING_OPTIONAL))}")
         missing = sorted(FINDING_FIELDS - set(f))
         if missing:
             problems.append(f"{where} is missing required field(s) {', '.join(missing)}")
@@ -263,8 +312,17 @@ def parse_findings(args: dict) -> tuple[tuple[AxisFinding, ...], tuple[str, ...]
         if problems:
             continue
 
+        def _opt(name: str, row: dict = f) -> str:
+            value = row.get(name)
+            return value.strip() if isinstance(value, str) else ""
+
         out.append(AxisFinding(axis_key=key.strip(), finding=text,
-                               evidence_ids=tuple(eids), passed=judgement))
+                               evidence_ids=tuple(eids), passed=judgement,
+                               brief_requirement=_opt("brief_requirement"),
+                               wrong_problem=_opt("wrong_problem").lower(),
+                               builder_change=_opt("builder_change").lower(),
+                               change_request=_opt("change_request"),
+                               severity=_opt("severity").lower()))
 
     return tuple(out), tuple(problems)
 
@@ -319,6 +377,9 @@ async def run_unified_review(
     dispute_phase: str = "",
     rerun: int = 0,
     on_picture: PictureSink | None = None,
+    brief_text: str = "",
+    levers: tuple[str, ...] = (),
+    measured: dict | None = None,
 ) -> UnifiedReviewOutcome:
     # Part 6: refuse to call the provider when required deterministic evidence is missing. That is
     # an assurance-evidence failure, never provider downtime.
@@ -387,7 +448,8 @@ async def run_unified_review(
         provider_failure_marker=_marker_for_exit)
 
     return await _outcome_from(result, policy, messages, publish=publish,
-                               job_id=job_id)
+                               job_id=job_id, brief_text=brief_text, levers=tuple(levers),
+                               measured=measured)
 
 
 def _marker_for_exit(exit_reason: LoopExit) -> str:
@@ -413,7 +475,9 @@ _FAILURE_CLASS = {
 
 async def _outcome_from(result, policy: ReviewLoopPolicy, messages: list[dict], *,
                         publish: ExecutionEventPublisher | None,
-                        job_id: str) -> UnifiedReviewOutcome:
+                        job_id: str, brief_text: str = "",
+                        levers: tuple[str, ...] = (),
+                        measured: dict | None = None) -> UnifiedReviewOutcome:
     tally = result.record.tally
     from meshpipeline.agents.loop.diagnostics import sanitized
     common = {"messages": tuple(messages), "llm_rounds": tally.rounds,
@@ -423,8 +487,16 @@ async def _outcome_from(result, policy: ReviewLoopPolicy, messages: list[dict], 
         # per-axis record is built from, so the two can never disagree.
         verdict = policy.accepted.verdict
         assert verdict is not None, "an accepted decision always carries a verdict"
-        logger.info("Reviewer: eligibility accepted - verdict=%s rounds=%d - job_id=%s",
-                    verdict.value, tally.rounds, job_id)
+        # WHICH of the findings that did not pass may ask for a rebuild, and which are concerns.
+        # Judged by the application from the findings' own citations, never taken from the model.
+        from meshpipeline.agents.reviewer.review_policy import judge_all
+        judgements = judge_all(policy.accepted_findings, brief_text=brief_text, levers=levers,
+                               ledger=policy.ledger, measured=measured)
+        logger.info("Reviewer: eligibility accepted - verdict=%s rounds=%d blocking=%s "
+                    "improve=%s concerns=%s - job_id=%s", verdict.value, tally.rounds,
+                    sorted(f"{k}:{j.blocking}" for k, j in judgements.items() if j.blocking),
+                    sorted(k for k, j in judgements.items() if j.improve),
+                    sorted(k for k, j in judgements.items() if j.concern), job_id)
         # The application's own account of the verdict, from the accepted findings -
         # not from anything the model said about them.
         if publish is not None:
@@ -435,13 +507,15 @@ async def _outcome_from(result, policy: ReviewLoopPolicy, messages: list[dict], 
             # "it failed", because a list of criteria is what the user can act on.
                 failed_axes=tuple(
                     f.axis_key for f in (policy.accepted_findings or ())
-                    if getattr(f, "passed", True) is False))
+                    if getattr(f, "passed", True) is False),
+                rebuild_axes=tuple(k for k, j in judgements.items() if j.improve),
+                blocking_axes=tuple(k for k, j in judgements.items() if j.blocking))
         return UnifiedReviewOutcome(
             verdict=("PASS" if verdict is ReviewVerdict.passed else "FAIL"),
             reasoning=policy.accepted_reasoning,
             rebuild_required=policy.accepted_rebuild_required and verdict is ReviewVerdict.failed,
             findings=policy.accepted_findings,
-            flag_findings=policy.accepted_flag_findings, **common)
+            flag_findings=policy.accepted_flag_findings, judgements=judgements, **common)
     marker = result.failure_marker or MARKER_EVIDENCE_MISSING
     if publish is not None:
         await _rationale.areviewer_evidence_incomplete(publish)

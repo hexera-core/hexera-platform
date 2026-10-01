@@ -322,7 +322,8 @@ def test_a_review_offer_names_the_review_never_a_mesher_that_could_not_finish():
         succeeded=False, system_failure=False)["offer"]
     assert domain["kind"] == "engine"
     assert domain["text"].startswith("snappyHexMesh built a mesh that passed every automatic "
-                                     "check, but it did not pass review.")
+                                     "check, but the review found it represents a different "
+                                     "problem than you asked for.")
     assert "could not mesh this shape" not in domain["text"]
 
 

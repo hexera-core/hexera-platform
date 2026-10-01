@@ -85,7 +85,9 @@ setResultHandler((data, anchor) => {
     // THE RESULT SURFACE IS THE MESH: open it inline, with the deliverables and the
     // flag -> re-review controls attached to the thing they describe.
     openViewer(job, anchor,
-      { metrics: { attempts: data.attempts, pass: true }, files: data.files || [] });
+      { metrics: { attempts: data.attempts, pass: true }, files: data.files || [],
+        concerns: data.reviewOutcome === "delivered_with_concerns" ? (data.concerns || []) : null,
+        reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "" });
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],

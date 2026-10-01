@@ -174,6 +174,9 @@ class TerminalAssembly:
     failure_facts: dict = field(default_factory=dict)
     #: reviews started again on the same validated mesh (pipeline/graph.node_review_retry)
     review_reruns: int = 0
+    #: the concluded review's wrong-problem findings (final_result.review_blocking) - the only
+    #: review findings that fail a run; they name, in the failure, which way the mesh is wrong
+    review_blocking: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -212,6 +215,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         failure_cause=assembly.failure_cause,
         failure_facts=dict(assembly.failure_facts or {}),
         review_reruns=assembly.review_reruns,
+        review_blocking=list(assembly.review_blocking or []),
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
         pipeline_timed_out=assembly.pipeline_timed_out)

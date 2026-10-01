@@ -110,3 +110,4 @@
 .proc-cancel:hover{border-color:var(--border-strong);color:var(--text)}
 .proc.done .proc-cancel{display:none}
 .tl-verd .pill.cancelled{border-color:var(--text-faint);color:var(--text-faint)}
+.tl-verd .pill.concerns{border-color:#b45309;color:#b45309}

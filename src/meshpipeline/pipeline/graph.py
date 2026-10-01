@@ -283,6 +283,17 @@ def route_after_reviewer(
         )
         return _END
 
+    # A REBUILD ONLY FOR A CHANGE THE BUILDER CAN MAKE. A review that did not pass but names no
+    # cited, buildable change (agents/reviewer/review_policy) has nothing a rebuild could act on:
+    # the run ends here and terminal assembly delivers the mesh with the concerns listed - or,
+    # for a confirmed wrong-problem finding, fails it with the class named.
+    from meshpipeline.agents.reviewer.review_policy import asks_for_rebuild
+    if not asks_for_rebuild(state.get("reviewer_axis_findings")):
+        logger.info("route_after_reviewer: review did not pass but asks for no buildable change "
+                    "→ END (attempt=%d/%d) - job_id=%s", retry_count,
+                    bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+        return _END
+
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:
         logger.info(
             "route_after_reviewer: FAIL attempt=%d/%d → classifier",
