@@ -13,8 +13,8 @@ pytestmark = pytest.mark.ui
 JOB = "heat-job"
 # the calm end of the scale, the edge colour while the faces carry it, and the plain view's edge
 # colour - viewer.js's STOPS[0], _EDGE_HEAT and _EDGE
-CALM = [78, 102, 130]
-HEAT_EDGE = [0.19, 0.17, 0.15]
+CALM = [92, 120, 152]
+HEAT_EDGE = [0.24, 0.23, 0.22]
 PLAIN_EDGE = [0.27, 0.25, 0.22]
 
 
