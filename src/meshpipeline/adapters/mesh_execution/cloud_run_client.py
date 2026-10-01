@@ -17,7 +17,7 @@ import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
-from meshpipeline.contracts.mesh_execution import SubmissionIndeterminate
+from meshpipeline.contracts.mesh_execution import RC_TIMED_OUT, SubmissionIndeterminate
 from meshpipeline.settings.env import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,29 @@ def _fail(engine: str, detail: str) -> dict:
             "log_tail": f"[CLOUD_RUN_FAILED] {engine}: {detail}"}
 
 
+RESULT_TIMEOUT_MARKER = "[CLOUD_RUN_TIMEOUT]"
+
+
+def _timed_out(engine: str, deadline_s: float,
+               operation: CloudRunOperationReference | None) -> dict:
+    """The run was DISPATCHED - this worker's submission was accepted, or a previous worker's was
+    and this one is collecting it - and no result came back by the deadline. That is a run that
+    ran out of time, not one that never started: job 470c3eb9's snappyHexMesh ran the full 50
+    minutes twice, each time reported as "INFRASTRUCTURE failure - the mesh run never started",
+    and the planner, told to resubmit the plan unchanged, did exactly that.
+
+    TIMED OUT, so every judge reads it before the exit code and asks for a smaller mesh. The
+    operation reference travels back so the claim records the submission as accepted: a
+    replacement worker then collects this run's late result instead of starting another."""
+    minutes = max(0, int(round(float(deadline_s) / 60.0)))
+    logger.warning("Cloud Run mesh TIMED OUT for %s: no result within %ss", engine, deadline_s)
+    return {"rc": RC_TIMED_OUT, "timed_out": True,
+            "provider_reference": operation.operation_name if operation else "",
+            "log_tail": (f"{RESULT_TIMEOUT_MARKER} {engine}: the mesh run ran out of time - no "
+                         f"result after {minutes} min. It was dispatched and did not finish in "
+                         "time; the mesh is too big or too slow for the budget.")}
+
+
 RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 
 
@@ -274,7 +297,9 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
 
         result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600)
         if result is None:
-            return _fail(engine, f"no result within {timeout + 600}s deadline")
+            # Reached only once the run is dispatched (a refused or ambiguous submission raised
+            # above), so this is a run out of time, never one that did not start.
+            return _timed_out(engine, timeout + 600, operation)
         # A recognised mesh result, checked rather than assumed. Anything else - a JSON scalar, a
         # list, a document without the verdict - is an exchange we do not understand, and the one
         # safe reading of that is "not collected", so the objects stay for someone who can.

@@ -16,6 +16,15 @@ from typing import Any, Protocol, runtime_checkable
 #: application/, so a constant only application/ owned forced that edge.
 RC_INFRASTRUCTURE = -3
 
+#: A run that WAS dispatched and did not come back within its time limit. Not an outage and not
+#: a crash: the mesh was too big or too slow for the budget, and the one repair is a SMALLER mesh.
+#: It always travels with timed_out=True, which every judge reads before the exit code, and it is
+#: the code a local stage timeout already reports (engines/snappy/parallel_stages). It lives here
+#: beside RC_INFRASTRUCTURE because the two used to be one: a remote run that outlived the
+#: worker's deadline was reported as -3, "the mesh run never started", and the planner was told
+#: to resubmit the same plan - which ran out of time again (job 470c3eb9, 2 x 50 minutes).
+RC_TIMED_OUT = -1
+
 #: A run REFUSED before launch because the written case does not build the patches the user
 #: approved (engines/case_contract.py). Not a mesh verdict and not an outage: nothing ran.
 RC_CASE_CONTRACT = -5
