@@ -529,6 +529,16 @@ def _layers_are_to_blame(state: Mapping) -> bool:
                for c in (facts.get("checks") or []))
 
 
+def _review_failed_only_layers(state: Mapping) -> bool:
+    """The review's failed criteria are ALL layer criteria. Fewer layers can only rescue a review
+    whose every complaint is about the layers: job e0fa8ad0 failed prism coverage AND wake
+    resolution, and was offered fewer layers - which does nothing for the wake."""
+    failed = [str(f.get("axis_key") or "").lower()
+              for f in (state.get("reviewer_axis_findings") or [])
+              if isinstance(f, Mapping) and f.get("passed") is False]
+    return bool(failed) and all("layer" in k for k in failed)
+
+
 def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
     from meshpipeline.engines.registry import get_spec
     lr = layer_request(str(state.get("request_txt", "") or ""),
@@ -537,14 +547,23 @@ def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
     if (failure.cause not in _LAYER_SHAPED or not lr.count or lr.count < 2
             or dm is None or not dm.prism_layers or not _layers_are_to_blame(state)):
         return None
+    if failure.cause == "review" and not _review_failed_only_layers(state):
+        return None
     fewer = max(1, lr.count // 2)
+    # NAME THE CAUSE THAT HAPPENED. A review failure is a mesh that was built and passed every
+    # automatic check; telling that user the mesher "could not finish" it with their layers sent
+    # them to approve a change for a failure that never occurred.
+    why = (f"{engine_label(engine)} built the mesh and it passed every automatic check, but the "
+           f"review found its {lr.count} near-wall layers covered too little of the wall. Fewer "
+           "layers usually cover more of it."
+           if failure.cause == "review" else
+           f"{engine_label(engine)} could not finish this mesh with the {lr.count} near-wall "
+           f"layers you asked for: {failure.reason}. Fewer layers usually fixes this.")
     return {"kind": "fewer_layers", "engine": engine, "same_contract": False,
             "layers_from": lr.count, "layers_to": fewer,
             "changes": [f"{fewer} near-wall layers instead of {lr.count}"],
             "reply": f"use {fewer} layers",
-            "text": (f"{engine_label(engine)} could not finish this mesh with the {lr.count} "
-                     f"near-wall layers you asked for: {failure.reason}. Fewer layers usually "
-                     f"fixes this. I can build the same mesh with {fewer} layers instead - same "
+            "text": (f"{why} I can build the same mesh with {fewer} layers instead - same "
                      f"boundaries, same units. Reply \"use {fewer} layers\" and I will set that "
                      "run up.")}
 
@@ -570,6 +589,10 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
            f"Neither {names[0]} nor {names[1]} could" if len(names) == 2 else
            f"None of {', '.join(names[:-1])} and {names[-1]} could")
     head = f"{who} mesh this shape: {failure.reason}."
+    if failure.cause == "review" and len(names) == 1:
+        # the mesh exists and passed every gate - "could not mesh this shape" says it does not
+        head = (f"{names[0]} built a mesh that passed every automatic check, but it did not pass "
+                "review.")
     if same:
         to = same[0].engine
         why = (f"You chose {engine_label(engine)}, so I did not switch engines without asking."

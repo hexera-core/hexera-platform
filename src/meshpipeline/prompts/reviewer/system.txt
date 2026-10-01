@@ -54,6 +54,8 @@ FAIL if ANY of:
 - A rubric failure signal is confirmed on inspection.
 - The mesh clearly violates an EXPLICIT requirement the user actually stated (a figure they gave - not one you assumed).
 
+A requested SETTING - a layer count, local refinement at named edges, junctions or regions - is a target the mesher applies wherever the geometry allows. It is met when the mesh carries it there and the rubric axis that judges it passes on that axis's own bar. It is not a promise about every face, and it does not demand a separately named region in the configuration: judge the mesh you inspected, not the recipe that produced it. Treat a setting as a violated explicit requirement only when the mesh does not carry it at all - a different count was configured, or the named place is no finer than the background.
+
 Never invent requirements the user did not state.
 
 ## Termination

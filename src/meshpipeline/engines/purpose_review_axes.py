@@ -66,9 +66,21 @@ _EXTERNAL_CFD_AXES: tuple[ReviewAxis, ...] = (
     ),
     ReviewAxis(
         name="wake_resolution", validation_axis="quality",
+        # Judged on the MESH, never on the recipe. Read literally, "refine the wake" became "the
+        # configuration must contain a region named for the wake" - jobs e0fa8ad0, 4d8b318d,
+        # 76ad00ec and 8e8e8309 each failed this axis citing the builder's config, and the same
+        # reviewer passed the same kind of mesh a rebuild later. A config-shaped demand is one no
+        # rebuild of an engine without such a region can meet, so it only burns attempts.
         guidance=("When the request cares about wake behaviour, check the mesh downstream "
                   "of the body is plausibly resolved rather than dropping straight to "
-                  "background coarseness behind it."),
+                  "background coarseness behind it. Judge the MESH in the volume slices, not "
+                  "the recipe: cells that stay fine or intermediate for a stretch behind the "
+                  "body and then coarsen over several graded bands ARE a resolved near wake, "
+                  "whether a dedicated wake region or the refinement around the body put them "
+                  "there. A configuration with no region named for the wake is not by itself a "
+                  "failure, and a request to refine the wake is met by that graded downstream "
+                  "refinement. Fail this axis only when the cells directly behind the body are "
+                  "already background-sized, or the size jumps there in a single step."),
         concern="The wake behind the body is not resolved - drag and separation will be wrong",
         failure_signals=("the wake region left at background coarseness when it matters",
                          "an abrupt refinement drop immediately behind the body"),

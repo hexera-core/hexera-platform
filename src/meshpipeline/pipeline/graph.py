@@ -144,7 +144,14 @@ async def node_review_retry(state: PipelineState) -> dict:
 
 def route_after_builder(
     state: PipelineState,
-) -> Literal["node_executor", "node_failure_handler", "node_infra_retry"]:
+) -> Literal["node_executor", "node_failure_handler", "node_infra_retry", "__end__"]:
+    if state.get("builder_stop"):
+        # The builder built nothing on purpose: another attempt provably cannot change the outcome
+        # (a review's retry wrote exactly the case that review rejected). The verdict already
+        # reached stands - validating and reviewing the same mesh again would only re-roll it.
+        logger.warning("route_after_builder: builder stop %r → END on the verdict already "
+                       "reached - job_id=%s", state.get("builder_stop"), state.get("job_id"))
+        return _END
     api_failure = state.get("api_failure")
     if api_failure:
         from meshpipeline.errors import classify_api_failure
@@ -357,7 +364,7 @@ def build_graph(checkpointer):
         "node_builder",
         route_after_builder,
         {"node_executor": "node_executor", "node_failure_handler": "node_failure_handler",
-         "node_infra_retry": "node_infra_retry"},
+         "node_infra_retry": "node_infra_retry", END: END},
     )
     b.add_edge("node_infra_retry", "node_builder")
     b.add_conditional_edges(

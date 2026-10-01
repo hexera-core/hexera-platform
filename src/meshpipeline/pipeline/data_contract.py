@@ -441,6 +441,9 @@ STATE_FIELDS: dict[str, str] = {
     "effective_mesh_fidelity": "the deterministic operational tier actually used (draft/standard/max); soft engine-owned authoring input only, never a gate or a cell target",
     "mesh_fidelity_source":    "user | default - which of the two produced the effective tier, so a system default is never presented as a user choice",
     "builder_noop_count":    "no-op builder rounds counter (retry-storm guard)",
+    "builder_stop":          "the Builder's declared stop (driver_run.STOP_*): it built nothing because "
+                             "another attempt cannot change the outcome (a review retry that wrote the "
+                             "rejected case again); the graph ends on the verdict already reached",
     "builder_deadline_epoch": "aggregate Builder wall-clock deadline (epoch) across ALL attempts of one run (B-4); set once, carried, never reset",
     "pipeline_deadline_epoch": "TOP-LEVEL pipeline wall-clock deadline (epoch) for the WHOLE job (O-4, from the durable pipeline_deadline_at anchored once at execution start); child budgets cap at what remains; never reset",
     "execution_generation":  "O-3 durable execution generation owning this run; side effects namespace on it (workspace generation_<g>/, artifact binding) so a superseded generation never clobbers the current one",
