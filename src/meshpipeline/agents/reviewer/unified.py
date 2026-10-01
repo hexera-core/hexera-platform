@@ -19,6 +19,7 @@ from meshpipeline.agents.reviewer.loop_policy import (
     MARKER_EXHAUSTED,
     MARKER_STALLED,
     REVIEWER_NO_PROGRESS_THRESHOLD,
+    PictureSink,
     ReviewLoopPolicy,
 )
 from meshpipeline.agents.reviewer.render_runtime import ReviewerRenderRuntime
@@ -317,6 +318,7 @@ async def run_unified_review(
     user_dispute=None,
     dispute_phase: str = "",
     rerun: int = 0,
+    on_picture: PictureSink | None = None,
 ) -> UnifiedReviewOutcome:
     # Part 6: refuse to call the provider when required deterministic evidence is missing. That is
     # an assurance-evidence failure, never provider downtime.
@@ -358,6 +360,7 @@ async def run_unified_review(
     policy = ReviewLoopPolicy(
         plan=plan, ledger=ledger, runtime=runtime, obligations=obligations, inventory=inventory,
         publish=publish, user_dispute=user_dispute, dispute_phase=dispute_phase,
+        on_picture=on_picture,
         limits_=LoopLimits(max_rounds=max_rounds, total_timeout_s=budget,
                            # ACTIVATED: the Builder's production stall threshold, the only new
                            # enforcement in this cutover. Tool-call, category and warning limits

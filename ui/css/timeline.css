@@ -50,9 +50,6 @@
 .e-think .lbl{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);margin-bottom:5px;display:flex;align-items:center;gap:6px}
 .e-think .lbl::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--text-faint)}
 .e-think .body{font-style:italic;color:var(--text-muted);font-size:12.5px;line-height:1.65;white-space:pre-wrap}
-.e-shot{margin:5px 0 9px 18px;animation:rise .3s ease}
-.e-shot img{max-width:300px;width:100%;border-radius:9px;border:1px solid var(--border);cursor:zoom-in;display:block;transition:.15s}
-.e-shot img:hover{border-color:var(--steel-muted);box-shadow:0 6px 18px -8px rgba(0,0,0,.25)}
 
 /* MCP web-search entry (replaces RAG) */
 .e-mcp{display:flex;align-items:center;gap:9px;margin:5px 0;padding:7px 11px;border-radius:9px;

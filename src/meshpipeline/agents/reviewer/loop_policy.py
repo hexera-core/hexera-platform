@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -63,6 +64,10 @@ MARKER_RENDER_UNAVAILABLE = "reviewer_render_unavailable"
 # out of rounds, or the renderer fell over. A transient provider failure is also rerun, but that
 # is decided by its failure class (errors.FailureClass.is_retryable), not listed here.
 RERUNNABLE_MARKERS = frozenset({MARKER_STALLED, MARKER_EXHAUSTED, MARKER_RENDER_UNAVAILABLE})
+
+# Told about each view the viewer actually drew, with the tool result the model receives. The node
+# owns what that means (visual._LivePictures puts it on the live page); the policy only reports it.
+PictureSink = Callable[[Any], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -174,6 +179,7 @@ class ReviewLoopPolicy:
     # ordinary run, and then nothing below changes behaviour.
     user_dispute: Any = None
     dispute_phase: str = ""
+    on_picture: PictureSink | None = None
 
     # attempt-local accumulators
     submissions: int = 0
@@ -237,6 +243,8 @@ class ReviewLoopPolicy:
                                             invocation.tool)
             if _is_refusal(invocation.tool, typed):
                 self._refused_view(typed.content)
+            elif self.on_picture is not None:
+                await self.on_picture(typed.content)
             return ToolOutcome(content=_append_evidence_id(typed.content, eid))
         return ToolOutcome(content=f"Unknown tool: {invocation.tool}", accepted=False)
 
@@ -586,6 +594,7 @@ __all__ = [
     "MARKER_EXHAUSTED",
     "SUBMIT_FINDINGS",
     "AxisDeficits",
+    "PictureSink",
     "ReviewLoopPolicy",
     "compute_deficits",
     "normalize_findings",

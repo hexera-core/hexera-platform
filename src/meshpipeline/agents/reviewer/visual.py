@@ -3,12 +3,13 @@
 # Collaborates with: agents/reviewer/unified.py, render_runtime.py and sandbox/.
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import meshpipeline.agents.reviewer.settings as rcfg
 from meshpipeline.agents.reviewer.context import build_review_prompt
@@ -208,12 +209,13 @@ async def node_reviewer(state: PipelineState) -> dict:
             if not opening.has_geometry:
                 raise ReviewRenderError(ReviewEvidenceFailure.EVIDENCE_MISSING,
                                         "mesh loaded no renderable geometry (0 surface points)")
-            # The reviewer's own inspection render. Safe mode publishes NOTHING for
-            # these - the reader is told an image was produced (as tool activity), not
-            # handed the image - so the bytes never enter the public backlog at all.
-            # Raw mode publishes it, sanitized, through the same event.
-            await _publish_inspection_image(_publish, opening.initial_screenshot_b64,
-                                      op_id=f"opening-render:{_scope}")
+            # The reviewer's own inspection renders - this opening one, then every view it takes
+            # in the loop below. Safe mode publishes NOTHING for these - the reader is told an
+            # image was produced (as tool activity), not handed the image - so the bytes never
+            # enter the public backlog at all. Raw mode publishes them, sanitized, through the
+            # same event.
+            pictures = _LivePictures(_publish, _scope)
+            await pictures.opening(opening.initial_screenshot_b64)
 
             # EXPECTED-TARGET-MISSING pre-check: an engine-RESOLVED obligation that discovery cannot
             # satisfy - whole-kind absence OR partial loss (3 groups expected, 1 discovered) - is
@@ -266,7 +268,8 @@ async def node_reviewer(state: PipelineState) -> dict:
                 pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),
                 job_id=job_id, user_id=inputs.user_id, publish=_publish, obligations=obligations,
                 attempt=inputs.retry_count, rerun=inputs.rerun,
-                user_dispute=inputs.user_dispute, dispute_phase=inputs.dispute_phase)
+                user_dispute=inputs.user_dispute, dispute_phase=inputs.dispute_phase,
+                on_picture=pictures)
     except ReviewRenderError as exc:
         return await _render_failure_result(inputs, exc)
 
@@ -488,3 +491,68 @@ async def _publish_inspection_image(publish: ExecutionEventPublisher | None,
         raise
     except Exception:      # observability never fails a review
         pass
+
+
+# The most pictures one review puts on the live page AFTER its opening one. Each is 100-350 KB of
+# base64 on the live stream, so the cap keeps a runaway review from pushing hundreds of them; a
+# typical review takes about twenty views and repeats several. The model still sees every view.
+LIVE_PICTURES_MAX = 24
+
+
+class _LivePictures:
+    """Puts the opening render, then each view the reviewer takes in its loop, on the live page.
+
+    Every picture goes through `_publish_inspection_image` under its own id, so the same rules
+    hold for all of them: only raw trace mode publishes, a failed publish costs the review nothing,
+    and only a lost claim propagates - as it does for every other event this reviewer publishes.
+    A view identical to one already sent (the reviewer often returns to the same camera) is not
+    sent again and does not count toward the cap: the page would show the same picture twice."""
+
+    def __init__(self, publish: ExecutionEventPublisher | None, scope: str,
+                 limit: int = LIVE_PICTURES_MAX) -> None:
+        self._publish = publish
+        self._scope = scope
+        self._limit = limit
+        self._seen: set[bytes] = set()
+        self.sent = 0
+
+    async def opening(self, image_b64: str | None) -> None:
+        await self._send(image_b64 or "", f"opening-render:{self._scope}")
+
+    async def __call__(self, content: Any) -> None:
+        await self._send(_image_b64(content), "")
+
+    async def _send(self, image_b64: str, op_id: str) -> None:
+        try:
+            if not image_b64:
+                return
+            key = hashlib.sha256(image_b64.encode()).digest()
+            if key in self._seen:
+                return
+            if not op_id:
+                if self.sent >= self._limit:
+                    return
+                self.sent += 1
+                op_id = f"review-render:{self._scope}:{self.sent}"
+            self._seen.add(key)
+            await _publish_inspection_image(self._publish, image_b64, op_id=op_id)
+        except StaleExecutionPublish:
+            raise
+        except Exception:  # noqa: BLE001 - a picture for the page never costs the review
+            logger.debug("Reviewer: live picture not published", exc_info=True)
+
+
+def _image_b64(content: Any) -> str:
+    """The base64 body of the image in a viewer tool's result, or '' when it carries none."""
+    if not isinstance(content, list):
+        return ""
+    for part in content:
+        if not (isinstance(part, dict) and part.get("type") == "image_url"):
+            continue
+        ref = part.get("image_url")
+        url = ref.get("url") if isinstance(ref, dict) else None
+        if isinstance(url, str) and url.startswith("data:image/"):
+            _head, sep, body = url.partition(";base64,")
+            if sep and body:
+                return body
+    return ""
