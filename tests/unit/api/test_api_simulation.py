@@ -107,6 +107,75 @@ async def test_the_reviewers_reasoning_is_served_as_plain_engineering_text(monke
     assert body["reviewer_reasoning"] == "First cell at y⁺ ≈ 80 on `wing_1`, outside 30–300."
 
 
+#: Job 4f18812f's durable record, as stored: the Windsor body, delivered with every gate passed and
+#: its review unfinished (the reviewer's model provider refused the first call).
+_DELIVERED_UNREVIEWED = {
+    "engine": "snappy", "job_id": "4f18812f-d05c-4749-9072-af59c54b3764", "status": "succeeded",
+    "purpose": "external_cfd", "attempts": 1, "owner_id": "owner-1", "failed_gate": "",
+    "attempts_max": 3, "finalized_at": "2026-09-30T22:32:19.046935+00:00",
+    "outcome_code": "success", "failure_cause": "", "retry_skipped": False,
+    "dimensionality": "3D", "failure_detail": "", "required_ready": True, "schema_version": 5,
+    "delivered_types": ["mesh", "mesh_bundle", "viewer_data"], "missing_outputs": [],
+    "executor_success": True, "failure_category": None, "review_execution": "failed_to_complete",
+    "reviewer_verdict": None, "failure_next_step": "", "optional_warnings": [],
+    "patch_contract_ok": True,
+    "requirement_caveats": [{"kind": "review_inconclusive", "marker": "reviewer_non_transient",
+                             "reruns": 0}],
+    "approved_snapshot_id": "", "mesh_fidelity_source": "default",
+    "effective_mesh_fidelity": "standard", "fidelity_policy_version": "3tier-v1",
+    "requested_mesh_fidelity": None}
+
+
+async def _served(monkeypatch, final_result, review):
+    async def _vdata(*_a, **_k):
+        return {"mesh_available": True, "review": review}
+    monkeypatch.setattr(sim_module, "_viewer_data_or_empty", _vdata)
+    job = _make_mock_job()
+    job.final_result = final_result
+    return (await _get(job)).json()
+
+
+async def test_a_delivered_mesh_whose_review_did_not_finish_never_reads_fail(monkeypatch):
+    # the worker's copy of that review said "FAIL" (a non-verdict used to be saved as one); the
+    # durable record says no verdict was reached, and the status must say the same
+    body = await _served(monkeypatch, _DELIVERED_UNREVIEWED,
+                         {"verdict": "FAIL", "reasoning": "", "axis_findings": {}})
+    assert body["status"] == "succeeded"
+    assert body["reviewer_verdict"] is None
+    assert body["reviewer_findings"] == [] and body["reviewer_reasoning"] == ""
+    assert body["final_result"]["reviewer_verdict"] is None
+    assert body["final_message"].startswith("Delivered with a stated caveat")
+    assert "FAIL" not in body["final_message"]
+
+
+async def test_a_retained_earlier_review_is_not_served_as_this_runs_judgement(monkeypatch):
+    stale = {"verdict": "FAIL", "reasoning": "an earlier attempt's words",
+             "axis_findings": [{"axis_key": "boundary_layers", "passed": False}]}
+    body = await _served(monkeypatch, {**_DELIVERED_UNREVIEWED, "review_execution": "not_reached"},
+                         stale)
+    assert body["reviewer_verdict"] is None
+    assert body["reviewer_findings"] == [] and body["reviewer_reasoning"] == ""
+
+
+async def test_a_concluded_review_serves_the_durable_verdict(monkeypatch):
+    passed = {**_DELIVERED_UNREVIEWED, "review_execution": "completed",
+              "reviewer_verdict": "passed", "requirement_caveats": []}
+    body = await _served(monkeypatch, passed, {"verdict": "PASS", "reasoning": "clean"})
+    assert body["reviewer_verdict"] == "PASS" and body["reviewer_reasoning"] == "clean"
+    failed = {**_DELIVERED_UNREVIEWED, "status": "failed", "review_execution": "completed",
+              "reviewer_verdict": "failed", "requirement_caveats": []}
+    body = await _served(monkeypatch, failed, {"verdict": "FAIL", "reasoning": "layers short"})
+    assert body["reviewer_verdict"] == "FAIL" and body["reviewer_reasoning"] == "layers short"
+
+
+def test_before_a_record_exists_only_a_real_verdict_is_served():
+    from meshpipeline.api.v1.simulation import served_review
+    assert served_review(None, {"verdict": "PASS"})["verdict"] == "PASS"
+    assert served_review(None, {"verdict": None, "reasoning": ""})["verdict"] is None
+    assert served_review(None, {"verdict": "maybe"})["verdict"] is None
+    assert served_review(None, {}).get("verdict") is None
+
+
 def test_the_wake_estimate_is_pure_over_the_row_and_zero_hides_it(monkeypatch):
     import meshpipeline.settings.runtime as rtcfg
     from meshpipeline.api.v1.simulation import worker_wake_estimate

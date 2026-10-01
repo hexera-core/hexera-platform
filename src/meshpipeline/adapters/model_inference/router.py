@@ -63,9 +63,11 @@ async def _run(route: ModelRoute, invoke, *, job_id: str) -> ModelRoundResult:
         response, target, attempts = await execute(route, invoke, _classify, job_id=job_id,
                                                    cost_of=_cost_of)
     except RouteExhausted as exc:
+        # `detail` is routing.describe_failure's account - the provider's own words, credentials
+        # masked. The marker below keeps only the category, so this line is where they survive.
         logger.error("Router: %s exhausted its route - category=%s phase=%s provider=%s "
-                     "model=%s attempts=%d job_id=%s", route.role, exc.category.value,
-                     exc.phase.value, exc.provider, exc.model, exc.attempts, job_id)
+                     "model=%s attempts=%d job_id=%s detail=%s", route.role, exc.category.value,
+                     exc.phase.value, exc.provider, exc.model, exc.attempts, job_id, exc.detail)
         return ModelRoundResult(
             failure_marker=marker_for(route.role, exc.category),
             provider=ProviderAttemptInfo(attempts=exc.attempts, provider=exc.provider,

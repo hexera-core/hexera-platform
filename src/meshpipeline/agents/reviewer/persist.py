@@ -69,7 +69,12 @@ def save_review_artifacts(
         _vj_axis_findings  = verdict_result.get("axis_findings", {})   if verdict_result else {}
         _vj_rebuild        = bool(verdict_result.get("rebuild_required", False)) if verdict_result else False
         _vj_reasoning      = verdict_result.get("reasoning", "")       if verdict_result else ""
-        _vj_verdict        = verdict_result.get("verdict", "FAIL")     if verdict_result else "FAIL"
+        # A review that ended WITHOUT a verdict (verdict_result None: it stalled, ran out of time,
+        # or its model provider refused the call) records NO verdict - never "FAIL". This file
+        # feeds the viewer payload's `review` block, and the job status served it as the run's
+        # verdict: job 4f18812f was delivered with its review unfinished and read "FAIL".
+        _given             = verdict_result.get("verdict")             if verdict_result else None
+        _vj_verdict        = _given if _given in ("PASS", "FAIL") else None
         verdict_json = {
             "verdict":          _vj_verdict,
             "patch_checks":     _vj_patch_checks,
