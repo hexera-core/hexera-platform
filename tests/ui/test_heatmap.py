@@ -11,10 +11,10 @@ from tests.foam_fixtures import ROW_SHEAR, ROW_SHEAR_NON_ORTHO_DEG, write_row_of
 pytestmark = pytest.mark.ui
 
 JOB = "heat-job"
-# the calm end of the scale, the flat grey "near the limit only" rests a face at, and the plain
-# view's edge colour - viewer.js's STOPS[0], NEUTRAL and _EDGE
-CALM = [206, 217, 230]
-NEUTRAL = [66, 70, 76]
+# the calm end of the scale, the edge colour while the faces carry it, and the plain view's edge
+# colour - viewer.js's STOPS[0], _EDGE_HEAT and _EDGE
+CALM = [78, 102, 130]
+HEAT_EDGE = [0.19, 0.17, 0.15]
 PLAIN_EDGE = [0.27, 0.25, 0.22]
 
 
@@ -104,34 +104,30 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert up["open"] == pytest.approx([0, 0, 1], abs=1e-9), up
     assert up["fit"] == pytest.approx([0, 0, 1], abs=1e-9), up
 
-    # clicking the non-orthogonality figure colours the mesh, draws the legend, marks the one
-    # face over the bar, and switches the hint to the probe
+    # clicking the non-orthogonality figure colours the mesh, draws the legend, says the one face
+    # over the bar, and switches the hint to the probe
     after = live.evaluate(f"""(() => {{
       document.querySelector('#v-facts-{JOB} .mx-c.live[data-metric=non_ortho]').click();
       const h = window._vdbg['{JOB}:heat'];
       const lg = document.querySelector('#viewer-{JOB} .v-legend');
-      const walk = lg && lg.querySelector('button.v-walk'), only = lg && lg.querySelector('button.v-only');
-      return {{active: h.active(), legend: h.legend(), hotspots: h.hotspots(),
+      return {{active: h.active(), legend: h.legend(), extras: h.extras(),
                legendText: lg ? lg.textContent : '',
+               buttons: lg ? [...lg.querySelectorAll('button')].map(b => b.className) : [],
                hint: document.getElementById('v-hint-{JOB}').textContent,
                onCells: document.querySelectorAll('#v-facts-{JOB} .mx-c.live.on').length,
-               walk: walk ? walk.textContent : null,
-               walkN: walk ? walk.querySelector('.v-walk-n').textContent : null,
-               only: only ? only.textContent : null, calm: h.colorOf('inlet', 0),
-               edges: h.edges()}};
+               calm: h.colorOf('inlet', 0), edges: h.edges()}};
     }})()""")
     assert after["active"] == "non_ortho" and after["legend"] is True
-    assert after["hotspots"] == 1, "exactly one face is over the bar"
     assert "65.0°" in after["legendText"] and "1 face over" in after["legendText"]
     assert "Click a face" in after["hint"] and after["onCells"] == 1
-    # the calm end reads as a lit surface, not a dark one; the cells stay in view at every zoom,
-    # their edges in a faint colour a shade off the faces rather than the plain view's dark line
+    # the colour is the surface's own: nothing is drawn on top of the mesh - no markers, no walker,
+    # no grey-out switch - and the scale's only control is the one that turns it off
+    assert after["extras"] == 0, after
+    assert after["buttons"] == ["x"], after
+    # the console's original deep-steel calm end, and dark edges so every cell reads under the data
     assert after["calm"] == CALM, after
     assert after["edges"]["on"] is True, after
-    assert after["edges"]["color"] != pytest.approx(PLAIN_EDGE), after
-    # the walker is on the scale, and so is the grey-out: a face sits past 80% of the bar
-    assert after["walk"].startswith("Worst spot") and after["walkN"] == "0 / 1", after
-    assert after["only"] == "Near the limit only", after
+    assert after["edges"]["color"] == pytest.approx(HEAT_EDGE), after
 
     # a probe on the outlet (cell 2) reads the sheared angle and says it is over the bar; the
     # inlet (cell 0) reads zero. The reason names the cell's shape.
@@ -160,42 +156,6 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     assert marked["markers"] == 1 and marked["probeGone"]
     assert "1 mark" in marked["submit"]
 
-    # WORST SPOT flies the camera to the one hotspot (an inner face, so its own reading is shown),
-    # animated rather than jumped, and lights it with the ring
-    walked = live.evaluate(f"""(async () => {{
-      const h = window._vdbg['{JOB}:heat'];
-      const lg = document.querySelector('#viewer-{JOB} .v-legend');
-      lg.querySelector('button.v-walk').click();
-      const flying = h.flying();
-      await h.settled();
-      const f = h.focus(), fp = h.focal();
-      return {{flying, f, dist: Math.hypot(fp[0] - f.x, fp[1] - f.y, fp[2] - f.z),
-               n: lg.querySelector('.v-walk-n').textContent, ring: h.ring(),
-               probe: (document.querySelector('#viewer-{JOB} .v-probe') || {{}}).textContent || '',
-               last: h.last()}};
-    }})()""", timeout=30)
-    assert walked["flying"] is True, "the camera glides to the spot; it does not jump"
-    assert walked["n"] == "1 / 1" and walked["f"]["index"] == 0 and walked["f"]["over"] is True, walked
-    assert walked["dist"] < 1e-6 and walked["ring"] == 3, walked
-    assert "worst spot 1 / 1" in walked["probe"] and "over the 65.0° limit" in walked["probe"], walked
-    assert walked["last"]["values"]["non_ortho"] == pytest.approx(ROW_SHEAR_NON_ORTHO_DEG, abs=0.1)
-
-    # NEAR THE LIMIT ONLY: the inlet (cell 0, 0 degrees) goes flat grey, the outlet (over) keeps
-    # its colour; switching it off gives the colours back
-    only = live.evaluate(f"""(() => {{
-      const h = window._vdbg['{JOB}:heat'];
-      const btn = document.querySelector('#viewer-{JOB} .v-legend button.v-only');
-      const before = h.colorOf('inlet', 0);
-      btn.click();
-      const r = {{on: h.nearOnly(), pressed: btn.getAttribute('aria-pressed'), before,
-                  inlet: h.colorOf('inlet', 0), outlet: h.colorOf('outlet', 0)}};
-      r.back = h.only(false); r.after = h.colorOf('inlet', 0);
-      return r;
-    }})()""")
-    assert only["on"] is True and only["pressed"] == "true", only
-    assert only["inlet"] == NEUTRAL and only["before"] == CALM and only["outlet"] != NEUTRAL, only
-    assert only["back"] is False and only["after"] == CALM, only
-
     # aspect ratio: cell 0 is a unit cube and reads 1.00; checkMesh's bar (1000) is far above
     # the mesh's range, so the scale spans the mesh's own values and no limit tick is drawn
     ar = live.evaluate(f"""(() => {{
@@ -221,58 +181,39 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
     }})()""", timeout=30)
     assert exported["present"] and exported["hits"] == 1 and exported["id"] == f"v-vtk-{JOB}", exported
 
-    # turning it off restores the plain view: no legend, no hotspots, no ring, no active metric,
-    # the property colours back and the edges drawn as the parts panel draws them
+    # turning it off restores the plain view: no legend, no active metric, nothing drawn over the
+    # mesh, the property colours back and the edges drawn as the parts panel draws them
     off = live.evaluate(f"""(() => {{
-      window._vdbg['{JOB}:heat'].walk();
       window._vdbg['{JOB}:heat'].set(null);
       const h = window._vdbg['{JOB}:heat'];
-      return {{active: h.active(), legend: h.legend(), hotspots: h.hotspots(), ring: h.ring(),
-               flying: h.flying(), colour: h.colorOf('inlet', 0), edges: h.edges(),
+      return {{active: h.active(), legend: h.legend(), colour: h.colorOf('inlet', 0), edges: h.edges(),
                hint: document.getElementById('v-hint-{JOB}').textContent}};
     }})()""")
-    assert off["active"] is None and off["legend"] is False and off["hotspots"] == 0
-    assert off["ring"] == 0 and off["flying"] is False and off["colour"] is None, off
+    assert off["active"] is None and off["legend"] is False and off["colour"] is None, off
     assert off["edges"]["on"] is True and off["edges"]["color"] == pytest.approx(PLAIN_EDGE), off
     assert "Rotate: drag" in off["hint"]
     assert_clean(live, "the viewer with the heatmap")
 
 
-def test_the_worst_spot_walker_works_on_a_mesh_that_passes(live, tmp_path):
-    # A good mesh has no hotspot at all - the payload's list is the faces OVER the bar. The walker
-    # still has somewhere to go: the drawn faces themselves, worst first.
+def test_a_mesh_that_passes_reads_calm_with_nothing_drawn_on_it(live, tmp_path):
+    # A good mesh has no hotspot at all - the payload's list is the faces OVER the bar. Its heatmap
+    # is the calm colour on every face, the dark cell edges over it, and nothing else.
     payload = _payload(tmp_path, shear=0.0)
     assert not [h for h in payload["quality_fields"]["hotspots"] if h["metric"] == "non_ortho"]
     _open(live, payload, "good-job")
-    state = live.evaluate("""(async () => {
+    state = live.evaluate("""(() => {
       document.querySelector('#v-facts-good-job .mx-c.live[data-metric=non_ortho]').click();
       const h = window._vdbg['good-job:heat'];
       const lg = document.querySelector('#viewer-good-job .v-legend');
-      const n0 = lg.querySelector('.v-walk-n').textContent;
-      lg.querySelector('button.v-walk').click();
-      await h.settled();
-      const f = h.focus(), fp = h.focal();
-      return {n0, f, dist: Math.hypot(fp[0] - f.x, fp[1] - f.y, fp[2] - f.z),
-              n1: lg.querySelector('.v-walk-n').textContent, spots: h.spots().length,
-              only: !!lg.querySelector('button.v-only'), text: lg.textContent, ring: h.ring(),
-              probe: (document.querySelector('#viewer-good-job .v-probe') || {}).textContent || '',
-              last: h.last(), calm: h.colorOf('inlet', 0)};
-    })()""", timeout=30)
-    assert state["spots"] >= 1 and state["n0"] == f"0 / {state['spots']}", state
-    assert state["n1"] == f"1 / {state['spots']}" and state["dist"] < 1e-6 and state["ring"] == 3, state
-    # the spot is a drawn face, so the readout is the same one a click on that face opens
-    assert state["f"]["face"] is not None and state["f"]["over"] is False, state
-    assert "worst spot 1 /" in state["probe"] and "under the 65.0° limit" in state["probe"], state
-    assert state["last"]["values"]["non_ortho"] == pytest.approx(0.0, abs=1e-5)
-    # nothing is near the bar, so there is nothing to grey out; the part reads calm
-    assert "none over" in state["text"] and state["only"] is False, state
-    assert state["calm"] == CALM
-    # the hook drives the same walker the button does, and wraps round
-    again = live.evaluate("""(() => { const h = window._vdbg['good-job:heat'];
-      const n = h.spots().length; let f = null; for (let i = 0; i < n; i++) f = h.walk();
-      return {index: f.index, n}; })()""")
-    assert again["index"] == 0, again
-    assert_clean(live, "the walker on a mesh that passes")
+      return {text: lg.textContent, extras: h.extras(), calm: h.colorOf('inlet', 0),
+              outlet: h.colorOf('outlet', 0), edges: h.edges(),
+              buttons: [...lg.querySelectorAll('button')].map(b => b.className)};
+    })()""")
+    assert "none over" in state["text"] and state["buttons"] == ["x"], state
+    assert state["extras"] == 0, state
+    assert state["calm"] == CALM and state["outlet"] == CALM, state
+    assert state["edges"]["on"] is True and state["edges"]["color"] == pytest.approx(HEAT_EDGE), state
+    assert_clean(live, "the heatmap on a mesh that passes")
 
 
 def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_path):
