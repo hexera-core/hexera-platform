@@ -199,6 +199,13 @@ and nothing is charged - only a succeeded job ever is.
 - Idempotent: cancelling a cancelled job answers 200 with `already_cancelled: true`.
 - Refused with 409 once the job succeeded or failed - a delivered mesh or a recorded failure is not
   something a cancel may undo.
+- A Cloud Run mesh execution already running is stopped by the worker waiting on it: that worker
+  checks every 30 seconds whether the job is still its own, and on a cancel it calls the Cloud Run
+  executions cancel API and stops waiting (`application/native_submission.py`,
+  `adapters/mesh_execution/cloud_run_client.py`). The same happens when the worker is shutting down
+  and hands the job back, and when it gives up at its own deadline (the mesh timeout plus 10
+  minutes). The cancel request never waits on this, and a Cloud Run cancel that fails is logged and
+  leaves the execution to finish on its own, unread and uncharged.
 - Known limit: the worker keeps computing until its next fence check (a checkpoint write, the
-  native accept, delivery), and a Cloud Run mesh execution already started is not stopped. Its
-  result is simply never delivered and never charged.
+  native accept, delivery). A worker that died outright (its VM gone without a shutdown) cannot
+  cancel anything, so an execution it started runs to its own end.

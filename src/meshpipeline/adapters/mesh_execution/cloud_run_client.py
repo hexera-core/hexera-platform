@@ -1,5 +1,5 @@
 # Responsibility: Run a mesh job on Cloud Run and bring its workspace back.
-# Owns: job dispatch, the configuration check, the returned Operation reference, and fail-closed archive extraction.
+# Owns: job dispatch, the configuration check, the returned Operation reference, cancelling a run nobody will collect, and fail-closed archive extraction.
 # Boundaries: it moves work and results; whether a submission may happen at all is decided above it.
 # Collaborates with: exchange_coordinates.py to name its objects; native_submission.py alone may submit through it.
 from __future__ import annotations
@@ -17,7 +17,11 @@ import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
-from meshpipeline.contracts.mesh_execution import SubmissionIndeterminate
+from meshpipeline.contracts.mesh_execution import (
+    RC_INFRASTRUCTURE,
+    SubmissionIndeterminate,
+    abandonment_reason,
+)
 from meshpipeline.settings.env import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -101,12 +105,21 @@ _UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
 _UPLOAD_TIMEOUT_S = 300
 
 
+class _Abandoned(Exception):
+    """The run stopped waiting before the remote finished; the message says why."""
+
+
 def _poll_gcs_json(bucket, key: str, deadline_s: float) -> dict | None:
     blob = bucket.blob(key)
     start = time.time()
     while time.time() - start < deadline_s:
         if blob.exists():
             return json.loads(blob.download_as_bytes())
+        # Asked between polls, AFTER the result check: a result that has already landed is
+        # collected, never thrown away over a cancel that came a moment too late.
+        reason = abandonment_reason()
+        if reason:
+            raise _Abandoned(reason)
         time.sleep(10)
     return None
 
@@ -124,6 +137,8 @@ def _access_token() -> str:
 #: does not exist yet.
 _OPERATION_NAME = re.compile(
     r"\Aprojects/[^/]+/locations/[^/]+/operations/[A-Za-z0-9._~-]+\Z")
+_EXECUTION_NAME = re.compile(
+    r"\Aprojects/[^/]+/locations/[^/]+/jobs/[^/]+/executions/[A-Za-z0-9._~-]+\Z")
 
 
 @dataclass(frozen=True)
@@ -131,10 +146,21 @@ class CloudRunOperationReference:
 
     #: `projects/{p}/locations/{l}/operations/{id}` - the only thing a later reconciliation has
     operation_name: str
+    #: `projects/{p}/locations/{l}/jobs/{j}/executions/{e}` - what a cancel names, or "" when the
+    #: acceptance did not say. RunJob's operation metadata IS the Execution, so the run request's
+    #: own answer carries it; reading it there keeps the cancel to `run.executions.cancel`, which
+    #: the narrowest invoker role (roles/run.jobsExecutorWithOverrides, apply-iam.sh) holds -
+    #: looking the operation up later would need `run.operations.get`, which that role does not.
+    execution_name: str = ""
 
     @property
     def location(self) -> str:
         return self.operation_name.split("/")[3]
+
+    @property
+    def execution_id(self) -> str:
+        # the short name an operator types: `gcloud run jobs executions describe <this>`
+        return self.execution_name.rsplit("/", 1)[-1] if self.execution_name else ""
 
 
 def _operation_reference(response, *, engine: str) -> CloudRunOperationReference:
@@ -156,7 +182,12 @@ def _operation_reference(response, *, engine: str) -> CloudRunOperationReference
             f"{engine}: the run request returned an operation name that is not a Cloud Run "
             "long-running operation resource; the provider may have accepted it")
     expected_location = str(provcfg.GCP_REGION or "").strip()
-    reference = CloudRunOperationReference(name)
+    # Optional, never a reason to doubt the acceptance: the operation name alone proves it, so a
+    # missing or unrecognised metadata block only means a cancel will have to look the run up.
+    meta = body.get("metadata") if isinstance(body, dict) else None
+    execution = str(meta.get("name", "") or "").strip() if isinstance(meta, dict) else ""
+    reference = CloudRunOperationReference(
+        name, execution if _EXECUTION_NAME.match(execution) else "")
     # The project segment is deliberately NOT compared: the API may canonicalise a project id to
     # its numeric project number, so an equality check there would reject valid acceptances.
     if expected_location and reference.location != expected_location:
@@ -190,6 +221,53 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
     return _operation_reference(resp, engine=engine)
 
 
+def _execution_of(operation: CloudRunOperationReference, auth: dict) -> str:
+    # The fallback for an acceptance that did not name its execution: the operation's metadata is
+    # the Execution. Needs run.operations.get, which the narrowest invoker role lacks - so a 403
+    # here is expected there, and is reported as "not cancelled" like any other refusal.
+    import requests as _rq
+    resp = _rq.get(f"https://run.googleapis.com/v2/{operation.operation_name}",
+                   headers=auth, timeout=30)
+    resp.raise_for_status()
+    meta = (resp.json() or {}).get("metadata")
+    name = str(meta.get("name", "") or "").strip() if isinstance(meta, dict) else ""
+    return name if _EXECUTION_NAME.match(name) else ""
+
+
+def cancel_execution(operation: CloudRunOperationReference, *, engine: str, why: str) -> bool:
+    """Stop a Cloud Run execution whose result nobody will collect. True when Cloud Run took the
+    cancel.
+
+    BEST EFFORT, and it never raises: by the time this is called the run has already been given
+    up (cancelled by its owner, handed back, or past its deadline), and failing that over a cancel
+    that did not land would only lose the reason it was given up. A cancel that does not land
+    leaves the execution to finish on its own, which is what happened before this existed - so it
+    is logged loudly enough to find, never escalated. The provider's message is never logged; the
+    status code and the execution's short name are what an operator acts on."""
+    import requests as _rq
+    try:
+        auth = {"Authorization": f"Bearer {_access_token()}"}
+        execution = operation.execution_name or _execution_of(operation, auth)
+        if not execution:
+            logger.warning("Cloud Run execution for %s NOT cancelled (%s): the run's execution "
+                           "name is unknown; it finishes on its own", engine, why)
+            return False
+        resp = _rq.post(f"https://run.googleapis.com/v2/{execution}:cancel", json={},
+                        headers=auth, timeout=30)
+    except Exception as exc:  # noqa: BLE001 - see the docstring: best effort, never raised
+        logger.warning("Cloud Run execution %s for %s NOT cancelled (%s): %s; it finishes on its "
+                       "own", operation.execution_id or "(unnamed)", engine, why,
+                       type(exc).__name__)
+        return False
+    short = execution.rsplit("/", 1)[-1]
+    if 200 <= resp.status_code < 300:
+        logger.warning("Cloud Run execution %s for %s cancelled: %s", short, engine, why)
+        return True
+    logger.warning("Cloud Run execution %s for %s NOT cancelled (%s): HTTP %s; it finishes on its "
+                   "own", short, engine, why, resp.status_code)
+    return False
+
+
 def _fail(engine: str, detail: str) -> dict:
     logger.error("Cloud Run mesh FAILED for %s: %s", engine, detail)
     return {"rc": -3, "timed_out": False,
@@ -197,6 +275,7 @@ def _fail(engine: str, detail: str) -> dict:
 
 
 RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
+ABANDONED_MARKER = "[CLOUD_RUN_ABANDONED]"
 
 
 def _uncollected(engine: str, result: dict, exc: BaseException) -> dict:
@@ -267,6 +346,10 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             in_blob = bucket.blob(in_key, chunk_size=_UPLOAD_CHUNK_BYTES)
             in_blob.upload_from_string(_tar_dir(ws), content_type="application/gzip",
                                        timeout=_UPLOAD_TIMEOUT_S)
+            # A large upload takes minutes; a run given up meanwhile starts nothing.
+            reason = abandonment_reason()
+            if reason:
+                raise _Abandoned(reason)
             operation = _trigger_job(
                 input_uri=f"gs://{bucket_name}/{in_key}",
                 output_uri=f"gs://{bucket_name}/{out_key}",
@@ -274,6 +357,12 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
 
         result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600)
         if result is None:
+            # THIS WORKER'S deadline, not the execution's: the job's own task timeout is set at
+            # deploy and may run well past it. Nobody reads a result after this return, so the
+            # execution is stopped rather than left running unread.
+            if operation is not None:
+                cancel_execution(operation, engine=engine,
+                                 why=f"no result within the {timeout + 600}s deadline")
             return _fail(engine, f"no result within {timeout + 600}s deadline")
         # A recognised mesh result, checked rather than assumed. Anything else - a JSON scalar, a
         # list, a document without the verdict - is an exchange we do not understand, and the one
@@ -299,6 +388,16 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # An ambiguous submission is NOT a mesh failure: only the caller holding the claim may
         # decide what to record, and it must never read this as "nothing was submitted".
         raise
+    except _Abandoned as stop:
+        # GIVEN UP, not failed: the job was cancelled or moved, or the worker is going away. Not
+        # a mesh verdict, so the infrastructure code - and the execution it was waiting on is
+        # stopped, because nobody will collect it. The exchange objects stay, like any run that
+        # was not collected; a submission given up before its trigger has no execution to stop.
+        logger.warning("Cloud Run mesh for %s given up before it finished: %s", engine, stop)
+        if operation is not None:
+            cancel_execution(operation, engine=engine, why=str(stop))
+        return {"rc": RC_INFRASTRUCTURE, "timed_out": False,
+                "log_tail": f"{ABANDONED_MARKER} {engine}: {stop}"}
     except Exception as exc:  # noqa: BLE001 - any failure is a LOUD mesh failure, not a local run
         if isinstance(result, dict) and "rc" in result:
             return _uncollected(engine, result, exc)
