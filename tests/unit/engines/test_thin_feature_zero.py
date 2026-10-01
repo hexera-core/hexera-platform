@@ -111,6 +111,15 @@ def test_no_planned_cell_is_no_refinement(cell):
     assert thin_refinement_boxes(_plate(0.003), cell_m=cell) == []
 
 
+def test_non_finite_geometry_is_no_measurement_never_a_thickness():
+    bad = np.full((4, 3, 3), np.nan)
+    assert thin_refinement_boxes(bad, cell_m=0.0044) == []
+    # a few broken triangles beside a real plate: the plate is still found, the NaNs read nothing
+    boxes = thin_refinement_boxes(np.concatenate([_plate(0.003), bad]), cell_m=0.0044)
+    assert boxes and all(math.isfinite(b["thinnest_m"]) and b["thinnest_m"] > 0 for b in boxes)
+    assert min(b["thinnest_m"] for b in boxes) == pytest.approx(0.003, rel=1e-6)
+
+
 def test_the_result_is_still_a_plain_list_of_boxes():
     boxes = thin_refinement_boxes(_plate(0.003), cell_m=0.0044)
     assert isinstance(boxes, list) and isinstance(boxes, ThinRegions)

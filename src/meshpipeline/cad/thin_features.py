@@ -285,8 +285,14 @@ def _tessellation_sag(T: np.ndarray) -> np.ndarray:
     sag = np.zeros(n)
     if n < 2:
         return sag
+    finite = np.isfinite(T).all(axis=(1, 2))
+    if not bool(finite.all()):
+        # a broken facet measures nothing (the probe reads it +inf too); judge the rest alone
+        if int(finite.sum()) >= 2:
+            sag[finite] = _tessellation_sag(T[finite])
+        return sag
     V = T.reshape(-1, 3)
-    scale = float(np.abs(V[np.isfinite(V).all(axis=1)]).max()) if np.isfinite(V).any() else 0.0
+    scale = float(np.abs(V).max())
     if not scale > 0.0:
         return sag
     # weld coincident corners (STL repeats them per facet) so facets sharing an edge can be found
