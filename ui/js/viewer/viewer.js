@@ -16,7 +16,7 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
-import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml } from "./view_controls.js";
+import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -227,8 +227,8 @@ function initViewer(job,surf,uiCfg){
 
   let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
   // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
-  // part keeps its selection edge
-  let repaintParts=null;
+  // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
+  let repaintParts=null,onPartsPainted=null;
   const cam=ren.getActiveCamera();
   // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
   // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
@@ -436,6 +436,7 @@ function initViewer(job,surf,uiCfg){
       });
       note.innerHTML=inspect(selPart);
       wire();
+      if(onPartsPainted)onPartsPainted();
     }
     repaintParts=paint;
 
@@ -914,24 +915,375 @@ function initViewer(job,surf,uiCfg){
       return {color,hi,lo,open,css,limitPct:pc(lim)};}
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
 
-    let legend=null,probeEl=null;
+    /* PROBLEM AREAS. The faces over the bar, and those near it (80% of it and up), gathered into
+       places, so a mesh with three bad corners reads as three areas and not as a few hundred faces.
+       The worst face left seeds an area and every bad face within a radius of it joins: ten typical
+       faces of what is on screen, or 2% of its size, whichever is larger - so the same rule groups a
+       nozzle's lip and an airliner's wing root. A grid of that radius keeps it one pass however many
+       faces there are, and seeding worst first puts the list in order as it is built. A payload
+       hotspot (a face over the bar) that no drawn area holds - a bad cell inside the volume - still
+       makes an area of its own. Nothing here is drawn on the mesh: a click glides the camera there
+       and the heatmap's own colour shows the cells. */
+    const NEAR=0.8,SHOW_AREAS=5,MAX_AREAS=200;
+    const NEUTRAL=[84,87,92];        // "only bad cells": the flat grey every face below 80% rests in
+    const shown=()=>entries.filter(en=>en.actor.getVisibility());
+    const shownSig=()=>shown().map(en=>en.patch).join('|')+'#'+(upSel?upSel.value:'');
+    const faceSize=(en,cid)=>{const v=newell(en,cid);return Math.sqrt(0.5*Math.hypot(v[0],v[1],v[2]));};
+    const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+    const unit=v=>{const l=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/l,v[1]/l,v[2]/l];};
+    const tanHalf=()=>Math.tan(cam.getViewAngle()*Math.PI/360);
+    function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
+      return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
+    function unionBounds(list){if(!list.length)return null;
+      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      list.forEach(en=>{const e=en.pd.getBounds();
+        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],e[k]);b[k+1]=Math.max(b[k+1],e[k+1]);}});
+      return b;}
+    function diagOf(list){const b=unionBounds(list);if(!b)return diag;
+      return Math.max(Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]),1e-9);}
+    function faceTyp(vis){            // the median drawn face of the parts on screen, sampled
+      const tot=vis.reduce((a,en)=>a+en.nCells,0),step=Math.max(1,Math.floor(tot/3000)),s=[];
+      vis.forEach(en=>{for(let c=0;c<en.nCells;c+=step)s.push(faceSize(en,c));});
+      s.sort((a,b)=>a-b);
+      return (s.length&&s[s.length>>1])||(stats&&stats.typ)||diag*0.005;}
+    const roleOf=en=>(((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'')+' '+en.patch;
+    const isIn=en=>/inlet|inflow/i.test(roleOf(en)),isOut=en=>/outlet|outflow|exit/i.test(roleOf(en));
+
+    /* WHERE IT IS, in words a person would use, read from the drawn parts' own box and the up axis
+       the viewer is using - nothing is guessed past what the case says. Ahead and behind are said
+       only when the case names an inlet and an outlet: between them the walls of an internal flow
+       read "inlet end" / "outlet end", and a body standing in the stream reads "front" (toward the
+       inlet) / "rear". "tip" is the far end of something only a small share of the part reaches - a
+       wing tip, a fin top, a probe's point. "upper" / "lower" are thirds along the up axis. */
+    function placeFrame(vis){
+      const box=en=>/farfield|freestream|symmetry/i.test(roleOf(en));
+      let ref=vis.filter(en=>!isIn(en)&&!isOut(en)&&!box(en));if(!ref.length)ref=vis;
+      const tot=ref.reduce((a,en)=>a+en.pts.length/3,0),step=Math.max(1,Math.floor(tot/20000)),P=[];
+      ref.forEach(en=>{const n=en.pts.length/3;for(let i=0;i<n;i+=step)P.push([en.pts[i*3],en.pts[i*3+1],en.pts[i*3+2]]);});
+      const range=ax=>{let lo=Infinity,hi=-Infinity;P.forEach(p=>{const d=dot(p,ax);if(d<lo)lo=d;if(d>hi)hi=d;});
+        return [lo,hi];};
+      const mid=list=>{const b=unionBounds(list);return [(b[0]+b[1])/2,(b[2]+b[3])/2,(b[4]+b[5])/2];};
+      const up=upVector(upSel?upSel.value:'+z');
+      const ins=entries.filter(isIn),outs=entries.filter(isOut);
+      let stream=null,internal=false,stR=null;
+      if(ins.length&&outs.length&&P.length){const a=mid(ins),b=mid(outs),d=[b[0]-a[0],b[1]-a[1],b[2]-a[2]];
+        if(Math.hypot(d[0],d[1],d[2])>0){stream=unit(d);stR=range(stream);const span=(stR[1]-stR[0])||1;
+          // the inlet and the outlet close the walls' own ends: the flow runs inside them
+          internal=dot(a,stream)>=stR[0]-0.15*span&&dot(b,stream)<=stR[1]+0.15*span;}}
+      const axes=[[1,0,0],[0,1,0],[0,0,1]].filter(ax=>!stream||Math.abs(dot(ax,stream))<0.9)
+        .map(ax=>({ax,r:range(ax),isUp:Math.abs(dot(ax,up))>0.9}));
+      const big=Math.max(1e-30,...axes.map(a=>a.r[1]-a.r[0]),stR?stR[1]-stR[0]:0);
+      return {P,up,upR:P.length?range(up):null,stream,stR,internal,axes,big};}
+    function hintOf(c,F,nrm,port){
+      if(!F.P.length)return '';
+      const t=(r,v)=>(v-r[0])/((r[1]-r[0])||1);
+      const words=[];
+      if(F.stream&&!port){const s=t(F.stR,dot(c,F.stream));
+        if(s<0.3)words.push(F.internal?'inlet end':'front');
+        else if(s>0.7)words.push(F.internal?'outlet end':'rear');}
+      let tipUp=false;
+      for(const a of F.axes){const s=t(a.r,dot(c,a.ax));if(s>0.05&&s<0.95)continue;
+        // the bottom of the part along the up axis is where it rests, not a tip
+        if(a.isUp&&(dot(a.ax,F.up)>0?s<=0.08:s>=0.92))continue;
+        const span=(a.r[1]-a.r[0])||1,hi=s>=0.92,cut=hi?a.r[1]-0.08*span:a.r[0]+0.08*span;
+        let n=0;F.P.forEach(p=>{const d=dot(p,a.ax);if(hi?d>=cut:d<=cut)n++;});
+        if(n<0.04*F.P.length){words.push('tip');tipUp=a.isUp;break;}}
+      // a level patch says which way it faces; anything else, which third of the height it is in
+      const fu=nrm?dot(nrm,F.up):0;
+      if(Math.abs(fu)>0.85)words.push(fu>0?'top side':'underside');
+      // (a part with no height to speak of - a flat plate - has no upper or lower)
+      else if(!tipUp&&F.upR&&F.upR[1]-F.upR[0]>0.05*F.big){const s=t(F.upR,dot(c,F.up));
+        if(s>0.67)words.push('upper');else if(s<0.33)words.push('lower');}
+      return words.slice(0,2).join(' · ')||'middle';}
+
+    function buildAreas(m){
+      const md=qf.metrics[m],lim=md.limit,out={list:[],total:0,offScreen:false};
+      if(!(lim>0))return out;
+      const cut=NEAR*lim,vis=shown(),vi=new Set(vis);
+      // a part that is not on screen still decides whether the whole mesh is clear
+      entries.forEach(en=>{if(vi.has(en)||out.offScreen)return;const v=en.q[m];
+        if(v)for(let i=0;i<v.length;i++)if(v[i]>=cut){out.offScreen=true;break;}});
+      const onScreen=h=>!h.patch||vis.some(en=>en.patch===h.patch);
+      const hot=(qf.hotspots||[]).filter(h=>h.metric===m&&h.value>lim);
+      if(hot.some(h=>!onScreen(h)))out.offScreen=true;
+      const hs=hot.filter(onScreen);
+      let n=0;vis.forEach(en=>{const v=en.q[m];if(v)for(let i=0;i<v.length;i++)if(v[i]>=cut)n++;});
+      if(!n&&!hs.length)return out;
+      const typ=faceTyp(vis),R=Math.max(10*typ,0.02*diagOf(vis)),R2=R*R;
+      // the candidates, flat: value, part, face, centre
+      const val=new Float32Array(n),ent=new Uint16Array(n),cid=new Uint32Array(n),pos=new Float64Array(n*3);
+      let k=0;vis.forEach(en=>{const v=en.q[m];if(!v)return;const ei=entries.indexOf(en);
+        for(let i=0;i<v.length;i++)if(v[i]>=cut){const p=cellCenter(en,i);
+          val[k]=v[i];ent[k]=ei;cid[k]=i;pos[k*3]=p[0];pos[k*3+1]=p[1];pos[k*3+2]=p[2];k++;}});
+      // a grid of the radius: an area's members all sit in the 27 grid cells around its seed
+      const b=unionBounds(vis)||[0,0,0,0,0,0];
+      const cellOf=(x,y,z)=>[Math.floor((x-b[0])/R),Math.floor((y-b[2])/R),Math.floor((z-b[4])/R)];
+      const key=(i,j,l)=>((i+2)*4099+(j+2))*4099+(l+2);
+      const grid=new Map();
+      for(let q=0;q<n;q++){const g=cellOf(pos[q*3],pos[q*3+1],pos[q*3+2]),kk=key(g[0],g[1],g[2]);
+        let a=grid.get(kk);if(!a){a=[];grid.set(kk,a);}a.push(q);}
+      const order=Array.from({length:n},(_,q)=>q).sort((a,c)=>val[c]-val[a]);
+      const taken=new Uint8Array(n),areas=[];
+      const fresh=(seed,worst,inside)=>({seed,worst,over:0,near:0,hot:0,sum:[0,0,0],nrm:[0,0,0],nabs:0,
+                                         firm:!inside,sizes:[],by:{},m:[]});
+      for(const s of order){if(taken[s])continue;if(areas.length>=MAX_AREAS)break;
+        const sx=pos[s*3],sy=pos[s*3+1],sz=pos[s*3+2],g=cellOf(sx,sy,sz),a=fresh([sx,sy,sz],val[s],false);
+        for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)for(let l=-1;l<=1;l++){
+          const cell=grid.get(key(g[0]+i,g[1]+j,g[2]+l));if(!cell)continue;
+          for(const q of cell){if(taken[q])continue;
+            const dx=pos[q*3]-sx,dy=pos[q*3+1]-sy,dz=pos[q*3+2]-sz;if(dx*dx+dy*dy+dz*dz>R2)continue;
+            taken[q]=1;a.m.push(q);
+            if(val[q]>lim)a.over++;else a.near++;
+            a.sum[0]+=pos[q*3];a.sum[1]+=pos[q*3+1];a.sum[2]+=pos[q*3+2];
+            const en=entries[ent[q]],nv=newell(en,cid[q]),sg=outSign(en),nm=Math.hypot(nv[0],nv[1],nv[2]);
+            a.nrm[0]+=nv[0]*sg;a.nrm[1]+=nv[1]*sg;a.nrm[2]+=nv[2]*sg;a.nabs+=nm;
+            if(!en.outFirm)a.firm=false;
+            if(a.sizes.length<400)a.sizes.push(Math.sqrt(0.5*nm));
+            a.by[en.patch]=(a.by[en.patch]||0)+1;}}
+        areas.push(a);}
+      // the hotspots: one inside a drawn area tells it its worst cell; the rest make their own
+      const loose=[];
+      hs.forEach(h=>{
+        const a=areas.find(a=>(h.x-a.seed[0])**2+(h.y-a.seed[1])**2+(h.z-a.seed[2])**2<=R2*1.44);
+        if(!a){loose.push(h);return;}
+        if(h.value>a.worst)a.worst=h.value;
+        a.hot++;});
+      areas.forEach(a=>{if(a.worst>lim&&!a.over)a.over=a.hot||1;});
+      loose.sort((x,y)=>y.value-x.value);
+      const used=new Uint8Array(loose.length);
+      loose.forEach((h,i)=>{if(used[i]||areas.length>=MAX_AREAS)return;
+        const a=fresh([h.x,h.y,h.z],h.value,true);
+        loose.forEach((g,j)=>{if(used[j])return;
+          if((g.x-h.x)**2+(g.y-h.y)**2+(g.z-h.z)**2>R2)return;used[j]=1;a.over++;
+          a.sum[0]+=g.x;a.sum[1]+=g.y;a.sum[2]+=g.z;const pn=g.patch||'inside the mesh';a.by[pn]=(a.by[pn]||0)+1;});
+        areas.push(a);});
+      // worst first; between equals, the one with more cells over
+      areas.sort((x,y)=>(y.worst-x.worst)||(y.over-x.over)||(y.near-x.near));
+      const F=placeFrame(vis);
+      out.total=areas.length;
+      out.list=areas.slice(0,SHOW_AREAS).map((a,i)=>{
+        const cnt=a.m.length||a.over||1,c=[a.sum[0]/cnt,a.sum[1]/cnt,a.sum[2]/cnt];
+        // the place the camera centres: the area's own face nearest its middle, so the focus sits on
+        // the surface even when the area curves round a corner
+        let r=0,best=-1,bd=Infinity;
+        a.m.forEach(q=>{const dd=Math.hypot(pos[q*3]-c[0],pos[q*3+1]-c[1],pos[q*3+2]-c[2]);
+          if(dd>r)r=dd;if(dd<bd){bd=dd;best=q;}});
+        if(best<0)bd=0;
+        const at=best>=0?[pos[best*3],pos[best*3+1],pos[best*3+2]]:c;
+        a.sizes.sort((x,y)=>x-y);
+        const size=a.sizes.length?a.sizes[a.sizes.length>>1]:typ;
+        // the part it is on: the one holding most of it, and a second one holding a fair share
+        const parts=Object.entries(a.by).sort((x,y)=>y[1]-x[1]);
+        const patch=parts.length>1&&parts[1][1]>=0.25*cnt?`${parts[0][0]}, ${parts[1][0]}`
+                                                           :(parts[0]||['inside the mesh'])[0];
+        const nl=Math.hypot(a.nrm[0],a.nrm[1],a.nrm[2]),flat=a.nabs?nl/a.nabs:0;
+        let normal=flat>0.3?[a.nrm[0]/nl,a.nrm[1]/nl,a.nrm[2]/nl]:null;
+        if(!normal&&best>=0)normal=cellNormal(entries[ent[best]],cid[best]);
+        const port=parts.length&&entries.some(en=>en.patch===parts[0][0]&&(isIn(en)||isOut(en)));
+        return {index:i,patch,hint:hintOf(c,F,a.firm&&flat>0.6?normal:null,port),
+                over:a.over,near:a.near,worst:a.worst,centre:at,radius:Math.max(r+bd,size),size,
+                normal,firm:a.firm};});
+      return out;}
+
+    /* THE GLIDE. The camera glides to an area over FLY_MS - focal point straight, distance
+       geometric so a long zoom feels even, direction turned about one axis - rather than jumping,
+       so the viewer keeps their bearings. Any drag, wheel, Fit or change of the up axis takes the
+       camera back at once. */
+    const FLY_MS=1000;
+    let fly=null;
+    function cancelFly(){if(fly){const f=fly;fly=null;f.resolve(false);}}
+    const ease=t=>t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+    function flyTo(tf,dir,dist){
+      cancelFly();
+      const f0=cam.getFocalPoint().slice(),p0=cam.getPosition().slice();
+      const v0=[p0[0]-f0[0],p0[1]-f0[1],p0[2]-f0[2]],d0=Math.hypot(v0[0],v0[1],v0[2])||1e-9;
+      for(let k=0;k<3;k++)v0[k]/=d0;
+      // the turn: about the axis square to both directions (about the view-up for a half turn)
+      const ang=Math.acos(Math.max(-1,Math.min(1,dot(v0,dir))));
+      let ax=[v0[1]*dir[2]-v0[2]*dir[1],v0[2]*dir[0]-v0[0]*dir[2],v0[0]*dir[1]-v0[1]*dir[0]];
+      if(Math.hypot(ax[0],ax[1],ax[2])<1e-6){const u=cam.getViewUp(),d=dot(u,v0);
+        ax=[u[0]-d*v0[0],u[1]-d*v0[1],u[2]-d*v0[2]];}
+      ax=unit(ax);
+      const kx=[ax[1]*v0[2]-ax[2]*v0[1],ax[2]*v0[0]-ax[0]*v0[2],ax[0]*v0[1]-ax[1]*v0[0]];
+      const calm=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const dur=calm?0:FLY_MS,t0=performance.now();
+      const me={};me.done=new Promise(r=>{me.resolve=r;});fly=me;
+      const place=e=>{
+        const co=Math.cos(ang*e),si=Math.sin(ang*e),d=d0*Math.pow(dist/d0,e);
+        const v=[0,1,2].map(k=>v0[k]*co+kx[k]*si),f=[0,1,2].map(k=>f0[k]+(tf[k]-f0[k])*e);
+        _clamping=true;
+        try{cam.setFocalPoint(f[0],f[1],f[2]);cam.setPosition(f[0]+v[0]*d,f[1]+v[1]*d,f[2]+v[2]*d);
+            cam.orthogonalizeViewUp();}
+        finally{_clamping=false;}
+        clampCam();ren.resetCameraClippingRange();rw.render();};
+      const land=()=>{if(fly!==me)return;place(1);fly=null;me.resolve(true);};
+      const step=()=>{if(fly!==me)return;const t=dur?(performance.now()-t0)/dur:1;
+        if(t>=1){land();return;}place(ease(t));requestAnimationFrame(step);};
+      setTimeout(land,dur+300);      // a backgrounded tab gets no animation frames: land anyway
+      step();
+      return me.done;}
+    host.addEventListener('pointerdown',e=>{
+      if(!(e.target&&e.target.closest&&e.target.closest('.v-legend,.v-probe')))cancelFly();},true);
+    host.addEventListener('wheel',()=>cancelFly(),{capture:true,passive:true});
+    document.getElementById('v-fitbtn-'+job).addEventListener('click',()=>cancelFly());
+
+    /* WHERE THE CAMERA STOPS: the area in the middle of the view, close enough that its own faces
+       read as cells - 20 px across when the area is small, never under 12 px when it is wide - and
+       seen from the side it faces, keeping the bearing the viewer already has. */
+    function areaDist(a){
+      const H=host.clientHeight||600,t=tanHalf(),at=px=>a.size*H/(2*t*px);
+      const d=Math.min(at(12),Math.max(at(20),1.3*a.radius/t)),r=capRange();
+      return Math.max(r[0],Math.min(r[1],d));}
+    // never straight down the up axis: the view would lose which way is up
+    function offUp(v){const u=cam.getViewUp(),du=dot(v,u);
+      if(Math.abs(du)<=0.94)return v;
+      let h=[v[0]-du*u[0],v[1]-du*u[1],v[2]-du*u[2]];
+      if(Math.hypot(h[0],h[1],h[2])<1e-3){const fw=cam.getDirectionOfProjection(),df=dot(fw,u);
+        h=[-(fw[0]-df*u[0]),-(fw[1]-df*u[1]),-(fw[2]-df*u[2])];}
+      h=unit(h);return unit(v.map((x,k)=>Math.sign(du)*0.94*u[k]+0.34*h[k]));}
+    // the drawn faces' centres and reach (centre to farthest corner), once per part, for the
+    // line-of-sight test
+    function geom(en){if(!en.geo){const C=new Float32Array(en.nCells*3),Rr=new Float32Array(en.nCells),off=cellOffsets(en);
+        for(let c=0;c<en.nCells;c++){const p=cellCenter(en,c),o=off[c],n=en.polys[o];let r=0;
+          C[c*3]=p[0];C[c*3+1]=p[1];C[c*3+2]=p[2];
+          for(let j=1;j<=n;j++){const q=en.polys[o+j]*3;
+            r=Math.max(r,Math.hypot(en.pts[q]-p[0],en.pts[q+1]-p[1],en.pts[q+2]-p[2]));}
+          Rr[c]=r;}
+        en.geo={C,R:Rr};}
+      return en.geo;}
+    // does the sight line p + t v, t0 < t < t1, pass through drawn face c? (its triangle fan)
+    function hits(en,c,p,v,t0,t1){
+      const o=cellOffsets(en)[c],n=en.polys[o],P=en.pts,a=en.polys[o+1]*3;
+      for(let j=2;j<n;j++){const b=en.polys[o+j]*3,e=en.polys[o+j+1]*3;
+        const e1=[P[b]-P[a],P[b+1]-P[a+1],P[b+2]-P[a+2]],e2=[P[e]-P[a],P[e+1]-P[a+1],P[e+2]-P[a+2]];
+        const h=[v[1]*e2[2]-v[2]*e2[1],v[2]*e2[0]-v[0]*e2[2],v[0]*e2[1]-v[1]*e2[0]],det=dot(e1,h);
+        if(det===0)continue;
+        const w=[p[0]-P[a],p[1]-P[a+1],p[2]-P[a+2]],u=dot(w,h)/det;if(u<0||u>1)continue;
+        const q=[w[1]*e1[2]-w[2]*e1[1],w[2]*e1[0]-w[0]*e1[2],w[0]*e1[1]-w[1]*e1[0]],k=dot(v,q)/det;
+        if(k<0||u+k>1)continue;
+        const t=dot(e2,q)/det;if(t>t0&&t<t1)return true;}
+      return false;}
+    // would a part on screen stand between the area and a camera d along v? The line starts a
+    // hair off the area's own face, so only something in front of it counts
+    function blocked(p,v,d,keep){
+      const q=[p[0]+v[0]*d,p[1]+v[1]*d,p[2]+v[2]*d],pad=0.05*diag;
+      for(const en of shown()){const b=en.pd.getBounds();
+        if(Math.max(p[0],q[0])+pad<b[0]||Math.min(p[0],q[0])-pad>b[1]||Math.max(p[1],q[1])+pad<b[2]
+           ||Math.min(p[1],q[1])-pad>b[3]||Math.max(p[2],q[2])+pad<b[4]||Math.min(p[2],q[2])-pad>b[5])continue;
+        const {C,R}=geom(en);
+        for(let c=0;c<en.nCells;c++){
+          const x=C[c*3]-p[0],y=C[c*3+1]-p[1],z=C[c*3+2]-p[2],t=x*v[0]+y*v[1]+z*v[2],r=R[c];
+          if(t+r<=keep||t-r>=d)continue;
+          const ex=x-t*v[0],ey=y-t*v[1],ez=z-t*v[2];
+          if(ex*ex+ey*ey+ez*ez>r*r)continue;
+          if(hits(en,c,p,v,keep,d))return true;}}
+      return false;}
+    function areaDir(a,d){
+      const f=cam.getFocalPoint(),p=cam.getPosition();
+      let v=unit([p[0]-f[0],p[1]-f[1],p[2]-f[2]]),nrm=a.normal?a.normal.slice():null;
+      if(nrm){let dp=dot(v,nrm);
+        // a part with no firm outside (a flat inlet disc) is seen from whichever side faces us
+        if(dp<0&&!a.firm){nrm=nrm.map(x=>-x);dp=-dp;}
+        if(dp<0){v=v.map((x,k)=>x-2*dp*nrm[k]);dp=-dp;}
+        if(dp<0.7)v=unit(v.map((x,k)=>x+(0.7-dp)*nrm[k]));}
+      // the bearing the viewer has, unless something stands in the way: then the clear view
+      // nearest to it, turning about the area's face - over to its other side too when the part
+      // has no firm outside
+      const ring=n=>{const t1=unit(Math.abs(n[0])<0.9?[0,-n[2],n[1]]:[-n[2],0,n[0]]);
+        const t2=[n[1]*t1[2]-n[2]*t1[1],n[2]*t1[0]-n[0]*t1[2],n[0]*t1[1]-n[1]*t1[0]],out=[n];
+        [30,60].forEach(deg=>{const ca=Math.cos(deg*Math.PI/180),sa=Math.sin(deg*Math.PI/180);
+          for(let k=0;k<8;k++){const ph=k*Math.PI/4;
+            out.push(unit([0,1,2].map(i=>n[i]*ca+(t1[i]*Math.cos(ph)+t2[i]*Math.sin(ph))*sa)));}});
+        return out;};
+      const n=nrm||v,cands=ring(n).concat(nrm&&a.firm?[]:ring(n.map(x=>-x)));
+      cands.sort((x,y)=>dot(y,v)-dot(x,v));
+      const keep=0.05*a.size;
+      for(const c of [v].concat(cands)){const w=offUp(c);if(!blocked(a.centre,w,d,keep))return w;}
+      return offUp(v);}
+
+    let legend=null,probeEl=null,selArea=-1,onlyBad=false,curRp=null;
+    let areaSet={list:[],total:0,offScreen:false},areaSig='';
     function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
-    function setMetric(m){
-      if(m===activeMetric)m=null;
-      activeMetric=m;
-      const rp=m?ramp(m):null;
+    function goArea(i){
+      const a=areaSet.list[i];if(!activeMetric||!a)return Promise.resolve(false);
+      selArea=i;markArea();hideProbe();
+      const d=areaDist(a);
+      return flyTo(a.centre,areaDir(a,d),d);}
+    function markArea(){if(!legend)return;
+      legend.querySelectorAll('.v-area').forEach(b=>{
+        b.setAttribute('aria-pressed',String(Number(b.dataset.index)===selArea));});}
+
+    // the worst value, to the precision that tells it apart from the limit
+    function fmtWorst(m,v){const md=qf.metrics[m],u=md.unit||'';
+      const dv=Math.abs(v-md.limit),dp=u==='°'?(dv<0.01?3:dv<0.1?2:1):(dv<0.001?4:dv<0.01?3:2);
+      return v.toFixed(dp)+u;}
+    function areasHtml(m){
+      const S=areaSet;
+      if(!S.list.length)return `<div class="v-areas"><p class="ar-none">`
+        +(S.offScreen?'No problem areas on the parts shown'
+                     :'No problem areas: every cell is well inside the limit')+`</p></div>`;
+      const count=a=>[a.over?`<span class="ar-over">${a.over.toLocaleString()} over the limit</span>`:'',
+                      a.near?`${a.near.toLocaleString()} near`+(a.over?'':' the limit'):''].filter(Boolean).join(' · ');
+      return `<div class="v-areas" role="group" aria-label="Problem areas">`
+        +`<div class="ar-h"><span class="ar-ht">Problem areas</span>`
+          +`<button class="v-only" type="button" aria-pressed="${onlyBad}" `
+          +`title="Grey out every face below ${esc(fmt(m,NEAR*qf.metrics[m].limit))} (80% of the limit)">Only bad cells</button></div>`
+        +S.list.map(a=>`<button class="v-area" type="button" data-index="${a.index}" aria-pressed="${a.index===selArea}" `
+            +`title="Go to area ${a.index+1}">`
+          +`<span class="ar-i">${a.index+1}</span>`
+          +`<span class="ar-b"><span class="ar-t"><span class="ar-p">${esc(a.patch)}</span>`
+            +(a.hint?`<span class="ar-w"> · ${esc(a.hint)}</span>`:'')+`</span>`
+            +`<span class="ar-c">${count(a)}</span></span>`
+          +`<span class="ar-v">${esc(fmtWorst(m,a.worst))}</span></button>`).join('')
+        +(S.total>S.list.length?`<p class="ar-n">The ${S.list.length} worst of ${S.total.toLocaleString()} areas</p>`:'')
+        +`</div>`;}
+    function wireAreas(){if(!legend)return;
+      legend.querySelectorAll('.v-area').forEach(b=>{b.onclick=()=>goArea(Number(b.dataset.index));});
+      const ob=legend.querySelector('.v-only');if(ob)ob.onclick=()=>setOnlyBad(!onlyBad);}
+    // what is on screen changed (a part hidden, shown or isolated; the up axis): the areas follow
+    function refreshAreas(){const m=activeMetric;if(!m)return;
+      const sig=m+'#'+shownSig();if(sig===areaSig)return;
+      cancelFly();areaSet=buildAreas(m);areaSig=sig;selArea=-1;
+      if(!areaSet.list.length&&onlyBad){onlyBad=false;paintFaces(m,curRp);}
+      const el=legend&&legend.querySelector('.v-areas');
+      if(el){el.outerHTML=areasHtml(m);wireAreas();}
+      rw.render();}
+    onPartsPainted=refreshAreas;
+    if(upSel)upSel.addEventListener('change',()=>{cancelFly();refreshAreas();});
+
+    /* ONLY BAD CELLS: every face below 80% of the bar goes one flat grey, so the clusters stand
+       out at full view; off, the scale's colours come back. A viewer's preference - nothing in
+       the payload changes. */
+    function paintFaces(m,rp){const cut=m?NEAR*qf.metrics[m].limit:0;
       entries.forEach(en=>{const mp=en.actor.getMapper();
         if(rp&&en.q[m]){
           const v=en.q[m],rgb=new Uint8Array(v.length*3);
-          for(let i=0;i<v.length;i++)rp.color(v[i],rgb,i*3);
+          for(let i=0;i<v.length;i++){
+            if(onlyBad&&!(v[i]>=cut)){rgb[i*3]=NEUTRAL[0];rgb[i*3+1]=NEUTRAL[1];rgb[i*3+2]=NEUTRAL[2];}
+            else rp.color(v[i],rgb,i*3);}
           en.pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
             {name:'quality',values:rgb,numberOfComponents:3}));
           mp.setScalarModeToUseCellData();mp.setColorModeToDirectScalars();
           if(mp.setInterpolateScalarsBeforeMapping)mp.setInterpolateScalarsBeforeMapping(false);
           mp.setScalarVisibility(true);}
-        else mp.setScalarVisibility(false);});
+        else mp.setScalarVisibility(false);});}
+    function setOnlyBad(b){
+      onlyBad=!!b&&!!activeMetric&&areaSet.list.length>0;
+      if(activeMetric&&curRp){paintFaces(activeMetric,curRp);rw.render();}
+      const bt=legend&&legend.querySelector('.v-only');
+      if(bt)bt.setAttribute('aria-pressed',String(onlyBad));
+      return onlyBad;}
+
+    function setMetric(m){
+      if(m===activeMetric)m=null;
+      cancelFly();
+      activeMetric=m;onlyBad=false;selArea=-1;
+      const rp=m?ramp(m):null;curRp=rp;
+      paintFaces(m,rp);
       if(legend){legend.remove();legend=null;}
       hideProbe();
+      areaSet=m?buildAreas(m):{list:[],total:0,offScreen:false};
+      areaSig=m?m+'#'+shownSig():'';
       // the edges darken while the faces carry the data, so every cell still reads, and are handed
       // back through the parts panel when it is switched off, so a selected part keeps its
       // selection edge
@@ -941,7 +1293,8 @@ function initViewer(job,surf,uiCfg){
       if(rp){const md=qf.metrics[m];
         legend=document.createElement('div');legend.className='v-legend';
         // an instrument scale: the bar stands upright beside the viewport, the limit is a
-        // tick with its value, the top of the bar is a third past the limit
+        // tick with its value, the top of the bar is a third past the limit; the problem areas
+        // follow under it
         legend.innerHTML=`<span class="lg-h"><b>${esc(md.label)}</b>`
             +`<button class="x" type="button" title="turn colouring off" aria-label="Turn colouring off">✕</button></span>`
           +`<span class="scale"><span class="ticks">`
@@ -953,10 +1306,12 @@ function initViewer(job,surf,uiCfg){
           +(md.n_over
              ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
              :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
-                     :`<span class="ok">none over</span>`);
+                     :`<span class="ok">none over</span>`)
+          +areasHtml(m);
         legend.querySelector('.x').onclick=()=>setMetric(null);
-        // a press on the scale is not the start of an orbit
-        legend.addEventListener('pointerdown',e=>e.stopPropagation());
+        wireAreas();
+        // a press or a scroll on the scale is not the start of an orbit or a zoom
+        shield(legend);
         host.appendChild(legend);}
       if(!markMode)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
       document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`).forEach(c=>{
@@ -1030,8 +1385,19 @@ function initViewer(job,surf,uiCfg){
 
     /* support/debug hook - lets the browser tier drive the heatmap without pixel picking; the demo
        recorder clicks the real buttons. `extras` counts what is drawn besides the mesh's own parts
-       and the user's marks: the heatmap draws nothing on top of the mesh, so it stays 0. */
+       and the user's marks: the heatmap draws nothing on top of the mesh, so it stays 0.
+       areas() is the problem-area list on screen (index i is the button with data-index i, shown
+       as number i+1); goArea(i) glides there and resolves true when the camera lands (false when a
+       drag, wheel, Fit or another area took it first); only(b) sets "Only bad cells". */
+    const areaOut=a=>({index:a.index,patch:a.patch,hint:a.hint,over:a.over,near:a.near,worst:a.worst,
+                       centre:a.centre.slice(),radius:a.radius,cellSize:a.size});
     window._vdbg[job+':heat']={metrics:avail,set:setMetric,active:()=>activeMetric,
+      areas:()=>areaSet.list.map(areaOut),totalAreas:()=>areaSet.total,goArea:i=>goArea(i),
+      selected:()=>selArea,only:b=>setOnlyBad(b===undefined?!onlyBad:b),onlyBad:()=>onlyBad,
+      flying:()=>!!fly,focal:()=>cam.getFocalPoint().slice(),dist:()=>camDist(),
+      // how many CSS pixels area i's typical face spans at the camera's distance now
+      cellPx:i=>{const a=areaSet.list[i];if(!a)return null;
+        return a.size*(host.clientHeight||600)/(2*camDist()*tanHalf());},
       probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
       last:()=>lastProbe,legend:()=>!!legend,wired:()=>wired,
       extras:()=>ren.getActors().filter(a=>!entries.some(en=>en.actor===a)
