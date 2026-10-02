@@ -44,6 +44,19 @@ class ConfirmedOpening(BaseModel):
     diameter_mm: float | None = None
     width_mm: float | None = None
     height_mm: float | None = None
+    #: Which way the mouth faces, out of the part: the check's own measurement, for an opening it
+    #: proposed and for one the user added on an open end alike. Unit-free, so a change of unit
+    #: leaves it as it is. Stored as a unit vector; three numbers that are no direction are dropped.
+    normal: list[float] | None = None
+
+    @field_validator("normal")
+    @classmethod
+    def _normal_is_a_direction(cls, v):
+        import math
+        if v is None or len(v) != 3 or not all(math.isfinite(x) for x in v):
+            return None
+        length = math.sqrt(sum(x * x for x in v))
+        return [x / length for x in v] if length > 0 else None
 
 
 class ConfirmIn(BaseModel):
