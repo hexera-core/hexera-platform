@@ -127,6 +127,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                              "timed-out or cancelled run leaves a partial polyMesh); "
                              "re-run the mesh.")}
     q = R.check_mesh(ws)
+    if internal_flow:
+        # WHICH under-resolved passages the flow can go round (engines/passage_flow.py): read here,
+        # on the mesh that came home, only when the measure beside it put the narrowest wall under
+        # the floor - so the resolution floor judges the passages the flow must go through, and a
+        # tube bank's gaps are told on the delivered mesh instead of refusing it (job 02ed0d14).
+        from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
+        q.update(passage_flow_of_polymesh(ws, q))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region

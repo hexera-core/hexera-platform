@@ -100,7 +100,11 @@ _LADDER_CLASS: dict[FailureCause, str] = {
 #: geometry is the same file on the next attempt - but a different engine has a different input
 #: contract (VMTK refuses a self-intersecting surface that cfMesh and snappyHexMesh wrap), so it
 #: stays an ENGINE failure: never a mid-run switch (the run ends at the refusal), always an offer.
-_ONLY_ANOTHER_ENGINE_CHANGES: frozenset[FailureCause] = frozenset({FailureCause.GEOMETRY_REJECTED})
+#: So does a mesh too coarse across its passage whose cheapest rebuild on this engine is over the
+#: cell limit (failure_cause.rebuild_over_limit): this engine's next attempt cannot reach the floor,
+#: but another engine sizes its cells another way - the run ends, and the offer stands.
+_ONLY_ANOTHER_ENGINE_CHANGES: frozenset[FailureCause] = frozenset({
+    FailureCause.GEOMETRY_REJECTED, FailureCause.UNDER_RESOLVED})
 
 #: What each failure means, said to the user. Short and plain: the full account of the failure is
 #: the terminal message's (failure_cause.describe); this is the half-sentence that says why the

@@ -110,14 +110,32 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
     and every pre-flight refusal). Where the builder model chooses them (gmsh's physical groups,
     the multi-region case's regions) or the geometry staging binds them (vmtk's openings), the
     next attempt may name them differently, so those gates mark the mismatch `retry_may_fix` and
-    it keeps its retries - when in doubt, the ladder stays as it was."""
+    it keeps its retries - when in doubt, the ladder stays as it was.
+
+    And one the other way: a mesh too coarse across its passage, whose gate worked out that even
+    the cheapest rebuild reaching the floor (`rebuild_cells`, the cell count grown by the square of
+    the refinement) is over the job's `cell_limit`. Another attempt can only come out too big or
+    too coarse again, so it is not started."""
     c = as_cause(cause)
     if c is None:
         return True
     if (c is FailureCause.CONTRACT_MISMATCH and isinstance(facts, Mapping)
             and facts.get("retry_may_fix")):
         return True
+    if c is FailureCause.UNDER_RESOLVED and rebuild_over_limit(facts):
+        return False
     return c not in _NOT_RETRYABLE
+
+
+def rebuild_over_limit(facts: Mapping | None) -> bool:
+    """Whether an under-resolved mesh's facts say no rebuild within the cell limit reaches the
+    floor. False whenever either figure is missing - when in doubt, the retry stays."""
+    if not isinstance(facts, Mapping):
+        return False
+    need, limit = _as_number(facts.get("rebuild_cells")), _as_number(facts.get("cell_limit"))
+    if need is None or limit is None:
+        return False
+    return limit > 0 and need > limit
 
 
 # #
@@ -356,10 +374,24 @@ def describe(cause: object, facts: Mapping | None = None, *,
     if c is FailureCause.MESH_QUALITY:
         return _quality(f)
     if c is FailureCause.UNDER_RESOLVED:
-        x, n = f.get("cells_across"), f.get("needed")
-        what = ("The mesh is too coarse where the passage is narrowest"
-                + (f": about {_num(float(x))} cells across it, and it needs at least {_num(n)}"
-                   if isinstance(x, (int, float)) and n is not None else "") + ".")
+        x, n = _as_number(f.get("cells_across")), f.get("needed")
+        if f.get("scope") == "main":
+            # the side passages the flow can go round were set aside; the main way itself fell short
+            what = ("The mesh is too coarse in the passages the flow must go through"
+                    + (f": about {_num(x)} cells across them at the narrowest, and they "
+                       f"need at least {_num(n)}" if x is not None and n is not None else "")
+                    + ".")
+        else:
+            what = ("The mesh is too coarse where the passage is narrowest"
+                    + (f": about {_num(x)} cells across it, and it needs at least {_num(n)}"
+                       if x is not None and n is not None else "") + ".")
+        if rebuild_over_limit(f):
+            rebuild = _as_number(f.get("rebuild_cells")) or 0.0
+            allowed = _as_number(f.get("cell_limit")) or 0.0
+            what += (f" A mesh fine enough would need at least about {rebuild / 1e6:.2g} million "
+                     f"cells, more than the {allowed / 1e6:.2g} million one job may build.")
+            return what, ("You can try another mesher, or mesh a smaller part of the geometry "
+                          "where the passage is narrowest.")
         return what, f"You can run it again ({_RUN_AGAIN}), or ask for a finer mesh."
     if c is FailureCause.CELL_BUDGET:
         cells, limit = f.get("cells"), f.get("limit")
@@ -396,4 +428,4 @@ def describe(cause: object, facts: Mapping | None = None, *,
 
 
 __all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "FailureCause", "as_cause", "clean_reason",
-           "describe", "retry_can_help", "review_stopped_reason"]
+           "describe", "rebuild_over_limit", "retry_can_help", "review_stopped_reason"]
