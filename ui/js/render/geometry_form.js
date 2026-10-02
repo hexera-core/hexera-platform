@@ -290,6 +290,10 @@ export function readForm(root, p) {
     const id = Number(tr.dataset.id), o = (p.openings || []).find((x) => x.id === id) || {};
     const body = { id, name: tr.querySelector(".gc-name").value.trim() || o.name || `opening_${id}`,
                    role: tr.querySelector(".gc-role").value, centroid_mm: o.centroid_mm || null };
+    // which way the mouth faces, out of the part - measured, never typed - when it is known
+    if (Array.isArray(o.normal) && o.normal.length === 3 && o.normal.every((v) => Number.isFinite(Number(v)))) {
+      body.normal = o.normal.map(Number);
+    }
     const dia = tr.querySelector(".gc-dia");
     if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = typed(v, p); }    // typed in the file's units
     else if (o.shape === "circle") body.diameter_mm = o.diameter_mm;

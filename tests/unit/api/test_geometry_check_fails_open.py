@@ -302,6 +302,32 @@ async def test_a_unit_corrected_on_the_stage_is_recorded_and_the_sizes_re_read(s
     assert recorded == [] and "Part size: 7 x 7 x 117 mm" in out["message"]
 
 
+async def test_an_opening_added_on_an_open_end_confirms_with_its_centre_size_and_direction(served, monkeypatch):
+    """"Add an opening" snapped to an open end on the stage: the patch the port binding reads
+    carries its measured centre and size, exactly as a proposed opening's does, and the stored
+    confirmation keeps which way its mouth faces - a direction, so a change of unit re-reads the
+    centre and the size and leaves it alone. A direction that is no direction is dropped."""
+    store = served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = (await route._owned_session(SID, "alice", "org-1"))
+    _confirming(monkeypatch, session, {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm",
+                                       "scale_to_metres": 0.001, "basis": "file_declared", "evidence": "SI_UNIT"}, [])
+    ops = [route.ConfirmedOpening(id=1, name="inlet", role="inlet", diameter_mm=18.37,
+                                  centroid_mm=[406.9, 408.6, 315.9], normal=[0.0, 3.0, -4.0]),
+           route.ConfirmedOpening(id=2, name="outlet", role="outlet", diameter_mm=8.56,
+                                  centroid_mm=[382.0, 162.8, 282.9], normal=[0.0, 0.0, 0.0])]
+    out = await route.confirm_check(SID, route.ConfirmIn(input_kind="body-surface", flow="internal", openings=ops,
+                                                         scale_to_m=0.001, unit="mm"), "alice", "org-1")
+    assert out["patches"][0] == {"name": "inlet", "type": "inlet", "diameter_mm": 18.37, "near_mm": [406.9, 408.6, 315.9]}
+    stored = json.loads(store.objects[_key("confirmed.json")])["openings"]
+    assert stored[0]["normal"] == pytest.approx([0.0, 0.6, -0.8]) and stored[1]["normal"] is None
+    # the same form confirmed in centimetres: the centre and the size are re-read, the direction is not
+    out = await route.confirm_check(SID, route.ConfirmIn(input_kind="body-surface", flow="internal", openings=ops,
+                                                         scale_to_m=0.001, unit="cm"), "alice", "org-1")
+    assert out["patches"][0]["diameter_mm"] == pytest.approx(183.7)
+    assert out["patches"][0]["near_mm"] == pytest.approx([4069.0, 4086.0, 3159.0])
+    assert json.loads(store.objects[_key("confirmed.json")])["openings"][0]["normal"] == pytest.approx([0.0, 0.6, -0.8])
+
+
 async def test_openings_that_share_a_name_are_named_apart_not_refused(served, monkeypatch):
     """The intake soak: the check named five discarded stickers "not_an_opening", and Proceed was
     refused ("Every opening needs its own name") until the user renamed stickers they were throwing
