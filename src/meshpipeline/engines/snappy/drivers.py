@@ -252,6 +252,32 @@ def _coarsen_after_timeout(timed_out: dict | None, strategy: dict, *,
     return out, "; ".join(cuts)
 
 
+def _under_resolved_facts(state) -> dict | None:
+    """The resolution floor's facts when the last attempt's mesh failed it, else None."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    if str(state.get("executor_failure_cause") or "") != FailureCause.UNDER_RESOLVED.value:
+        return None
+    facts = state.get("executor_failure_facts")
+    return dict(facts) if isinstance(facts, dict) and facts else None
+
+
+def _refine_after_under_resolved(gated: dict | None, facts: dict | None,
+                                 strategy: dict) -> tuple[dict, str]:
+    """The strategy for a pass that follows a mesh too coarse across its passage, and the
+    plain-words list of what was raised ('' when nothing was: no such failure, or the re-plan
+    already asked for enough)."""
+    if not gated or not facts:
+        return strategy, ""
+    from meshpipeline.engines.snappy.planner import refine_after_under_resolved
+    out, raised = refine_after_under_resolved(
+        gated, strategy, measured=facts.get("cells_across"), needed=facts.get("needed"),
+        cells=facts.get("cells"), ceiling=polcfg.CELL_HARD_LIMIT)
+    if raised:
+        logger.info("pass after an under-resolved mesh: the re-plan was not fine enough - %s",
+                    "; ".join(raised))
+    return out, "; ".join(raised)
+
+
 def _mm(metres: float) -> str:
     """A length for a person: never "0.0 mm" for something real and small."""
     v = float(metres) * 1000.0
@@ -941,6 +967,10 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # held below it, and never rebuilds it byte for byte. Seeded from an earlier attempt's record.
     _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
     _timeout_case: dict[str, bytes] | None = None
+    # the plan whose mesh fell short of the resolution floor, and the gate's figures for it: every
+    # pass of this attempt puts the floor across that passage (_refine_after_under_resolved)
+    _under = _under_resolved_facts(state)
+    _gated_plan = _sibling_plan_memory(workspace) if _under else None
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -957,6 +987,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             plan = _po.plan
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
+        # after a mesh too coarse across its passage the next one is FINER where it counts,
+        # whatever the re-plan proposed - and a timeout below still makes it smaller
+        strategy, _refined = _refine_after_under_resolved(_gated_plan, _under, strategy)
         # after a timeout the next mesh is SMALLER, whatever the re-plan proposed
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=True)
         previous_plan = strategy
@@ -1035,6 +1068,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}"
+                     + (f" - made finer because the last mesh had too few cells across its "
+                        f"narrowest passage: {_refined}" if _refined and not _coarsened else "")
                      + (f" - made coarser because the last pass ran out of time: {_coarsened}"
                         if _coarsened else ""),
                 op_id=f"internal:pass-open:{attempt}")

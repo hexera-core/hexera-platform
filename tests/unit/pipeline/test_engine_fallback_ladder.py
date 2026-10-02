@@ -104,6 +104,15 @@ def test_a_cause_the_retry_policy_calls_hopeless_never_moves_the_run_unless_an_e
     assert lad.classify({"engine": "gmsh", "executor_failed_gate": "patch_contract",
                          "executor_failure_cause": "contract_mismatch",
                          "executor_failure_facts": {"retry_may_fix": True}}).kind == lad.NEVER
+    # a mesh too coarse whose cheapest rebuild here is over the cell limit: not retried on this
+    # engine (failure_cause.rebuild_over_limit), but another engine sizes its cells another way -
+    # the run keeps its offer
+    over = {"cells_across": 6.0, "needed": 12, "cells": 4_000_000, "cell_limit": 8_000_000,
+            "rebuild_cells": 16_000_000}
+    assert not retry_can_help("under_resolved", over)
+    assert lad.classify({"engine": "snappy", "executor_failed_gate": "resolution_floor",
+                         "executor_failure_cause": "under_resolved",
+                         "executor_failure_facts": over}).kind == lad.FIXABLE
 
 
 def test_a_record_without_a_cause_reads_the_cause_the_executor_would_have_recorded():

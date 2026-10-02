@@ -169,6 +169,64 @@ def coarsen_after_timeout(timed_out: dict, proposed: dict, *, ceiling: int,
     return out, changes
 
 
+#: The headroom a refined plan's cell budget keeps over the least the refinement costs (the count
+#: grown by the square of the factor): snappy's maxGlobalCells stops refining at the budget, so a
+#: plan asked for more cells across under its old budget would come out as coarse as before.
+REFINE_BUDGET_HEADROOM = 1.5
+
+
+def refine_after_under_resolved(gated: dict | None, proposed: dict, *, measured: object,
+                                needed: object, cells: object = None,
+                                ceiling: int) -> tuple[dict, list[str]]:
+    """The internal plan for the attempt after a mesh too coarse across its passage - one that
+    actually puts the floor (plus one) across it.
+
+    The internal wall cell is bore / cells_across_diameter, whatever the surface level. Job
+    02ed0d14's re-plan was told to "refine the wall surface level", raised it expecting twice the
+    cells across, and moved cells_across only 24 -> 28: the narrowest passage went 8.3 -> 9.8 and
+    the attempt was spent. So the number is set here, by arithmetic, against the plan whose mesh
+    `measured` cells across where `needed` were: cells across x (needed + 1) / measured, never
+    fewer than proposed. The cell budget follows (the least the refinement costs, with headroom,
+    up to `ceiling`), or snappy would stop refining at the old one.
+
+    Returns (strategy, changes) - `changes` in plain words, empty when the proposal already asks
+    for enough (or nothing is known to refine against)."""
+    import math
+
+    def _finite(v: object) -> float | None:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        return float(v) if math.isfinite(float(v)) else None
+
+    out = dict(proposed or {})
+    m, n = _finite(measured), _finite(needed)
+    if not gated or m is None or n is None or m <= 0.0 or m >= n:
+        return out, []
+
+    def _ca(plan: dict) -> int:
+        try:
+            return max(_MIN_CELLS_ACROSS, int(plan.get("cells_across_diameter", 24)))
+        except (TypeError, ValueError):
+            return 24
+
+    factor = (n + 1.0) / m
+    want = int(math.ceil(_ca(gated) * factor))
+    have = _ca(out)
+    changes: list[str] = []
+    if have < want:
+        out["cells_across_diameter"] = want
+        changes.append(f"cells across the bore raised from {have} to {want}")
+    c = _finite(cells)
+    if c is not None and c > 0.0:
+        floor_budget = min(int(ceiling), int(REFINE_BUDGET_HEADROOM * c * factor ** 2))
+        p_budget = clamp_cell_budget(out.get("max_cells"), ceiling=ceiling)
+        if p_budget < floor_budget:
+            out["max_cells"] = floor_budget
+            changes.append(f"cell budget raised from {p_budget / 1e6:.2g} M to "
+                           f"{floor_budget / 1e6:.2g} M")
+    return out, changes
+
+
 def _log_plan_event(job_id: str, payload: dict, op_id: str = "",
                     attempt: int | None = None) -> None:
     try:

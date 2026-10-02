@@ -29,6 +29,11 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     if incomplete:
         return {"success": False, "stdout": "", "stderr": "", "output": incomplete}
     q = R.check_mesh(ws)
+    if internal_flow:
+        # which under-resolved passages the flow can go round - read only when the measure put the
+        # narrowest wall under the floor (engines/passage_flow.py, as in the snappy finalize)
+        from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
+        q.update(passage_flow_of_polymesh(ws, q))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
