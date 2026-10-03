@@ -145,7 +145,7 @@ export function formHtml(p) {
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
     ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`
            : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
-    <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><span class="gc-tools-hint">then click the part where it is</span></div>
+    <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">then click the part where it is</span></div>
     </div>
     ${external}
     ${notes}
