@@ -2,8 +2,8 @@
 // the way a CAD viewer draws it, a numbered sticker on every opening, and the panel beside it
 // where names and roles are confirmed, stickers added or removed.
 // Owns: its vtk.js scene (the skin, its edges, the lights, the sticker balls and the pins that
-// follow them), the naming state of the panel, and the takeover of the workbench while the
-// check is open.
+// follow them), the naming state of the panel, the measuring ruler, and the takeover of the
+// workbench while the check is open.
 // Boundaries: it decides nothing about the geometry - positions, sizes and proposals arrive from
 // the check, the holes an added opening snaps to among them - and it starts no run; confirming
 // is the callback it was handed.
@@ -457,6 +457,7 @@ function initScene(sessionId, box, surf, p) {
   function setAddMode(on, said) {
     addMode = on;
     endTrace();
+    if (on && measuring) setMeasure(false);
     const b = form.querySelector(".gc-add"); if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Click the part…" : "Add an opening"; }
     host.style.cursor = on ? "crosshair" : "";
     hint(on ? "click the spot on the part where the opening is (dragging still turns it)" : (said || ADD_HINT));
@@ -548,7 +549,11 @@ function initScene(sessionId, box, surf, p) {
     trace = null;
     if (traceDots.length) { traceDots.splice(0).forEach((a) => ren.removeActor(a)); rw.render(); }
   }
-  function onKey(e) { if (e.key === "Escape" && addMode) setAddMode(false); }
+  function onKey(e) {
+    if (e.key !== "Escape") return;
+    if (addMode) setAddMode(false);
+    if (measuring) setMeasure(false);
+  }
   document.addEventListener("keydown", onKey);
   function nextId() { return Math.max(0, ...(p.openings || []).map((o) => Number(o.id) || 0)) + 1; }
   function fromFace(f, extra) {
@@ -604,11 +609,111 @@ function initScene(sessionId, box, surf, p) {
   }
   host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
-    if (!addMode || !downXY) return;
+    if (!(addMode || measuring) || !downXY) return;
     if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
-    addAt(rayAt(e.clientX, e.clientY));
+    if (measuring) measureAt(e.clientX, e.clientY);
+    else addAt(rayAt(e.clientX, e.clientY));
   }, true);
+
+  /* MEASURING: two clicks on the part draw a thin line between them, a dot at each end and the
+     distance beside it, in the unit the sizes are shown in. A click within a few pixels of a
+     hole's edge lands on that edge, so a hole's width across is two clicks. A third click starts
+     a new measurement; Esc or the button ends it. It sends nothing and changes nothing the user
+     confirms - a ruler, not an answer. */
+  let measuring = false;
+  const measurePts = [], measureActors = [];
+  let measureLabel = null;
+  const RIM_SNAP_PX = 8;
+  function setMeasure(on) {
+    measuring = on;
+    clearMeasure();
+    if (on && addMode) setAddMode(false);
+    const b = form.querySelector(".gc-measure");
+    if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Measuring…" : "Measure"; }
+    host.style.cursor = on ? "crosshair" : "";
+    hint(on ? "click two points on the part (a hole's edge pulls the click onto it); Esc ends" : ADD_HINT);
+  }
+  function clearMeasure() {
+    measurePts.length = 0;
+    measureActors.splice(0).forEach((a) => ren.removeActor(a));
+    if (measureLabel) { measureLabel.remove(); measureLabel = null; }
+    rw.render();
+  }
+  /** Whether a point is in front of the camera (whatever the clipping planes say). */
+  function inFront(pt) {
+    const cp = cam.getPosition(), dop = cam.getDirectionOfProjection();
+    return (pt[0] - cp[0]) * dop[0] + (pt[1] - cp[1]) * dop[1] + (pt[2] - cp[2]) * dop[2] > 0;
+  }
+  /** Where a point of the part is on the screen, in client pixels; null when it is behind the camera. */
+  function screenOf(pt) {
+    if (!inFront(pt)) return null;
+    const size = apiRW.getSize(), rect = host.getBoundingClientRect();
+    const nd = ren.worldToNormalizedDisplay(pt[0], pt[1], pt[2], size[0] / size[1]);
+    return [rect.left + nd[0] * rect.width, rect.top + (1 - nd[1]) * rect.height];
+  }
+  /** The hole edge point nearest a click on the screen, within RIM_SNAP_PX, that the camera can
+   *  see (nothing of the part stands between them), or null. */
+  function rimPointNear(clientX, clientY) {
+    let best = null, bestD = RIM_SNAP_PX;
+    for (const h of p.holes || []) {
+      for (const pt of [...(h.loop_m || []), ...(h.outer_m || [])]) {
+        const sp = screenOf(pt);
+        if (!sp) continue;
+        const dd = Math.hypot(sp[0] - clientX, sp[1] - clientY);
+        if (dd < bestD) { best = pt; bestD = dd; }
+      }
+    }
+    if (!best) return null;
+    const cp = cam.getPosition(), dir = [best[0] - cp[0], best[1] - cp[1], best[2] - cp[2]];
+    const L = Math.hypot(dir[0], dir[1], dir[2]);
+    const hit = snapAt({ ...clicksNow(), holes: [] }, { origin: cp, dir }).hit;
+    return hit && hit.t < L - 1e-4 * diag ? null : best;      // hidden behind the part: not it
+  }
+  /** One measuring click at a point on the canvas: the point it lands on (a hole's edge when one
+   *  is that close), and - at the second - the line, the dots and the distance. */
+  function measureAt(clientX, clientY) {
+    const pt = rimPointNear(clientX, clientY) || (snapAt({ ...clicksNow(), holes: [] }, rayAt(clientX, clientY)).hit || {}).point;
+    if (!pt) return null;
+    if (measurePts.length >= 2) clearMeasure();               // a third click starts again
+    measurePts.push(pt);
+    const dotPd = spherePd(pt[0], pt[1], pt[2], 0.004 * diag);
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(dotPd);
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    ac.getProperty().setColor(SEL[0], SEL[1], SEL[2]); ac.getProperty().setLighting(false);
+    ren.addActor(ac); measureActors.push(ac);
+    if (measurePts.length === 2) {
+      const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+      pd.getPoints().setData(Float32Array.from([...measurePts[0], ...measurePts[1]]), 3);
+      pd.getLines().setData(Uint32Array.from([2, 0, 1]));
+      const lm = vtk.Rendering.Core.vtkMapper.newInstance(); lm.setInputData(pd);
+      const la = vtk.Rendering.Core.vtkActor.newInstance(); la.setMapper(lm); la.setPickable(false);
+      const lp = la.getProperty(); lp.setColor(SEL[0], SEL[1], SEL[2]); lp.setLineWidth(1.5); lp.setLighting(false);
+      ren.addActor(la); measureActors.push(la);
+      measureLabel = document.createElement("div");
+      measureLabel.className = "gc-mlabel";
+      measureLabel.textContent = measuredNow().label;
+      host.appendChild(measureLabel);
+    }
+    rw.render();
+    return measuredNow();
+  }
+  /** The measurement as it stands: its points, its length in the reading's millimetres, and the
+   *  words beside the line - the number as the sizes on the form show it, in the file's unit. */
+  function measuredNow() {
+    if (measurePts.length < 2) return { points: measurePts.slice(), mm: null, label: null };
+    const [a, b] = measurePts;
+    const mm = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) * 1000;
+    return { points: measurePts.slice(), mm, label: `${shown(mm, p)} ${unitOf(p)}` };
+  }
+  function placeMeasureLabel(aspect, rect) {
+    if (!measureLabel || measurePts.length < 2) return;
+    const [a, b] = measurePts, m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+    const nd = ren.worldToNormalizedDisplay(m[0], m[1], m[2], aspect);
+    const ok = inFront(m);
+    measureLabel.style.display = ok ? "" : "none";
+    if (ok) { measureLabel.style.left = (nd[0] * rect.width) + "px"; measureLabel.style.top = ((1 - nd[1]) * rect.height) + "px"; }
+  }
 
   /* the form is re-drawn when the model's labels arrive, so its controls are re-bound then */
   function rebind() {
@@ -618,6 +723,8 @@ function initScene(sessionId, box, surf, p) {
       if (!tr.dataset.bound) { tr.dataset.bound = "1"; tr.addEventListener("focusin", () => { const id = Number(tr.dataset.id); if (sel !== id) select(id); }); }
     });
     const addBtn = form.querySelector(".gc-add"); if (addBtn) addBtn.onclick = () => setAddMode(!addMode);
+    const mBtn = form.querySelector(".gc-measure");
+    if (mBtn) { mBtn.onclick = () => setMeasure(!measuring); mBtn.classList.toggle("armed", measuring); }
     // pins follow the rows: a row without a pin gets one, a pin without a row goes
     const ids = new Set(rows().map((tr) => Number(tr.dataset.id)));
     pins.slice().forEach((pn) => { if (!ids.has(pn.id)) removePin(pn.id); });
@@ -725,6 +832,7 @@ function initScene(sessionId, box, surf, p) {
       const n = pn.o.n, facing = (n[0] * (x - cp[0]) + n[1] * (y - cp[1]) + n[2] * (z - cp[2])) < 0;
       pn.el.classList.toggle("back", !facing);
     });
+    placeMeasureLabel(aspect, rect);
     requestAnimationFrame(pinLoop);
   })();
 
@@ -735,6 +843,7 @@ function initScene(sessionId, box, surf, p) {
   window._vdbg["gstage:" + sessionId] = {
     pins: () => pins.length, selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
     tracing: () => (trace ? trace.length : null), adding: () => addMode,
+    measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
@@ -744,7 +853,7 @@ function initScene(sessionId, box, surf, p) {
     render: () => rw.render(),
   };
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal,
   };
 }
