@@ -5,8 +5,8 @@
 // follow them), the naming state of the panel, and the takeover of the workbench while the
 // check is open.
 // Boundaries: it decides nothing about the geometry - positions, sizes and proposals arrive from
-// the check, and an opening the user adds is measured from the skin by open_ends.js - and it
-// starts no run; confirming is the callback it was handed.
+// the check, the holes an added opening snaps to among them - and it starts no run; confirming
+// is the callback it was handed.
 
 /* THE GEOMETRY STAGE.
  *
@@ -20,7 +20,7 @@ import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, extentAlong, followSuggestion, followUnit, formHtml, markConfirmed, readExternal,
   readForm, rowHtml, shown, tableHead, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { openEnds, snapAt } from "./open_ends.js";
+import { circleThrough, clickIndex, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
@@ -252,7 +252,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       // re-reads the form from `scale_to_m` when it is confirmed. Only the words move.
       const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;    // a missing scale is the display's default
       const rescaled = Math.abs(theirs - mine) > 1e-12;
-      const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$/.test(k))) : p2;
+      const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$|^holes$/.test(k))) : p2;
       // a unit the user set in the box outlives the re-draw; a served one fills an untouched box
       const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
       // so do the flow axis the user turned and the reference length they typed; an untyped
@@ -440,27 +440,33 @@ function initScene(sessionId, box, surf, p) {
   }
 
   /* ADDING A STICKER: click the part where the opening is. The click is a ray through the clicked
-     pixel, and the opening it means is read from the part's own triangles (open_ends.js), in
-     this order: the open end the ray looks into - through a hole that has no surface to click,
-     or onto a flat ring's own face - else the measured flat face the click lands on, else the
-     open end nearest the spot clicked. Each carries a real centre, size and direction. Off all
-     of them the opening lands on the clicked spot with the size left for the user, and the
-     hint beside the button says no open end was found there. */
+     pixel, read against the check's own holes (cad/open_ends on the server - the same holes the
+     upload's stickers come from), in this order: the hole the ray looks into - through it, where
+     there is no surface to click, or onto the end face around it - else the measured flat face
+     the click lands on, else the hole nearest the spot clicked. Each carries a real centre, size
+     and direction. When none is there the sticker is never dropped on the wall: the stage asks
+     for the hole's edge instead - two more clicks on its rim - and the circle through the three
+     points is the opening. Esc cancels. When the user says the file is the fluid volume itself,
+     its mouths are faces, not holes, and only the measured faces are read. */
   let addMode = false, downXY = null;
+  let trace = null;                                  // the rim points clicked so far, while tracing
+  const traceDots = [];
   const ADD_HINT = "then click the part where it is";
+  const TRACE_HINT = "Couldn't find a hole here: click 2 more points around its edge";
+  function hint(text) { const th = form.querySelector(".gc-tools-hint"); if (th) th.textContent = text; }
   function setAddMode(on, said) {
     addMode = on;
+    endTrace();
     const b = form.querySelector(".gc-add"); if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Click the part…" : "Add an opening"; }
     host.style.cursor = on ? "crosshair" : "";
-    const th = form.querySelector(".gc-tools-hint");
-    if (th) th.textContent = on ? "click the spot on the part where the opening is (dragging still turns it)" : (said || ADD_HINT);
-    if (on) setTimeout(openEndsNow, 30);               // read them while the user aims, not on the click
+    hint(on ? "click the spot on the part where the opening is (dragging still turns it)" : (said || ADD_HINT));
+    if (on) setTimeout(clicksNow, 30);               // read the skin while the user aims, not on the click
   }
-  // THE OPEN ENDS are read once, from the skin as drawn, the first time they are needed
-  let ends = null;
-  function openEndsNow() {
-    if (!ends) ends = openEnds(skins.map((s) => ({ pts: s.pts, polys: s.polys })));
-    return ends;
+  // what a click is read against: the skin's triangles and the check's holes, read once
+  let clicks = null;
+  function clicksNow() {
+    if (!clicks) clicks = clickIndex(skins.map((s) => ({ pts: s.pts, polys: s.polys })), p.holes || []);
+    return clicks;
   }
   /** The ray through a point on the canvas, from the camera into the scene, in the skin's units.
    *  It starts at the camera, not at the near clipping plane, which a camera moved without a
@@ -476,36 +482,74 @@ function initScene(sessionId, box, surf, p) {
     return { origin: [a[0] - dir[0] / L * back, a[1] - dir[1] / L * back, a[2] - dir[2] / L * back], dir };
   }
   const r6 = (v) => Math.round(v * 1e6) / 1e6, r2 = (v) => Math.round(v * 100) / 100;
-  /** The measured flat face that is this open end, when the measuring step measured it: the
-   *  same direction, centre and size. A STEP file's faces are exact, so theirs are the numbers. */
-  function measuredAs(e) {
+  /** The measured flat face that is this hole, when the measuring step measured it: the same
+   *  direction, centre and size. A STEP file's faces are exact, so theirs are the numbers. */
+  function measuredAs(h) {
+    const n = h.normal, c = h.centroid_m, d = (h.diameter_mm || 0) / 1000;
     return (p.faces || []).find((f) => {
       const fn = f.normal || [0, 0, 1], fc = f.centroid_m || (f.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
-      const d = (f.diameter_mm || 0) / 1000;
-      return Math.abs(fn[0] * e.n[0] + fn[1] * e.n[1] + fn[2] * e.n[2]) >= 0.95 && Math.abs(d - e.d) <= 0.1 * e.d
-        && Math.hypot(fc[0] - e.c[0], fc[1] - e.c[1], fc[2] - e.c[2]) <= 0.1 * e.d;
+      const fd = (f.diameter_mm || 0) / 1000;
+      return Math.abs(fn[0] * n[0] + fn[1] * n[1] + fn[2] * n[2]) >= 0.95 && Math.abs(fd - d) <= 0.1 * d
+        && Math.hypot(fc[0] - c[0], fc[1] - c[1], fc[2] - c[2]) <= 0.1 * d;
     }) || null;
   }
-  /** A new opening on an open end: at its loop's centre, its size from the loop's area (and the
-   *  loop's width and height when it is not round), facing out of the part. */
-  function addEnd(e) {
-    const f = measuredAs(e);
+  /** A new opening on a hole, as the check measured it: centre, size, which way it faces. */
+  function addHole(h) {
+    const f = measuredAs(h);
     if (f) return place(fromFace(f, { open_end: true }));
     const id = nextId();
-    return place({ id, name: `opening_${id}`, role: "outlet", shape: e.shape, kind: e.kind, confidence: 0.5,
-      centroid_m: e.c.map(r6), centroid_mm: e.c.map((v) => r2(v * 1000)), normal: e.n.map((v) => Math.round(v * 1e5) / 1e5),
-      diameter_mm: r2(e.d * 1000), ...(e.shape === "circle" ? {} : { width_mm: r2(e.wh[0] * 1000), height_mm: r2(e.wh[1] * 1000) }),
-      added: true, snapped: true, open_end: true });
+    return place({ id, name: `opening_${id}`, role: "outlet", shape: h.shape, kind: h.kind, confidence: 0.5,
+      centroid_m: h.centroid_m, centroid_mm: h.centroid_mm, normal: h.normal,
+      diameter_mm: h.diameter_mm, width_mm: h.width_mm, height_mm: h.height_mm, added: true, snapped: true, open_end: true });
   }
-  /** What a click adds, along the ray through the clicked pixel (see above). Returns the opening,
-   *  or null when the ray meets neither the part nor an open end. */
+  /** What a click does, along the ray through the clicked pixel (see above): the opening it
+   *  added, or null - nothing met, or the stage now asking for the hole's edge. */
   function addAt(ray) {
-    const s = snapAt(openEndsNow(), ray);
-    const o = s.through ? addEnd(s.through) : s.hit ? add(s.hit.point, s.hit.normal, s.near) : null;
-    if (o) setAddMode(false, o.open_end ? "Snapped to the open end there."
-      : o.snapped ? "" : "No open end found there, so it sits where you clicked: type its size.");
-    return o;
+    const idx = clicksNow();
+    if (trace) return traceAt(snapAt({ ...idx, holes: [] }, ray).hit, ray.origin);
+    const fluid = (form.querySelector(".gc-kind") || {}).value === "fluid-domain";
+    const s = snapAt(fluid ? { ...idx, holes: [] } : idx, ray);
+    if (s.through) return done(addHole(s.through), "Snapped to the hole there.");
+    if (!s.hit) return null;
+    const face = faceAt(s.hit.point, s.hit.normal);
+    if (face) return done(place(fromFace(face)), "");
+    if (s.near) return done(addHole(s.near), "Snapped to the hole there.");
+    trace = [];
+    return traceAt(s.hit, ray.origin);
   }
+  function done(o, said) { setAddMode(false, said); return o; }
+  /** TRACING A HOLE the check did not find: each click is a point on its rim; at the third, the
+   *  circle through them is the opening - its centre, its diameter, and the three points' plane
+   *  turned to face the viewer, who clicked from outside the part. */
+  function traceAt(hit, viewer) {
+    if (!hit) return null;
+    trace.push(hit.point);
+    const dot = vtk.Rendering.Core.vtkActor.newInstance(), mp = vtk.Rendering.Core.vtkMapper.newInstance();
+    mp.setInputData(spherePd(hit.point[0], hit.point[1], hit.point[2], 0.006 * diag));
+    dot.setMapper(mp); dot.setPickable(false); dot.getProperty().setColor(SEL[0], SEL[1], SEL[2]);
+    ren.addActor(dot); traceDots.push(dot); rw.render();
+    if (trace.length < 3) {
+      hint(trace.length === 1 ? TRACE_HINT : "click 1 more point around its edge (Esc cancels)");
+      return null;
+    }
+    const c = circleThrough(trace[0], trace[1], trace[2], viewer);
+    if (!c) {                                        // three points in a line make no circle
+      trace.pop(); ren.removeActor(traceDots.pop()); rw.render();
+      hint("Those points lie in a line: click another point around the edge");
+      return null;
+    }
+    const id = nextId();
+    const o = place({ id, name: `opening_${id}`, role: "outlet", shape: "circle", kind: "traced", confidence: 0.5,
+      centroid_m: c.centre.map(r6), centroid_mm: c.centre.map((v) => r2(v * 1000)), normal: c.normal.map((v) => Math.round(v * 1e5) / 1e5),
+      diameter_mm: r2(c.diameter * 1000), added: true, snapped: true, traced: true });
+    return done(o, "Placed on the circle through your three points.");
+  }
+  function endTrace() {
+    trace = null;
+    if (traceDots.length) { traceDots.splice(0).forEach((a) => ren.removeActor(a)); rw.render(); }
+  }
+  function onKey(e) { if (e.key === "Escape" && addMode) setAddMode(false); }
+  document.addEventListener("keydown", onKey);
   function nextId() { return Math.max(0, ...(p.openings || []).map((o) => Number(o.id) || 0)) + 1; }
   function fromFace(f, extra) {
     const id = nextId();
@@ -513,25 +557,27 @@ function initScene(sessionId, box, surf, p) {
       centroid_m: f.centroid_m, centroid_mm: f.centroid_mm, normal: f.normal,
       diameter_mm: f.diameter_mm, width_mm: f.width_mm, height_mm: f.height_mm, added: true, snapped: true, ...extra };
   }
-  /** A new opening at a point on the part: snapped to the measured flat face the click lands
-   *  on, else to the open end `near` it (when the click found one), else the point itself with no
-   *  size. Of concentric faces - a coaxial fitting's inner and outer port share a centre - the
-   *  smallest one that still reaches the click is the one clicked; a face turned away from the
-   *  clicked surface is never it. Returns the opening. */
-  function add(point, normal, near) {
-    const faces = p.faces || [];
+  /** The measured flat face a point on the part lies on, or null. Of concentric faces - a coaxial
+   *  fitting's inner and outer port share a centre - the smallest one that still reaches the
+   *  point is the one clicked; a face turned away from the clicked surface is never it. */
+  function faceAt(point, normal) {
     let best = null, bestHalf = Infinity, bestD = Infinity;
-    faces.forEach((f) => {
+    (p.faces || []).forEach((f) => {
       const fn = f.normal || [0, 0, 1];
       if (normal && (fn[0] * normal[0] + fn[1] * normal[1] + fn[2] * normal[2]) < 0.5) return;
       const fc = f.centroid_m || (f.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
       const half = Math.max(f.width_mm || 0, f.height_mm || 0, f.diameter_mm || 0) / 1000 / 2;
       const dd = Math.hypot(point[0] - fc[0], point[1] - fc[1], point[2] - fc[2]);
-      if (dd > 1.1 * half + 0.003) return;                // the click is not on this face (a tenth of slack)
+      if (dd > 1.1 * half + 0.003) return;                // the point is not on this face (a tenth of slack)
       if (half < bestHalf || (half === bestHalf && dd < bestD)) { best = f; bestHalf = half; bestD = dd; }
     });
-    if (best) return place(fromFace(best));
-    if (near) return addEnd(near);
+    return best;
+  }
+  /** A new opening at a point on the part (the support hook's way in): on the measured flat face
+   *  there, else the point itself, with its size left for the user to type. Returns the opening. */
+  function add(point, normal) {
+    const face = faceAt(point, normal);
+    if (face) return place(fromFace(face));
     const id = nextId();
     return place({ id, name: `opening_${id}`, role: "outlet", shape: "unknown", kind: "picked", confidence: 0.3,
       centroid_m: point.slice(), centroid_mm: point.map((v) => r2(v * 1000)), normal: normal.slice(), added: true });
@@ -688,6 +734,7 @@ function initScene(sessionId, box, surf, p) {
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
     pins: () => pins.length, selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
+    tracing: () => (trace ? trace.length : null), adding: () => addMode,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
@@ -697,7 +744,7 @@ function initScene(sessionId, box, surf, p) {
     render: () => rw.render(),
   };
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { alive = false; ro.disconnect(); clearDecor(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal,
   };
 }
