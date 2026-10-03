@@ -430,7 +430,26 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     if unit_note:
         facts["notes"].append(unit_note)
     skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+    facts["holes"] = skin_holes(skin)
     return facts, skin
+
+
+def skin_holes(skin: Path) -> list[dict]:
+    """The holes of the skin the stage draws, by the one definition the triangle scout uses
+    (cad/open_ends) - what "Add an opening" snaps to. A STEP file's openings are measured exactly
+    from its faces; these are for the click, on the same triangles the user clicks. Never fails
+    the scout: a skin it cannot read has no holes to snap to, and the click falls back."""
+    import numpy as np
+
+    from meshpipeline.cad.open_ends import find_holes
+    from meshpipeline.cad.stl_io import read_stl_triangles
+
+    try:
+        tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3, 3)
+        return [h.as_dict() for h in find_holes(tris)]
+    except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
+        logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)
+        return []
 
 
 def _scout_triangles(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
@@ -1039,6 +1058,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "notes": list(facts.get("notes") or []),
         "read_as": facts.get("read_as", "cad"),
         "faces": list(facts.get("faces") or []),      # every flat face measured: what "add an opening" snaps to
+        "holes": list(facts.get("holes") or []),      # every hole in the skin: what a click into one snaps to
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }

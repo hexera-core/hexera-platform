@@ -1,7 +1,8 @@
 # Responsibility: Read a triangle file - STL, OBJ, VTP - and propose what the CAD scout proposes
 # for a STEP file: the openings, what kind of body it is, which way the fluid goes, a point inside
-# the flow. Triangles carry no faces to measure, so the openings are read from the mesh's open
-# rims and from flat rings and discs in it: close, not exact, and said to be.
+# the flow. Triangles carry no faces to measure, so the openings are the holes cad/open_ends finds
+# (the one definition the stage's "Add an opening" shares) and the flat discs of a fluid body:
+# close, not exact, and said to be.
 # Boundaries: numpy over triangles. No OpenCASCADE, no model, no storage; the decisions mirror
 # cad/scout so the two roads meet the same stage.
 from __future__ import annotations
@@ -19,13 +20,11 @@ from meshpipeline.cad.scout import (
     Opening,
     ScoutResult,
     _name_openings,
-    drop_flange_twins,
-    drop_stacked_rings,
     measured_faces,
 )
 
-#: Two triangles lie in one plane when their normals agree within this and their offsets within
-#: a thousandth of the part's size.
+#: Two triangles lie in one plane when their normals agree within this and each one's centre is
+#: within a thousandth of the part's size of the other's plane.
 PLANE_COS = math.cos(math.radians(3.0))
 #: This many separate pieces read as a scene - buildings, a city block - not a part with mouths.
 MANY_BODIES = 6
@@ -87,7 +86,10 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     tris = read_triangles(path) * float(scale_to_m)
     if len(tris) < 4:
         raise ValueError("the file holds too few triangles to read")
-    verts, faces = _weld(tris)
+    from meshpipeline.cad.open_ends import find_holes, skin_faces
+
+    # the skin as one surface: an assembly's faces where its solids touch are inside the part
+    verts, faces = skin_faces(tris)
     bbox_min, bbox_max = verts.min(axis=0), verts.max(axis=0)
     diag = float(np.linalg.norm(bbox_max - bbox_min)) or 1.0
     centre = (bbox_min + bbox_max) / 2.0
@@ -101,22 +103,17 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     notes: list[str] = []
     candidates: list[Opening] = []
 
-    # OPEN RIMS: the boundary of an open mesh - the uncapped ends of a pipe wall, the open bottom
-    # of a scene - each closed loop of edges that belong to one triangle only
-    boundary_edges = edges[counts == 1]
-    rims = 0
-    for loop in _loops(boundary_edges):
-        poly = _polygon(verts[loop])
-        if poly is None:
-            continue
-        c, n, area, wh = poly
-        if np.dot(n, c - centre) < 0:
-            n = -n                                            # a rim faces away from the part
-        candidates.append(_opening(-1, "rim", c, n, area, wh, bbox_min, bbox_max, diag))
-        rims += 1
+    # THE HOLES, by the one definition the stage's "Add an opening" uses too (cad/open_ends): a
+    # thin wall's open rim (a "rim"), or the mouth of a thick wall's bore at its cut end (a
+    # "ring", the scout's word for an end face whose hole is the opening) - flat or not, square
+    # to the axis or not, wherever the part sits
+    holes = find_holes(tris)
+    for h in holes:
+        candidates.append(_opening(-1, "rim" if h.kind == "rim" else "ring", h.centroid, h.normal, h.area, h.wh,
+                                   bbox_min, bbox_max, diag))
 
     # FLAT REGIONS: coplanar, edge-connected triangles. One boundary loop is a disc (a fluid
-    # body's mouth, or a box's side); two or more make a ring whose hole is the opening.
+    # body's mouth, or a box's side); a face with a real hole in it is the holes' business above.
     regions = _plane_regions(faces, fn, fc, edge_faces[interior], diag)
     sx, sy, sz = (float(v) for v in (bbox_max - bbox_min))
     box_skin = 2.0 * (sx * sy + sy * sz + sz * sx) or 1.0
@@ -142,15 +139,10 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         if normal[2] < -0.9 and abs(outer[0][2] - bbox_min[2]) < 0.01 * diag:
             ground_area += area
         if len(polys) >= 2 and polys[1][2] >= MIN_RING_BORE_FRACTION * outer[2]:
-            hole = polys[1]
-            candidates.append(_opening(int(region[0]), "ring", hole[0], normal, hole[2], hole[3],
-                                       bbox_min, bbox_max, diag, outer_wh=outer[3]))
-        else:
-            candidates.append(_opening(int(region[0]), "disc", outer[0], normal, area, outer[3],
-                                       bbox_min, bbox_max, diag))
+            continue          # an end face around a hole: the hole, if it is one, is found above
+        candidates.append(_opening(int(region[0]), "disc", outer[0], normal, area, outer[3],
+                                   bbox_min, bbox_max, diag))
 
-    candidates = drop_flange_twins(candidates, (float(centre[0]), float(centre[1]), float(centre[2])))
-    candidates = drop_stacked_rings(candidates)
     measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
     discs = [c for c in candidates if c.kind == "disc" and c.on_extremity]
@@ -184,7 +176,9 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     pool = sorted(pool, key=lambda o: o.area, reverse=True)
     if pool:
         largest = pool[0].area
-        pool = [o for o in pool if o.area >= MIN_OPENING_FRACTION * largest]
+        # a hole is an opening however small (an aorta's 3.7 mm branch beside its 27.7 mm root);
+        # a flat face has to be a real share of the largest to be one
+        pool = [o for o in pool if o.kind in ("ring", "rim") or o.area >= MIN_OPENING_FRACTION * largest]
     if len(pool) > MAX_OPENINGS:
         notes.append(f"{len(pool)} candidate openings found; only the {MAX_OPENINGS} largest are proposed")
         pool = pool[:MAX_OPENINGS]
@@ -216,22 +210,14 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     result.extra = {  # type: ignore[attr-defined]
         "components": n_components, "grounded": bool(grounded),
         "flow_axis_guess": "+x" if size[0] >= size[1] else "+y",
+        # every hole, for the stage: "Add an opening" snaps to these, so a sticker added by hand
+        # lands where the measuring step would have put it
+        "holes": [h.as_dict() for h in holes],
     }
     return result
 
 
 # ---------------------------------------------------------------------------- the geometry ----
-def _weld(tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    pts = tris.reshape(-1, 3)
-    span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) or 1.0
-    key = np.round(pts / (1e-6 * span)).astype(np.int64)
-    _, first, inverse = np.unique(key, axis=0, return_index=True, return_inverse=True)
-    verts = pts[first]
-    faces = inverse.reshape(-1, 3)
-    keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
-    return verts, faces[keep]
-
-
 def _face_normals(verts, faces):
     a, b, c = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
     cross = np.cross(b - a, c - a)
@@ -279,8 +265,13 @@ def _components(n_faces: int, pairs: np.ndarray) -> np.ndarray:
 
 
 def _plane_regions(faces, fn, fc, pairs, diag: float) -> list[np.ndarray]:
-    """Edge-connected groups of coplanar triangles, each as an array of face indices."""
-    d = np.einsum("ij,ij->i", fn, fc)
+    """Edge-connected groups of coplanar triangles, each as an array of face indices.
+
+    TWO TRIANGLES SHARE A PLANE when each one's centre lies on the other's plane - measured from
+    the triangles themselves, never from the world origin. The plane's distance from the origin
+    (n . c) once stood in for that: on a part drawn 600 mm from the origin, normals a fraction of
+    a degree apart moved it by millimetres, and the flat end rings of an aorta fell apart into
+    single triangles - the scout found none of its five open ends."""
     parent = np.arange(len(faces))
 
     def find(x):
@@ -293,7 +284,9 @@ def _plane_regions(faces, fn, fc, pairs, diag: float) -> list[np.ndarray]:
     for a, b in pairs:
         if a < 0 or b < 0:
             continue
-        if np.dot(fn[a], fn[b]) >= PLANE_COS and abs(d[a] - d[b]) <= tol:
+        gap = fc[b] - fc[a]
+        if (np.dot(fn[a], fn[b]) >= PLANE_COS and abs(float(np.dot(fn[a], gap))) <= tol
+                and abs(float(np.dot(fn[b], gap))) <= tol):
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[rb] = ra

@@ -86,6 +86,39 @@ def test_a_pipe_wall_with_ring_ends_is_read_as_a_wall(stl):
         assert abs(o.equivalent_diameter - 2 * inner) < 0.01      # the HOLE is the opening
 
 
+def _wall(outer, inner, L, at=(0.0, 0.0, 0.0), n=32):
+    """A pipe wall along z with flat ring ends, moved to `at`."""
+    tris = _band(_ring(outer, 0.0, n), _ring(outer, L, n))
+    tris += _band(_ring(inner, L, n), _ring(inner, 0.0, n))
+    tris += _band(_ring(inner, 0.0, n), _ring(outer, 0.0, n))
+    tris += _band(_ring(outer, L, n), _ring(inner, L, n))
+    return [[[p[0] + at[0], p[1] + at[1], p[2] + at[2]] for p in t] for t in tris]
+
+
+def test_a_pipe_wall_drawn_far_from_the_origin_on_a_rough_mesh_keeps_its_ring_ends(stl):
+    """The aorta (Aorta1_offset.stl): drawn ~600 mm from the origin, its flat end rings a little
+    uneven. Two triangles were 'one plane' when their distances from the ORIGIN agreed, and normals
+    a fraction of a degree apart moved those by millimetres there: the rings fell apart and the
+    scout found none of its five ends. The ends are holes now, found the way the stage finds them."""
+    tris = np.asarray(_wall(0.06, 0.05, 0.3, at=(0.4, 0.3, 0.3), n=96))
+    end = np.abs(tris[..., 2] - 0.3) < 1e-9
+    tris[..., 2] += end * 2e-5 * np.sin(5000 * tris[..., 0] + 3000 * tris[..., 1])     # by position: still welded
+    res = scout_mesh(stl("far", tris.tolist()), scale_to_m=1.0)
+    assert res.body_kind == "pipe_wall" and res.input_kind == "body-surface" and res.flow == "internal"
+    assert len(res.openings) == 2 and all(o.kind == "ring" for o in res.openings)
+    holes = res.extra["holes"]                                   # what the stage's click snaps to
+    assert len(holes) == 2 and all(abs(h["diameter_mm"] - 100.0) < 1.0 for h in holes)
+
+
+def test_a_small_hole_beside_a_big_one_is_still_proposed(stl):
+    # the aorta's 3.7 mm branch beside its 27.7 mm root: under 2 % of the largest's area, which
+    # a flat face would not be, and every hole is a real opening
+    tris = _wall(0.15, 0.14, 0.5) + _wall(0.022, 0.018, 0.1, at=(0.5, 0.0, 0.0))
+    res = scout_mesh(stl("small", tris), scale_to_m=1.0)
+    assert len(res.openings) == 4
+    assert sorted(o.equivalent_diameter for o in res.openings) == pytest.approx([0.036, 0.036, 0.28, 0.28], abs=0.002)
+
+
 def test_a_box_is_a_solid_body_in_a_flow(stl):
     res = scout_mesh(stl("box", _box_triangles((0, 0, 0), (2.0, 1.0, 0.8))), scale_to_m=1.0)
     assert res.flow == "external" and res.input_kind == "solid-body"
