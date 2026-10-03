@@ -3,7 +3,9 @@
 #       `cancelled` record with its announcement, and the withdrawal of a launch still queued.
 # Boundaries: it writes the ONE terminal transaction of a cancelled job; from that commit on the
 #             worker's own terminal path is refused by the fence and by the transition table. It runs
-#             no pipeline and stops no native process - a worker mid-mesh learns at its next fence.
+#             no pipeline and stops no native process - a worker mid-mesh learns at its next fence,
+#             and one waiting on a Cloud Run execution notices the cleared token within about half a
+#             minute and cancels that execution itself (application/native_submission).
 from __future__ import annotations
 
 import enum

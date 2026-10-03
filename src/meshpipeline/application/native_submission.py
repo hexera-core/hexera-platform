@@ -7,12 +7,19 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
+from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE, abandonment_watch
 
 logger = logging.getLogger(__name__)
+
+#: How often a run waiting on its remote mesh asks the database whether the job is still its own.
+#: A cancel is noticed within this plus one 10-second poll; one primary-key read per half minute
+#: per running mesh is nothing beside the execution it can stop.
+OWNERSHIP_RECHECK_SECONDS = 30.0
 
 
 
@@ -46,6 +53,46 @@ def workspace_digest(workspace: Any) -> str:
         for path in files
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def abandonment_watch_for(own: Any, *, recheck_seconds: float = OWNERSHIP_RECHECK_SECONDS,
+                          clock: Callable[[], float] = time.monotonic) -> Callable[[], str | None]:
+    """The question the provider's poll loop asks between polls: should this run stop waiting?
+
+    Yes when the worker is shutting down (its job is handed back and runs again elsewhere, so this
+    run's result would never be read), and yes when the job is no longer this worker's: the
+    owner's cancel clears the worker token (persistence/lease.evict_owner), a takeover rotates it,
+    and the reaper ends the status. The cancel itself never waits on any of this - it is already
+    durable when the worker notices.
+
+    The drain mark is in memory and read every time; ownership is a database read, taken at most
+    every `recheck_seconds`. A read that fails is "keep waiting", never "stop": it is logged, the
+    next one may answer, and the fence still refuses the result of a run that truly lost its job.
+    """
+    from meshpipeline.contracts.worker_drain import drain_requested
+    from meshpipeline.persistence.repositories import native_submission_repository as claims
+
+    checked_at: float | None = None
+
+    def reason() -> str | None:
+        nonlocal checked_at
+        if drain_requested():
+            return "the worker is shutting down; the job is being handed back to run elsewhere"
+        now = clock()
+        if checked_at is not None and now - checked_at < recheck_seconds:
+            return None
+        checked_at = now
+        try:
+            owned = claims.still_owned(job_id=own.job_id,
+                                       execution_generation=own.execution_generation,
+                                       worker_token=own.worker_token)
+        except Exception as exc:  # noqa: BLE001 - see the docstring: unanswered means keep waiting
+            logger.warning("could not check whether job %s is still this worker's (%s) - still "
+                           "waiting on its mesh", own.job_id, type(exc).__name__)
+            return None
+        return None if owned else "the job was cancelled, or is no longer this worker's to run"
+
+    return reason
 
 
 def _infrastructure_failure(engine: str, detail: str) -> dict:
@@ -146,8 +193,9 @@ class ClaimingMeshExecutor:
                 return _infrastructure_failure(
                     engine, "a previous worker's submission was accepted and this executor "
                             "cannot collect its result without submitting again")
-            return collect(workspace, engine=engine, timeout=timeout,
-                           operation_key=outcome.operation_key)
+            with abandonment_watch(abandonment_watch_for(own)):
+                return collect(workspace, engine=engine, timeout=timeout,
+                               operation_key=outcome.operation_key)
 
         if outcome.result is claims.ClaimResult.existing_failed:
             return _infrastructure_failure(
@@ -161,8 +209,11 @@ class ClaimingMeshExecutor:
             return _infrastructure_failure(engine, outcome.detail or str(outcome.result))
 
         try:
-            result = self._inner.run(workspace, engine=engine, timeout=timeout,
-                                     operation_key=outcome.operation_key)
+            # THE WATCH the provider waits under: a run whose job was cancelled, moved or ended
+            # stops waiting and stops its execution, instead of paying for a mesh nobody reads.
+            with abandonment_watch(abandonment_watch_for(own)):
+                result = self._inner.run(workspace, engine=engine, timeout=timeout,
+                                         operation_key=outcome.operation_key)
         except Exception as exc:  # noqa: BLE001 - classified below, never swallowed
             if _is_indeterminate(exc):
                 # The request may have reached the provider. Recording that is the whole point:

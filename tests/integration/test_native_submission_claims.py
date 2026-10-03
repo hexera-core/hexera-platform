@@ -317,6 +317,40 @@ async def test_one_provider_reference_cannot_belong_to_two_operations():
         await b_engine.dispose()
 
 
+async def test_a_run_waiting_on_its_mesh_learns_when_the_job_is_no_longer_its_own():
+    # THE QUESTION a worker's mesh poll asks every half minute (application/native_submission
+    # abandonment_watch_for). Yes while it owns a live job; no once the owner's cancel cleared the
+    # token, once another generation holds it, or once the reaper ended the status under it.
+    from sqlalchemy import text
+
+    from meshpipeline.persistence.lease import LeaseRepository
+
+    job_id, own, Session, engine_ = await _claimed_job("still-owned")
+    ended_job, ended_own, _s2, ended_engine = await _claimed_job("still-owned-ended")
+    try:
+        def owned(j, o):
+            return repo.still_owned(job_id=j, execution_generation=o.execution_generation,
+                                    worker_token=o.worker_token)
+
+        assert owned(job_id, own) is True
+        assert owned(job_id, ownership.superseded(job_id, own)) is False
+
+        async with Session() as db:                       # the cancel's eviction, committed
+            assert await LeaseRepository().evict_owner(db, job_id) is True
+            await db.commit()
+        assert owned(job_id, own) is False
+
+        assert owned(ended_job, ended_own) is True
+        async with Session() as db:                       # the reaper fails it; token untouched
+            await db.execute(text("update simulation_jobs set status = 'failed' where id = :j"),
+                             {"j": ended_job})
+            await db.commit()
+        assert owned(ended_job, ended_own) is False
+    finally:
+        await engine_.dispose()
+        await ended_engine.dispose()
+
+
 async def test_no_raw_worker_token_is_stored():
     job_id, own, _s, engine_ = await _claimed_job("fingerprint")
     try:
