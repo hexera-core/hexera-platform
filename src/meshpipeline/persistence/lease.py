@@ -67,6 +67,23 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _locked_job(job_id: uuid.UUID):
+    """The job row, row-locked AND as the database holds it under that lock.
+
+    `populate_existing` is what makes the lock worth taking. Without it SQLAlchemy hands back the
+    instance already in the session's identity map with the attributes of whichever read put it
+    there - a read taken BEFORE the lock - so every check made on it decides on a status the lock
+    never saw. claim_delivery reads the job before claiming it, so an owner's cancel committed in
+    between was invisible: the claim wrote `running` over `cancelled` and the mesh ran and was
+    delivered anyway (shared dev, 2026-09-29).
+
+    It also overwrites any UNFLUSHED edit to this row in the same session. Lock first, then write -
+    the only order in which the lock protects the write at all.
+    """
+    return (select(SimulationJob).where(SimulationJob.id == job_id)
+            .with_for_update().execution_options(populate_existing=True))
+
+
 class LeaseRepository:
     async def claim_execution(
         self, db: AsyncSession, job_id: uuid.UUID, *, worker_token: uuid.UUID, backend: str,
@@ -78,8 +95,7 @@ class LeaseRepository:
         pipeline_total = int(pipeline_total_seconds if pipeline_total_seconds is not None
                              else rtcfg.PIPELINE_TOTAL_TIMEOUT_SECONDS)
 
-        row = (await db.execute(
-            select(SimulationJob).where(SimulationJob.id == job_id).with_for_update())).scalar_one_or_none()
+        row = (await db.execute(_locked_job(job_id))).scalar_one_or_none()
         if row is None:
             return ClaimResult.not_found, None
         if row.status in TERMINAL_STATES:
@@ -149,8 +165,7 @@ class LeaseRepository:
                         now: datetime | None = None, lease_seconds: int | None = None) -> bool:
         now = now or _now()
         lease_seconds = int(lease_seconds if lease_seconds is not None else rtcfg.WORKER_LEASE_SECONDS)
-        row = (await db.execute(
-            select(SimulationJob).where(SimulationJob.id == own.job_id).with_for_update())).scalar_one_or_none()
+        row = (await db.execute(_locked_job(own.job_id))).scalar_one_or_none()
         if row is None or row.status in TERMINAL_STATES:
             return False
         if (row.execution_generation != own.execution_generation
@@ -208,8 +223,7 @@ class LeaseRepository:
 
     async def lock_current_owner(self, db: AsyncSession,
                                  own: ExecutionOwnership) -> SimulationJob | None:
-        row = (await db.execute(select(SimulationJob).where(SimulationJob.id == own.job_id)
-                                .with_for_update())).scalar_one_or_none()
+        row = (await db.execute(_locked_job(own.job_id))).scalar_one_or_none()
         if row is None:
             return None
         if (row.execution_generation != own.execution_generation
@@ -235,8 +249,7 @@ class LeaseRepository:
         expire. Failing the cancel over a Redis blip would leave the owner unable to stop a run
         for no safety gain.
         """
-        row = (await db.execute(
-            select(SimulationJob).where(SimulationJob.id == job_id).with_for_update())).scalar_one_or_none()
+        row = (await db.execute(_locked_job(job_id))).scalar_one_or_none()
         if row is None or row.active_worker_token is None:
             return False
         # From here on, the row's own id: the value the database returned, not the argument.
@@ -256,8 +269,7 @@ class LeaseRepository:
 
     async def release(self, db: AsyncSession, own: ExecutionOwnership,
                       *, now: datetime | None = None) -> None:
-        row = (await db.execute(
-            select(SimulationJob).where(SimulationJob.id == own.job_id).with_for_update())).scalar_one_or_none()
+        row = (await db.execute(_locked_job(own.job_id))).scalar_one_or_none()
         if row is None or row.status in TERMINAL_STATES:
             return
         if (row.execution_generation == own.execution_generation
