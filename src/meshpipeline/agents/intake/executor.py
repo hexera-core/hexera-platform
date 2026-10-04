@@ -180,6 +180,19 @@ class IntakeToolExecutor:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
+    def _geometry_form(self) -> str:
+        # WHAT KIND OF FILE the user uploaded - a CAD solid or a surface mesh - read off the
+        # approved source's own name (engines/capability.geometry_form). Every engine check below
+        # asks the engine whether it takes THIS file for the flow; '' (no upload, or a name that
+        # says nothing) claims nothing, and nothing is refused on it.
+        from meshpipeline.engines.capability import geometry_form
+        ref = self.state.source_ref
+        for candidate in (getattr(ref, "suffix_hint", ""), getattr(ref, "original_filename", "")):
+            form = geometry_form(candidate)
+            if form:
+                return form
+        return ""
+
 
     async def run(self, tool: str, args: dict | None) -> IntakeToolResult:
         st = self.state
@@ -250,7 +263,8 @@ class IntakeToolExecutor:
         recs = rec.recommend_compatible_engines(
             args.get("purpose", ""), args.get("input_kind", ""),
             dimensionality=args.get("dimensionality"), patches=args.get("patches"),
-            engine_params=args.get("engine_params"), authorized=st.rec_authorized)
+            engine_params=args.get("engine_params"), authorized=st.rec_authorized,
+            geometry_form=self._geometry_form())
         if st.rec_authorized:
             # TURN-SCOPED latch. Set once, cleared only by a new Intake invocation.
             st.recommended_this_turn = True
@@ -301,16 +315,30 @@ class IntakeToolExecutor:
             # user never said - or to ask a user who had said "your call" which value to revise.
             # The engine is the model's to change, the confirmed geometry is not.
             purpose, kind = st.declared_case
-            verdict = preview_admission(eng, purpose, kind, dimensionality="3D")
+            form = self._geometry_form()
+            verdict = preview_admission(eng, purpose, kind, dimensionality="3D",
+                                        geometry_form=form)
             if verdict.get("verdict") == "impossible":
                 able = [e for e in self._engines
-                        if preview_admission(e, purpose, kind, dimensionality="3D").get("verdict") != "impossible"]
+                        if preview_admission(e, purpose, kind, dimensionality="3D",
+                                             geometry_form=form).get("verdict") != "impossible"]
                 shown = _vocab.to_display(_vocab.ENGINE, eng)
-                names = ", ".join(_vocab.to_display(_vocab.ENGINE, e) for e in able) or "none"
+                if not able:
+                    # NO ENGINE can take this file for this flow: proposing any of them would only
+                    # be refused again (the aorta STL was offered VMTK, which cannot take an STL
+                    # either). The way on is the file - say so, and propose nothing.
+                    return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
+                        f"Not proposed: {verdict.get('capability_reason') or shown + ' cannot mesh this.'} "
+                        "No engine here can mesh what the user confirmed from the file they "
+                        "uploaded, so do not propose any engine. Tell the user plainly, in one or "
+                        "two sentences, and give them the way on: "
+                        + " ".join(verdict.get("what_would_pass") or [])))
+                names = ", ".join(_vocab.to_display(_vocab.ENGINE, e) for e in able)
                 return IntakeToolResult(tool="propose_engine_selection", accepted=False, content=(
                     f"Not proposed: {shown} cannot mesh what the user confirmed on the geometry "
                     f"stage ({_vocab.to_display(_vocab.INPUT_KIND, kind)}, "
-                    f"{_vocab.to_display(_vocab.PURPOSE, purpose)}), and the user did not ask for it. "
+                    f"{_vocab.to_display(_vocab.PURPOSE, purpose)}) from the file they uploaded, "
+                    f"and the user did not ask for it. "
                     f"Engines that can: {names}. Propose one of those instead; never ask the user to "
                     "change the geometry they confirmed to suit an engine they did not choose."))
         # A NEW proposal invalidates the previous selection AND any admission preview or pending
@@ -396,7 +424,8 @@ class IntakeToolExecutor:
                                  dimensionality=args.get("dimensionality"),
                                  patches=args.get("patches"),
                                  engine_params=args.get("engine_params"),
-                                 geometry_facts=self._geometry_facts())
+                                 geometry_facts=self._geometry_facts(),
+                                 geometry_form=self._geometry_form())
         logger.info("Intake: preview_selected_admission(%s,%s,%s,patches=%d) -> %s(%s) - job_id=%s",
                     eng, args.get("purpose"), args.get("input_kind"),
                     len(args.get("patches") or []), prev["verdict"],

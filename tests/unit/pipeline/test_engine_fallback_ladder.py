@@ -67,9 +67,20 @@ def _node(state: dict) -> dict:
 # the declarations the ladder stands on
 
 def test_every_engine_that_produces_a_topology_is_on_its_ladder():
-    for topo, order in lad.FALLBACK_ORDER.items():
+    for topo in ("external", "internal"):
+        order = lad.fallback_order(topo)
         missing = set(engines_producing_topology(topo)) - set(order)
         assert not missing, f"{sorted(missing)} produce {topo} flow but are not on its ladder"
+
+
+def test_the_ladder_order_is_read_from_the_engines_declarations_not_a_list():
+    # most robust input handling first, then the body-fitted hex mesher, then the tet engines -
+    # declared by each engine (EngineSpec.ladder_rank), so a new engine joins from its spec alone
+    assert lad.fallback_order("external") == ("cfmesh", "snappy", "gmsh")
+    assert lad.fallback_order("internal") == ("cfmesh", "snappy", "vmtk", "gmsh")
+    import inspect
+    src = inspect.getsource(lad)
+    assert '"cfmesh", "snappy"' not in src, "the ladder lists engines by hand again"
 
 
 def test_every_implemented_engine_declares_what_it_delivers():

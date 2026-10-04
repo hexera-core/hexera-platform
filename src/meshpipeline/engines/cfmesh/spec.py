@@ -12,6 +12,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     RunPolicy,
@@ -149,6 +150,14 @@ SPEC = EngineSpec(
         # surfaceGenerateBoundingBox exists to do).
         capabilities=(MeshCapability("body-surface", "fluid-volume",
                                      topologies=("internal", "external")),),
+        # WHAT FILE IT TAKES, per flow - the true path on main. EXTERNAL wraps a surface, so a CAD
+        # solid (tessellated first) and a surface mesh both reach it. INTERNAL carves the fluid out
+        # of the CAD solid (geometry.step + tessellate_internal); a surface upload is refused by
+        # cfmesh_runner._configure_internal. When surface internal flow lands, widen it here.
+        accepts=(FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # the most forgiving input handling (it wraps dirty surfaces): first on the ladder
+        ladder_rank=10,
         input_contract=InputContract(
             dimensionalities=("2D", "3D"),
             input_kind="surface",

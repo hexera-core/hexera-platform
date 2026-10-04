@@ -3892,9 +3892,9 @@
   ]
  },
  {
-  "context": "pipeline/geometry_admission.py::node_geometry_admission::error#1|NotAPublisher|not-a-publisher|",
+  "context": "pipeline/geometry_admission.py::_refuse::error#1|NotAPublisher|not-a-publisher|",
   "path": "pipeline/geometry_admission.py",
-  "qualname": "node_geometry_admission",
+  "qualname": "_refuse",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,

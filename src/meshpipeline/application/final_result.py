@@ -544,6 +544,13 @@ def _admission_account(failure_facts: Mapping | None,
     phases = {str(p) for p in (facts.get("phases") or [])}
     reason = clean_reason(facts.get("reason"))
     declared_reason = clean_reason(facts.get("declared_reason"))
+    if facts.get("refused_by_design") and declared_reason:
+        # REFUSED BY DESIGN: the engine cannot take this FORM of file for this flow - its declared
+        # limit, not a defect in the file and not a crash. Said as exactly that, with the fact that
+        # nothing was built; the run's one offer (engine_fallback.offer) carries the way on - the
+        # engines that can take the file, or the file every engine for this flow takes.
+        return (FailureCategory.incompatible_requirements, FailureCause.GEOMETRY_REJECTED.value,
+                f"{declared_reason}. Nothing was built, and no attempt was used.", "")
     if phases and "measured" not in phases:
         reason = declared_reason or reason
         label = engine

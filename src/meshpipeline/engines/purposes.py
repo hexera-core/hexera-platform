@@ -27,6 +27,10 @@ class Purpose:
     # it from the purpose; only the gate and the engine runners read it.
     # "" = the distinction does not apply (structural; CHT, which declares its own).
     flow_topology: str = ""
+    # THE FLOW KIND an engine must be designed for to serve this purpose (engines/capability.py
+    # FLOW_KINDS): the topology for the CFD purposes, and its own kind for the two that have none.
+    # Engines declare, per flow kind, the geometry forms they can take (EngineSpec.accepts).
+    flow_kind: str = ""
     # USE-CASE review axes (ReviewAxis tuple): what THIS workflow requires of any mesh,
     # regardless of engine (external CFD wants far-field clearance; structural wants the
     # restraint/load surfaces tagged). The reviewer runtime unions these with the
@@ -50,6 +54,7 @@ PURPOSES: dict[str, Purpose] = {
         # PLANAR body (2D plane-stress/strain) - the surface mesh that IS the solid
         # discretization (CPS/plane elements). Both kinds serve this purpose.
         requires_mesh_kind=("solid-volume", "surface-mesh"),
+        flow_kind="structural",
         review_axes=_STRUCTURAL_AXES,
     ),
     "external_cfd": Purpose(
@@ -58,6 +63,7 @@ PURPOSES: dict[str, Purpose] = {
         boundary_roles=("wall", "farfield", "symmetry", "empty"),
         requires_mesh_kind="fluid-volume",   # needs the fluid AROUND the body meshed
         flow_topology="external",
+        flow_kind="external",
         review_axes=_EXTERNAL_CFD_AXES,
     ),
     "internal_cfd": Purpose(
@@ -66,6 +72,7 @@ PURPOSES: dict[str, Purpose] = {
         boundary_roles=("wall", "inlet", "outlet", "symmetry", "empty"),
         requires_mesh_kind="fluid-volume",   # needs the fluid INSIDE the cavity meshed
         flow_topology="internal",
+        flow_kind="internal",
         review_axes=_INTERNAL_CFD_AXES,
     ),
     "conjugate_heat_transfer": Purpose(
@@ -75,6 +82,7 @@ PURPOSES: dict[str, Purpose] = {
         # (splitMeshRegions auto-creates the coupled mappedWall patches), not asked for.
         boundary_roles=("inlet", "outlet", "wall", "external", "symmetry", "empty"),
         requires_mesh_kind="multiregion-volume",  # coupled fluid + solid meshes in one case
+        flow_kind="multi-region",
         review_axes=_CHT_AXES,
     ),
 }
@@ -134,6 +142,10 @@ def flow_topology(purpose_key: str) -> str:
 
 def topology_of(purpose_key: str) -> str:
     return PURPOSES[purpose_key].flow_topology if purpose_key in PURPOSES else ""
+
+
+def flow_kind_of(purpose_key: str) -> str:
+    return PURPOSES[purpose_key].flow_kind if purpose_key in PURPOSES else ""
 
 
 def kinds_admitted_as(input_kind: str | None, required_mesh_kinds: tuple) -> tuple:

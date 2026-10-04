@@ -12,6 +12,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
@@ -168,6 +169,14 @@ SPEC = EngineSpec(
             # triangles (CPS3/CPS6 in the .inp) with boundary groups on curves.
             MeshCapability("planar-domain", "surface-mesh"),
         ),
+        # WHAT FILE IT TAKES, per flow - the true path on main: the CAD B-rep is staged as
+        # geometry.step and gmsh meshes the volume it bounds, for every flow. A surface upload
+        # stages no B-rep at all (gmsh_runner.inspect_stl: "upload a CAD solid, not a bare STL").
+        accepts=(FlowSupport("structural", ("cad",)),
+                 FlowSupport("external", ("cad",)),
+                 FlowSupport("internal", ("cad",))),
+        # a tetrahedral mesher of a prepared volume: last on the flow ladders
+        ladder_rank=40,
         input_contract=InputContract(
             dimensionalities=("2D", "3D"),
             input_kind="solid",
