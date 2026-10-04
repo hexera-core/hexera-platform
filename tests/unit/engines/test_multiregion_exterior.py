@@ -43,15 +43,18 @@ def test_the_exterior_becomes_the_declared_ports_then_the_declared_wall(tmp_path
     plan = dict(N.name_exterior(ws, [{"name": "fluid", "type": "fluid"},
                                       {"name": "pipe", "type": "solid"}]))
     # the fluid: its ports from the exterior faces at their declared places, then the wall
-    assert [c for c, _ in plan["fluid"]] == [
-        "topoSet -region fluid", "createPatch -region fluid -overwrite",
-        "createPatch -region fluid -dict system/fluid/createPatchDict.wall -overwrite"]
+    cmds = [c for c, _ in plan["fluid"]]
+    assert cmds[:2] == ["topoSet -region fluid", "createPatch -region fluid -overwrite"]
+    # the wall pass: the default dict name (portable across OpenFOAM lines), and only when the
+    # ports left something of the exterior (v2412 drops an emptied patch)
+    assert "constant/fluid/polyMesh/boundary" in cmds[2] and \
+        "cp system/fluid/createPatchDict.wall system/fluid/createPatchDict" in cmds[2] and \
+        cmds[2].endswith("createPatch -region fluid -overwrite; fi") and "-dict" not in cmds[2]
     ts = (ws / "system" / "fluid" / "topoSetDict").read_text()
     assert "box (-0.06 -0.06 -0.06) (0.06 0.06 0.06)" in ts and "action subset" in ts
     assert "set port_outlet;" in (ws / "system" / "fluid" / "createPatchDict").read_text()
     # a solid has no ports: its whole outside is the declared wall
-    assert [c for c, _ in plan["pipe"]] == [
-        "createPatch -region pipe -dict system/pipe/createPatchDict.wall -overwrite"]
+    assert len(plan["pipe"]) == 1 and "createPatch -region pipe -overwrite" in plan["pipe"][0][0]
     assert "name pipe_wall; patchInfo { type wall; } constructFrom patches; patches (exterior);" in \
         (ws / "system" / "pipe" / "createPatchDict.wall").read_text()
 

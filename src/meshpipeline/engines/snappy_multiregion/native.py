@@ -205,8 +205,14 @@ def name_exterior(ws: Path, regions: list) -> list[tuple[str, list[tuple[str, st
             hdr.format(obj="createPatchDict") + "pointSync false;\npatches\n(\n"
             + f"    {{ name {wall}; patchInfo {{ type wall; }} constructFrom patches; "
             "patches (exterior); }\n);\n")
-        cmds.append((f"createPatch -region {region} -dict system/{region}/createPatchDict.wall "
-                     "-overwrite", f"createPatch.wall.{region}"))
+        # The wall pass reads its dict under the default name: `-dict` with `-region` resolves
+        # differently across OpenFOAM lines (v2412 looked for system/<r>/<r>/...). And only when
+        # something is left of the exterior: v2412's createPatch drops a patch the ports emptied
+        # (a fluid enclosed by its pipe has no outside but its ports), OpenFOAM 11 keeps it.
+        cmds.append((f"if grep -qE '^[[:space:]]*exterior[[:space:]]*$' "
+                     f"constant/{region}/polyMesh/boundary; then "
+                     f"cp system/{region}/createPatchDict.wall system/{region}/createPatchDict && "
+                     f"createPatch -region {region} -overwrite; fi", f"createPatch.wall.{region}"))
         out.append((region, cmds))
     return out
 
