@@ -507,6 +507,7 @@ def _canonical(rec: dict, *, accepted: bool) -> str:
                          ("internal:filling:", "note#4"),
                          ("internal:passes-exhausted", "note#3"),
                          ("internal:thin-feature:", "note#7"),
+                         ("internal:narrow-passage:", "note#8"),
                          ("snappy:preflight-replan:", "note#7")):
         if op.startswith(prefix):
             return f"{fn}::{name}"
