@@ -2426,6 +2426,19 @@
   "roots": []
  },
  {
+  "context": "cad/cad_tessellate.py::tessellate_internal._less_other_solids::error#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/cad_tessellate.py",
+  "qualname": "tessellate_internal._less_other_solids",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/cad_tessellate.py::tessellate_internal._mouth_caps::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
   "qualname": "tessellate_internal._mouth_caps",
