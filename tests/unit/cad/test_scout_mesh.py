@@ -1,7 +1,8 @@
 # Responsibility: Verify the triangle scout reads what the CAD scout reads - openings, kind, flow -
-# from meshes built on paper: an open tube, a capped tube, a pipe wall with ring ends, a box, and a
-# block of boxes on the ground.
-# Boundaries: numpy meshes written as STL; no OpenCASCADE, no model, no storage.
+# from meshes built on paper: an open tube, a capped tube (fine and coarse), a fluid body with a side
+# branch, a coarse closed blob, a pipe wall with ring ends, a box, and a block of boxes on the ground.
+# Boundaries: numpy meshes written as STL, and OpenCASCADE for the shape that needs a boolean
+# (skipped where it is not installed); no model, no storage.
 from __future__ import annotations
 
 import math
@@ -71,6 +72,79 @@ def test_a_capped_tube_is_a_fluid_body_with_two_disc_mouths(stl):
     assert res.flow == "internal" and res.input_kind == "fluid-domain"
     assert [o.kind for o in res.openings] == ["disc", "disc"]
     assert all(o.on_extremity for o in res.openings)
+
+
+def _rows(r, length, sides, rows):
+    """A tube along z in `rows` rows of `sides` facets: a coarse export's wall."""
+    tris = []
+    for j in range(rows):
+        tris += _band(_ring(r, length * j / rows, sides), _ring(r, length * (j + 1) / rows, sides))
+    return tris
+
+
+def test_a_coarse_fluid_body_proposes_its_two_lids_and_none_of_its_facets(stl):
+    # a solver's coarse export of a pipe's fluid: ten facets round, flat runs of them all along it
+    # - each one flat, cornered against the next - and only the two end lids are openings
+    tris = _rows(0.05, 1.0, 10, 20) + _fan((0, 0, 0), _ring(0.05, 0.0, 10), flip=True) + _fan((0, 0, 1.0), _ring(0.05, 1.0, 10))
+    res = scout_mesh(stl("coarse", tris), scale_to_m=1.0)
+    assert res.input_kind == "fluid-domain" and len(res.openings) == 2
+    assert sorted(round(o.centroid[2], 6) for o in res.openings) == [0.0, 1.0]
+    assert all(o.confidence >= 0.9 for o in res.openings)
+
+
+def test_a_side_branchs_lid_is_proposed_wherever_it_sits(stl):
+    # the fluid of a pipe with a branch off its side, as a CAD export draws it: the branch's lid is
+    # nowhere near the part's box, and it is an opening as much as the two ends are
+    pytest.importorskip("OCP")
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    def cyl(p, axis, r, h):
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*p), gp_Dir(*axis)), r, h).Shape()
+
+    # a short branch and, further along, a long one the same way: the short one's lid is inside
+    # the part's box, short of the long one's
+    shape = BRepAlgoAPI_Fuse(cyl((0, 0, 0), (0, 0, 1), 0.05, 1.0), cyl((0, 0, 0.3), (1, 0, 0), 0.015, 0.09)).Shape()
+    shape = BRepAlgoAPI_Fuse(shape, cyl((0, 0, 0.7), (1, 0, 0), 0.02, 0.3)).Shape()
+    BRepMesh_IncrementalMesh(shape, 0.004, False, 0.4, True)
+    tris = []
+    ex = TopExp_Explorer(shape, TopAbs_FACE)
+    while ex.More():
+        face = TopoDS.Face_s(ex.Current())
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(face, loc)
+        pts = [tri.Node(i).Transformed(loc.Transformation()) for i in range(1, tri.NbNodes() + 1)]
+        for i in range(1, tri.NbTriangles() + 1):
+            a, b, c = tri.Triangle(i).Get()
+            if face.Orientation() == TopAbs_REVERSED:
+                b, c = c, b
+            tris.append([[pts[k - 1].X(), pts[k - 1].Y(), pts[k - 1].Z()] for k in (a, b, c)])
+        ex.Next()
+    res = scout_mesh(stl("branch", tris), scale_to_m=1.0)
+    assert res.input_kind == "fluid-domain" and len(res.openings) == 4, [o.centroid for o in res.openings]
+    branch = next(o for o in res.openings if abs(o.centroid[2] - 0.3) < 0.01)
+    assert not branch.on_extremity and branch.equivalent_diameter == pytest.approx(0.03, rel=0.05)
+    assert branch.normal[0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_a_coarse_closed_body_is_a_body_in_a_flow(stl):
+    # a coarse ellipsoid: every facet flat, none of them a lid
+    u, v = np.meshgrid(np.linspace(0, np.pi, 9), np.linspace(0, 2 * np.pi, 13))
+    P = np.stack([0.6 * np.sin(u) * np.cos(v), 0.2 * np.sin(u) * np.sin(v), 0.3 * np.cos(u)], axis=-1)
+    tris = []
+    for i in range(12):
+        for j in range(8):
+            a, b, c, d = P[i, j], P[i + 1, j], P[i, j + 1], P[i + 1, j + 1]
+            tris += [(a, b, d), (a, d, c)]
+    res = scout_mesh(stl("blob", np.asarray(tris).tolist()), scale_to_m=1.0)
+    assert res.flow == "external" and res.openings == []
 
 
 def test_a_pipe_wall_with_ring_ends_is_read_as_a_wall(stl):
