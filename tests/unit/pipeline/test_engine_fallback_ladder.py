@@ -558,6 +558,7 @@ def test_an_admission_refusal_is_not_recorded_as_a_build():
     assert rec["attempts"] == [{"attempt": 0, "engine": "vmtk", "kind": lad.ENGINE,
                                 "cause": "geometry_rejected",
                                 "reason": "it cannot take this geometry as it is",
+                                "stop": "refused_by_design",
                                 "refused_before_building": True}]
     # and the refusal still ends with an out: another engine, differences stated
     assert rec["offer"]["engine"] == "snappy" and rec["offer"]["same_contract"] is False

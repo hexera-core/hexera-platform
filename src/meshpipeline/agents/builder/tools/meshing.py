@@ -239,6 +239,8 @@ class PreparedMeshRun:
     purpose: str = ""
     history: dict | None = None
     refusal: dict | None = None
+    #: the case this run hands the mesher (agents/builder/rerun_guard.case_digest)
+    case_digest: str = ""
 
 
 # Everything `run_mesh` decided BEFORE it announced itself. Blocking (registry lookups, file
@@ -319,6 +321,16 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
             "success": True, "mesh_already_production_grade": True,
             "guidance": "You ALREADY built a PRODUCTION-GRADE mesh (run_mesh judged it so). "
                         "Re-running is a wasteful 25-min off-box job - call submit_mesh NOW."})
+    # NO IDENTICAL RETRY: the exact case an earlier attempt of this run already ran to a verdict is
+    # refused here, before the announcement - the same engine, spec and surfaces give the same
+    # result back, and another attempt would only repeat it (agents/builder/rerun_guard.py).
+    from meshpipeline.agents.builder import rerun_guard
+    _digest = rerun_guard.case_digest(workspace, _policy.required_files)
+    _earlier = rerun_guard.earlier_identical(workspace, _digest)
+    if _earlier is not None:
+        logger.warning("run_mesh: the case in %s already ran in %s (%s) - refusing an identical "
+                       "re-run", workspace, _earlier.get("attempt"), _earlier.get("outcome"))
+        return PreparedMeshRun(refusal=rerun_guard.refusal(_earlier))
     # The cap is ENGINE-DECLARED (spec.run_policy): a draft mesher fails fast,
     # a production off-box mesher gets its legitimate 20-35 min - BUT it must FIT inside
     # the remaining builder-loop budget, or the outer loop kills the attempt mid-run and
@@ -361,7 +373,8 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
         _history = _hist_estimate(engine, _purpose)
     except Exception:  # noqa: BLE001 - an absent history is honestly absent, never invented
         _history = None
-    return PreparedMeshRun(engine=engine, cap=_cap, purpose=_purpose, history=_history)
+    return PreparedMeshRun(engine=engine, cap=_cap, purpose=_purpose, history=_history,
+                           case_digest=_digest)
 
 
 # The two halves composed, WITHOUT the announcement. The announcement is an execution-owned
@@ -377,6 +390,15 @@ def run_mesh(ctx: BuilderToolContext) -> dict:
 # The native run and its verdict. Blocking, so it stays off the event loop. It runs only after
 # the announcement above it was authorized, which is why it is a separate callable.
 def execute_prepared_mesh_run(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
+    out = _run_and_judge(ctx, prepared)
+    # what this exact case came to, so a later attempt that hands the mesher the very same case
+    # is refused before it starts (agents/builder/rerun_guard.py)
+    from meshpipeline.agents.builder import rerun_guard
+    rerun_guard.remember(ctx.workspace, prepared.case_digest, out)
+    return out
+
+
+def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
     from meshpipeline.engines.registry import get_spec as _get_spec
     from meshpipeline.engines.runtime import get_engine
     workspace, engine = ctx.workspace, prepared.engine

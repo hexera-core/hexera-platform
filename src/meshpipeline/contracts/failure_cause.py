@@ -63,6 +63,17 @@ class FailureCause(StrEnum):
     #: The mesher stopped before it wrote a complete mesh, or the mesh's record was never
     #: written. Facts: engine.
     ENGINE_CRASHED = "engine_crashed"
+    #: NO MESHER WAS STARTED in the attempt: the engine's own preparation stopped before the
+    #: native run (the record of native runs says so - contracts/mesh_execution.native_runs). It
+    #: used to be told as a crash (job d20ad762). Facts: engine, deterministic (the engine's
+    #: build is a deterministic driver, so the same inputs stop the same way again).
+    NOT_BUILT = "not_built"
+    #: The mesher RAN OUT OF TIME: its run did not come back within the run's time limit. Not a
+    #: crash and not an outage - the mesh was too big or too slow. Facts: engine.
+    ENGINE_TIMED_OUT = "engine_timed_out"
+    #: The mesh run did not complete ON OUR SIDE: the service that runs the mesher failed to take
+    #: or return it. Never a statement about the geometry. Facts: engine.
+    RUN_INFRASTRUCTURE = "run_infrastructure"
     #: The input geometry was refused before any mesh was built. Facts: reason.
     GEOMETRY_REJECTED = "geometry_rejected"
     #: The review of the mesh stopped before it reached a verdict - our failure, never a statement
@@ -124,7 +135,74 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
         return True
     if c is FailureCause.UNDER_RESOLVED and rebuild_over_limit(facts):
         return False
+    if c is FailureCause.NOT_BUILT:
+        # a deterministic driver that stopped before its mesher stops the same way on the same
+        # inputs (job d20ad762 ran the identical refusal twice); a model-led build may not
+        return not (isinstance(facts, Mapping) and facts.get("deterministic"))
     return c not in _NOT_RETRYABLE
+
+
+# #
+# WHY AN ENGINE STOPPED - the six classes every cause belongs to
+# #
+
+class StopClass(StrEnum):
+    """Why an engine stopped, in the six classes a user can act on. Each cause above belongs to
+    exactly one (stop_class_of); the review and the infrastructure are named by the run itself."""
+    #: the engine does not take this input or flow, by design - nothing was built
+    REFUSED_BY_DESIGN = "refused_by_design"
+    #: the mesher started and stopped without a complete mesh
+    MESHER_CRASHED = "mesher_crashed"
+    #: the run ran out of time, or the mesh came out over the cell budget
+    OUT_OF_BUDGET = "out_of_budget"
+    #: a mesh came out and failed one of its checks
+    CHECK_FAILED = "check_failed"
+    #: a mesh passed its checks and the review asked for a rebuild
+    REVIEW_REBUILD = "review_rebuild"
+    #: our side failed - the service that runs the mesher, or the review's own service
+    INFRASTRUCTURE = "infrastructure"
+
+
+_STOP_CLASS: dict[FailureCause, StopClass] = {
+    FailureCause.GEOMETRY_REJECTED: StopClass.REFUSED_BY_DESIGN,
+    FailureCause.NOT_BUILT: StopClass.REFUSED_BY_DESIGN,
+    FailureCause.ENGINE_CRASHED: StopClass.MESHER_CRASHED,
+    FailureCause.ENGINE_TIMED_OUT: StopClass.OUT_OF_BUDGET,
+    FailureCause.CELL_BUDGET: StopClass.OUT_OF_BUDGET,
+    FailureCause.CONTRACT_MISMATCH: StopClass.CHECK_FAILED,
+    FailureCause.PATCH_NOT_CAPTURED: StopClass.CHECK_FAILED,
+    FailureCause.BOUNDARY_TYPE: StopClass.CHECK_FAILED,
+    FailureCause.MESH_QUALITY: StopClass.CHECK_FAILED,
+    FailureCause.UNDER_RESOLVED: StopClass.CHECK_FAILED,
+    FailureCause.DOMAIN_EXTENT: StopClass.CHECK_FAILED,
+    FailureCause.NOT_SOLVABLE: StopClass.CHECK_FAILED,
+    FailureCause.REGION_SPLIT: StopClass.CHECK_FAILED,
+    FailureCause.RUN_INFRASTRUCTURE: StopClass.INFRASTRUCTURE,
+    FailureCause.REVIEW_INCOMPLETE: StopClass.INFRASTRUCTURE,
+}
+
+#: The words a user reads for each class - the half-sentence the attempt record carries.
+STOP_CLASS_WORDS: dict[StopClass, str] = {
+    StopClass.REFUSED_BY_DESIGN: "refused before building",
+    StopClass.MESHER_CRASHED: "the mesher stopped without a mesh",
+    StopClass.OUT_OF_BUDGET: "ran out of time or cells",
+    StopClass.CHECK_FAILED: "the mesh failed a check",
+    StopClass.REVIEW_REBUILD: "the review asked for a rebuild",
+    StopClass.INFRASTRUCTURE: "a failure on our side",
+}
+
+
+def stop_class_of(cause: object, *, review: bool = False,
+                  infrastructure: bool = False) -> StopClass | None:
+    """The class of a recorded cause - `review` for a reviewer's rebuild request, and
+    `infrastructure` for a provider or service failure the run recorded instead of a cause -
+    or None when nothing says why."""
+    if infrastructure:
+        return StopClass.INFRASTRUCTURE
+    if review:
+        return StopClass.REVIEW_REBUILD
+    c = as_cause(cause)
+    return _STOP_CLASS.get(c) if c is not None else None
 
 
 def rebuild_over_limit(facts: Mapping | None) -> bool:
@@ -416,6 +494,24 @@ def describe(cause: object, facts: Mapping | None = None, *,
         return (f"The mesher{who} stopped before it finished writing the mesh, so there was no "
                 "complete mesh to check. This is usually on our side, not your geometry's.",
                 f"You can run it again: {_RUN_AGAIN}.")
+    if c is FailureCause.NOT_BUILT:
+        who = str(f.get("engine") or engine or "The engine")
+        what = (f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "
+                "started, so there was nothing to check. The notes above say what it stopped on.")
+        if f.get("deterministic"):
+            return (what, "Running it again would stop the same way. Tell me what to change in "
+                          "this chat - the file, the boundaries or the engine.")
+        return what, f"You can run it again ({_RUN_AGAIN}), or tell me what to change first."
+    if c is FailureCause.ENGINE_TIMED_OUT:
+        who = f" ({f.get('engine') or engine})" if (f.get("engine") or engine) else ""
+        return (f"The mesher{who} ran out of time: its run did not finish within the time one "
+                "run may take, so no complete mesh came back.",
+                f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
+    if c is FailureCause.RUN_INFRASTRUCTURE:
+        return ("The mesh run did not complete on our side: the service that runs the mesher "
+                "failed to take the job or to return its result. That is our failure, not your "
+                "geometry's or your settings'.",
+                f"You can run it again with nothing changed: {_RUN_AGAIN}.")
     if c is FailureCause.REVIEW_INCOMPLETE:
         return _review(f)
     if c is FailureCause.GEOMETRY_REJECTED:
@@ -427,5 +523,6 @@ def describe(cause: object, facts: Mapping | None = None, *,
     return "", ""
 
 
-__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "FailureCause", "as_cause", "clean_reason",
-           "describe", "rebuild_over_limit", "retry_can_help", "review_stopped_reason"]
+__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "STOP_CLASS_WORDS", "FailureCause", "StopClass",
+           "as_cause", "clean_reason", "describe", "rebuild_over_limit", "retry_can_help",
+           "review_stopped_reason", "stop_class_of"]

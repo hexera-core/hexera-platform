@@ -352,6 +352,19 @@ def _ladder_record(final_state, *, succeeded: bool, system_failure: bool, jlog) 
         return {}
 
 
+def _attempts_shown(final_state, retry_count: int, *, jlog) -> int:
+    # How many attempts started a mesher (pipeline/engine_fallback.attempts_made). An account, so
+    # anything that goes wrong reading it falls back to the retry counter, as before.
+    try:
+        from meshpipeline.pipeline.engine_fallback import attempts_made
+        return attempts_made(final_state,
+                             succeeded=bool(final_state.get("executor_success")))
+    except Exception as exc:  # noqa: BLE001
+        jlog.warning("attempts: could not count the attempts that meshed (%s) - showing the "
+                     "retry counter", exc)
+        return int(retry_count)
+
+
 def _emit_intake_events(job_id: str, intake_events: list) -> None:
     from meshpipeline.capture.logger import TrainingLogger
     tlogger = TrainingLogger(job_id)
@@ -860,8 +873,12 @@ async def _run_async(req: JobRequest) -> dict:
 
         retry_count = _run_outcome.retry_count
         if retry_count > 0:
+            # THE ATTEMPTS A USER IS SHOWN are the attempts that started a mesher - not the retry
+            # counter, which also counts a refusal before building and an attempt that stopped
+            # before its mesher (jobs d20ad762 / 26f5429a read "2 attempts" with nothing built)
             async with AsyncSessionLocal() as db:
-                await job_repo.update_current_attempt(db, uuid.UUID(job_id), retry_count)
+                await job_repo.update_current_attempt(
+                    db, uuid.UUID(job_id), _attempts_shown(final_state, retry_count, jlog=jlog))
                 await db.commit()
 
         _uploaded_artifacts: list[dict] = []

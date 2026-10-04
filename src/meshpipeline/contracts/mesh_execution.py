@@ -189,5 +189,75 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
     if _launch_check is not None:
         refusal = _launch_check(workspace, engine)
         if refusal is not None:
+            _note_native_run(workspace, refusal, refused=True)
             return refusal
-    return _executor.run(workspace, engine=engine, timeout=timeout)
+    try:
+        result = _executor.run(workspace, engine=engine, timeout=timeout)
+    except BaseException:
+        # the run did not come back with a verdict: told as the infrastructure it is, never a
+        # mesher that crashed
+        _note_native_run(workspace, {"rc": RC_INFRASTRUCTURE, "timed_out": False}, raised=True)
+        raise
+    _note_native_run(workspace, result)
+    return result
+
+
+# #
+# WHAT HAPPENED NATIVELY IN AN ATTEMPT - the record a failure is classified from
+# #
+# An attempt that ends with no mesh used to be told, whatever happened, as "the mesher stopped
+# before it finished writing the mesh... usually on our side" (job d20ad762: a mesher that never
+# started, refused by design). WHY there is no mesh is decided here, where every native run of
+# every engine passes: no run at all, a run that ran out of time, a run whose infrastructure
+# failed, or a mesher that really crashed. The builder opens the record when its attempt starts
+# (open_native_record), so an empty record is POSITIVE evidence that no mesher was started in
+# that attempt; a workspace this process never opened answers None - unknown - and nothing is
+# claimed from it. In-process by design: the record must never enter the workspace, whose bytes
+# are the submission's identity (submission_payload_files), and the builder and the executor
+# that reads it run in the same process one after the other.
+
+_NATIVE_RUNS: dict[str, list[dict]] = {}
+#: how many attempt records a long-lived worker keeps (oldest dropped first)
+_NATIVE_RUNS_KEPT = 512
+
+
+def _key(workspace: Any) -> str:
+    from pathlib import Path
+    try:
+        return str(Path(workspace).resolve())
+    except (OSError, RuntimeError, TypeError):
+        return str(workspace)
+
+
+def open_native_record(workspace: Any) -> None:
+    """The attempt in `workspace` starts: from now on, every native run in it is recorded."""
+    key = _key(workspace)
+    _NATIVE_RUNS.pop(key, None)
+    _NATIVE_RUNS[key] = []
+    while len(_NATIVE_RUNS) > _NATIVE_RUNS_KEPT:
+        _NATIVE_RUNS.pop(next(iter(_NATIVE_RUNS)))
+
+
+def _note_native_run(workspace: Any, result: Any, *, refused: bool = False,
+                     raised: bool = False) -> None:
+    runs = _NATIVE_RUNS.get(_key(workspace))
+    if runs is None:
+        return
+    r = result if isinstance(result, dict) else {}
+    runs.append({"rc": r.get("rc"), "timed_out": bool(r.get("timed_out")),
+                 "refused_before_launch": refused, "raised": raised})
+
+
+def native_runs(workspace: Any) -> list[dict] | None:
+    """Every native run of the attempt in `workspace`, in order - [] when none was started -
+    or None when this process never opened that attempt's record (then nothing is known)."""
+    runs = _NATIVE_RUNS.get(_key(workspace))
+    return None if runs is None else [dict(r) for r in runs]
+
+
+def meshers_started(runs: list[dict] | None) -> int | None:
+    """How many of those runs actually launched a mesher (a launch the last check refused did
+    not), or None when unknown."""
+    if runs is None:
+        return None
+    return sum(1 for r in runs if not r.get("refused_before_launch"))

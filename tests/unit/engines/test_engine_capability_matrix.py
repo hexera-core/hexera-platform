@@ -488,6 +488,7 @@ def test_a_refused_by_design_run_says_why_builds_nothing_and_gives_the_way_on(
                                 "cause": "geometry_rejected",
                                 "reason": f"it cannot mesh {cap.flow_words(flow)} from a "
                                           "surface mesh",
+                                "stop": "refused_by_design",
                                 "refused_before_building": True}]
     from meshpipeline.pipeline import engine_fallback as lad
     # who can take THIS request (its boundaries and geometry kind too) from this file: the
