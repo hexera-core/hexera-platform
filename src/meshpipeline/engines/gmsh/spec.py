@@ -164,6 +164,11 @@ SPEC = EngineSpec(
             # so it serves either flow topology.
             MeshCapability("fluid-domain", "fluid-volume",
                            topologies=("internal", "external")),
+            # A BODY in EXTERNAL flow: the driver builds the fluid itself - a far-field box minus
+            # the body (an OpenCASCADE cut of the CAD solid, or two surface loops around a
+            # triangulated body), sized in the unit the domain-extent gate judges
+            # (engines/far_field.py). Before this every external case was refused for gmsh.
+            MeshCapability("body-surface", "fluid-volume", topologies=("external",)),
             # 2D plane-stress/strain FEA: a FLAT face/sheet body meshed into
             # triangles (CPS3/CPS6 in the .inp) with boundary groups on curves.
             MeshCapability("planar-domain", "surface-mesh"),
