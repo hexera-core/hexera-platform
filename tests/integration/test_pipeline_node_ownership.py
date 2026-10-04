@@ -183,8 +183,36 @@ async def test_the_selection_the_user_pinned_is_never_re_decided(monkeypatch):
 # geometry admission
 
 
+def _vmtk_taking_surfaces(monkeypatch) -> None:
+    # The MEASURED check is under test here, and a self-intersection is a defect of a surface. On
+    # main VMTK declares CAD only for internal flow (engines/vmtk/spec.py `accepts`), so its own
+    # form check would refuse this STL before measuring anything. Declare it as it will be once
+    # surface internal flow lands, so the measured rejection is the one exercised.
+    import dataclasses
+
+    from meshpipeline.engines.base import FlowSupport
+    from meshpipeline.engines.registry import ENGINE_CATALOG
+    monkeypatch.setitem(ENGINE_CATALOG, "vmtk", dataclasses.replace(
+        ENGINE_CATALOG["vmtk"], accepts=(FlowSupport("internal", ("cad", "surface")),)))
+
+
 @pytest.fixture()
 async def rejected(monkeypatch, tmp_path):
+    from meshpipeline.pipeline.geometry_admission import node_geometry_admission
+
+    _vmtk_taking_surfaces(monkeypatch)
+    seen: list = []
+    geometry = _self_intersecting_geometry(tmp_path)
+    res = await _owned(monkeypatch, seen, node_geometry_admission,
+                       lambda j: {**_VMTK, "job_id": str(j), "geometry": geometry})
+    res["seen"] = seen
+    yield res
+
+
+@pytest.fixture()
+async def refused_by_design(monkeypatch, tmp_path):
+    # The same STL on main's declaration: VMTK does not take a surface for internal flow, so the
+    # node refuses it by design - before staging or measuring anything.
     from meshpipeline.pipeline.geometry_admission import node_geometry_admission
 
     seen: list = []
@@ -193,6 +221,22 @@ async def rejected(monkeypatch, tmp_path):
                        lambda j: {**_VMTK, "job_id": str(j), "geometry": geometry})
     res["seen"] = seen
     yield res
+
+
+async def test_a_refusal_by_design_publishes_under_the_claim_and_says_nothing_was_built(
+        refused_by_design):
+    out = refused_by_design["out"]
+    assert out["executor_failure_facts"]["refused_by_design"] is True, out
+    assert out["geometry_unsuitable_reason"].startswith("VMTK cannot mesh internal flow from a "
+                                                        "surface mesh"), out
+    seen = refused_by_design["seen"]
+    assert [(r["fn"], r["method"]) for r in seen][:2] == [("_publish", "stage"),
+                                                          ("_publish", "note")]
+    note = next(r for r in seen if r["module"] == ADMISSION_MOD and r["method"] == "note")
+    assert note["args"][1] == "error" and "Nothing was built" in note["args"][0]
+    for r in seen:
+        assert r["own"] is not None, f"{r['fn']}.{r['method']} published with NO ownership bound"
+        assert str(r["own"].job_id) == str(refused_by_design["job_id"])
 
 
 async def test_a_measured_rejection_publishes_under_the_claim(rejected):
