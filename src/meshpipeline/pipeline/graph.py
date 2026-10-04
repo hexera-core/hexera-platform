@@ -21,6 +21,7 @@ from meshpipeline.pipeline.engine_select import node_engine_select
 from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
 from meshpipeline.pipeline.geometry_admission import node_geometry_admission
+from meshpipeline.pipeline.repair_inspect import node_repair_inspect
 
 logger = logging.getLogger(__name__)
 
@@ -167,12 +168,15 @@ def route_after_builder(
     return "node_executor"
 
 
-def route_after_engine_select(state: PipelineState) -> Literal["node_geometry_admission", "node_reviewer"]:
+def route_after_engine_select(state: PipelineState) -> Literal["node_repair_inspect", "node_reviewer"]:
     if state.get("user_dispute") and not state.get("reviewer_verdict"):
         logger.info("route_after_engine_select: dispute run → re-review delivered mesh first "
                     "- job_id=%s", state.get("job_id"))
         return "node_reviewer"
-    return "node_geometry_admission"
+    # A normal run inspects the input for CAD defects (evidence), then the admission gate judges
+    # it (the decision). The dispute bypass above is untouched: a re-review of a mesh already
+    # delivered has nothing to inspect on the way in.
+    return "node_repair_inspect"
 
 
 def route_after_geometry_admission(
@@ -344,6 +348,7 @@ def build_graph(checkpointer):
     # fault-isolation contract.
     b.add_node("node_intake",          _fenced("node_intake", node_intake))
     b.add_node("node_engine_select",   _fenced("node_engine_select", node_engine_select))
+    b.add_node("node_repair_inspect",   _fenced("node_repair_inspect", node_repair_inspect))
     b.add_node("node_geometry_admission", _fenced("node_geometry_admission", node_geometry_admission))
     b.add_node("node_builder",         _fenced("node_builder", node_builder))
     b.add_node("node_executor",        _fenced("node_executor", node_executor))
@@ -363,8 +368,10 @@ def build_graph(checkpointer):
     b.add_conditional_edges(
         "node_engine_select",
         route_after_engine_select,
-        {"node_geometry_admission": "node_geometry_admission", "node_reviewer": "node_reviewer"},
+        {"node_repair_inspect": "node_repair_inspect", "node_reviewer": "node_reviewer"},
     )
+    # Inspection is evidence and never ends a run, so its one edge is the gate that decides.
+    b.add_edge("node_repair_inspect", "node_geometry_admission")
     b.add_conditional_edges(
         "node_geometry_admission",
         route_after_geometry_admission,

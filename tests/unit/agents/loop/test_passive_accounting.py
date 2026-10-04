@@ -176,8 +176,9 @@ def test_the_state_carries_append_only_agent_run_history():
 
     from meshpipeline.contracts import pipeline_state as ps
     # v10 added the executor's failure cause and facts, v11 the fallback ladder's
-    # engine_source + engine_ladder, v12 the review rerun counter; the history field is unchanged
-    assert ps.STATE_SCHEMA_VERSION == 12
+    # engine_source + engine_ladder, v12 the review rerun counter, v13 the repair inspection's
+    # status and report; the history field is unchanged
+    assert ps.STATE_SCHEMA_VERSION == 13
     hints = typing.get_type_hints(ps.PipelineState, include_extras=True)
     import operator
     assert operator.add in hints["agent_run_records"].__metadata__, "history must be append-only"

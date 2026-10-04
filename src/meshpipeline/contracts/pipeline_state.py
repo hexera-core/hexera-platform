@@ -16,7 +16,11 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 12  # v12: `review_rerun_count` - reviews of the same validated mesh started
+STATE_SCHEMA_VERSION = 13  # v13: `repair_status` + `repair_report` - what CAD repair inspection
+                           # said about the verified input on the way into the mesh run
+                           # (node_repair_inspect). Diagnostics: neither field moves geometry.
+                           # Carries every v12 field.
+                           # v12: `review_rerun_count` - reviews of the same validated mesh started
                            # again after one ended without a verdict (node_review_retry).
                            # Carries every v11 field.
                            # v11: `engine_source` + `engine_ladder` - who chose the engine, and
@@ -57,6 +61,12 @@ class PipelineState(TypedDict):
     # execution handle, never identity - a resumed process re-materialises rather than
     # trusting a path serialised by whichever container ran the previous node.
     geometry: GeometryState
+
+    # WHAT CAD REPAIR INSPECTION SAW on the way in (pipeline/repair_inspect.py), before the
+    # admission gate judged anything: a RepairStatus value and the typed RepairResult payload.
+    # Diagnostics only - no reader may treat either as a decision, and neither moves `geometry`.
+    repair_status: str
+    repair_report: dict
 
     domain:     str
     engine_params: dict   # engine-NATIVE declared params (ParamSpec answers; see data_contract)

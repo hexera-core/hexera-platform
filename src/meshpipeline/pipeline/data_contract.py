@@ -358,6 +358,9 @@ EVENT_TYPES: dict[str, str] = {
     "geometry_admission": "qa: input-contract admission verdict - when an engine's "
                           "measured input contract (e.g. self-intersection) rejected the "
                           "geometry before any build; deterministic, no model",
+    "repair_inspect":     "training+qa: what CAD repair inspection measured on the verified "
+                          "input before admission judged it - the defect taxonomy an operator's "
+                          "repair decision is later learned from; deterministic, no model",
     "planner_run":        "training: the planner LLM's system, input, raw "
                           "response, parsed plan and usage",
     "builder_attempt":    "training: the builder's full trajectory per attempt",
@@ -388,6 +391,11 @@ STATE_FIELDS: dict[str, str] = {
     "user_id":               "owner identity (see contract; alias of owner_id)",
     "session_id":            "session identity (see contract)",
     "geometry":              "verified input geometry handle (see contract)",
+    "repair_status":         "what CAD repair inspection concluded about the verified input "
+                             "(RepairStatus); evidence for the operator and the corpus, never "
+                             "a decision, and never a reason to move the geometry",
+    "repair_report":         "the typed RepairResult payload behind repair_status: defects, "
+                             "measurements and the inspect operation that produced them",
     "domain":                "descriptive task label (see contract)",
     "engine_params":         "engine-native declared parameters (see contract)",
     "openfoam_workspace":    "the attempt workspace directory the builder/executor share",
