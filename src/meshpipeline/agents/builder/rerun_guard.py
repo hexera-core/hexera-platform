@@ -62,8 +62,18 @@ def case_digest(workspace: Path, required_files) -> str:
     h = hashlib.sha256()
     for rel in sorted(files):
         h.update(rel.encode("utf-8") + b"\0")
-        h.update(hashlib.sha256(files[rel].read_bytes()).digest())
+        h.update(_file_digest(files[rel]))
     return h.hexdigest()
+
+
+def _file_digest(path: Path) -> bytes:
+    # streamed: a staged surface can be hundreds of megabytes, and a whole-file read before every
+    # run would hold it in memory for nothing
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.digest()
 
 
 def _generation(workspace: Path) -> str:

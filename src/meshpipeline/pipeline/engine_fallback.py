@@ -480,11 +480,18 @@ def attempts_made(state: Mapping, *, succeeded: bool) -> int:
     """HOW MANY ATTEMPTS ACTUALLY STARTED A MESHER, the attempt that just ended included - the
     number a user is shown. A refusal before building, a pre-flight stop and an attempt whose
     record shows no mesher started are not attempts anyone made (jobs d20ad762 and 26f5429a read
-    "2 attempts" with nothing ever built)."""
+    "2 attempts" with nothing ever built).
+
+    Counted DOWN from the run's own counter: every builder turn is an attempt unless the record
+    says no mesher started in it, so an attempt the record knows nothing about still counts, as it
+    always did. A geometry-admission refusal ends the run before the first turn: none was made."""
+    if state.get("geometry_unsuitable_reason"):
+        return 0
     rec = with_attempt(state, None if succeeded else classify(state))
-    return sum(1 for a in rec["attempts"]
-               if isinstance(a, Mapping) and int(a.get("attempt", 0) or 0) > 0
-               and not a.get("refused_before_building") and a.get("built", True) is not False)
+    turns = int(state.get("retry_count", 0) or 0)
+    not_made = {int(a.get("attempt", 0) or 0) for a in rec["attempts"]
+                if isinstance(a, Mapping) and a.get("built") is False}
+    return max(0, turns - len({n for n in not_made if 0 < n <= turns}))
 
 
 # #

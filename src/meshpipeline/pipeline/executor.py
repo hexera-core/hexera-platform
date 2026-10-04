@@ -112,17 +112,16 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
 
     * no mesher started at all          -> NOT_BUILT (the engine stopped while preparing);
     * the last run ran out of time      -> ENGINE_TIMED_OUT;
-    * the last run's service failed     -> RUN_INFRASTRUCTURE (never a statement about the input);
+    * the last run never started        -> RUN_INFRASTRUCTURE (never a statement about the input)
+      - positively: it raised, or its log carries the never-started tag. An RC_INFRASTRUCTURE
+      result without it ran (its output was not collected, or snappy's stage verdict found no
+      valid mesh), so it keeps the seam's cause rather than blaming the service;
     * a mesher ran and left no mesh     -> the finalize seam's cause (the mesher crashed).
 
     A workspace whose record this process never opened says nothing, and the seam's cause stands
     exactly as before."""
     from meshpipeline.contracts.failure_cause import FailureCause
-    from meshpipeline.contracts.mesh_execution import (
-        RC_INFRASTRUCTURE,
-        meshers_started,
-        native_runs,
-    )
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
     runs = native_runs(workspace)
     if runs is None:
         return cause, facts
@@ -139,7 +138,7 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
     last = launched[-1]
     if last.get("timed_out"):
         return FailureCause.ENGINE_TIMED_OUT.value, facts
-    if last.get("raised") or last.get("rc") == RC_INFRASTRUCTURE:
+    if last.get("never_started"):
         return FailureCause.RUN_INFRASTRUCTURE.value, facts
     return cause, facts
 

@@ -159,13 +159,35 @@ def test_a_run_that_ran_out_of_time_is_told_so(quiet_executor, tmp_path):
     assert retry_can_help("engine_timed_out")
 
 
-@pytest.mark.parametrize("run", [{"rc": mx.RC_INFRASTRUCTURE, "timed_out": False},
-                                 {"rc": None, "raised": True}])
-def test_a_run_our_infrastructure_dropped_is_told_as_ours(quiet_executor, tmp_path, run):
+@pytest.mark.parametrize("run", [
+    {"rc": mx.RC_INFRASTRUCTURE, "timed_out": False,
+     "log_tail": f"{mx.RUN_NOT_STARTED_TAG} vmtk: the job could not be dispatched"},
+    {"rc": None, "raised": True}])
+def test_a_run_that_never_started_on_our_side_is_told_as_ours(quiet_executor, tmp_path, run):
     out = _no_mesh(quiet_executor, tmp_path, "vmtk", [run])
     assert out["executor_failure_cause"] == "run_infrastructure"
     what, _ = describe("run_infrastructure", {})
     assert "on our side" in what and "geometry" in what
+
+
+@pytest.mark.parametrize("tail", [
+    # the remote ran and its output could not be brought back
+    "[CLOUD_RUN_RESULT_UNCOLLECTED] snappy: the mesh ran (remote rc=0 cells=7000000) but ...",
+    # snappyHexMesh's own stage verdict: every stage ran, no valid mesh came out
+    ""])
+def test_an_infrastructure_code_from_a_run_that_ran_never_blames_the_service(quiet_executor,
+                                                                              tmp_path, tail):
+    out = _no_mesh(quiet_executor, tmp_path, "snappy",
+                   [{"rc": mx.RC_INFRASTRUCTURE, "timed_out": False, "log_tail": tail}])
+    assert out["executor_failure_cause"] == "engine_crashed"
+    assert out["executor_failure_facts"]["meshers_started"] == 1
+
+
+def test_the_adapter_writes_the_never_started_tag_the_account_reads():
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import _fail
+    r = _fail("cfmesh", "no operation")
+    assert r["rc"] == mx.RC_INFRASTRUCTURE
+    assert r["log_tail"].startswith(mx.RUN_NOT_STARTED_TAG)
 
 
 def test_a_mesher_that_ran_and_left_no_mesh_is_the_crash_it_is(quiet_executor, tmp_path):
@@ -264,6 +286,13 @@ def test_an_attempt_that_meshed_counts_and_one_that_did_not_does_not():
     assert lad.attempts_made(ok, succeeded=True) == 2
 
 
+def test_an_attempt_the_record_knows_nothing_about_still_counts():
+    # a run whose ladder record holds no history (an older state, a synthetic one): every builder
+    # turn counts, exactly as the retry counter always did
+    st = {"engine": "cfmesh", "retry_count": 3, "executor_success": False, "engine_ladder": {}}
+    assert lad.attempts_made(st, succeeded=False) == 3
+
+
 def test_a_refusal_before_building_is_never_an_attempt():
     st = {"engine": "vmtk", "retry_count": 3, "executor_success": False,
           "executor_failed_gate": "geometry", "executor_failure_cause": "geometry_rejected",
@@ -287,7 +316,24 @@ def test_the_run_writes_the_attempts_that_meshed_not_the_retry_counter():
     import meshpipeline.application.pipeline_run as pr
     src = inspect.getsource(pr._run_async)
     assert "_attempts_shown(final_state, retry_count" in src
-    assert "update_current_attempt(db, uuid.UUID(job_id), retry_count)" not in src
+    assert "update_current_attempt(db, uuid.UUID(job_id), _attempts_made)" in src
+    # the terminal record says the same number as the job row
+    assert "attempts_made=_attempts_made" in src
+
+
+def test_the_terminal_record_counts_the_attempts_made_and_judges_by_the_budget():
+    from meshpipeline.application import final_result as fr
+    common = {"job_id": "j", "owner_id": "o", "status": fr.TerminalStatus.failed,
+              "engine": "cfmesh", "purpose": "external_cfd", "dimensionality": "3D",
+              "approved_snapshot_id": "", "executor_success": False, "reviewer_verdict": "",
+              "failed_gate": "", "api_failure": "", "attempts": 3, "attempts_max": 3,
+              "required_ready": False, "delivered_types": [], "optional_warnings": []}
+    made = fr.build_final_result(**common, attempts_made=1)
+    assert made.attempts == 1
+    # the category is still judged against the budget the retry counter spent
+    assert made.failure_category == "attempts_exhausted"
+    assert "Attempts used: 1/3." in fr.render_message(made)
+    assert fr.build_final_result(**common).attempts == 3
 
 
 # the builder's own notes

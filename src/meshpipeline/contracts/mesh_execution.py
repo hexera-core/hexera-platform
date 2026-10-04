@@ -29,6 +29,13 @@ RC_TIMED_OUT = -1
 #: approved (engines/case_contract.py). Not a mesh verdict and not an outage: nothing ran.
 RC_CASE_CONTRACT = -5
 
+#: The tag an RC_INFRASTRUCTURE result's log opens with when the run NEVER STARTED (the remote
+#: runner could not be dispatched or polled). RC_INFRASTRUCTURE alone does not say that: a run
+#: whose output could not be collected ran, and snappyHexMesh's own stage verdict reports -3 for a
+#: run that ran and left no valid mesh. Only this tag, or a run that raised, is the outage; it
+#: lives here because the adapter writes it and the executor's account reads it.
+RUN_NOT_STARTED_TAG = "[CLOUD_RUN_FAILED]"
+
 
 #: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
 #: submission belongs to. An engine driver runs several plan->mesh->judge passes inside one
@@ -245,7 +252,11 @@ def _note_native_run(workspace: Any, result: Any, *, refused: bool = False,
         return
     r = result if isinstance(result, dict) else {}
     runs.append({"rc": r.get("rc"), "timed_out": bool(r.get("timed_out")),
-                 "refused_before_launch": refused, "raised": raised})
+                 "refused_before_launch": refused, "raised": raised,
+                 # the outage, positively: never inferred from the exit code alone
+                 "never_started": raised or (
+                     r.get("rc") == RC_INFRASTRUCTURE
+                     and str(r.get("log_tail") or "").lstrip().startswith(RUN_NOT_STARTED_TAG))})
 
 
 def native_runs(workspace: Any) -> list[dict] | None:

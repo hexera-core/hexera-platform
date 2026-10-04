@@ -872,13 +872,14 @@ async def _run_async(req: JobRequest) -> dict:
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
+        # THE ATTEMPTS A USER IS SHOWN are the attempts that started a mesher - not the retry
+        # counter, which also counts a refusal before building and an attempt that stopped before
+        # its mesher (jobs d20ad762 / 26f5429a read "2 attempts" with nothing built). The job row
+        # and the terminal record carry the same number.
+        _attempts_made = _attempts_shown(final_state, retry_count, jlog=jlog)
         if retry_count > 0:
-            # THE ATTEMPTS A USER IS SHOWN are the attempts that started a mesher - not the retry
-            # counter, which also counts a refusal before building and an attempt that stopped
-            # before its mesher (jobs d20ad762 / 26f5429a read "2 attempts" with nothing built)
             async with AsyncSessionLocal() as db:
-                await job_repo.update_current_attempt(
-                    db, uuid.UUID(job_id), _attempts_shown(final_state, retry_count, jlog=jlog))
+                await job_repo.update_current_attempt(db, uuid.UUID(job_id), _attempts_made)
                 await db.commit()
 
         _uploaded_artifacts: list[dict] = []
@@ -997,6 +998,7 @@ async def _run_async(req: JobRequest) -> dict:
                 api_failure=api_failure,
                 review_reruns=int(final_state.get("review_rerun_count", 0) or 0),
                 attempts=int(final_state.get("retry_count", 0) or 0),
+                attempts_made=_attempts_made,
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_timed_out,
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when

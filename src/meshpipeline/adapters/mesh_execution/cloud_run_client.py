@@ -17,7 +17,11 @@ import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
-from meshpipeline.contracts.mesh_execution import RC_TIMED_OUT, SubmissionIndeterminate
+from meshpipeline.contracts.mesh_execution import (
+    RC_TIMED_OUT,
+    RUN_NOT_STARTED_TAG,
+    SubmissionIndeterminate,
+)
 from meshpipeline.settings.env import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -193,7 +197,7 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
 def _fail(engine: str, detail: str) -> dict:
     logger.error("Cloud Run mesh FAILED for %s: %s", engine, detail)
     return {"rc": -3, "timed_out": False,
-            "log_tail": f"[CLOUD_RUN_FAILED] {engine}: {detail}"}
+            "log_tail": f"{RUN_NOT_STARTED_TAG} {engine}: {detail}"}
 
 
 RESULT_TIMEOUT_MARKER = "[CLOUD_RUN_TIMEOUT]"
