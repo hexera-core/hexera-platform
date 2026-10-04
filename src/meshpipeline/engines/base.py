@@ -389,10 +389,20 @@ class EngineSpec:
 
     def forms_for(self, flow: str) -> tuple[str, ...] | None:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed
-        for that flow at all."""
+        for that flow at all.
+
+        INTERNAL FLOW FROM A SURFACE is also read from the input contract's own declaration,
+        `InputContract.internal_from_surface` (the shared internal-surface staging, STL-INTERNAL
+        #135/#138): an engine that declares it takes a surface for internal flow, without its
+        `accepts` row being edited a second time. One fact, read in one place - when both land,
+        keep one of the two declarations."""
         for fs in self.accepts:
             if fs.flow == flow:
-                return tuple(fs.forms)
+                forms = tuple(fs.forms)
+                if (flow == "internal" and "surface" not in forms
+                        and bool(getattr(self.input_contract, "internal_from_surface", False))):
+                    forms = (*forms, "surface")
+                return forms
         return None
     # THE THREE AUDIT SEAMS (stage C): builder briefing fragments, the user
     # deliverable recipe, and the run/submit tool policy. Implemented rows
@@ -586,9 +596,11 @@ class EngineSpec:
         purpose = evidence.purpose or ""
         ik = evidence.input_kind
 
-        # (engine × purpose × input) CAPABILITY - the core "can it produce this at all".
+        # (engine × purpose × input) CAPABILITY - the core "can it produce this at all". The file's
+        # form is passed so a surface for internal flow is read as the one input it is, whichever
+        # kind the user confirmed (purposes.kinds_admitted_as).
         if purpose in PURPOSES:
-            if not is_compatible(self, purpose, ik):
+            if not is_compatible(self, purpose, ik, form=str(evidence.geometry_form or "")):
                 if not is_compatible(self, purpose):
                     out.append(Rejection(
                         code="purpose_incompatible", phase="declared", field="purpose",

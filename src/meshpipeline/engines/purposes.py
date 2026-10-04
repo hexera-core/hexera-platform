@@ -148,26 +148,42 @@ def flow_kind_of(purpose_key: str) -> str:
     return PURPOSES[purpose_key].flow_kind if purpose_key in PURPOSES else ""
 
 
-def kinds_admitted_as(input_kind: str | None, required_mesh_kinds: tuple) -> tuple:
+#: For INTERNAL flow from a SURFACE, these kinds are one input: the closed boundary of the fluid.
+#: A surface of the fluid volume (open-ended or capped), a surface of the part whose bore carries
+#: the flow, and a part's skin all come down, once staged, to the wall around the fluid with the
+#: confirmed openings as its lids (the shared internal-surface staging finds the fluid's side). So
+#: an engine that takes a surface for internal flow takes it whichever of them the user confirmed.
+_FLUID_BOUNDARY_KINDS: tuple[str, ...] = ("fluid-domain", "body-surface", "solid-body")
+
+
+def kinds_admitted_as(input_kind: str | None, required_mesh_kinds: tuple, *,
+                      topology: str = "", form: str = "") -> tuple:
     """The capability input kinds a submitted geometry satisfies for a purpose. To a flow engine a
     CAD solid of the physical part IS its surface - the mesher wraps the skin and fills the fluid
     around or inside it - so for a purpose that needs a fluid volume, "solid-body" satisfies a
     "body-surface" capability. For structural work it stays its own kind: gmsh meshes the solid
     itself. Without this, a car body, a wing or a blade confirmed on the geometry check as "a
     solid body the fluid flows around" was refused: "cannot produce an external_cfd mesh from a
-    'solid-body' geometry"."""
+    'solid-body' geometry". And for internal flow from a SURFACE file (`form`, engines/capability)
+    every kind in _FLUID_BOUNDARY_KINDS is the same input: cfMesh was refused an STL confirmed as
+    the fluid volume, and Gmsh one confirmed as the part, for a distinction a surface does not
+    carry. Whether the engine takes a surface at all is its own declaration (the form rule)."""
     if input_kind is None:
         return ()
+    if (form == "surface" and topology == "internal" and "fluid-volume" in required_mesh_kinds
+            and input_kind in _FLUID_BOUNDARY_KINDS):
+        return _FLUID_BOUNDARY_KINDS
     if input_kind == "solid-body" and "fluid-volume" in required_mesh_kinds:
         return ("solid-body", "body-surface")
     return (input_kind,)
 
 
-def is_compatible(spec, purpose_key: str, input_kind: str | None = None) -> bool:
+def is_compatible(spec, purpose_key: str, input_kind: str | None = None, *,
+                  form: str = "") -> bool:
     p = PURPOSES[purpose_key]
     req, req_topo = p.requires_mesh_kind, p.flow_topology
     req = (req,) if isinstance(req, str) else tuple(req)
-    admitted = kinds_admitted_as(input_kind, req)
+    admitted = kinds_admitted_as(input_kind, req, topology=req_topo, form=form)
     return any(
         c.output_kind in req
         and (input_kind is None or c.input_kind in admitted)

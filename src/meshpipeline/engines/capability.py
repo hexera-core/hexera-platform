@@ -253,10 +253,12 @@ def way_on(flow: str, form: str, *, able: Iterable[str] | None = None,
 
 
 def takes_line(spec) -> str:
-    """One line a proposer reads: what this engine takes, per flow - derived from `accepts`."""
+    """One line a proposer reads: what this engine takes, per flow - derived from the declarations
+    (EngineSpec.forms_for: `accepts`, and the input contract's internal_from_surface)."""
     parts = []
     for fs in spec.accepts:
-        forms = _join([form_words(f, short=True) for f in fs.forms], "or")
+        forms = _join([form_words(f, short=True) for f in (spec.forms_for(fs.flow) or fs.forms)],
+                      "or")
         shaped = f" (built for {fs.designed_for})" if fs.designed_for else ""
         parts.append(f"{flow_words(fs.flow)}{shaped} from {forms}")
     return ("Takes: " + "; ".join(parts) + ".") if parts else ""

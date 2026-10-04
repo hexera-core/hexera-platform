@@ -220,6 +220,70 @@ def test_the_start_of_run_choice_reads_the_declarations(monkeypatch, tmp_path, f
     assert asyncio.run(node_engine_select(st)) == {"engine": engine}
 
 
+# once surface internal flow lands (STL-INTERNAL #135/#138): only the declarations change
+
+
+_SURFACE_TAKERS = ("snappy", "cfmesh", "vmtk", "gmsh")
+
+
+@pytest.fixture
+def internal_from_surface(monkeypatch):
+    """Each internal-flow engine as STL-INTERNAL declares it: InputContract.internal_from_surface.
+    The field is not on main yet, so the contract is stood in for with the same values plus it."""
+    import dataclasses
+
+    for name in _SURFACE_TAKERS:
+        spec = ENGINE_CATALOG[name]
+        contract = SimpleNamespace(**dataclasses.asdict(spec.input_contract),
+                                   internal_from_surface=True)
+        monkeypatch.setitem(ENGINE_CATALOG, name,
+                            dataclasses.replace(spec, input_contract=contract))
+
+
+def test_internal_from_surface_is_read_from_the_engines_declaration(internal_from_surface):
+    # no per-engine special case: every engine that declares it is offered for an STL
+    assert cap.engines_for("internal", "surface") == ["cfmesh", "snappy", "vmtk", "gmsh"]
+    for name in _SURFACE_TAKERS:
+        assert get_spec(name).forms_for("internal") == ("cad", "surface")
+        assert "internal flow" in cap.takes_line(get_spec(name))
+    assert ("internal flow from a CAD solid or a surface mesh"
+            in cap.takes_line(get_spec("cfmesh")))
+    # external and the other flows keep exactly what they declared
+    assert get_spec("gmsh").forms_for("external") == ("cad",)
+    assert get_spec("snappy_multiregion").forms_for("multi-region") == ("cad",)
+
+
+@pytest.mark.parametrize("engine", _SURFACE_TAKERS)
+@pytest.mark.parametrize("kind", ["fluid-domain", "body-surface", "solid-body"])
+def test_a_surface_for_internal_flow_is_one_input_whichever_kind_was_confirmed(
+        internal_from_surface, engine, kind):
+    # the aorta STL was confirmed as the fluid volume; cfMesh refused that kind and Gmsh refused a
+    # part's skin, for a distinction a surface does not carry - the staging finds the fluid's side
+    codes = {r.code for r in get_spec(engine).admit(AdmissionEvidence(
+        engine=engine, purpose="internal_cfd", input_kind=kind, geometry_form="surface",
+        engine_params=resolve_engine_params(engine, {})))}
+    assert not codes & {"purpose_incompatible", "input_kind_incompatible",
+                        "geometry_form_unsupported"}, (engine, kind, codes)
+
+
+@pytest.mark.parametrize("engine,kind", [("cfmesh", "fluid-domain"), ("gmsh", "body-surface")])
+def test_a_cad_solid_keeps_its_declared_kinds(internal_from_surface, engine, kind):
+    # a CAD solid's kind is real: a solid of the fluid and a solid of the part are meshed
+    # differently, and each engine's capability still says which it takes
+    codes = {r.code for r in get_spec(engine).admit(AdmissionEvidence(
+        engine=engine, purpose="internal_cfd", input_kind=kind, geometry_form="cad",
+        engine_params=resolve_engine_params(engine, {})))}
+    assert "input_kind_incompatible" in codes
+
+
+def test_the_aorta_stl_is_offered_every_internal_engine_once_they_take_surfaces(
+        internal_from_surface):
+    from meshpipeline.pipeline import engine_fallback as lad
+    st = _state("snappy", "internal", "surface", input_kind="fluid-domain")
+    assert not get_spec("snappy").admit(lad._declared_evidence(st, "snappy"))
+    assert [r.engine for r in lad.ladder(st)] == ["snappy", "cfmesh", "vmtk", "gmsh"]
+
+
 def test_a_future_engine_is_offered_from_its_spec_alone():
     # adding an engine needs only its spec: the roster, the ladder order and the matrix read it
     from dataclasses import replace
