@@ -135,6 +135,10 @@ _EXACT_MARKER_CLASS: dict[str, FailureClass] = {
     # get past a stall and cannot get past the pre-loop refusals reviewer_evidence_missing names.
     # Without this entry the substring cascade below would call it a provider outage.
     "reviewer_stalled": FailureClass.REVIEW_EVIDENCE_MISSING,
+    # An engine could not prepare its input because of OUR side - a disk write, memory, a time
+    # limit (agents/builder/attempt.STAGING_SYSTEM_FAILURE). Not the file's fault and possibly
+    # gone on a second pass, so it is transient: the same attempt is replayed after a wait.
+    "builder_staging_system": FailureClass.PROVIDER_TRANSIENT,
 }
 
 

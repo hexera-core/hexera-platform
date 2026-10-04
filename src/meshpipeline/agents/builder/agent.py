@@ -131,6 +131,14 @@ async def node_builder(state: PipelineState) -> dict:
     # spends model time looking for a file that was never written (job a76e3ca1: 15 minutes), and
     # the recorded reason - not "the mesher stopped" - is what the executor reports.
     _staging = attempt_mod.staging_failure(attempt.workspace)
+    if _staging is not None and (_staging.facts or {}).get("ours"):
+        # ...unless the failure was OURS (a disk write, memory, a time limit): nothing about the
+        # file, and possibly gone next time. It goes to the infrastructure replay, which prepares
+        # this same attempt again - never to the executor as the file's refusal.
+        logger.error("Builder: engine staging failed on our side - handing the attempt to the "
+                     "infrastructure replay - job_id=%s: %s", job_id, _staging.builder_text)
+        return _patch(retry_count=attempt.retry_count,
+                      api_failure=attempt_mod.STAGING_SYSTEM_FAILURE)
 
     authored_before = (noop_mod.authored_digest(attempt.workspace, attempt.engine)
                        if attempt.is_retry else "")

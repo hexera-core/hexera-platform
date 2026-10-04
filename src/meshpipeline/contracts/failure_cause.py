@@ -520,6 +520,14 @@ def describe(cause: object, facts: Mapping | None = None, *,
                     "geometry's.",
                     f"You can run it again ({_RUN_AGAIN}). If it happens again, ask for less "
                     "detail - a very large mesh can be too big to bring back.")
+        if f.get("stage") == "staging":
+            # agents/builder/attempt._record_staging_failure(ours=True): no mesher was started
+            who = str(f.get("engine") or engine or "The engine")
+            reason = clean_reason(f.get("reason"))
+            return (f"No mesh was built: preparing {who}'s input failed on our side"
+                    f"{f' ({reason})' if reason else ''}, so no mesher was started. That is our "
+                    "failure, not your geometry's.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}.")
         return ("The mesh run did not complete on our side: the service that runs the mesher "
                 "failed to take the job or to return its result. That is our failure, not your "
                 "geometry's or your settings'.",

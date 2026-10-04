@@ -63,7 +63,68 @@ def test_a_system_error_while_staging_is_never_the_files_refusal(tmp_path, monke
                         lambda g, p: types.SimpleNamespace(consumed=None))
     geometry = types.SimpleNamespace(path=str(tmp_path / "duct.step"))
     attempt_mod._stage_declared(tmp_path, geometry, {"intake_patches": []}, "vmtk")
+    refusal = attempt_mod.staging_failure(tmp_path)
+    # recorded - never swallowed - but as OURS: not deterministic, and the run may try again
+    from meshpipeline.contracts.failure_cause import retry_can_help
+    assert refusal is not None and refusal.cause == "run_infrastructure"
+    assert refusal.facts["ours"] is True and refusal.facts["deterministic"] is False
+    assert retry_can_help(refusal.cause, refusal.facts)
+
+
+def test_a_replay_of_the_same_attempt_stages_afresh(tmp_path, monkeypatch):
+    # the earlier pass's record is not this pass's verdict
+    attempt_mod._record_staging_failure(tmp_path, "vmtk", OSError(28, "No space left on device"),
+                                        ours=True)
+
+    class _Engine:
+        def stage_declared(self, *a, **k):
+            return {"ports": [1, 2]}
+
+    monkeypatch.setattr("meshpipeline.engines.runtime.get_engine", lambda e: _Engine())
+    monkeypatch.setattr("meshpipeline.cad.staging.staged_surface",
+                        lambda g, p: types.SimpleNamespace(consumed=None))
+    geometry = types.SimpleNamespace(path=str(tmp_path / "duct.step"))
+    attempt_mod._stage_declared(tmp_path, geometry, {"intake_patches": []}, "vmtk")
     assert attempt_mod.staging_failure(tmp_path) is None
+
+
+def test_our_staging_failure_goes_to_the_infrastructure_replay(tmp_path, monkeypatch, published):
+    import meshpipeline.settings.runtime as rtcfg
+    from meshpipeline.errors import classify_api_failure
+    from meshpipeline.pipeline.graph import route_after_builder
+    monkeypatch.setattr(rtcfg, "WORKSPACE_BASE", tmp_path / "workspaces")
+    real_prepare = attempt_mod.prepare
+
+    def _prepare(state, *, job_id, mode):
+        att = real_prepare(state, job_id=job_id, mode=mode)
+        attempt_mod._record_staging_failure(att.workspace, "vmtk",
+                                            OSError(28, "No space left on device"), ours=True)
+        return att
+
+    async def _never(*a, **k):
+        raise AssertionError("the builder ran on without its staged input")
+
+    monkeypatch.setattr(attempt_mod, "prepare", _prepare)
+    monkeypatch.setattr(invoke, "run_attempt", _never)
+    state = {"job_id": "j", "engine": "vmtk", "retry_count": 0, "builder_mode": "initial",
+             "geometry": {}, "request_txt": "r", "review_brief_txt": "b", "intake_patches": []}
+    out = asyncio.run(agent.node_builder(state))
+    assert out["api_failure"] == attempt_mod.STAGING_SYSTEM_FAILURE
+    assert classify_api_failure(out["api_failure"]).is_retryable
+    assert route_after_builder({**state, **out}) == "node_infra_retry"
+    notes = [c["text"] for p in published for c in p.calls if c["method"] == "anote"]
+    assert not any("from your file" in n for n in notes), "our failure was told as the file's"
+
+
+def test_our_staging_failure_is_said_as_ours():
+    from meshpipeline.contracts.failure_cause import describe
+    what, way_on = describe("run_infrastructure", {
+        "stage": "staging", "engine": "VMTK", "reason": "[Errno 28] No space left on device",
+        "ours": True, "deterministic": False})
+    assert what == ("No mesh was built: preparing VMTK's input failed on our side (No space left "
+                    "on device), so no mesher was started. That is our failure, not your "
+                    "geometry's.")
+    assert way_on.startswith("You can run it again with nothing changed")
 
 
 @pytest.fixture

@@ -218,6 +218,11 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         fn = None
     if fn is None or geometry is None:
         return
+    # A replay of this same attempt (graph.node_infra_retry, after a failure on our side) stages
+    # again in the same workspace: the earlier pass's record is no longer this pass's verdict.
+    if staging_failure(workspace) is not None:
+        from meshpipeline.engines.preflight import clear_refusal
+        clear_refusal(workspace)
     if (workspace / "vmtk_staging.json").exists():
         return                                  # carried forward from the previous attempt
     try:
@@ -226,11 +231,13 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         rec = fn(workspace, geometry_path=geometry.path, prepared=consumed,
                  intake_patches=state.get("intake_patches") or [],
                  input_kind=str(state.get("input_kind") or ""))
-    except _SYSTEM_ERRORS:
+    except _SYSTEM_ERRORS as exc:
         # OUR side (a disk write, memory, a timeout): nothing about the file, and not the same
-        # next time - never recorded as the file's refusal. The attempt goes on as it always did.
-        logger.exception("Builder: engine staging hit a system error (engine=%s) - continuing on "
-                         "the shared surface", engine)
+        # next time. Recorded as ours - the attempt stops on it and the run may try again - never
+        # as the file's refusal, and never left for the builder to stumble over a missing input.
+        logger.exception("Builder: engine staging hit a system error (engine=%s) - the attempt "
+                         "stops, and may be tried again", engine)
+        _record_staging_failure(workspace, engine, exc, ours=True)
         return
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason, never a crash
         logger.exception("Builder: engine staging failed (engine=%s) - the attempt stops on the "
@@ -245,27 +252,36 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
 #: The gate key a staging refusal is recorded under (engines/preflight.py's refusal record).
 STAGING_GATE = "staging"
 
+#: What the builder's turn ends with when staging failed on OUR side (errors.py classifies it as
+#: transient): graph.node_infra_retry waits, then prepares the SAME attempt again, spending none of
+#: the mesh-retry ladder; past its replay budget the run ends as our failure, never the file's.
+STAGING_SYSTEM_FAILURE = "<<API_FAILURE:builder_staging_system>>"
+
 #: Staging errors that are the system's, not the file's: a write that failed, memory, a time limit.
 #: They say nothing about the upload, and a later attempt may well not meet them.
 _SYSTEM_ERRORS: tuple[type[BaseException], ...] = (OSError, MemoryError, TimeoutError)
 
 
-def _record_staging_failure(workspace: Path, engine: str, exc: BaseException) -> None:
-    """THE ENGINE COULD NOT PREPARE ITS INPUT FROM THIS FILE, recorded with its reason. It used to
-    be logged and swallowed: the builder ran on without the staged input (job a76e3ca1 spent 15
-    minutes looking for a lumen that was never written) and the run ended as "the mesher
-    stopped", with the one fact that explained it lost. The same file stages the same way every
-    time, so it is deterministic: no retry, and the reason reaches the user - the executor reports
-    the record while no mesh exists."""
+def _record_staging_failure(workspace: Path, engine: str, exc: BaseException, *,
+                            ours: bool = False) -> None:
+    """THE ENGINE COULD NOT PREPARE ITS INPUT, recorded with its reason. It used to be logged and
+    swallowed: the builder ran on without the staged input (job a76e3ca1 spent 15 minutes looking
+    for a lumen that was never written) and the run ended as "the mesher stopped", with the one
+    fact that explained it lost. The executor reports the record while no mesh exists.
+
+    From the FILE (the default), it is deterministic - the same file stages the same way every
+    time - so it is not retried. From OUR side (`ours`: disk, memory, a time limit), it is our
+    infrastructure, said as ours, and the run may try again."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.engines.preflight import PreflightRefusal
     from meshpipeline.engines.registry import engine_label
     reason = " ".join(str(exc).split())[:300] or type(exc).__name__
     PreflightRefusal(
-        gate=STAGING_GATE, cause=FailureCause.NOT_BUILT.value,
+        gate=STAGING_GATE,
+        cause=(FailureCause.RUN_INFRASTRUCTURE if ours else FailureCause.NOT_BUILT).value,
         builder_text=f"[STAGING_FAILED] {engine}: {reason}",
         facts={"engine": engine_label(engine), "stage": "staging", "reason": reason,
-               "deterministic": True, "before_meshing": True}).write(workspace)
+               "deterministic": not ours, "ours": ours, "before_meshing": True}).write(workspace)
 
 
 def staging_failure(workspace: Path):
