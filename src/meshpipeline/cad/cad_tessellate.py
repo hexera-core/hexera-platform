@@ -13,6 +13,28 @@ from meshpipeline.cad.stl_io import read_stl_triangles
 logger = logging.getLogger(__name__)
 
 
+def is_iges(path) -> bool:
+    """Whether a CAD file IS IGES, read from its content, not its name. Staging copies every CAD
+    upload to geometry.step for the engines that read the B-rep, so an IGES upload arrived under a
+    .step name and the STEP reader refused it ("OpenCASCADE could not read CAD file:
+    geometry.step": cfMesh internal on every IGES of the lab test set, 2026-10-04). A STEP file
+    opens with ISO-10303-21; an IGES file is 80-column records whose 73rd column names the
+    section (S, G, D, P, T). The name decides only when the content says neither."""
+    p = Path(path)
+    try:
+        with open(p, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        head = b""
+    text = head.lstrip()
+    if text.startswith(b"ISO-10303-21"):
+        return False
+    first = head.splitlines()[0] if head else b""
+    if len(first) >= 73 and first[72:73] in (b"S", b"G") and b"ISO-10303" not in head:
+        return True
+    return p.suffix.lower() in (".igs", ".iges")
+
+
 def _occ_to_metres(prepared):
     from meshpipeline.cad.normalise import occ_scale_transform
 
@@ -37,7 +59,7 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.StlAPI import StlAPI_Writer
-    if geom_path.suffix.lower() in (".igs", ".iges"):
+    if is_iges(geom_path):
         from OCP.IGESControl import IGESControl_Reader as _Reader
     else:
         from OCP.STEPControl import STEPControl_Reader as _Reader
@@ -557,7 +579,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     geom_path = Path(geom_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if geom_path.suffix.lower() in (".igs", ".iges"):
+    if is_iges(geom_path):
         from OCP.IGESControl import IGESControl_Reader as _Reader
     else:
         from OCP.STEPControl import STEPControl_Reader as _Reader
