@@ -155,8 +155,11 @@ async function watchGeometryCheck(sessionId) {
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
-  const confirmFn = async (body) => {
+  // `edits` is the stage's (or the card's) one line saying what the user changed on the form. It
+  // is said once the server holds the answers, before the declaration that carries them all.
+  const confirmFn = async (body, edits) => {
     const reply = await confirmGeometryCheck(sessionId, body);
+    if (edits) deps.chat("assistant", edits);
     deps.chat("assistant", reply.message);
     // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
     // is the next question - or the dispatch, when nothing was left to ask.
