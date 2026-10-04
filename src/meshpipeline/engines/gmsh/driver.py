@@ -465,6 +465,10 @@ def main(workspace: str) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
+        # the model's bounding box from its surface, not OpenCascade's loose envelope of B-spline
+        # control points: the element size is a factor of this diagonal and the resolution clamp
+        # reads its narrowest side (a 132 mm Supra read 570 x 492 x 401 mm without it)
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
         gmsh.model.occ.importShapes(str(geom))
         gmsh.model.occ.synchronize()

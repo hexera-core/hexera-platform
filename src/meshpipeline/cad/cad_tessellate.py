@@ -31,12 +31,11 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
         if geom_path.resolve() != out_stl.resolve():
             _sh.copy2(geom_path, out_stl)
         return out_stl
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.StlAPI import StlAPI_Writer
+
+    from meshpipeline.cad.occ_box import mesh_to_size
     if geom_path.suffix.lower() in (".igs", ".iges"):
         from OCP.IGESControl import IGESControl_Reader as _Reader
     else:
@@ -48,11 +47,9 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
     shape = reader.OneShape()
     trsf = _occ_to_metres(prepared)
     shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
-    box = Bnd_Box(); BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
-    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-    lin = linear_deflection if linear_deflection is not None else diag / 2500.0
-    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    # the deflection follows the part's REAL size (cad/occ_box.mesh_to_size), not OpenCascade's
+    # loose envelope: a Supra whose envelope read 4.3x too big was meshed 4.3x too coarse
+    mesh_to_size(shape, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
     StlAPI_Writer().Write(shape, str(out_stl))
     return out_stl
 
@@ -581,14 +578,13 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         cls.Perform(gp_Pnt(*p), 1e-9)
         return cls.State() == TopAbs_IN
 
-    diag = 0.0
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
-    box = Bnd_Box(); BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
-    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-    lin = linear_deflection if linear_deflection is not None else diag / 2500.0
-    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    # meshed at the part's REAL size (cad/occ_box.mesh_to_size); lin is the deflection it was meshed
+    # at, which the cap faces below reuse. The box is the part's real extent too, and it sizes the
+    # internal background mesh (bbox_min/bbox_max below), which a loose envelope inflated.
+    from meshpipeline.cad.occ_box import mesh_to_size
+    box, lin = mesh_to_size(shape, 1.0 / 2500.0, angular_deflection,
+                            linear_deflection=linear_deflection)
+    x0, y0, z0, x1, y1, z1 = box
 
     # classify faces: planar -> opening candidate, curved -> wall (see docstring)
     faces: list = []
@@ -1211,11 +1207,9 @@ def tessellate_regions_to_stl(geom_path, out_stl, *, prepared=None, angular_defl
     # That is right for a body meshed as a single wall, and lossy for a surface whose parts are
     # named - and the loss happens here, before any engine could have chosen. A file that
     # distinguishes nothing takes the flat path unchanged and reports no names.
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
+    from meshpipeline.cad.occ_box import mesh_to_size
     from meshpipeline.cad.regions import components_of, regions_of
     from meshpipeline.cad.stl_io import write_stl_solids
 
@@ -1238,12 +1232,8 @@ def tessellate_regions_to_stl(geom_path, out_stl, *, prepared=None, angular_defl
         if shape is None or shape.IsNull():
             continue
         shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
-        box = Bnd_Box()
-        BRepBndLib.Add_s(shape, box)
-        x0, y0, z0, x1, y1, z1 = box.Get()
-        diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-        lin = linear_deflection if linear_deflection is not None else max(diag / 2500.0, 1e-9)
-        BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+        # each component meshed at its own REAL size (cad/occ_box.mesh_to_size)
+        mesh_to_size(shape, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
         tris = _triangles_of(shape)
         if tris:
             solids[name or f"region_{index + 1}"] = tris
