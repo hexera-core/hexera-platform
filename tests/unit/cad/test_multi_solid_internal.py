@@ -16,6 +16,7 @@ try:
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
     from OCP.TopAbs import TopAbs_IN
     from OCP.TopoDS import TopoDS_Compound
@@ -61,7 +62,7 @@ def _write(path: Path, *solids):
         b.Add(both, s)
     w = STEPControl_Writer()
     w.Transfer(both, STEPControl_AsIs)
-    assert w.Write(str(path)) is not None
+    assert w.Write(str(path)) == IFSelect_RetDone
     return path
 
 
@@ -148,6 +149,23 @@ def test_a_bundle_of_inserts_is_taken_off_the_lid_one_by_one(tmp_path):
     assert lid == pytest.approx(math.pi * (R_BORE ** 2 - 3 * r_tube ** 2), rel=0.02)
     p = [v * 1000.0 for v in t["interior_point"]]
     assert not _in(pipe, p) and not any(_in(s, p) for s in tubes), f"seed {p} mm is in the metal"
+
+
+def test_a_declared_fluid_annulus_round_a_separate_insert_is_seeded_in_the_annulus(tmp_path):
+    # the file IS the fluid - an annulus - with an insert down its middle as a second solid: the
+    # annulus's centroid lies on the axis, in the insert, and a point in the insert is in a body
+    r_out, r_in = 50.0, 30.0
+    fluid = BRepAlgoAPI_Cut(_cyl(0.0, r_out, L), _cyl(-1.0, r_in, L + 2.0)).Shape()
+    insert = _cyl(0.0, r_in, L)
+    step = _write(tmp_path / "annulus_insert.step", fluid, insert)
+    d_eq = 2.0 * math.sqrt(r_out ** 2 - r_in ** 2)            # the annulus as a circle's diameter
+    t = tessellate_internal(step, tmp_path / "stls", prepared=_prepared(), fluid_solid=True,
+                            declared_ports=declaration_targets([
+                                {"name": "inlet", "type": "inlet", "near_mm": [0.0, 0.0, 0.0], "diameter_mm": d_eq},
+                                {"name": "outlet", "type": "outlet", "near_mm": [L, 0.0, 0.0], "diameter_mm": d_eq},
+                                {"name": "wall", "type": "wall"}]))
+    x, y, z = (v * 1000.0 for v in t["interior_point"])
+    assert _in(fluid, (x, y, z)) and not _in(insert, (x, y, z)), f"seed ({x}, {y}, {z}) mm is not in the annulus"
 
 
 def test_a_single_pipe_keeps_its_whole_bore_as_the_lid(tmp_path):

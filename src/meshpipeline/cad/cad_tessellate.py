@@ -787,9 +787,10 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                     ends.update(i for i, f in enumerate(faces) if f.IsSame(sf))
             cut = BRepAlgoAPI_Cut(result, s)
             if not cut.IsDone():
+                # half a cut is worse than none: the whole lid stays as it was, and so does the wall
                 logger.error("tessellate_internal: could not take a solid's footprint off a port "
-                             "lid - the lid keeps it")
-                continue
+                             "lid - the lid spans the whole bore, as for a single solid")
+                return [cap], 0.0
             result = cut.Shape()
         g = GProp_GProps(); BRepGProp.SurfaceProperties_s(result, g)
         taken = max(before - g.Mass(), 0.0)
@@ -1185,7 +1186,23 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                 on_ring = [c[k] + r_mid * d[k] for k in range(3)]
                 for sign in (-1.0, 1.0):
                     candidates.append(tuple(on_ring[k] + sign * step * n[k] for k in range(3)))
-        interior = next((p for p in candidates if _inside(p)), None)
+        # THE SOLID IS THE FLOW - but which, when there are several? The one the ports belong to:
+        # an annular fluid with a separate insert down its middle is the annulus, and its centroid,
+        # on the axis, lies in the insert. A point in a solid that carries no port is in a body.
+        owners = [o for o in (_owner(faces[pi]) for pi in (inlet_i, *outlet_ids)) if o is not None]
+        flow_cls = [c for s, c in zip(solids, classifiers) if any(s.IsSame(o) for o in owners)] or classifiers
+        body_cls = [c for c in classifiers if all(c is not f for f in flow_cls)]
+
+        def _in_flow(p) -> bool:
+            def _in(cls_list) -> bool:
+                for cls in cls_list:
+                    cls.Perform(gp_Pnt(*p), 1e-9)
+                    if cls.State() == TopAbs_IN:
+                        return True
+                return False
+            return _in(flow_cls) and not _in(body_cls)
+
+        interior = next((p for p in candidates if _in_flow(p)), None)
     if interior is None and fluid_solid:
         # A DECLARED fluid domain is the fluid: a point that is not inside the solid is not in
         # the flow, whatever the hollow-wall search below would make of it. Refuse loudly
