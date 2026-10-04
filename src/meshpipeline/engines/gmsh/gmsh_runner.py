@@ -77,7 +77,18 @@ def _inspect_surface(ws: Path, stl: Path) -> dict:
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("inspect_surface")
-        tags = classify_closed_surface(gmsh, str(stl))
+        try:
+            tags = classify_closed_surface(gmsh, str(stl))
+        except Exception as exc:  # noqa: BLE001 - reported, the builder cannot fix a surface
+            tags, why = [], f" ({type(exc).__name__}: {exc})"
+        else:
+            why = ""
+        if not tags:
+            gmsh.model.remove()
+            return {"error": ("the staged surface (input.stl) has no faces gmsh can close into a "
+                              f"volume{why} - an empty or open surface bounds nothing. Supply a "
+                              "closed surface (or a CAD solid)."),
+                    "source": "surface"}
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
         out = {
             "volumes": 0,

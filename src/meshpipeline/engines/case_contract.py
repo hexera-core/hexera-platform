@@ -308,7 +308,27 @@ def _gmsh_boundary(ws: Path) -> CaseBoundary | None:
         spec = json.loads(f.read_text())
     except (OSError, ValueError) as exc:
         raise CaseUnreadable(f"gmsh_spec.json is missing or not JSON ({exc})") from exc
+    from meshpipeline.engines.workspace_facts import (
+        port_declaration,
+        read_flow_topology,
+        read_input_kind,
+    )
+    declared = [p for p in port_declaration(ws) if isinstance(p, dict) and p.get("name")]
+    # THE ENGINE NAMES THESE ITSELF (engines/gmsh/driver.py), whatever the spec says: an external
+    # body is cut out of a far-field box and its groups are the declared wall and far field; a
+    # spec without groups has the declared ports bound to their faces and the rest walled.
+    if read_flow_topology(ws) == "external" and read_input_kind(ws) != "fluid-domain":
+        wall = next((p["name"] for p in declared if p.get("type") == "wall"), "body")
+        far = next((p["name"] for p in declared if p.get("type") == "farfield"), "farfield")
+        return CaseBoundary(patches={str(wall): "wall", str(far): "farfield"}, kind="roles",
+                            authored_by=RENDERER)
     groups = spec.get("groups") if isinstance(spec, dict) else None
+    if not groups and any(p.get("type") in ("inlet", "outlet") for p in declared):
+        wall = next((p["name"] for p in declared if p.get("type") == "wall"), "wall")
+        patches = {str(p["name"]): str(p["type"]) for p in declared
+                   if p.get("type") in ("inlet", "outlet")}
+        patches[str(wall)] = "wall"
+        return CaseBoundary(patches=patches, kind="roles", authored_by=RENDERER)
     if not isinstance(groups, list):
         raise CaseUnreadable("gmsh_spec.json has no groups list")
     patches = {str(g.get("name") or "").strip(): str(g.get("role") or "free").strip()

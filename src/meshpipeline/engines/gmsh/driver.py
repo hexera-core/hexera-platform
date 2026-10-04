@@ -19,6 +19,10 @@ MIN_CELLS_ACROSS = 8
 #: passage that narrows inside (a volute scroll: 2-4 cells at the narrowest wall). The
 #: resolution_floor gate rejects a fill under PASSAGE_FLOOR_CELLS at the narrowest wall.
 PASSAGE_CELLS_ACROSS = 13
+#: EXTERNAL bodies: elements across the body's thinnest extent, and the finest body size as a
+#: fraction of its diagonal (the floor that keeps a thin plate from asking for millions of tets)
+EXTERNAL_THIN_DIVISIONS = 6
+EXTERNAL_MAX_DIVISIONS = 400
 #: the finest the passage field may ask for, as a fraction of the clamp size h: a chord that
 #: grazes a sharp corner reads as a tiny radius, and 2r/13 of that would never finish
 PASSAGE_MIN_SIZE_FRACTION = 1.0 / 30.0
@@ -524,11 +528,18 @@ def _external_fluid(gmsh, ws, spec, discrete, surfaces, bmin, bmax, h, ports):
     return vols, groups, facts
 
 
-def _bound_groups(gmsh, surfaces, ports) -> list[dict]:
-    """The groups of a classified surface when the builder named none: each declared port bound to
-    its face (engines/gmsh/surface_volume.bind_ports), every other face the declared wall."""
+def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
+    """The groups when the builder named none: each declared port bound to its face
+    (engines/gmsh/surface_volume.bind_ports), every other face the declared wall - the same
+    reading for a CAD face table (mass properties) and a classified surface (its triangles)."""
     from meshpipeline.engines.gmsh.surface_volume import bind_ports, surface_table
-    bound = bind_ports(surface_table(gmsh, surfaces), ports)
+    if cad:
+        table = [{"tag": int(t), "area": float(gmsh.model.occ.getMass(2, t)),
+                  "centroid": [float(v) for v in gmsh.model.occ.getCenterOfMass(2, t)]}
+                 for t in surfaces]
+    else:
+        table = surface_table(gmsh, surfaces)
+    bound = bind_ports(table, ports)
     roles = {str(p.get("name")): str(p.get("type")) for p in ports or [] if isinstance(p, dict)}
     used = {t for tags in bound.values() for t in tags}
     wall, _ = _declared_names(ports)
@@ -537,8 +548,8 @@ def _bound_groups(gmsh, surfaces, ports) -> list[dict]:
     rest = [t for t in surfaces if t not in used]
     if rest:
         groups.append({"name": wall, "role": "wall", "surface_tags": rest})
-    print(f"[GMSH] surface input: ports bound to faces {bound}; {len(rest)} face(s) are the wall",
-          file=sys.stderr)
+    print(f"[GMSH] no groups in the spec: ports bound to faces {bound}; {len(rest)} face(s) are "
+          "the wall", file=sys.stderr)
     return groups
 
 
@@ -626,6 +637,13 @@ def main(workspace: str) -> int:
         # dimension" is a passage rule, and across a wing's thickness it would refine the whole
         # far field to the thickness. The body size stands; the box grades away from it.
         h = h_req if external else min(h_req, min_ext / MIN_CELLS_ACROSS)
+        if external:
+            # THE BODY'S THINNEST DIMENSION gets a few elements: a wing 79 mm thick under a 68 mm
+            # body size left its trailing edge to one element and boundary-locked slivers no
+            # optimiser can move (ONERA M6: min SICN 0.04; at a sixth of the thickness 0.08 with
+            # one sliver left, 2026-10-04). Bounded below so a thin plate cannot ask for millions.
+            h = min(h, max(narrowest_extent(ext, diag) / EXTERNAL_THIN_DIVISIONS,
+                           diag / EXTERNAL_MAX_DIVISIONS))
         if h < h_req:
             _what = (f"the {min_ext:.4g} m narrow dimension" if _basis == "bbox"
                      else f"the {min_ext:.4g} m flow width of {_basis[5:]}")
@@ -673,6 +691,10 @@ def main(workspace: str) -> int:
                 spec["groups"] = _bound_groups(gmsh, surfaces, _ports)
         else:
             vols = [t for _, t in gmsh.model.getEntities(3)]
+            if not spec.get("groups") and any(isinstance(p, dict) and p.get("type") in
+                                               ("inlet", "outlet") for p in _ports):
+                spec["groups"] = _bound_groups(gmsh, [t for _, t in gmsh.model.getEntities(2)],
+                                               _ports, cad=True)
         # Physical groups: every volume is the solid; surfaces per the spec's
         # contracted names; unassigned surfaces land in the default group so
         # the .inp has a complete, named boundary decomposition.
