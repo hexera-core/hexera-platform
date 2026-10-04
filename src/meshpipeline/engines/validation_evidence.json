@@ -163,6 +163,27 @@
           "summary": "straight_reducer_004 fluid twin (corpus, HEX-11): the engine opened the declared ports, builder attempt 1, Cloud Run 3 min, 97,465 tets, min SJ 0.119 on the isotropic fill, all gates green, reviewer PASS (13 rounds), 502 s end to end; straight_reducer_006 (9dc8f08a) likewise, 148,264 tets"
         }
       ]
+    },
+    {
+      "engine": "gmsh",
+      "input_kind": "body-surface",
+      "output_kind": "fluid-volume",
+      "supported": true,
+      "tier": "T4 (overnight cloud lab: the production graph and mesh image, scripted builder, no reviewer) - T5 pending the integration deploy",
+      "deliveries": [
+        {
+          "purpose": "external_cfd (3D)",
+          "job": "lab gx3-bluff_body_001-gmsh-step",
+          "date": "2026-10-04",
+          "summary": "bluff body in a far-field box (OCC box minus body), STEP: every executor gate passed incl. the domain extent, 27,357 tets, min SICN 0.48, 10 s (commit 59aaa67)"
+        },
+        {
+          "purpose": "external_cfd (3D)",
+          "job": "lab gx3-ahmed_variant_001-gmsh-step, gx3-wing_003-gmsh-step",
+          "date": "2026-10-04",
+          "summary": "Ahmed body 39,871 tets min SICN 0.42; wing_003 349,748 tets min SICN 0.108; all gates passed"
+        }
+      ]
     }
   ]
 }
