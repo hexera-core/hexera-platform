@@ -402,8 +402,16 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
     # at the ports and sized the whole wall from the skin (5.3 cells across, lab 2026-10-04).
     # Each port is read by its lid's hydraulic diameter: an annulus is its gap, not its bore.
     chord = field_radius_stats(*raw) if raw is not None else {}
-    chosen = choose_passage_radius(
-        chord, port_radius_stats(t.get("openings"), lid_hydraulic_diameters(srcs, wall_key)))
+    # each port at its narrowest flow width: the lid's hydraulic diameter, and the declared
+    # short side of a rectangle or gap of an annulus where stated (a 140 x 384 mm duct's
+    # hydraulic diameter is 205 mm; the floor counts cells across its 140 mm side)
+    widths = dict(lid_hydraulic_diameters(srcs, wall_key))
+    for p in declaration or []:
+        hw = declared_port_half_width([p]) if isinstance(p, dict) else None
+        if hw and p.get("name"):
+            name = str(p["name"])
+            widths[name] = min(float(widths.get(name) or float("inf")), 2.0 * hw)
+    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths))
     if not chosen or not str(chosen.get("source", "")).startswith("chord") or raw is None:
         return chosen, None
     field = staged_passage_field(t, srcs, wall_key, declaration, field=raw)

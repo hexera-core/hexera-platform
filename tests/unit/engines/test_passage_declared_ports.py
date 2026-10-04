@@ -57,3 +57,20 @@ def test_cfmesh_never_bands_wider_than_the_widest_declared_port(monkeypatch):
     chosen, field = R._passage_sizing(t, {}, "wall", decl)
     assert chosen["band"] == pytest.approx(0.07) and chosen["band_capped_at_declared_port"]
     assert field is not None and len(field) == 3
+
+
+def test_a_rectangular_port_is_read_by_its_short_side_not_its_hydraulic_diameter(monkeypatch):
+    import meshpipeline.engines.cfmesh.cfmesh_runner as R
+    pts = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1.0, 0], [1.0, 1.0, 0]])
+    faces = np.array([[0, 1, 2], [1, 3, 2]])
+    r = np.full(4, 0.19)                       # read along the 384 mm side everywhere
+    monkeypatch.setattr(P, "staged_passage_field",
+                        lambda *_a, **k: (pts, faces, r) if k.get("field") is None else k["field"])
+    # the lid's hydraulic diameter is 205 mm; the declared short side is 140 mm
+    monkeypatch.setattr(P, "lid_hydraulic_diameters", lambda *_a, **_k: {"in": 0.205, "out": 0.205})
+    decl = [{"name": "in", "type": "inlet", "width_mm": 384, "height_mm": 140},
+            {"name": "out", "type": "outlet", "width_mm": 384, "height_mm": 140},
+            {"name": "wall", "type": "wall"}]
+    t = {"openings": {"in": {"area": 0.384 * 0.14}, "out": {"area": 0.384 * 0.14}}}
+    chosen, field = R._passage_sizing(t, {}, "wall", decl)
+    assert chosen["source"] == "ports" and chosen["p05"] == pytest.approx(0.07) and field is None
