@@ -23,8 +23,6 @@ logger = logging.getLogger(__name__)
 #: failed and unsupported are terminal and say why.
 STATUS_PENDING, STATUS_SCOUTED, STATUS_READY = "pending", "scouted", "ready"
 STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
-_CAD_SUFFIXES = (".step", ".stp", ".igs", ".iges")
-_MESH_SUFFIXES = (".stl", ".obj", ".vtp")
 #: THE WORKER'S LIMITS for the two steps, in seconds. Past the soft one the task is told to stop
 #: and stores `failed` itself; past the hard one it is killed and stores nothing - and a worker
 #: whose VM is deleted mid-task stores nothing either. The Celery tasks take these same numbers,
@@ -354,14 +352,16 @@ def _fetch(ref, work: Path) -> Path:
 
 
 def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None) -> dict:
+    from meshpipeline.cad.ingest import IngestError, canonicalise
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+    from meshpipeline.contracts.intake_formats import GeometryKind, format_for_suffix
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.render.scout_snapshots import render_snapshots
 
     ref = GeometrySourceRef.from_payload(source)
     suffix = (ref.suffix_hint or "").lower()
-    if suffix not in _CAD_SUFFIXES + _MESH_SUFFIXES:
-        raise _Unsupported("the geometry check reads STEP, IGES, STL, OBJ and VTP files; this upload "
+    if format_for_suffix(suffix) is None:
+        raise _Unsupported("the geometry check reads the accepted geometry formats; this upload "
                            f"is a {suffix or 'nameless'} file, so the intake will ask about its openings")
     interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
 
@@ -369,11 +369,19 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     # skin and picture left behind in /tmp would stay there until the disk was full.
     with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp:
         work = Path(tmp)
-        local_path = _fetch(ref, work)
-        if suffix in _CAD_SUFFIXES:
+        # the same canonical form the job materialiser hands the engines (cad/ingest)
+        try:
+            canonical = canonicalise(_fetch(ref, work), work, stem="geometry")
+        except IngestError as exc:
+            raise _Unsupported(str(exc)) from exc
+        local_path = canonical.path
+        if canonical.kind is GeometryKind.cad:
             facts, skin = _scout_exact(local_path, work, interp_ref, ref)
         else:
             facts, skin = _scout_triangles(local_path, work, interp_ref, ref)
+        # what kind of geometry this is and what it came from, for whoever decides what to offer
+        facts.update(canonical.facts())
+        facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
 
         # the same skin, stored for the stage the user turns the part in
         skin_key = check_object_key(session_id, "skin.json")

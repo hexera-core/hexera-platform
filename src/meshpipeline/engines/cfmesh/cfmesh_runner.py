@@ -69,8 +69,11 @@ review_surface_is_body_only = True
 
 def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
     import shutil as _shutil
+
+    from meshpipeline.contracts.intake_formats import is_cad
+
     geom_path, out_stl = Path(geom_path), Path(out_stl)
-    if geom_path.suffix.lower() in (".step", ".stp", ".iges", ".igs"):
+    if is_cad(geom_path):
         _shutil.copy2(geom_path, out_stl.parent / "geometry.step")
     return _cad_tessellate_to_stl(geom_path, out_stl, prepared=prepared)
 

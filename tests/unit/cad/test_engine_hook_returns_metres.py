@@ -14,6 +14,9 @@ UNITS = [(LengthUnit.metre, 1.0), (LengthUnit.millimetre, 1e-3),
 
 
 class _RecordingEngine:
+    #: what makes staging hand the file to this hook at all: like vmtk, it reads VTP itself
+    #: (any other surface is converted to the canonical STL by cad/ingest instead)
+    native_surface_suffixes = (".vtp",)
 
     def __init__(self):
         self.calls = []
