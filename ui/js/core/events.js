@@ -40,6 +40,23 @@ function verdictText(verdict) {
     : "Verdict: the reviewer left points open (see the outcome)";
 }
 
+/** What a failed verdict turns out to have been once a rebuild follows it: a request for changes,
+ *  not the run's last word. The renderer rewords the verdict line with it when the next attempt
+ *  opens, and marks the review's lane "sent back" rather than ticking it. */
+export const SENT_BACK = "Verdict: sent back for a rebuild - the reviewer asked for changes";
+
+/** How many attempts a finished run made, as its timeline counts them. Only an attempt in which a
+ *  mesher RAN counts - the `meshing` event is published just before the mesher starts, after every
+ *  refusal - so a run whose every attempt was refused before meshing says that nothing was built,
+ *  where it used to say "2 attempts". `opened` is whether the timeline saw any attempt at all; when
+ *  it saw none (an older run, a replay that came back empty) the server's count is all there is.
+ *  Pure: (opened, built, serverCount) -> the words beside the verdict. */
+export function attemptsLabel(opened, built, serverCount) {
+  const n = opened ? built : Number(serverCount) || 0;
+  if (n > 0) return `${n} attempt${n !== 1 ? "s" : ""}`;
+  return opened ? "no mesh was built" : "";
+}
+
 /** Which lane an event belongs to, given the lane the stream was last in.
  *  Pure: (event, cursor) -> {stage, cursor, closed}. `closed` is the lane this event
  *  retires, if any - a stage becoming active closes the one before it. */
@@ -61,7 +78,8 @@ const HANDLERS = {
   attempt:     (ev, r) => r.attempt(ev.n),
   stage:       (ev, r, st) => r.node(ev.stage || st),
   check:       (ev, r, st) => r.check(st, ev.statement, ev.ok),
-  note:        (ev, r, st) => r.info(st, ev.text, ev.tone !== "info"),
+  // the tone travels too: an error marks its lane failed, a warning marks it warned
+  note:        (ev, r, st) => r.info(st, ev.text, ev.tone !== "info", ev.tone),
   action:      (ev, r, st) => (ev.actions || []).forEach((a) => r.tool(st, a)),
   search:      (ev, r, st) => r.mcp(st, ev.query),
   screenshot:  (ev, r) => { if (ev.image) r.screenshot(ev.image); },   // replayed: no bytes
@@ -72,7 +90,8 @@ const HANDLERS = {
   rationale:   (ev, r, st) => r.rationale(st, ev),
   meshing:     (ev, r, st) => { r.node(st); r.startMesh(ev.engine, ev.budget_s, ev.history); },
   meshed:      (ev, r) => r.endMesh(ev.cells ? ev.cells.toLocaleString() + " cells" : ""),
-  verdict:     (ev, r, st) => r.info(st, verdictText(ev.verdict), ev.verdict !== "PASS"),
+  // the verdict is kept on its lane, so the lane's mark can never contradict it
+  verdict:     (ev, r, st) => r.verdict(st, ev.verdict === "PASS", verdictText(ev.verdict)),
   closing:     () => {},          // the stream holds it for the result card
 };
 

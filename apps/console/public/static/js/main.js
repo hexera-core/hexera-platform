@@ -102,9 +102,11 @@ setResultHandler((data, anchor) => {
    conversation the run belongs to: the page's own session for a run the chat started, the
    disputed run's conversation for a re-review. */
 function attachJob(id, { replayHistory = false, message = "", origin = getState.sessionId() } = {}) {
-  if (message) Stage.chat("assistant", message);
   clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
+  // the message goes on the NEW stage: said before the mount, it was wiped the instant it was
+  // drawn, so "re-review started" never reached the user
+  if (message) Stage.chat("assistant", message);
   beginRun(id, { sessionId: origin });
   // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no
   // routes and keeps the query string it has always used. Neither global set means the second
