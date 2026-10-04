@@ -87,6 +87,7 @@
    "timed_out"
   ],
   "deliverable": [
+   "fluid_boundary.stl",
    "geometry.step",
    "gmsh_spec.json",
    "mesh.bdf",
@@ -127,7 +128,7 @@
    "min_thickness_ratio": 0.0,
    "rationale": "3D: a valid closed CAD solid \u2192 second-order tetrahedra. 2D: a FLAT (planar) face/sheet body \u2192 plane-stress/strain triangles with boundary groups on the curves. Element sizing adapts to thin solids, so no hard thin-feature floor is set.",
    "require_no_self_intersection": false,
-   "internal_from_surface": false
+   "internal_from_surface": true
   },
   "required_run_files": [
    "gmsh_spec.json"
