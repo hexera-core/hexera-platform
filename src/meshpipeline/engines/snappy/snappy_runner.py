@@ -792,6 +792,18 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
     return out
 
 
+def _off_grid(point, lo, hi, div, levels: int) -> tuple:
+    """The centre of the cell holding `point` in a uniform box grid (corners `lo`/`hi`, `div`
+    cells per axis) refined `levels` times: inside one cell at every coarser level too, since
+    each refinement only halves the cells of the one before."""
+    out = []
+    for i in range(3):
+        h = (hi[i] - lo[i]) / max(div[i], 1) / 2 ** levels
+        k = math.floor((float(point[i]) - lo[i]) / h) if h > 0 else 0
+        out.append(lo[i] + (k + 0.5) * h if h > 0 else float(point[i]))
+    return tuple(out)
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
@@ -864,6 +876,18 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         "boundary (outer { type patch; faces "
         "((0 3 2 1)(4 5 6 7)(0 1 5 4)(2 3 7 6)(1 2 6 5)(0 4 7 3)); });\nmergePatchPairs ();\n")
 
+    # THE SEED OFF THE GRID. A part symmetric about a plane has its seed on that plane, and the
+    # background box, built round the part, is symmetric about it too: the plane is a cell face
+    # whenever the cell count across it is even, and a face of every refined cell whenever it
+    # is odd. snappyHexMesh cannot then say which cell holds locationInMesh ("is not inside the
+    # mesh or on a face or edge") and stops before it carves - every attempt on the centred
+    # tee_wye_018_fluid did, and the untouched background box read back as an exterior leak.
+    # The point the mesher gets is the centre of the finest cell (_HARD_MAX_LEVEL) holding the
+    # seed, on the box as written: strictly inside one cell at every level, and never more
+    # than half a finest cell from the seed.
+    location = _off_grid(interior_point, [float(f"{v:.6g}") for v in dmin],
+                         [float(f"{v:.6g}") for v in dmax], div, _HARD_MAX_LEVEL)
+
     # THE SEED BUBBLE. locationInMesh decides which region survives; interior cells far
     # from any surface stay at the BACKGROUND size, and a background cell containing the
     # seed can physically straddle a nearby port disc or wall (the autopsied leak: seed
@@ -925,7 +949,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
   refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
-  locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
+  locationInMesh ({location[0]:.12g} {location[1]:.12g} {location[2]:.12g}); allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_layers}; }} }}
@@ -940,7 +964,7 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
 mergeTolerance 1e-6; debug 0;
 """)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
-            "location_in_mesh": [round(x, 5) for x in interior_point], "max_cells": max_cells,
+            "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
             "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
