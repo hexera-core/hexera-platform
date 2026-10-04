@@ -15,6 +15,7 @@ from meshpipeline.cad.scout import (
     BOX_LIKE_FILL,
     BOX_LIKE_FLAT_SHARE,
     FINNED_FLAT_SHARE,
+    MAX_MOUTHS,
     MAX_OPENINGS,
     MIN_MOUTH_OF_THICKNESS,
     MIN_OPENING_FRACTION,
@@ -183,22 +184,27 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         # as cad/scout reads a closed solid: a body whose flat faces cover much of its box AND which
         # fills it is a body (the Ahmed body), a bent or branched passage fills far less of its box
         # however flat its walls (a square-section elbow); same-size flats fanning round an axis are
-        # blade tips
+        # blade tips, and more than a dozen lids is a machined part (a connector's pins, a heat
+        # sink's fins), not a passage's mouths
         flat_share = drawn_flat / box_skin
         box_like = (flat_share >= BOX_LIKE_FLAT_SHARE and fill >= BOX_LIKE_FILL) or flat_share >= FINNED_FLAT_SHARE
         bladed = _bladed(discs)
+        machined = bladed or len(discs) > MAX_MOUTHS
         # a passage's widest mouth is a real share of the part's thickness; a nacelle's 8 mm tail
         # flat on a 200 mm body is no mouth (its small branches may be: only the widest is held to it)
         thinnest = max(min(sx, sy, sz), 1e-12)
         mouthed = bool(discs) and max(o.equivalent_diameter for o in discs) >= MIN_MOUTH_OF_THICKNESS * thinnest
-        if len(discs) >= 2 and mouthed and not box_like and not bladed:
+        if len(discs) >= 2 and mouthed and not box_like and not machined:
             body_kind, input_kind, flow, pool, conf = "single_solid", "fluid-domain", "internal", discs, 0.6
         else:
             body_kind, input_kind, flow, pool, conf = "single_solid", "solid-body", "external", [], 0.6
             if len(discs) >= 2 and box_like:
                 notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box and the part fills "
                              f"{100 * fill:.0f}% of it, so it reads as a solid body in a flow, not a fluid passage")
-            elif len(discs) >= 2 and bladed:
+            elif len(discs) > MAX_MOUTHS:
+                notes.append(f"{len(discs)} flat ends are more than a passage has mouths, so it reads as a machined "
+                             "body in a flow, not a fluid passage")
+            elif bladed:
                 notes.append("its flat ends are alike and fan out round an axis like blade tips, so it reads as a "
                              "body in a flow, not a fluid passage")
             elif len(discs) >= 2:

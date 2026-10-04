@@ -92,10 +92,9 @@ def test_a_coarse_fluid_body_proposes_its_two_lids_and_none_of_its_facets(stl):
     assert all(o.confidence >= 0.9 for o in res.openings)
 
 
-def test_a_side_branchs_lid_is_proposed_wherever_it_sits(stl):
-    # the fluid of a pipe with a branch off its side, as a CAD export draws it: the branch's lid is
-    # nowhere near the part's box, and it is an opening as much as the two ends are
-    pytest.importorskip("OCP")
+def _cylinders_fused(*cyls, deflection=0.004):
+    """Cylinders (base point, axis, radius, height) fused into one solid and tessellated the way a
+    CAD export draws it, as triangles."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
@@ -106,14 +105,11 @@ def test_a_side_branchs_lid_is_proposed_wherever_it_sits(stl):
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
 
-    def cyl(p, axis, r, h):
-        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*p), gp_Dir(*axis)), r, h).Shape()
-
-    # a short branch and, further along, a long one the same way: the short one's lid is inside
-    # the part's box, short of the long one's
-    shape = BRepAlgoAPI_Fuse(cyl((0, 0, 0), (0, 0, 1), 0.05, 1.0), cyl((0, 0, 0.3), (1, 0, 0), 0.015, 0.09)).Shape()
-    shape = BRepAlgoAPI_Fuse(shape, cyl((0, 0, 0.7), (1, 0, 0), 0.02, 0.3)).Shape()
-    BRepMesh_IncrementalMesh(shape, 0.004, False, 0.4, True)
+    shape = None
+    for p, axis, r, h in cyls:
+        c = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*p), gp_Dir(*axis)), r, h).Shape()
+        shape = c if shape is None else BRepAlgoAPI_Fuse(shape, c).Shape()
+    BRepMesh_IncrementalMesh(shape, deflection, False, 0.4, True)
     tris = []
     ex = TopExp_Explorer(shape, TopAbs_FACE)
     while ex.More():
@@ -127,11 +123,33 @@ def test_a_side_branchs_lid_is_proposed_wherever_it_sits(stl):
                 b, c = c, b
             tris.append([[pts[k - 1].X(), pts[k - 1].Y(), pts[k - 1].Z()] for k in (a, b, c)])
         ex.Next()
+    return tris
+
+
+def test_a_side_branchs_lid_is_proposed_wherever_it_sits(stl):
+    # the fluid of a pipe with a branch off its side, as a CAD export draws it: the branch's lid is
+    # nowhere near the part's box, and it is an opening as much as the two ends are
+    pytest.importorskip("OCP")
+    # a short branch and, further along, a long one the same way: the short one's lid is inside
+    # the part's box, short of the long one's
+    tris = _cylinders_fused(((0, 0, 0), (0, 0, 1), 0.05, 1.0), ((0, 0, 0.3), (1, 0, 0), 0.015, 0.09),
+                            ((0, 0, 0.7), (1, 0, 0), 0.02, 0.3))
     res = scout_mesh(stl("branch", tris), scale_to_m=1.0)
     assert res.input_kind == "fluid-domain" and len(res.openings) == 4, [o.centroid for o in res.openings]
     branch = next(o for o in res.openings if abs(o.centroid[2] - 0.3) < 0.01)
     assert not branch.on_extremity and branch.equivalent_diameter == pytest.approx(0.03, rel=0.05)
     assert branch.normal[0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_a_body_with_more_lids_than_a_passage_has_mouths_is_machined(stl):
+    # a connector: a bar with two flat ends and thirteen pins standing out of one side, each pin's
+    # flat tip a lid by every local measure - fifteen lids is a machined part, not a passage
+    pytest.importorskip("OCP")
+    pins = [((0, 0, 0.06 + 0.067 * k), (1, 0, 0), 0.006, 0.08) for k in range(13)]
+    tris = _cylinders_fused(((0, 0, 0), (0, 0, 1), 0.05, 1.0), *pins)
+    res = scout_mesh(stl("connector", tris), scale_to_m=1.0)
+    assert res.flow == "external" and res.openings == []
+    assert any("more than a passage has mouths" in n for n in res.notes)
 
 
 def test_a_coarse_closed_body_is_a_body_in_a_flow(stl):

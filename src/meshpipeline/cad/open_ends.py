@@ -71,6 +71,8 @@ MIN_RIM_EDGES = 4
 #: A lid spans one passage, so its outline is about as full as its convex hull (a round, square or
 #: oval section, an oblique cut of one); a flat band of wall curving round a bend is not.
 LID_SOLIDITY = 0.8
+#: Lids whose outside is probed with rays: far more than any passage has mouths.
+MAX_LIDS_PROBED = 256
 #: A flat patch this many times the size of the patches round it is a face the part was drawn
 #: with even where it runs smoothly into a fillet; a facet of a curved wall is their size.
 FACE_OVER_FACETS = 4.0
@@ -588,9 +590,11 @@ class _Mesh:
                            crease=float(crease[p]), rim_edges=int(n_rim[p]), smooth=float(smooth[p]),
                            over=float(over[p]), solidity=_solidity(outline, c, n_loop, outline_area), clear=-1,
                            confidence=0.0))
-        # OPEN AIR OUTSIDE, for the lids among them: the rays cost the most, so the largest few
-        lids = sorted((cap for cap in out if cap._rim_ok), key=lambda cap: cap.area, reverse=True)
-        for cap in lids[:MAX_PROBED]:
+        # OPEN AIR OUTSIDE, for the lids among them: the rays cost the most, so a part with very many
+        # gets them for its surest rims first, whatever their size - a small branch's clean lid
+        # before a big flat face's ragged one
+        lids = sorted((cap for cap in out if cap._rim_ok), key=lambda cap: (round(cap.sharp, 2), cap.area), reverse=True)
+        for cap in lids[:MAX_LIDS_PROBED]:
             cap.clear = self._clear(cap.centroid + cap.normal * 0.02 * cap.equivalent_diameter, cap.normal)
         # HOW SURE: a rim sharp all the way round, under open air - the share of the rim beyond
         # half that is sharp, times the share of the outside rays that met nothing
