@@ -268,7 +268,7 @@
    "historical_alias": "",
    "historical_id": "",
    "mapping": "new",
-   "mapping_reason": "the port-binding refusal names what the measured openings disagree about (error#4 until the STL refusal's logger before it was removed: internal flow from a surface is staged now)",
+   "mapping_reason": "the port-binding refusal names what the measured openings disagree about",
    "status": "proven",
    "proof_scenario": "snappy-driver:internal-refuse-binding"
   },
@@ -277,7 +277,7 @@
    "historical_alias": "E062",
    "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#1",
    "mapping": "renamed",
-   "mapping_reason": "the port-binding seam's logger and refusal were inserted earlier in the function, shifting this site's mixed-ordinal position; then the STL refusal's logger before it was removed (internal flow from a surface is staged now)",
+   "mapping_reason": "the port-binding seam's logger and refusal were inserted earlier in the function, shifting this site's mixed-ordinal position; the STL refusal's logger line before it is gone (a surface is staged now), shifting it back by one",
    "status": "proven",
    "proof_scenario": "snappy-driver:internal-refuse"
   },
