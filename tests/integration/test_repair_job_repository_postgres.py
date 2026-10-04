@@ -16,6 +16,7 @@ if not os.getenv("DATABASE_URL"):
 from meshpipeline.persistence.job_state import TransitionResult
 from meshpipeline.persistence.models import (
     CadRepairAttempt,
+    CadRepairDecision,
     CadRepairJob,
     GeometrySource,
     Organization,
@@ -33,14 +34,19 @@ _SHA_OUT = "b" * 64
 
 @pytest.fixture(autouse=True)
 async def _clean(db):
+    # ROLLED BACK FIRST. A test that proved a constraint refuses something leaves the transaction
+    # aborted, and every statement in an aborted transaction fails - including this cleanup, which
+    # would then report the previous test's failure as this one's.
+    await db.rollback()
     # Child-first DELETE, never a TRUNCATE ... CASCADE: this session's schema is shared with every
     # other integration suite, and a cascade off geometry_sources or organizations would take
     # their rows with it.
-    for model in (CadRepairAttempt, CadRepairJob):
+    for model in (CadRepairDecision, CadRepairAttempt, CadRepairJob):
         await db.execute(delete(model))
     await db.commit()
     yield
-    for model in (CadRepairAttempt, CadRepairJob):
+    await db.rollback()
+    for model in (CadRepairDecision, CadRepairAttempt, CadRepairJob):
         await db.execute(delete(model))
     await db.commit()
 
@@ -84,7 +90,7 @@ async def test_another_owner_sees_none_of_the_queue(db):
 
 
 async def test_an_organisation_scopes_over_the_owner(db):
-    org = Organization(name="acme")
+    org = Organization(name="acme", slug=f"acme-{uuid.uuid4().hex[:8]}")
     db.add(org)
     await db.flush()
     src = await _source(db, _A)
@@ -247,10 +253,24 @@ async def test_a_malformed_digest_never_reaches_the_row(db):
     repo = RepairJobRepository()
     job = await _job(db, _A)
 
-    for bad in ("", "abc", _SHA_IN.upper(), "z" * 64):
+    # absent, too short, and not hex at all: each is refused before the row is built
+    for bad in ("", "abc", "z" * 64, _SHA_IN + "0"):
         with pytest.raises(ValueError, match="input_sha256"):
             await repo.record_attempt(db, repair_job_id=job.id, mode="inspect", input_sha256=bad)
     await db.rollback()
+
+
+async def test_an_uppercase_digest_is_normalised_rather_than_refused(db):
+    # THE DIGEST IS A VALUE, NOT A SPELLING. The same bytes hashed by a tool that prints upper
+    # case are the same bytes, so the repository lowercases rather than rejecting - and the column
+    # therefore only ever holds one spelling, which is what makes a later comparison meaningful.
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    row = await repo.record_attempt(db, repair_job_id=job.id, mode="inspect",
+                                    input_sha256=_SHA_IN.upper())
+    await db.commit()
+    assert row.input_sha256 == _SHA_IN
 
 
 async def test_deleting_a_repair_job_takes_its_attempts_with_it(db):
@@ -270,10 +290,13 @@ async def test_the_customer_upload_cannot_be_deleted_from_under_a_job(db):
     job = await _job(db, _A)
     row = await RepairJobRepository().get_internal(db, job.id)
 
-    # RESTRICT: the repair job is ABOUT those bytes, so their identity outlives it
-    await db.execute(delete(GeometrySource).where(GeometrySource.id == row.geometry_source_id))
+    # RESTRICT: the repair job is ABOUT those bytes, so their identity outlives it. PostgreSQL
+    # enforces this at the DELETE itself rather than deferring to COMMIT, so the refusal arrives
+    # from execute() - and the transaction is then aborted, so it has to be rolled back before
+    # the fixture can clean up behind this test.
     with pytest.raises(IntegrityError):
-        await db.commit()
+        await db.execute(
+            delete(GeometrySource).where(GeometrySource.id == row.geometry_source_id))
     await db.rollback()
 
 
