@@ -6,7 +6,7 @@ import { buildAdminSections, isLaunchAdminSurfaceEnabled } from "./sections";
 test("the shell offers the admin sections in a fixed order", () => {
   assert.deepEqual(
     buildAdminSections({ ENV: "prod", OUTREACH_ENABLED: "1" }).map((s) => s.label),
-    ["Fleet", "Costs", "Billing", "Activity", "Customers", "Outreach"],
+    ["Fleet", "Costs", "Billing", "Activity", "Customers", "Repair", "Outreach"],
   );
 });
 
@@ -19,7 +19,9 @@ test("every section has a route under /", () => {
 test("dev navigation keeps launch-only surfaces out of the way", () => {
   assert.deepEqual(
     buildAdminSections({ ENV: "dev" }).map((s) => s.label),
-    ["Fleet", "Costs", "Billing"],
+    // Repair is NOT launch-only: a personal environment is where the repair loop is exercised,
+    // so the queue has to be openable there.
+    ["Fleet", "Costs", "Billing", "Repair"],
   );
 });
 
@@ -32,6 +34,7 @@ test("prod navigation unblocks launch operator surfaces", () => {
       ["Billing", true],
       ["Activity", true],
       ["Customers", true],
+      ["Repair", true],
     ],
   );
 });

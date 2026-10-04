@@ -192,3 +192,168 @@ export function signedNumber(amount: number): string {
   if (amount === 0) return "0";
   return amount > 0 ? `+${formatted}` : `-${formatted}`;
 }
+
+// THE OPERATOR REPAIR QUEUE
+//
+// One list over every customer's repair jobs, for this service's own staff. The API answers
+// `awaiting_human` / `blocked` / `settled` per row rather than leaving each screen to decide what
+// a status means, so the presentation below groups by what it was TOLD, never by re-deriving it.
+
+export type RepairJobRow = {
+  assigned_at: string | null;
+  assigned_operator: string | null;
+  awaiting_human: boolean;
+  blocked: boolean;
+  blocked_reason: string | null;
+  created_at: string | null;
+  current_strategy: string;
+  id: string;
+  organization_id: string | null;
+  owner_id: string;
+  repair_status: string;
+  service_priority: number;
+  settled: boolean;
+  status: string;
+  target_engine: string;
+  updated_at: string | null;
+};
+
+export type RepairAttemptRow = {
+  attempt_no: number;
+  caps: Record<string, unknown> | null;
+  created_at: string | null;
+  input_sha256: string;
+  measurements: Record<string, unknown> | null;
+  mode: string;
+  output_sha256: string | null;
+  profile: string;
+  report: Record<string, unknown> | null;
+  status: string;
+  tool_version: string;
+};
+
+export type RepairDecisionRow = {
+  actor: string;
+  created_at: string | null;
+  decision: string;
+  from_status: string;
+  notes: string | null;
+  reason: string | null;
+};
+
+export type RepairJobDetail = {
+  attempts: RepairAttemptRow[];
+  available_decisions: string[];
+  decisions: RepairDecisionRow[];
+  job: RepairJobRow;
+};
+
+export async function readRepairQueue(query: {
+  limit?: number;
+  operator?: string;
+  status?: string;
+  unassigned?: boolean;
+} = {}): Promise<Read<{ filter: Record<string, unknown>; jobs: RepairJobRow[] }>> {
+  return request(hexeraApiRoutes.adminRepairQueue(query));
+}
+
+export async function readRepairJob(jobId: string): Promise<Read<RepairJobDetail>> {
+  return request(hexeraApiRoutes.adminRepairJob(jobId));
+}
+
+export async function assignRepairJob(input: {
+  claim?: boolean;
+  jobId: string;
+  operator: string;
+}): Promise<Read<{ job: RepairJobRow }>> {
+  return request(hexeraApiRoutes.adminRepairJobAssign(input.jobId), {
+    body: JSON.stringify({ claim: input.claim ?? true, operator: input.operator }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+export async function decideRepairJob(input: {
+  actor: string;
+  decision: string;
+  jobId: string;
+  notes?: string;
+  reason?: string;
+  strategy?: string;
+}): Promise<Read<{ applied: string; decisions: RepairDecisionRow[]; job: RepairJobRow }>> {
+  return request(hexeraApiRoutes.adminRepairJobDecide(input.jobId), {
+    body: JSON.stringify({
+      actor: input.actor,
+      decision: input.decision,
+      notes: input.notes ?? "",
+      reason: input.reason ?? "",
+      strategy: input.strategy ?? "",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+// WHAT THE OPERATOR IS ASKED TO DO, in the words of the decision rather than the state. A button
+// reading "awaiting_strategy" tells nobody what clicking it means.
+export const REPAIR_DECISION_LABELS: Readonly<Record<string, string>> = {
+  ask_customer: "Ask the customer",
+  block: "Stop — cannot proceed",
+  choose_strategy: "Choose a strategy",
+  deliver: "Deliver mesh",
+  deliver_repair: "Deliver repaired CAD only",
+  escalate: "Escalate",
+  inspect: "Inspect",
+  manual_cleanup: "Send to manual cleanup",
+  mesh: "Mesh it",
+  repair: "Run repair",
+  retry: "Try again",
+  review_mesh: "Review the mesh",
+  review_repair: "Review the repair",
+};
+
+// The decisions that stop or hold a customer's job, which the API refuses without a reason. The
+// form uses this to REQUIRE the field rather than letting the operator discover it as a 422.
+export const REPAIR_DECISIONS_NEEDING_REASON: readonly string[] = [
+  "ask_customer",
+  "block",
+  "escalate",
+  "manual_cleanup",
+];
+
+export function repairDecisionLabel(decision: string): string {
+  return REPAIR_DECISION_LABELS[decision] ?? decision.replace(/_/g, " ");
+}
+
+export type RepairQueueGroup = {
+  jobs: RepairJobRow[];
+  key: "blocked" | "ours" | "settled" | "waiting";
+  title: string;
+};
+
+export function groupRepairQueue(rows: readonly RepairJobRow[]): RepairQueueGroup[] {
+  // GROUPED BY WHO IS HOLDING IT UP, because that is what an operator opening this page needs to
+  // know first - not alphabetical order and not raw status. Classification comes from the API's
+  // own flags so this page and the service metrics cannot disagree about what a state means.
+  const groups: RepairQueueGroup[] = [
+    { jobs: [], key: "ours", title: "Ours to move" },
+    { jobs: [], key: "waiting", title: "Waiting on a person" },
+    { jobs: [], key: "blocked", title: "Blocked" },
+    { jobs: [], key: "settled", title: "Settled" },
+  ];
+  const bucket = (row: RepairJobRow): RepairQueueGroup["key"] => {
+    if (row.settled) return "settled";
+    if (row.blocked) return "blocked";
+    if (row.awaiting_human) return "waiting";
+    return "ours";
+  };
+  for (const row of rows) {
+    const key = bucket(row);
+    groups.find((g) => g.key === key)?.jobs.push(row);
+  }
+  return groups.filter((g) => g.jobs.length > 0);
+}
+
+export function repairStatusLabel(status: string): string {
+  return status.replace(/_/g, " ");
+}
