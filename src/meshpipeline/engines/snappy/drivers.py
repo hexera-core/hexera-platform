@@ -904,6 +904,78 @@ def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]
     return bind_intake(t, intake_patches)
 
 
+def _lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
+    """{port: hydraulic diameter of its staged lid} (engines/passage); {} when none reads."""
+    from meshpipeline.engines.passage import lid_hydraulic_diameters
+    try:
+        return lid_hydraulic_diameters(srcs, wall_key)
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("lid hydraulic diameters failed - sizing from the port areas")
+        return {}
+
+
+def _port_hydraulic_diameters(srcs: dict, wall_key: str, intake_patches: list) -> dict:
+    """{port: hydraulic diameter}: the smaller of the staged lid's (4 x area / perimeter) and the
+    declared size's (a bore, an annulus's D - d, a rectangle's 2wh / (w + h))."""
+    from meshpipeline.engines.passage import declared_hydraulic_diameters
+    out = dict(_lid_hydraulic_diameters(srcs, wall_key))
+    for name, v in declared_hydraulic_diameters(intake_patches).items():
+        out[name] = min(float(out.get(name) or float("inf")), float(v))
+    return out
+
+
+def _bore_port_name(t: dict) -> str:
+    """The port _bore_area_m2 sizes from: the largest declared inlet (any port without one)."""
+    def _opening(p: dict) -> float:
+        v = p.get("opening_area_m2")
+        return float(v) if v is not None else float(p.get("area_m2") or 0.0)
+    ports = (t.get("binding") or {}).get("ports") or []
+    if ports:
+        pool = [p for p in ports if p.get("role") == "inlet"] or list(ports)
+        return str(max(pool, key=_opening).get("name"))
+    return "inlet"
+
+
+def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: list):
+    """(points, radius, wall area per point) of the staged cavity wall, held near each declared
+    port to its half flow-width (engines/passage.staged_passage_field); None when unreadable,
+    or when the ports do not vouch for the reading (a hollow part's outer skin read instead of
+    its bore: the boxes would be placed by a passage that is not there)."""
+    from meshpipeline.engines.passage import (
+        field_radius_stats,
+        plausible_radius,
+        point_areas,
+        port_radius_stats,
+        staged_passage_field,
+    )
+    raw = staged_passage_field(t, srcs, wall_key, intake_patches, corrected=False)
+    if raw is None:
+        return None
+    ports = port_radius_stats(t.get("openings"),
+                              _port_hydraulic_diameters(srcs, wall_key, intake_patches))
+    if ports and not plausible_radius(field_radius_stats(*raw), ports):
+        logger.info("narrow passages: the staged wall's reading is not the passage the ports "
+                    "describe - no local refinement")
+        return None
+    pts, faces, r = staged_passage_field(t, srcs, wall_key, intake_patches, field=raw)
+    return pts, r, point_areas(pts, faces)
+
+
+def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float) -> list:
+    """Refinement boxes, in render_internal_case's thin-region form ({min, max, level_bump} over
+    the wall's surface level), for every passage the wall cell puts under the floor
+    (engines/passage.narrow_passage_regions); [] without a field."""
+    if field is None:
+        return []
+    from meshpipeline.engines.passage import narrow_passage_regions
+    try:
+        return narrow_passage_regions(field[0], field[1], cell_m=wall_cell, areas=field[2],
+                                      budget_cells=budget_cells)
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("narrow-passage regions failed - continuing without them")
+        return []
+
+
 def _bore_area_m2(t: dict) -> float:
     """The resolution yardstick's area. With a binding: the largest DECLARED-inlet opening -
     never the engine's largest-opening guess, which is backwards on combiners. A ring
@@ -1023,14 +1095,23 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # constant. With a binding it is the DECLARED inlet's area (the guess is dead there).
     _inlet_area = _bore_area_m2(t) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
+    # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
+    # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
+    # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
+    _dh = _port_hydraulic_diameters(_srcs, _wall_key, state.get("intake_patches") or [])
+    _bore_name = _bore_port_name(t)
+    if _dh.get(_bore_name):
+        bore_D = min(bore_D, float(_dh[_bore_name]))
     # EVERY port's own diameter, for per-port refinement: the base cell is sized from the
     # inlet bore, and a much smaller side port seals over at that size (the corpus's
-    # biggest failure cluster). Ring ports size by their inner opening, not the metal.
+    # biggest failure cluster). Ring ports size by their inner opening, not the metal - and
+    # every lid by its hydraulic diameter where it reads.
     _port_sizes: dict = {}
     for _nm, _rec in (t.get("openings") or {}).items():
         _a = float((_rec.get("opening") or {}).get("area") or _rec.get("area") or 0.0)
         if _a > 0:
-            _port_sizes[_nm] = 2.0 * _math.sqrt(_a / _math.pi)
+            _port_sizes[_nm] = min(2.0 * _math.sqrt(_a / _math.pi),
+                                   float(_dh.get(_nm) or float("inf")))
     # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
     # and that is wrong for every diffusing or combining part, where the feed is not the widest
     # port. The geometry alone often cannot settle it: a wye is a wye whether flow splits or joins.
@@ -1053,6 +1134,20 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _msg = (f"Fluid volume identified - {len(_ports)} openings separated from the wall: "
                 f"{_detail}. Bore Ø{bore_D * 1000:.1f} mm{_caveat}")
     await publish.anote(_msg, op_id="internal:volume-identified")
+    # THE PASSAGE, POINT BY POINT. The wall cell below is sized from the inlet bore, and every
+    # passage narrower than that cell carries at the floor came in under it: the Fluent aorta's
+    # 5.6-7.5 mm branches (3 mm at their narrowest) behind a 20 mm inlet read 6 cells across, and
+    # 11.2 after the whole part was refined to 6.7 M cells (2026-10-04). The staged wall's
+    # radius field is read once here (the geometry is fixed across passes); each pass refines
+    # locally where it is narrow (_narrow_passage_boxes). A failed reading refines nothing.
+    from asyncio import to_thread as _to_thread
+    try:
+        _passage_field = await _to_thread(_staged_passage_field, t, _srcs, _wall_key,
+                                          state.get("intake_patches") or [])
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("internal build: passage field failed - continuing without local "
+                         "narrow-passage refinement - job_id=%s", job_id)
+        _passage_field = None
 
     plan = initial_plan
     feedback = (state.get("classifier_result", {}) or {}).get("summary", "") \
@@ -1139,7 +1234,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # mesher reads - and refine locally where it is too thin: a global refinement fine
         # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
         # measurement failure degrades to "no thin features", never to a guess.
-        _wall_cell = bore_D / cells_across
+        _wall_cell = base_cell / (2 ** surface_level)
         # the values this pass actually meshes with - what a timeout is measured against
         _effective = {**strategy, "max_cells": _budget, "cells_across_diameter": cells_across}
         _thin_regions: list = []
@@ -1173,6 +1268,16 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                    else "refining locally as far as the cell budget allows")
                 + (f" ({_thin_note})" if _thin_note else ""),
                 op_id=f"internal:thin-feature:{attempt}")
+        _narrow_regions = _narrow_passage_boxes(_passage_field, wall_cell=_wall_cell,
+                                                budget_cells=max(50_000, int(0.5 * _budget)))
+        if _narrow_regions:
+            _narrow_note = str(getattr(_narrow_regions, "note", "") or "")
+            await publish.anote(
+                f"Narrow passages - {len(_narrow_regions)} region(s) down to "
+                f"{_mm(2.0 * min(float(b['radius_m']) for b in _narrow_regions))} across, "
+                f"under 12 cells at the {_wall_cell * 1000:.1f} mm wall cell; refining them "
+                "locally to 13 across" + (f" ({_narrow_note})" if _narrow_note else ""),
+                op_id=f"internal:narrow-passage:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}"
@@ -1198,7 +1303,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
                 max_cells=_budget, quality=quality,
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
-                thin_regions=_thin_regions)
+                thin_regions=[*_thin_regions, *_narrow_regions])
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):
