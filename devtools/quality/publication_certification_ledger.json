@@ -264,20 +264,20 @@
    "proof_scenario": "builder-loop:cfmesh"
   },
   {
-   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#4",
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#3",
    "historical_alias": "",
    "historical_id": "",
    "mapping": "new",
-   "mapping_reason": "the port-binding refusal names what the measured openings disagree about",
+   "mapping_reason": "the port-binding refusal names what the measured openings disagree about (error#4 until the STL refusal's logger before it was removed: internal flow from a surface is staged now)",
    "status": "proven",
    "proof_scenario": "snappy-driver:internal-refuse-binding"
   },
   {
-   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#5",
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#4",
    "historical_alias": "E062",
    "historical_id": "engines/snappy/drivers.py::_build_internal_deterministic::error#1",
    "mapping": "renamed",
-   "mapping_reason": "the port-binding seam's logger and refusal were inserted earlier in the function, shifting this site's mixed-ordinal position",
+   "mapping_reason": "the port-binding seam's logger and refusal were inserted earlier in the function, shifting this site's mixed-ordinal position; then the STL refusal's logger before it was removed (internal flow from a surface is staged now)",
    "status": "proven",
    "proof_scenario": "snappy-driver:internal-refuse"
   },
