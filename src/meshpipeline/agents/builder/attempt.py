@@ -149,6 +149,9 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
         engine_params=state.get("engine_params", {}) or {},
         flow_topology=state.get("flow_topology", "") or "",
         purpose=state.get("purpose", "") or "",
+        far_field={"requested_extents": state.get("requested_extents"),
+                   "reference_length_m": state.get("reference_length_m"),
+                   "flow_axis": state.get("flow_axis")},
     )
 
 

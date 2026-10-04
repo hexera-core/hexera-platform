@@ -207,14 +207,24 @@ _ROLE_TO_OF_TYPE = {"wall": "wall", "farfield": "patch", "inlet": "patch",
                     "patch": "patch"}
 
 
-def domain_from_strategy(body_bbox, L: float, strategy: dict | None = None) -> tuple[list, list]:
+def domain_from_strategy(body_bbox, L: float, strategy: dict | None = None,
+                         request: dict | None = None) -> tuple[list, list]:
+    """The far-field box: margins from the strategy, else the approved request's typed extents,
+    else the defaults; in the unit the domain-extent gate judges them in (the stated reference
+    length, else the body's extent along the flow) and on the declared flow axis
+    (engines/far_field.py). `L` - the body's LARGEST extent along a fixed +x - was the ruler
+    before, and every body whose largest extent is not streamwise failed that gate: a rotor came
+    back with 47.8 lengths downstream where 8 were asked (2026-10-04). It is kept in the signature
+    for callers only."""
+    from meshpipeline.engines.far_field import far_field_box, margins_from
     (bmin, bmax) = body_bbox
-    m = (strategy or {}).get("domain_margin") or {}
-    up, dn = float(m.get("up", 10.0)), float(m.get("down", 20.0))
-    side, vert = float(m.get("side", 10.0)), float(m.get("vert", 10.0))
-    dmin = [bmin[0] - up * L, bmin[1] - side * L, bmin[2] - vert * L]
-    dmax = [bmax[0] + dn * L, bmax[1] + side * L, bmax[2] + vert * L]
-    return dmin, dmax
+    s = strategy or {}
+    req = request or {}
+    margins = margins_from(s.get("domain_margin"), req.get("requested_extents"),
+                           req.get("request_txt"))
+    return far_field_box(bmin, bmax, margins, flow_axis=req.get("flow_axis"),
+                         reference_length_m=(s.get("reference_length_m")
+                                             or req.get("reference_length_m")))
 
 
 def _render_object_refinements(features: list, *, cell_floor: float = 0.0) -> str:
@@ -508,7 +518,10 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
     if args.get("domain_min") and args.get("domain_max"):
         dmin, dmax = args["domain_min"], args["domain_max"]
     else:
-        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy)
+        from meshpipeline.engines.workspace_facts import read_far_field_request, read_request_txt
+        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy,
+                                          request={**read_far_field_request(workspace),
+                                                   "request_txt": read_request_txt(workspace)})
     from meshpipeline.engines.declared_boundary import body_walls, farfield_name
     _patches = list(contract_patches or [])
     _farfield = farfield_name(_patches)
@@ -571,7 +584,10 @@ def _configure_external_2d(workspace, *, geometry_file: str, strategy: dict, sur
     if args.get("domain_min") and args.get("domain_max"):
         dmin, dmax = list(args["domain_min"]), list(args["domain_max"])
     else:
-        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy)
+        from meshpipeline.engines.workspace_facts import read_far_field_request, read_request_txt
+        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy,
+                                          request={**read_far_field_request(workspace),
+                                                   "request_txt": read_request_txt(workspace)})
     # 2D: the far-field is a SIDE RIBBON over the body's exact z span (cartesian2DMesh
     # meshes one cell through the thickness; a z-padded or capped box breaks it).
     dmin[2], dmax[2] = z0, z1
