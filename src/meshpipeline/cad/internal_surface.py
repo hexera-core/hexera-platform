@@ -32,6 +32,10 @@ CAP_REACH = 0.2
 MATCH_RATIO = 2.0
 #: Faces meeting at more than this angle bound a capped mouth's face region.
 CAP_CREASE_DEG = 30.0
+#: Two faces lie in one flat region when their normals agree within 3 degrees (and each centre is
+#: on the other's plane). The scout's former flat-face test (cad/scout_mesh.PLANE_COS, which the
+#: openings work replaced with cad/open_ends.find_caps): this staging was proven with it.
+FLAT_COS = math.cos(math.radians(3.0))
 #: The seed must stand at least this share of its opening's radius clear of every face.
 SEED_CLEARANCE = 0.02
 
@@ -687,13 +691,12 @@ def _flat_labels(mesh) -> np.ndarray:
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
-    from meshpipeline.cad.scout_mesh import PLANE_COS
     e = np.flatnonzero((mesh.count == 2) & (mesh.f1 >= 0))
     a, b = mesh.f0[e], mesh.f1[e]
     na, nb = mesh.normal[a], mesh.normal[b]
     gap = mesh.centre[b] - mesh.centre[a]
     tol = 1e-3 * mesh.diag
-    ok = ((np.einsum("ij,ij->i", na, nb) >= PLANE_COS)
+    ok = ((np.einsum("ij,ij->i", na, nb) >= FLAT_COS)
           & (np.abs(np.einsum("ij,ij->i", na, gap)) <= tol)
           & (np.abs(np.einsum("ij,ij->i", nb, gap)) <= tol))
     nf = len(mesh.faces)
@@ -721,12 +724,11 @@ def _holes_area(mesh, region) -> float:
     """The area a face region's inner outlines enclose - the centre body's hole in a ring-shaped
     cap - so a mouth declared by its outer size is still recognised. 0 for a plain disc."""
     from meshpipeline.cad.lids import frame
-    from meshpipeline.cad.scout_mesh import _loops
     f = mesh.faces[region]
     e = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
     uniq, cnt = np.unique(e, axis=0, return_counts=True)
     areas = []
-    for lp in _loops(uniq[cnt == 1]):
+    for lp in _edge_loops(uniq[cnt == 1]):
         try:
             areas.append(frame(mesh.verts[lp])[2])
         except Exception:  # noqa: BLE001, S112 - a loop with no area adds none
@@ -735,6 +737,37 @@ def _holes_area(mesh, region) -> float:
         return 0.0
     areas.sort(reverse=True)
     return float(sum(areas[1:]))
+
+
+def _edge_loops(edge_list: np.ndarray) -> list[list[int]]:
+    """Closed vertex loops walked along the given edges; a vertex met by more than two edges is
+    taken through whichever unvisited edge comes first. (cad/scout_mesh's former _loops, kept here
+    when the openings work moved the scout's own flat-face reading into cad/open_ends.)"""
+    if len(edge_list) == 0:
+        return []
+    adj: dict[int, list[int]] = {}
+    for a, b in edge_list.tolist():
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    used: set[tuple[int, int]] = set()
+    loops: list[list[int]] = []
+    for start in adj:
+        for nxt in adj[start]:
+            if (start, nxt) in used or (nxt, start) in used:
+                continue
+            loop = [start]
+            prev, cur = start, nxt
+            used.add((prev, cur))
+            while cur != start and len(loop) < 200_000:
+                loop.append(cur)
+                choices = [v for v in adj.get(cur, []) if (cur, v) not in used and (v, cur) not in used]
+                if not choices:
+                    break
+                prev, cur = cur, choices[0]
+                used.add((prev, cur))
+            if cur == start and len(loop) >= 3:
+                loops.append(loop)
+    return loops
 
 
 def _patch_normal(mesh, region) -> np.ndarray:
