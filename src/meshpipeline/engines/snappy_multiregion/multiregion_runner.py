@@ -165,8 +165,30 @@ def render_block_mesh(bbox_min, bbox_max, base_cell: float, pad: float = 0.15) -
         _HDR.format(cls="dictionary", loc="system", obj="blockMeshDict")
         + "\nscale 1;\n\nvertices\n(\n" + vtxt + "\n);\n\n"
         + f"blocks\n(\n    hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)\n);\n\n"
-        + "edges ();\nboundary ();\nmergePatchPairs ();\n"
+        + "edges ();\n"
+        # THE OUTSIDE IS A NAMED WALL PATCH, not blockMesh's unnamed default (an `empty` patch that
+        # snappyHexMesh refuses to relax a 3D mesh against). It is what the cells outside every
+        # declared region are cut back to (native.py), and what the ports are taken from.
+        + f"boundary\n(\n    {EXTERIOR_PATCH}\n    {{\n        type wall;\n        faces\n        (\n"
+        + "            (0 3 2 1)\n            (4 5 6 7)\n            (0 1 5 4)\n"
+        + "            (2 3 7 6)\n            (1 2 6 5)\n            (0 4 7 3)\n"
+        + "        );\n    }\n);\nmergePatchPairs ();\n"
     )
+
+
+#: the background's outer boundary, and every face left facing it once the cells outside all
+#: declared regions are removed (native.py: topoSet + subsetMesh before splitMeshRegions)
+EXTERIOR_PATCH = "exterior"
+#: the cellSet of every cell in a declared region
+ZONED_SET = "zoned"
+
+
+def render_zoned_set_dict(rmap: dict) -> str:
+    """topoSet actions: the cells of every declared region's cellZone, as one cellSet."""
+    acts = [f"    {{ name {ZONED_SET}; type cellSet; action {'new' if i == 0 else 'add'}; "
+            f"source zoneToCell; zone {name}; }}" for i, name in enumerate(rmap)]
+    return (_HDR.format(cls="dictionary", loc="system", obj="topoSetDict")
+            + "\nactions\n(\n" + "\n".join(acts) + "\n);\n")
 
 
 def interface_name(region_a: str, region_b: str) -> str:
@@ -581,6 +603,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
             break
     (ws / "system" / "blockMeshDict").write_text(
         render_block_mesh(allmins, allmaxs, base_cell, pad=_pad))
+    (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
     (ws / "system" / "snappyHexMeshDict").write_text(
         render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
                                interface_refinement=interface_refinement, n_layers=n_layers,
