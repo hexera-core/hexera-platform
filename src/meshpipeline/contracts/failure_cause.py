@@ -512,6 +512,14 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
     if c is FailureCause.RUN_INFRASTRUCTURE:
+        if f.get("result_uncollected"):
+            # the mesher RAN: the return trip failed. A result too large to bring back fails the
+            # same way, so the second remedy is said too
+            return ("The mesher ran, but its result could not be brought back from the service "
+                    "that runs it, so there was no mesh to check. That is our failure, not your "
+                    "geometry's.",
+                    f"You can run it again ({_RUN_AGAIN}). If it happens again, ask for less "
+                    "detail - a very large mesh can be too big to bring back.")
         return ("The mesh run did not complete on our side: the service that runs the mesher "
                 "failed to take the job or to return its result. That is our failure, not your "
                 "geometry's or your settings'.",

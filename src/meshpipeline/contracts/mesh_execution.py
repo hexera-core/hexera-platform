@@ -36,6 +36,10 @@ RC_CASE_CONTRACT = -5
 #: lives here because the adapter writes it and the executor's account reads it.
 RUN_NOT_STARTED_TAG = "[CLOUD_RUN_FAILED]"
 
+#: The tag an RC_INFRASTRUCTURE result's log opens with when the run FINISHED but its result could
+#: not be brought back. The mesher ran; what failed is the return trip - ours, not the case's.
+RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
+
 
 #: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
 #: submission belongs to. An engine driver runs several plan->mesh->judge passes inside one
@@ -251,12 +255,14 @@ def _note_native_run(workspace: Any, result: Any, *, refused: bool = False,
     if runs is None:
         return
     r = result if isinstance(result, dict) else {}
+    tail = str(r.get("log_tail") or "").lstrip()
+    infra = r.get("rc") == RC_INFRASTRUCTURE
     runs.append({"rc": r.get("rc"), "timed_out": bool(r.get("timed_out")),
                  "refused_before_launch": refused, "raised": raised,
                  # the outage, positively: never inferred from the exit code alone
-                 "never_started": raised or (
-                     r.get("rc") == RC_INFRASTRUCTURE
-                     and str(r.get("log_tail") or "").lstrip().startswith(RUN_NOT_STARTED_TAG))})
+                 "never_started": raised or (infra and tail.startswith(RUN_NOT_STARTED_TAG)),
+                 # ran, but the result never came back
+                 "uncollected": infra and tail.startswith(RUN_UNCOLLECTED_TAG)})
 
 
 def native_runs(workspace: Any) -> list[dict] | None:

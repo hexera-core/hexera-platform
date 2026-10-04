@@ -44,7 +44,8 @@ def test_rejects_a_self_intersecting_input_before_the_builder(tmp_path, monkeypa
     monkeypatch.setattr("meshpipeline.cad.staging.prepare_surface",
                         _fake_prepare)
     monkeypatch.setattr("meshpipeline.cad.analysis.analyze_surface", lambda *_a, **_k: dict(_SCALES))
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", lambda *_a, **_k: True)
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report",
+                        lambda *_a, **_k: {"pairs": 1})
 
     out = _run({**_VMTK_STATE, "geometry": geometry_state(tmp_path, filename="lumen.step")})
     assert out["executor_success"] is False
@@ -60,7 +61,8 @@ def test_admits_a_clean_input(tmp_path, monkeypatch):
     monkeypatch.setattr("meshpipeline.cad.staging.prepare_surface",
                         _fake_prepare)
     monkeypatch.setattr("meshpipeline.cad.analysis.analyze_surface", lambda *_a, **_k: dict(_SCALES))
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", lambda *_a, **_k: False)
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report",
+                        lambda *_a, **_k: None)
 
     out = _run({**_VMTK_STATE, "geometry": geometry_state(tmp_path, filename="lumen.step")})
     assert out == {}   # admitted (declared + measured both clean) → proceed to the builder
@@ -72,7 +74,8 @@ def test_a_declared_rejection_from_post_intake_drift_blocks_the_builder(tmp_path
     monkeypatch.setattr("meshpipeline.cad.staging.prepare_surface",
                         _fake_prepare)
     monkeypatch.setattr("meshpipeline.cad.analysis.analyze_surface", lambda *_a, **_k: dict(_SCALES))
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", lambda *_a, **_k: False)  # geometry FINE
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report",
+                        lambda *_a, **_k: None)  # geometry FINE
     drifted = {**_VMTK_STATE, "geometry": geometry_state(tmp_path, filename="lumen.step"),
                "engine_params": {"wall_layers": "on", "topology": "internal"}}  # unknown param injected
     out = _run(drifted)
@@ -87,7 +90,7 @@ def test_is_a_free_no_op_for_engines_without_a_measured_contract(tmp_path, monke
         tripped["v"] = True
         return True
     monkeypatch.setattr("meshpipeline.cad.staging.prepare_surface", _tripwire)
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", _tripwire)
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report", _tripwire)
     upload = tmp_path / "body.stl"
     upload.write_text("")
     for eng in ("snappy", "cfmesh", "gmsh"):

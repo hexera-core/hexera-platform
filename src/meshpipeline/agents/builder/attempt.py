@@ -226,6 +226,12 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         rec = fn(workspace, geometry_path=geometry.path, prepared=consumed,
                  intake_patches=state.get("intake_patches") or [],
                  input_kind=str(state.get("input_kind") or ""))
+    except _SYSTEM_ERRORS:
+        # OUR side (a disk write, memory, a timeout): nothing about the file, and not the same
+        # next time - never recorded as the file's refusal. The attempt goes on as it always did.
+        logger.exception("Builder: engine staging hit a system error (engine=%s) - continuing on "
+                         "the shared surface", engine)
+        return
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason, never a crash
         logger.exception("Builder: engine staging failed (engine=%s) - the attempt stops on the "
                          "recorded reason", engine)
@@ -238,6 +244,10 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
 
 #: The gate key a staging refusal is recorded under (engines/preflight.py's refusal record).
 STAGING_GATE = "staging"
+
+#: Staging errors that are the system's, not the file's: a write that failed, memory, a time limit.
+#: They say nothing about the upload, and a later attempt may well not meet them.
+_SYSTEM_ERRORS: tuple[type[BaseException], ...] = (OSError, MemoryError, TimeoutError)
 
 
 def _record_staging_failure(workspace: Path, engine: str, exc: BaseException) -> None:

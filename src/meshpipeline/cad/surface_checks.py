@@ -25,13 +25,11 @@ def surface_analysis_for(spec, surface) -> dict | None:
                        "evidence, deferring", exc)
         return None
     if ic.require_no_self_intersection:
-        a["self_intersecting"] = self_intersects(stl_path)
-        if a["self_intersecting"]:
-            # WHERE and HOW BIG, not just whether: the refusal names the place, so the user can
-            # find it (measured again only for a surface that already failed - the rare case)
-            report = self_intersection_report(stl_path)
-            if report is not None:
-                a["self_intersection"] = report
+        # ONE scan answers whether AND where: the refusal names the place, so the user can find it
+        report = self_intersection_report(stl_path)
+        a["self_intersecting"] = report is not None
+        if report is not None:
+            a["self_intersection"] = report
     return a
 
 

@@ -20,6 +20,7 @@ from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
 from meshpipeline.contracts.mesh_execution import (
     RC_TIMED_OUT,
     RUN_NOT_STARTED_TAG,
+    RUN_UNCOLLECTED_TAG,
     SubmissionIndeterminate,
 )
 from meshpipeline.settings.env import ConfigurationError
@@ -223,7 +224,8 @@ def _timed_out(engine: str, deadline_s: float,
                          "time; the mesh is too big or too slow for the budget.")}
 
 
-RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
+#: one spelling, owned by the contract the executor's account reads it through
+RESULT_UNCOLLECTED_MARKER = RUN_UNCOLLECTED_TAG
 
 
 def _uncollected(engine: str, result: dict, exc: BaseException) -> dict:

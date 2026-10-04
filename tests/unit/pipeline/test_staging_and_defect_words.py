@@ -50,6 +50,22 @@ def test_a_raising_staging_hook_no_longer_vanishes(tmp_path, monkeypatch):
     assert refusal.facts["reason"] == "the body could not be opened at the declared ports"
 
 
+@pytest.mark.parametrize("exc", [OSError(28, "No space left on device"), MemoryError(),
+                                 TimeoutError("staging took too long")])
+def test_a_system_error_while_staging_is_never_the_files_refusal(tmp_path, monkeypatch, exc):
+    # our disk, memory or clock - nothing about the upload, and not the same next time
+    class _Engine:
+        def stage_declared(self, *a, **k):
+            raise exc
+
+    monkeypatch.setattr("meshpipeline.engines.runtime.get_engine", lambda e: _Engine())
+    monkeypatch.setattr("meshpipeline.cad.staging.staged_surface",
+                        lambda g, p: types.SimpleNamespace(consumed=None))
+    geometry = types.SimpleNamespace(path=str(tmp_path / "duct.step"))
+    attempt_mod._stage_declared(tmp_path, geometry, {"intake_patches": []}, "vmtk")
+    assert attempt_mod.staging_failure(tmp_path) is None
+
+
 @pytest.fixture
 def published(monkeypatch):
     from tests.execution_publisher_double import install

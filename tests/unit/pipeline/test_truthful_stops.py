@@ -170,17 +170,27 @@ def test_a_run_that_never_started_on_our_side_is_told_as_ours(quiet_executor, tm
     assert "on our side" in what and "geometry" in what
 
 
-@pytest.mark.parametrize("tail", [
-    # the remote ran and its output could not be brought back
-    "[CLOUD_RUN_RESULT_UNCOLLECTED] snappy: the mesh ran (remote rc=0 cells=7000000) but ...",
-    # snappyHexMesh's own stage verdict: every stage ran, no valid mesh came out
-    ""])
-def test_an_infrastructure_code_from_a_run_that_ran_never_blames_the_service(quiet_executor,
-                                                                              tmp_path, tail):
+def test_snappys_own_stage_verdict_is_the_mesher_failing_not_the_service(quiet_executor,
+                                                                         tmp_path):
+    # RC_INFRASTRUCTURE with neither tag: every stage ran and no valid mesh came out
     out = _no_mesh(quiet_executor, tmp_path, "snappy",
-                   [{"rc": mx.RC_INFRASTRUCTURE, "timed_out": False, "log_tail": tail}])
+                   [{"rc": mx.RC_INFRASTRUCTURE, "timed_out": False, "log_tail": ""}])
     assert out["executor_failure_cause"] == "engine_crashed"
     assert out["executor_failure_facts"]["meshers_started"] == 1
+
+
+def test_a_result_that_could_not_be_brought_back_is_told_as_a_run_that_ran(quiet_executor,
+                                                                           tmp_path):
+    out = _no_mesh(quiet_executor, tmp_path, "snappy", [{
+        "rc": mx.RC_INFRASTRUCTURE, "timed_out": False,
+        "log_tail": f"{mx.RUN_UNCOLLECTED_TAG} snappy: the mesh ran (remote rc=0 cells=7000000)"}])
+    assert out["executor_failure_cause"] == "run_infrastructure"
+    assert out["executor_failure_facts"]["result_uncollected"] is True
+    what, nxt = describe("run_infrastructure", out["executor_failure_facts"])
+    assert what.startswith("The mesher ran, but its result could not be brought back")
+    assert "too big to bring back" in nxt
+    from meshpipeline.adapters.mesh_execution.cloud_run_client import RESULT_UNCOLLECTED_MARKER
+    assert RESULT_UNCOLLECTED_MARKER == mx.RUN_UNCOLLECTED_TAG
 
 
 def test_the_adapter_writes_the_never_started_tag_the_account_reads():
