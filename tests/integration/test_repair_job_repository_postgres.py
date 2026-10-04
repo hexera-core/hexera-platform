@@ -275,3 +275,97 @@ async def test_the_customer_upload_cannot_be_deleted_from_under_a_job(db):
     with pytest.raises(IntegrityError):
         await db.commit()
     await db.rollback()
+
+
+# THE OPERATOR SURFACE (cross-tenant by design - see RepairJobRepository.operator_queue)
+
+
+async def test_the_operator_queue_spans_every_tenant(db):
+    repo = RepairJobRepository()
+    mine = await _job(db, _A)
+    theirs = await _job(db, _B)
+
+    queued = {j.id for j in await repo.operator_queue(db)}
+
+    # the whole point of this surface: one list over every customer's work
+    assert {mine.id, theirs.id} <= queued
+
+
+async def test_claiming_is_refused_when_somebody_already_holds_it(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    assert await repo.assign(db, job.id, operator="ana", claim_only_if_unassigned=True) is True
+    await db.commit()
+    assert await repo.assign(db, job.id, operator="ben", claim_only_if_unassigned=True) is False
+    await db.commit()
+
+    row = await repo.get_internal(db, job.id)
+    assert row.assigned_operator == "ana" and row.assigned_at is not None
+    # a lead reassigning does overwrite
+    assert await repo.assign(db, job.id, operator="ben") is True
+    await db.commit()
+    assert (await repo.get_internal(db, job.id)).assigned_operator == "ben"
+
+
+async def test_releasing_a_job_clears_the_claim_and_its_timestamp(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.assign(db, job.id, operator="ana")
+    await db.commit()
+
+    assert await repo.assign(db, job.id, operator="") is True
+    await db.commit()
+    row = await repo.get_internal(db, job.id)
+    assert row.assigned_operator is None and row.assigned_at is None
+
+
+async def test_the_queue_can_show_one_operators_load_or_only_unclaimed_work(db):
+    repo = RepairJobRepository()
+    held = await _job(db, _A)
+    free = await _job(db, _A)
+    await repo.assign(db, held.id, operator="ana")
+    await db.commit()
+
+    assert [j.id for j in await repo.operator_queue(db, assigned_operator="ana")] == [held.id]
+    unclaimed = {j.id for j in await repo.operator_queue(db, unassigned_only=True)}
+    assert free.id in unclaimed and held.id not in unclaimed
+
+
+async def test_decisions_are_appended_in_order_and_keep_their_actor(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor="ana",
+                               from_status="received")
+    await repo.record_decision(db, repair_job_id=job.id, decision="block", actor="ben",
+                               from_status="inspecting", reason="no units in the STEP file")
+    await db.commit()
+
+    history = await repo.decisions_for_job(db, job.id)
+    assert [(d.decision, d.actor) for d in history] == [("inspect", "ana"), ("block", "ben")]
+    # WHY, kept with WHO: the question "who approved this, and on what grounds" is answerable
+    assert history[1].reason == "no units in the STEP file"
+    assert history[1].from_status == "inspecting"
+
+
+async def test_an_unattributed_decision_is_refused(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    for actor in ("", "   "):
+        with pytest.raises(ValueError, match="actor is required"):
+            await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor=actor)
+    await db.rollback()
+
+
+async def test_deleting_a_repair_job_takes_its_decisions_with_it(db):
+
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor="ana")
+    await db.commit()
+
+    await db.execute(delete(CadRepairJob).where(CadRepairJob.id == job.id))
+    await db.commit()
+    assert await repo.decisions_for_job(db, job.id) == []

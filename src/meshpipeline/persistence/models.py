@@ -422,6 +422,12 @@ class CadRepairJob(Base):
                                                        server_default="")
     # WHY it is waiting or stopped, for the customer-facing message and for the metrics bucket.
     blocked_reason:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    # WHO IS WORKING IT. Self-asserted today: the operator surface is reached with a shared
+    # credential that proves staff access but names nobody, so this records the claim rather than
+    # dressing it up as an identity. NULL means unclaimed, which is what the queue shows first.
+    assigned_operator: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    assigned_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                             nullable=True)
     created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True),
                                                        server_default=func.now())
     updated_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True),
@@ -430,9 +436,12 @@ class CadRepairJob(Base):
 
     attempts: Mapped[list[CadRepairAttempt]] = relationship(
         "CadRepairAttempt", back_populates="repair_job", cascade="all, delete-orphan")
+    decisions: Mapped[list[CadRepairDecision]] = relationship(
+        "CadRepairDecision", back_populates="repair_job", cascade="all, delete-orphan")
 
     __table_args__: tuple = (
         Index("ix_cad_repair_jobs_queue", "status", "service_priority", "created_at"),
+        Index("ix_cad_repair_jobs_assignee", "assigned_operator", "status"),
     )
 
 
@@ -488,6 +497,44 @@ class CadRepairAttempt(Base):
 
     __table_args__: tuple = (
         UniqueConstraint("repair_job_id", "attempt_no", name="uq_cad_repair_attempts_job_no"),
+    )
+
+
+class CadRepairDecision(Base):
+    """ONE HUMAN DECISION on a repair job: who moved it where, when, and why.
+
+    The job's status says where it IS; it cannot say who sent it there or on what grounds. For
+    this service those are the questions that matter most, because the decisions recorded here are
+    judgements about somebody else's geometry - "who approved inflating the tolerance on this
+    customer's part" has to be answerable months later.
+
+    APPEND-ONLY. A changed mind is a new decision with its own actor and reason; overwriting one
+    would erase the audit this table exists to be.
+    """
+
+    __tablename__ = "cad_repair_decisions"
+
+    id:            Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                     default=uuid.uuid4)
+    repair_job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cad_repair_jobs.id", ondelete="CASCADE"),
+        nullable=False, index=True)
+    # The status the job was moved to, and the one it came from, as TEXT. A decision is a
+    # historical fact and must stay readable after a label is retired from the enum.
+    decision:      Mapped[str]       = mapped_column(String(32), nullable=False)
+    from_status:   Mapped[str]       = mapped_column(String(32), nullable=False,
+                                                     server_default="")
+    # Self-asserted; see CadRepairJob.assigned_operator.
+    actor:         Mapped[str]       = mapped_column(String(256), nullable=False)
+    reason:        Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes:         Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True),
+                                                     server_default=func.now())
+
+    repair_job: Mapped[CadRepairJob] = relationship("CadRepairJob", back_populates="decisions")
+
+    __table_args__: tuple = (
+        Index("ix_cad_repair_decisions_history", "repair_job_id", "created_at"),
     )
 
 

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from meshpipeline.persistence.job_state import TransitionResult
 from meshpipeline.persistence.models import (
     CadRepairAttempt,
+    CadRepairDecision,
     CadRepairJob,
     RepairJobStatus,
 )
@@ -167,4 +168,71 @@ class RepairJobRepository:
             select(CadRepairAttempt)
             .where(CadRepairAttempt.repair_job_id == repair_job_id)
             .order_by(CadRepairAttempt.attempt_no.asc()))
+        return list(res.scalars().all())
+
+    # THE OPERATOR SURFACE. These read ACROSS tenants, because the people using them are this
+    # service's own staff working a shared queue - the customer-scoped reads above are a different
+    # question with a different answer. Nothing here takes an owner_id, so no caller can mistake
+    # one of these for a tenant-scoped read by leaving an argument off.
+
+    async def operator_queue(self, db: AsyncSession, *,
+                             statuses: tuple[RepairJobStatus, ...] = (),
+                             assigned_operator: str | None = None,
+                             unassigned_only: bool = False,
+                             limit: int = 50) -> list[CadRepairJob]:
+        """The cross-tenant work queue, most urgent first: priority, then oldest."""
+        stmt = select(CadRepairJob)
+        if statuses:
+            stmt = stmt.where(CadRepairJob.status.in_(statuses))
+        if unassigned_only:
+            stmt = stmt.where(CadRepairJob.assigned_operator.is_(None))
+        elif assigned_operator:
+            stmt = stmt.where(CadRepairJob.assigned_operator == assigned_operator)
+        stmt = stmt.order_by(CadRepairJob.service_priority.asc(),
+                             CadRepairJob.created_at.asc()).limit(int(limit))
+        return list((await db.execute(stmt)).scalars().all())
+
+    async def assign(self, db: AsyncSession, job_id: uuid.UUID, *, operator: str,
+                     claim_only_if_unassigned: bool = False) -> bool:
+        """Put `operator`'s name on the job, or take it off when `operator` is empty.
+
+        `claim_only_if_unassigned` makes it a CLAIM: the update applies only while nobody holds
+        the item, so two operators opening the same queue row cannot both believe they took it.
+        Reassignment - a lead moving work - is the default and deliberately overwrites.
+        """
+        who = str(operator or "").strip()[:256]
+        stmt = update(CadRepairJob).where(CadRepairJob.id == job_id)
+        if claim_only_if_unassigned:
+            stmt = stmt.where(CadRepairJob.assigned_operator.is_(None))
+        stmt = stmt.values(assigned_operator=who or None,
+                           assigned_at=func.now() if who else None)
+        res = await db.execute(stmt.returning(CadRepairJob.id))
+        return res.first() is not None
+
+    async def record_decision(self, db: AsyncSession, *, repair_job_id: uuid.UUID,
+                              decision: str, actor: str, from_status: str = "",
+                              reason: str = "", notes: str = "") -> CadRepairDecision:
+        """Append what a person decided. Never updates: a changed mind is a new row."""
+        if not str(actor or "").strip():
+            raise ValueError("actor is required - an unattributed decision is not an audit")
+        if not str(decision or "").strip():
+            raise ValueError("decision is required")
+        row = CadRepairDecision(
+            repair_job_id=repair_job_id,
+            decision=str(decision)[:32],
+            from_status=str(from_status or "")[:32],
+            actor=str(actor).strip()[:256],
+            reason=(reason or None),
+            notes=(notes or None),
+        )
+        db.add(row)
+        await db.flush()
+        return row
+
+    async def decisions_for_job(self, db: AsyncSession,
+                                repair_job_id: uuid.UUID) -> list[CadRepairDecision]:
+        res = await db.execute(
+            select(CadRepairDecision)
+            .where(CadRepairDecision.repair_job_id == repair_job_id)
+            .order_by(CadRepairDecision.created_at.asc()))
         return list(res.scalars().all())

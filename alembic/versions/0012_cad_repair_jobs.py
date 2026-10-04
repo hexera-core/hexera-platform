@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = "0012_cad_repair_jobs"
 down_revision = "0011_repair_report_artifact"
@@ -101,9 +102,9 @@ def upgrade() -> None:
         sa.Column("input_sha256", sa.String(length=64), nullable=False),
         sa.Column("output_sha256", sa.String(length=64), nullable=True),
         sa.Column("status", sa.String(length=32), server_default="", nullable=False),
-        sa.Column("report", sa.dialects.postgresql.JSONB(), nullable=True),
-        sa.Column("caps", sa.dialects.postgresql.JSONB(), nullable=True),
-        sa.Column("measurements", sa.dialects.postgresql.JSONB(), nullable=True),
+        sa.Column("report", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("caps", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("measurements", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"),

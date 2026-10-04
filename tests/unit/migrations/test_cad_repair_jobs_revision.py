@@ -34,6 +34,17 @@ def test_the_enum_labels_match_the_model_member_for_member():
     assert tuple(_constants()["_REPAIR_JOB_STATUS"]) == tuple(s.value for s in RepairJobStatus)
 
 
+#: Columns a LATER revision adds to these tables, and which 0012 therefore must not mention.
+#: Listed so that the agreement below stays a real check rather than being loosened to a subset:
+#: every model column is either created here or named as arriving later.
+_ADDED_AFTER = {
+    "cad_repair_jobs": {
+        "assigned_operator": "0013_repair_operator_queue",
+        "assigned_at": "0013_repair_operator_queue",
+    },
+}
+
+
 def test_the_columns_match_the_models():
     from meshpipeline.persistence.models import CadRepairAttempt, CadRepairJob
 
@@ -42,9 +53,18 @@ def test_the_columns_match_the_models():
         table = model.__table__
         declared = up[up.index(f'"{table.name}"'):]
         declared = declared[:declared.index("op.create_index")]
+        later = _ADDED_AFTER.get(table.name, {})
         for column in table.c:
+            if column.name in later:
+                # created by a later revision, so it must NOT be here - a column in both places
+                # means one of the two revisions is wrong about who owns it
+                assert f'"{column.name}"' not in declared, (
+                    f"{table.name}.{column.name} is created by {later[column.name]}, "
+                    "but revision 0012 also declares it")
+                continue
             assert f'"{column.name}"' in declared, (
-                f"{table.name}.{column.name} is in the model but not in revision 0012")
+                f"{table.name}.{column.name} is in the model but in no revision - add it to "
+                "0012, or to a later revision and to _ADDED_AFTER")
 
 
 def test_the_customer_upload_cannot_be_deleted_from_under_a_repair_job():
