@@ -67,6 +67,7 @@ from meshpipeline.engines.snappy.solvability import check_solvability  # noqa: F
 # the name has to be here even though the native phase is what calls it.
 from meshpipeline.engines.snappy_hexmesh import (  # noqa: F401
     _write_case_skeleton,
+    off_grid_point,
     parse_layer_coverage,
 )
 from meshpipeline.render.review_artifacts import (  # noqa: F401
@@ -868,16 +869,8 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
     return out
 
 
-def _off_grid(point, lo, hi, div, levels: int) -> tuple:
-    """The centre of the cell holding `point` in a uniform box grid (corners `lo`/`hi`, `div`
-    cells per axis) refined `levels` times: inside one cell at every coarser level too, since
-    each refinement only halves the cells of the one before."""
-    out = []
-    for i in range(3):
-        h = (hi[i] - lo[i]) / max(div[i], 1) / 2 ** levels
-        k = math.floor((float(point[i]) - lo[i]) / h) if h > 0 else 0
-        out.append(lo[i] + (k + 0.5) * h if h > 0 else float(point[i]))
-    return tuple(out)
+# the seed is placed off the background grid by the rule both snappy engines share
+_off_grid = off_grid_point
 
 
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,

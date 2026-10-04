@@ -12,7 +12,11 @@ from meshpipeline.cad.stl_io import _write_solid, read_stl_triangles
 # The snappyHexMesh mechanics this engine shares with `snappy` - the case skeleton the mesher
 # needs, and how to read its log. gave them their own authority, so this engine no
 # longer depends on another engine's runner for either.
-from meshpipeline.engines.snappy_hexmesh import _write_case_skeleton, parse_layer_coverage
+from meshpipeline.engines.snappy_hexmesh import (
+    _write_case_skeleton,
+    off_grid_point,
+    parse_layer_coverage,
+)
 from meshpipeline.engines.snappy_multiregion.foam_exec import (  # noqa: F401  re-exported for the adapter
     _CM,
     _DEFAULT_BASHRC,
@@ -148,16 +152,25 @@ def render_geometry_block(rmap: dict) -> str:
     return "\n".join(lines)
 
 
-def render_block_mesh(bbox_min, bbox_max, base_cell: float, pad: float = 0.15) -> str:
+def background_box(bbox_min, bbox_max, base_cell: float, pad: float = 0.15
+                   ) -> tuple[tuple, tuple, tuple]:
+    """(lo, hi, divisions) of the background block render_block_mesh writes: the box padded by
+    `pad` of its extent on every side, cut into cells about `base_cell` wide. The corners are the
+    numbers AS WRITTEN (6 significant digits), so a point placed against this grid
+    (snappy_hexmesh.off_grid_point) is placed against the grid the mesher builds."""
     (x0, y0, z0), (x1, y1, z1) = bbox_min, bbox_max
     dx, dy, dz = (x1 - x0), (y1 - y0), (z1 - z0)
     mx, my, mz = dx * pad, dy * pad, dz * pad
-    x0, y0, z0 = x0 - mx, y0 - my, z0 - mz
-    x1, y1, z1 = x1 + mx, y1 + my, z1 + mz
+    lo = tuple(float(f"{v:.6g}") for v in (x0 - mx, y0 - my, z0 - mz))
+    hi = tuple(float(f"{v:.6g}") for v in (x1 + mx, y1 + my, z1 + mz))
     bc = max(base_cell, 1e-9)
-    nx = max(1, round((x1 - x0) / bc))
-    ny = max(1, round((y1 - y0) / bc))
-    nz = max(1, round((z1 - z0) / bc))
+    div = tuple(max(1, round((hi[i] - lo[i]) / bc)) for i in range(3))
+    return lo, hi, div
+
+
+def render_block_mesh(bbox_min, bbox_max, base_cell: float, pad: float = 0.15) -> str:
+    (x0, y0, z0), (x1, y1, z1), (nx, ny, nz) = background_box(bbox_min, bbox_max, base_cell,
+                                                              pad=pad)
     verts = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
              (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
     vtxt = "\n".join(f"    ({v[0]:.6g} {v[1]:.6g} {v[2]:.6g})" for v in verts)
@@ -603,6 +616,12 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
             break
     (ws / "system" / "blockMeshDict").write_text(
         render_block_mesh(allmins, allmaxs, base_cell, pad=_pad))
+    # THE SEEDS OFF THE GRID (snappy_hexmesh.off_grid_point), as the internal snappy case places
+    # its own: a region's seed is the centre of its box when that lies inside it, which on a part
+    # symmetric about a plane is ON that plane - and the background box, padded evenly round the
+    # assembly, is symmetric about it too, so the seed sat on a cell face or edge.
+    _grid = background_box(allmins, allmaxs, base_cell, pad=_pad)
+    region_points = {n: off_grid_point(p, *_grid) for n, p in region_points.items()}
     (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
     (ws / "system" / "snappyHexMeshDict").write_text(
         render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
@@ -626,10 +645,10 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
 
 
 def _locations_in_mesh(region_points: dict | None, fallback) -> str:
-    if region_points:
-        p = next(iter(region_points.values()))
-        return f"locationInMesh ({p[0]:.6g} {p[1]:.6g} {p[2]:.6g});"
-    return f"locationInMesh ({fallback[0]:.6g} {fallback[1]:.6g} {fallback[2]:.6g});"
+    # 12 significant digits: a seed placed off the grid (configure_mesh) stays where it was put -
+    # six could round it back within a hair of the cell face it was moved off
+    p = next(iter(region_points.values())) if region_points else fallback
+    return f"locationInMesh ({p[0]:.12g} {p[1]:.12g} {p[2]:.12g});"
 
 
 def render_snappy_multiregion_dict(rmap: dict, bbox_min, bbox_max, *, surface_level, interface_refinement,
