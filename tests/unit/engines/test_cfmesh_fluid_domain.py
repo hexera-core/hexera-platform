@@ -15,10 +15,14 @@ def _fluid_rod_step(path, radius_mm=40.0, length_mm=400.0):
     """A cylinder solid: the fluid of a straight pipe, inlet at x=0, outlet at x=length."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
     solid = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)),
                                      radius_mm, length_mm).Shape()
     w = STEPControl_Writer()
+    # OCC's write unit is process-global: an earlier test's INCH fixture would leave it set, and
+    # this rod would be written in inches and read back as millimetres (random-order flake)
+    assert Interface_Static.SetCVal_s("write.step.unit", "MM")
     w.Transfer(solid, STEPControl_AsIs)
     w.Write(str(path))
     return path
