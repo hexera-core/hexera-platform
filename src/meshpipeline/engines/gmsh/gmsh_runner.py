@@ -243,6 +243,8 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
         gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
+        # the size the builder is told is the surface's, not OpenCascade's loose envelope
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("inspect")
         gmsh.model.occ.importShapes(str(geom))
         gmsh.model.occ.synchronize()

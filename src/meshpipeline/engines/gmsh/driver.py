@@ -732,6 +732,10 @@ def main(workspace: str) -> int:
         # (2026-10-04), where three local runs of each of three cases matched to the digit.
         gmsh.option.setNumber("General.NumThreads", 1)
         gmsh.option.setNumber("Mesh.RandomSeed", 1)
+        # the model's bounding box from its surface, not OpenCascade's loose envelope of B-spline
+        # control points: the element size is a factor of this diagonal and the resolution clamp
+        # reads its narrowest side (a 132 mm Supra read 570 x 492 x 401 mm without it)
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
         # an EXTERNAL BODY is cut out of a far-field box here; an external fluid domain the user
         # prepared (the air box itself) is meshed as it is, like any other fluid domain
