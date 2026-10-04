@@ -410,9 +410,22 @@ def _install_thin_feature_double(monkeypatch) -> None:
     monkeypatch.setattr(TF, "thin_refinement_boxes", thin_refinement_boxes)
 
 
+# The narrow-passage reading, answering "yes, a passage is narrower than the wall cell allows".
+# The real reading measures the staged wall (engines/passage.narrow_passage_regions); the double's
+# box is 100 mm across, so only a stand-in puts the driver on the branch that discloses it.
+def _install_narrow_passage_double(monkeypatch) -> None:
+    from meshpipeline.engines.snappy import drivers as D
+
+    def narrow_passage_boxes(field, *, wall_cell, budget_cells):
+        return [{"min": [-0.02, -0.02, 0.48], "max": [0.02, 0.02, 0.52], "level_bump": 1,
+                 "radius_m": 0.004}]
+
+    monkeypatch.setattr(D, "_narrow_passage_boxes", narrow_passage_boxes)
+
+
 async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=None,
                internal=False, tessellate_fail=False, unbindable_patches=False,
-               thin_feature=False, domain_refused=False):
+               thin_feature=False, domain_refused=False, narrow_passage=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
 
@@ -439,6 +452,8 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
         _install_tessellate_double(monkeypatch, tessellate, fail=tessellate_fail)
     if internal and thin_feature:
         _install_thin_feature_double(monkeypatch)
+    if internal and narrow_passage:
+        _install_narrow_passage_double(monkeypatch)
 
     import meshpipeline.pipeline.graph as gm
     root = tmp_path / f"run-{job_id.hex[:8]}"
@@ -1084,6 +1099,9 @@ INTERNAL_EXHAUSTED = {
 # the one disclosure that the plate was found and is being refined locally (fix #4, the orifice
 # cluster). It fires once per pass, before the case is rendered.
 INTERNAL_THIN_FEATURE = {**INTERNAL_ACCEPTED, f"{INTERNAL_FN}::note#7": 1}
+# The narrow-passage disclosure: a passage the wall cell leaves under the resolution floor is named
+# and refined locally - once per pass, before the case is rendered.
+INTERNAL_NARROW_PASSAGE = {**INTERNAL_ACCEPTED, f"{INTERNAL_FN}::note#8": 1}
 
 
 @pytest.fixture()
@@ -1095,6 +1113,12 @@ async def internal_accepted(monkeypatch, tmp_path):
 async def internal_thin_feature(monkeypatch, tmp_path):
     return await _run(monkeypatch, tmp_path, native_double=False, internal=True,
                       thin_feature=True)
+
+
+@pytest.fixture()
+async def internal_narrow_passage(monkeypatch, tmp_path):
+    return await _run(monkeypatch, tmp_path, native_double=False, internal=True,
+                      narrow_passage=True)
 
 
 @pytest.fixture()
@@ -1148,6 +1172,15 @@ async def test_a_thin_feature_is_disclosed_once_at_its_own_site(internal_thin_fe
     recs = [r for r in _driver_records(seen)
             if r["method"] == "note" and r["op_id"].startswith("internal:thin-feature:")]
     assert [r["op_id"] for r in recs] == ["internal:thin-feature:1"], recs
+
+
+async def test_a_narrow_passage_is_disclosed_once_at_its_own_site(internal_narrow_passage):
+    _job_id, seen, _built, native, _marks, _rounds, _tess = internal_narrow_passage
+    assert _owned_counts(seen, accepted=True) == INTERNAL_NARROW_PASSAGE
+    assert len(native) == 1, "the narrow-passage disclosure must not cost a meshing pass"
+    recs = [r for r in _driver_records(seen)
+            if r["method"] == "note" and r["op_id"].startswith("internal:narrow-passage:")]
+    assert [r["op_id"] for r in recs] == ["internal:narrow-passage:1"], recs
 
 
 async def test_the_internal_union_reaches_all_ten_sites_and_no_external_one(
