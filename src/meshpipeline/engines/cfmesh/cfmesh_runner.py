@@ -410,7 +410,7 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
     chosen = {**field_radius_stats(*field), "source": chosen["source"]}
     # the band at the NARROWEST passage while that is affordable (a one-width part meshes as it
     # always did); the typical passage, with the narrow ones refined locally, when it is not
-    if band_shell_cells(*field, float(chosen["p05"])) <= GLOBAL_BAND_MAX_CELLS:
+    if band_shell_cells(field[0], field[1], field[2], float(chosen["p05"])) <= GLOBAL_BAND_MAX_CELLS:
         chosen = {**chosen, "band": chosen["p05"], "band_from": "narrowest"}
     else:
         chosen = {**chosen, "band_from": "typical"}

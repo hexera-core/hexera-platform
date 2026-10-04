@@ -149,11 +149,11 @@ def port_radius_stats(openings, hydraulic: dict | None = None) -> dict:
         except (TypeError, ValueError):
             continue
         if a > 0.0:
-            r = float(np.sqrt(a / np.pi))
+            r_eq = float(np.sqrt(a / np.pi))
             # the lid only ever NARROWS the reading: a wall solid's lid can be its whole end
             # (flange and all, wider than the bore the opening area measures)
             dh = (hydraulic or {}).get(str(name))
-            radii.append(min(r, 0.5 * float(dh)) if dh else r)
+            radii.append(min(r_eq, 0.5 * float(dh)) if dh else r_eq)
     if not radii:
         return {}
     r = np.asarray(radii, dtype=float)
