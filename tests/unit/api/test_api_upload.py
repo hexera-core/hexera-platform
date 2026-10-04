@@ -41,7 +41,8 @@ async def test_wrong_extension_rejected():
     async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
         resp = await c.post(
             "/api/v1/upload/step-file",
-            files={"file": ("model.obj", b"some data", "application/octet-stream")},
+            # .obj is read now (cad/ingest); a DWG drawing still is not
+            files={"file": ("model.dwg", b"some data", "application/octet-stream")},
         )
     assert resp.status_code == 422
     detail = resp.json()["detail"].lower()

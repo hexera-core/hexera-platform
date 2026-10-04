@@ -98,12 +98,38 @@ def _iges_evidence(path: Path) -> UnitEvidence:
 
 
 def read_declared_unit(path: str | Path) -> UnitEvidence:
+    from meshpipeline.cad.ingest.canonical import read_sidecar
+    from meshpipeline.contracts.intake_formats import format_for_key, format_for_suffix
+
     p = Path(path)
     suffix = p.suffix.lower()
+    converted = read_sidecar(p)
+    if converted is not None:
+        # A file cad/ingest wrote: its own unit label is the converter's, not the user's. What
+        # counts is what the SOURCE stated (a BREP states nothing, though its STEP says mm),
+        # which the conversion recorded beside it.
+        declared = converted.get("declared_unit") or {}
+        if declared.get("resolved") and declared.get("unit"):
+            try:
+                return UnitEvidence(True, LengthUnit(declared["unit"]),
+                                    str(declared.get("detail") or ""))
+            except ValueError:
+                pass
+        source = format_for_key(str(converted.get("source_format", "")))
+        return UnitEvidence.unresolved(
+            str(declared.get("detail") or "")
+            or f"the uploaded {source.label if source else 'file'} does not record a unit")
     if suffix in (".step", ".stp"):
         return _step_evidence(p)
     if suffix in (".iges", ".igs"):
         return _iges_evidence(p)
+    fmt = format_for_suffix(suffix)
+    if fmt is not None and fmt.declares_units:
+        from meshpipeline.cad.ingest.units import declared_unit
+
+        evidence = declared_unit(p, fmt.key)
+        if evidence is not None:
+            return evidence
     return UnitEvidence.unresolved(f"{suffix or 'this format'} does not record a unit")
 
 
