@@ -20,6 +20,18 @@ import numpy as np
 # Either way nothing may span the loop, and outside it - the way the mouth faces - is open air.
 # No loop has to be flat, round or square to the axis; every measure is taken about the loop
 # itself, never about the world origin.
+#
+# WHAT A CAP IS. A file that IS the fluid - a closed volume, the way a solver exports it - has no
+# holes: its openings are flat lids laid across each passage's end. A coarse tessellation leaves
+# flat patches all over a curved wall too (a few facets that happen to share a plane), and a cap
+# is told from them by measures taken against the mesh's OWN facets, never a fixed size:
+#  - FLAT: every corner of the patch lies in one plane;
+#  - A SHARP RIM ALL THE WAY ROUND: at nearly every rim edge the wall turns away from the lid by
+#    far more than the wall's own facets turn against each other just beside it - a lid's rim is a
+#    corner, a facet's edge is just the wall's curve, as gentle as every other edge there;
+#  - THE WALL RUNS BACK BEHIND IT, and outside it - the way it faces - is open air.
+# Each cap carries how sure that reading is, so a lid can be proposed and a near miss left for
+# the user to add with a click.
 
 #: Two faces meeting at more than this angle make a sharp edge: a cut rim, a corner.
 SHARP_DEG = 30.0
@@ -37,6 +49,34 @@ MAX_PROBED = 64
 #: Points of a loop kept for the stage: enough to draw and click it, not the whole tessellation.
 LOOP_POINTS = 96
 
+#: FLAT PATCHES: faces meeting edge to edge within this angle grow one patch, and the patch is flat
+#: when none of its corners strays from its plane by more than FLAT_TOL of its size.
+FLAT_DEG = 2.0
+FLAT_TOL = 0.01
+#: A CAP'S RIM: a rim edge is sharp when the wall there turns away from the lid by RIM_CONTRAST
+#: times the creases the wall's own facets make just beside the rim (their 90th percentile) - never
+#: asked below RIM_MIN_DEG (a fine mesh: any real corner), nor above RIM_MAX_DEG (a mesh so coarse
+#: its walls crease like corners: a square lid still shows) - and the wall runs back behind the lid,
+#: not folded over it past FOLD_DEG.
+RIM_CONTRAST = 1.5
+RIM_MIN_DEG = 25.0
+RIM_MAX_DEG = 65.0
+FOLD_DEG = 165.0
+#: ...along at least this share of the rim's length: all the way round, but for a sliver or two;
+#: and nowhere along more than RIM_SMOOTH of it does the wall run on from the lid with no corner.
+RIM_SHARE = 0.75
+RIM_SMOOTH = 0.1
+#: One triangle cannot tell a lid from a facet: a lid's rim runs over at least this many edges.
+MIN_RIM_EDGES = 4
+#: A lid spans one passage, so its outline is about as full as its convex hull (a round, square or
+#: oval section, an oblique cut of one); a flat band of wall curving round a bend is not.
+LID_SOLIDITY = 0.8
+#: Lids whose outside is probed with rays: far more than any passage has mouths.
+MAX_LIDS_PROBED = 256
+#: A flat patch this many times the size of the patches round it is a face the part was drawn
+#: with even where it runs smoothly into a fillet; a facet of a curved wall is their size.
+FACE_OVER_FACETS = 4.0
+
 
 @dataclass
 class Hole:
@@ -53,6 +93,9 @@ class Hole:
     outer: np.ndarray | None
     planarity: float                # how far the loop strays from its plane, over its diameter
     clear: int                      # how many of the outside rays met nothing
+    #: how sure the reading is, 0..1: an open edge or a bore wall all round, and how much of the
+    #: air outside is clear
+    confidence: float = 0.0
 
     @property
     def equivalent_diameter(self) -> float:
@@ -60,14 +103,7 @@ class Hole:
 
     @property
     def shape(self) -> str:
-        w, h = self.wh
-        if w <= 0 or h <= 0:
-            return "other"
-        if abs(w - h) <= 0.08 * max(w, h) and abs(self.area - math.pi * w * h / 4.0) <= 0.12 * self.area:
-            return "circle"
-        if abs(self.area - w * h) <= 0.12 * self.area:
-            return "rectangle"
-        return "other"
+        return _shape(self.wh, self.area)
 
     def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
         """The hole as the stage reads it: metres and the reading's millimetres side by side, the
@@ -79,7 +115,7 @@ class Hole:
                "area_mm2": round(self.area * mm_per_unit * mm_per_unit, 2),
                "diameter_mm": round(self.equivalent_diameter * mm_per_unit, 2),
                "loop_m": [r6(p) for p in _thin(self.loop)],
-               "planarity": round(self.planarity, 4)}
+               "planarity": round(self.planarity, 4), "confidence": round(self.confidence, 2)}
         if self.shape != "circle":
             out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, 2), round(self.wh[1] * mm_per_unit, 2)
         if self.outer is not None:
@@ -87,20 +123,87 @@ class Hole:
         return out
 
 
-def find_holes(tris) -> list[Hole]:
-    """Every hole of a triangle surface, the largest first. `tris` is (n, 3, 3)."""
+@dataclass
+class Cap:
+    """One flat patch of a skin, measured as the lid over a passage's end might be, in the
+    triangles' own units. `normal` points out of the part; `loop` is the patch's outline. `sharp`
+    is the share of its rim, by length, where the wall turns away from it like a lid's rim and not
+    like the wall's own facets; `clear` how many of the outside rays met nothing (-1: not looked)."""
+
+    face: int                       # one of its faces, by index into the skin
+    faces: np.ndarray               # all of them
+    centroid: np.ndarray
+    normal: np.ndarray
+    area: float
+    wh: tuple[float, float]
+    loop: np.ndarray
+    inner: float                    # the area of the largest outline inside it (an end face's hole)
+    sharp: float
+    crease: float                   # the wall's own creases beside the rim, degrees (90th percentile)
+    rim_edges: int
+    smooth: float                   # share of the rim where the wall runs on from it, no corner at all
+    over: float                     # its area over the patches' across its rim (by rim length)
+    solidity: float                 # how much of its outline's convex hull it fills
+    clear: int
+    confidence: float
+
+    @property
+    def face_of_part(self) -> bool:
+        """A flat face the part was drawn with, not a facet of a curved wall: cornered, or far
+        bigger than the wall's patches round it (a flat face that runs into a fillet)."""
+        return self.sharp >= 0.5 or self.over >= FACE_OVER_FACETS
+
+    @property
+    def likely(self) -> bool:
+        """A lid: a sharp rim all the way round, and open air outside."""
+        return self._rim_ok and self.clear >= MIN_CLEAR
+
+    @property
+    def _rim_ok(self) -> bool:
+        return (self.sharp >= RIM_SHARE and self.smooth <= RIM_SMOOTH and self.rim_edges >= MIN_RIM_EDGES
+                and self.solidity >= LID_SOLIDITY)
+
+    @property
+    def equivalent_diameter(self) -> float:
+        return 2.0 * math.sqrt(max(self.area, 0.0) / math.pi)
+
+    @property
+    def shape(self) -> str:
+        return _shape(self.wh, self.area)
+
+
+def surface(tris) -> _Mesh | None:
+    """A triangle file's skin, read once for both finders (None when it holds too few faces)."""
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
     if len(tris) < 4:
-        return []
+        return None
     skin = skin_faces(tris)
     if len(skin[1]) < 4:
+        return None
+    return _Mesh(skin=skin)
+
+
+def find_holes(tris=None, *, mesh: _Mesh | None = None) -> list[Hole]:
+    """Every hole of a triangle surface, the largest first. `tris` is (n, 3, 3); or pass the
+    surface() already read."""
+    mesh = mesh if mesh is not None else surface(tris)
+    if mesh is None:
         return []
-    mesh = _Mesh(skin=skin)
     # the cheap look at every loop first (what runs along it), then the rays for the largest few
     shaped = [s for s in (mesh.shape(loop) for loop in mesh.feature_loops()) if s is not None]
     shaped.sort(key=lambda s: s["area"], reverse=True)
     holes = [h for h in (mesh.probe(s) for s in shaped[:MAX_PROBED]) if h is not None]
     return _distinct(holes)
+
+
+def find_caps(tris=None, *, mesh: _Mesh | None = None, min_area: float = math.inf) -> list[Cap]:
+    """The flat patches of a triangle surface, each measured as a lid (see WHAT A CAP IS), the
+    largest first: every patch of at least `min_area` (the faces a click may land on), and every
+    smaller one whose rim is mostly sharp (a small branch's lid). Read `Cap.likely` for the lids."""
+    mesh = mesh if mesh is not None else surface(tris)
+    if mesh is None:
+        return []
+    return mesh.caps(min_area)
 
 
 # ---------------------------------------------------------------------------- the surface ----
@@ -145,6 +248,7 @@ class _Mesh:
         both = self.count == 2
         cos = np.ones(len(self.count))
         cos[both] = np.einsum("ij,ij->i", self.normal[self.f0[both]], self.normal[self.f1[both]])
+        self.cos = cos                                         # how far the two faces on each edge turn
         self.feature = (self.count != 2) | (cos < math.cos(math.radians(SHARP_DEG)))
         self.why = ""                                          # why the last loop was not a hole
 
@@ -234,11 +338,7 @@ class _Mesh:
 
     def _open_chains(self):
         ids = np.flatnonzero(self.count == 1)
-        at: dict[int, list[int]] = {}
-        for k, (x, y) in enumerate(zip(self.ea[ids].tolist(), self.eb[ids].tolist())):
-            at.setdefault(x, []).append(k)
-            at.setdefault(y, []).append(k)
-        yield from _chain(ids, self.ea[ids], self.eb[ids], at, self.verts)
+        yield from _chain(ids, self.ea[ids], self.eb[ids], _at(self.ea[ids], self.eb[ids]), self.verts)
 
     def _patch_outlines(self):
         from scipy.sparse import coo_matrix
@@ -360,9 +460,150 @@ class _Mesh:
         if clear < MIN_CLEAR or self._spanned(P, c, out, d, dev):
             return None
         outer, band = self._end_face(c, out, d, dev, s["seeds"]) if kind == "bore" else (None, set())
+        # an open edge is a hole for certain, a bore's mouth nearly so; how sure, by how open the
+        # air outside is
+        conf = (0.6 if kind == "rim" else 0.5) + 0.35 * clear / (CONE_RAYS + 1)
         hole = Hole(kind=kind, centroid=c, normal=out, area=area, wh=wh, loop=P, outer=outer,
-                    planarity=dev / d, clear=clear)
+                    planarity=dev / d, clear=clear, confidence=round(conf, 2))
         return hole, band
+
+    # ---------------------------------------------------------------------------- the caps ----
+    def caps(self, min_area: float) -> list[Cap]:
+        """The flat patches, measured as lids (see WHAT A CAP IS): all of at least min_area, and
+        any smaller whose rim is mostly sharp."""
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        nf = len(self.faces)
+        V, F = self.verts, self.faces
+        join = (self.count == 2) & (self.cos >= math.cos(math.radians(FLAT_DEG)))
+        g = coo_matrix((np.ones(int(join.sum())), (self.f0[join], self.f1[join])), shape=(nf, nf))
+        n_lab, lab = connected_components(g, directed=False)
+        # each patch's plane: its area-weighted normal through its area centroid
+        area = np.bincount(lab, weights=self.area, minlength=n_lab)
+        wn = np.stack([np.bincount(lab, weights=self.normal[:, k] * self.area, minlength=n_lab) for k in range(3)], axis=1)
+        wc = np.stack([np.bincount(lab, weights=self.centre[:, k] * self.area, minlength=n_lab) for k in range(3)], axis=1)
+        L = np.linalg.norm(wn, axis=1)
+        N = wn / np.where(L > 0, L, 1.0)[:, None]
+        C = wc / np.where(area > 0, area, 1.0)[:, None]
+        dev = np.zeros(n_lab)
+        for k in range(3):
+            np.maximum.at(dev, lab, np.abs(np.einsum("ij,ij->i", V[F[:, k]] - C[lab], N[lab])))
+        flat = (L > 0) & (dev <= FLAT_TOL * np.sqrt(area)) & (np.sqrt(4.0 * area / math.pi) >= MIN_LOOP * self.diag)
+        if not flat.any():
+            return []
+
+        # THE RIM: every edge between a flat patch and anything else, from the patch's side
+        e = np.flatnonzero((self.count != 2) | (lab[self.f0] != lab[np.maximum(self.f1, 0)]))
+        two = self.count[e] == 2
+        has1 = self.f1[e] >= 0
+        P = np.r_[lab[self.f0[e]], lab[self.f1[e][has1]]]
+        E = np.r_[e, e[has1]]
+        O = np.r_[np.where(two, self.f1[e], -1), np.where(two[has1], self.f0[e][has1], -1)]
+        keep = flat[P]
+        P, E, O = P[keep], E[keep], O[keep]
+        if len(P) == 0:
+            return []
+        a, b = V[self.ea[E]], V[self.eb[E]]
+        length = np.linalg.norm(b - a, axis=1)
+        wall = O >= 0
+        Os = np.maximum(O, 0)
+        ang = np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", N[P], self.normal[Os]), -1.0, 1.0)))
+        back = np.einsum("ij,ij->i", self.centre[Os] - (a + b) / 2.0, N[P])
+        # a closed piece's faces face out, so its lid's wall lies behind it; an open piece's way out
+        # is the side its walls do not stand on
+        rim_len = np.bincount(P, weights=length, minlength=n_lab)
+        behind_len = np.bincount(P, weights=length * (wall & (back < 0)), minlength=n_lab)
+        front_len = np.bincount(P, weights=length * (wall & (back > 0)), minlength=n_lab)
+        closed_lab = np.zeros(n_lab, dtype=bool)
+        closed_lab[lab[self.closed]] = True
+        turn = ~closed_lab & (front_len > behind_len)
+        N[turn] = -N[turn]
+        back = np.where(turn[P], -back, back)
+        ang = np.where(turn[P], 180.0 - ang, ang)
+
+        # THE WALL'S OWN CREASES beside the rim: where the wall's facets meet each other - not
+        # inside one flat facet, never on the rim itself - over the two rows of faces across the
+        # rim. That is what this mesh's facets do on this wall, here.
+        # (only for the patches whose rim could be sharp at all: on a fine skin, a handful)
+        rim_len = np.where(rim_len > 0, rim_len, 1.0)
+        corner0 = wall & (back < 0) & (ang >= RIM_MIN_DEG) & (ang <= FOLD_DEG)
+        maybe = np.bincount(P, weights=length * corner0, minlength=n_lab) / rim_len >= 0.5
+        corners3 = self.edge_of.reshape(-1, 3)
+        ring1, rp1 = O[wall & maybe[P]], P[wall & maybe[P]]
+        e1 = corners3[ring1].reshape(-1)
+        p1 = np.repeat(rp1, 3)
+        f1 = np.repeat(ring1, 3)
+        nxt = np.where(self.f0[e1] == f1, self.f1[e1], self.f0[e1])
+        go = (nxt >= 0) & (lab[np.maximum(nxt, 0)] != p1)
+        ring = np.r_[ring1, nxt[go]]
+        RP = np.r_[rp1, p1[go]]
+        RE = corners3[ring].reshape(-1)
+        RP = np.repeat(RP, 3)
+        pair = np.unique(np.stack([RP, RE], axis=1), axis=0)
+        RP, RE = pair[:, 0], pair[:, 1]
+        g1 = np.maximum(self.f1[RE], 0)
+        okr = ((self.count[RE] == 2) & (lab[self.f0[RE]] != lab[g1])
+               & (lab[self.f0[RE]] != RP) & (lab[g1] != RP))
+        RE, RP = RE[okr], RP[okr]
+        crease = np.zeros(n_lab)
+        if len(RE):
+            ra = np.degrees(np.arccos(np.clip(self.cos[RE], -1.0, 1.0)))
+            order = np.lexsort((ra, RP))
+            RPs, ras = RP[order], ra[order]
+            labs, first, counts = np.unique(RPs, return_index=True, return_counts=True)
+            crease[labs] = ras[first + np.floor(0.9 * (counts - 1)).astype(np.int64)]
+        need = np.clip(RIM_CONTRAST * crease, RIM_MIN_DEG, RIM_MAX_DEG)
+        corner = corner0 & maybe[P] & (ang >= need[P])
+        sharp = np.bincount(P, weights=length * corner, minlength=n_lab) / rim_len
+        n_rim = np.bincount(P, minlength=n_lab)
+        # where the wall runs on from the patch with no corner at all: a lid crosses its passage,
+        # it is never tangent to the wall (a flat side of a duct that runs into a bend is)
+        smooth = np.bincount(P, weights=length * (wall & (ang < RIM_MIN_DEG)), minlength=n_lab) / rim_len
+        # how much bigger the patch is than the patches across its rim: a facet of a curved wall
+        # is the size of the facets round it, a flat face of the part is far bigger than a fillet's
+        wall_len = np.bincount(P, weights=length * wall, minlength=n_lab)
+        nb_area = np.bincount(P, weights=length * wall * area[lab[Os]], minlength=n_lab) / np.where(wall_len > 0, wall_len, 1.0)
+        over = np.where(nb_area > 0, area / np.where(nb_area > 0, nb_area, 1.0), np.inf)
+
+        # measured one by one: the patches big enough to click, and the small ones that could be lids
+        pick = np.flatnonzero(flat & ((area >= min_area) | (sharp >= 0.5)))
+        order = np.argsort(P, kind="stable")
+        Ps = P[order]
+        starts = np.searchsorted(Ps, pick, side="left")
+        ends = np.searchsorted(Ps, pick, side="right")
+        members = np.argsort(lab, kind="stable")
+        mstart = np.searchsorted(lab[members], pick, side="left")
+        mend = np.searchsorted(lab[members], pick, side="right")
+        out: list[Cap] = []
+        for i, p in enumerate(pick.tolist()):
+            rim = np.unique(E[order[starts[i]:ends[i]]])
+            ea, eb = self.ea[rim], self.eb[rim]
+            loops = [(V[vs], m) for vs, _ in _chain(rim, ea, eb, _at(ea, eb), V) if (m := _measure(V[vs])) is not None]
+            if not loops:
+                continue
+            loops.sort(key=lambda lm: lm[1][2], reverse=True)
+            outline, (c, n_loop, outline_area, wh, _) = loops[0]
+            faces = members[mstart[i]:mend[i]]
+            out.append(Cap(face=int(faces[0]), faces=faces, centroid=c, normal=N[p].copy(), area=float(area[p]), wh=wh,
+                           loop=outline, inner=float(loops[1][1][2]) if len(loops) > 1 else 0.0, sharp=float(sharp[p]),
+                           crease=float(crease[p]), rim_edges=int(n_rim[p]), smooth=float(smooth[p]),
+                           over=float(over[p]), solidity=_solidity(outline, c, n_loop, outline_area), clear=-1,
+                           confidence=0.0))
+        # OPEN AIR OUTSIDE, for the lids among them: the rays cost the most, so a part with very many
+        # gets them for its surest rims first, whatever their size - a small branch's clean lid
+        # before a big flat face's ragged one
+        lids = sorted((cap for cap in out if cap._rim_ok), key=lambda cap: (round(cap.sharp, 2), cap.area), reverse=True)
+        for cap in lids[:MAX_LIDS_PROBED]:
+            cap.clear = self._clear(cap.centroid + cap.normal * 0.02 * cap.equivalent_diameter, cap.normal)
+        # HOW SURE: a rim sharp all the way round, under open air - the share of the rim beyond
+        # half that is sharp, times the share of the outside rays that met nothing
+        for cap in out:
+            q = min(max((cap.sharp - 0.5) / (1.0 - 0.5), 0.0), 1.0)
+            air = cap.clear / (CONE_RAYS + 1) if cap.clear >= 0 else 0.0
+            cap.confidence = round(0.3 + 0.65 * q * air, 2)
+        out.sort(key=lambda cap: cap.area, reverse=True)
+        return out
 
     # --------------------------------------------------------------------------- the rays ----
     def _hits(self, origins: np.ndarray, dirs: np.ndarray, faces: np.ndarray | None = None) -> np.ndarray:
@@ -510,6 +751,42 @@ def _covered(p, a, b, c, n) -> np.ndarray:
 
 
 # ------------------------------------------------------------------------------ the loops ----
+def _at(ea, eb) -> dict[int, list[int]]:
+    """Which of the edges (by position) meet at each corner."""
+    at: dict[int, list[int]] = {}
+    for k, (x, y) in enumerate(zip(ea.tolist(), eb.tolist())):
+        at.setdefault(x, []).append(k)
+        at.setdefault(y, []).append(k)
+    return at
+
+
+def _solidity(P: np.ndarray, c: np.ndarray, n: np.ndarray, area: float) -> float:
+    """How much of its convex hull a plane loop fills: 1 for a round or square section, far less
+    for a band that curves round a bend."""
+    from scipy.spatial import ConvexHull, QhullError
+
+    u = np.cross(n, [0.0, 0.0, 1.0] if abs(n[2]) < 0.9 else [0.0, 1.0, 0.0])
+    u /= np.linalg.norm(u)
+    w = np.cross(n, u)
+    xy = np.c_[(P - c) @ u, (P - c) @ w]
+    try:
+        hull = float(ConvexHull(xy).volume)                 # a 2-D hull's "volume" is its area
+    except (QhullError, ValueError):
+        return 1.0
+    return min(area / hull, 1.0) if hull > 0 else 1.0
+
+
+def _shape(wh: tuple[float, float], area: float) -> str:
+    w, h = wh
+    if w <= 0 or h <= 0:
+        return "other"
+    if abs(w - h) <= 0.08 * max(w, h) and abs(area - math.pi * w * h / 4.0) <= 0.12 * area:
+        return "circle"
+    if abs(area - w * h) <= 0.12 * area:
+        return "rectangle"
+    return "other"
+
+
 def _chain(ids, ea, eb, at, V):
     """Closed loops walked along the given edges; where more than two meet, the walk goes on along
     the straightest. A walk that does not close gives its edges back to the others."""
@@ -633,4 +910,4 @@ def _distinct(found: list[tuple[Hole, set]]) -> list[Hole]:
     return [h for i, (h, _) in enumerate(found) if i not in gone]
 
 
-__all__ = ["Hole", "find_holes", "CONE_DEG", "MIN_LOOP", "SHARP_DEG"]
+__all__ = ["Cap", "Hole", "find_caps", "find_holes", "surface", "CONE_DEG", "MIN_LOOP", "RIM_SHARE", "SHARP_DEG"]
