@@ -1,0 +1,2006 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CAD Repair AI-Native Roadmap</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17201b;
+      --muted: #59645e;
+      --paper: #f8faf7;
+      --panel: #ffffff;
+      --line: #dbe2dd;
+      --green: #23614b;
+      --lime: #d8e9a8;
+      --teal: #2f7b83;
+      --blue: #345d96;
+      --red: #9d4237;
+      --gold: #a36b15;
+      --shadow: 0 16px 40px rgba(23, 32, 27, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.5;
+    }
+
+    header {
+      padding: 34px clamp(20px, 5vw, 72px) 20px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(120deg, rgba(216, 233, 168, 0.55), rgba(47, 123, 131, 0.08) 45%, rgba(255, 255, 255, 0) 80%),
+        var(--panel);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--green);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 980px;
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 4.35rem);
+      line-height: 0.96;
+      letter-spacing: 0;
+    }
+
+    .lede {
+      max-width: 980px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.7vw, 1.24rem);
+    }
+
+    main {
+      padding: 28px clamp(16px, 4vw, 72px) 56px;
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 10px 0 18px;
+      background: linear-gradient(var(--paper) 76%, rgba(248, 250, 247, 0));
+    }
+
+    .nav button {
+      flex: 0 0 auto;
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 13px;
+      color: var(--ink);
+      background: var(--panel);
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+
+    .nav button[aria-pressed="true"] {
+      color: #fff;
+      border-color: var(--green);
+      background: var(--green);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+      gap: 22px;
+      align-items: start;
+    }
+
+    section,
+    aside,
+    .phase,
+    .source,
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 1px 0 rgba(23, 32, 27, 0.03);
+    }
+
+    section {
+      display: none;
+      padding: clamp(18px, 3vw, 28px);
+    }
+
+    section.active {
+      display: block;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: clamp(1.45rem, 2.4vw, 2.3rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .metric {
+      padding: 15px;
+      min-height: 126px;
+    }
+
+    .metric strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--green);
+      font-size: 0.88rem;
+      text-transform: uppercase;
+    }
+
+    .plan-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .plan-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 15px;
+      background: #fff;
+    }
+
+    .plan-card strong {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--green);
+      font-size: 0.86rem;
+      text-transform: uppercase;
+    }
+
+    .state-flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 18px 0;
+    }
+
+    .state {
+      border: 1px solid rgba(47, 123, 131, 0.28);
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: rgba(47, 123, 131, 0.08);
+      color: #1d4c52;
+      font-size: 0.82rem;
+      font-weight: 780;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+      font-size: 0.92rem;
+    }
+
+    th,
+    td {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--green);
+      background: #f5f8f2;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .phase-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr) minmax(220px, 0.65fr);
+      gap: 16px;
+      padding: 16px;
+      overflow: hidden;
+    }
+
+    .phase-number {
+      display: grid;
+      width: 52px;
+      height: 52px;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--green);
+      font-weight: 850;
+    }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 25px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--muted);
+      background: #fbfcfa;
+      font-size: 0.78rem;
+      font-weight: 720;
+    }
+
+    .tag.ai {
+      color: #1d4c52;
+      border-color: rgba(47, 123, 131, 0.35);
+      background: rgba(47, 123, 131, 0.1);
+    }
+
+    .tag.now {
+      color: #2f5520;
+      border-color: rgba(35, 97, 75, 0.32);
+      background: rgba(216, 233, 168, 0.42);
+    }
+
+    .tag.risk {
+      color: #7a3128;
+      border-color: rgba(157, 66, 55, 0.32);
+      background: rgba(157, 66, 55, 0.08);
+    }
+
+    .phase ul,
+    aside ul,
+    .source ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+
+    .phase li,
+    aside li,
+    .source li {
+      margin: 6px 0;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .source {
+      padding: 16px;
+      min-height: 170px;
+    }
+
+    .source a {
+      color: var(--blue);
+      font-weight: 760;
+      text-decoration: none;
+    }
+
+    .source a:hover {
+      text-decoration: underline;
+    }
+
+    .roadmap {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .roadmap-row {
+      display: grid;
+      grid-template-columns: 145px minmax(0, 1fr) 132px;
+      gap: 12px;
+      align-items: center;
+      padding: 13px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .roadmap-row:last-child {
+      border-bottom: 0;
+    }
+
+    .status {
+      justify-self: start;
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 800;
+      background: var(--teal);
+    }
+
+    .status.later {
+      background: var(--gold);
+    }
+
+    .status.guard {
+      background: var(--red);
+    }
+
+    aside {
+      position: sticky;
+      top: 72px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    aside h2 {
+      font-size: 1.15rem;
+    }
+
+    .callout {
+      margin-top: 14px;
+      border-left: 4px solid var(--green);
+      padding: 12px;
+      background: rgba(216, 233, 168, 0.28);
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .filters button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 10px;
+      background: #fff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .filters button.active {
+      color: #fff;
+      border-color: var(--teal);
+      background: var(--teal);
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 980px) {
+      .layout,
+      .grid,
+      .matrix,
+      .plan-grid {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        position: static;
+      }
+
+      .phase,
+      .roadmap-row {
+        grid-template-columns: 1fr;
+      }
+
+      .phase-number {
+        width: 42px;
+        height: 42px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">CAD repair research artifact</p>
+    <h1>CAD repair has to become a service workflow that fixes geometry, meshes it, and proves the result.</h1>
+    <p class="lede">This map turns the current repair draft and diagnostics slice into an implementation-oriented service plan. The goal is not inspection for its own sake; it is a repeatable operator workflow that gets customer CAD repaired, meshed, validated, and delivered.</p>
+  </header>
+
+  <main>
+    <nav class="nav" aria-label="Artifact sections">
+      <button type="button" aria-pressed="true" data-tab="baseline">Operating Model</button>
+      <button type="button" aria-pressed="false" data-tab="phases">Service Phases</button>
+      <button type="button" aria-pressed="false" data-tab="integration">Integration</button>
+      <button type="button" aria-pressed="false" data-tab="system">System Design</button>
+      <button type="button" aria-pressed="false" data-tab="roadmap">Build Plan</button>
+      <button type="button" aria-pressed="false" data-tab="testing">Test Pipeline</button>
+      <button type="button" aria-pressed="false" data-tab="ai">AI Work</button>
+      <button type="button" aria-pressed="false" data-tab="sources">Research</button>
+    </nav>
+
+    <div class="layout">
+      <div>
+        <section id="baseline" class="active">
+          <h2>Operating model</h2>
+          <p>The company should run CAD repair as a service operation with software-enforced evidence. The customer submits geometry and desired mesh intent; the internal system creates a repair job, routes it through automated and operator steps, generates a mesh, and delivers a bundle that explains what changed and why it is acceptable.</p>
+          <p class="muted">The current diagnostics-only package under <code>meshpipeline.cad.repair</code> is the intake instrument. It should become the first state in a repair-to-mesh job, not a terminal product.</p>
+
+          <div class="grid">
+            <div class="metric">
+              <strong>Service promise</strong>
+              <p>Return one of three outcomes: delivered mesh, delivered repair-only artifact with explanation, or blocked job with a precise customer/operator action.</p>
+            </div>
+            <div class="metric">
+              <strong>Primary workflow</strong>
+              <p>Upload, interpret units, inspect defects, choose strategy, repair, validate, stage, mesh, review, package, and deliver.</p>
+            </div>
+            <div class="metric">
+              <strong>Operator role</strong>
+              <p>Operators handle exceptions, approve risky repairs, run manual CAD cleanup when needed, and annotate decisions that can train later automation.</p>
+            </div>
+            <div class="metric">
+              <strong>Automation role</strong>
+              <p>Deterministic tools perform geometry changes and meshing. AI routes work, drafts repair plans, explains evidence, and learns from operator decisions.</p>
+            </div>
+          </div>
+
+          <div class="state-flow" aria-label="Service job states">
+            <span class="state">uploaded</span>
+            <span class="state">interpreted</span>
+            <span class="state">inspected</span>
+            <span class="state">strategy_selected</span>
+            <span class="state">repairing</span>
+            <span class="state">repair_review</span>
+            <span class="state">staging_check</span>
+            <span class="state">meshing</span>
+            <span class="state">mesh_review</span>
+            <span class="state">delivered</span>
+          </div>
+
+          <div class="callout">
+            <strong>Commercial contract:</strong> the product being sold is not "best effort CAD healing." It is a service commitment with scoped inputs, SLA tier, acceptance evidence, rework allowance, explicit exclusions, and a priced decision point when the job moves from automated repair into operator or customer-dependent work.
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Contract area</th>
+                  <th>Minimum rule</th>
+                  <th>Why it matters</th>
+                  <th>System field / artifact</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Scope</td>
+                  <td>Each job declares desired output: mesh delivery, repair-only delivery, inspection-only, or customer blocker.</td>
+                  <td>Prevents the system from over-repairing when the service only owes evidence or a mesh-ready route.</td>
+                  <td><code>service_scope</code>, <code>target_output</code>, quote line item.</td>
+                </tr>
+                <tr>
+                  <td>Acceptance</td>
+                  <td>Delivery requires immutable artifact ids, hashes, mesh-quality evidence, repair caveats, and reviewer approval.</td>
+                  <td>Makes customer success auditable and supportable after the job closes.</td>
+                  <td><code>delivery_bundle_id</code>, manifest, final result.</td>
+                </tr>
+                <tr>
+                  <td>Rework</td>
+                  <td>Service tier defines included retries and when customer CAD, intent, or approval is required.</td>
+                  <td>Stops indefinite repair loops and sets a clean commercial boundary.</td>
+                  <td><code>rework_budget</code>, <code>waiting_customer</code> task.</td>
+                </tr>
+                <tr>
+                  <td>Exclusions</td>
+                  <td>Unsupported formats, missing physics intent, design-changing defeaturing, and licensed-data restrictions are explicit blockers.</td>
+                  <td>Protects operators from making unapproved engineering design decisions.</td>
+                  <td>Blocker code, operator note, customer message.</td>
+                </tr>
+                <tr>
+                  <td>Data governance</td>
+                  <td>Training consent, retention, deletion, license class, and access audit are recorded per source and derived artifact.</td>
+                  <td>Separates production support evidence from model-training data.</td>
+                  <td><code>training_consent</code>, retention policy, access log.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Required job state</th>
+                  <th>Entered when</th>
+                  <th>Owner</th>
+                  <th>Exit condition</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>waiting_customer</code></td>
+                  <td>Missing units, intent, revised CAD, approval, or commercial re-quote.</td>
+                  <td>Customer success / customer</td>
+                  <td>Response received, deadline expires, or job is canceled.</td>
+                </tr>
+                <tr>
+                  <td><code>manual_cleanup</code></td>
+                  <td>Automatic repair would delete features, inflate tolerances, or require CAD-tool judgment.</td>
+                  <td>Operator</td>
+                  <td>Manual artifact checked in with tool/version, notes, and after-checks.</td>
+                </tr>
+                <tr>
+                  <td><code>escalated</code></td>
+                  <td>High-value job, disputed result, repeated repair failure, or safety/intent ambiguity.</td>
+                  <td>Lead operator</td>
+                  <td>Second review records approve, block, rework, or customer decision.</td>
+                </tr>
+                <tr>
+                  <td><code>retrying</code></td>
+                  <td>Transient service failure or bounded alternate strategy is available.</td>
+                  <td>System</td>
+                  <td>Attempt succeeds, retry budget ends, or error becomes non-retryable.</td>
+                </tr>
+                <tr>
+                  <td><code>dead_lettered</code></td>
+                  <td>Worker, storage, kernel, or mesh execution repeatedly fails without customer fault.</td>
+                  <td>Engineering</td>
+                  <td>Incident resolved and job is replayed or service failure is delivered.</td>
+                </tr>
+                <tr>
+                  <td><code>delivery_disputed</code></td>
+                  <td>Customer reopens because artifact, mesh, or caveat does not match accepted scope.</td>
+                  <td>Support / lead operator</td>
+                  <td>Evidence confirms delivery, rework is accepted, or refund/escalation path closes.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>Definition of done</strong>
+              <p>A job is done only when the customer can download the mesh bundle or when the operator has sent a precise blocker with supporting evidence.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Evidence bundle</strong>
+              <p>Original source identity, unit basis, defect report, repair plan, changed artifact identity, after-checks, mesh quality summary, and operator notes.</p>
+            </div>
+            <div class="plan-card">
+              <strong>First commercial slice</strong>
+              <p>Internal operator queue plus conservative automatic repair for STEP/IGES, followed by existing engine staging and mesh execution.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Approval point</th>
+                  <th>Automatic allowed when</th>
+                  <th>Operator required when</th>
+                  <th>Peer review required when</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Repair strategy</td>
+                  <td>Known defect class, bounded operation, no design-intent ambiguity.</td>
+                  <td>Any deletion, defeaturing, missing customer intent, or over-cap tolerance proposal.</td>
+                  <td>High-value customer, repeated failure, or delivery caveat affects analysis use.</td>
+                </tr>
+                <tr>
+                  <td>Effective geometry</td>
+                  <td>After-check, deviation, topology map, and staging all improve or remain inside caps.</td>
+                  <td>Named regions changed, associations missing, or staging result is ambiguous.</td>
+                  <td>Manual cleanup artifact becomes customer-visible source for delivery.</td>
+                </tr>
+                <tr>
+                  <td>Customer delivery</td>
+                  <td>Bundle is complete, reviewer passed, scope matched, and no unresolved caveats exist.</td>
+                  <td>Repair-only delivery, blocked delivery, caveat acceptance, or rework decision.</td>
+                  <td>Dispute, refund risk, or customer asks for engineering interpretation beyond scope.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="phases">
+          <h2>Repair-to-mesh service phases</h2>
+          <p>Each phase should move a customer job toward delivery. If a phase cannot advance automatically, it should create a precise operator task rather than leaving the job as a vague failure.</p>
+
+          <div class="filters" aria-label="Phase filter">
+            <button type="button" class="active" data-filter="all">All</button>
+            <button type="button" data-filter="now">Now</button>
+            <button type="button" data-filter="ai">AI-native</button>
+            <button type="button" data-filter="risk">High-risk</button>
+          </div>
+
+          <div class="phase-list">
+            <article class="phase" data-kind="now ai">
+              <div class="phase-number">1</div>
+              <div>
+                <h3>Identity and interpretation</h3>
+                <p>Freeze source id, hash, suffix, size, unit basis, and materialized path before repair sees the file.</p>
+                <div class="tags"><span class="tag now">implemented basis</span><span class="tag ai">AI can explain unit risk</span></div>
+              </div>
+              <ul>
+                <li>Never infer units inside repair.</li>
+                <li>Repair output becomes a new source only by explicit product action.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="now ai">
+              <div class="phase-number">2</div>
+              <div>
+                <h3>Format-specific inspection</h3>
+                <p>Run B-rep inspection for STEP/IGES and triangle-surface inspection for STL/VTP. Keep the taxonomy stable so operators see the same defect language across jobs.</p>
+                <div class="tags"><span class="tag now">slice 1 exists</span><span class="tag ai">AI triage labels</span></div>
+              </div>
+              <ul>
+                <li>B-rep: validity, entity counts, invalid/no-face outcomes.</li>
+                <li>Surface: duplicate, degenerate, boundary, and non-manifold metrics.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="ai">
+              <div class="phase-number">3</div>
+              <div>
+                <h3>Failure localization</h3>
+                <p>Attach defect locations, affected entities, screenshots, and small repro extracts so operators know what to fix and what to ignore.</p>
+                <div class="tags"><span class="tag ai">AI-native evidence clustering</span></div>
+              </div>
+              <ul>
+                <li>Cluster repeated defects by region and entity type.</li>
+                <li>Generate concise repair rationale from structured facts.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="ai">
+              <div class="phase-number">4</div>
+              <div>
+                <h3>Repair strategy selection</h3>
+                <p>Choose conservative, mesh-ready, or manual-review strategy from measured defects, model scale, engine target, service SLA, and user intent.</p>
+                <div class="tags"><span class="tag ai">AI-native classifier</span></div>
+              </div>
+              <ul>
+                <li>AI recommends the job path; deterministic gates enforce caps.</li>
+                <li>Create an operator task when deletion or defeaturing could alter design intent.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="risk">
+              <div class="phase-number">5</div>
+              <div>
+                <h3>Conservative kernel repair</h3>
+                <p>Use bounded OpenCASCADE operations for B-rep wire/order/gap/tolerance/sewing fixes. Save repaired output separately and reject over-cap deviation.</p>
+                <div class="tags"><span class="tag risk">geometry mutation</span></div>
+              </div>
+              <ul>
+                <li>No feature deletion in the first automatic repair mode.</li>
+                <li>Record geometry, topology, and tolerance deltas for operator/customer review.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="risk ai">
+              <div class="phase-number">6</div>
+              <div>
+                <h3>Surface repair path</h3>
+                <p>Use a service-gated triangle repair path for STL/VTP jobs where CAD-source repair is unavailable. Treat CGAL-style repair as the reference behavior while packaging is decided.</p>
+                <div class="tags"><span class="tag risk">dependency decision</span><span class="tag ai">repair recipe ranking</span></div>
+              </div>
+              <ul>
+                <li>Candidate operations: orient, stitch, remove duplicates, fill holes, split intersections.</li>
+                <li>Keep exactness and snap-rounding behavior visible in reports.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="now ai">
+              <div class="phase-number">7</div>
+              <div>
+                <h3>After-check and engine admission</h3>
+                <p>Re-run validity, deviation, region preservation, staging, and engine admission against the effective geometry before spending mesh time.</p>
+                <div class="tags"><span class="tag now">engine gates already exist</span><span class="tag ai">failure prediction</span></div>
+              </div>
+              <ul>
+                <li>A green repair is not enough; downstream staging must improve.</li>
+                <li>AI can predict likely engine success before expensive runs.</li>
+              </ul>
+            </article>
+
+            <article class="phase" data-kind="now ai">
+              <div class="phase-number">8</div>
+              <div>
+                <h3>Mesh, review, and deliver</h3>
+                <p>Run the selected meshing engine, review mesh quality, package repaired geometry and mesh artifacts, and produce customer-facing evidence.</p>
+                <div class="tags"><span class="tag now">core mesh pipeline exists</span><span class="tag ai">review summarization</span></div>
+              </div>
+              <ul>
+                <li>Delivery is the acceptance state, not "repair attempted".</li>
+                <li>Operator review should focus on exceptions, quality failures, and customer-risk decisions.</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="integration">
+          <h2>How it connects to the existing mesher</h2>
+          <p>CAD repair should not become a second pipeline. It should become the missing geometry-preparation layer between verified execution geometry and the existing engine admission/build/review loop. The current mesher already has the right seams: deterministic engine selection, metre-normalized staging, engine-owned admission, Cloud Run mesh execution, artifact delivery, and final-result truth.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Existing seam</th>
+                  <th>Current responsibility</th>
+                  <th>Repair integration</th>
+                  <th>Invariant</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>geometry_check</code></td>
+                  <td>Measures and pictures uploads, then proposes names/openings for user confirmation.</td>
+                  <td>Feeds repair intake with geometry facts, screenshots, orientation/opening hints, and user-confirmed semantics.</td>
+                  <td>Still proposes; it does not silently decide design intent.</td>
+                </tr>
+                <tr>
+                  <td><code>engine_select</code></td>
+                  <td>Resolves the selected/default engine and logs selection/ladder evidence.</td>
+                  <td>Repair strategy uses selected engine and fallback ladder to decide whether to repair for snappy/cfMesh/Gmsh/VMTK or ask for a different route.</td>
+                  <td>Repair may recommend alternate engine, but engine selection remains explicit and logged.</td>
+                </tr>
+                <tr>
+                  <td><code>cad.staging.prepare_surface</code></td>
+                  <td>Turns verified geometry into metre-normalized staged surface without reinterpreting units.</td>
+                  <td>Repair writes an effective geometry handle; staging consumes either original or repaired bytes through the same path.</td>
+                  <td>No unit guessing and no original-source overwrite.</td>
+                </tr>
+                <tr>
+                  <td><code>geometry_admission</code></td>
+                  <td>Measures staged surface and calls the same <code>EngineSpec.admit</code> with declared plus measured evidence.</td>
+                  <td>Moves after repair in the graph. Admission failure becomes structured repair feedback rather than a terminal mystery.</td>
+                  <td>Admission remains the engine contract gate; repair cannot bypass it.</td>
+                </tr>
+                <tr>
+                  <td><code>EngineSpec.admit</code></td>
+                  <td>Rejects impossible declared/measured requests for a specific engine.</td>
+                  <td>Repair reads rejection codes to choose whether to repair geometry, change strategy, change engine, or block.</td>
+                  <td>Engine capability claims do not change because repair exists.</td>
+                </tr>
+                <tr>
+                  <td><code>run_mesh</code> / Cloud Run mesh job</td>
+                  <td>Runs the native mesher out-of-process through GCS workspace exchange.</td>
+                  <td>Repair-to-mesh E2E proves repaired geometry reaches the same remote mesh boundary and produces the same artifact classes.</td>
+                  <td>No local fallback and no hidden native path in the API/worker image.</td>
+                </tr>
+                <tr>
+                  <td>Reviewer and artifact delivery</td>
+                  <td>Reviewer verdict, required artifact upload, final result, and user message determine terminal truth.</td>
+                  <td>Delivery evidence adds repair lineage and changed-geometry facts beside mesh quality and reviewer pass/fail.</td>
+                  <td>No customer-visible success without delivered artifacts and verified final result.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="state-flow" aria-label="Integrated graph order">
+            <span class="state">upload</span>
+            <span class="state">unit interpretation</span>
+            <span class="state">materialized geometry</span>
+            <span class="state">repair inspect</span>
+            <span class="state">repair/strategy loop</span>
+            <span class="state">effective geometry</span>
+            <span class="state">engine admission</span>
+            <span class="state">builder</span>
+            <span class="state">Cloud Run mesh</span>
+            <span class="state">reviewer</span>
+            <span class="state">delivery</span>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Concrete answer</th>
+                  <th>Data it needs</th>
+                  <th>Failure behavior</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>How does repair decide whether to run?</td>
+                  <td>Every mesh-intended upload gets inspect. Repair mode runs only when defects, admission failures, operator decision, or strategy policy says it is useful.</td>
+                  <td>Repair report, engine, purpose, input kind, surface analysis, geometry-check facts, service priority.</td>
+                  <td>Clean geometry passes through. Inconclusive inspection creates a service failure or operator task, not a fake repair.</td>
+                </tr>
+                <tr>
+                  <td>How does repaired CAD become what the mesher sees?</td>
+                  <td>A repaired artifact becomes <code>effective_geometry</code> for one run after safety gates pass. <code>source_geometry</code> keeps original lineage.</td>
+                  <td>Original source ref, repaired storage key, output hash, interpretation id, repair attempt id, deviation report.</td>
+                  <td>If after-check or staging fails, fall back to original/alternate strategy or operator review.</td>
+                </tr>
+                <tr>
+                  <td>How do repair and engine fallback play off each other?</td>
+                  <td>Repair first tries to make the chosen engine's contract true. If the issue is engine-mechanical rather than CAD-corrupt, the fallback ladder can propose a different engine instead of over-repairing.</td>
+                  <td>Engine rejection phase/code, fallback ladder, delivered mesh equivalence, purpose requirements.</td>
+                  <td>Do not mutate CAD just to satisfy an engine that is the wrong tool.</td>
+                </tr>
+                <tr>
+                  <td>How does repair improve builder quality?</td>
+                  <td>Builder starts from geometry that already passed repair/admission gates, with explicit defect and region evidence in state rather than rediscovering defects via failures.</td>
+                  <td>Repair report, defect clusters, region map, chosen strategy, engine staging report.</td>
+                  <td>Builder cannot ignore repair warnings; they are part of state and final provenance.</td>
+                </tr>
+                <tr>
+                  <td>How is AI-native learning closed-loop?</td>
+                  <td>Capture engine selection, repair attempts, admission rejects, mesh outcomes, reviewer findings, operator decisions, and delivery status into one training ledger.</td>
+                  <td>Existing <code>TrainingLogger</code> events plus repair attempts, operator tasks, artifact lineage, mesh quality metrics.</td>
+                  <td>AI starts in shadow mode; recommendations are compared to actual operator/outcome decisions before automation authority increases.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>State contract additions</strong>
+              <p>Do not add <code>effective_geometry</code> casually. The current state contract has one authoritative <code>geometry</code>. First implementation should either replace <code>geometry</code> only after approval and record lineage, or explicitly update every consumer to choose an effective geometry handle.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Graph insertion</strong>
+              <p>Insert repair inspect/strategy after materialized geometry and before geometry admission. Repair mutation can remain disabled until later slices; dispute and first-review bypass routes must keep their current short-circuit behavior.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Feedback channels</strong>
+              <p>Admission rejects, builder failures, Cloud Run mesh logs, reviewer verdicts, and artifact delivery failures all become repair-learning events, not just terminal messages.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Repo contract</th>
+                  <th>Current fact</th>
+                  <th>Repair requirement</th>
+                  <th>Build decision</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Geometry state</td>
+                  <td><code>PipelineState.geometry</code> is the single geometry handle, and materialization helpers read that field.</td>
+                  <td>Repaired bytes must become mesh input without losing original source identity.</td>
+                  <td>Preferred slice: keep one active <code>geometry</code>, write an immutable <code>source_geometry_lineage</code> / repair attempt record, and bump <code>STATE_SCHEMA_VERSION</code>. Only add <code>effective_geometry</code> after all consumers are updated.</td>
+                </tr>
+                <tr>
+                  <td>Staging vs admission</td>
+                  <td><code>prepare_surface()</code> preserves unit/coordinate interpretation and can fail before engine admission.</td>
+                  <td>Repair must know whether the failure is conversion/staging, measured geometry, or declared engine setup.</td>
+                  <td>Record distinct phases: <code>staging_failed</code>, <code>admission_declared_rejected</code>, <code>admission_measured_rejected</code>. Only measured geometry defects automatically enter repair.</td>
+                </tr>
+                <tr>
+                  <td>Engine ownership</td>
+                  <td><code>EngineSpec.admit()</code> owns declared and measured engine feasibility.</td>
+                  <td>Repair can recommend a route, but cannot weaken engine contracts or hide partial capabilities.</td>
+                  <td>Engine changes must go through explicit engine fallback/operator transition. Repair output returns to the same admission gate.</td>
+                </tr>
+                <tr>
+                  <td>Artifact policy</td>
+                  <td>Current upload plans are engine-declared around mesh, mesh bundle, and viewer data.</td>
+                  <td>Repair reports, repaired CAD, topology maps, and delivery evidence need first-class artifact classes.</td>
+                  <td>Add repair artifact kinds and required/optional policy before exposing repair delivery. Bump final-result contract when terminal output includes repair lineage.</td>
+                </tr>
+                <tr>
+                  <td>Terminal result</td>
+                  <td>Success is currently mesh-centric.</td>
+                  <td>Service may need mesh delivered, repair-only delivered, blocked-with-evidence, or service failure.</td>
+                  <td>Design explicit terminal modes such as <code>mesh_delivered</code>, <code>repair_delivered</code>, <code>customer_blocked</code>, and <code>service_failed</code>; do not fake a mesh success.</td>
+                </tr>
+                <tr>
+                  <td>Route after repair</td>
+                  <td>Current graph routes admission, builder, review, and dispute decisions separately.</td>
+                  <td>Repair failures should not collapse every outcome into the same terminal error.</td>
+                  <td>Add a <code>route_after_repair</code> decision with explicit destinations: retry, manual cleanup, alternate engine, admission, customer blocker, service failure.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Failure class</th>
+                  <th>Examples</th>
+                  <th>Default owner</th>
+                  <th>Retry / billing rule</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>customer_input</code></td>
+                  <td>Unsupported format, missing units, corrupt upload, missing physics intent.</td>
+                  <td>Customer success</td>
+                  <td>Wait for customer; do not burn repair retries.</td>
+                </tr>
+                <tr>
+                  <td><code>measured_geometry_defect</code></td>
+                  <td>Small gap, invalid wire, non-manifold surface, duplicate faces.</td>
+                  <td>Repair service</td>
+                  <td>Consumes repair attempt budget; billable if within service scope.</td>
+                </tr>
+                <tr>
+                  <td><code>declared_engine_mismatch</code></td>
+                  <td>Patch setup, symmetry, ground plane, dimensionality, incompatible purpose.</td>
+                  <td>Setup/operator</td>
+                  <td>Route to setup or engine fallback, not CAD mutation.</td>
+                </tr>
+                <tr>
+                  <td><code>intent_risk</code></td>
+                  <td>Feature deletion, large tolerance inflation, region/name loss, defeaturing.</td>
+                  <td>Operator</td>
+                  <td>Requires approval; billable manual cleanup or re-quote.</td>
+                </tr>
+                <tr>
+                  <td><code>service_infra</code></td>
+                  <td>Storage, queue, worker, kernel crash, Cloud Run mesh failure.</td>
+                  <td>Engineering</td>
+                  <td>Retry or incident; customer message must not blame CAD.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="system">
+          <h2>System design</h2>
+          <p>The plan needs one shared repair service, not separate implementations for product, operator tooling, and meshing. Every caller should create or attach to the same repair job and read the same evidence model.</p>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>Repair job service</strong>
+              <p>Owns job state, source identity, strategy, attempts, operator tasks, artifacts, status transitions, and customer-visible summaries.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Repair executor</strong>
+              <p>Runs inspect, OpenCASCADE repair, surface repair, deviation checks, and after-checks. It never overwrites source geometry.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Meshing handoff</strong>
+              <p>Receives only validated effective geometry. If repair output fails staging, the system returns to repair review instead of burning mesh capacity.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Operator console</strong>
+              <p>Shows queue priority, defect evidence, suggested strategy, repair attempts, before/after checks, mesh quality, and delivery actions.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Delivery packager</strong>
+              <p>Builds a final bundle: repaired CAD when present, mesh artifacts, repair report, mesh quality report, screenshots, and operator notes.</p>
+            </div>
+            <div class="plan-card">
+              <strong>AI assistant</strong>
+              <p>Produces recommendations and summaries, but all state transitions that mutate geometry or deliver output require deterministic evidence.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Record</th>
+                  <th>Purpose</th>
+                  <th>Required fields</th>
+                  <th>Why it matters</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>cad_repair_jobs</code></td>
+                  <td>One customer service job from intake to delivery.</td>
+                  <td>Owner, source id, interpretation id, status, target engine, service priority, customer intent, current strategy.</td>
+                  <td>Gives operators and automation one durable object to coordinate around.</td>
+                </tr>
+                <tr>
+                  <td><code>cad_repair_attempts</code></td>
+                  <td>Every inspect or repair execution.</td>
+                  <td>Mode, profile, tool version, input hash, output hash, report JSON, tolerance caps, before/after measurements.</td>
+                  <td>Makes retries auditable and prevents silent source replacement.</td>
+                </tr>
+                <tr>
+                  <td><code>operator_tasks</code></td>
+                  <td>Human review and manual cleanup work.</td>
+                  <td>Reason, severity, assigned operator, due time, suggested action, decision, notes, attached artifacts.</td>
+                  <td>Turns ambiguous geometry failures into work that can be managed and learned from.</td>
+                </tr>
+                <tr>
+                  <td><code>repair_artifacts</code></td>
+                  <td>All downloadable and internal files.</td>
+                  <td>Kind, storage key, sha256, size, producer attempt id, source lineage, customer-visible flag.</td>
+                  <td>Separates original, repaired, mesh, screenshot, and report artifacts cleanly.</td>
+                </tr>
+                <tr>
+                  <td><code>delivery_evidence</code></td>
+                  <td>Final acceptance material.</td>
+                  <td>Repair summary, mesh quality metrics, reviewer decision, blocked reason, customer message, delivered artifact list.</td>
+                  <td>Creates the customer-facing proof that the service did real work.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Gate</th>
+                  <th>Pass condition</th>
+                  <th>Fail action</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Source integrity</td>
+                  <td>Input hash, suffix, size, owner, and unit interpretation are fixed.</td>
+                  <td>Block as intake problem.</td>
+                  <td>Source reference and unit basis.</td>
+                </tr>
+                <tr>
+                  <td>Repair safety</td>
+                  <td>Deviation and tolerance changes remain inside the selected strategy caps.</td>
+                  <td>Route to operator review or manual cleanup.</td>
+                  <td>Before/after metrics and changed topology report.</td>
+                </tr>
+                <tr>
+                  <td>Region preservation</td>
+                  <td>Named regions, boundary intent, and material regions survive or are mapped explicitly.</td>
+                  <td>Block automatic mesh handoff.</td>
+                  <td>Region diff and operator decision.</td>
+                </tr>
+                <tr>
+                  <td>Engine staging</td>
+                  <td>Chosen engine can stage the effective geometry without admission errors.</td>
+                  <td>Try alternate strategy or engine, then operator review.</td>
+                  <td>Staging report and engine diagnostics.</td>
+                </tr>
+                <tr>
+                  <td>Mesh quality</td>
+                  <td>Mesh is generated, downloadable, and passes service-defined quality thresholds.</td>
+                  <td>Re-run with adjusted strategy or assign operator review.</td>
+                  <td>Mesh manifest, quality metrics, screenshots.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Operator action</th>
+                  <th>Screen must show</th>
+                  <th>Allowed decisions</th>
+                  <th>Automation follow-up</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Accept job</td>
+                  <td>Customer intent, original file, unit basis, target engine, inspection summary, priority.</td>
+                  <td>Accept, ask customer for new CAD, request missing intent.</td>
+                  <td>Create repair strategy candidate or customer blocker.</td>
+                </tr>
+                <tr>
+                  <td>Choose repair strategy</td>
+                  <td>Defect clusters, likely meshing impact, suggested operations, risk caps.</td>
+                  <td>Auto conservative, manual cleanup, mesh original, alternate engine, block.</td>
+                  <td>Run selected repair/mesh path and record decision.</td>
+                </tr>
+                <tr>
+                  <td>Review repair</td>
+                  <td>Before/after validity, topology delta, tolerance delta, region preservation, visual diff.</td>
+                  <td>Approve for staging, retry with notes, reject repair, assign manual cleanup.</td>
+                  <td>Run engine staging or create next operator task.</td>
+                </tr>
+                <tr>
+                  <td>Review mesh</td>
+                  <td>Mesh manifest, cell count, quality metrics, screenshots, engine logs, repair lineage.</td>
+                  <td>Deliver, remesh, change strategy, mark blocked, escalate.</td>
+                  <td>Package artifacts or return to repair/mesh queue.</td>
+                </tr>
+                <tr>
+                  <td>Deliver job</td>
+                  <td>Final artifact list, customer summary, caveats, reviewer identity, immutable evidence.</td>
+                  <td>Send delivery, hold for second review, request customer approval.</td>
+                  <td>Freeze delivery bundle and update service metrics.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>Bad CAD</strong>
+              <p>The geometry is objectively defective or not safely repairable. The customer-facing result says what to change or what service path remains.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Service failure</strong>
+              <p>Storage, kernel, queue, worker, or mesh infrastructure failed. Do not describe this as the customer's geometry problem.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Engineering judgment</strong>
+              <p>The geometry can be changed, but the change may alter intent. Assign an operator task and record the decision, not an automatic fix.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="ai">
+          <h2>AI-native service surfaces worth building</h2>
+          <p>AI-native here means a workflow that learns from geometry, repair outcomes, operator choices, mesh quality, and delivery results while deterministic components perform exact geometry mutation and meshing.</p>
+
+          <div class="matrix">
+            <div class="source">
+              <h3>Job triage classifier</h3>
+              <p>Inputs: repair report, scout metrics, engine target, user intent, SLA, historical repair outcomes.</p>
+              <ul>
+                <li>Predict auto-fix, operator-fix, remesh-only, or request-new-CAD.</li>
+                <li>Rank defect families by likely meshing impact.</li>
+              </ul>
+            </div>
+            <div class="source">
+              <h3>Repair-and-mesh planner</h3>
+              <p>Inputs: defect clusters, model scale, tolerance cap, target engine, available kernel operations, and mesh quality target.</p>
+              <ul>
+                <li>Propose a bounded operation sequence and engine path.</li>
+                <li>Emit a plan that can be replayed deterministically.</li>
+              </ul>
+            </div>
+            <div class="source">
+              <h3>Delivery narrator</h3>
+              <p>Inputs: before/after measurements, changed topology, preserved named regions, staging result.</p>
+              <ul>
+                <li>Explain what changed, what was meshed, and what remains risky.</li>
+                <li>Make downloadable reports useful to customers and operators.</li>
+              </ul>
+            </div>
+            <div class="source">
+              <h3>Workflow learner</h3>
+              <p>Inputs: repair job corpus, user approvals, engine failures, final mesh quality, operator overrides.</p>
+              <ul>
+                <li>Improve policy defaults by geometry family.</li>
+                <li>Detect when a model should skip repair and ask for CAD-side redesign.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>Boundary:</strong> AI can drive the service workflow, but customer-deliverable geometry and meshes must come from deterministic executors with tolerance caps, source identity, before/after validation, and mesh-quality evidence.
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>AI capability</th>
+                  <th>Training signal</th>
+                  <th>Output</th>
+                  <th>Hard guardrail</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Job triage</td>
+                  <td>Inspection reports, final job outcomes, operator strategy choices, mesh success/failure.</td>
+                  <td>Recommended route: auto repair, operator repair, mesh original, request new CAD.</td>
+                  <td>Recommendation only; job state changes are explicit events.</td>
+                </tr>
+                <tr>
+                  <td>Repair planning</td>
+                  <td>Defect clusters, repair attempts, before/after metrics, accepted/rejected operator decisions.</td>
+                  <td>Ordered repair recipe with caps and expected risks.</td>
+                  <td>Executor validates every operation and rejects over-cap output.</td>
+                </tr>
+                <tr>
+                  <td>Mesh-risk prediction</td>
+                  <td>Geometry admission results, engine staging logs, mesh quality results, runtime failures.</td>
+                  <td>Likely engine path and estimated failure modes.</td>
+                  <td>Engine admission remains authoritative.</td>
+                </tr>
+                <tr>
+                  <td>Operator note drafting</td>
+                  <td>Structured report, screenshots, operator decision, delivery artifacts.</td>
+                  <td>Internal note and customer-readable summary.</td>
+                  <td>Human review required for customer-facing delivery text.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>AI-native layer</th>
+                  <th>Role</th>
+                  <th>Inputs from Hexera</th>
+                  <th>Executor / authority</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Perception</td>
+                  <td>Turn raw CAD, staged surfaces, screenshots, scout facts, and engine evidence into defect clusters and semantic regions.</td>
+                  <td>Repair reports, geometry-check snapshots, <code>surface_analysis</code>, region maps, intake patches, manifest facts.</td>
+                  <td>AI may label and cluster; exact measurements come from CAD/scout/staging tools.</td>
+                </tr>
+                <tr>
+                  <td>Planning</td>
+                  <td>Choose a candidate route: no repair, conservative B-rep repair, surface repair, alternate engine, manual cleanup, or customer blocker.</td>
+                  <td>Engine selection evidence, fallback ladder, purpose, input kind, defect clusters, service priority.</td>
+                  <td>AI proposes; repair job service records explicit operator/system decision.</td>
+                </tr>
+                <tr>
+                  <td>Execution</td>
+                  <td>Run bounded operations: ShapeFix/Sewing, Gmsh cross-check, surface repair, staging, mesh job.</td>
+                  <td>Approved recipe, tolerance caps, source/effective geometry handles, target engine.</td>
+                  <td>Deterministic executors only. AI cannot directly modify deliverable CAD or mesh.</td>
+                </tr>
+                <tr>
+                  <td>Critique</td>
+                  <td>Compare before/after geometry, admission result, mesh quality, reviewer evidence, and customer delivery risk.</td>
+                  <td>After-checks, topology/tolerance deltas, engine logs, reviewer verdict, artifact readiness.</td>
+                  <td>Deterministic gates decide pass/fail; AI summarizes and suggests next action.</td>
+                </tr>
+                <tr>
+                  <td>Memory</td>
+                  <td>Learn which geometry families, defect clusters, operations, engines, and operators lead to delivered meshes.</td>
+                  <td>TrainingLogger events, repair attempts, operator tasks, mesh quality, final result, delivery status.</td>
+                  <td>Offline/shadow evaluation first; promotion requires corpus regression improvement.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>Why this is AI-native</strong>
+              <p>The system is organized around a learning loop: perceive geometry, plan bounded actions, execute exact tools, critique downstream results, and feed outcomes back into routing.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Why this is not an AI CAD editor</strong>
+              <p>AI never owns geometry truth. It manipulates plans, labels, summaries, and recommendations. Exact repair and meshing remain replayable tool executions.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Promotion ladder</strong>
+              <p>Shadow recommendations, operator-visible suggestions, one-click operator approval, policy-controlled auto-route, then auto-execute only for fixtures/corpus classes with passing regressions.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Promotion gate</th>
+                  <th>Required evidence</th>
+                  <th>Blocker</th>
+                  <th>Rollback trigger</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Shadow to visible suggestion</td>
+                  <td>Fixed corpus shows recommendation agreement with operator route above the selected threshold, with calibrated confidence and abstentions.</td>
+                  <td>High-confidence wrong route on any must-block fixture.</td>
+                  <td>Operator rejection rate rises above baseline for the same defect family.</td>
+                </tr>
+                <tr>
+                  <td>Visible suggestion to one-click approval</td>
+                  <td>Delivery-rate improvement without mesh-quality regression, geometry-deviation regression, or increase in manual cleanup time.</td>
+                  <td>Suggested route hides a declared engine mismatch as a geometry repair.</td>
+                  <td>Customer blocker, reopened job, or peer review finds misleading rationale.</td>
+                </tr>
+                <tr>
+                  <td>One-click approval to policy auto-route</td>
+                  <td>Canary cohort passes corpus replay, live operator audit, artifact completeness, and cost-per-delivered-job target.</td>
+                  <td>False auto-repair above the agreed ceiling or confidence not monotonic with success.</td>
+                  <td>Any delivery dispute caused by AI route choice disables that policy version.</td>
+                </tr>
+                <tr>
+                  <td>Auto-route to auto-execute</td>
+                  <td>Only for fixture-backed defect classes where deterministic executors, after-checks, topology maps, staging, and mesh review all pass.</td>
+                  <td>Any design-intent operation: deletion, defeaturing, region loss, large tolerance inflation.</td>
+                  <td>Any over-cap mutation, mesh-quality regression, or missing lineage artifact.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>AI-native record</th>
+                  <th>Fields</th>
+                  <th>Rule</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>defect_cluster</code></td>
+                  <td>Defect family, affected B-rep/surface entity ids, measured facts, screenshots, confidence, evidence source.</td>
+                  <td>Use conservative names; do not call a cluster semantic unless customer intent, CAD names, material/boundary labels, or operator annotation supports it.</td>
+                </tr>
+                <tr>
+                  <td><code>repair_recipe</code></td>
+                  <td>Operation sequence, tool, version, parameter caps, expected risk, abstain reason, required approvals.</td>
+                  <td>AI may draft the recipe, but deterministic executors validate and materialize it.</td>
+                </tr>
+                <tr>
+                  <td><code>topology_map</code></td>
+                  <td>Original face/edge/vertex id, repaired entity id, deleted/split/merged marker, confidence, validation status.</td>
+                  <td>Required before repaired CAD can feed meshing when named regions, loads, materials, or boundary patches matter.</td>
+                </tr>
+                <tr>
+                  <td><code>mesh_associativity_map</code></td>
+                  <td>Repaired entity id, mesh group/patch/cell-zone id, source region, preservation status.</td>
+                  <td>Required before delivery claims region preservation or patch identity.</td>
+                </tr>
+                <tr>
+                  <td><code>model_eval_run</code></td>
+                  <td>Model/prompt/policy version, corpus version, live canary cohort, metrics, failures, approval decision.</td>
+                  <td>No AI policy promotion without replayable eval lineage and rollback pointer.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="testing">
+          <h2>Full test pipeline</h2>
+          <p>The repair service cannot be proven only with unit tests or a local compose stack. It has to pass the same deployment shape the product uses: GitHub Actions, personal <code>dev-&lt;slug&gt;</code> environments in <code>hexera-dev</code>, Cloud Run services and jobs, GCS-backed exchange/artifact storage, Cloud SQL, Redis, and the worker fleet.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Layer</th>
+                  <th>Runs where</th>
+                  <th>Purpose</th>
+                  <th>Required checks</th>
+                  <th>Promotion rule</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Host fast gate</td>
+                  <td>Developer machine and CI</td>
+                  <td>Catch contract, typing, import, architecture, and report-shape defects before cloud spend.</td>
+                  <td><code>make lint</code>, <code>make typecheck</code>, <code>make test-fast</code>, <code>make check-fast</code>, plus focused repair tests.</td>
+                  <td>No deploy if this fails.</td>
+                </tr>
+                <tr>
+                  <td>Native repair image</td>
+                  <td>Native/container test tier</td>
+                  <td>Prove OpenCASCADE, Gmsh, CGAL-style tools, and engine binaries work in the image that will run repair/mesh work.</td>
+                  <td>Synthetic STEP/IGES/STL fixtures; repair executor tests; bounded tolerance tests; mesh runner smoke.</td>
+                  <td>No Cloud Run smoke until native executor passes.</td>
+                </tr>
+                <tr>
+                  <td>Personal deploy</td>
+                  <td>GitHub Actions <code>deploy.yml</code></td>
+                  <td>Provision the real API, console, migrate job, mesh job, queue-depth job, GCS buckets, database, and worker fleet.</td>
+                  <td>First slug run: <code>app,data,fleet</code>, then <code>console,fleet</code>. Later runs: <code>app,console</code>, plus <code>fleet</code> when worker settings changed.</td>
+                  <td>Use a task-owned slug; never shared dev for experimental repair work.</td>
+                </tr>
+                <tr>
+                  <td>Cloud smoke</td>
+                  <td>Personal environment</td>
+                  <td>Prove service wiring after deployment, not just workflow success.</td>
+                  <td>Describe API/console URLs, run migrations, verify object storage settings, read recent API logs, check worker queue depth publisher, submit inspect-only job.</td>
+                  <td>Cannot claim deployed repair works until a real job exercises the path.</td>
+                </tr>
+                <tr>
+                  <td>Repair-to-mesh E2E</td>
+                  <td>Personal environment</td>
+                  <td>Prove the service outcome: bad or marginal CAD becomes repaired geometry, staged geometry, mesh artifacts, and delivery evidence.</td>
+                  <td>Upload fixture, inspect, repair, after-check, engine staging, mesh execution, reviewer pass, artifact delivery, final result.</td>
+                  <td>Feature remains internal until this passes for representative fixtures.</td>
+                </tr>
+                <tr>
+                  <td>Regression corpus</td>
+                  <td>Scheduled personal/shared-dev-compatible job</td>
+                  <td>Track whether repair policy changes improve or degrade throughput and meshability.</td>
+                  <td>Run fixed corpus; compare status, changed topology, staging success, mesh quality, runtime, and operator tasks created.</td>
+                  <td>Block policy changes that reduce delivery rate or silently increase geometry deviation.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>Deploy command shape</strong>
+              <p>Use the existing workflow: first deploy a new slug with <code>gh workflow run deploy.yml --ref "$branch" -f slug=cadfix -f app=true -f data=true -f fleet=true</code>, then <code>console=true -f fleet=true</code>. Reuse the same slug for iteration.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Smoke data</strong>
+              <p>Keep a small fixture suite in source control and a larger licensed/customer-like corpus in gitignored storage. Every fixture needs expected defect class, allowed strategy, expected gate, and whether a mesh should be deliverable.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Cloud assertions</strong>
+              <p>Assert the API URL, console URL, Cloud Run mesh job name, per-slug database, Redis prefix, artifact bucket, exchange bucket, and worker MIG all match the deployment id before running E2E tests.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Hosted proof step</th>
+                  <th>Command / observation</th>
+                  <th>Pass condition</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Deploy gate</td>
+                  <td><code>gh workflow run deploy.yml --ref "$branch" -f slug=&lt;slug&gt; -f app=true -f data=true -f fleet=true</code>, then <code>gh run watch</code>.</td>
+                  <td>The workflow completes, the deploy gate is green, and the slug is task-owned rather than shared dev.</td>
+                </tr>
+                <tr>
+                  <td>Service discovery</td>
+                  <td><code>gcloud run services describe dev-&lt;slug&gt;-api --region us-central1 --format='value(status.url)'</code> and the matching console service.</td>
+                  <td>API and console URLs resolve for the deployed slug.</td>
+                </tr>
+                <tr>
+                  <td>Job inventory</td>
+                  <td><code>gcloud run jobs describe dev-&lt;slug&gt;-mesh --region us-central1</code>, plus migrate and queue-depth jobs.</td>
+                  <td>Mesh, migrate, and queue-depth jobs exist with the expected deployment labels.</td>
+                </tr>
+                <tr>
+                  <td>Storage split</td>
+                  <td>Inspect runtime env and bucket objects for exchange versus artifact storage.</td>
+                  <td>Transient workspace files land in the exchange bucket; repair reports, repaired CAD, mesh bundles, and delivery manifests land in durable artifact storage with hashes.</td>
+                </tr>
+                <tr>
+                  <td>Data isolation</td>
+                  <td>Confirm deployed configuration uses <code>MIGRATE_DB_NAME=meshpipeline_&lt;slug&gt;</code> and <code>REDIS_KEY_PREFIX=dev-&lt;slug&gt;:</code>.</td>
+                  <td>Repair jobs, queue keys, and worker tasks are isolated to the personal environment.</td>
+                </tr>
+                <tr>
+                  <td>Worker/fleet proof</td>
+                  <td>Read recent logs for API, worker, queue-depth, and mesh job: <code>gcloud logging read 'resource.labels.service_name="dev-&lt;slug&gt;-api"' --limit 50 --freshness 10m</code>.</td>
+                  <td>A deployed repair inspect or repair-to-mesh job is consumed by the slug's worker fleet and reaches Cloud Run mesh when expected.</td>
+                </tr>
+                <tr>
+                  <td>Artifact download</td>
+                  <td>Submit one clean pass-through fixture and one repairable fixture through the deployed API/console.</td>
+                  <td>Final result links download the repair report, repaired CAD when present, mesh bundle, screenshots/quality report, and delivery manifest from GCS-backed storage.</td>
+                </tr>
+                <tr>
+                  <td>Teardown / reuse</td>
+                  <td>When the branch is abandoned or merged, run <code>make destroy-env SLUG=&lt;slug&gt;</code>; otherwise explicitly document slug reuse.</td>
+                  <td>The teardown summary is read, or the standing cost is intentional and assigned to the continuing task.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>E2E scenario</th>
+                  <th>Input</th>
+                  <th>Expected route</th>
+                  <th>Acceptance proof</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Clean CAD pass-through</td>
+                  <td>Valid STEP box or simple fluid volume.</td>
+                  <td>Inspect clean, no repair, stage original, mesh, deliver.</td>
+                  <td>Final result names original geometry, repair report says clean, mesh artifacts are downloadable.</td>
+                </tr>
+                <tr>
+                  <td>Conservative repair</td>
+                  <td>STEP with a small bounded wire gap or sewing issue.</td>
+                  <td>Inspect repairable, run ShapeFix/Sewing, after-check, stage repaired output, mesh.</td>
+                  <td>Original hash preserved, repaired artifact has new hash, deviation under cap, mesh delivered.</td>
+                </tr>
+                <tr>
+                  <td>Unsafe mutation</td>
+                  <td>CAD requiring feature deletion or large tolerance inflation.</td>
+                  <td>Inspect repairable or risky, create operator task, do not auto-mesh repaired output.</td>
+                  <td>Job blocks with operator reason and no silent source replacement.</td>
+                </tr>
+                <tr>
+                  <td>Triangle-soup repair</td>
+                  <td>STL with duplicate faces, holes, self-intersections, or non-manifold vertices.</td>
+                  <td>Inspect surface defects, route to surface-repair strategy or operator review.</td>
+                  <td>Report identifies exact defect family and delivery is blocked unless watertightness/manifold checks pass.</td>
+                </tr>
+                <tr>
+                  <td>Infrastructure failure</td>
+                  <td>Valid CAD with object store, worker, or mesh job fault injected.</td>
+                  <td>Classify as service failure.</td>
+                  <td>User/customer message does not blame geometry; retry/dead-letter evidence is present.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout">
+            <strong>Deployment invariant:</strong> a green GitHub workflow only proves provisioning. A CAD repair feature is proven only when the personal environment produces the expected repair report, effective geometry, mesh artifacts, and final result from the deployed API, worker fleet, Cloud Run mesh job, and object store.
+          </div>
+        </section>
+
+        <section id="roadmap">
+          <h2>Build plan</h2>
+          <p>The fastest path to revenue is an internal service console, not a polished self-serve repair product. Build the narrow repair-to-mesh loop first, then automate the operator decisions that repeat.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Deliverable</th>
+                  <th>Acceptance test</th>
+                  <th>Hosted proof</th>
+                  <th>Stop condition</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>P0: Baseline</td>
+                  <td>Existing diagnostics-only repair core remains the stable report contract.</td>
+                  <td>Repair contract, B-rep inspect, surface inspect, and dispatcher tests pass.</td>
+                  <td>None required beyond CI/local gates because no deployed behavior changes.</td>
+                  <td>No mutation; only report quality and taxonomy changes allowed.</td>
+                </tr>
+                <tr>
+                  <td>P1: Mesh-intake inspect</td>
+                  <td>Pipeline node records repair inspection after materialization and before geometry admission.</td>
+                  <td>A mesh-intended upload produces a repair report and still stages the original geometry unchanged.</td>
+                  <td>Personal slug proves inspect report is attached to a deployed mesh-intended job and persisted as an artifact.</td>
+                  <td>If inspection infra fails, classify as service failure, not bad CAD.</td>
+                </tr>
+                <tr>
+                  <td>P2: Repair job service</td>
+                  <td>Durable repair jobs, attempts, artifacts, operator tasks, and status transitions.</td>
+                  <td>An operator can open a queue item, see defect evidence, assign a strategy, and mark blocked/deliverable.</td>
+                  <td>Personal slug proves API, database, Redis prefix, worker queue, and artifact storage all use the slug-scoped environment.</td>
+                  <td>No automatic repair yet; manual/operator decisions create the initial corpus.</td>
+                </tr>
+                <tr>
+                  <td>P3: Conservative STEP repair</td>
+                  <td>OpenCASCADE ShapeFix/Sewing repair executor with profile caps and repaired STEP output.</td>
+                  <td>A fixture with repairable B-rep defects produces a new artifact, passes after-checks, and preserves original source.</td>
+                  <td>Personal slug runs one repairable STEP through worker execution, stores repaired CAD, and records before/after evidence.</td>
+                  <td>Reject any repair that changes beyond caps, drops regions, or worsens staging.</td>
+                </tr>
+                <tr>
+                  <td>P4: Mesh repaired output</td>
+                  <td>Validated repaired geometry can become the effective geometry for the mesh run.</td>
+                  <td>A job that fails staging before repair passes staging after repair and produces downloadable mesh artifacts.</td>
+                  <td>Personal slug proves the repaired artifact crosses the Cloud Run mesh boundary and produces expected GCS artifact classes.</td>
+                  <td>Fallback to operator review when repaired geometry does not improve the downstream gate.</td>
+                </tr>
+                <tr>
+                  <td>P5: Delivery bundle</td>
+                  <td>Customer bundle with repaired CAD, mesh, repair report, quality evidence, screenshots, and plain-language summary.</td>
+                  <td>Operator can approve delivery and the customer-visible artifact set is complete and immutable.</td>
+                  <td>Personal slug proves final result, console links, hashes, caveats, and downloadable artifacts match the delivery manifest.</td>
+                  <td>Do not deliver if source lineage, quality metrics, or reviewer decision is missing.</td>
+                </tr>
+                <tr>
+                  <td>P6: AI assist</td>
+                  <td>Triage, strategy suggestion, repair-plan draft, mesh-risk prediction, and delivery summary.</td>
+                  <td>AI recommendation is visible beside deterministic evidence and operator decisions are logged for learning.</td>
+                  <td>Personal slug proves shadow recommendations are logged and displayed without changing job state or geometry authority.</td>
+                  <td>AI cannot mutate geometry, bypass gates, or mark a job delivered.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan-grid">
+            <div class="plan-card">
+              <strong>Near-term code owners</strong>
+              <p>Repair core, pipeline graph, object storage/artifacts, persistence, operator console, and final result packaging each need a small owner boundary.</p>
+            </div>
+            <div class="plan-card">
+              <strong>First fixtures</strong>
+              <p>STEP with small wire gap, STEP with small edge, invalid no-face file, STL with duplicate triangles, STL with non-manifold vertex, and a clean control part.</p>
+            </div>
+            <div class="plan-card">
+              <strong>Launch metric</strong>
+              <p>Percentage of customer CAD jobs that reach a downloadable mesh without ad hoc shell work, with median operator minutes per delivered job.</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ticket</th>
+                  <th>Scope</th>
+                  <th>Files/areas</th>
+                  <th>Proof</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1</td>
+                  <td>Add repair inspection node to the pipeline state after materialized geometry.</td>
+                  <td>Pipeline graph, repair dispatcher, pipeline state contracts.</td>
+                  <td>Unit test proves original geometry still reaches admission and report is attached.</td>
+                </tr>
+                <tr>
+                  <td>2</td>
+                  <td>Persist inspect reports as artifacts for every mesh-intended service job.</td>
+                  <td>Artifact policy, uploader, object-store keys, final result payload.</td>
+                  <td>Integration test downloads report from a completed or blocked job.</td>
+                </tr>
+                <tr>
+                  <td>3</td>
+                  <td>Create durable repair job and attempt tables.</td>
+                  <td>Migration, repositories, tenancy checks, model contracts.</td>
+                  <td>Repository tests cover owner isolation and status transitions.</td>
+                </tr>
+                <tr>
+                  <td>4</td>
+                  <td>Add internal operator queue API.</td>
+                  <td>API routes, repositories, auth/organization scoping.</td>
+                  <td>API tests cover list, read, assign, decide, and block transitions.</td>
+                </tr>
+                <tr>
+                  <td>5</td>
+                  <td>Build a minimal operator console view.</td>
+                  <td>Console routing, queue table, job detail, artifact links, decision controls.</td>
+                  <td>Browser test proves an operator can move a job from inspected to strategy selected.</td>
+                </tr>
+                <tr>
+                  <td>6</td>
+                  <td>Implement conservative STEP repair attempt behind a feature flag.</td>
+                  <td>Repair executor, OpenCASCADE adapter, artifact writer, after-checks.</td>
+                  <td>Native test repairs a synthetic STEP defect and rejects over-cap output.</td>
+                </tr>
+                <tr>
+                  <td>7</td>
+                  <td>Allow repaired geometry to become effective geometry only after staging passes.</td>
+                  <td>Pipeline state, geometry materialization, engine admission, final result provenance.</td>
+                  <td>Integration test shows original fails staging, repaired output passes, mesh starts.</td>
+                </tr>
+                <tr>
+                  <td>8</td>
+                  <td>Package delivery evidence.</td>
+                  <td>Artifact uploader, result builder, console download links, report renderer.</td>
+                  <td>End-to-end test verifies repaired CAD, mesh, report, and quality evidence are present.</td>
+                </tr>
+                <tr>
+                  <td>9</td>
+                  <td>Add AI triage in shadow mode.</td>
+                  <td>Model routing, prompt contract, repair job service, operator UI.</td>
+                  <td>Recommendation is logged and visible but cannot change job state.</td>
+                </tr>
+                <tr>
+                  <td>10</td>
+                  <td>Measure service throughput.</td>
+                  <td>Metrics, traces, job timestamps, operator decisions.</td>
+                  <td>Dashboard or query reports delivery rate, blocked rate, and operator minutes per job.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="sources">
+          <h2>Research readout</h2>
+          <p>The latest direction is not "AI replaces meshing." It is measured automation around geometry preparation: classify the part, localize defects, choose decomposition/defeaturing/repair actions, predict mesh failure, run exact tools, and prove downstream improvement. The service plan should follow that pattern.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Read</th>
+                  <th>What it says</th>
+                  <th>Implication for Hexera</th>
+                  <th>Plan change</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>2026 AI geometry-prep and meshing survey</td>
+                  <td>AI is useful across part classification, segmentation, mesh-quality prediction, defeaturing, meshing guidance, parallel meshing, and scripting, but practical use depends on workflow objectives and trustworthy integration.</td>
+                  <td>Treat AI as a service accelerator and route recommender, not as the repair authority.</td>
+                  <td>Keep shadow-mode AI first; train on operator decisions and final mesh outcomes.</td>
+                </tr>
+                <tr>
+                  <td>2026 CAD/CAE preprocessing challenge review</td>
+                  <td>Geometry handling, mesh generation, model integration, and mesh-to-CAD associativity remain coupled bottlenecks rather than isolated algorithms.</td>
+                  <td>The service outcome has to include repaired geometry, mesh, and provenance together.</td>
+                  <td>Add delivery evidence and mesh-quality gates as first-class records.</td>
+                </tr>
+                <tr>
+                  <td>OpenCASCADE Shape Healing and STEP healing docs</td>
+                  <td>B-rep repair is operation-specific: wire ordering, curve gaps, degenerated edges, tolerance changes, sewing, and face/wire fixes are controllable and inspectable.</td>
+                  <td>Use OCCT as the first mutation authority for STEP/IGES and record every tolerance/topology change.</td>
+                  <td>P3 remains conservative STEP repair, with hard caps and after-checks.</td>
+                </tr>
+                <tr>
+                  <td>Gmsh OCC <code>HealShapes</code></td>
+                  <td>Gmsh exposes mesh-oriented OpenCASCADE healing toggles for degenerated entities, small edges/faces, sewing, and solid creation.</td>
+                  <td>Use Gmsh healing as a staging cross-check or engine-specific preparation path, not the product source of truth.</td>
+                  <td>Add native image tests comparing OCCT repair and Gmsh staging behavior.</td>
+                </tr>
+                <tr>
+                  <td>Topology-first B-rep meshing</td>
+                  <td>Recent B-rep meshing research emphasizes preserving exact B-rep topology while bounding deviation from parametric surfaces.</td>
+                  <td>Repair and meshing should share topology/region evidence instead of collapsing early to anonymous triangle soup.</td>
+                  <td>Keep STEP/IGES B-rep repair as the preferred path; use STL/VTP repair as a fallback service path.</td>
+                </tr>
+                <tr>
+                  <td>CGAL polygon mesh repair and autorefinement</td>
+                  <td>Triangle soup repair needs robust handling of self-intersections, duplicates, snap rounding, hole filling, orientation, and manifoldness.</td>
+                  <td>STL/VTP repair cannot be a quick heuristic pass; it needs a gated dependency decision and a separate surface-repair acceptance suite.</td>
+                  <td>Surface repair stays service-gated until watertight/manifold E2E tests pass.</td>
+                </tr>
+                <tr>
+                  <td>Commercial preprocessing systems</td>
+                  <td>Siemens, Cubit, and similar tools treat geometry cleanup, defeaturing, attribution, mesh generation, smoothing, quality improvement, and reporting as one pre/post-processing workflow.</td>
+                  <td>Hexera should not sell "repair" separately from "mesh readiness"; the service product is the transition from customer CAD to delivered mesh.</td>
+                  <td>Operator console and delivery bundle stay first-class, not follow-on polish.</td>
+                </tr>
+                <tr>
+                  <td>2026 B-rep representation/repair papers</td>
+                  <td>New B-rep learning work improves representation alignment and anomaly detection, but generated or repaired CAD still needs validity and topology checks.</td>
+                  <td>Use learned B-rep signals for triage/localization before using them for mutation.</td>
+                  <td>Add AI capabilities only where deterministic validators can reject bad output.</td>
+                </tr>
+                <tr>
+                  <td>CAD generation benchmarks</td>
+                  <td>Specialized CAD models outperform generic code/VLM approaches under idealized inputs, and generic model-generated CAD remains unreliable for exact reconstruction.</td>
+                  <td>Do not build service delivery around LLM-authored CAD edits.</td>
+                  <td>AI can draft scripts/recipes; exact tools own delivered artifacts.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="matrix">
+            <div class="source">
+              <h3>OpenCASCADE Shape Healing</h3>
+              <p>Primary reference for B-rep repair operations: wire ordering, edge curve fixes, small-edge handling, gap repair, sewing, and tolerance controls.</p>
+              <a href="https://documentation.help/Open-Cascade/occt_user_guides__shape_healing.html">OpenCASCADE shape healing docs</a>
+            </div>
+            <div class="source">
+              <h3>Gmsh OCC HealShapes</h3>
+              <p>Useful for cross-checking mesh-oriented shape healing and engine-specific preparation behavior around degenerated entities, small edges/faces, sewing, and solids.</p>
+              <a href="https://gmsh.info/doc/texinfo/gmsh.html">Gmsh reference manual</a>
+            </div>
+            <div class="source">
+              <h3>CGAL Polygon Mesh Repair</h3>
+              <p>Reference model for triangle-soup and polygon mesh repair: self-intersections, orientation, duplicate cleanup, hole filling, and snap-rounding tradeoffs.</p>
+              <a href="https://cgal.geometryfactory.com/CGAL/doc/main/PMP_Mesh_repair/index.html">CGAL polygon mesh repair manual</a>
+            </div>
+            <div class="source">
+              <h3>AI Geometry Preparation Survey</h3>
+              <p>Frames AI as workflow assistance across classification, defeaturing, mesh quality prediction, meshing guidance, and automation rather than a replacement for validated geometry algorithms.</p>
+              <a href="https://doi.org/10.1007/s00366-026-02379-1">Engineering with Computers survey</a>
+            </div>
+            <div class="source">
+              <h3>CAD/CAE Preprocessing Challenges</h3>
+              <p>2026 review of geometry handling, mesh generation, integration between models, and mesh-to-CAD associativity as coupled preprocessing problems.</p>
+              <a href="https://cad-journal.net/files/vol_23/CAD_23%282%29_2026_123-146.pdf">Computer-Aided Design &amp; Applications review</a>
+            </div>
+            <div class="source">
+              <h3>B-rep Learning and Repair</h3>
+              <p>Recent B-rep learning work is promising for representation, anomaly detection, and repair guidance, but the output still needs exact validation.</p>
+              <a href="https://proceedings.mlr.press/v306/sun26ac.html">Brep2Shape, ICML 2026</a>
+            </div>
+            <div class="source">
+              <h3>Topology-First B-Rep Meshing</h3>
+              <p>Relevant because it centers topology preservation and bounded deviation, the exact acceptance bar repair should feed before engine staging.</p>
+              <a href="https://arxiv.org/abs/2604.02141">Topology-First B-Rep Meshing</a>
+            </div>
+            <div class="source">
+              <h3>Simulation Geometry Preprocessor</h3>
+              <p>Commercial preprocessing patterns reinforce that gap closing, defeaturing, watertight fluid extraction, and meshing are one service workflow.</p>
+              <a href="https://blogs.sw.siemens.com/simcenter/from-cad-to-cae-bridging-the-simulation-gap-with-the-geometry-preprocessor/">Siemens Simcenter geometry preprocessor</a>
+            </div>
+            <div class="source">
+              <h3>Cubit Geometry and Meshing</h3>
+              <p>Shows the mature preprocessor shape: import CAD, clean geometry, prepare for meshing, generate meshes, improve quality, attribute, and export.</p>
+              <a href="https://cubit.sandia.gov/">Cubit toolkit</a>
+            </div>
+            <div class="source">
+              <h3>CAD Generation Benchmark</h3>
+              <p>CADBench shows why generic multimodal/code generation should not be the core repair executor for customer delivery.</p>
+              <a href="https://arxiv.org/abs/2605.10873">CADBench preprint</a>
+            </div>
+            <div class="source">
+              <h3>Wireframe Anomaly Repair</h3>
+              <p>Training-free anomaly detection and guided regeneration is relevant as a future localization/planning signal, not a near-term source-replacement authority.</p>
+              <a href="https://arxiv.org/abs/2608.04955">Towards Valid B-Rep Generation</a>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Repair technology</th>
+                  <th>Use it for</th>
+                  <th>Do not trust it for</th>
+                  <th>Acceptance suite</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>OpenCASCADE shape healing</td>
+                  <td>Same-parameter fixes, pcurve/3D curve gaps, wire ordering, sewing, bounded tolerance changes, small-edge/small-face handling.</td>
+                  <td>Unapproved face deletion, unchecked topology rewrite, large tolerance inflation, or silently fixing self-intersections.</td>
+                  <td>Validity, entity count deltas, tolerance histogram, topology map, max deviation, region preservation, staging improvement.</td>
+                </tr>
+                <tr>
+                  <td>CGAL-style surface repair</td>
+                  <td>Polygon soup orientation, duplicate cleanup, boundary loops, hole filling, manifold vertex handling, self-intersection localization.</td>
+                  <td>Recovering design intent from STL, preserving CAD features, or replacing B-rep repair when STEP/IGES exists.</td>
+                  <td>Watertightness, oriented volume, manifoldness, connected components, boundary loops, feature-edge preservation, max displacement.</td>
+                </tr>
+                <tr>
+                  <td>Gmsh / OCC healing</td>
+                  <td>Mesh-oriented cross-checks, engine-specific preparation, BooleanFragments/Coherence experiments, solid creation checks.</td>
+                  <td>Product source of truth for repaired CAD or stable identity after tag-renumbering operations.</td>
+                  <td>Physical-group preservation, OCC entity tag diff, imported label behavior, meshability, comparison with OCCT attempt.</td>
+                </tr>
+                <tr>
+                  <td>Defeaturing</td>
+                  <td>Simplifying valid geometry when simulation intent allows removal of holes, fillets, small bosses, or other non-essential features.</td>
+                  <td>Repairing invalid CAD without customer/operator approval, or deleting features to satisfy the wrong engine.</td>
+                  <td>Customer intent, preserve/delete labels, sensitivity proxy, mesh-quality gain, operator approval, delivery caveat.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Corpus tier</th>
+                  <th>Contents</th>
+                  <th>Required metadata</th>
+                  <th>Use</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Synthetic unit fixtures</td>
+                  <td>Minimal STEP/STL cases with one known defect each.</td>
+                  <td>Defect class, allowed operations, forbidden mutations, expected route, expected artifact classes.</td>
+                  <td>Fast tests, operation-level regressions, and must-not-mutate guarantees.</td>
+                </tr>
+                <tr>
+                  <td>Ugly public CAD</td>
+                  <td>Messy but redistributable models from public sources and benchmarks.</td>
+                  <td>License, format, expected inspection facts, baseline staging/mesh behavior.</td>
+                  <td>Policy evaluation and failure-mode discovery without customer data.</td>
+                </tr>
+                <tr>
+                  <td>Customer-like licensed corpus</td>
+                  <td>Internal or licensed examples that match service demand.</td>
+                  <td>License class, training consent, retention date, anonymization state, intended use.</td>
+                  <td>Promotion gates and operator-time estimates.</td>
+                </tr>
+                <tr>
+                  <td>Adversarial regression</td>
+                  <td>Self-intersections, region loss, tag instability, giant tolerances, empty solids, malformed metadata.</td>
+                  <td>Must-block condition, customer-safe message, expected owner, non-retryable/retryable flag.</td>
+                  <td>Prevents automation from turning dangerous CAD into confident delivery.</td>
+                </tr>
+                <tr>
+                  <td>Live service replay</td>
+                  <td>Production jobs eligible under consent and retention rules.</td>
+                  <td>Operator decision, final outcome, artifact manifest, reopen/dispute flag, cost and runtime.</td>
+                  <td>Shadow evaluation and economic metrics before policy promotion.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <aside aria-label="Decision summary">
+        <h2>Recommended direction</h2>
+        <p><strong>Build the repair system as a service operating loop.</strong> Every job should move from intake to repair strategy, repaired artifact, mesh attempt, mesh review, and customer delivery evidence.</p>
+        <ul>
+          <li>Ship pipeline inspect next because every service job needs a defect baseline.</li>
+          <li>Add durable repair jobs and an operator queue before standalone self-serve polish.</li>
+          <li>Turn on conservative repair as soon as after-checks, region preservation, and deviation caps exist.</li>
+          <li>Use AI first where it increases throughput: triage, strategy recommendation, operator notes, mesh-failure prediction, and delivery summaries.</li>
+        </ul>
+        <div class="callout">
+          The acceptance test is a delivered service result: repaired geometry plus a mesh that passes staging, quality review, and customer-facing provenance.
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const tabButtons = [...document.querySelectorAll("[data-tab]")];
+    const sections = [...document.querySelectorAll("main section")];
+    tabButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const id = button.dataset.tab;
+        tabButtons.forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+        sections.forEach((section) => section.classList.toggle("active", section.id === id));
+      });
+    });
+
+    const filterButtons = [...document.querySelectorAll("[data-filter]")];
+    const phases = [...document.querySelectorAll(".phase")];
+    filterButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const filter = button.dataset.filter;
+        filterButtons.forEach((b) => b.classList.toggle("active", b === button));
+        phases.forEach((phase) => {
+          const kinds = phase.dataset.kind.split(" ");
+          phase.classList.toggle("hidden", filter !== "all" && !kinds.includes(filter));
+        });
+      });
+    });
+  </script>
+</body>
+</html>
