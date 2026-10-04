@@ -34,6 +34,7 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+    drawn = False
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("tess")
@@ -49,13 +50,29 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # The staged SURFACE (input.stl) is a picture of that B-rep for the report and review,
+        # never what the driver meshes. A size floor keeps a degenerate CAD edge from asking for
+        # a zero size (CRM high-lift: "Wrong mesh element size lc = 0" stopped staging, lab
+        # 2026-10-04); a surface gmsh still cannot draw is drawn by the shared OCC tessellator.
+        x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+        diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+        gmsh.option.setNumber("Mesh.MeshSizeMin", max(diag * 1e-5, 1e-9))
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 24)
-        gmsh.model.mesh.generate(2)
-        gmsh.write(str(out_stl))
+        try:
+            gmsh.model.mesh.generate(2)
+            gmsh.write(str(out_stl))
+            drawn = True
+        except Exception as exc:  # noqa: BLE001 - the B-rep is staged; only the picture failed
+            logger.warning("gmsh staging: the surface picture could not be meshed (%s) - drawing "
+                           "it with the shared OCC tessellator", exc)
+            drawn = False
         gmsh.model.remove()
     finally:
         if _mine:
             gmsh.finalize()
+    if not drawn:
+        from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _occ_tessellate
+        _occ_tessellate(geom_path, out_stl, prepared=prepared)
     return out_stl
 
 
