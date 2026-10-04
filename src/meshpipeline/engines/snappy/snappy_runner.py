@@ -106,7 +106,12 @@ def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: flo
     h = float(finest_cell_m)
     if not (math.isfinite(h) and h > 0.0):
         return MIN_VOL_HISTORICAL
-    thinnest = max(float(min_thickness_rel), 1e-3) * h / max(1, int(n_layers)) * 0.5
+    if int(n_layers) <= 0:
+        # no layers: the thinnest legitimate cell is the finest wall cell itself, so the bar sits
+        # under that and no lower - castellation and snapping keep their full positive-volume check
+        thinnest = 0.5 * h
+    else:
+        thinnest = max(float(min_thickness_rel), 1e-3) * h / int(n_layers) * 0.5
     pyramid = h * h * thinnest / 6.0
     return max(1e-30, min(MIN_VOL_HISTORICAL, MIN_VOL_MARGIN * pyramid))
 

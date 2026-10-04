@@ -41,6 +41,17 @@ def test_min_vol_drops_below_the_thinnest_legitimate_layer_cell_on_fine_cells():
     assert 0.0 < mv < 1e-2 * legit_pyramid < R.MIN_VOL_HISTORICAL
 
 
+def test_without_layers_the_bar_sits_under_the_finest_cell_not_under_a_layer():
+    # no layer stage: the thinnest legitimate cell is the wall cell itself, so castellation and
+    # snapping keep the tightest bar that cell allows
+    h = 0.0002
+    none = R.layer_min_vol(h, n_layers=0, min_thickness_rel=0.05)
+    five = R.layer_min_vol(h, n_layers=5, min_thickness_rel=0.05)
+    assert five < none <= R.MIN_VOL_HISTORICAL
+    assert none < 1e-2 * (h ** 3 / 6.0), "still far under the cell's own face pyramid"
+    assert R.layer_min_vol(0.05, n_layers=0, min_thickness_rel=0.05) == R.MIN_VOL_HISTORICAL
+
+
 def test_min_vol_is_monotone_in_the_cell_and_never_zero():
     vols = [R.layer_min_vol(h, n_layers=5, min_thickness_rel=0.05)
             for h in (1e-6, 1e-5, 1e-4, 1e-3, 1e-2)]
