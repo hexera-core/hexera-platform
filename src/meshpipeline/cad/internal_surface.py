@@ -1279,6 +1279,6 @@ def _seed(V, F, L, ports: dict[str, _Opening]) -> tuple[np.ndarray, dict]:
                   "clearance_m": round(float(best[2]), 7), "from": owners[best[0]][0]}
 
 
-__all__ = ["STAGING_GATE","InternalSurfaceError", "StagedInternal", "is_cad",
+__all__ = ["STAGING_GATE", "InternalSurfaceError", "StagedInternal", "is_cad",
            "stage_internal", "stage_internal_surface", "stage_triangles", "staging_failure",
            "write_staged"]
