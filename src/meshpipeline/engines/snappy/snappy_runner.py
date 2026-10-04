@@ -541,7 +541,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        layer_overrides: dict | None = None,
                        ground: str | None = None,
                        farfield: str = "farfield",
-                       class_regions: bool = True) -> dict:
+                       class_regions: bool = True,
+                       outside_points: list | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -608,6 +609,15 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
 
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
+
+    # SEALED SPACES (engines/sealed_cavities.py). A point inside each space the far field reaches
+    # only through gaps too narrow to mesh is a place the mesh must NOT reach: snappyHexMesh walks
+    # the leak path from locationInMesh to it and closes the narrow gap on that path with a wall
+    # face, instead of meshing the whole inside through a slit. With no points the dict is
+    # exactly what it has always been.
+    _pts = [p for p in (outside_points or []) if p is not None and len(p) == 3]
+    _outside = (f"\n  locationsOutsideMesh ({' '.join(vf(p) for p in _pts)}); useLeakClosure true;"
+                if _pts else "")
 
     V = [(domain_min[0], domain_min[1], domain_min[2]), (domain_max[0], domain_min[1], domain_min[2]),
          (domain_max[0], domain_max[1], domain_min[2]), (domain_min[0], domain_max[1], domain_min[2]),
@@ -702,7 +712,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
   refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }} }}
-  locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true; }}
+  locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
@@ -748,6 +758,8 @@ mergeTolerance 1e-6; debug 0;
         out["merged_regions"] = list(_synthetic)
     if ground:
         out["ground"] = {"patch": ground, "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
+    if _pts:
+        out["sealed_points"] = [[round(float(v), 6) for v in p] for p in _pts]
     return out
 
 

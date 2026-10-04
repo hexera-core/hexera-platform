@@ -33,6 +33,11 @@ if SNAPPY_THIN_STACK_FACTOR <= 0.0:
     raise ConfigurationError(
         f"SNAPPY_THIN_STACK_FACTOR must be positive, got {SNAPPY_THIN_STACK_FACTOR}")
 
+# SEALED SPACES (engines/sealed_cavities.py) - external flow: a space inside the body that the far
+# field reaches only through gaps narrower than two wall cells (a hollow shell's panel gaps) is
+# kept out of the mesh; snappy closes the narrow gap on the leak path with a wall face
+SNAPPY_SEAL_CAVITIES: bool = bool_env("SNAPPY_SEAL_CAVITIES", "true")
+
 # the planner's model identity (its OWN, not the builder's)
 PLANNER_MODEL: str = optional_env("PLANNER_MODEL", "gpt-5.6-terra")
 
