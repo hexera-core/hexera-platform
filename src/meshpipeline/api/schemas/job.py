@@ -61,6 +61,10 @@ class JobStatus_(BaseModel):
     # can say "waiting for a worker to start (about N minutes)" instead of a silent spinner;
     # None once a worker has started (or when the estimate is disabled).
     worker_wake_minutes: int | None = None
+    # WHAT THE USER CALLED THE FILE this run meshes - display only, never a path. The console
+    # showed it from the upload it made itself, so a reload (or a run opened from a link) lost it;
+    # it is read from the run's geometry source so every view of the run can name its file.
+    geometry_filename: str | None = None
 
 
 class DisputeFlag(BaseModel):
