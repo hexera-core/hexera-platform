@@ -70,17 +70,6 @@ def test_the_budget_lowers_the_levels_then_drops_boxes():
     assert "not refined" in starved.note and len(starved) < len(free)
 
 
-def test_the_cell_is_nudged_onto_whole_halvings_only_when_that_is_cheap():
-    # the aorta: 0.839 mm bore cell, 1.23 mm-radius vessels
-    aligned = P.octree_aligned_cell(0.839e-3, 1.23e-3)
-    assert aligned == pytest.approx(4 * 2 * 1.23e-3 / 13)        # two halvings -> 13 across
-    assert 0.839e-3 / aligned <= P.OCTREE_ALIGN_MAX
-    # 1.9x finer would be needed: not worth it, unchanged
-    assert P.octree_aligned_cell(1.0e-3, 13 * (1.0e-3 / 1.9) / 2) == 1.0e-3
-    # a passage the cell already carries: unchanged
-    assert P.octree_aligned_cell(1.0e-3, 0.05) == 1.0e-3
-
-
 def test_the_ports_hold_the_reading_beside_them():
     pts = np.array([[0.0, 0.0, 0.0], [0.05, 0.0, 0.0], [0.5, 0.0, 0.0]])
     r = np.array([0.19, 0.19, 0.19])
@@ -164,11 +153,6 @@ def test_snappy_turns_the_narrow_boxes_into_thin_regions_over_the_wall_level():
     boxes = D._narrow_passage_boxes(field, wall_cell=0.001, budget_cells=1e7)
     assert boxes and all({"min", "max", "level_bump"} <= set(b) for b in boxes)
     assert D._narrow_passage_boxes(None, wall_cell=0.001, budget_cells=1e7) == []
-    # 13 across a 2 mm radius is 0.31 mm: from 0.4 mm that is 1.3x finer - too dear, it stays;
-    # from 0.33 mm it is 1.07x finer, and the wall cell becomes it
-    assert D._aligned_wall_cell(0.4e-3, field) == 0.4e-3
-    assert D._aligned_wall_cell(0.33e-3, field) == pytest.approx(2 * 0.002 / 13)
-    assert D._aligned_wall_cell(0.4e-3, None) == 0.4e-3
 
 
 def test_a_lid_reads_its_hydraulic_diameter(tmp_path):

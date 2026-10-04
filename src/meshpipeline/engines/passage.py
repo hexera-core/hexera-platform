@@ -798,30 +798,6 @@ def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration, *,
     return pts, faces, port_corrected_radius(pts, r, declared_port_widths(declaration, openings))
 
 
-#: How much finer a wall cell may be made so that whole octree halvings land the narrowest
-#: passage on its target cells across (octree_aligned_cell): 1.15 is 1.5x the cells where the
-#: wall cell rules, against 6-8x in the narrow boxes for the extra halving it saves.
-OCTREE_ALIGN_MAX = 1.15
-
-
-def octree_aligned_cell(cell_m: float, narrow_radius: float, *,
-                        target: float = PASSAGE_CELLS_ACROSS,
-                        max_nudge: float = OCTREE_ALIGN_MAX) -> float:
-    """`cell_m`, or a cell up to `max_nudge` finer from which whole halvings reach `target`
-    cells across a passage of `narrow_radius` exactly. An octree mesher reaches a narrow
-    passage only in halvings: from 0.84 mm, two halvings put 11.7 cells across the Fluent
-    aorta's 1.23 mm-radius vessels and the third put 23 (and six times the cells in those
-    boxes); from 0.76 mm two put 13."""
-    import math as _math
-    if not (cell_m > 0.0 and narrow_radius > 0.0):
-        return cell_m
-    need = 2.0 * float(narrow_radius) / float(target)
-    if need >= cell_m:
-        return cell_m
-    aligned = need * 2 ** _math.floor(_math.log2(cell_m / need) + 1e-12)
-    return aligned if cell_m / aligned <= max_nudge else cell_m
-
-
 class NarrowRegions(list):
     """Refinement boxes for narrow passages; `note` says what a budget left out."""
 
@@ -939,7 +915,7 @@ __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS"
            "declared_port_half_width", "declared_port_widths", "field_radius_stats",
            "narrow_passage_regions", "passage_field_of_stls", "point_areas",
            "port_corrected_radius", "staged_passage_field", "weighted_percentile",
-           "OCTREE_ALIGN_MAX", "octree_aligned_cell", "FIELD_MAX_POINTS",
+           "FIELD_MAX_POINTS",
            "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
            "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",

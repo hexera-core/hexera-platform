@@ -892,20 +892,6 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
     return pts, r, point_areas(pts, faces)
 
 
-def _aligned_wall_cell(wall_cell: float, field) -> float:
-    """The wall cell, nudged finer (engines/passage.octree_aligned_cell) so the narrowest
-    passage - the 5th-percentile radius the resolution floor reads - lands on 13 cells across
-    after whole octree halvings; unchanged without a field."""
-    if field is None or not len(field[1]):
-        return wall_cell
-    import numpy as np
-
-    from meshpipeline.engines.passage import octree_aligned_cell
-    r = np.asarray(field[1], dtype=float)
-    r = r[r > 0.0]
-    return octree_aligned_cell(wall_cell, float(np.percentile(r, 5))) if len(r) else wall_cell
-
-
 def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float) -> list:
     """Refinement boxes, in render_internal_case's thin-region form ({min, max, level_bump} over
     the wall's surface level), for every passage the wall cell puts under the floor
@@ -1132,11 +1118,6 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         feature_level = int(strategy.get("feature_level", surface_level + 1))
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
-        # ... a shade finer when that lands the narrowest passage on a whole number of octree
-        # halvings: the aorta's 0.84 mm bore cell reached its 1.2 mm-radius vessels at 11.7
-        # across after two halvings and needed a third (6x the cells in those boxes); 0.76 mm
-        # reaches them at 13 after two (engines/passage.octree_aligned_cell)
-        base_cell = _aligned_wall_cell(bore_D / cells_across, _passage_field) * (2 ** surface_level)
         # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
         # than it is never captured by castellation - an orifice plate (3-9 mm) inside a
         # 106-290 mm pipe vanishes, its faces never become patches, and the run dies at the
