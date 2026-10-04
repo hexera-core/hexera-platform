@@ -416,8 +416,8 @@ def _mesh_planar(ws: Path, spec: dict, h: float, resolution: dict | None = None)
         gmsh.model.mesh.optimize()
     order = int(spec.get("element_order", 2))
     if order > 1:
+        gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)   # read by setOrder: set it first
         gmsh.model.mesh.setOrder(order)
-        gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)
 
     etypes, etags, _ = gmsh.model.mesh.getElements(2)
     all_tags = [t for arr in etags for t in arr]
@@ -641,6 +641,12 @@ def main(workspace: str) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
+        # PINNED: one thread and a fixed seed, so a staged surface gives the same mesh wherever
+        # it runs. Threaded meshing inserts nodes in the order threads finish, and the worst
+        # tet with it; a staged tee read worst SICN 0.18, 0.12 and 0.002 on three lab runs
+        # (2026-10-04), where three local runs of each of three cases matched to the digit.
+        gmsh.option.setNumber("General.NumThreads", 1)
+        gmsh.option.setNumber("Mesh.RandomSeed", 1)
         gmsh.model.add("fea")
         # THE SOURCE. A CAD upload is staged as geometry.step (its B-rep, meshed as it is). A
         # surface upload (STL) has no B-rep: its triangles are split into faces wherever the
@@ -805,8 +811,10 @@ def main(workspace: str) -> int:
                 print(f"[GMSH] passage measurement failed: {exc}", file=sys.stderr)
         order = int(spec.get("element_order", 2))
         if order > 1:
-            gmsh.model.mesh.setOrder(order)
+            # BEFORE setOrder: the option is read while the high-order nodes are placed, so set
+            # after it (as it was) it optimised nothing and curved elements shipped as snapped
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)  # elastic+optim
+            gmsh.model.mesh.setOrder(order)
 
         # Quality: SICN over the volume elements (signed inverse condition
         # number - Gmsh's standard quality measure; 0 = degenerate, 1 = ideal).
