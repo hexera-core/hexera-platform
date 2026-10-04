@@ -396,6 +396,9 @@ STATE_FIELDS: dict[str, str] = {
                              "a decision, and never a reason to move the geometry",
     "repair_report":         "the typed RepairResult payload behind repair_status: defects, "
                              "measurements and the inspect operation that produced them",
+    "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
+                             "replacement was proved to stage for; empty unless repaired "
+                             "geometry became the geometry this run meshes",
     "domain":                "descriptive task label (see contract)",
     "engine_params":         "engine-native declared parameters (see contract)",
     "openfoam_workspace":    "the attempt workspace directory the builder/executor share",

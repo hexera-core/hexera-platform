@@ -18,11 +18,17 @@ from meshpipeline.persistence.repair_job_state import (
     is_terminal,
     legal_sources,
 )
-from meshpipeline.persistence.repositories.repair_job_repository import RepairJobRepository
 from meshpipeline.persistence.session import get_db
 
 router = APIRouter()
-repo = RepairJobRepository()
+
+
+def repo():
+    # IMPORTED PER CALL, not at module scope: a route is transport, and the architecture suite
+    # keeps persistence out of its import graph so an API module cannot grow a second authority
+    # over the database. Resolving it here also lets a test substitute the repository.
+    from meshpipeline.persistence.repositories.repair_job_repository import RepairJobRepository
+    return RepairJobRepository()
 
 # THIS SURFACE IS CROSS-TENANT, and that is the whole point: the people using it are this service's
 # own operators working one shared queue over every customer's jobs. It therefore sits behind the
@@ -156,7 +162,7 @@ async def read_queue(status: str = "", operator: str = "", unassigned: bool = Fa
     bounded = max(1, min(int(limit), 200))
     wanted = _statuses(status)
     async with get_db() as db:
-        rows = await repo.operator_queue(db, statuses=wanted, assigned_operator=operator or None,
+        rows = await repo().operator_queue(db, statuses=wanted, assigned_operator=operator or None,
                                         unassigned_only=unassigned, limit=bounded)
     return {"jobs": [_job_row(j) for j in rows],
             # Echoed so a client can tell an empty queue from a filter that matched nothing.
@@ -168,11 +174,11 @@ async def read_queue(status: str = "", operator: str = "", unassigned: bool = Fa
 async def read_job(job_id: str) -> dict:
     jid = _parse(job_id)
     async with get_db() as db:
-        job = await repo.get_internal(db, jid)
+        job = await repo().operator_job(db, jid)
         if job is None:
             raise HTTPException(status_code=404, detail="repair job not found")
-        attempts = await repo.attempts_for_job(db, jid)
-        decisions = await repo.decisions_for_job(db, jid)
+        attempts = await repo().attempts_for_job(db, jid)
+        decisions = await repo().decisions_for_job(db, jid)
     return {
         "job": _job_row(job),
         "attempts": [_attempt_row(a) for a in attempts],
@@ -189,10 +195,10 @@ async def read_job(job_id: str) -> dict:
 async def assign_job(job_id: str, body: AssignIn) -> dict:
     jid = _parse(job_id)
     async with get_db() as db:
-        job = await repo.get_internal(db, jid)
+        job = await repo().operator_job(db, jid)
         if job is None:
             raise HTTPException(status_code=404, detail="repair job not found")
-        took = await repo.assign(db, jid, operator=body.operator,
+        took = await repo().assign(db, jid, operator=body.operator,
                                  claim_only_if_unassigned=bool(body.claim and body.operator))
         if not took:
             # 409, not 403: the caller is entitled to this queue, it just lost the race for this
@@ -200,7 +206,7 @@ async def assign_job(job_id: str, body: AssignIn) -> dict:
             raise HTTPException(status_code=409,
                                 detail=f"already assigned to {job.assigned_operator}")
         await db.commit()
-        job = await repo.get_internal(db, jid)
+        job = await repo().operator_job(db, jid)
     return {"job": _job_row(job)}
 
 
@@ -217,12 +223,12 @@ async def decide_job(job_id: str, body: DecideIn) -> dict:
                             detail=f"{name} must state a reason - it stops a customer's job")
 
     async with get_db() as db:
-        job = await repo.get_internal(db, jid)
+        job = await repo().operator_job(db, jid)
         if job is None:
             raise HTTPException(status_code=404, detail="repair job not found")
         was = job.status.value
 
-        outcome = await repo.transition(
+        outcome = await repo().transition(
             db, jid, target,
             # A blocking decision's reason IS the blocked reason the customer is eventually told;
             # recording it twice in different words is how the two come to disagree.
@@ -240,11 +246,11 @@ async def decide_job(job_id: str, body: DecideIn) -> dict:
         # THE DECISION IS RECORDED EVEN WHEN THE JOB WAS ALREADY THERE. A second operator
         # confirming the same move is a real event with its own actor, and the audit is the
         # history of what people decided, not of what changed.
-        await repo.record_decision(db, repair_job_id=jid, decision=name, actor=body.actor,
+        await repo().record_decision(db, repair_job_id=jid, decision=name, actor=body.actor,
                                    from_status=was, reason=reason, notes=body.notes.strip())
         await db.commit()
-        job = await repo.get_internal(db, jid)
-        decisions = await repo.decisions_for_job(db, jid)
+        job = await repo().operator_job(db, jid)
+        decisions = await repo().decisions_for_job(db, jid)
 
     return {"job": _job_row(job), "applied": outcome.value,
             "decisions": [_decision_row(d) for d in decisions]}

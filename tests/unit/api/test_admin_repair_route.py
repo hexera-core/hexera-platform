@@ -61,7 +61,9 @@ class _Repo:
         rows.sort(key=lambda j: (j.service_priority, j.created_at))
         return rows[:limit]
 
-    async def get_internal(self, db, job_id):
+    async def operator_job(self, db, job_id):
+        # the repository's CROSS-TENANT read, named as such - `get_internal` is the worker's seam
+        # and the architecture suite forbids a request handler from touching it
         return self.jobs.get(job_id)
 
     async def attempts_for_job(self, db, job_id):
@@ -130,7 +132,9 @@ def _client(monkeypatch, repo: _Repo):
         yield _Session()
 
     monkeypatch.setattr(admin_repair, "get_db", _no_db)
-    monkeypatch.setattr(admin_repair, "repo", repo)
+    # `repo` is a factory on the module, so the route resolves persistence per call rather than
+    # importing it at module scope; the double is substituted the same way
+    monkeypatch.setattr(admin_repair, "repo", lambda: repo)
     monkeypatch.setattr(polcfg, "ADMIN_API_KEY", ADMIN_KEY)
     app = FastAPI()
     app.include_router(admin_repair.router, prefix="/api/v1/admin/repair")

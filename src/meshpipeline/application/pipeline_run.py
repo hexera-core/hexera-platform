@@ -1017,6 +1017,7 @@ async def _run_async(req: JobRequest) -> dict:
                 pipeline_timed_out=_timed_out,
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
+                repair_lineage=dict(final_state.get("repair_lineage") or {}),
                 engine_ladder=_ladder_record(
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),

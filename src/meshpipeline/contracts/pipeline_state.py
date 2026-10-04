@@ -16,7 +16,11 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 13  # v13: `repair_status` + `repair_report` - what CAD repair inspection
+STATE_SCHEMA_VERSION = 14  # v14: `repair_lineage` - when repaired geometry REPLACED the approved
+                           # upload as the geometry this run meshes, which bytes it replaced
+                           # (pipeline/repair_promote.py). `geometry` always names what is being
+                           # meshed; this says what it used to be. Carries every v13 field.
+                           # v13: `repair_status` + `repair_report` - what CAD repair inspection
                            # said about the verified input on the way into the mesh run
                            # (node_repair_inspect). Diagnostics: neither field moves geometry.
                            # Carries every v12 field.
@@ -67,6 +71,12 @@ class PipelineState(TypedDict):
     # Diagnostics only - no reader may treat either as a decision, and neither moves `geometry`.
     repair_status: str
     repair_report: dict
+    # SET ONLY WHEN A REPAIR WAS PROMOTED (pipeline/repair_promote.py): the identity of the
+    # original upload this run stopped meshing, the repaired bytes that replaced it, and the
+    # engine the replacement was proved to stage for. Empty on every run that meshed what the
+    # customer sent, which is most of them. `geometry` is always what IS being meshed - no reader
+    # has to choose between two candidates - and this is the record of what it was before.
+    repair_lineage: dict
 
     domain:     str
     engine_params: dict   # engine-NATIVE declared params (ParamSpec answers; see data_contract)

@@ -86,3 +86,56 @@ def test_only_the_conservative_profile_runs_here(tmp_path):
     source = write_step(tmp_path / "box.step", "MM")
     with pytest.raises(RepairUnavailable, match="operator"):
         repair_step_file(source, tmp_path / "out.step", profile=RepairProfile.mesh_ready)
+
+
+def test_a_real_repaired_part_can_be_promoted_to_the_runs_geometry(tmp_path):
+    """The promotion path against the real kernel: repair a part, then prove the result stages.
+
+    WHAT THIS DOES NOT PROVE. The roadmap's acceptance for this stage is "the original fails
+    staging, the repaired output passes". The second half is what runs here; the first needs a
+    fixture whose geometry OpenCASCADE genuinely refuses to stage, and a part that broken cannot
+    be authored reliably from the kernel's own constructors - every shape they build is sound by
+    construction. Until such a fixture exists (a real customer file, licensed and reduced), the
+    honest claim is this one: a repaired part is accepted only because it provably staged.
+    """
+    from tests._geometry_support import geometry_state
+
+    from meshpipeline.contracts.geometry_source import (
+        GeometrySourceRef,
+        MaterializedGeometry,
+        sha256_of,
+    )
+    from meshpipeline.pipeline.geometry_state import materialized
+    from meshpipeline.pipeline.repair_promote import derived_interpretation, promote
+
+    source = write_step(tmp_path / "part.step", "MM")
+    state = {"job_id": "native-1", "engine": "gmsh",
+             "geometry": geometry_state(tmp_path, filename="part.step")}
+    original = materialized(state)
+
+    repaired_path = tmp_path / "part-repaired.step"
+    repair_step_file(source, repaired_path)
+    assert repaired_path.exists()
+
+    digest, size = sha256_of(repaired_path)
+    # THE REPAIRED BYTES ARE THEIR OWN SOURCE: the digest is the identity, so a handle claiming
+    # the original's digest for different bytes would make every later provenance claim a lie.
+    repaired_id = "native-repaired-source"
+    repaired = MaterializedGeometry(
+        ref=GeometrySourceRef(
+            source_id=repaired_id, owner_id=original.ref.owner_id,
+            object_key=f"sources/{repaired_id}", sha256=digest, size_bytes=size,
+            original_filename="part-repaired.step", suffix_hint=".step"),
+        interpretation=derived_interpretation(original, source_id=repaired_id),
+        local_path=repaired_path)
+
+    update = promote(state, repaired=repaired, engine="gmsh", attempt=1)
+
+    # it staged for the real engine through the real kernel, so it is what the run meshes now
+    assert update["geometry"]["ref"]["sha256"] == digest
+    lineage = update["repair_lineage"]
+    assert lineage["original"]["sha256"] == original.ref.sha256
+    assert lineage["engine_staged_for"] == "gmsh"
+    # the unit was carried, not re-resolved
+    assert update["geometry"]["interpretation"]["unit"] == \
+        state["geometry"]["interpretation"]["unit"]

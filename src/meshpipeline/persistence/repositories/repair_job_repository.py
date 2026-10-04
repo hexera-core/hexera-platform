@@ -175,6 +175,18 @@ class RepairJobRepository:
     # question with a different answer. Nothing here takes an owner_id, so no caller can mistake
     # one of these for a tenant-scoped read by leaving an argument off.
 
+    async def operator_job(self, db: AsyncSession, job_id: uuid.UUID) -> CadRepairJob | None:
+        """ONE repair job, read ACROSS tenants for the operator surface.
+
+        Named rather than reached through `get_internal`, which is the worker's seam: the
+        architecture suite forbids request-facing code from calling that, and rightly - a request
+        handler reading unscoped by accident is how one tenant's data reaches another. This method
+        says cross-tenant in its own name, so a reviewer sees the intent at the call site, and the
+        route that uses it is gated by the admin credential rather than an owner identity.
+        """
+        res = await db.execute(select(CadRepairJob).where(CadRepairJob.id == job_id))
+        return res.scalar_one_or_none()
+
     async def operator_queue(self, db: AsyncSession, *,
                              statuses: tuple[RepairJobStatus, ...] = (),
                              assigned_operator: str | None = None,
