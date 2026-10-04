@@ -29,6 +29,10 @@ MAX_VOXELS = 8_000_000
 #: At most this many sealed spaces are named (largest first).
 MAX_CAVITIES = 32
 
+#: The rasteriser's sample budget (points laid on the triangles); a surface needing more is not
+#: read - the case is then authored exactly as before.
+MAX_SAMPLES = 150_000_000
+
 
 @dataclass(frozen=True)
 class SealedCavity:
@@ -120,7 +124,15 @@ def _read_cavities(tris, *, cell_m: float, gap_cells: float, min_cells: float, m
         return None
     shape = tuple(int(d) for d in dims)
     origin = lo - (r + 4) * h
-    blocked = _rasterize(origin, h, shape, T[finite], deadline=deadline)
+    # the rasteriser samples every triangle every h/3: bound that work up front, since it checks
+    # its deadline only between batches of similar triangles
+    tf_ = T[finite]
+    area = 0.5 * float(np.linalg.norm(np.cross(tf_[:, 1] - tf_[:, 0], tf_[:, 2] - tf_[:, 0]),
+                                      axis=1).sum())
+    if 2.0 * area / (h / 3.0) ** 2 + 4.0 * len(tf_) > MAX_SAMPLES:
+        logger.info("sealed cavities: surface too large to read within budget - skipped")
+        return None
+    blocked = _rasterize(origin, h, shape, tf_, deadline=deadline)
 
     six = ndimage.generate_binary_structure(3, 1)
     raw, _ = ndimage.label(~blocked, structure=six)
@@ -217,11 +229,42 @@ def _read_cavities(tris, *, cell_m: float, gap_cells: float, min_cells: float, m
 CLOSED_SHELL_OPEN_EDGES = 0.01
 
 
+#: Material sides are read by ray parity for at most this many closed shells (largest first) and
+#: this many faces each; any further shell falls back to its signed volume.
+PARITY_SHELLS = 200
+PARITY_FACES = 3
+
+
+def _crossings(points: np.ndarray, d: np.ndarray, T: np.ndarray, chunk: int = 2048) -> np.ndarray:
+    """How many triangles the ray from each point along d crosses (Moller-Trumbore)."""
+    count = np.zeros(len(points), dtype=np.int64)
+    for s in range(0, len(T), chunk):
+        tri = T[s:s + chunk]
+        v0, e1, e2 = tri[:, 0], tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
+        p = np.cross(d, e2)                                   # (m, 3)
+        det = (e1 * p).sum(-1)
+        ok = np.abs(det) > 1e-30
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        sv = points[:, None, :] - v0[None, :, :]              # (R, m, 3)
+        u = (sv * p[None]).sum(-1) * inv[None]
+        q = np.cross(sv, e1[None])
+        v = (q * d).sum(-1) * inv[None]
+        t = (q * e2[None]).sum(-1) * inv[None]
+        hit = ok[None] & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)
+        count += hit.sum(axis=1)
+    return count
+
+
 def outward_signs(tris) -> np.ndarray:
     """Per triangle, +1 or -1: the sign that turns its normal OUT of the material of the closed
-    shell it belongs to (a shell's signed volume is positive when its normals point out), or 0 for
-    a face of an open sheet, which has no inside. Shells are the edge-connected pieces of the
-    surface; coincident corners are welded first."""
+    shell it belongs to, or 0 for a face of an open sheet, which has no inside. Shells are the
+    edge-connected pieces of the surface; coincident corners are welded first.
+
+    Which side is material is read by RAY PARITY over the whole surface: a point just off a face
+    is inside material when a ray from it crosses the surface an odd number of times. A shell's
+    own signed volume cannot tell a solid modelled inside-out from the skin of a void nested in
+    another part (both read negative) - the inner skin of a sealed hollow body is the second kind,
+    and its outward side is the void. Signed volume is the fallback past PARITY_SHELLS shells."""
     T = np.asarray(tris, dtype=float)
     n = int(len(T))
     out = np.zeros(n, dtype=np.int8)
@@ -253,8 +296,38 @@ def outward_signs(tris) -> np.ndarray:
     vol_per = np.bincount(comp, weights=vol6, minlength=n_comp)
     closed = (open_per <= CLOSED_SHELL_OPEN_EDGES * edges_per) & (vol_per != 0.0)
     sign = np.where(closed, np.sign(vol_per), 0.0).astype(np.int8)
+
+    # ray parity for the largest closed shells: a point a hair in front of a face (along its own
+    # normal) inside material means the normal points INTO material, so the outward sign is -1
+    fn = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    area2 = np.linalg.norm(fn, axis=1)
+    area_per = np.bincount(comp, weights=area2, minlength=n_comp)
+    shells = [int(k) for k in np.argsort(-area_per) if closed[k]][:PARITY_SHELLS]
+    if shells:
+        good = area2 > 0
+        diag = float(np.linalg.norm(V.max(axis=0) - V.min(axis=0))) or 1.0
+        probes, owner_shell = [], []
+        for k in shells:
+            faces = np.flatnonzero((comp == k) & good)
+            if len(faces) == 0:
+                continue
+            pick = faces[np.argsort(-area2[faces])[:PARITY_FACES]]
+            for f in pick:
+                u = fn[f] / area2[f]
+                # a hair off the face: far below any wall thickness, far above round-off
+                probes.append(T[f].mean(axis=0) + u * 1e-6 * diag)
+                owner_shell.append(k)
+        if probes:
+            d = np.array([0.5773503, 0.5773807, 0.5772199])     # off-axis: misses edges
+            d = d / np.linalg.norm(d)
+            odd = _crossings(np.asarray(probes), d, T[np.isfinite(T).all(axis=(1, 2))]) % 2 == 1
+            votes: dict[int, list[int]] = {}
+            for k, o in zip(owner_shell, odd):
+                votes.setdefault(k, []).append(-1 if o else 1)
+            for k, vs in votes.items():
+                sign[k] = 1 if sum(vs) > 0 else -1
     return sign[comp]
 
 
-__all__ = ["CLOSED_SHELL_OPEN_EDGES", "CavityReading", "MAX_VOXELS", "MIN_CAVITY_CELLS",
-           "SEAL_GAP_CELLS", "SealedCavity", "outward_signs", "read_cavities"]
+__all__ = ["CLOSED_SHELL_OPEN_EDGES", "CavityReading", "MAX_SAMPLES", "MAX_VOXELS",
+           "MIN_CAVITY_CELLS", "SEAL_GAP_CELLS", "SealedCavity", "outward_signs", "read_cavities"]

@@ -105,6 +105,23 @@ def test_the_far_field_wets_the_outer_skin_and_not_the_sealed_inner_one():
         "the cavity's own skin faces only the sealed space - it is no part of the meshed wall")
 
 
+def test_a_closed_voids_own_skin_is_read_from_the_void_side_and_is_dry():
+    # outer skin and inner skin as two separate closed shells, the inner one's normals pointing
+    # into the void (out of the wall material): its signed volume reads negative exactly like an
+    # inside-out solid, but ray parity knows the void is not material
+    tris = np.asarray(_hollow_shell(gap=None))
+    signs = outward_signs(tris)
+    c = tris.mean(axis=1)
+    outer = np.isclose(c, 0.0).any(axis=1) | np.isclose(c, 0.1).any(axis=1)
+    assert set(signs[outer].tolist()) == {1}
+    assert set(signs[~outer].tolist()) == {1}, "the void's skin already points out of the wall"
+    r = read_cavities(tris, cell_m=0.004)
+    assert (r.wet_sides[outer] != 0).all()
+    assert (r.wet_sides[~outer] == 0).all(), (
+        "a 2 mm wall is thinner than the reading's step - stepping through it from the inner "
+        "skin would have reached the far field and called the void's skin wetted")
+
+
 def test_outward_signs_follow_each_closed_shell_and_skip_open_sheets():
     cube = np.asarray(_box((0, 0, 0), (1, 1, 1)))
     assert set(outward_signs(cube).tolist()) == {1}

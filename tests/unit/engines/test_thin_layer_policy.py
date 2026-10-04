@@ -173,16 +173,22 @@ def test_reconcile_degrades_to_uniform_on_real_cad_regions():
     pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
     out = LP.reconcile_policy(pol, ["fluid", "casing"], "body")
     assert out.mode == "uniform"
-    assert LP.layer_counts_for(out) == {"body": 5}
+    # the count lands on the regions that were staged, by their own names - keyed by the wall
+    # name alone, the renderer gave each real region the full request whatever the ladder
+    # decided, and the record named a patch that did not exist
+    assert LP.layer_counts_for(out) == {"fluid": 5, "casing": 5}
     # from stage 1 the ladder reduces uniformly, to the thin class's count of that stage
     pol1 = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
                                 stage=1)
     out1 = LP.reconcile_policy(pol1, ["fluid", "casing"], "body")
-    assert LP.layer_counts_for(out1) == {"body": 3}
+    assert LP.layer_counts_for(out1) == {"fluid": 3, "casing": 3}
     pol2 = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
                                 stage=2)
     out2 = LP.reconcile_policy(pol2, ["fluid", "casing"], "body")
-    assert LP.layer_counts_for(out2) == {"body": 2}
+    assert LP.layer_counts_for(out2) == {"fluid": 2, "casing": 2}
+    # a surface staged as the one wall keeps the one entry
+    assert LP.layer_counts_for(LP.reconcile_policy(pol1, ["body"], "body")) == {"body": 3}
+    assert LP.layer_counts_for(LP.reconcile_policy(pol1, [], "body")) == {"body": 3}
 
 
 # -- the authored artefacts -------------------------------------------------------------------

@@ -266,9 +266,15 @@ def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
         return None
     regions = [str(r) for r in (surface_regions or [])]
     names = _region_names(wall_name)
+    synthetic = {names["thin"], names["razor"]}
+    # the patches a uniform count lands on: the user's own named regions when the surface carries
+    # them (keyed by the wall name alone, the renderer gave each region the FULL request whatever
+    # the ladder said, and the record named a patch that was never staged), else the one wall
+    real = [r for r in regions if r not in synthetic]
+    uniform_patches = (dict.fromkeys(real, "uniform") if real and real != [names["normal"]]
+                       else {names["normal"]: "uniform"})
     p = dict(policy.policy)
     if policy.mode == "split":
-        synthetic = {names["thin"], names["razor"]}
         if regions and (synthetic & set(regions)):
             # keep only the class regions that actually exist on the staged surface
             p["region_patches"] = {r: c for r, c in p["region_patches"].items() if r in regions}
@@ -278,11 +284,13 @@ def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
         n_req = int(p.get("requested_layers", 0))
         uniform = n_req if stage <= 0 else class_layer_counts(n_req, stage)["thin"]
         p["mode"] = "uniform"
-        p["region_patches"] = {names["normal"]: "uniform"}
+        p["region_patches"] = uniform_patches
         p["classes"] = {c: {"n_layers": uniform, "area_frac": p["classes"][c]["area_frac"]}
                         for c in p["classes"]}
         p["uniform_n_layers"] = uniform
         return LayerPolicy(policy=p, labels=None)
+    if policy.mode == "uniform":
+        p["region_patches"] = uniform_patches
     return LayerPolicy(policy=p, labels=policy.labels)
 
 
