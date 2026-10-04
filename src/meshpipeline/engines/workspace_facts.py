@@ -38,6 +38,18 @@ def read_dimensionality(workspace) -> str:
         return ""
 
 
+def read_far_field_request(workspace) -> dict:
+    """The approved far-field request the builder recorded: {requested_extents, reference_length_m,
+    flow_axis}, each present only when the intake approved one; {} for none (internal flow, a
+    programmatic submit)."""
+    try:
+        p = Path(workspace) / "far_field_request.json"
+        out = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        return out if isinstance(out, dict) else {}
+    except Exception:  # noqa: BLE001 - absent or unreadable means nothing was approved
+        return {}
+
+
 def port_declaration(workspace) -> list[dict]:
     """The verbatim intake patch declaration (sizes/locations included), or [] when none was
     written - programmatic submits have no declaration and keep engine-canonical names."""
