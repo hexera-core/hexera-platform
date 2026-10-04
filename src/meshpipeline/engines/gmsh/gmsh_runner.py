@@ -37,12 +37,15 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("tess")
-        tags = gmsh.model.occ.importShapes(str(geom_path))
-        if factor != 1.0:
-            # ONE dilation about the origin, before synchronize: entity tags, volumes and
-            # surfaces are carried through it, so physical groups assigned later still land on
-            # the same topology.
-            gmsh.model.occ.dilate(tags, 0, 0, 0, factor, factor, factor)
+        # The metre scale is applied AS the shapes are read (a uniform similarity, OCC's
+        # BRepBuilderAPI_Transform), not by occ.dilate afterwards: dilate is a general affine map
+        # that rebuilds every curve, and on the Toyota Supra STEP it stopped staging with
+        # "Geom_TrimmedCurve::parameters out of range" before any mesher ran (2026-10-04).
+        gmsh.option.setNumber("Geometry.OCCScaling", float(factor))
+        try:
+            gmsh.model.occ.importShapes(str(geom_path))
+        finally:
+            gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
