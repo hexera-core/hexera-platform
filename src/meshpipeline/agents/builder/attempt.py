@@ -152,6 +152,7 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
         far_field={"requested_extents": state.get("requested_extents"),
                    "reference_length_m": state.get("reference_length_m"),
                    "flow_axis": state.get("flow_axis")},
+        input_kind=str(state.get("input_kind") or ""),
     )
 
 
