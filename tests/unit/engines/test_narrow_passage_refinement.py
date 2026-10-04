@@ -169,3 +169,51 @@ def test_snappy_turns_the_narrow_boxes_into_thin_regions_over_the_wall_level():
     assert D._aligned_wall_cell(0.4e-3, field) == 0.4e-3
     assert D._aligned_wall_cell(0.33e-3, field) == pytest.approx(2 * 0.002 / 13)
     assert D._aligned_wall_cell(0.4e-3, None) == 0.4e-3
+
+
+def test_a_lid_reads_its_hydraulic_diameter(tmp_path):
+    import pyvista as pv
+    # annular_001's annulus: a 151 mm bore around a 125 mm rod - the flow crosses a 13 mm gap
+    ring = pv.Disc(inner=0.0625, outer=0.0755, r_res=4, c_res=180).triangulate()
+    ring.save(str(tmp_path / "ring.stl"))
+    disc = pv.Disc(inner=0.0, outer=0.05, r_res=6, c_res=180).triangulate()
+    disc.save(str(tmp_path / "disc.stl"))
+    assert P.lid_hydraulic_diameter(tmp_path / "ring.stl") == pytest.approx(0.026, rel=0.02)
+    assert P.lid_hydraulic_diameter(tmp_path / "disc.stl") == pytest.approx(0.1, rel=0.01)
+    dh = P.lid_hydraulic_diameters({"wall": "w.stl", "inlet": str(tmp_path / "ring.stl")}, "wall")
+    assert set(dh) == {"inlet"}
+    # the lid only narrows the port reading: a wall solid's lid can be its whole flanged end
+    openings = {"inlet": {"area": 3.14159 * 0.0755 ** 2}, "outlet": {"area": 3.14159 * 0.05 ** 2}}
+    st = P.port_radius_stats(openings, {"inlet": 0.026, "outlet": 0.3})
+    assert st["min"] == pytest.approx(0.013, rel=1e-3) and st["max"] == pytest.approx(0.05, rel=1e-3)
+
+
+def test_cfmesh_does_not_size_from_an_outer_skin_the_ports_do_not_vouch_for(monkeypatch):
+    import meshpipeline.engines.cfmesh.cfmesh_runner as R
+    pts = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1.0, 0], [1.0, 1.0, 0]])
+    faces = np.array([[0, 1, 2], [1, 3, 2]])
+    skin = np.full(4, 0.21)                    # straight_reducer_015's outer skin: 210 mm
+    monkeypatch.setattr(P, "staged_passage_field",
+                        lambda *_a, **k: (pts, faces, skin) if k.get("field") is None
+                        else k["field"])
+    monkeypatch.setattr(P, "lid_hydraulic_diameters", lambda *_a, **_k: {})
+    t = {"openings": {"in": {"area": 3.14159 * 0.0825 ** 2}, "out": {"area": 3.14159 * 0.165 ** 2}}}
+    chosen, field = R._passage_sizing(t, {}, "wall", [])
+    assert chosen["source"] == "ports" and field is None
+    assert chosen["p05"] == pytest.approx(0.0825, rel=1e-3)
+
+
+def test_cfmesh_bands_at_the_narrowest_passage_while_that_is_affordable(monkeypatch):
+    import meshpipeline.engines.cfmesh.cfmesh_runner as R
+    pts, faces = (np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1.0, 0], [1.0, 1.0, 0]]),
+                  np.array([[0, 1, 2], [1, 3, 2]]))
+    r = np.array([0.05, 0.1, 0.1, 0.1])
+    monkeypatch.setattr(P, "staged_passage_field",
+                        lambda *_a, **k: (pts, faces, r) if k.get("field") is None else k["field"])
+    monkeypatch.setattr(P, "lid_hydraulic_diameters", lambda *_a, **_k: {})
+    t = {"openings": {"in": {"area": 3.14159 * 0.06 ** 2}}}
+    cheap, _ = R._passage_sizing(t, {}, "wall", [])
+    assert cheap["band_from"] == "narrowest" and cheap["band"] == pytest.approx(cheap["p05"])
+    monkeypatch.setattr(P, "GLOBAL_BAND_MAX_CELLS", 1)
+    dear, field = R._passage_sizing(t, {}, "wall", [])
+    assert dear["band_from"] == "typical" and dear["band"] > dear["p05"] and field is not None

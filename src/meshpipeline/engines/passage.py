@@ -130,11 +130,13 @@ def radius_stats(radius) -> dict:
             "points": int(len(r))}
 
 
-def port_radius_stats(openings) -> dict:
-    """Equivalent radii of the bound openings (sqrt(area / pi) each): the passage radius AT the
-    ports, always readable, the yardstick for the chord reading. {} without areas."""
+def port_radius_stats(openings, hydraulic: dict | None = None) -> dict:
+    """Radii of the bound openings: the passage radius AT the ports, always readable, the
+    yardstick for the chord reading. Half the lid's hydraulic diameter where `hydraulic` has it
+    (lid_hydraulic_diameters - an annulus is its gap, not its bore), else the equivalent radius
+    sqrt(area / pi). {} without areas."""
     radii = []
-    for rec in (openings or {}).values():
+    for name, rec in (openings or {}).items():
         if not isinstance(rec, dict):
             continue
         area = (rec.get("opening") or {}).get("area") if isinstance(rec.get("opening"), dict) else None
@@ -147,7 +149,11 @@ def port_radius_stats(openings) -> dict:
         except (TypeError, ValueError):
             continue
         if a > 0.0:
-            radii.append(float(np.sqrt(a / np.pi)))
+            r = float(np.sqrt(a / np.pi))
+            # the lid only ever NARROWS the reading: a wall solid's lid can be its whole end
+            # (flange and all, wider than the bore the opening area measures)
+            dh = (hydraulic or {}).get(str(name))
+            radii.append(min(r, 0.5 * float(dh)) if dh else r)
     if not radii:
         return {}
     r = np.asarray(radii, dtype=float)
@@ -673,23 +679,98 @@ def declared_port_widths(intake_patches, openings: dict | None = None) -> list[t
     return out
 
 
-def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration):
+#: A wall band at the NARROWEST passage is kept while it costs fewer cells than this (estimated
+#: by band_shell_cells); above it, the band is the typical passage and the narrow ones are refined
+#: locally. Sized from the narrowest passage everywhere, a part with one passage width meshes
+#: as it always did (most of the corpus: 50-430k cells); a multi-scale one - the Fluent aorta
+#: (an estimated 3.8 M in the band alone, no mesh in 47 min), manifold_003 (4.6 M cells),
+#: manifold_004's wall solid (6.6 M) - is not cut at its smallest passage's cell end to end.
+GLOBAL_BAND_MAX_CELLS = 300_000
+
+
+def band_shell_cells(points, faces, radius, band_radius: float,
+                     target: float = PASSAGE_CELLS_ACROSS) -> float:
+    """Cells a wall band sized for `band_radius` costs: the wall's area, a band one radius thick
+    (thinner where the passage is), at `target` cells across that radius."""
+    if not band_radius or band_radius <= 0.0:
+        return float("inf")
+    a = point_areas(points, faces)
+    cell = 2.0 * float(band_radius) / float(target)
+    depth = np.minimum(1.1 * float(band_radius), np.asarray(radius, dtype=float))
+    return float((a * depth).sum()) / cell ** 3
+
+
+def lid_hydraulic_diameter(path) -> float | None:
+    """The hydraulic diameter of a staged port lid, 4 x area / perimeter, in its file's unit:
+    the bore of a round lid, twice the gap of an annulus (an annular port with a centre body),
+    the right width of a slot or a rectangle - where the area-equivalent diameter read an
+    annulus as its 151 mm bore while the flow crosses a 13.2 mm gap (annular_001: 3 cells across
+    the gap, 2026-10-04). The perimeter is the lid's free boundary once coincident points are
+    merged. None when the lid cannot be read or its boundary is not a few closed loops."""
+    import pyvista as pv
+    try:
+        lid = pv.read(str(path)).extract_surface().triangulate()
+        if lid.n_cells == 0:
+            return None
+        area = float(lid.area)
+        span = float(np.linalg.norm(np.asarray(lid.bounds[1::2]) - np.asarray(lid.bounds[0::2])))
+        lid = lid.clean(tolerance=1e-6 * max(span, 1e-12), absolute=True)
+        edges = lid.extract_feature_edges(boundary_edges=True, feature_edges=False,
+                                          manifold_edges=False, non_manifold_edges=False)
+        if edges.n_cells == 0:
+            return None
+        e = np.asarray(edges.lines).reshape(-1, 3)[:, 1:]
+        p = np.asarray(edges.points, dtype=float)
+        perimeter = float(np.linalg.norm(p[e[:, 1]] - p[e[:, 0]], axis=1).sum())
+    except Exception:  # noqa: BLE001 - a sizing aid; the caller keeps its own yardstick
+        logger.warning("hydraulic diameter of %s could not be read", path, exc_info=True)
+        return None
+    if area <= 0.0 or perimeter <= 0.0:
+        return None
+    dh = 4.0 * area / perimeter
+    d_eq = 2.0 * float(np.sqrt(area / np.pi))
+    # never wider than the circle of the same area (a circle is the widest); far narrower than
+    # any real slot means the boundary is a soup of unjoined triangles, not the lid's outline
+    return dh if 0.02 * d_eq <= dh <= 1.0001 * d_eq else None
+
+
+def lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
+    """{port name: hydraulic diameter} of every staged lid that reads (lid_hydraulic_diameter)."""
+    out = {}
+    for name, v in (srcs or {}).items():
+        if name == wall_key:
+            continue
+        paths = v if isinstance(v, list) else [v]
+        if len(paths) != 1:
+            continue
+        dh = lid_hydraulic_diameter(paths[0])
+        if dh:
+            out[str(name)] = dh
+    return out
+
+
+def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration, *,
+                         corrected: bool = True, field=None):
     """(points, faces, radius) of an internal-flow staging's cavity wall - the record
     tessellate_internal returns (`openings` with their centroids) and its surfaces by patch
     (`srcs`: the wall under `wall_key`, the port caps the rest) - with the radius held near each
-    declared port to that port's half flow-width (port_corrected_radius). None when the wall
-    cannot be read."""
-    wall_src = srcs.get(wall_key) or []
-    wall_paths = wall_src if isinstance(wall_src, list) else [wall_src]
-    cap_paths = [p for k, v in srcs.items() if k != wall_key
-                 for p in (v if isinstance(v, list) else [v])]
+    declared port to that port's half flow-width (port_corrected_radius) unless `corrected` is
+    False. A `field` already read (uncorrected) is corrected rather than read again. None when
+    the wall cannot be read."""
     openings = t.get("openings") or {}
-    centroids = [o.get("centroid") for o in openings.values()
-                 if isinstance(o, dict) and o.get("centroid")]
-    field = passage_field_of_stls(wall_paths, cap_paths=cap_paths, port_centroids=centroids)
+    if field is None:
+        wall_src = srcs.get(wall_key) or []
+        wall_paths = wall_src if isinstance(wall_src, list) else [wall_src]
+        cap_paths = [p for k, v in srcs.items() if k != wall_key
+                     for p in (v if isinstance(v, list) else [v])]
+        centroids = [o.get("centroid") for o in openings.values()
+                     if isinstance(o, dict) and o.get("centroid")]
+        field = passage_field_of_stls(wall_paths, cap_paths=cap_paths, port_centroids=centroids)
     if field is None:
         return None
     pts, faces, r = field
+    if not corrected:
+        return pts, faces, r
     return pts, faces, port_corrected_radius(pts, r, declared_port_widths(declaration, openings))
 
 

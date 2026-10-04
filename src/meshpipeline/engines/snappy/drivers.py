@@ -835,14 +835,49 @@ def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]
     return bind_intake(t, intake_patches)
 
 
+def _lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
+    """{port: hydraulic diameter of its staged lid} (engines/passage); {} when none reads."""
+    from meshpipeline.engines.passage import lid_hydraulic_diameters
+    try:
+        return lid_hydraulic_diameters(srcs, wall_key)
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("lid hydraulic diameters failed - sizing from the port areas")
+        return {}
+
+
+def _bore_port_name(t: dict) -> str:
+    """The port _bore_area_m2 sizes from: the largest declared inlet (any port without one)."""
+    def _opening(p: dict) -> float:
+        v = p.get("opening_area_m2")
+        return float(v) if v is not None else float(p.get("area_m2") or 0.0)
+    ports = (t.get("binding") or {}).get("ports") or []
+    if ports:
+        pool = [p for p in ports if p.get("role") == "inlet"] or list(ports)
+        return str(max(pool, key=_opening).get("name"))
+    return "inlet"
+
+
 def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: list):
     """(points, radius, wall area per point) of the staged cavity wall, held near each declared
-    port to its half flow-width (engines/passage.staged_passage_field); None when unreadable."""
-    from meshpipeline.engines.passage import point_areas, staged_passage_field
-    field = staged_passage_field(t, srcs, wall_key, intake_patches)
-    if field is None:
+    port to its half flow-width (engines/passage.staged_passage_field); None when unreadable,
+    or when the ports do not vouch for the reading (a hollow part's outer skin read instead of
+    its bore: the boxes would be placed by a passage that is not there)."""
+    from meshpipeline.engines.passage import (
+        field_radius_stats,
+        plausible_radius,
+        point_areas,
+        port_radius_stats,
+        staged_passage_field,
+    )
+    raw = staged_passage_field(t, srcs, wall_key, intake_patches, corrected=False)
+    if raw is None:
         return None
-    pts, faces, r = field
+    ports = port_radius_stats(t.get("openings"), _lid_hydraulic_diameters(srcs, wall_key))
+    if ports and not plausible_radius(field_radius_stats(*raw), ports):
+        logger.info("narrow passages: the staged wall's reading is not the passage the ports "
+                    "describe - no local refinement")
+        return None
+    pts, faces, r = staged_passage_field(t, srcs, wall_key, intake_patches, field=raw)
     return pts, r, point_areas(pts, faces)
 
 
@@ -955,14 +990,23 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # constant. With a binding it is the DECLARED inlet's area (the guess is dead there).
     _inlet_area = _bore_area_m2(t) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
+    # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
+    # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
+    # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
+    _dh = _lid_hydraulic_diameters(_srcs, _wall_key)
+    _bore_name = _bore_port_name(t)
+    if _dh.get(_bore_name):
+        bore_D = min(bore_D, float(_dh[_bore_name]))
     # EVERY port's own diameter, for per-port refinement: the base cell is sized from the
     # inlet bore, and a much smaller side port seals over at that size (the corpus's
-    # biggest failure cluster). Ring ports size by their inner opening, not the metal.
+    # biggest failure cluster). Ring ports size by their inner opening, not the metal - and
+    # every lid by its hydraulic diameter where it reads.
     _port_sizes: dict = {}
     for _nm, _rec in (t.get("openings") or {}).items():
         _a = float((_rec.get("opening") or {}).get("area") or _rec.get("area") or 0.0)
         if _a > 0:
-            _port_sizes[_nm] = 2.0 * _math.sqrt(_a / _math.pi)
+            _port_sizes[_nm] = min(2.0 * _math.sqrt(_a / _math.pi),
+                                   float(_dh.get(_nm) or float("inf")))
     # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
     # and that is wrong for every diffusing or combining part, where the feed is not the widest
     # port. The geometry alone often cannot settle it: a wye is a wye whether flow splits or joins.

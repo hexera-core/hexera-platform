@@ -386,18 +386,34 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
     for is replaced by the port radii, with no local refinement (the gate still measures the
     delivered mesh)."""
     from meshpipeline.engines.passage import (
+        GLOBAL_BAND_MAX_CELLS,
+        band_shell_cells,
         choose_passage_radius,
         declared_port_half_width,
         field_radius_stats,
+        lid_hydraulic_diameters,
         point_areas,
         port_radius_stats,
         staged_passage_field,
     )
-    field = staged_passage_field(t, srcs, wall_key, declaration)
-    chord = field_radius_stats(*field) if field is not None else {}
-    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings")))
-    if not chosen or not str(chosen.get("source", "")).startswith("chord"):
+    raw = staged_passage_field(t, srcs, wall_key, declaration, corrected=False)
+    # the ports vouch for the RAW reading: held to the port widths first, a reading off a hollow
+    # part's outer skin (straight_reducer_015: 210-336 mm on an 82-165 mm bore) passed the check
+    # at the ports and sized the whole wall from the skin (5.3 cells across, lab 2026-10-04).
+    # Each port is read by its lid's hydraulic diameter: an annulus is its gap, not its bore.
+    chord = field_radius_stats(*raw) if raw is not None else {}
+    chosen = choose_passage_radius(
+        chord, port_radius_stats(t.get("openings"), lid_hydraulic_diameters(srcs, wall_key)))
+    if not chosen or not str(chosen.get("source", "")).startswith("chord") or raw is None:
         return chosen, None
+    field = staged_passage_field(t, srcs, wall_key, declaration, field=raw)
+    chosen = {**field_radius_stats(*field), "source": chosen["source"]}
+    # the band at the NARROWEST passage while that is affordable (a one-width part meshes as it
+    # always did); the typical passage, with the narrow ones refined locally, when it is not
+    if band_shell_cells(*field, float(chosen["p05"])) <= GLOBAL_BAND_MAX_CELLS:
+        chosen = {**chosen, "band": chosen["p05"], "band_from": "narrowest"}
+    else:
+        chosen = {**chosen, "band_from": "typical"}
     widest = max((declared_port_half_width([p]) or 0.0 for p in declaration or []), default=0.0)
     if widest and chosen.get("band") and float(chosen["band"]) > widest:
         chosen = {**chosen, "band": widest, "band_capped_at_declared_port": True}
