@@ -1,6 +1,6 @@
 # Responsibility: Answer, from the engines' own declarations, which engine can mesh which flow from which form of geometry.
 # Owns: the canonical geometry forms, the flow kinds, the one reading of a file as CAD or surface, and the words for both.
-# Boundaries: it reads declarations (EngineSpec.accepts) and file names; it opens no file, meshes nothing and decides no run.
+# Boundaries: it reads declarations (EngineSpec.accepts), file names and FORMATS' reading of a file; it meshes nothing and decides no run.
 # Collaborates with: engines/base.py (FlowSupport, the admission rule), engines/registry.py, pipeline/geometry_admission.py,
 #                    pipeline/engine_fallback.py, pipeline/engine_select.py and agents/intake/.
 """WHICH ENGINE CAN MESH WHAT - one answer, read from the engines' own declarations.
@@ -72,19 +72,77 @@ def _suffix_of(source: object) -> str:
     return PurePath(text.replace("\\", "/")).suffix
 
 
+#: INTEGRATION SEAM (FORMATS, PR #134). FORMATS owns the answer to "CAD solid or surface":
+#: contracts.intake_formats.geometry_kind for every format it reads, and cad.ingest.step_facets for
+#: a STEP that is really a faceted mesh (a mesh saved as STEP is a SURFACE). Until #134 is on main
+#: these lookups find nothing and the suffix tables above answer; once it is, they answer here with
+#: no other change. After both have merged, the two lookups may become plain imports.
+_FORMATS_KIND = ("meshpipeline.contracts.intake_formats", "geometry_kind")
+_FORMATS_FACETED = ("meshpipeline.cad.ingest.step_facets", "is_faceted_step")
+_FACETED: dict[tuple, bool] = {}
+
+
+def _formats(where: tuple[str, str]):
+    """FORMATS' function at `where`, or None while it has not landed."""
+    import importlib
+    try:
+        return getattr(importlib.import_module(where[0]), where[1], None)
+    except ImportError:
+        return None
+
+
+def _formats_form(source: object) -> str:
+    kind_of = _formats(_FORMATS_KIND)
+    if kind_of is None:
+        return ""
+    try:
+        kind = kind_of(source)
+    except Exception:  # noqa: BLE001 - a question it cannot answer is answered by the suffix
+        return ""
+    form = str(getattr(kind, "value", kind) or "") if kind is not None else ""
+    return form if form in GEOMETRY_FORMS else ""
+
+
+def _is_faceted_step(source: object) -> bool:
+    """Whether an existing STEP file is a faceted mesh, by FORMATS' census of its faces. Read once
+    per file version; a name, a suffix or an unreadable file is not one."""
+    if not isinstance(source, (str, PurePath)) or _suffix_of(source) not in (".step", ".stp"):
+        return False
+    census = _formats(_FORMATS_FACETED)
+    if census is None:
+        return False
+    from pathlib import Path
+    try:
+        st = Path(source).stat()
+    except OSError:
+        return False
+    key = (str(source), st.st_size, st.st_mtime_ns)
+    if key not in _FACETED:
+        if len(_FACETED) > 256:
+            _FACETED.clear()
+        try:
+            _FACETED[key] = census(Path(source)) is not None
+        except Exception:  # noqa: BLE001 - a file the census cannot read stays what its name says
+            _FACETED[key] = False
+    return _FACETED[key]
+
+
 def geometry_form(source: object) -> str:
     """'cad' or 'surface' for a file path, file name or suffix; '' when it cannot be told.
 
-    THE ONE PLACE the system decides whether an input is a CAD solid or a surface. The formats
-    work (FORMATS) adds the reader-backed answer for every format it opens; this function is the
-    seam to point at it - every caller below reads the form through here and nowhere else.
-    Unknown answers '' and an unknown form is never a reason to refuse anything."""
-    suffix = _suffix_of(source)
-    if suffix in _CAD_SUFFIXES:
-        return FORM_CAD
-    if suffix in _SURFACE_SUFFIXES:
+    THE ONE PLACE the system decides whether an input is a CAD solid or a surface - every caller
+    reads the form through here and nowhere else. FORMATS' reader-backed answer comes first (see
+    the integration seam above), then the suffix tables. A STEP file on disk that is really a
+    faceted mesh is the surface it is. Unknown answers '' and an unknown form is never a reason to
+    refuse anything."""
+    form = _formats_form(source)
+    if not form:
+        suffix = _suffix_of(source)
+        form = (FORM_CAD if suffix in _CAD_SUFFIXES
+                else FORM_SURFACE if suffix in _SURFACE_SUFFIXES else "")
+    if form == FORM_CAD and _is_faceted_step(source):
         return FORM_SURFACE
-    return ""
+    return form
 
 
 def geometry_form_of_state(state: Mapping | None) -> str:

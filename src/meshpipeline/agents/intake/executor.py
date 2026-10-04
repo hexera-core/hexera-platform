@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from meshpipeline.agents.intake import admission_token as at
@@ -180,14 +181,29 @@ class IntakeToolExecutor:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
+    def _staged_upload(self) -> str:
+        # The upload as staged beside the session (the file cad/regions reads), or ''.
+        try:
+            import meshpipeline.settings.runtime as rtcfg
+            from meshpipeline.contracts.intake_formats import format_for_suffix
+
+            root = Path(rtcfg.JOBS_DIR) / str(self.state.session_id or "")
+            staged = sorted(p for p in root.iterdir()
+                            if p.is_file() and format_for_suffix(p.suffix.lower()))
+            return str(staged[0]) if staged else ""
+        except Exception:  # noqa: BLE001 - no staged file simply leaves the name to answer
+            return ""
+
     def _geometry_form(self) -> str:
-        # WHAT KIND OF FILE the user uploaded - a CAD solid or a surface mesh - read off the
-        # approved source's own name (engines/capability.geometry_form). Every engine check below
-        # asks the engine whether it takes THIS file for the flow; '' (no upload, or a name that
-        # says nothing) claims nothing, and nothing is refused on it.
+        # WHAT KIND OF FILE the user uploaded - a CAD solid or a surface mesh - asked of the one
+        # reading (engines/capability.geometry_form): the staged file itself first, so a STEP that
+        # is really a faceted mesh reads as the surface it is, then the approved source's own
+        # name. Every engine check below asks the engine whether it takes THIS file for the flow;
+        # '' (no upload, or a name that says nothing) claims nothing, and nothing is refused on it.
         from meshpipeline.engines.capability import geometry_form
         ref = self.state.source_ref
-        for candidate in (getattr(ref, "suffix_hint", ""), getattr(ref, "original_filename", "")):
+        for candidate in (self._staged_upload(), getattr(ref, "suffix_hint", ""),
+                          getattr(ref, "original_filename", "")):
             form = geometry_form(candidate)
             if form:
                 return form

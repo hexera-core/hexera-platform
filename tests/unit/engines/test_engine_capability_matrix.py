@@ -135,6 +135,44 @@ def test_the_form_is_read_from_the_runs_geometry_reference():
     assert cap.geometry_form_of_state({}) == "" and cap.geometry_form_of_state(None) == ""
 
 
+def _with_formats(monkeypatch, *, kind=None, faceted=None):
+    # FORMATS (#134) answers through the seam: contracts.intake_formats.geometry_kind and
+    # cad.ingest.step_facets.is_faceted_step, whichever of them is present
+    answers = {cap._FORMATS_KIND: kind, cap._FORMATS_FACETED: faceted}
+    monkeypatch.setattr(cap, "_formats", lambda where: answers.get(where))
+    cap._FACETED.clear()
+
+
+def test_formats_answer_comes_first_when_it_has_landed(monkeypatch):
+    kind = SimpleNamespace(value="surface")
+    _with_formats(monkeypatch, kind=lambda s: kind if str(s).endswith(".dxf") else None)
+    assert cap.geometry_form("panel.dxf") == "surface"     # a format only FORMATS knows
+    assert cap.geometry_form("wing.step") == "cad"         # not known to it: the suffix answers
+
+
+def test_a_step_file_that_is_a_faceted_mesh_is_a_surface(monkeypatch, tmp_path):
+    scan = tmp_path / "scan.stp"
+    scan.write_text("ISO-10303-21;")
+    real = tmp_path / "wing.step"
+    real.write_text("ISO-10303-21;")
+    _with_formats(monkeypatch, faceted=lambda p: object() if p.name == "scan.stp" else None)
+    assert cap.geometry_form(str(scan)) == "surface"
+    assert cap.geometry_form(str(real)) == "cad"
+    assert cap.geometry_form("scan.stp") == "cad", "a name alone cannot say a STEP is faceted"
+
+
+def test_the_intake_reads_the_staged_file_before_the_name(monkeypatch, tmp_path):
+    import meshpipeline.settings.runtime as rtcfg
+    (tmp_path / "s").mkdir()
+    (tmp_path / "s" / "aorta.stp").write_text("ISO-10303-21;")
+    monkeypatch.setattr(rtcfg, "JOBS_DIR", tmp_path)
+    _with_formats(monkeypatch, faceted=lambda p: object())
+    ex = _intake("cad")
+    assert ex._geometry_form() == "surface"
+    monkeypatch.setattr(rtcfg, "JOBS_DIR", tmp_path / "nowhere")
+    assert ex._geometry_form() == "cad"
+
+
 # admission: the one rule every consumer goes through
 
 @pytest.mark.parametrize("engine,flow,form", _cells())
