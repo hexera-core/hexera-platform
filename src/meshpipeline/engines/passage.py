@@ -181,6 +181,55 @@ def choose_passage_radius(chord: dict | None, ports: dict | None) -> dict | None
     return None
 
 
+def declared_port_half_width(intake_patches) -> float | None:
+    """Half the narrowest width the flow crosses at a DECLARED port, in metres: half a bore,
+    half a rectangle's SHORT side, half an annulus's radial gap, the equivalent radius of a port
+    declared by area only. None without a sized port. The intake states these in millimetres."""
+    from meshpipeline.engines.port_binding import DeclaredPatch
+    best: float | None = None
+    for p in intake_patches or []:
+        if not isinstance(p, dict) or str(p.get("type") or "") not in ("inlet", "outlet"):
+            continue
+        try:
+            dp = DeclaredPatch.from_intake(p)
+        except (KeyError, TypeError, ValueError):
+            continue
+        width = None
+        d, inner = dp.diameter_mm, dp.inner_diameter_mm
+        if d is not None and d > 0:
+            width = (d - inner) / 2.0 if inner is not None and 0.0 < inner < d else d
+        elif dp.width_mm and dp.height_mm and dp.width_mm > 0 and dp.height_mm > 0:
+            width = min(dp.width_mm, dp.height_mm)
+        elif dp.area_mm2 and dp.area_mm2 > 0:
+            width = 2.0 * float(np.sqrt(dp.area_mm2 / np.pi))
+        if width is not None and width > 0 and (best is None or width < best):
+            best = float(width)
+    return best / 2000.0 if best is not None else None
+
+
+def cap_at_ports(passage_radius: dict | None, port_half_width: float | None) -> dict | None:
+    """The radius statistics the size caps use, never wider at the narrow end than half the
+    narrowest declared port: the flow crosses that port, so the passage there is no wider, and
+    the wall band sized from it is what the resolution floor measures at the port's rim. The
+    chord reading can only read wider than that by mistake - off a hollow part's outer skin, or
+    along the LONG side of a rectangular duct (bend_elbow_003: 192 mm read on a 140 x 384 mm
+    duct, so the cells were sized for 384 and the 140 mm side had 9.5 across, 2026-10-04). A
+    narrower reading (a throat inside) stands. Unchanged without a declared size."""
+    if not port_half_width or port_half_width <= 0.0:
+        return passage_radius
+    if not passage_radius:
+        return {"min": port_half_width, "p05": port_half_width, "median": port_half_width,
+                "max": port_half_width, "points": 0, "source": "declared-ports"}
+    out = dict(passage_radius)
+    for k in ("min", "p05"):
+        if out.get(k) is not None and float(out[k]) > port_half_width:
+            out[k] = port_half_width
+            out["capped_at_declared_port"] = True
+    if out.get("median") is not None and float(out["median"]) < float(out["p05"]):
+        out["median"] = out["p05"]
+    return out
+
+
 def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS,
               ceiling: float = PASSAGE_CEILING_CELLS) -> dict:
     """The largest cells that still put `target` across the passage: the wall band at the
@@ -510,7 +559,8 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
 
 __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS",
            "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue",
-           "boundary_of_polymesh", "boundary_triangles_of_polymesh",
+           "boundary_of_polymesh", "boundary_triangles_of_polymesh", "cap_at_ports",
+           "declared_port_half_width",
            "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
            "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",

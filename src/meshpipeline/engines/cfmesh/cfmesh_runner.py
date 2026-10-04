@@ -388,7 +388,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
     from meshpipeline.engines.passage import (
+        cap_at_ports,
         choose_passage_radius,
+        declared_port_half_width,
         passage_of_stls,
         port_radius_stats,
     )
@@ -402,6 +404,11 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     # the ports vouch for the chord reading; a reading off the outer skin or the wall thickness
     # is replaced by the port radii (the gate still measures the delivered mesh)
     passage_radius = choose_passage_radius(_chord, port_radius_stats(t.get("openings")))
+    # and the narrow end is never wider than half the narrowest DECLARED port: a reading off a
+    # hollow part's outer skin, or along a rectangular duct's long side, sized the wall band for
+    # a passage the flow never sees (20 of 72 corpus walls read 8-173% wide, 2026-10-04)
+    passage_radius = cap_at_ports(passage_radius,
+                                  declared_port_half_width(port_declaration(workspace)))
 
     _patches = list(contract_patches or [])
     if not _patches:
