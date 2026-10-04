@@ -84,6 +84,33 @@ def _feature_extract_dict(surf_file: str, feature_angle: float) -> str:
             "  writeObj yes; }\n")
 
 
+#: meshQualityControls minVol as OpenFOAM's tutorials set it - an ABSOLUTE volume, m^3.
+MIN_VOL_HISTORICAL = 1e-13
+#: How far under the thinnest legitimate layer cell's face pyramid minVol sits: far enough that no
+#: real cell trips it, while an inverted (negative) or collapsed one still does.
+MIN_VOL_MARGIN = 1e-3
+
+
+def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
+    """meshQualityControls minVol for a mesh whose finest wall cell is finest_cell_m.
+
+    minVol is the one quality bar snappyHexMesh reads in absolute units: a face whose pyramid to
+    a cell centre holds less than minVol cubic metres is "illegal" and its prism layers are
+    taken back. The tutorials' 1e-13 suits metre-scale cells. A wall cell of 0.2 mm with five
+    layers has layer cells of a few 1e-13 m^3 - every one of them illegal: the SAE notchback lost
+    182 357 faces' worth of layers in the first check (52 % coverage on a smooth car body), the
+    128 mm Supra 2.2 million (15 %), with no other bar breached. So the bar is set from the mesh's
+    own scale: MIN_VOL_MARGIN of the face pyramid of the thinnest layer cell snappy may keep (the
+    stack thinned to minThickness, split across the layers, on the finest cell), never above the
+    historical 1e-13 - a body whose cells are big enough for it keeps exactly that."""
+    h = float(finest_cell_m)
+    if not (math.isfinite(h) and h > 0.0):
+        return MIN_VOL_HISTORICAL
+    thinnest = max(float(min_thickness_rel), 1e-3) * h / max(1, int(n_layers)) * 0.5
+    pyramid = h * h * thinnest / 6.0
+    return max(1e-30, min(MIN_VOL_HISTORICAL, MIN_VOL_MARGIN * pyramid))
+
+
 # #
 # surface prep  (snappy variant - triSurface + skeleton; AI writes the dicts)
 # #
@@ -634,6 +661,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # region's count must not leave the layer stage running against an all-zero table.
     _any_layers = (any(_n_for(r) > 0 for r in _names) if _names
                    else _n_for(surface_name) > 0)
+    # minVol from the mesh's own finest wall cell (layer_min_vol): the feature/near-band level
+    _finest = (min(ext[i] / max(div[i], 1) for i in range(3))
+               / (2 ** max(smax, flevel, near_band_level)))
+    _min_vol = layer_min_vol(_finest, n_layers=max([n_layers, *layer_counts.values()]),
+                             min_thickness_rel=_min_thick)
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
@@ -651,7 +683,7 @@ addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
-  minVol 1e-13; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
+  minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
@@ -917,6 +949,12 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
     else:
         min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+    # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
+    # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
+    _top = max([smax, flevel, near_level, *port_lvls.values(),
+                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1))) for r in _thin)])
+    _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
+                             n_layers=n_layers, min_thickness_rel=0.05)
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if n_layers > 0 else 'false'};
@@ -934,7 +972,7 @@ addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_l
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
-  minVol 1e-13; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
+  minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
