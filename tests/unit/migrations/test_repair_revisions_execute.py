@@ -3,6 +3,7 @@
 #             never that PostgreSQL accepts it, which is the integration tier's job.
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
 
@@ -95,6 +96,22 @@ def test_every_jsonb_column_is_built_from_the_bound_dialect():
             f"{revision} reaches through sa.dialects, which raises AttributeError at runtime")
         if "JSONB" in source:
             assert "from sqlalchemy.dialects import postgresql" in source, revision
+
+
+def test_no_revision_commits_early_and_strands_the_schema_anchor():
+    # alembic/env.py anchors every unqualified statement with `SET LOCAL search_path`, which
+    # reverts when its transaction ends. A revision that opens an autocommit block commits that
+    # transaction, so every revision AFTER it runs under the role's ambient search_path - and a
+    # role configured `search_path = other, public` then gets its tables built in `other`. This
+    # repository had exactly that failure; the ban is cheaper than rediscovering it.
+    # Asserted over the AST, not the text: a revision is entitled to EXPLAIN in a comment why it
+    # does not do this, and a substring search cannot tell that apart from doing it.
+    for revision in _REPAIR_REVISIONS:
+        tree = ast.parse((VERSIONS / f"{revision}.py").read_text())
+        called = {node.func.attr for node in ast.walk(tree)
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+        assert "autocommit_block" not in called, (
+            f"{revision} would strand the search_path anchor for every later revision")
 
 
 def test_the_repair_revisions_form_one_unbroken_chain():

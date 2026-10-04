@@ -8,6 +8,16 @@ REPO = Path(__file__).resolve().parents[3]
 SOURCE = (REPO / "alembic" / "versions" / "0011_repair_report_artifact.py").read_text()
 
 
+def _called_attributes(function: str) -> set[str]:
+    """Method names actually CALLED in one function - never names merely discussed in a comment."""
+    tree = ast.parse(SOURCE)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == function:
+            return {n.func.attr for n in ast.walk(node)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    raise AssertionError(f"revision 0011 has no {function}()")
+
+
 def _constants() -> dict:
     tree = ast.parse(SOURCE)
     return {n.targets[0].id: n.value.value for n in tree.body
@@ -26,8 +36,11 @@ def test_upgrade_adds_one_enum_label_and_touches_no_table():
     up = SOURCE[SOURCE.index("def upgrade"):SOURCE.index("def downgrade")]
     assert up.count("op.execute(") == 1
     assert "ALTER TYPE artifacttype ADD VALUE IF NOT EXISTS" in up
-    # ADD VALUE cannot run inside a transaction block on older PostgreSQL
-    assert "autocommit_block()" in up
+    # AND NOT IN AN AUTOCOMMIT BLOCK. env.py anchors unqualified DDL with `SET LOCAL
+    # search_path`, which dies with the transaction that set it, so committing early here would
+    # leave every LATER revision running under the role's ambient search_path. PostgreSQL 12+
+    # accepts ADD VALUE in a transaction as long as the label is not used in the same one.
+    assert "autocommit_block" not in _called_attributes("upgrade")
     # no row is rewritten and no table is reshaped by adding a label
     for unwanted in ("create_table", "add_column", "alter_column", "drop_", "UPDATE "):
         assert unwanted not in up

@@ -41,11 +41,22 @@ _LABEL = "repair_report"
 
 
 def upgrade() -> None:
-    # IF NOT EXISTS because a re-run of a partially applied migration must not fail on a label
-    # that is already there. ADD VALUE cannot run inside a transaction block on older PostgreSQL,
-    # so the statement is issued on its own connection via autocommit.
-    with op.get_context().autocommit_block():
-        op.execute(f"ALTER TYPE artifacttype ADD VALUE IF NOT EXISTS '{_LABEL}'")
+    # IN THE MIGRATION'S OWN TRANSACTION, and deliberately NOT in an autocommit block.
+    #
+    # PostgreSQL 12 and later accept ALTER TYPE ... ADD VALUE inside a transaction; the remaining
+    # restriction is that the new label may not be USED in the same transaction, and nothing here
+    # uses it. The older advice to wrap this in `op.get_context().autocommit_block()` is actively
+    # harmful in this repository: alembic/env.py anchors every unqualified statement by issuing
+    # `SET LOCAL search_path` inside the migration transaction, and SET LOCAL dies with the
+    # transaction that set it. An autocommit block commits that transaction, so every revision
+    # AFTER this one would run under the role's ambient search_path instead - which, for a role
+    # configured `search_path = other, public`, silently creates later tables in the wrong schema.
+    # That is exactly what happened: 0012 and 0013 built their tables in `other`, and the
+    # completeness guard in runtime/migrate.py refused the result.
+    #
+    # IF NOT EXISTS keeps a re-run of a partially applied migration from failing on a label that
+    # is already there.
+    op.execute(f"ALTER TYPE artifacttype ADD VALUE IF NOT EXISTS '{_LABEL}'")
 
 
 def downgrade() -> None:
