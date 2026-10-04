@@ -880,6 +880,44 @@ async def _run_async(req: JobRequest) -> dict:
                 await _worker_engine.dispose()
                 return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
 
+        # THE INSPECTION REPORT, on EVERY terminal outcome. Artifact delivery below runs only on a
+        # genuine success and only from an engine workspace, but the report's most important
+        # readers are on the runs that produced no mesh at all: the operator deciding whether the
+        # file is worth repairing, and the customer being told why it was refused. It is evidence,
+        # so it cannot change `final_status` and its own failures are swallowed (see
+        # application/repair_report_delivery.py); only being FENCED stops this worker, for the
+        # same reason it stops artifact registration.
+        if final_state.get("repair_report"):
+            from meshpipeline.application.execution_fence import (
+                StaleWorkerFenced as _StaleFenced,
+            )
+            from meshpipeline.application.execution_fence import (
+                execution_ownership as _own_ctx,
+            )
+            from meshpipeline.application.execution_fence import (
+                lock_ownership_for_commit as _lock_owner,
+            )
+            from meshpipeline.application.repair_report_delivery import deliver_repair_report
+
+            async def _fence_report(db):
+                await _lock_owner(db, "repair report registration")
+
+            try:
+                with _own_ctx(ownership, session_factory=AsyncSessionLocal):
+                    await deliver_repair_report(
+                        AsyncSessionLocal, job_id=job_id,
+                        report=dict(final_state.get("repair_report") or {}),
+                        repair_status=str(final_state.get("repair_status", "") or ""),
+                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                        execution_generation=_generation,
+                        fence_commit=_fence_report)
+            except _StaleFenced:
+                jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
+                             "or taken over) - producing no terminal side effects. job_id=%s",
+                             job_id)
+                await _worker_engine.dispose()
+                return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+
         # Artifacts are delivered ONLY on a genuine success (verdict PASS with a real
         # visual review). DELIVER FIRST - a delivery failure downgrades the job to a
         # system failure, recorded by the single status commit below.

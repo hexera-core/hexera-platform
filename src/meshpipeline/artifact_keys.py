@@ -21,5 +21,9 @@ def mesh_artifact_key(job: str) -> str:
     return f"{_PREFIX}/{job}/mesh.msh"
 
 
+def repair_report_key(job: str) -> str:
+    return f"{_PREFIX}/{job}/repair_report.json"
+
+
 def result_key_beside(output_object_key: str) -> str:
     return output_object_key.rsplit("/", 1)[0] + "/result.json"

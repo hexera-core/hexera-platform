@@ -147,6 +147,8 @@ def _artifact_label(artifact_type, engine: str) -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
     if _t == "mesh":
         return "Surface preview (.msh)"
+    if _t == "repair_report":
+        return "CAD inspection report (.json)"
     if _t == "mesh_bundle":
         try:
             from meshpipeline.engines.registry import get_spec

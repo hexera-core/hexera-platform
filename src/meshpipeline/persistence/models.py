@@ -58,6 +58,12 @@ class ArtifactType(str, PyEnum):
     # used to rebuild this from a worker's local directory, which only ever worked when the two
     # ran on one host; it is durable so the API can serve it after the workspace is gone.
     viewer_data      = "viewer_data"
+    # WHAT CAD REPAIR INSPECTION MEASURED about the uploaded geometry (pipeline/repair_inspect.py),
+    # made durable because the readers who need it most - an operator deciding whether to repair,
+    # and a customer being told why their file was refused - exist on runs that produced no mesh.
+    # EVIDENCE, never a deliverable: artifact_policy keeps it out of the required classes, so it
+    # can never make an undelivered job look ready. Added by revision 0011.
+    repair_report    = "repair_report"
 
 
 

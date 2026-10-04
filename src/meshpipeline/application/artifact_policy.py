@@ -17,6 +17,12 @@ REQUIRED_VIEWER_CLASS = "viewer_data"
 #: Classes that are delivered when available but never required. Their absence is at most a warning.
 OPTIONAL_CLASSES: tuple[str, ...] = ("mesh",)
 
+#: What CAD repair inspection measured about the uploaded geometry. EVIDENCE, not an output: it is
+#: absent from both the required classes and OPTIONAL_CLASSES on purpose. Required would let a run
+#: that only inspected look like a delivery; optional would warn about its absence on every job
+#: whose geometry we never inspected, which says nothing about whether the mesh is complete.
+EVIDENCE_REPAIR_REPORT_CLASS = "repair_report"
+
 
 def required_output_classes(engine) -> list[str]:
     name = str(engine or "").strip().lower()
@@ -50,4 +56,5 @@ def optional_warnings(delivered_classes) -> list[str]:
 
 
 __all__ = ["ARTIFACT_POLICY_VERSION", "REQUIRED_BUNDLE_CLASS", "REQUIRED_VIEWER_CLASS", "OPTIONAL_CLASSES",
+           "EVIDENCE_REPAIR_REPORT_CLASS",
            "required_output_classes", "is_required_class", "required_ready", "optional_warnings"]
