@@ -187,6 +187,30 @@ def choose_passage_radius(chord: dict | None, ports: dict | None) -> dict | None
     return None
 
 
+def declared_hydraulic_diameters(intake_patches) -> dict:
+    """{port name: hydraulic diameter in metres} of every sized declared inlet/outlet: the bore
+    of a round port, D - d of an annulus, 2wh / (w + h) of a rectangle. The intake states these
+    in millimetres. A port declared by area alone has no perimeter, so it is left out."""
+    from meshpipeline.engines.port_binding import DeclaredPatch
+    out: dict = {}
+    for p in intake_patches or []:
+        if not isinstance(p, dict) or str(p.get("type") or "") not in ("inlet", "outlet"):
+            continue
+        try:
+            dp = DeclaredPatch.from_intake(p)
+        except (KeyError, TypeError, ValueError):
+            continue
+        d, inner = dp.diameter_mm, dp.inner_diameter_mm
+        dh = None
+        if d is not None and d > 0:
+            dh = d - inner if inner is not None and 0.0 < inner < d else d
+        elif dp.width_mm and dp.height_mm and dp.width_mm > 0 and dp.height_mm > 0:
+            dh = 2.0 * dp.width_mm * dp.height_mm / (dp.width_mm + dp.height_mm)
+        if dh and dh > 0 and p.get("name"):
+            out[str(p["name"])] = float(dh) / 1000.0
+    return out
+
+
 def declared_port_half_width(intake_patches) -> float | None:
     """Half the narrowest width the flow crosses at a DECLARED port, in metres: half a bore,
     half a rectangle's SHORT side, half an annulus's radial gap, the equivalent radius of a port

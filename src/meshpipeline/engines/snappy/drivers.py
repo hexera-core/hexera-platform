@@ -845,6 +845,16 @@ def _lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
         return {}
 
 
+def _port_hydraulic_diameters(srcs: dict, wall_key: str, intake_patches: list) -> dict:
+    """{port: hydraulic diameter}: the smaller of the staged lid's (4 x area / perimeter) and the
+    declared size's (a bore, an annulus's D - d, a rectangle's 2wh / (w + h))."""
+    from meshpipeline.engines.passage import declared_hydraulic_diameters
+    out = dict(_lid_hydraulic_diameters(srcs, wall_key))
+    for name, v in declared_hydraulic_diameters(intake_patches).items():
+        out[name] = min(float(out.get(name) or float("inf")), float(v))
+    return out
+
+
 def _bore_port_name(t: dict) -> str:
     """The port _bore_area_m2 sizes from: the largest declared inlet (any port without one)."""
     def _opening(p: dict) -> float:
@@ -872,7 +882,8 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
     raw = staged_passage_field(t, srcs, wall_key, intake_patches, corrected=False)
     if raw is None:
         return None
-    ports = port_radius_stats(t.get("openings"), _lid_hydraulic_diameters(srcs, wall_key))
+    ports = port_radius_stats(t.get("openings"),
+                              _port_hydraulic_diameters(srcs, wall_key, intake_patches))
     if ports and not plausible_radius(field_radius_stats(*raw), ports):
         logger.info("narrow passages: the staged wall's reading is not the passage the ports "
                     "describe - no local refinement")
@@ -993,7 +1004,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
     # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
     # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
-    _dh = _lid_hydraulic_diameters(_srcs, _wall_key)
+    _dh = _port_hydraulic_diameters(_srcs, _wall_key, state.get("intake_patches") or [])
     _bore_name = _bore_port_name(t)
     if _dh.get(_bore_name):
         bore_D = min(bore_D, float(_dh[_bore_name]))

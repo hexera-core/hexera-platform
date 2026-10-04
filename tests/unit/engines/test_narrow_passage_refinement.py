@@ -217,3 +217,27 @@ def test_cfmesh_bands_at_the_narrowest_passage_while_that_is_affordable(monkeypa
     monkeypatch.setattr(P, "GLOBAL_BAND_MAX_CELLS", 1)
     dear, field = R._passage_sizing(t, {}, "wall", [])
     assert dear["band_from"] == "typical" and dear["band"] > dear["p05"] and field is not None
+
+
+def test_the_declared_size_gives_each_port_its_hydraulic_diameter():
+    dh = P.declared_hydraulic_diameters([
+        {"name": "pipe", "type": "inlet", "diameter_mm": 100},
+        {"name": "annulus", "type": "outlet", "diameter_mm": 151.19, "inner_diameter_mm": 124.75},
+        {"name": "duct", "type": "outlet", "width_mm": 384, "height_mm": 140},
+        {"name": "area_only", "type": "outlet", "area_mm2": 5000},
+        {"name": "wall", "type": "wall"}])
+    assert dh["pipe"] == pytest.approx(0.1)
+    assert dh["annulus"] == pytest.approx(0.02644)        # annular_001: the gap twice, not the bore
+    assert dh["duct"] == pytest.approx(2 * 0.384 * 0.14 / (0.384 + 0.14))
+    assert set(dh) == {"pipe", "annulus", "duct"}
+
+
+def test_snappy_sizes_its_bore_by_the_smaller_hydraulic_diameter(monkeypatch):
+    from meshpipeline.engines.snappy import drivers as D
+    monkeypatch.setattr(D, "_lid_hydraulic_diameters", lambda *_a, **_k: {"inlet": 0.037})
+    decl = [{"name": "inlet", "type": "inlet", "diameter_mm": 151.19, "inner_diameter_mm": 124.75}]
+    assert D._port_hydraulic_diameters({}, "wall", decl)["inlet"] == pytest.approx(0.02644)
+    t = {"binding": {"ports": [{"name": "inlet", "role": "inlet", "area_m2": 0.0027,
+                                "opening_area_m2": 0.0179},
+                               {"name": "outlet", "role": "outlet", "area_m2": 0.0027}]}}
+    assert D._bore_port_name(t) == "inlet"
