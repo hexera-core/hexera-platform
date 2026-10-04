@@ -140,6 +140,9 @@ export function resultSurface(data) {
  *  worse failure than one that skips it. */
 export function dispatch(ev, renderer, cursor) {
   if (!ev || typeof ev !== "object" || typeof ev.type !== "string") return cursor;
+  // WHEN IT HAPPENED, by the server's clock - before anything closes or opens, so a replayed
+  // run's lanes last as long as they did then
+  if (typeof ev.ts === "string" && typeof renderer.at === "function") renderer.at(ev.ts);
   const { stage, cursor: next, closed } = resolveStage(ev, cursor);
   if (closed) renderer.done(closed);
   const handler = HANDLERS[ev.type];

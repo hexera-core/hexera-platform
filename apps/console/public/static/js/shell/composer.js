@@ -50,6 +50,15 @@ export function disableInput() {
 
 export function setPlaceholder(text) { $("chat-input").placeholder = text; }
 
+/** THE FILE A RUN MESHES, named by the server. The label was only ever filled by this page's own
+ *  upload, so a reload - or a run opened from a link - read "No geometry file selected" beside a
+ *  run that plainly had one. A page that holds an upload of its own keeps naming that upload. */
+export function showRunFile(name) {
+  const lbl = $("file-label");
+  if (!name || !lbl || getState.sessionId()) return;
+  lbl.textContent = name; lbl.className = "ready";
+}
+
 function autoResize(el) {
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + "px";

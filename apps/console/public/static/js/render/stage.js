@@ -58,7 +58,9 @@ export const Stage = {
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
     // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
     // one still counted as open).
-    this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;},
+    this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
+    // ...and so did the stopped clock and the last event's time
+    this.finished=false;this._evt=0;},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -222,6 +224,23 @@ export const Stage = {
   // renders the same card, and a control that could stop nothing must not be on it.
   showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
 
+  // THE RUN'S CLOCK IS THE SERVER'S. It counts from when the job was created, not from when this
+  // page opened it - a reload, or a run opened from a link, used to start it again at 0:00 - and it
+  // stops at the time the job ended. Before, it never stopped at all: a finished run kept counting.
+  // A start ahead of this machine's own clock is held at now, so the clock never runs backwards.
+  clock(createdAt,endedAt){
+    const t0=Date.parse(createdAt||''),t1=Date.parse(endedAt||'');
+    if(this.finished&&!(t1>0))return;
+    if(t0>0)this.t0=Math.min(t0,Date.now());
+    if(t1>0)this.finished=true;
+    const c=this.proc&&this.proc.querySelector('.proc-clock');
+    if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:Date.now())-this.t0);},
+  // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a lane opens and closes at
+  // those times, so a replayed run's stages last as long as they did - not the instant the replay
+  // took, which read "0:00" on every stage after a reload. Live, it is the moment the event left.
+  at(ts){const t=Date.parse(ts||'');this._evt=t>0?Math.min(t,Date.now()):0;},
+  now(){return this._evt||Date.now();},
+
   // MESH RUN - bounded by the engine's DECLARED budget (published by the backend).
   // We bar elapsed against that real cap; we do not invent a percentage.
   startMesh(engine,budget,history){
@@ -280,12 +299,12 @@ export const Stage = {
     this.tl.appendChild(n);
     this.nodes[agent]={el:n,body:n.querySelector('.tl-inner'),dot:n.querySelector('.tl-dot'),
                        ct:n.querySelector('.ct'),dur:n.querySelector('.dur'),
-                       t0:Date.now(),tEnd:null,count:0,
+                       t0:this.now(),tEnd:null,count:0,
                        // what the lane's mark is read from: see markOf
                        agent,seq:++this._seq,worst:0};
     return this.nodes[agent];},
   done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');
-    n.el.classList.remove('open');n.tEnd=Date.now();
+    n.el.classList.remove('open');n.tEnd=Math.max(n.t0,this.now());
     if(n.dur)n.dur.textContent=fmtDur(n.tEnd-n.t0);this.paint(n);}},
   /* THE LANE'S MARK SAYS HOW IT ENDED. A tick is earned: it used to be every closed lane's, so a
      review that failed the mesh and sent it back for a rebuild closed with a green tick beside its
@@ -515,8 +534,13 @@ export const Stage = {
     // run cancelled mid-mesh. It does not turn green either - nothing finished.
     if(this.meshBar){const s=this.meshBar.el.querySelector('.mb-sub');
       if(s)s.textContent='stopped when the run ended';this.meshBar.el.classList.add('stopped');this.meshBar=null;}
+    // the open lanes close when the job ended, and the run's clock stops there
+    this.at(data.endedAt);
     Object.keys(this.nodes).forEach(k=>this.done(k));
     lanes.forEach(n=>this.paint(n));
+    this.clock(data.createdAt,data.endedAt);
+    if(!this.finished){this.finished=true;
+      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
     // HOW MANY ATTEMPTS, as the timeline counted them: only one that ran a mesher counts
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);
