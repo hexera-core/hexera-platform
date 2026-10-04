@@ -135,7 +135,7 @@ def test_a_measured_refusal_is_the_cads_and_says_why():
         "phases": ["measured"], "codes": ["geometry_unsuitable"]})
     msg = render_message(fr)
     assert fr.failure_category == FailureCategory.input_rejected.value
-    assert "the problem is in the CAD file" in msg
+    assert "the problem is in the geometry file" in msg
     assert "the input surface self-intersects" in msg and "[" not in msg
 
 
@@ -160,7 +160,7 @@ def test_a_mixed_refusal_names_both_changes():
         "declared_reason": "engine_params: bad layers value"})
     msg = render_message(fr)
     assert fr.failure_category == FailureCategory.input_rejected.value
-    assert "the problem is in the CAD file" in msg and "the input surface self-intersects" in msg
+    assert "the problem is in the geometry file" in msg and "the input surface self-intersects" in msg
     assert "Fix the geometry and upload it again." in msg
     assert "The setup also needs a change before this can run: engine_params: bad layers value"         in msg
 
@@ -168,4 +168,4 @@ def test_a_mixed_refusal_names_both_changes():
 def test_an_older_admission_record_keeps_the_class_sentence():
     fr = _fail("geometry")
     assert fr.failure_category == FailureCategory.input_rejected.value
-    assert "the problem is in the CAD file" in render_message(fr)
+    assert "the problem is in the geometry file" in render_message(fr)

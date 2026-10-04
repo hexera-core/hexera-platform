@@ -37,7 +37,7 @@ def test_a_refused_input_is_input_rejected_not_a_quality_gate():
     msg = render_message(fr)
     assert "did not complete successfully" in msg
     assert "cannot be meshed as it is" in msg
-    assert "CAD file" in msg and "not our systems" in msg
+    assert "geometry file" in msg and "not our systems" in msg
     assert "Fix the geometry and upload it again." in msg
     assert "quality checks" not in msg
     assert "try running the job again" not in msg

@@ -309,9 +309,10 @@ class Artifact(Base):
     # distinct logical_key). The DB UNIQUE(job_id, logical_key) - not a prior read - is the final
     # concurrency authority: two workers cannot create duplicate rows for the same logical artifact.
     logical_key:  Mapped[str]         = mapped_column(String(128), nullable=False, server_default="")
-    # The graph's retry_count for the run that delivered this row (= SimulationJob.current_attempt,
-    # which mirrors the same value). Delivery is a compare-and-set on this: a newer attempt
-    # overwrites, a stale attempt is superseded (a no-op).
+    # The graph's retry_count for the run that delivered this row. (SimulationJob.current_attempt
+    # is the count of attempts that started a mesher - what a user is shown - and is not this.)
+    # Delivery is a compare-and-set on this: a newer attempt overwrites, a stale attempt is
+    # superseded (a no-op).
     delivery_attempt: Mapped[int]     = mapped_column(Integer, nullable=False, server_default="0")
     # the execution generation that delivered this row. Currency is (execution_generation,
     # then delivery_attempt): a newer generation supersedes an older one, and within a generation a

@@ -25,7 +25,11 @@ def surface_analysis_for(spec, surface) -> dict | None:
                        "evidence, deferring", exc)
         return None
     if ic.require_no_self_intersection:
-        a["self_intersecting"] = self_intersects(stl_path)
+        # ONE scan answers whether AND where: the refusal names the place, so the user can find it
+        report = self_intersection_report(stl_path)
+        a["self_intersecting"] = report is not None
+        if report is not None:
+            a["self_intersection"] = report
     return a
 
 
@@ -57,12 +61,23 @@ def surface_deviation(snapped_surface_path, reference_stl_path) -> dict | None:
 
 
 def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
+    return self_intersection_report(surface_path, max_faces=max_faces, max_pairs=1) is not None
+
+
+def self_intersection_report(surface_path, *, max_faces: int = 400_000,
+                             max_pairs: int = 50) -> dict | None:
+    """Where the surface passes through itself, or None when it does not (or cannot be told).
+
+    {"pairs": crossing triangle pairs found (at most max_pairs; "more" when the search stopped
+    there), "first_at_m": the first crossing's centre, "region_m": the size of the box holding
+    every crossing found, "triangle_m": the typical triangle size there} - in the staged surface's
+    metres, so a refusal can say where to look and how big the damage is."""
     try:
         import pyvista as pv
         from vtkmodules.vtkCommonDataModel import vtkTriangle
     except Exception as exc:  # noqa: BLE001 - never let a probe crash the build
         logger.warning("self_intersects: render stack unavailable (%s) - skipping check", exc)
-        return False
+        return None
 
     try:
         # clean() MERGES coincident points so a shared vertex is a shared INDEX - the only
@@ -70,12 +85,12 @@ def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
         surf = pv.read(str(Path(surface_path))).extract_surface().triangulate().clean()
         n = surf.n_cells
         if n == 0:
-            return False
+            return None
         if n > max_faces:
             # the broad phase is ~linear in faces; guard a pathological input rather than hang
             logger.warning("self_intersects: %d faces exceeds %d - skipping (too large to "
                            "check cheaply)", n, max_faces)
-            return False
+            return None
         tris = surf.faces.reshape(-1, 4)[:, 1:]
         pts = np.asarray(surf.points, dtype=float)
         tp = pts[tris]                                   # (n,3,3)
@@ -97,6 +112,7 @@ def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
 
         triset = [frozenset(t.tolist()) for t in tris]
         tested: set[tuple[int, int]] = set()
+        found: list[tuple[int, int]] = []
         for ids in buckets.values():
             m = len(ids)
             if m < 2:
@@ -115,8 +131,21 @@ def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
                         continue                          # AABBs miss
                     if vtkTriangle.TrianglesIntersect(tp[i][0], tp[i][1], tp[i][2],
                                                       tp[j][0], tp[j][1], tp[j][2]):
-                        return True
-        return False
+                        found.append(key)
+                        if len(found) >= max_pairs:
+                            return _crossing_report(found, tp, more=True)
+        return _crossing_report(found, tp, more=False) if found else None
     except Exception as exc:  # noqa: BLE001 - a probe must never be the reason a build dies
         logger.warning("self_intersects: check failed (%s) - treating as inconclusive", exc)
-        return False
+        return None
+
+
+def _crossing_report(pairs: list[tuple[int, int]], tp, *, more: bool) -> dict:
+    idx = sorted({i for p in pairs for i in p})
+    pts = tp[idx].reshape(-1, 3)
+    first = tp[list(pairs[0])].reshape(-1, 3).mean(axis=0)
+    spans = (tp[idx].max(axis=1) - tp[idx].min(axis=1)).max(axis=1)
+    return {"pairs": len(pairs), "more": bool(more),
+            "first_at_m": [round(float(v), 6) for v in first],
+            "region_m": [round(float(v), 6) for v in (pts.max(axis=0) - pts.min(axis=0))],
+            "triangle_m": round(float(np.median(spans)), 6)}

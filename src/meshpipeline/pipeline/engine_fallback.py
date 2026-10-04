@@ -95,6 +95,13 @@ _LADDER_CLASS: dict[FailureCause, str] = {
     # the review of a validated mesh did not finish: our reviewer's failing, which the same mesh
     # from another engine would meet again - never a reason to leave the engine
     FailureCause.REVIEW_INCOMPLETE: NEVER,
+    # the engine stopped while preparing, before its mesher started: its own preparation's limit,
+    # which another engine's preparation may not share
+    FailureCause.NOT_BUILT: ENGINE,
+    # the run ran out of time: a smaller plan on the same engine may well finish
+    FailureCause.ENGINE_TIMED_OUT: FIXABLE,
+    # the service that runs the mesher failed: every engine runs on it, so no engine changes it
+    FailureCause.RUN_INFRASTRUCTURE: NEVER,
 }
 #: The causes the retry policy calls hopeless that another ENGINE still changes. A refused
 #: geometry is the same file on the next attempt - but a different engine has a different input
@@ -104,7 +111,7 @@ _LADDER_CLASS: dict[FailureCause, str] = {
 #: cell limit (failure_cause.rebuild_over_limit): this engine's next attempt cannot reach the floor,
 #: but another engine sizes its cells another way - the run ends, and the offer stands.
 _ONLY_ANOTHER_ENGINE_CHANGES: frozenset[FailureCause] = frozenset({
-    FailureCause.GEOMETRY_REJECTED, FailureCause.UNDER_RESOLVED})
+    FailureCause.GEOMETRY_REJECTED, FailureCause.UNDER_RESOLVED, FailureCause.NOT_BUILT})
 
 #: What each failure means, said to the user. Short and plain: the full account of the failure is
 #: the terminal message's (failure_cause.describe); this is the half-sentence that says why the
@@ -122,6 +129,9 @@ _REASON_BY_CAUSE: dict[FailureCause, str] = {
     FailureCause.DOMAIN_EXTENT: "the far-field domain came out short of the size you asked for",
     FailureCause.REGION_SPLIT: "the parts did not come out as separate meshes",
     FailureCause.REVIEW_INCOMPLETE: "the review of its mesh did not finish",
+    FailureCause.NOT_BUILT: "it stopped before its mesher started",
+    FailureCause.ENGINE_TIMED_OUT: "its run ran out of time",
+    FailureCause.RUN_INFRASTRUCTURE: "the mesh run did not complete on our side",
 }
 _REASON_REVIEW = "the mesh did not pass review"
 _REASON_GENERIC = "it did not produce a mesh that passed its checks"
@@ -338,19 +348,26 @@ class Failure:
     kind: str       # ENGINE | FIXABLE | NEVER
     cause: str      # the recorded cause, the gate key, or "review"
     reason: str     # the plain half-sentence
+    #: WHY THE ENGINE STOPPED, in the six classes (contracts/failure_cause.StopClass)
+    stop: str = ""
 
     def as_dict(self) -> dict:
-        return {"kind": self.kind, "cause": self.cause, "reason": self.reason}
+        d = {"kind": self.kind, "cause": self.cause, "reason": self.reason}
+        if self.stop:
+            d["stop"] = self.stop
+        return d
 
 
 def classify(state: Mapping) -> Failure | None:
     """What stopped the attempt whose result the state now holds, or None when it did not fail."""
+    from meshpipeline.contracts.failure_cause import StopClass, stop_class_of
     if state.get("executor_success"):
         if state.get("requirement_caveats"):
             return Failure(NEVER, "requirements_near_miss",
-                           "the far-field domain came out short of the size you asked for")
+                           "the far-field domain came out short of the size you asked for",
+                           StopClass.CHECK_FAILED.value)
         if str(state.get("reviewer_verdict", "") or "").upper() == "FAIL":
-            return Failure(FIXABLE, "review", _REASON_REVIEW)
+            return Failure(FIXABLE, "review", _REASON_REVIEW, StopClass.REVIEW_REBUILD.value)
         return None
     gate = str(state.get("executor_failed_gate", "") or "")
     facts = state.get("executor_failure_facts")
@@ -360,18 +377,39 @@ def classify(state: Mapping) -> Failure | None:
         if gate:
             # a gate that names no cause, on no engine this system knows: never a reason to switch
             # at once, never a reason to refuse one
-            return Failure(FIXABLE, gate, _REASON_GENERIC)
+            return Failure(FIXABLE, gate, _REASON_GENERIC, StopClass.CHECK_FAILED.value)
         # no gate at all: the executor had nothing to validate - the builder produced no mesh
         cause = FailureCause.ENGINE_CRASHED
     kind = _LADDER_CLASS[cause]
     if not retry_can_help(cause, facts) and cause not in _ONLY_ANOTHER_ENGINE_CHANGES:
         # the retry policy's own verdict: nothing that runs again changes this, so no engine does
         kind = NEVER
+    stop = stop_class_of(cause)
+    stopped = stop.value if stop is not None else ""
     if refused_by_design(state):
         # the engine's DECLARED limit, said as that limit - not "it cannot take this geometry as it
         # is", which sends a user to repair a file that is fine
-        return Failure(kind, cause.value, _by_design_reason(facts))
-    return Failure(kind, cause.value, _REASON_BY_CAUSE[cause])
+        return Failure(kind, cause.value, _by_design_reason(facts), stopped)
+    return Failure(kind, cause.value, _REASON_BY_CAUSE[cause], stopped)
+
+
+def mesher_started(state: Mapping) -> bool:
+    """Whether the attempt whose result the state holds actually started a mesher - the one fact
+    an attempt is COUNTED by. Not when admission or a pre-flight refused before meshing, and not
+    when the executor's record of native runs says none was started (NOT_BUILT). Unknown counts as
+    started, as it always did."""
+    if state.get("geometry_unsuitable_reason"):
+        return False
+    if state.get("executor_success"):
+        return True
+    facts = state.get("executor_failure_facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    started = facts.get("meshers_started")
+    if isinstance(started, int) and not isinstance(started, bool):
+        # the attempt's own record of native runs is the authority: an earlier pass that meshed
+        # before a later pass's pre-flight refused still made this an attempt
+        return started > 0
+    return not facts.get("before_meshing")
 
 
 def refused_by_design(state: Mapping) -> bool:
@@ -429,10 +467,31 @@ def with_attempt(state: Mapping, failure: Failure | None) -> dict:
         entry.update(failure.as_dict() if failure else {"kind": "passed"})
         if n == 0:
             entry["refused_before_building"] = True
+        elif not mesher_started(state):
+            # an attempt that never started a mesher is not one the user is told was made
+            entry["built"] = False
         attempts.append(entry)
     rec["attempts"] = attempts
     rec.setdefault("switches", [])
     return rec
+
+
+def attempts_made(state: Mapping, *, succeeded: bool) -> int:
+    """HOW MANY ATTEMPTS ACTUALLY STARTED A MESHER, the attempt that just ended included - the
+    number a user is shown. A refusal before building, a pre-flight stop and an attempt whose
+    record shows no mesher started are not attempts anyone made (jobs d20ad762 and 26f5429a read
+    "2 attempts" with nothing ever built).
+
+    Counted DOWN from the run's own counter: every builder turn is an attempt unless the record
+    says no mesher started in it, so an attempt the record knows nothing about still counts, as it
+    always did. A geometry-admission refusal ends the run before the first turn: none was made."""
+    if state.get("geometry_unsuitable_reason"):
+        return 0
+    rec = with_attempt(state, None if succeeded else classify(state))
+    turns = int(state.get("retry_count", 0) or 0)
+    not_made = {int(a.get("attempt", 0) or 0) for a in rec["attempts"]
+                if isinstance(a, Mapping) and a.get("built") is False}
+    return max(0, turns - len({n for n in not_made if 0 < n <= turns}))
 
 
 # #
@@ -803,9 +862,9 @@ async def node_engine_fallback(state: PipelineState) -> dict:
 
 __all__ = ["ENGINE", "FIXABLE", "NEVER", "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
            "SOURCE_SYSTEM", "SOURCE_USER", "Decision", "Failure", "LayerRequest", "Rung",
-           "able_engines", "approved_engine", "classify", "decide", "delivered_note",
-           "engine_source", "fallback_order", "fresh_start_brief",
-           "final_record", "ladder", "layer_request", "may_switch_on_its_own",
+           "able_engines", "approved_engine", "attempts_made", "classify", "decide",
+           "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
+           "final_record", "ladder", "layer_request", "may_switch_on_its_own", "mesher_started",
            "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
            "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",
            "with_switch"]
