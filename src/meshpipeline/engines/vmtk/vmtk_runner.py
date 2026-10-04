@@ -249,6 +249,9 @@ def _metre_factor(prepared) -> float:
 def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
     ws = Path(workspace)
     lumen = ws / _LUMEN
+    err = _staging_error(ws)
+    if err:
+        return {"error": f"the engine could not open this CAD body at its declared ports: {err}"}
     if not lumen.exists():
         from meshpipeline.cad.internal_surface import staging_failure
         why = staging_failure(ws)
@@ -314,6 +317,11 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
 def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                    geometry_file: str = "input.stl", **_ignored) -> dict:
     ws = Path(workspace)
+    # NOTHING STAGED, OR STAGING FAILED: say so before any check of a surface that is not the
+    # lumen (the unopened CAD skin reads "closed", a missing lumen reads as nothing at all)
+    unstaged = _unstaged_refusal(ws)
+    if unstaged is not None:
+        return unstaged
     # WHERE THE ENGINE'S INPUT CONTRACT IS ENFORCED. vmtk derives its centerline endpoints from
     # the surface's real boundary loops - the inlet and outlet the anatomy actually has. A sealed
     # lumen states none, and the `pointlist` selector cannot invent them: it maps a coordinate to
@@ -349,13 +357,55 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
 
 # staging (builder attempt seam): open the declared ports of a CAD body before anything runs
 
+#: Written when the engine could not open the declared ports of a CAD body: what failed, so the
+#: run says THAT instead of whatever the unstaged surface looks like (job a76e3ca1 burned two
+#: attempts on "lumen.vtp missing"; the faceted CAD aorta was refused as "this surface is closed").
+STAGING_ERROR = "vmtk_staging_error.json"
+
+
 def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
                    input_kind: str = "") -> dict | None:
     """Deterministic lumen preparation - see engines/vmtk/lumen_staging.py. Returns the
-    staging record, or None when it does not apply (a surface input, nothing declared)."""
+    staging record, or None when it does not apply (a surface input, nothing declared). A
+    failure is recorded in the workspace (STAGING_ERROR) before it propagates, so the engine's
+    own inspection and configure can name it."""
     from meshpipeline.engines.vmtk.lumen_staging import stage_lumen
-    return stage_lumen(workspace, geometry_path, prepared=prepared,
-                       intake_patches=intake_patches, input_kind=input_kind)
+    ws = Path(workspace)
+    (ws / STAGING_ERROR).unlink(missing_ok=True)
+    try:
+        return stage_lumen(workspace, geometry_path, prepared=prepared,
+                           intake_patches=intake_patches, input_kind=input_kind)
+    except Exception as exc:
+        try:
+            (ws / STAGING_ERROR).write_text(json.dumps(
+                {"error": f"{type(exc).__name__}: {exc}"}), encoding="utf-8")
+        except OSError:
+            pass
+        raise
+
+
+def _staging_error(ws: Path) -> str:
+    try:
+        return str(json.loads((ws / STAGING_ERROR).read_text(encoding="utf-8")).get("error") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _unstaged_refusal(ws: Path) -> dict | None:
+    """The refusal for a run whose lumen was never prepared, or whose CAD body could not be
+    opened at its ports - said before anything native starts, with the reason."""
+    err = _staging_error(ws)
+    if err:
+        return {"code": "vmtk_staging_failed",
+                "error": ("the engine could not open this CAD body at its declared ports, so there "
+                          f"is no lumen to mesh: {err}. Nothing a mesh setting changes can fix "
+                          "this - it needs the geometry (or the port declaration) changed.")}
+    if not (ws / _LUMEN).exists() and not (ws / _LUMEN_OPEN).exists():
+        return {"code": "vmtk_lumen_not_staged",
+                "error": ("no lumen surface was prepared for this upload (lumen.vtp is missing), "
+                          "so there is nothing for vmtk to mesh. Nothing a mesh setting changes "
+                          "can fix this.")}
+    return None
 
 
 # run (isolated subprocess)
@@ -488,6 +538,12 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     if not spec_path.exists():
         return {"rc": 1, "timed_out": False,
                 "log_tail": "vmtk_spec.json missing - call configure_mesh before run_mesh"}
+    if not (ws / _LUMEN).exists() and not (ws / _LUMEN_OPEN).exists():
+        # never launch the pype on nothing: it fails minutes later as "Error opening file" and
+        # reads as a mesher crash (job a76e3ca1)
+        return {"rc": 1, "timed_out": False,
+                "log_tail": f"{_LUMEN} missing - no lumen was staged for this upload; vmtk was "
+                            "not started"}
     strategy = json.loads(spec_path.read_text())
     ladder = repair_ladder(strategy)
     notes: list[str] = []

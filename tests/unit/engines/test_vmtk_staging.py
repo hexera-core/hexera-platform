@@ -231,6 +231,7 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "run_guarded", fake_run)
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
     # the surface stage once, then two generator attempts
     assert res["rc"] == 0 and len(calls) == 3
@@ -266,6 +267,7 @@ def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_now", lambda: clock["t"])
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=1000)
     # the surface stage (700 s) and one generator step (700 s) exhaust the 1000 s budget: the
     # remaining ladder steps are not started, and the note says so
@@ -304,6 +306,7 @@ def test_a_completed_fill_is_also_written_as_an_openfoam_case(tmp_path, monkeypa
     monkeypatch.setattr(R, "export_openfoam_case", lambda ws, **kw: exported.append(kw) or "openfoam_case")
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=900)
     assert res["rc"] == 0 and res["openfoam_case"] == "openfoam_case"
     assert len(exported) == 1 and 0 < exported[0]["timeout"] <= 900
@@ -386,6 +389,7 @@ def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "run_guarded", fake_run)
     (tmp_path / "vmtk_spec.json").write_text(json.dumps({"source_ids": [0], "target_ids": [1],
                                                         "boundary_layers": 3}))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
     assert len(calls) == 1 and "repair_note" not in res
 
