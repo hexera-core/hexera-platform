@@ -207,40 +207,19 @@ def declared_port_half_width(intake_patches) -> float | None:
     return best / 2000.0 if best is not None else None
 
 
-def cap_at_ports(passage_radius: dict | None, port_half_width: float | None) -> dict | None:
-    """The radius statistics the size caps use, never wider at the narrow end than half the
-    narrowest declared port: the flow crosses that port, so the passage there is no wider, and
-    the wall band sized from it is what the resolution floor measures at the port's rim. The
-    chord reading can only read wider than that by mistake - off a hollow part's outer skin, or
-    along the LONG side of a rectangular duct (bend_elbow_003: 192 mm read on a 140 x 384 mm
-    duct, so the cells were sized for 384 and the 140 mm side had 9.5 across, 2026-10-04). A
-    narrower reading (a throat inside) stands. Unchanged without a declared size."""
-    if not port_half_width or port_half_width <= 0.0:
-        return passage_radius
-    if not passage_radius:
-        return {"min": port_half_width, "p05": port_half_width, "median": port_half_width,
-                "max": port_half_width, "points": 0, "source": "declared-ports"}
-    out = dict(passage_radius)
-    for k in ("min", "p05"):
-        if out.get(k) is not None and float(out[k]) > port_half_width:
-            out[k] = port_half_width
-            out["capped_at_declared_port"] = True
-    if out.get("median") is not None and float(out["median"]) < float(out["p05"]):
-        out["median"] = out["p05"]
-    return out
-
-
 def size_caps(passage_radius: dict, *, target: float = PASSAGE_CELLS_ACROSS,
               ceiling: float = PASSAGE_CEILING_CELLS) -> dict:
     """The largest cells that still put `target` across the passage: the wall band at the
-    narrowest passage (5th-percentile radius), the background at the typical one (median),
-    and a wall band thick enough to carry the wall size across a narrow passage entirely.
-    Also the SMALLEST wall cell worth cutting, `wall_cell_floor`: `ceiling` across the
-    narrowest passage, the top of industry practice."""
+    band radius (field_radius_stats; the narrowest passage, the 5th-percentile radius, when the
+    statistics carry none - and then nothing narrower is refined locally), the background at the
+    typical one (median), and a wall band thick enough to carry the wall size across a band-wide
+    passage entirely. Also the SMALLEST wall cell worth cutting, `wall_cell_floor`: `ceiling`
+    across the narrowest passage, the top of industry practice."""
     p05 = float(passage_radius["p05"])
     med = float(passage_radius["median"])
-    return {"wall_cell": 2.0 * p05 / target, "max_cell": 2.0 * med / target,
-            "refinement_thickness": 1.1 * p05, "wall_cell_floor": 2.0 * p05 / ceiling}
+    band = float(passage_radius.get("band") or p05)
+    return {"wall_cell": 2.0 * band / target, "max_cell": 2.0 * max(med, band) / target,
+            "refinement_thickness": 1.1 * band, "wall_cell_floor": 2.0 * p05 / ceiling}
 
 
 def inside_point(surface):
@@ -519,21 +498,65 @@ def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S
 
 
 def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=()) -> dict:
-    """The radius statistics of the staged WALL (open at the ports) BEFORE meshing, for sizing,
-    read the way VMTK's staging reads them (a ray leaving through a port borrows its neighbour).
-    The chords are oriented from a point deep in the cavity found from the port centroids
-    (interior_from_ports); the tessellation's own interior point is NOT trusted - for a hollow
-    wall solid it sits inside the wall material, a wall thickness off the cavity surface, and
-    the orientation vote from there is a coin toss (production read a 6 mm radius on a 173 mm
+    """The radius statistics of the staged WALL (open at the ports) BEFORE meshing, for sizing
+    (passage_field_of_stls says how the field is read). {} when nothing reads."""
+    field = passage_field_of_stls(paths, interior_point=interior_point, cap_paths=cap_paths,
+                                  port_centroids=port_centroids)
+    if field is None:
+        return {}
+    return radius_stats(field[2])
+
+
+#: The staged wall is read at points no farther apart than this fraction of the part's diagonal.
+#: A CAD tessellation puts no point inside a flat face and none along a straight pipe - only at
+#: the face's edges, where the normal leans 45 degrees into a corner and the chord reads a
+#: glance - so a rectangular duct read its LONG side everywhere (bend_elbow_003: 200 points, all
+#: 192 mm on a 140 x 384 mm duct) and a narrow branch had readings at its two ends only.
+FIELD_EDGE_FRACTION = 1.0 / 150.0
+
+
+def point_areas(points, faces) -> np.ndarray:
+    """The wall area each point stands for: a third of every triangle it belongs to."""
+    p = np.asarray(points, dtype=float)
+    f = np.asarray(faces, dtype=np.int64)
+    a = 0.5 * np.linalg.norm(np.cross(p[f[:, 1]] - p[f[:, 0]], p[f[:, 2]] - p[f[:, 0]]), axis=1)
+    return np.bincount(f.ravel(), weights=np.repeat(a / 3.0, 3), minlength=len(p))
+
+
+def weighted_percentile(values, weights, q: float) -> float:
+    """The q-th percentile of values, each counted by its weight."""
+    v = np.asarray(values, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    order = np.argsort(v)
+    c = np.cumsum(w[order])
+    if c[-1] <= 0.0:
+        return float(np.percentile(v, q))
+    return float(v[order][min(len(v) - 1, int(np.searchsorted(c, q / 100.0 * c[-1])))])
+
+
+def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=(),
+                          max_points: int = MAX_MEASURE_POINTS):
+    """(points, faces, radius at each point) of the staged WALL (open at the ports) BEFORE
+    meshing, read the way VMTK's staging reads them (a ray leaving through a port borrows its
+    neighbour). The chords are oriented from a point deep in the cavity found from the port
+    centroids (interior_from_ports); the tessellation's own interior point is NOT trusted - for a
+    hollow wall solid it sits inside the wall material, a wall thickness off the cavity surface,
+    and the orientation vote from there is a coin toss (production read a 6 mm radius on a 173 mm
     bore and cartesianMesh was killed at 1 mm cells). The staged caps do not stitch to the wall
-    rim exactly, so a merged 'closed' surface is only the last resort. {} when nothing reads."""
+    rim exactly, so a merged 'closed' surface is only the last resort.
+
+    The wall is read at points FIELD_EDGE_FRACTION of the diagonal apart at most (long edges are
+    halved, which keeps the shape), and on a decimated copy when it has more than `max_points`
+    points (a scanned vessel), so the field covers every passage at a bounded cost. The points
+    returned are the ones read. None when nothing reads."""
     import pyvista as pv
 
     from meshpipeline.engines.vmtk.lumen_staging import local_radius
+    from meshpipeline.engines.vmtk.rims import _halve_long_edges
     try:
         parts = [pv.read(str(p)) for p in paths if Path(p).exists()]
         if not parts:
-            return {}
+            return None
         merged = parts[0].merge(parts[1:]) if len(parts) > 1 else parts[0]
         pts, faces = _triangles(merged.extract_surface())
         caps = [pv.read(str(p)) for p in cap_paths if Path(p).exists()]
@@ -544,23 +567,263 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
         deep = interior_from_ports(pts, cap_pts, list(port_centroids)) if len(port_centroids) else None
         if deep is None and interior_point is not None:
             deep = np.asarray(interior_point, dtype=float)
-        if deep is None:
-            return passage_of_surface(pts, faces).get("passage_radius") or {}
-        if len(port_centroids):
-            pts, faces = orient_wall_faces(pts, faces, list(port_centroids))
         b = np.asarray(merged.bounds, dtype=float)
         diag = float(np.linalg.norm(b[1::2] - b[0::2]))
+        if deep is None:
+            surf = pv.PolyData(pts, np.hstack([np.full((len(faces), 1), 3, dtype=np.int64),
+                                               faces]).ravel())
+            deep = inside_point(surf)
+            if deep is None:
+                return None
+        elif len(port_centroids):
+            pts, faces = orient_wall_faces(pts, faces, list(port_centroids))
+        if len(pts) > max_points:
+            surf = pv.PolyData(pts, np.hstack([np.full((len(faces), 1), 3, dtype=np.int64),
+                                               faces]).ravel())
+            coarse = surf.decimate(1.0 - max_points / float(len(pts))).clean()
+            cf = np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+            if len(cf) >= 4:
+                pts, faces = np.asarray(coarse.points, dtype=float), cf
+        else:
+            # no edge longer than the field spacing - nor so short that the point count runs
+            # past max_points (about 0.6 h^2 of wall per point once halved)
+            area = float(point_areas(pts, faces).sum())
+            h = max(diag * FIELD_EDGE_FRACTION, float(np.sqrt(area / (0.6 * max_points))))
+            pts, faces = _halve_long_edges(np.asarray(pts, dtype=float),
+                                           np.asarray(faces, dtype=np.int64), h)
         r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0)
-        return radius_stats(r)
+        return pts, faces, np.asarray(r, dtype=float)
     except Exception:  # noqa: BLE001 - sizing aid, not a verdict
         logger.warning("passage radius of the staged surface failed", exc_info=True)
-        return {}
+        return None
+
+
+#: The wall band is sized for the passage half the wall AREA is at least as narrow as (the
+#: median by area); what is narrower than the band can carry is refined locally, level by level
+#: (narrow_passage_regions). By area, not by point: a scanned vessel's small branches carry many
+#: more points per square millimetre than its trunk. Lower, the band itself cost the cells: on
+#: the Fluent aorta, where a fifth of the wall bounds vessels under 1.7 mm in radius, a band at
+#: that 20th percentile was a 0.26 mm shell over the whole 19,000 mm^2 wall.
+BAND_AREA_PERCENTILE = 50.0
+
+
+def field_radius_stats(points, faces, radius) -> dict:
+    """radius_stats of a passage field, plus `band` (the BAND_AREA_PERCENTILE radius by area)
+    and the median by area (the background's yardstick); the narrow end (min, p05) stays by
+    point - it is what the resolution floor measures."""
+    r = np.asarray(radius, dtype=float)
+    out = radius_stats(r)
+    if not out:
+        return out
+    w = point_areas(points, faces)
+    ok = r > 0.0
+    if w[ok].sum() > 0.0:
+        out["band"] = round(weighted_percentile(r[ok], w[ok], BAND_AREA_PERCENTILE), 6)
+        out["median"] = round(max(weighted_percentile(r[ok], w[ok], 50.0), out["band"]), 6)
+    return out
+
+
+#: A declared port vouches for the passage within this many port diameters of it: the passage
+#: there is never wider than the port the flow crosses (a reading off a hollow part's outer skin,
+#: or along a rectangular duct's long side, is corrected by it).
+PORT_VOUCH_DIAMETERS = 1.5
+
+
+def port_corrected_radius(points, radius, ports) -> np.ndarray:
+    """The radius field with every point within PORT_VOUCH_DIAMETERS of a declared port held to
+    that port's half flow-width. ports: [(centroid in metres, half width in metres)]."""
+    pts = np.asarray(points, dtype=float)
+    out = np.asarray(radius, dtype=float).copy()
+    for c, hw in ports or ():
+        if not hw or hw <= 0.0 or c is None:
+            continue
+        d = np.linalg.norm(pts - np.asarray(c, dtype=float), axis=1)
+        near = d < PORT_VOUCH_DIAMETERS * 2.0 * float(hw)
+        out[near] = np.minimum(out[near], float(hw))
+    return out
+
+
+def declared_port_widths(intake_patches, openings: dict | None = None) -> list[tuple]:
+    """[(centroid in metres, half flow-width in metres)] of every sized declared port: the bound
+    opening's measured centroid when there is one, else the declared location."""
+    out = []
+    for p in intake_patches or []:
+        if not isinstance(p, dict) or str(p.get("type") or "") not in ("inlet", "outlet"):
+            continue
+        hw = declared_port_half_width([p])
+        if not hw:
+            continue
+        rec = (openings or {}).get(str(p.get("name"))) or {}
+        c = rec.get("centroid") if isinstance(rec, dict) else None
+        if c is None and p.get("near_mm") is not None:
+            c = [float(v) / 1000.0 for v in p["near_mm"]]
+        if c is not None:
+            out.append((tuple(float(v) for v in c), hw))
+    return out
+
+
+def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration):
+    """(points, faces, radius) of an internal-flow staging's cavity wall - the record
+    tessellate_internal returns (`openings` with their centroids) and its surfaces by patch
+    (`srcs`: the wall under `wall_key`, the port caps the rest) - with the radius held near each
+    declared port to that port's half flow-width (port_corrected_radius). None when the wall
+    cannot be read."""
+    wall_src = srcs.get(wall_key) or []
+    wall_paths = wall_src if isinstance(wall_src, list) else [wall_src]
+    cap_paths = [p for k, v in srcs.items() if k != wall_key
+                 for p in (v if isinstance(v, list) else [v])]
+    openings = t.get("openings") or {}
+    centroids = [o.get("centroid") for o in openings.values()
+                 if isinstance(o, dict) and o.get("centroid")]
+    field = passage_field_of_stls(wall_paths, cap_paths=cap_paths, port_centroids=centroids)
+    if field is None:
+        return None
+    pts, faces, r = field
+    return pts, faces, port_corrected_radius(pts, r, declared_port_widths(declaration, openings))
+
+
+#: How much finer a wall cell may be made so that whole octree halvings land the narrowest
+#: passage on its target cells across (octree_aligned_cell): 1.15 is 1.5x the cells where the
+#: wall cell rules, against 6-8x in the narrow boxes for the extra halving it saves.
+OCTREE_ALIGN_MAX = 1.15
+
+
+def octree_aligned_cell(cell_m: float, narrow_radius: float, *,
+                        target: float = PASSAGE_CELLS_ACROSS,
+                        max_nudge: float = OCTREE_ALIGN_MAX) -> float:
+    """`cell_m`, or a cell up to `max_nudge` finer from which whole halvings reach `target`
+    cells across a passage of `narrow_radius` exactly. An octree mesher reaches a narrow
+    passage only in halvings: from 0.84 mm, two halvings put 11.7 cells across the Fluent
+    aorta's 1.23 mm-radius vessels and the third put 23 (and six times the cells in those
+    boxes); from 0.76 mm two put 13."""
+    import math as _math
+    if not (cell_m > 0.0 and narrow_radius > 0.0):
+        return cell_m
+    need = 2.0 * float(narrow_radius) / float(target)
+    if need >= cell_m:
+        return cell_m
+    aligned = need * 2 ** _math.floor(_math.log2(cell_m / need) + 1e-12)
+    return aligned if cell_m / aligned <= max_nudge else cell_m
+
+
+class NarrowRegions(list):
+    """Refinement boxes for narrow passages; `note` says what a budget left out."""
+
+    note: str = ""
+
+
+#: A wall point is in a narrow passage when the planned wall cell puts fewer than this many
+#: cells across it: the floor, with half a cell to spare for a reading's noise.
+NARROW_DETECT_CELLS = PASSAGE_FLOOR_CELLS + 0.5
+
+
+def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
+                           target: float = PASSAGE_CELLS_ACROSS,
+                           detect: float = NARROW_DETECT_CELLS, max_level_bump: int = 4,
+                           max_regions: int = 128,
+                           budget_cells: float | None = None) -> NarrowRegions:
+    """Boxes around the walls of passages too NARROW for the planned wall cell (fewer than
+    `detect` cells across), each with the cell that puts `target` across its narrowest point
+    (`cell_needed_m`) and the octree level bump over cell_m that reaches it (`level_bump`,
+    `cell_m`).
+
+    The wall cell of a mesh is one number; the passage is not. Sized from the inlet (snappy) or
+    the typical passage (cfMesh), the branches of an aorta or a manifold came in under the
+    12-across floor; sized from the narrowest passage everywhere, the Fluent aorta's 20 mm trunk
+    was cut at its 3 mm branches' cell and cfMesh made no mesh in 47 minutes. So the cell is held
+    where the passage is narrow, and only there - the same local treatment cad/thin_features
+    gives thin plates: the narrow wall points are sorted by the level they need (one octree
+    level per halving of the cell), each level's points binned into compact groups (a few cells,
+    or a few radii, across), and each group boxed out to its passage (padded by its widest
+    radius). Where boxes overlap, the finer level wins in both meshers. More than `max_regions`
+    groups coarsen the bins.
+
+    With a `budget_cells`, the extra levels are lowered while the boxes' cost exceeds it, and if
+    even +1 does not fit, the cheapest boxes that fit are kept (and `note` says so). The cost is
+    the fluid a box refines at its cell: with the wall `areas` of the points, the passage their
+    wall bounds (area x radius, a tube's volume twice over); without, the box's whole volume."""
+    pts = np.asarray(points, dtype=float)
+    r = np.asarray(radius, dtype=float)
+    out = NarrowRegions()
+    if not (cell_m and cell_m > 0.0) or len(pts) == 0 or len(r) != len(pts):
+        return out
+    narrow = np.isfinite(r) & (r > 0.0) & (2.0 * r / float(cell_m) < float(detect))
+    if not narrow.any():
+        return out
+    P, R = pts[narrow], r[narrow]
+    A = (np.asarray(areas, dtype=float)[narrow]
+         if areas is not None and len(areas) == len(pts) else None)
+    need = 2.0 * R / float(target)
+    level = np.clip(np.ceil(np.log2(np.maximum(float(cell_m) / need, 1.0)) - 1e-9), 1,
+                    int(max_level_bump)).astype(np.int64)
+    classes = sorted(set(level.tolist()))
+    base_bin = {b: max(3.0 * float(cell_m) / (2 ** b), 8.0 * float(R[level == b].min()))
+                for b in classes}
+    scale = 1.0
+    groups: list[tuple[int, np.ndarray]] = []
+    for _ in range(40):
+        groups = []
+        for b in classes:
+            sel = np.flatnonzero(level == b)
+            keys = np.floor(P[sel] / (base_bin[b] * scale)).astype(np.int64)
+            _, lab = np.unique(keys, axis=0, return_inverse=True)
+            lab = np.asarray(lab).ravel()
+            groups += [(b, sel[lab == g]) for g in range(int(lab.max()) + 1)]
+        if len(groups) <= max_regions:
+            break
+        scale *= 1.5
+    boxes = []
+    for b, idx in groups:
+        if not len(idx):
+            continue
+        rg = R[idx]
+        lo = P[idx].min(axis=0) - float(rg.max())
+        hi = P[idx].max(axis=0) + float(rg.max())
+        rmin = float(rg.min())
+        box_volume = float(np.prod(np.maximum(hi - lo, 0.0)))
+        fluid = (min(box_volume, float((A[idx] * rg).sum())) if A is not None else box_volume)
+        boxes.append({"min": lo.tolist(), "max": hi.tolist(), "radius_m": rmin,
+                      "cell_needed_m": 2.0 * rmin / float(target), "level_bump": int(b),
+                      "n_points": int(len(idx)), "volume_m3": fluid})
+
+    def _cost(bs) -> float:
+        return sum(b["volume_m3"] / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
+
+    note = ""
+    if budget_cells is not None and budget_cells > 0 and boxes:
+        while _cost(boxes) > float(budget_cells) and max(b["level_bump"] for b in boxes) > 1:
+            top = max(b["level_bump"] for b in boxes)
+            for b in boxes:
+                if b["level_bump"] == top:
+                    b["level_bump"] -= 1
+            note = "refinement held back by the cell budget"
+        if _cost(boxes) > float(budget_cells):
+            kept, spent = [], 0.0
+            for b in sorted(boxes, key=lambda b_: b_["volume_m3"]):
+                c = _cost([b])
+                if spent + c <= float(budget_cells):
+                    kept.append(b)
+                    spent += c
+            note = (f"{len(boxes) - len(kept)} of {len(boxes)} narrow region(s) not refined: "
+                    "the cell budget does not cover them")
+            boxes = kept
+    for b in boxes:
+        b["cell_m"] = float(cell_m) / (2 ** b["level_bump"])
+        # never finer than its level reaches (a level held back by the budget, or the deepest
+        # level allowed): what cfMesh is asked for is what the octree can afford
+        b["cell_needed_m"] = max(b["cell_needed_m"], b["cell_m"])
+    out.extend(boxes)
+    out.note = note
+    return out
 
 
 __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS",
-           "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue",
-           "boundary_of_polymesh", "boundary_triangles_of_polymesh", "cap_at_ports",
-           "declared_port_half_width",
+           "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue", "NarrowRegions",
+           "boundary_of_polymesh", "boundary_triangles_of_polymesh",
+           "declared_port_half_width", "declared_port_widths", "field_radius_stats",
+           "narrow_passage_regions", "passage_field_of_stls", "point_areas",
+           "port_corrected_radius", "staged_passage_field", "weighted_percentile",
+           "OCTREE_ALIGN_MAX", "octree_aligned_cell",
            "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
            "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",

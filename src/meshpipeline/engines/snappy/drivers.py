@@ -854,6 +854,46 @@ def _bore_area_m2(t: dict) -> float:
     return float(t["openings"]["inlet"]["area"])
 
 
+def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: list):
+    """(points, radius, wall area per point) of the staged cavity wall, held near each declared
+    port to its half flow-width (engines/passage.staged_passage_field); None when unreadable."""
+    from meshpipeline.engines.passage import point_areas, staged_passage_field
+    field = staged_passage_field(t, srcs, wall_key, intake_patches)
+    if field is None:
+        return None
+    pts, faces, r = field
+    return pts, r, point_areas(pts, faces)
+
+
+def _aligned_wall_cell(wall_cell: float, field) -> float:
+    """The wall cell, nudged finer (engines/passage.octree_aligned_cell) so the narrowest
+    passage - the 5th-percentile radius the resolution floor reads - lands on 13 cells across
+    after whole octree halvings; unchanged without a field."""
+    if field is None or not len(field[1]):
+        return wall_cell
+    import numpy as np
+
+    from meshpipeline.engines.passage import octree_aligned_cell
+    r = np.asarray(field[1], dtype=float)
+    r = r[r > 0.0]
+    return octree_aligned_cell(wall_cell, float(np.percentile(r, 5))) if len(r) else wall_cell
+
+
+def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float) -> list:
+    """Refinement boxes, in render_internal_case's thin-region form ({min, max, level_bump} over
+    the wall's surface level), for every passage the wall cell puts under the floor
+    (engines/passage.narrow_passage_regions); [] without a field."""
+    if field is None:
+        return []
+    from meshpipeline.engines.passage import narrow_passage_regions
+    try:
+        return narrow_passage_regions(field[0], field[1], cell_m=wall_cell, areas=field[2],
+                                      budget_cells=budget_cells)
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("narrow-passage regions failed - continuing without them")
+        return []
+
+
 async def _build_internal_deterministic(workspace: Path, state: PipelineState, *, job_id: str,
                                         publish: ExecutionEventPublisher, source_path: str,
                                         initial_plan: dict | None,
@@ -945,6 +985,20 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _msg = (f"Fluid volume identified - {len(_ports)} openings separated from the wall: "
                 f"{_detail}. Bore Ø{bore_D * 1000:.1f} mm{_caveat}")
     await publish.anote(_msg, op_id="internal:volume-identified")
+    # THE PASSAGE, POINT BY POINT. The wall cell below is sized from the inlet bore, and every
+    # passage narrower than that cell carries at the floor came in under it: the Fluent aorta's
+    # 5.6-7.5 mm branches (3 mm at their narrowest) behind a 20 mm inlet read 6 cells across, and
+    # 11.2 after the whole part was refined to 6.7 M cells (2026-10-04). The staged wall's
+    # radius field is read once here (the geometry is fixed across passes); each pass refines
+    # locally where it is narrow (_narrow_passage_boxes). A failed reading refines nothing.
+    from asyncio import to_thread as _to_thread
+    try:
+        _passage_field = await _to_thread(_staged_passage_field, t, _srcs, _wall_key,
+                                          state.get("intake_patches") or [])
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("internal build: passage field failed - continuing without local "
+                         "narrow-passage refinement - job_id=%s", job_id)
+        _passage_field = None
 
     plan = initial_plan
     feedback = (state.get("classifier_result", {}) or {}).get("summary", "") \
@@ -1023,6 +1077,11 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         feature_level = int(strategy.get("feature_level", surface_level + 1))
         # base cell sized so the wall cell (base / 2^level) resolves the bore into `cells_across`
         base_cell = (bore_D / cells_across) * (2 ** surface_level)
+        # ... a shade finer when that lands the narrowest passage on a whole number of octree
+        # halvings: the aorta's 0.84 mm bore cell reached its 1.2 mm-radius vessels at 11.7
+        # across after two halvings and needed a third (6x the cells in those boxes); 0.76 mm
+        # reaches them at 13 after two (engines/passage.octree_aligned_cell)
+        base_cell = _aligned_wall_cell(bore_D / cells_across, _passage_field) * (2 ** surface_level)
         # THIN FEATURES. The wall cell above is sized from the BORE, so a feature thinner
         # than it is never captured by castellation - an orifice plate (3-9 mm) inside a
         # 106-290 mm pipe vanishes, its faces never become patches, and the run dies at the
@@ -1031,7 +1090,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # mesher reads - and refine locally where it is too thin: a global refinement fine
         # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
         # measurement failure degrades to "no thin features", never to a guess.
-        _wall_cell = bore_D / cells_across
+        _wall_cell = base_cell / (2 ** surface_level)
         # the values this pass actually meshes with - what a timeout is measured against
         _effective = {**strategy, "max_cells": _budget, "cells_across_diameter": cells_across}
         _thin_regions: list = []
@@ -1065,6 +1124,16 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                    else "refining locally as far as the cell budget allows")
                 + (f" ({_thin_note})" if _thin_note else ""),
                 op_id=f"internal:thin-feature:{attempt}")
+        _narrow_regions = _narrow_passage_boxes(_passage_field, wall_cell=_wall_cell,
+                                                budget_cells=max(50_000, int(0.5 * _budget)))
+        if _narrow_regions:
+            _narrow_note = str(getattr(_narrow_regions, "note", "") or "")
+            await publish.anote(
+                f"Narrow passages - {len(_narrow_regions)} region(s) down to "
+                f"{_mm(2.0 * min(float(b['radius_m']) for b in _narrow_regions))} across, "
+                f"under 12 cells at the {_wall_cell * 1000:.1f} mm wall cell; refining them "
+                "locally to 13 across" + (f" ({_narrow_note})" if _narrow_note else ""),
+                op_id=f"internal:narrow-passage:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}"
@@ -1090,7 +1159,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
                 max_cells=_budget, quality=quality,
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
-                thin_regions=_thin_regions)
+                thin_regions=[*_thin_regions, *_narrow_regions])
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):

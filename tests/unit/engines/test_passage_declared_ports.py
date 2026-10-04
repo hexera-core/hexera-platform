@@ -1,9 +1,10 @@
-# Responsibility: Verify the internal-flow sizing never reads a passage wider than the narrowest declared port.
+# Responsibility: Verify the internal-flow sizing reads each declared port's flow width and never sizes the wall band for a passage wider than the ports.
 # On 72 corpus walls the chord reading came out 8-173% wider than the narrowest port in 20 cases
 # (a hollow part's outer skin; the long side of a 140 x 384 mm rectangular duct), and cfMesh sized
 # its wall band for that: 6.9-11.4 cells across where the floor is 12 (2026-10-04).
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 import meshpipeline.engines.passage as P
@@ -31,21 +32,28 @@ def test_the_flow_width_of_each_port_shape():
     assert P.declared_port_half_width([]) is None
 
 
-def test_a_wide_reading_is_capped_at_the_port_and_a_throat_stands():
-    wide = {"min": 0.19, "p05": 0.19, "median": 0.19, "max": 0.19, "points": 200, "source": "chord"}
-    capped = P.cap_at_ports(wide, 0.07)
-    assert capped["p05"] == capped["min"] == 0.07 and capped["capped_at_declared_port"]
-    assert capped["median"] == 0.19, "the background is still sized from the typical passage"
-    throat = {"min": 0.02, "p05": 0.03, "median": 0.06, "max": 0.1, "points": 500}
-    assert P.cap_at_ports(throat, 0.07) == throat, "a narrower passage inside is kept"
-    assert P.cap_at_ports(wide, None) == wide
-    assert P.cap_at_ports(None, 0.07)["p05"] == 0.07
-    assert P.cap_at_ports(None, None) is None
-    # never a median below the narrow end
-    assert P.cap_at_ports({"p05": 0.2, "median": 0.1, "min": 0.1}, 0.15)["median"] == 0.15
-
-
-def test_the_wall_band_is_sized_from_the_capped_radius():
-    caps = P.size_caps(P.cap_at_ports({"p05": 0.19, "median": 0.19, "min": 0.19}, 0.07))
-    # 13 cells across the 140 mm side, not across the 384 mm one
+def test_the_wall_band_is_sized_from_the_band_radius_and_the_floor_from_the_narrowest():
+    caps = P.size_caps({"p05": 0.01, "median": 0.07, "band": 0.07})
     assert caps["wall_cell"] == pytest.approx(2 * 0.07 / P.PASSAGE_CELLS_ACROSS)
+    assert caps["refinement_thickness"] == pytest.approx(1.1 * 0.07)
+    assert caps["wall_cell_floor"] == pytest.approx(2 * 0.01 / P.PASSAGE_CEILING_CELLS)
+    # statistics with no band (the port radii, when the reading is not vouched for): the
+    # narrowest passage sizes the band, as before
+    assert P.size_caps({"p05": 0.05, "median": 0.1})["wall_cell"] == \
+        pytest.approx(2 * 0.05 / P.PASSAGE_CELLS_ACROSS)
+
+
+def test_cfmesh_never_bands_wider_than_the_widest_declared_port(monkeypatch):
+    import meshpipeline.engines.cfmesh.cfmesh_runner as R
+    pts = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1.0, 0], [1.0, 1.0, 0]])
+    faces = np.array([[0, 1, 2], [1, 3, 2]])
+    r = np.full(4, 0.19)                                   # the long side of the duct, everywhere
+    monkeypatch.setattr(P, "staged_passage_field", lambda *_a, **_k: (pts, faces, r))
+    decl = [{"name": "in", "type": "inlet", "width_mm": 384, "height_mm": 140},
+            {"name": "out", "type": "outlet", "width_mm": 384, "height_mm": 140},
+            {"name": "wall", "type": "wall"}]
+    t = {"openings": {"in": {"area": 0.384 * 0.14, "centroid": [0, 0, 0]},
+                      "out": {"area": 0.384 * 0.14, "centroid": [1, 0, 0]}}}
+    chosen, field = R._passage_sizing(t, {}, "wall", decl)
+    assert chosen["band"] == pytest.approx(0.07) and chosen["band_capped_at_declared_port"]
+    assert field is not None and len(field) == 3
