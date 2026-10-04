@@ -175,11 +175,14 @@ SPEC = EngineSpec(
             # triangles (CPS3/CPS6 in the .inp) with boundary groups on curves.
             MeshCapability("planar-domain", "surface-mesh"),
         ),
-        # WHAT FILE IT TAKES, per flow - the true path on main: the CAD B-rep is staged as
-        # geometry.step and gmsh meshes the volume it bounds, for every flow. A surface upload
-        # stages no B-rep at all (gmsh_runner.inspect_stl: "upload a CAD solid, not a bare STL").
+        # WHAT FILE IT TAKES, per flow. A CAD B-rep is staged as geometry.step and gmsh meshes the
+        # volume it bounds, for every flow. A surface upload has no B-rep: for EXTERNAL flow the
+        # driver classifies its triangles into faces and cuts the body out of a far-field box
+        # (engines/gmsh/surface_volume.py); for INTERNAL flow it is taken through the staged fluid
+        # boundary, declared once below as input_contract.internal_from_surface. Structural FEA
+        # stays CAD-only (a solid's faces carry its boundary conditions).
         accepts=(FlowSupport("structural", ("cad",)),
-                 FlowSupport("external", ("cad",)),
+                 FlowSupport("external", ("cad", "surface")),
                  FlowSupport("internal", ("cad",))),
         # a tetrahedral mesher of a prepared volume: last on the flow ladders
         ladder_rank=40,

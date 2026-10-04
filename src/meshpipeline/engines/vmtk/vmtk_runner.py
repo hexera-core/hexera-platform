@@ -251,13 +251,10 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
     lumen = ws / _LUMEN
     err = _staging_error(ws)
     if err:
-        return {"error": f"the engine could not open this CAD body at its declared ports: {err}"}
+        # the true reason the lumen was never prepared - even with an unopened skin staged as
+        # lumen.vtp, the failure is what is reported, not whatever that surface looks like
+        return {"error": f"the geometry could not be staged for vmtk: {err}"}
     if not lumen.exists():
-        from meshpipeline.cad.internal_surface import staging_failure
-        why = staging_failure(ws)
-        if why:
-            # the true reason the lumen was never staged, not just that its file is absent
-            return {"error": f"the geometry could not be staged for vmtk: {why}"}
         return {"error": f"{_LUMEN} missing - the workspace was not staged for vmtk"}
     surf = _read_surface(lumen).extract_surface()
     edges = surf.extract_feature_edges(boundary_edges=True, feature_edges=False,
@@ -357,38 +354,24 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
 
 # staging (builder attempt seam): open the declared ports of a CAD body before anything runs
 
-#: Written when the engine could not open the declared ports of a CAD body: what failed, so the
-#: run says THAT instead of whatever the unstaged surface looks like (job a76e3ca1 burned two
-#: attempts on "lumen.vtp missing"; the faceted CAD aorta was refused as "this surface is closed").
-STAGING_ERROR = "vmtk_staging_error.json"
-
-
 def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
                    input_kind: str = "") -> dict | None:
     """Deterministic lumen preparation - see engines/vmtk/lumen_staging.py. Returns the
-    staging record, or None when it does not apply (a surface input, nothing declared). A
-    failure is recorded in the workspace (STAGING_ERROR) before it propagates, so the engine's
-    own inspection and configure can name it."""
+    staging record, or None when it does not apply (nothing declared). A failure propagates to
+    the builder's attempt seam (agents/builder/attempt._stage_declared), which records it ONCE,
+    with its reason, as the attempt's pre-flight refusal; _staging_error reads it back."""
     from meshpipeline.engines.vmtk.lumen_staging import stage_lumen
-    ws = Path(workspace)
-    (ws / STAGING_ERROR).unlink(missing_ok=True)
-    try:
-        return stage_lumen(workspace, geometry_path, prepared=prepared,
-                           intake_patches=intake_patches, input_kind=input_kind)
-    except Exception as exc:
-        try:
-            (ws / STAGING_ERROR).write_text(json.dumps(
-                {"error": f"{type(exc).__name__}: {exc}"}), encoding="utf-8")
-        except OSError:
-            pass
-        raise
+    return stage_lumen(workspace, geometry_path, prepared=prepared,
+                       intake_patches=intake_patches, input_kind=input_kind)
 
 
 def _staging_error(ws: Path) -> str:
-    try:
-        return str(json.loads((ws / STAGING_ERROR).read_text(encoding="utf-8")).get("error") or "")
-    except (OSError, ValueError, AttributeError):
-        return ""
+    """Why the lumen could not be prepared, so the run says THAT instead of whatever the unstaged
+    surface looks like (job a76e3ca1 burned two attempts on "lumen.vtp missing"; the faceted CAD
+    aorta was refused as "this surface is closed"). "" when staging did not fail. The one record
+    of a staging failure (cad/internal_surface.staging_failure), not one of the engine's own."""
+    from meshpipeline.cad.internal_surface import staging_failure
+    return staging_failure(ws)
 
 
 def _unstaged_refusal(ws: Path) -> dict | None:
@@ -397,7 +380,7 @@ def _unstaged_refusal(ws: Path) -> dict | None:
     err = _staging_error(ws)
     if err:
         return {"code": "vmtk_staging_failed",
-                "error": ("the engine could not open this CAD body at its declared ports, so there "
+                "error": ("the engine could not open this geometry at its declared ports, so there "
                           f"is no lumen to mesh: {err}. Nothing a mesh setting changes can fix "
                           "this - it needs the geometry (or the port declaration) changed.")}
     if not (ws / _LUMEN).exists() and not (ws / _LUMEN_OPEN).exists():

@@ -28,19 +28,21 @@ from meshpipeline.engines.registry import (
     resolve_engine_params,
 )
 
-#: THE TRUE MATRIX ON MAIN (2026-10-04): (engine, flow) -> the forms it takes. A pair not listed
-#: is a flow the engine is not designed for. Surface internal flow lands with the STL-INTERNAL
-#: work; when it does, only the engines' `accepts` declarations - and this table - change.
+#: THE TRUE MATRIX (2026-10-04, with the overnight work in): (engine, flow) -> the forms it takes.
+#: A pair not listed is a flow the engine is not designed for. Internal flow from a surface comes
+#: from the shared staging (cad/internal_surface, InputContract.internal_from_surface); gmsh meshes
+#: an external body from a surface (engines/gmsh/surface_volume.py); the multi-region assembly is
+#: read from an STL's solids (snappy_multiregion/surface_solids.py). Structural FEA stays CAD-only.
 EXPECTED: dict[tuple[str, str], set[str]] = {
     ("cfmesh", "external"): {"cad", "surface"},
-    ("cfmesh", "internal"): {"cad"},
+    ("cfmesh", "internal"): {"cad", "surface"},
     ("snappy", "external"): {"cad", "surface"},
-    ("snappy", "internal"): {"cad"},
+    ("snappy", "internal"): {"cad", "surface"},
     ("gmsh", "structural"): {"cad"},
-    ("gmsh", "external"): {"cad"},
-    ("gmsh", "internal"): {"cad"},
-    ("vmtk", "internal"): {"cad"},
-    ("snappy_multiregion", "multi-region"): {"cad"},
+    ("gmsh", "external"): {"cad", "surface"},
+    ("gmsh", "internal"): {"cad", "surface"},
+    ("vmtk", "internal"): {"cad", "surface"},
+    ("snappy_multiregion", "multi-region"): {"cad", "surface"},
 }
 
 FILE_OF = {"cad": "part.step", "surface": "part.stl"}
@@ -198,13 +200,13 @@ def test_an_unknown_form_is_never_refused(engine):
 
 
 def test_the_refusal_states_the_engines_own_limit_in_plain_words():
-    r = [x for x in get_spec("snappy").admit(AdmissionEvidence(
-        engine="snappy", purpose="internal_cfd", geometry_form="surface"))
+    r = [x for x in get_spec("gmsh").admit(AdmissionEvidence(
+        engine="gmsh", purpose=_PURPOSE_OF["structural"], geometry_form="surface"))
         if x.code == "geometry_form_unsupported"][0]
     assert r.phase == "declared" and r.field == "geometry"
-    assert r.message == ("snappyHexMesh cannot mesh internal flow from a surface mesh (STL or a "
-                         "similar triangle file): for internal flow it needs a CAD solid (STEP or "
-                         "IGES).")
+    assert r.message == ("Gmsh cannot mesh a structural (FEA) part from a surface mesh (STL or a "
+                         "similar triangle file): for a structural (FEA) part it needs a CAD solid "
+                         "(STEP or IGES).")
     assert "crash" not in r.message.lower()
 
 
@@ -229,10 +231,13 @@ def test_the_ladder_never_carries_an_engine_that_cannot_take_the_file(engine, fl
 
 
 def test_the_aorta_stl_offers_no_engine_that_cannot_take_an_stl():
-    # job d20ad762: snappyHexMesh, internal flow, an STL - the run ended offering VMTK
+    # job d20ad762: snappyHexMesh, internal flow, an STL - the run ended offering VMTK, which then
+    # could not take an STL. Every rung now is an engine that takes a surface for internal flow.
     from meshpipeline.pipeline import engine_fallback as lad
     st = _state("snappy", "internal", "surface")
-    assert [r.engine for r in lad.ladder(st)] == ["snappy"]
+    rungs = [r.engine for r in lad.ladder(st)]
+    assert rungs[0] == "snappy"
+    assert all("surface" in EXPECTED[(e, "internal")] for e in rungs)
 
 
 def test_a_cad_file_keeps_every_internal_engine_on_the_ladder():
@@ -258,24 +263,17 @@ def test_the_start_of_run_choice_reads_the_declarations(monkeypatch, tmp_path, f
     assert asyncio.run(node_engine_select(st)) == {"engine": engine}
 
 
-# once surface internal flow lands (STL-INTERNAL #135/#138): only the declarations change
+# surface internal flow (the shared staging, cad/internal_surface): only the declarations changed
 
 
 _SURFACE_TAKERS = ("snappy", "cfmesh", "vmtk", "gmsh")
 
 
 @pytest.fixture
-def internal_from_surface(monkeypatch):
-    """Each internal-flow engine as STL-INTERNAL declares it: InputContract.internal_from_surface.
-    The field is not on main yet, so the contract is stood in for with the same values plus it."""
-    import dataclasses
-
+def internal_from_surface():
+    """Each internal-flow engine declares it once: InputContract.internal_from_surface."""
     for name in _SURFACE_TAKERS:
-        spec = ENGINE_CATALOG[name]
-        contract = SimpleNamespace(**dataclasses.asdict(spec.input_contract),
-                                   internal_from_surface=True)
-        monkeypatch.setitem(ENGINE_CATALOG, name,
-                            dataclasses.replace(spec, input_contract=contract))
+        assert ENGINE_CATALOG[name].input_contract.internal_from_surface is True, name
 
 
 def test_internal_from_surface_is_read_from_the_engines_declaration(internal_from_surface):
@@ -284,11 +282,14 @@ def test_internal_from_surface_is_read_from_the_engines_declaration(internal_fro
     for name in _SURFACE_TAKERS:
         assert get_spec(name).forms_for("internal") == ("cad", "surface")
         assert "internal flow" in cap.takes_line(get_spec(name))
+        # ONE declaration: the accepts row names the CAD form, the input contract adds the surface
+        assert next(fs for fs in get_spec(name).accepts if fs.flow == "internal").forms == ("cad",)
     assert ("internal flow from a CAD solid or a surface mesh"
             in cap.takes_line(get_spec("cfmesh")))
-    # external and the other flows keep exactly what they declared
-    assert get_spec("gmsh").forms_for("external") == ("cad",)
-    assert get_spec("snappy_multiregion").forms_for("multi-region") == ("cad",)
+    # the other flows keep exactly what they declared
+    assert get_spec("gmsh").forms_for("structural") == ("cad",)
+    assert get_spec("gmsh").forms_for("external") == ("cad", "surface")
+    assert get_spec("snappy_multiregion").forms_for("multi-region") == ("cad", "surface")
 
 
 @pytest.mark.parametrize("engine", _SURFACE_TAKERS)
@@ -304,14 +305,16 @@ def test_a_surface_for_internal_flow_is_one_input_whichever_kind_was_confirmed(
                         "geometry_form_unsupported"}, (engine, kind, codes)
 
 
-@pytest.mark.parametrize("engine,kind", [("cfmesh", "fluid-domain"), ("gmsh", "body-surface")])
-def test_a_cad_solid_keeps_its_declared_kinds(internal_from_surface, engine, kind):
+@pytest.mark.parametrize("engine,kind,refused", [("gmsh", "body-surface", True),
+                                                  ("cfmesh", "fluid-domain", False)])
+def test_a_cad_solid_keeps_its_declared_kinds(internal_from_surface, engine, kind, refused):
     # a CAD solid's kind is real: a solid of the fluid and a solid of the part are meshed
-    # differently, and each engine's capability still says which it takes
+    # differently, and each engine's capability still says which it takes (cfMesh declares a
+    # fluid solid for internal flow; Gmsh does not declare a part's solid for it)
     codes = {r.code for r in get_spec(engine).admit(AdmissionEvidence(
         engine=engine, purpose="internal_cfd", input_kind=kind, geometry_form="cad",
         engine_params=resolve_engine_params(engine, {})))}
-    assert "input_kind_incompatible" in codes
+    assert ("input_kind_incompatible" in codes) is refused, codes
 
 
 def test_the_aorta_stl_is_offered_every_internal_engine_once_they_take_surfaces(
@@ -331,7 +334,7 @@ def test_a_future_engine_is_offered_from_its_spec_alone():
                    accepts=(FlowSupport("internal", ("cad", "surface")),))
     specs = {**{n: get_spec(n) for n in engine_names()}, "tubemesh": fake}
     assert cap.ladder_order("internal", specs)[0] == "tubemesh"
-    assert cap.engines_for("internal", "surface", specs) == ["tubemesh"]
+    assert cap.engines_for("internal", "surface", specs)[0] == "tubemesh"
     assert cap.capability_table(specs)[("tubemesh", "internal", "surface")] is True
     assert "tubemesh" in cap.who_can("internal", "surface", specs=specs)
 
@@ -367,11 +370,16 @@ def test_the_intake_preview_refuses_exactly_what_the_engine_cannot_take(engine, 
 
 def test_a_comparison_lists_the_engines_that_cannot_take_the_file_as_needing_another():
     from meshpipeline.agents.intake.recommendation import recommend_compatible_engines
-    recs = recommend_compatible_engines("internal_cfd", "fluid-domain", "3D",
+    recs = recommend_compatible_engines("structural", "solid-body", "3D", patches=[],
+                                        authorized=True, geometry_form="surface")
+    assert recs["compatible_engines"] == []
+    assert set(recs["needs_other_input"]) >= {"gmsh"}
+    # the aorta STL, internal flow: the engines that take a surface are compatible now
+    surf = recommend_compatible_engines("internal_cfd", "fluid-domain", "3D",
                                         patches=list(_PATCHES["internal"]), authorized=True,
                                         geometry_form="surface")
-    assert recs["compatible_engines"] == []
-    assert set(recs["needs_other_input"]) >= {"snappy", "cfmesh", "vmtk"}
+    assert {"cfMesh", "snappyHexMesh"} <= set(surf["compatible_engines"])
+    assert not set(surf.get("needs_other_input") or []) & set(_SURFACE_TAKERS)
     cad_recs = recommend_compatible_engines("internal_cfd", "fluid-domain", "3D",
                                             patches=list(_PATCHES["internal"]), authorized=True,
                                             geometry_form="cad")
@@ -392,19 +400,21 @@ def _intake(form: str, declared=("internal_cfd", "fluid-domain")):
 
 
 def test_the_intake_never_proposes_an_engine_that_cannot_take_the_upload():
-    # the aorta STL was proposed VMTK ("built for branching tubular lumens") - which cannot take
-    # an STL. Now no engine is proposed, and the model is handed the way on instead.
-    ex = _intake("surface")
-    for shown in ("VMTK", "snappyHexMesh", "cfMesh"):
-        out = asyncio.run(ex.run("propose_engine_selection", {"engine": shown, "reason": "fits"}))
-        assert out.accepted is False
-        assert "do not propose any engine" in out.content
-        assert "STEP or IGES" in out.content
+    # the aorta STL was proposed VMTK when VMTK could not take an STL. A file no engine takes for
+    # the request (a surface for a structural part) gets no proposal, and the model is handed the
+    # way on instead.
+    ex = _intake("surface", declared=(_PURPOSE_OF["structural"], "solid-body"))
+    out = asyncio.run(ex.run("propose_engine_selection", {"engine": "Gmsh", "reason": "fits"}))
+    assert out.accepted is False
+    assert "do not propose any engine" in out.content
+    assert "STEP or IGES" in out.content
     assert ex.state.selection is None
 
 
-def test_the_intake_still_proposes_an_engine_that_takes_the_upload():
-    ex = _intake("cad")
+@pytest.mark.parametrize("form", ["cad", "surface"])
+def test_the_intake_still_proposes_an_engine_that_takes_the_upload(form):
+    # VMTK takes the aorta as a CAD solid and, through the shared staging, as an STL
+    ex = _intake(form)
     out = asyncio.run(ex.run("propose_engine_selection", {"engine": "VMTK", "reason": "fits"}))
     assert out.accepted is True and ex.state.selection["engine"] == "vmtk"
 
@@ -416,7 +426,7 @@ def test_the_proposer_reads_each_engines_declared_takes_and_delivers_lines():
         assert cap.takes_line(get_spec(name)) in menu
         assert cap.delivers_line(get_spec(name)) in menu
     assert ("Takes: external flow from a CAD solid or a surface mesh; internal flow from a CAD "
-            "solid.") in menu
+            "solid or a surface mesh.") in menu
     assert "Delivers: hex-dominant cells, a staircased wall, no reliable near-wall prism" in menu
 
 
@@ -469,8 +479,8 @@ def _refused_run(ga, ex, tmp_path, engine: str, flow: str, form: str,
 
 
 @pytest.mark.parametrize("engine,flow,form", [
-    c for c in _cells() if (c[0], c[1]) in EXPECTED and c[1] in ("external", "internal")
-    and c[2] not in EXPECTED[(c[0], c[1])]])
+    c for c in _cells() if (c[0], c[1]) in EXPECTED
+    and c[1] in ("external", "internal", "structural") and c[2] not in EXPECTED[(c[0], c[1])]])
 def test_a_refused_by_design_run_says_why_builds_nothing_and_gives_the_way_on(
         run_nodes, tmp_path, engine, flow, form):
     ga, ex = run_nodes
@@ -510,25 +520,17 @@ def test_a_refused_by_design_run_says_why_builds_nothing_and_gives_the_way_on(
                 f"{engine_label(other)} offered for a file it cannot take:\n{text}")
 
 
-def test_the_aorta_message_end_to_end(run_nodes, tmp_path):
-    # jobs d20ad762 / 26f5429a as they now end: the user named snappyHexMesh, confirmed the STL as
-    # the fluid volume itself, internal flow. Before: "Mesh built", "the mesher stopped before it
-    # finished... usually on our side", an identical second attempt, and an offer of VMTK.
-    ga, ex = run_nodes
-    _st, text, rec = _refused_run(ga, ex, tmp_path, "snappy", "internal", "surface",
-                                  input_kind="fluid-domain")
-    assert text == (
-        "Mesh generation did not complete successfully.\n"
-        "snappyHexMesh cannot mesh internal flow from a surface mesh (STL or a similar triangle "
-        "file): for internal flow it needs a CAD solid (STEP or IGES). Nothing was built, and no "
-        "attempt was used.\n"
-        "No downloadable mesh deliverable is available.\n"
-        "We did not try again: another attempt would hit the same problem.\n"
-        "No engine here can mesh internal flow from a surface mesh yet - snappyHexMesh, VMTK and "
-        "Gmsh take a CAD solid (STEP or IGES). Export the fluid region itself as a STEP or IGES "
-        "solid from your CAD tool and upload it in this chat - that file can be meshed.")
-    assert "VMTK can mesh it" not in text
-    assert rec["attempts"][0]["refused_before_building"] is True
+@pytest.mark.parametrize("engine", _SURFACE_TAKERS)
+def test_the_aorta_stl_is_no_longer_refused_before_building(run_nodes, tmp_path, engine):
+    # jobs d20ad762 / 26f5429a: the user named an engine, confirmed the STL as the fluid volume
+    # itself, internal flow - refused by every engine on 2026-10-03. Each internal-flow engine now
+    # takes it through the shared staging: admission does not stop it on its form.
+    from tests._geometry_support import geometry_state
+    ga, _ex = run_nodes
+    st = _state(engine, "internal", "surface", input_kind="fluid-domain",
+                geometry=geometry_state(tmp_path, filename="aorta.stl"))
+    out = asyncio.run(ga.node_geometry_admission(st))
+    assert "geometry_form_unsupported" not in str(out), out
 
 
 def test_a_file_the_engine_takes_is_not_refused_on_its_form(run_nodes, tmp_path):
