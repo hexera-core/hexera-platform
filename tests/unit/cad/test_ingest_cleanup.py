@@ -89,6 +89,16 @@ def test_the_majority_decides_so_a_consistently_inward_file_is_not_flipped():
     assert _signed_volume(out.points, out.triangles) < 0
 
 
+def test_a_wall_two_unnamed_regions_share_keeps_both_its_copies():
+    # two closed tetrahedra glued on face (0, 1, 2), written as ONE unnamed surface - how a
+    # multi-region file without names arrives. The shared face is real twice: once per region.
+    p = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]], dtype=float)
+    a = [(0, 2, 1), (0, 1, 3), (1, 2, 3), (2, 0, 3)]
+    b = [(0, 1, 2), (0, 4, 1), (1, 4, 2), (2, 4, 0)]
+    out, report = tidy(SurfaceMesh(p, np.array(a + b)))
+    assert report.duplicates == 0 and out.n_triangles == 8
+
+
 def test_two_regions_sharing_a_face_keep_their_copy_each():
     p, t = _sphere()
     group = np.r_[np.zeros(len(t), dtype=np.int64), [1]]

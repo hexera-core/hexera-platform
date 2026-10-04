@@ -117,8 +117,9 @@ def tidy(mesh: SurfaceMesh) -> tuple[SurfaceMesh, TidyReport]:
 
     1. corners at exactly the same coordinates become one vertex (nothing moves);
     2. triangles collapsed to a line or a point are left out (they enclose nothing);
-    3. a second copy of a triangle WITHIN ONE GROUP is left out - two regions that share a face
-       (a multi-region interface) keep their copy each;
+    3. a triangle written more than once within one group is resolved by what its edges say
+       (`_doubled_to_drop`): a loose sliver goes, a face written twice keeps one copy, a wall two
+       regions share keeps both; copies in different groups are never touched;
     4. triangles are turned so that every edge two of them share is walked in opposite
        directions - per connected piece, the way the majority already faces wins, so a file that
        was consistent is left exactly as it was.
@@ -137,22 +138,10 @@ def tidy(mesh: SurfaceMesh) -> tuple[SurfaceMesh, TidyReport]:
         raise SurfaceError("every triangle in the file has zero area")
     t, group = t[keep], group[keep]
 
-    key = np.c_[np.sort(t, axis=1), group]
-    _, first, copies = np.unique(key, axis=0, return_index=True, return_counts=True)
-    duplicates = int(len(t) - len(first))
+    drop = _doubled_to_drop(t, group)
+    duplicates = int(drop.sum())
     if duplicates:
-        doubled = first[copies > 1]
-        order = np.argsort(first)
-        first = first[order]
-        t, group = t[first], group[first]
-        # A doubled triangle is either a real face written twice (keep one copy: its edges are
-        # shared with its neighbours) or a zero-thickness sliver of two copies hanging off one
-        # edge (drop both: one copy alone would flap loose). Which one is MEASURED: whichever
-        # leaves fewer open and non-manifold edges.
-        drop = _loose_copies(t, np.searchsorted(first, np.sort(doubled)))
-        if drop.any():
-            duplicates += int(drop.sum())
-            t, group = t[~drop], group[~drop]
+        t, group = t[~drop], group[~drop]
 
     flip = _consistent_flips(t)
     turned = int(flip.sum())
@@ -163,25 +152,36 @@ def tidy(mesh: SurfaceMesh) -> tuple[SurfaceMesh, TidyReport]:
     return SurfaceMesh(pts, t, group, list(mesh.names), notes), report
 
 
-def _loose_copies(t: np.ndarray, kept: np.ndarray) -> np.ndarray:
-    """Of the kept copies of doubled triangles, those that are better gone: dropping the last copy
-    leaves fewer edges used once (open) or more than twice (non-manifold) than keeping it."""
-    drop = np.zeros(len(t), dtype=bool)
-    if len(kept) == 0:
+def _doubled_to_drop(t: np.ndarray, group: np.ndarray) -> np.ndarray:
+    """Which copies of a triangle written more than once (same corners, same group) to leave out.
+
+    What a doubled triangle IS is read from its edges - how many OTHER triangles use each one:
+    - two edges used by nothing else: a zero-thickness sliver hanging off one edge (the Fluent
+      aorta's defect). Every copy goes; one alone would flap loose.
+    - every edge used by at most one other: a face written twice. One copy stays.
+    - an edge used by two or more others: a wall two pieces share (the interface of a
+      multi-region file written without names). Every copy stays - the wall is real, and its two
+      sides are what tells the regions apart.
+    """
+    m = len(t)
+    drop = np.zeros(m, dtype=bool)
+    key = np.c_[np.sort(t, axis=1), group]
+    _, first, set_of, copies = np.unique(key, axis=0, return_index=True, return_inverse=True,
+                                         return_counts=True)
+    k = copies[np.asarray(set_of).ravel()]
+    if not (k > 1).any():
         return drop
     e = np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1)
-    _, inv, counts = np.unique(e, axis=0, return_inverse=True, return_counts=True)
-    use = counts.copy()
-    edge_of = inv.reshape(3, -1).T                      # (m, 3) edge ids of each triangle
-
-    def defects(c: np.ndarray) -> int:
-        return int(((c == 1) | (c > 2)).sum())
-
-    for i in kept.tolist():
-        ids = edge_of[i]
-        if defects(use[ids] - 1) < defects(use[ids]):
-            drop[i] = True
-            use[ids] -= 1
+    _, einv, ecount = np.unique(e, axis=0, return_inverse=True, return_counts=True)
+    edge_of = np.asarray(einv).ravel().reshape(3, -1).T          # (m, 3) edge ids
+    others = ecount[edge_of] - k[:, None]                         # uses by any OTHER triangle
+    doubled = k > 1
+    sliver = doubled & ((others == 0).sum(axis=1) >= 2)
+    written_twice = doubled & ~sliver & (others.max(axis=1) <= 1)
+    is_first = np.zeros(m, dtype=bool)
+    is_first[first] = True
+    drop[sliver] = True
+    drop[written_twice & ~is_first] = True
     return drop
 
 
