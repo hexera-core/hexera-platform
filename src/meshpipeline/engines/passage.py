@@ -514,6 +514,11 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
 #: 192 mm on a 140 x 384 mm duct) and a narrow branch had readings at its two ends only.
 FIELD_EDGE_FRACTION = 1.0 / 150.0
 
+#: The sizing field is read at no more points than this: a chord per point, about a millisecond
+#: each - 20,000 read the Fluent aorta's 31,000-point wall in under 20 s (the gate's measure of a
+#: finished mesh keeps MAX_MEASURE_POINTS).
+FIELD_MAX_POINTS = 20_000
+
 
 def point_areas(points, faces) -> np.ndarray:
     """The wall area each point stands for: a third of every triangle it belongs to."""
@@ -535,7 +540,7 @@ def weighted_percentile(values, weights, q: float) -> float:
 
 
 def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=(),
-                          max_points: int = MAX_MEASURE_POINTS):
+                          max_points: int = FIELD_MAX_POINTS):
     """(points, faces, radius at each point) of the staged WALL (open at the ports) BEFORE
     meshing, read the way VMTK's staging reads them (a ray leaving through a port borrows its
     neighbour). The chords are oriented from a point deep in the cavity found from the port
@@ -585,12 +590,18 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
             if len(cf) >= 4:
                 pts, faces = np.asarray(coarse.points, dtype=float), cf
         else:
-            # no edge longer than the field spacing - nor so short that the point count runs
-            # past max_points (about 0.6 h^2 of wall per point once halved)
+            # no edge longer than the field spacing - nor so many points that the read runs
+            # long: halving a CAD pipe's end-to-end slivers multiplies points far past the
+            # area's share (a 48-point cylinder came back with 210,000 at 1/150 of its length,
+            # and the chords took 8 minutes), so the spacing widens until the count fits
             area = float(point_areas(pts, faces).sum())
             h = max(diag * FIELD_EDGE_FRACTION, float(np.sqrt(area / (0.6 * max_points))))
-            pts, faces = _halve_long_edges(np.asarray(pts, dtype=float),
-                                           np.asarray(faces, dtype=np.int64), h)
+            p0, f0 = np.asarray(pts, dtype=float), np.asarray(faces, dtype=np.int64)
+            for _ in range(24):
+                pts, faces = _halve_long_edges(p0, f0, h)
+                if len(pts) <= max_points:
+                    break
+                h *= 1.5
         r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0)
         return pts, faces, np.asarray(r, dtype=float)
     except Exception:  # noqa: BLE001 - sizing aid, not a verdict
@@ -823,7 +834,7 @@ __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS"
            "declared_port_half_width", "declared_port_widths", "field_radius_stats",
            "narrow_passage_regions", "passage_field_of_stls", "point_areas",
            "port_corrected_radius", "staged_passage_field", "weighted_percentile",
-           "OCTREE_ALIGN_MAX", "octree_aligned_cell",
+           "OCTREE_ALIGN_MAX", "octree_aligned_cell", "FIELD_MAX_POINTS",
            "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
            "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",
