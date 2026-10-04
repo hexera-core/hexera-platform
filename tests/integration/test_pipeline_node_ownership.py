@@ -184,16 +184,11 @@ async def test_the_selection_the_user_pinned_is_never_re_decided(monkeypatch):
 
 
 def _vmtk_taking_surfaces(monkeypatch) -> None:
-    # The MEASURED check is under test here, and a self-intersection is a defect of a surface. On
-    # main VMTK declares CAD only for internal flow (engines/vmtk/spec.py `accepts`), so its own
-    # form check would refuse this STL before measuring anything. Declare it as it will be once
-    # surface internal flow lands, so the measured rejection is the one exercised.
-    import dataclasses
-
-    from meshpipeline.engines.base import FlowSupport
+    # The MEASURED check is under test here, and a self-intersection is a defect of a surface:
+    # VMTK takes a surface for internal flow (input_contract.internal_from_surface), so the STL
+    # passes its form check and the measured rejection is the one exercised.
     from meshpipeline.engines.registry import ENGINE_CATALOG
-    monkeypatch.setitem(ENGINE_CATALOG, "vmtk", dataclasses.replace(
-        ENGINE_CATALOG["vmtk"], accepts=(FlowSupport("internal", ("cad", "surface")),)))
+    assert "surface" in (ENGINE_CATALOG["vmtk"].forms_for("internal") or ())
 
 
 @pytest.fixture()
@@ -211,14 +206,20 @@ async def rejected(monkeypatch, tmp_path):
 
 @pytest.fixture()
 async def refused_by_design(monkeypatch, tmp_path):
-    # The same STL on main's declaration: VMTK does not take a surface for internal flow, so the
-    # node refuses it by design - before staging or measuring anything.
+    # The same STL, for a structural part: Gmsh (the one structural engine) takes a CAD solid only
+    # for FEA, so the node refuses it by design - before staging or measuring anything. (Internal
+    # flow from a surface is taken now: every internal-flow engine declares it.)
+    from meshpipeline.engines.registry import resolve_engine_params
     from meshpipeline.pipeline.geometry_admission import node_geometry_admission
 
     seen: list = []
     geometry = _self_intersecting_geometry(tmp_path)
     res = await _owned(monkeypatch, seen, node_geometry_admission,
-                       lambda j: {**_VMTK, "job_id": str(j), "geometry": geometry})
+                       lambda j: {"job_id": str(j), "engine": "gmsh", "purpose": "structural",
+                                  "input_kind": "solid-body", "dimensionality": "3D",
+                                  "intake_patches": [],
+                                  "engine_params": resolve_engine_params("gmsh", {}),
+                                  "geometry": geometry})
     res["seen"] = seen
     yield res
 
@@ -227,8 +228,8 @@ async def test_a_refusal_by_design_publishes_under_the_claim_and_says_nothing_wa
         refused_by_design):
     out = refused_by_design["out"]
     assert out["executor_failure_facts"]["refused_by_design"] is True, out
-    assert out["geometry_unsuitable_reason"].startswith("VMTK cannot mesh internal flow from a "
-                                                        "surface mesh"), out
+    assert out["geometry_unsuitable_reason"].startswith("Gmsh cannot mesh a structural (FEA) part "
+                                                        "from a surface mesh"), out
     seen = refused_by_design["seen"]
     assert [(r["fn"], r["method"]) for r in seen][:2] == [("_publish", "stage"),
                                                           ("_publish", "note")]
