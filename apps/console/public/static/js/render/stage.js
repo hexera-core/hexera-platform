@@ -225,9 +225,9 @@ export const Stage = {
       :`no history yet · will run up to ${fmtDur(budget*1000)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
-        <span class="mb-num" id="mb-num">0:00</span></div>
-      <div class="mb-track"><div class="mb-fill" id="mb-fill"></div></div>
-      <div class="mb-sub" id="mb-sub">${esc(sub)}</div>`;
+        <span class="mb-num">0:00</span></div>
+      <div class="mb-track"><div class="mb-fill"></div></div>
+      <div class="mb-sub">${esc(sub)}</div>`;
     n.body.appendChild(w);this.scroll(n);
     this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};},
   tickMesh(){const m=this.meshBar;if(!m)return;
@@ -236,7 +236,9 @@ export const Stage = {
     // bar holds full and the label keeps counting up - a run CAN take longer than usual,
     // and pretending otherwise (or racing to a fake 100%) would be the lie we are avoiding.
     const pct=Math.min(100,(el/m.ref)*100);
-    const f=document.getElementById('mb-fill'),num=document.getElementById('mb-num');
+    // THIS bar's parts, not a page-wide id: a retry keeps attempt 1's finished bar in the
+    // timeline, and an id lookup found that one - attempt 2's bar sat at 0:00, empty.
+    const f=m.el.querySelector('.mb-fill'),num=m.el.querySelector('.mb-num');
     if(f)f.style.width=pct+'%';
     if(f&&el>=m.ref)f.classList.add('over');
     if(num)num.textContent=fmtDur(el)+(el>=m.ref&&m.hasHist?' · longer than usual':'');},
@@ -246,12 +248,12 @@ export const Stage = {
     // The run FINISHED. While it runs the bar is elapsed against the engine's
     // budget, but a delivered mesh is 100% of the work - a run that lands well
     // inside its budget must not be left as a 3% sliver that has turned green.
-    const f=document.getElementById('mb-fill');
+    const f=m.el.querySelector('.mb-fill');
     if(f){f.classList.remove('over');f.style.width='100%';}
     // and the sub-line stops predicting a run that already happened
-    const sub=document.getElementById('mb-sub');
+    const sub=m.el.querySelector('.mb-sub');
     if(sub)sub.textContent=`finished in ${fmtDur(el)}`;
-    const num=document.getElementById('mb-num');
+    const num=m.el.querySelector('.mb-num');
     if(num&&cells)num.textContent=`${fmtDur(el)} · ${cells}`;
     this.meshBar=null;},
   node(agent){this.ensureProc();
