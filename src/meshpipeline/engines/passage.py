@@ -68,24 +68,53 @@ def measure_deadline(seconds: float):
         signal.signal(signal.SIGALRM, previous)
 
 
-def measure_passage(points, faces, radius) -> dict:
+def triangle_edges(faces) -> np.ndarray:
+    """The three edges of every triangle, as (k, 2) point ids (an edge two triangles share is
+    listed twice, so each point's mean weighs its faces alike)."""
+    f = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
+    return np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+
+
+def polygon_edges(polys) -> np.ndarray:
+    """The edges a mesh's boundary polygons really have, as (k, 2) point ids: each polygon's
+    sides, never the diagonals a fan triangulation adds inside it."""
+    rows = [np.stack([np.asarray(p, dtype=np.int64), np.roll(np.asarray(p, dtype=np.int64), -1)],
+                     axis=1) for p in polys if len(p) >= 3]
+    return np.concatenate(rows) if rows else np.zeros((0, 2), dtype=np.int64)
+
+
+def mean_edge(points, edges) -> np.ndarray:
+    """The mean length of the edges meeting each point (0 where none does)."""
+    pts = np.asarray(points, dtype=float)
+    e = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+    length = np.linalg.norm(pts[e[:, 1]] - pts[e[:, 0]], axis=1)
+    acc = (np.bincount(e[:, 0], weights=length, minlength=len(pts))
+           + np.bincount(e[:, 1], weights=length, minlength=len(pts)))
+    cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
+    return np.where(cnt > 0, acc / np.maximum(cnt, 1), 0.0)
+
+
+def measure_passage(points, faces, radius, *, edges=None) -> dict:
     """Cells across the passage at every boundary point: twice the local radius over the mean
     length of the boundary edges that meet the point (the surface cell is what the volume is
-    cut to beside it). Median, 5th percentile (the narrowest wall, less a few outliers), min."""
+    cut to beside it). Median, 5th percentile (the narrowest wall, less a few outliers), min.
+
+    `edges` are the boundary's REAL edges when the triangles are a fan of polygons (a polyMesh
+    boundary, see boundary_triangles_of_polymesh): a fan adds a diagonal inside every quad, and
+    counting it as a cell edge read a hex wall 12-14% coarser than it is - three cfMesh elbows
+    with 12.7, 10.8 and 20.7 cells across at the narrowest wall read 11.2, 9.5 and 18.3, and the
+    first was refused as under 12 (2026-10-04). Without `edges` the triangles' own edges are
+    used, which IS the cell edge on a triangulated wall (VMTK, gmsh, a staged surface)."""
     pts = np.asarray(points, dtype=float)
     f = np.asarray(faces, dtype=np.int64)
     r = np.asarray(radius, dtype=float)
     if len(f) == 0 or len(pts) == 0:
         return {}
-    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
-    length = np.linalg.norm(pts[e[:, 1]] - pts[e[:, 0]], axis=1)
-    acc = (np.bincount(e[:, 0], weights=length, minlength=len(pts))
-           + np.bincount(e[:, 1], weights=length, minlength=len(pts)))
-    cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
-    ok = (cnt > 0) & (r > 0.0)
+    h = mean_edge(pts, triangle_edges(f) if edges is None else edges)
+    ok = (h > 0.0) & (r > 0.0)
     if not ok.any():
         return {}
-    across = 2.0 * r[ok] / (acc[ok] / cnt[ok])
+    across = 2.0 * r[ok] / h[ok]
     return {"median": round(float(np.median(across)), 1),
             "p05": round(float(np.percentile(across, 5)), 1),
             "min": round(float(across.min()), 1), "points": int(ok.sum())}
@@ -297,7 +326,7 @@ def orient_wall_faces(points, faces, port_centroids):
 
 
 def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
-                       wall=None) -> dict:
+                       wall=None, edges=None) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
     at every point of a closed triangulated boundary, and the cells-across it implies.
 
@@ -314,7 +343,9 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
     Above `max_points` points the chords are cast on a decimated copy of the surface
     (vtkQuadricDecimation keeps the shape; the radius varies over metres, not over one cell)
     and each real point takes the radius of its nearest decimated point. The cells-across
-    figure is always measured on the real boundary, against the real boundary edges."""
+    figure is always measured on the real boundary, against the real boundary edges: `edges`
+    (in the numbering of the points measured - the wall's when `wall` is given) when the
+    triangles are a fan of polygons, which measure_passage explains."""
     import pyvista as pv
 
     from meshpipeline.engines.vmtk.lumen_staging import local_radius
@@ -344,7 +375,7 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
     else:
         r = local_radius(pts, f, interior, diag * 1e-5, diag / 2.0)
     return {"passage_radius": radius_stats(r),
-            "passage_cells_across_local": measure_passage(pts, f, r)}
+            "passage_cells_across_local": measure_passage(pts, f, r, edges=edges)}
 
 
 def _triangles(poly):
@@ -369,6 +400,15 @@ def boundary_triangles_of_polymesh(polymesh, *, wall_only: bool = False) -> tupl
     uses are kept. `wall_only` keeps the patches typed `wall` (empty when there are none).
     Never the volume: a VTK OpenFOAM reader decomposes every polyhedron of the fill to hand
     back a surface that is a few percent of it."""
+    pts, tri, _edges = boundary_of_polymesh(polymesh, wall_only=wall_only)
+    return pts, tri
+
+
+def boundary_of_polymesh(polymesh, *, wall_only: bool = False
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(points, fan triangles, the polygons' own edges) of a polyMesh boundary, read as
+    boundary_triangles_of_polymesh reads it. The edges are what a cell-size figure is taken
+    from (measure_passage): the triangles carry the fan's diagonals as well."""
     from meshpipeline.engines.cfmesh.polymesh_surface import (
         read_boundary_faces,
         read_boundary_patches,
@@ -376,7 +416,7 @@ def boundary_triangles_of_polymesh(polymesh, *, wall_only: bool = False) -> tupl
     )
     pm = Path(polymesh)
     patches = read_boundary_patches(pm)
-    empty = (np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64))
+    empty = (np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros((0, 2), dtype=np.int64))
     if wall_only:
         patches = [p for p in patches if p["type"] in WALL_PATCH_TYPES]
     if not patches:
@@ -398,7 +438,9 @@ def boundary_triangles_of_polymesh(polymesh, *, wall_only: bool = False) -> tupl
             fans.append(np.stack([ids[:, 0], ids[:, k], ids[:, k + 1]], axis=1))
     tri = np.concatenate(fans)
     used, inv = np.unique(tri, return_inverse=True)
-    return points[used], inv.reshape(tri.shape)
+    # every polygon corner is a corner of its fan, so the same numbering holds the edges
+    edges = np.searchsorted(used, polygon_edges(polys))
+    return points[used], inv.reshape(tri.shape), edges
 
 
 def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S) -> dict:
@@ -411,11 +453,13 @@ def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S
         return {}
     try:
         with measure_deadline(budget_s):
-            pts, faces = boundary_triangles_of_polymesh(pm)
+            pts, faces, edges = boundary_of_polymesh(pm)
             if len(faces) < 4:
                 return {}
-            wall = boundary_triangles_of_polymesh(pm, wall_only=True)
-            return passage_of_surface(pts, faces, wall=wall if len(wall[1]) >= 4 else None)
+            wpts, wfaces, wedges = boundary_of_polymesh(pm, wall_only=True)
+            if len(wfaces) >= 4:
+                return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
+            return passage_of_surface(pts, faces, edges=edges)
     except MeasureOverdue:
         logger.warning("passage measure abandoned after %.0f s; the mesh ships without it",
                        budget_s)
@@ -466,8 +510,9 @@ def passage_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=
 
 __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS",
            "PASSAGE_FLOOR_CELLS", "PASSAGE_MEASURE_BUDGET_S", "MeasureOverdue",
-           "boundary_triangles_of_polymesh",
+           "boundary_of_polymesh", "boundary_triangles_of_polymesh",
            "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
-           "measure_deadline", "measure_passage", "orient_wall_faces", "passage_of_polymesh",
+           "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
+           "passage_of_polymesh", "polygon_edges", "triangle_edges",
            "passage_of_stls", "passage_of_surface", "plausible_radius", "port_radius_stats",
            "radius_stats", "size_caps"]
