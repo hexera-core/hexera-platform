@@ -494,6 +494,44 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
     return dmin, dmax
 
 
+#: The background box's budget: total cells before refinement, and a per-axis sanity bound.
+BG_CELL_BUDGET = 600_000
+BG_MAX_DIV = 256
+#: blockMesh sanity minimum per axis. A thin slab's span axis sits on it, finer than the rest.
+BG_MIN_DIV = 12
+
+
+def background_grid(ext, base: float, *, budget: int = BG_CELL_BUDGET,
+                    max_div: int = BG_MAX_DIV, min_div: int = BG_MIN_DIV) -> tuple[list[int], int]:
+    """Divisions of the background box, with CUBIC cells, and how many doublings that took.
+
+    The cell starts at the recommender's base cell and doubles until the whole box fits the
+    budget; every axis gets the same cell. Returns (divisions, k): the cell is base * 2**k on
+    every axis (to the rounding of a whole number of cells, or finer on an axis held at
+    min_div), and k is the number of levels the surface must be bumped by to keep the wall cell
+    the recommender intended.
+
+    Cubic matters for the wall. The old fit trimmed the LONGEST axis until the box fitted, which
+    walks every far-field box towards the same count on each axis: a 2 x 5 x 1.5 m car box came
+    out 82 x 82 x 82, cells 3.3 times longer along the flow than up, every refinement level
+    copying that shape down to the body (job 9548829e). snappyHexMesh sizes a cell, a layer and
+    its warped-face test from ONE edge length per level - the shortest - so on such cells the
+    relative layer stack is sized for the short edge, the long faces read as warped and lose their
+    layers, and snapped cells cut across their long edge come out highly non-orthogonal."""
+    base = float(base)
+    if not (math.isfinite(base) and base > 0.0):
+        raise ValueError(f"background_grid needs a positive base cell, got {base!r}")
+    e = [max(float(v), 0.0) for v in ext]
+    div = [min_div] * 3
+    for k in range(64):
+        h = base * (2.0 ** k)
+        div = [max(int(min_div), int(round(v / h))) for v in e]
+        if (max(div) <= max_div and div[0] * div[1] * div[2] <= budget) or \
+                all(d <= min_div for d in div):
+            return div, k
+    return div, 63
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -529,36 +567,21 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # levels. That is a ~4000x multiplier on the wall shell to save 500k background cells, and it
     # OOM-killed snappy at both 8 GiB and 16 GiB.
     #
-    # So budget the background directly and let each axis resolve as finely as that budget allows.
-    _BG_MAX_DIV = 256          # per-axis sanity bound
-    _BG_CELL_BUDGET = 600_000  # total background cells before refinement
-    div = [max(12, min(_BG_MAX_DIV, int(round(ext[i] / base)))) for i in range(3)]
-    # Trim the coarsest-paying axis until the whole grid fits the budget. The floor of 12 is a
-    # blockMesh sanity minimum, so a thin slab's span axis is exempt from the trimming.
-    for _ in range(256):
-        if div[0] * div[1] * div[2] <= _BG_CELL_BUDGET:
-            break
-        k = max(range(3), key=lambda i: div[i])
-        if div[k] <= 12:
-            break
-        div[k] = max(12, int(div[k] * 0.92))
+    # So budget the background directly - with CUBIC cells (background_grid): the same cell on
+    # every axis, coarsened in whole doublings until the box fits the budget.
+    div, deficit = background_grid(ext, base)
 
     # DOMAIN-DECOUPLED RESOLUTION. A refinement LEVEL is relative to the background base cell,
-    # but the clamp above (needed so a large far-field doesn't explode the background) makes the
-    # ACTUAL base cell (ext/div) coarser than the recommender assumed. Uncompensated, a big domain
+    # but the budget (needed so a large far-field doesn't explode the background) makes the
+    # ACTUAL base cell coarser than the recommender assumed. Uncompensated, a big domain
     # silently coarsens the wall until cells are larger than the feature (the aircraft failure:
-    # 0.125 m cells on a 0.05 m wing). Bump every level by the clamp DEFICIT so the ABSOLUTE cell
-    # size the recommender intended is held regardless of domain size. deficit=0 when the clamp
-    # doesn't bite (small domains - e.g. an airfoil - are unchanged). snappy's maxGlobalCells is
-    # the hard budget backstop and the distance bands are already in absolute units, so this
-    # cannot explode the count - the fine cells stay a thin shell on the wall.
+    # 0.125 m cells on a 0.05 m wing). Every level is bumped by the DEFICIT - the number of
+    # whole doublings background_grid took - so the ABSOLUTE wall cell the recommender intended
+    # is held regardless of domain size, on every axis alike. deficit=0 when the budget doesn't
+    # bite (small domains - e.g. an airfoil - are unchanged). snappy's maxGlobalCells is the hard
+    # budget backstop and the distance bands are already in absolute units, so this cannot
+    # explode the count - the fine cells stay a thin shell on the wall.
     base_actual = max(ext[i] / max(div[i], 1) for i in range(3))
-    # floor, not ceil - the same correction render_internal_case already carries at the matching
-    # line. div is an integer count, so ext/div lands slightly above the requested base cell for
-    # pure rounding reasons; ceil turns that rounding into a whole extra refinement level, and a
-    # level is an 8x cell multiplier in 3D. Only a genuine doubling of the base cell should cost
-    # a level.
-    deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base, 1e-30), 1.0)) + 1e-9)))
     _HARD_MAX_LEVEL = 10
 
     # levels - the surface level is FLOORED at the body-sealing level the recommender computed
@@ -844,14 +867,12 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     dmax = [bbox_max[i] + pad for i in range(3)]
     dext = [dmax[i] - dmin[i] for i in range(3)]
 
-    div = [max(8, min(120, int(round(dext[i] / base_cell)))) for i in range(3)]
-    # domain-decoupled resolution: if the background clamp coarsened the base cell, bump levels
-    # so the ABSOLUTE wall cell size is held (same rationale as render_snappy_case).
+    # CUBIC background cells, at most 120 a side (background_grid): a pipe ten bores long used to
+    # be clamped on its axis alone - cells twice as long as they were wide, all the way down to
+    # the wall. Domain-decoupled resolution: every doubling the clamp takes is one level the wall
+    # gets back, so the ABSOLUTE wall cell size is held (same rationale as render_snappy_case).
+    div, deficit = background_grid(dext, base_cell, budget=120 ** 3, max_div=120, min_div=8)
     base_actual = max(dext[i] / max(div[i], 1) for i in range(3))
-    # floor (not ceil): a refinement LEVEL is a factor of 2, so bump only when the clamp genuinely
-    # DOUBLED the base cell. ceil would add a phantom +1 level from mere div-rounding (base_actual
-    # marginally > base_cell), needlessly doubling wall resolution on every internal build.
-    deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base_cell, 1e-30), 1.0)) + 1e-9)))
     # THE OTHER DIRECTION, which was missing and detonated the internal cluster: when the
     # min-8 division clamp makes the background FINER than base_cell (a high planner
     # surface_level inflates base_cell = wall_cell * 2^level far past the domain), keeping
