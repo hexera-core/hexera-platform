@@ -98,7 +98,7 @@ def _inspect_surface(ws: Path, stl: Path) -> dict:
             "diag": ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5,
             "source": "surface",
         }
-        if read_flow_topology(ws) == "external" and read_input_kind(ws) != "fluid-domain":
+        if read_flow_topology(ws) == "external" and read_input_kind(ws) in ("solid-body", "body-surface"):
             out["note"] = ("A triangulated BODY for external flow: the engine cuts it out of a "
                            "far-field box and names the groups itself (the body under the declared "
                            "wall, the box under the declared far field) - write gmsh_spec.json "
@@ -162,7 +162,7 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
             "diag": ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5,
         }
         from meshpipeline.engines.workspace_facts import read_flow_topology, read_input_kind
-        if read_flow_topology(ws) == "external" and read_input_kind(ws) != "fluid-domain":
+        if read_flow_topology(ws) == "external" and read_input_kind(ws) in ("solid-body", "body-surface"):
             out["note"] = ("A BODY for external flow: the engine cuts it out of a far-field box "
                            "(box minus body) and names the groups itself - the body under the "
                            "declared wall, the box under the declared far field. The tags above "

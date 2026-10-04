@@ -92,3 +92,40 @@ def test_an_external_fluid_domain_is_meshed_as_it_is(tmp_path):
     assert D.main(str(ws)) == 0
     q = json.loads((ws / "quality.json").read_text())
     assert not q.get("external") and q["bounds"][3] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_builders_groups_are_carried_through_the_far_field_cut():
+    from meshpipeline.engines.gmsh.driver import _external_groups
+    # body faces 11..14 came from the builder's tags 1..4; 21..26 are the box
+    origin = {11: 1, 12: 2, 13: 3, 14: 4}
+    spec = [{"name": "car_wall", "role": "wall", "surface_tags": [1, 2]},
+            {"name": "car_wall_2", "role": "wall", "surface_tags": [3]},
+            {"name": "FARFIELD", "role": "farfield", "surface_tags": [99]}]
+    ports = [{"name": "car_wall", "type": "wall"}, {"name": "FARFIELD", "type": "farfield"}]
+    out = {g["name"]: g["surface_tags"] for g in
+           _external_groups(spec, [11, 12, 13, 14], [21, 22, 23, 24, 25, 26], origin, ports)}
+    # face 4 was left out by the builder: it joins the first wall group
+    assert out == {"car_wall": [11, 12, 14], "car_wall_2": [13],
+                   "FARFIELD": [21, 22, 23, 24, 25, 26]}
+    # no builder groups: the declared wall and far field
+    auto = _external_groups(None, [11, 12], [21], origin, ports)
+    assert [(g["name"], g["surface_tags"]) for g in auto] == [("car_wall", [11, 12]),
+                                                              ("FARFIELD", [21])]
+
+
+def test_the_case_contract_reads_the_builders_external_groups(tmp_path):
+    import json
+
+    from meshpipeline.engines import case_contract as CC
+    (tmp_path / "gmsh_spec.json").write_text(json.dumps({"groups": [
+        {"name": "car_wall", "role": "wall", "surface_tags": [1]},
+        {"name": "car_wall_2", "role": "wall", "surface_tags": [2]},
+        {"name": "FARFIELD", "role": "farfield", "surface_tags": [3]}]}))
+    (tmp_path / "flow_topology").write_text("external")
+    (tmp_path / "input_kind").write_text("solid-body")
+    case = CC._gmsh_boundary(tmp_path)
+    assert set(case.patches) == {"car_wall", "car_wall_2", "FARFIELD"}
+    (tmp_path / "gmsh_spec.json").write_text(json.dumps({"groups": []}))
+    (tmp_path / "port_declaration.json").write_text(json.dumps(
+        [{"name": "body", "type": "wall"}, {"name": "far", "type": "farfield"}]))
+    assert CC._gmsh_boundary(tmp_path).patches == {"body": "wall", "far": "farfield"}

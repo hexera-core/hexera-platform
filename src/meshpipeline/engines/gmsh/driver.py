@@ -506,17 +506,19 @@ def _external_fluid(gmsh, ws, spec, discrete, surfaces, bmin, bmax, h, ports):
     if discrete:
         vols, far = external_fluid_discrete(gmsh, surfaces, dmin, dmax)
         body = list(surfaces)
+        origin = {t: t for t in body}
     else:
         if not gmsh.model.getEntities(3):
             return [], [], {}
+        before = {t: [float(v) for v in gmsh.model.occ.getCenterOfMass(2, t)]
+                  for _, t in gmsh.model.getEntities(2)}
         vols, far, body = external_fluid_cad(gmsh, dmin, dmax)
+        origin = _face_origin(gmsh, body, before)
     span = max(float(dmax[k]) - float(dmin[k]) for k in range(3))
     h_far = max(float(h), span / 15.0)
     grade_from_body(gmsh, body, h_body=float(h), h_far=h_far, ruler=ruler)
     gmsh.option.setNumber("Mesh.MeshSizeMax", h_far)
-    wall, farfield = _declared_names(ports)
-    groups = [{"name": wall, "role": "wall", "surface_tags": body},
-              {"name": farfield, "role": "farfield", "surface_tags": far}]
+    groups = _external_groups(spec.get("groups"), body, far, origin, ports)
     print(f"[GMSH] external: far-field box {[round(v, 4) for v in dmin]} .. "
           f"{[round(v, 4) for v in dmax]} ({margins}, ruler {ruler:.4g} m); body size {h:.4g} m "
           f"grading to {h_far:.4g} m", file=sys.stderr)
@@ -526,6 +528,56 @@ def _external_fluid(gmsh, ws, spec, discrete, surfaces, bmin, bmax, h, ports):
     if ffr.get("reference_length_m"):
         facts["reference_length"] = float(ffr["reference_length_m"])
     return vols, groups, facts
+
+
+def _face_origin(gmsh, faces, before: dict) -> dict:
+    """{face of the cut fluid: the body face it came from}, by nearest centre of mass - the box
+    cut renumbers the body's faces but does not move them."""
+    if not before:
+        return {}
+    import numpy as np
+    from scipy.spatial import cKDTree
+    old = list(before)
+    tree = cKDTree(np.asarray([before[t] for t in old], dtype=float))
+    out = {}
+    for t in faces:
+        _, i = tree.query(np.asarray(gmsh.model.occ.getCenterOfMass(2, t), dtype=float))
+        out[int(t)] = int(old[int(i)])
+    return out
+
+
+def _external_groups(spec_groups, body, far, origin: dict, ports) -> list[dict]:
+    """The groups of an external case. The builder's groups name the BODY's faces by the tags it
+    was shown (geometry_report), before the far-field box was cut around it: each is carried to
+    the faces those became; body faces it left out join its first wall group; every box face is
+    its first far-field group. Without builder groups: the declared wall and far field."""
+    wall, farfield = _declared_names(ports)
+    groups = [g for g in (spec_groups or []) if isinstance(g, dict) and g.get("name")]
+    if not groups:
+        return [{"name": wall, "role": "wall", "surface_tags": list(body)},
+                {"name": farfield, "role": "farfield", "surface_tags": list(far)}]
+    out, used = [], set()
+    far_groups = [g for g in groups if str(g.get("role")) == "farfield"]
+    for g in groups:
+        if g in far_groups:
+            continue
+        want = {int(t) for t in g.get("surface_tags") or []}
+        tags = [t for t in body if origin.get(t) in want and t not in used]
+        used.update(tags)
+        out.append({**g, "surface_tags": tags})
+    rest = [t for t in body if t not in used]
+    if rest:
+        first_wall = next((g for g in out if str(g.get("role")) == "wall"), None)
+        if first_wall is not None:
+            first_wall["surface_tags"] = [*first_wall["surface_tags"], *rest]
+        else:
+            out.append({"name": wall, "role": "wall", "surface_tags": rest})
+    if far_groups:
+        out.append({**far_groups[0], "surface_tags": list(far)})
+        out.extend({**g, "surface_tags": []} for g in far_groups[1:])
+    else:
+        out.append({"name": farfield, "role": "farfield", "surface_tags": list(far)})
+    return out
 
 
 def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
@@ -597,7 +649,7 @@ def main(workspace: str) -> int:
         # an EXTERNAL BODY is cut out of a far-field box here; an external fluid domain the user
         # prepared (the air box itself) is meshed as it is, like any other fluid domain
         external = (_read_flow_topology(ws) == "external"
-                    and _read_input_kind(ws) != "fluid-domain")
+                    and _read_input_kind(ws) in ("solid-body", "body-surface"))
         discrete = not geom.exists()
         surfaces: list[int] = []
         if discrete:
@@ -679,10 +731,6 @@ def main(workspace: str) -> int:
                 print("[GMSH] external flow needs a closed body: no solid could be cut out of "
                       "the far-field box", file=sys.stderr)
                 return 3
-            if spec.get("groups"):
-                print("[GMSH] external flow: the body and far-field groups are the engine's "
-                      "(the spec's face tags name the body before the box was cut around it)",
-                      file=sys.stderr)
             spec["groups"] = _groups_auto
         elif discrete:
             from meshpipeline.engines.gmsh.surface_volume import internal_volume_discrete

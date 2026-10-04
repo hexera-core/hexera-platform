@@ -314,15 +314,17 @@ def _gmsh_boundary(ws: Path) -> CaseBoundary | None:
         read_input_kind,
     )
     declared = [p for p in port_declaration(ws) if isinstance(p, dict) and p.get("name")]
-    # THE ENGINE NAMES THESE ITSELF (engines/gmsh/driver.py), whatever the spec says: an external
-    # body is cut out of a far-field box and its groups are the declared wall and far field; a
-    # spec without groups has the declared ports bound to their faces and the rest walled.
-    if read_flow_topology(ws) == "external" and read_input_kind(ws) != "fluid-domain":
+    groups = spec.get("groups") if isinstance(spec, dict) else None
+    # WITHOUT BUILDER GROUPS THE ENGINE NAMES THEM (engines/gmsh/driver.py): an external body is
+    # cut out of a far-field box and its groups are the declared wall and far field; ports are
+    # bound to their faces and the rest walled. The builder's groups, when written, are carried
+    # through the cut and stand.
+    if not groups and read_flow_topology(ws) == "external" \
+            and read_input_kind(ws) in ("solid-body", "body-surface"):
         wall = next((p["name"] for p in declared if p.get("type") == "wall"), "body")
         far = next((p["name"] for p in declared if p.get("type") == "farfield"), "farfield")
         return CaseBoundary(patches={str(wall): "wall", str(far): "farfield"}, kind="roles",
                             authored_by=RENDERER)
-    groups = spec.get("groups") if isinstance(spec, dict) else None
     if not groups and any(p.get("type") in ("inlet", "outlet") for p in declared):
         wall = next((p["name"] for p in declared if p.get("type") == "wall"), "wall")
         patches = {str(p["name"]): str(p["type"]) for p in declared
