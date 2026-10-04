@@ -109,6 +109,15 @@ def test_a_face_the_mesher_left_bare_still_counts():
     assert _ext(box) == pytest.approx([51.0, 1.0, 1.0], abs=1e-6)
 
 
+def test_a_shape_with_no_face_meshed_reads_its_faces_not_the_envelope():
+    # nothing meshed yet: every face is bare, so every face adds its exact box - the patch's own
+    # few hundredths of lift, never the 100 mm control point the envelope holds
+    face = _sheet_with_a_far_pole()
+    box = occ_box.surface_box(face)
+    assert box is not None
+    assert _ext(box)[2] < 0.1
+
+
 def test_nothing_meshable_has_no_surface_box():
     from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound

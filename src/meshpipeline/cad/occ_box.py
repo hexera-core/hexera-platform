@@ -28,13 +28,17 @@ def loose_box(shape) -> Box:
 
 
 def surface_box(shape) -> Box | None:
-    """The box of the points the shape's own triangulation puts on its surface, or None when no
-    face is meshed. Exact to within the mesh's deflection (the surface between two nodes may bulge
-    past them by at most that), and never larger than the part.
+    """The box of the shape's faces, read off the points its own triangulation puts on them, or
+    None when it has no faces. Exact to within the mesh's deflection (the surface between two nodes
+    may bulge past them by at most that), and never larger than the part. Only faces count: an
+    edge or vertex outside every face (a construction or annotation line) is not part of the
+    surface that gets meshed.
 
     A face the mesher left without triangles is not dropped: it adds its own exact box
-    (AddOptimal on that face alone - slow per face, but such faces are rare), so a failed face can
-    never make the part read smaller than it is."""
+    (AddOptimal on that face alone - slow per face, but such faces are rare; over the face's whole
+    parameter range, so it can overshoot a trimmed face a little, never undershoot), so a failed
+    face can never make the part read smaller than it is - and a shape no face of which meshed
+    still reads its faces' exact box, not the loose envelope."""
     from OCP.Bnd import Bnd_Box
     from OCP.BRep import BRep_Tool
     from OCP.BRepBndLib import BRepBndLib
@@ -44,7 +48,6 @@ def surface_box(shape) -> Box | None:
     from OCP.TopoDS import TopoDS
 
     box = Bnd_Box()
-    meshed = False
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         face = TopoDS.Face_s(exp.Current())
@@ -55,10 +58,9 @@ def surface_box(shape) -> Box | None:
             # the triangulation's own node range, in C++, placed by the face's location (accurate:
             # every node is moved, not the corners of the untransformed range)
             tri.MinMax(box, loc.Transformation(), True)
-            meshed = True
         else:
             BRepBndLib.AddOptimal_s(face, box, False, False)
-    if not meshed or box.IsVoid():
+    if box.IsVoid():
         return None
     return tuple(float(v) for v in box.Get())  # type: ignore[return-value]
 
