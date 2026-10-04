@@ -206,6 +206,9 @@ SPEC = EngineSpec(
         # a tetrahedral lumen filler: after the hex meshers on the internal ladder
         ladder_rank=30,
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             dimensionalities=("3D",),
             input_kind="surface",
             min_thickness_ratio=0.0,

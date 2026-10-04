@@ -78,6 +78,11 @@ class InputContract:
     # closed surface (TetGen-backed, e.g. vmtk) requires this; a wrap-then-fill engine that
     # tolerates a dirty surface (snappy/cfMesh) does not - so it is opt-in per engine.
     require_no_self_intersection: bool = False
+    # INTERNAL FLOW FROM A TRIANGLE SURFACE (STL, OBJ, PLY, ...): the engine's internal path takes
+    # the staged surface and the openings the user confirmed on it (cad/internal_surface: lids on
+    # open ends, capped faces kept, the fluid's side of a thick wall) instead of needing a CAD
+    # solid. An engine without it meshes internal flow from a CAD solid only.
+    internal_from_surface: bool = False
 
 
 @dataclass(frozen=True)
@@ -424,16 +429,16 @@ class EngineSpec:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed
         for that flow at all.
 
-        INTERNAL FLOW FROM A SURFACE is also read from the input contract's own declaration,
-        `InputContract.internal_from_surface` (the shared internal-surface staging, STL-INTERNAL
-        #135/#138): an engine that declares it takes a surface for internal flow, without its
-        `accepts` row being edited a second time. One fact, read in one place - when both land,
-        keep one of the two declarations."""
+        INTERNAL FLOW FROM A SURFACE is declared in ONE place, the input contract's
+        `InputContract.internal_from_surface` (the shared internal-surface staging,
+        cad/internal_surface): an engine that declares it takes a surface for internal flow. Its
+        `accepts` internal row names the CAD form only, so the fact is never stated twice."""
         for fs in self.accepts:
             if fs.flow == flow:
                 forms = tuple(fs.forms)
                 if (flow == "internal" and "surface" not in forms
-                        and bool(getattr(self.input_contract, "internal_from_surface", False))):
+                        and self.input_contract is not None
+                        and self.input_contract.internal_from_surface):
                     forms = (*forms, "surface")
                 return forms
         return None

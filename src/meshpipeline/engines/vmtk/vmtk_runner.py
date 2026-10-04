@@ -250,6 +250,11 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
     ws = Path(workspace)
     lumen = ws / _LUMEN
     if not lumen.exists():
+        from meshpipeline.cad.internal_surface import staging_failure
+        why = staging_failure(ws)
+        if why:
+            # the true reason the lumen was never staged, not just that its file is absent
+            return {"error": f"the geometry could not be staged for vmtk: {why}"}
         return {"error": f"{_LUMEN} missing - the workspace was not staged for vmtk"}
     surf = _read_surface(lumen).extract_surface()
     edges = surf.extract_feature_edges(boundary_edges=True, feature_edges=False,
