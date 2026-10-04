@@ -27,7 +27,7 @@ _STRONGLY_MARKED = frozenset({"step", "brep", "vtp", "vtu", "vtk", "ply", "off",
 
 #: Reading a .3dm at upload to see whether it holds anything readable loads the whole model; above
 #: this the check is left to the worker, which reports the same sentence on the geometry stage.
-_3DM_CHECK_MAX_BYTES = 256 * 1024 * 1024
+_3DM_CHECK_MAX_BYTES = 64 * 1024 * 1024
 #: A .gltf is JSON, possibly with its buffers inlined as base64; read whole only below this.
 _GLTF_CHECK_MAX_BYTES = 512 * 1024 * 1024
 

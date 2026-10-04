@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from xml.etree import ElementTree as ET  # noqa: S405 - entity declarations are refused before parsing
 
 import numpy as np
@@ -217,6 +217,33 @@ def _has_begin_bulk(path: Path) -> bool:
     return False
 
 
+def _gmsh_tag_names(mesh: Any, _path: Path) -> dict[tuple[int, int], str]:
+    """Gmsh physical groups: (dimension, tag) -> name, from the file's $PhysicalNames."""
+    return {(int(v[1]), int(v[0])): str(k) for k, v in (mesh.field_data or {}).items()
+            if len(v) >= 2}
+
+
+def _su2_tag_names(_mesh: Any, path: Path) -> dict[tuple[int, int], str]:
+    """SU2 boundary markers (always 2D): meshio numbers them 1.. in file order."""
+    return {(2, tag): name for tag, name in _su2_marker_names(path).items()}
+
+
+def _nastran_tag_names(_mesh: Any, path: Path) -> dict[tuple[int, int], str]:
+    """Nastran property ids, named only where a pre-processor's comments name them."""
+    return {(dim, pid): name for pid, name in _nastran_property_names(path).items()
+            for dim in (2, 3)}
+
+
+#: meshio format -> (the cell-data array holding each cell's tag, how the file names a tag).
+#: Formats whose groups are tags; Abaqus names cells through element SETS instead (below).
+_TAGGED_GROUPS = {
+    "gmsh": ("gmsh:physical", _gmsh_tag_names),
+    "su2": ("su2:tag", _su2_tag_names),
+    "nastran": ("nastran:ref", _nastran_tag_names),
+}
+_ELEMENT_SET_FORMATS = frozenset({"abaqus"})
+
+
 def _meshio_groups(mesh: Any, file_format: str, path: Path) -> tuple[list[str], list[np.ndarray]]:
     """The group names a file carries, and each cell's group, block by block (-1 = unnamed)."""
     blocks = mesh.cells
@@ -228,47 +255,22 @@ def _meshio_groups(mesh: Any, file_format: str, path: Path) -> tuple[list[str], 
             names.append(name)
         return names.index(name)
 
-    if file_format == "gmsh":
-        phys = mesh.cell_data.get("gmsh:physical")
-        by_tag = {(int(v[1]), int(v[0])): str(k) for k, v in (mesh.field_data or {}).items()
-                  if len(v) >= 2}
-        if phys is not None:
+    tagged = _TAGGED_GROUPS.get(file_format)
+    if tagged is not None:
+        key, namer = tagged
+        tags = mesh.cell_data.get(key)
+        by_tag = namer(mesh, path)
+        if tags is not None and by_tag:
             for i, b in enumerate(blocks):
                 dim = _dim_of_meshio(b.type)
-                tags = np.asarray(phys[i]).astype(np.int64).reshape(-1)
-                for tag in np.unique(tags):
-                    name = by_tag.get((dim, int(tag)))
-                    if name:
-                        per_block[i][tags == tag] = gid(name)
-        return names, per_block
-
-    if file_format == "su2":
-        tags = mesh.cell_data.get("su2:tag")
-        markers = _su2_marker_names(path)
-        if tags is not None and markers:
-            for i, b in enumerate(blocks):
-                if _dim_of_meshio(b.type) != 2:
-                    continue
                 t = np.asarray(tags[i]).astype(np.int64).reshape(-1)
                 for tag in np.unique(t):
-                    name = markers.get(int(tag))
+                    name = by_tag.get((dim, int(tag)))
                     if name:
                         per_block[i][t == tag] = gid(name)
         return names, per_block
 
-    if file_format == "nastran":
-        refs = mesh.cell_data.get("nastran:ref")
-        pid_names = _nastran_property_names(path)
-        if refs is not None and pid_names:
-            for i, _b in enumerate(blocks):
-                r = np.asarray(refs[i]).astype(np.int64).reshape(-1)
-                for pid in np.unique(r):
-                    name = pid_names.get(int(pid))
-                    if name:
-                        per_block[i][r == pid] = gid(name)
-        return names, per_block
-
-    if file_format == "abaqus":
+    if file_format in _ELEMENT_SET_FORMATS:
         # ELSETs: a cell takes the SMALLEST set that holds it (the most specific name); a set
         # holding every cell of its dimension says nothing that distinguishes one part from another,
         # and the sets a writer generates per entity (gmsh's Surface7, Abaqus/CAE's _PickedSet2)
@@ -285,8 +287,6 @@ def _meshio_groups(mesh: Any, file_format: str, path: Path) -> tuple[list[str], 
                         blocks[i].type) == 3 and _covers_all(sets, name, blocks):
                     continue
                 per_block[i][idx] = gid(name)
-        return names, per_block
-
     return names, per_block
 
 
@@ -562,8 +562,9 @@ def read_gltf(path: Path) -> SurfaceMesh:
     import io
 
     try:
-        scene = trimesh.load(io.BytesIO(data), file_type=kind, resolver=_RefuseOutside(),
-                             force="scene", process=False)
+        scene: Any = trimesh.load(io.BytesIO(data), file_type=kind,
+                                  resolver=cast(Any, _RefuseOutside()),
+                                  force="scene", process=False)
     except SurfaceError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -598,7 +599,7 @@ def read_3dm(path: Path) -> SurfaceMesh:
 
     from meshpipeline.contracts.intake_formats import RHINO_EXPORT
 
-    model = rhino3dm.File3dm.Read(str(path))
+    model: Any = rhino3dm.File3dm.Read(str(path))
     if model is None:
         raise SurfaceError("the Rhino file could not be read")
     layers = {i: model.Layers[i].Name for i in range(len(model.Layers))}

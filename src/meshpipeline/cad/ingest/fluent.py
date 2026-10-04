@@ -183,7 +183,7 @@ def _split_faces(ints: np.ndarray, count: int, ftype: int):
         if ints.size != count * (fixed + 2):
             raise FluentFormatError("a Fluent face section is truncated")
         rows = ints.reshape(count, fixed + 2)
-        return [r for r in rows[:, :fixed]], rows[:, fixed:]
+        return list(rows[:, :fixed]), rows[:, fixed:]
     faces, cells = [], []
     j = 0
     for _ in range(count):
@@ -215,20 +215,21 @@ def _boundary(node_blocks, face_zones, names: dict[int, str]) -> SurfaceMesh:
                 zone_names.append(name)
             gi = zone_names.index(name)
         for k in np.flatnonzero(one_sided):
-            nodes = np.asarray(faces[k], dtype=np.int64)
+            nodes: np.ndarray = np.asarray(faces[k], dtype=np.int64)
             # Fluent orders a face so its right-hand normal points at c0; a boundary face whose
             # only cell is c1 is turned round, so every face's normal leaves the fluid
             if cells[k, 0] != 0:
                 nodes = nodes[::-1]
-            for t in range(1, len(nodes) - 1):
-                tris.append((nodes[0], nodes[t], nodes[t + 1]))
+            for j in range(1, len(nodes) - 1):
+                tris.append((nodes[0], nodes[j], nodes[j + 1]))
                 group.append(gi)
     if not tris:
         raise FluentFormatError("the Fluent mesh has no boundary faces")
     t = np.asarray(tris, dtype=np.int64)
     if not np.isfinite(pts[np.unique(t)]).all():
         raise FluentFormatError("a Fluent face refers to a node that is not defined")
-    mesh = SurfaceMesh(pts[np.unique(t)].copy(), np.searchsorted(np.unique(t), t),
+    used = np.unique(t)
+    mesh = SurfaceMesh(pts[used].copy(), np.asarray(np.searchsorted(used, t), dtype=np.int64),
                        np.asarray(group, dtype=np.int64), zone_names)
     return _outward(mesh)
 

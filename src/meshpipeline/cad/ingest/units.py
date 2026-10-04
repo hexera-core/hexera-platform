@@ -17,7 +17,7 @@ _3MF_MODEL_TAG = re.compile(rb"<(?:\w+:)?model\b")
 _3DM_UNITS = {"Millimeters": LengthUnit.millimetre, "Centimeters": LengthUnit.centimetre,
               "Meters": LengthUnit.metre, "Inches": LengthUnit.inch}
 #: A .3dm read at upload for its unit loads the whole model; above this size the unit is asked.
-_3DM_UNIT_READ_MAX_BYTES = 256 * 1024 * 1024
+_3DM_UNIT_READ_MAX_BYTES = 64 * 1024 * 1024
 
 
 def declared_unit(path: Path, key: str):
