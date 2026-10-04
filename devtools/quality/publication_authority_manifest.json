@@ -381,6 +381,19 @@
   "roots": []
  },
  {
+  "context": "agents/builder/agent.py::node_builder::error#4|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 4,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/builder/agent.py::node_builder::note#1|ExecutionEventPublisher|execution-owned|agents/builder/agent.py::execution_publisher",
   "path": "agents/builder/agent.py",
   "qualname": "node_builder",

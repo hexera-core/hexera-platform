@@ -126,6 +126,12 @@ async def node_builder(state: PipelineState) -> dict:
             return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
                           noop_count=state.get("builder_noop_count", 0))
 
+    # THE ENGINE COULD NOT PREPARE ITS INPUT (attempt._record_staging_failure): nothing is run, and
+    # the attempt's closing note says why. Running the builder on without the staged input only
+    # spends model time looking for a file that was never written (job a76e3ca1: 15 minutes), and
+    # the recorded reason - not "the mesher stopped" - is what the executor reports.
+    _staging = attempt_mod.staging_failure(attempt.workspace)
+
     authored_before = (noop_mod.authored_digest(attempt.workspace, attempt.engine)
                        if attempt.is_retry else "")
 
@@ -143,8 +149,13 @@ async def node_builder(state: PipelineState) -> dict:
 
     # Supersession and cancellation propagate out of here untouched: a stale generation writes
     # nothing, and a cancelled attempt is not a failed one.
-    outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
-                                       timeout_s=budget.attempt_timeout_s)
+    if _staging is None:
+        outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
+                                           timeout_s=budget.attempt_timeout_s)
+    else:
+        logger.error("Builder: engine staging failed - the attempt ends on it, nothing runs - "
+                     "job_id=%s: %s", job_id, _staging.builder_text)
+        outcome = invoke.TurnOutcome()
 
     if outcome.provider_failed:
         attempt_capture.record_attempt(job_id, attempt=attempt, outcome=outcome)
@@ -160,6 +171,11 @@ async def node_builder(state: PipelineState) -> dict:
     if stopped:
         logger.warning("Builder stop: retry %d would rebuild the mesh the review rejected - "
                        "ending on that review - job_id=%s", attempt.retry_count, job_id)
+    elif _staging is not None:
+        # an ordinary turn that authored nothing - never a no-op of the builder's making
+        verdict = noop_mod.NoopVerdict(
+            repeated=False, consecutive=int(state.get("builder_noop_count", 0) or 0),
+            retry_count=attempt.retry_count)
     else:
         verdict = noop_mod.assess(
             before=authored_before,
@@ -192,6 +208,7 @@ async def node_builder(state: PipelineState) -> dict:
     _steps = len(attempt.tool_calls)
     await _publish.anote(
         _REVIEWED_CASE_REPEATS_NOTE if stopped
+        else _staging_note(attempt, _staging) if _staging is not None
         else _closing_note(attempt, _steps,
                            meshers_started(native_runs(attempt.workspace))),
         op_id=f"{'review-repeat-stop' if stopped else 'built'}:{attempt.retry_count}")
@@ -203,6 +220,12 @@ async def node_builder(state: PipelineState) -> dict:
                       workspace=str(state.get("openfoam_workspace") or ""),
                       stop=STOP_REVIEWED_CASE_REPEATS)
     return _patch(retry_count=verdict.retry_count, noop_count=verdict.consecutive)
+
+
+def _staging_note(attempt, refusal) -> str:
+    facts = refusal.facts or {}
+    return (f"{facts.get('engine') or attempt.engine} could not prepare its input from your file: "
+            f"{facts.get('reason') or 'staging failed'}. No mesher was started.")
 
 
 def _closing_note(attempt, steps: int, started: int | None) -> str:

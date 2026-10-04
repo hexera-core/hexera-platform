@@ -79,7 +79,9 @@ def _gate_statement(engine: str, gate_key: str) -> str:
                 return g.proves or g.key
     except Exception:  # noqa: BLE001
         pass
-    return {"domain_extent": "The far-field domain is the size you asked for"}.get(
+    return {"domain_extent": "The far-field domain is the size you asked for",
+            # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
+            "staging": "The engine prepared its input from your file"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 

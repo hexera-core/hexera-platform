@@ -274,7 +274,8 @@ def clean_reason(reason: object) -> str:
     text = " ".join(str(reason or "").split())
     while text.startswith("[") and "]" in text:
         text = text.split("]", 1)[1].strip()
-    return text[:400].rstrip(".")
+    # room for a refusal that says where the defect is and what to do about it
+    return text[:600].rstrip(".")
 
 
 def _contract(f: Mapping) -> tuple[str, str]:
@@ -496,7 +497,10 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 f"You can run it again: {_RUN_AGAIN}.")
     if c is FailureCause.NOT_BUILT:
         who = str(f.get("engine") or engine or "The engine")
-        what = (f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "
+        reason = clean_reason(f.get("reason"))
+        what = (f"No mesh was built: {who} could not prepare its input from your file ({reason}), "
+                "so no mesher was started." if reason else
+                f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "
                 "started, so there was nothing to check. The notes above say what it stopped on.")
         if f.get("deterministic"):
             return (what, "Running it again would stop the same way. Tell me what to change in "

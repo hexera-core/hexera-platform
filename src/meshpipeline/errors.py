@@ -238,7 +238,9 @@ _DOMAIN_MESSAGES: dict[FailureClass, tuple[str, str]] = {
         "Upload the file again and start a new run.",
     ),
     FailureClass.DOMAIN_REJECTED: (
-        "This geometry cannot be meshed as it is - the problem is in the CAD file, not our "
+        # "the CAD file" was untrue for every STL it was said about: the file the user uploaded
+        # is what has the problem, whatever kind of file it is
+        "This geometry cannot be meshed as it is - the problem is in the geometry file, not our "
         "systems",
         "Fix the geometry and upload it again.",
     ),

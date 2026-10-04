@@ -76,6 +76,12 @@ def _file_digest(path: Path) -> bytes:
     return h.digest()
 
 
+#: How the builder names an attempt's workspace inside its run's generation directory
+#: (agents/builder/workspace._setup_workspace: <job>/generation_<g>/attempt_<n>). Only workspaces
+#: laid out that way are attempts of one run; any other directory is never matched.
+_ATTEMPT_PREFIX = "attempt_"
+
+
 def _generation(workspace: Path) -> str:
     try:
         return str(Path(workspace).resolve().parent)
@@ -83,9 +89,13 @@ def _generation(workspace: Path) -> str:
         return str(Path(workspace).parent)
 
 
+def _is_attempt(workspace: Path) -> bool:
+    return Path(workspace).name.startswith(_ATTEMPT_PREFIX)
+
+
 def earlier_identical(workspace: Path, digest: str) -> dict | None:
     """The earlier attempt of this run that ran exactly this case to a verdict, or None."""
-    if not digest:
+    if not digest or not _is_attempt(workspace):
         return None
     seen = _LEDGER.get(_generation(workspace), {}).get(digest)
     if not seen or seen.get("attempt") == Path(workspace).name:
@@ -95,7 +105,7 @@ def earlier_identical(workspace: Path, digest: str) -> dict | None:
 
 def remember(workspace: Path, digest: str, result: dict) -> None:
     """Record what a run of this case came to - when it came to a verdict at all."""
-    if not digest or not isinstance(result, dict):
+    if not digest or not isinstance(result, dict) or not _is_attempt(workspace):
         return
     if result.get("system_failure") or result.get("patch_contract_mismatch"):
         return          # our infrastructure, or a launch refusal: nothing was learned about the case

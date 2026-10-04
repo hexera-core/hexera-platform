@@ -209,8 +209,8 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
     """Engine-owned preparation that needs the INTAKE, not just the file: an engine exposing
     `stage_declared` (vmtk opens a CAD body at the declared inlet/outlet faces) gets the
     declared ports and the input kind here, once the shared surface is staged. Nothing to
-    stage, or an engine without the hook, is a no-op; a staging failure is logged and the
-    attempt proceeds on the shared surface, where the engine's own inspection says why."""
+    stage, or an engine without the hook, is a no-op; a staging FAILURE is recorded with its
+    reason (_record_staging_failure) and the builder ends the attempt on it."""
     from meshpipeline.engines.runtime import get_engine
     try:
         fn = getattr(get_engine(engine), "stage_declared", None)
@@ -226,13 +226,43 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         rec = fn(workspace, geometry_path=geometry.path, prepared=consumed,
                  intake_patches=state.get("intake_patches") or [],
                  input_kind=str(state.get("input_kind") or ""))
-    except Exception:  # noqa: BLE001 - reported by the engine's inspection, never fatal here
-        logger.exception("Builder: engine staging failed (engine=%s) - continuing on the "
-                         "shared surface", engine)
+    except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason, never a crash
+        logger.exception("Builder: engine staging failed (engine=%s) - the attempt stops on the "
+                         "recorded reason", engine)
+        _record_staging_failure(workspace, engine, exc)
         return
     if rec:
         logger.info("Builder: engine staged the declared geometry (engine=%s, ports=%d)",
                     engine, len(rec.get("ports") or []))
+
+
+#: The gate key a staging refusal is recorded under (engines/preflight.py's refusal record).
+STAGING_GATE = "staging"
+
+
+def _record_staging_failure(workspace: Path, engine: str, exc: BaseException) -> None:
+    """THE ENGINE COULD NOT PREPARE ITS INPUT FROM THIS FILE, recorded with its reason. It used to
+    be logged and swallowed: the builder ran on without the staged input (job a76e3ca1 spent 15
+    minutes looking for a lumen that was never written) and the run ended as "the mesher
+    stopped", with the one fact that explained it lost. The same file stages the same way every
+    time, so it is deterministic: no retry, and the reason reaches the user - the executor reports
+    the record while no mesh exists."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    from meshpipeline.engines.registry import engine_label
+    reason = " ".join(str(exc).split())[:300] or type(exc).__name__
+    PreflightRefusal(
+        gate=STAGING_GATE, cause=FailureCause.NOT_BUILT.value,
+        builder_text=f"[STAGING_FAILED] {engine}: {reason}",
+        facts={"engine": engine_label(engine), "stage": "staging", "reason": reason,
+               "deterministic": True, "before_meshing": True}).write(workspace)
+
+
+def staging_failure(workspace: Path):
+    """The staging refusal this attempt recorded, or None."""
+    from meshpipeline.engines.preflight import read_refusal
+    refusal = read_refusal(workspace)
+    return refusal if refusal is not None and refusal.gate == STAGING_GATE else None
 
 
 def _carry_forward(prev: Path, workspace: Path, engine: str, job_id: str) -> None:
