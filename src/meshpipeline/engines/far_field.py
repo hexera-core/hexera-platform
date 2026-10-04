@@ -38,11 +38,28 @@ def flow_axis_of(flow_axis: str | None) -> tuple[int, int]:
     return _AXES[letter], (1 if sign == "+" else -1)
 
 
-def margins_from(strategy_margin: Mapping | None, requested_extents: Mapping | None) -> dict:
+def extents_in_text(request_txt: str | None) -> dict:
+    """The far-field margins a request states in words ('8 downstream', '5 lateral'), read by the
+    SAME parser the case-level extent check reads them with (domain_extent_gate), so a box built
+    from them is the box that check expects. That parser reads 'above'/'below' as lateral; the
+    vertical room is taken as the same number when the text names no other."""
+    from meshpipeline.engines.domain_extent_gate import parse_requested_extents
+    out = dict(parse_requested_extents(request_txt or ""))
+    if "lateral" in out and "vertical" not in out:
+        out["vertical"] = out["lateral"]
+    return out
+
+
+def margins_from(strategy_margin: Mapping | None, requested_extents: Mapping | None,
+                 request_txt: str | None = None) -> dict:
     """{up, down, side, vert} in rulers: what the strategy states, else the approved request's
-    typed extents, else the defaults - key by key, so a request naming only two directions keeps
-    the defaults for the others."""
+    typed extents, else the margins its text states, else the defaults - key by key, so a request
+    naming only two directions keeps the defaults for the others."""
     out = dict(DEFAULT_MARGINS)
+    for k, v in extents_in_text(request_txt).items():
+        key = _REQUEST_KEYS.get(str(k))
+        if key and v is not None:
+            out[key] = float(v)
     for k, v in (requested_extents or {}).items():
         key = _REQUEST_KEYS.get(str(k))
         if key and v is not None:
@@ -98,4 +115,5 @@ def far_field_box(bbox_min, bbox_max, margins: Mapping, *, flow_axis: str | None
     return dmin, dmax
 
 
-__all__ = ["DEFAULT_MARGINS", "far_field_box", "flow_axis_of", "margins_from", "ruler_of"]
+__all__ = ["DEFAULT_MARGINS", "extents_in_text", "far_field_box", "flow_axis_of",
+           "margins_from", "ruler_of"]

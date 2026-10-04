@@ -38,6 +38,25 @@ def read_dimensionality(workspace) -> str:
         return ""
 
 
+def read_request_txt(workspace) -> str:
+    """The engineer's request as the builder recorded it ('' when none)."""
+    try:
+        p = Path(workspace) / "request.txt"
+        return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+    except Exception:
+        return ""
+
+
+def read_input_kind(workspace) -> str:
+    """What the user confirmed the file is - 'fluid-domain', 'body-surface', 'solid-body' - or ''
+    when the run carries no confirmation."""
+    try:
+        p = Path(workspace) / "input_kind"
+        return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+    except Exception:
+        return ""
+
+
 def read_far_field_request(workspace) -> dict:
     """The approved far-field request the builder recorded: {requested_extents, reference_length_m,
     flow_axis}, each present only when the intake approved one; {} for none (internal flow, a

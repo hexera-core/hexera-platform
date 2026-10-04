@@ -210,7 +210,8 @@ def domain_from_strategy(body_bbox, L: float, strategy: dict | None = None,
     (bmin, bmax) = body_bbox
     s = strategy or {}
     req = request or {}
-    margins = margins_from(s.get("domain_margin"), req.get("requested_extents"))
+    margins = margins_from(s.get("domain_margin"), req.get("requested_extents"),
+                           req.get("request_txt"))
     return far_field_box(bmin, bmax, margins, flow_axis=req.get("flow_axis"),
                          reference_length_m=(s.get("reference_length_m")
                                              or req.get("reference_length_m")))
@@ -476,9 +477,10 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
     if args.get("domain_min") and args.get("domain_max"):
         dmin, dmax = args["domain_min"], args["domain_max"]
     else:
-        from meshpipeline.engines.workspace_facts import read_far_field_request
+        from meshpipeline.engines.workspace_facts import read_far_field_request, read_request_txt
         dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy,
-                                          request=read_far_field_request(workspace))
+                                          request={**read_far_field_request(workspace),
+                                                   "request_txt": read_request_txt(workspace)})
     from meshpipeline.engines.declared_boundary import body_walls, farfield_name
     _patches = list(contract_patches or [])
     _farfield = farfield_name(_patches)
@@ -541,9 +543,10 @@ def _configure_external_2d(workspace, *, geometry_file: str, strategy: dict, sur
     if args.get("domain_min") and args.get("domain_max"):
         dmin, dmax = list(args["domain_min"]), list(args["domain_max"])
     else:
-        from meshpipeline.engines.workspace_facts import read_far_field_request
+        from meshpipeline.engines.workspace_facts import read_far_field_request, read_request_txt
         dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy,
-                                          request=read_far_field_request(workspace))
+                                          request={**read_far_field_request(workspace),
+                                                   "request_txt": read_request_txt(workspace)})
     # 2D: the far-field is a SIDE RIBBON over the body's exact z span (cartesian2DMesh
     # meshes one cell through the thickness; a z-padded or capped box breaks it).
     dmin[2], dmax[2] = z0, z1
