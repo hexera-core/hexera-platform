@@ -165,17 +165,40 @@ def select_declared_openings(candidates: list, declared: list) -> list:
     def _dist(p, q):
         return sum((p[k] - q[k]) ** 2 for k in range(3)) ** 0.5
 
-    def _size_err(area, opening, port):
+    # WHAT FILLS AN OPENING. A ring face's inner wire encloses the bore; a body standing in the
+    # bore (the centre rod of an annular passage, a second solid of the file) shows its own flat
+    # end face inside that wire, in the same plane. The flow crosses only what is left: the bore
+    # less those faces. annular_001 declares its 151 mm bore around a 125 mm rod, 5730 mm2 of
+    # annulus; the ring's inner wire encloses 17923 mm2 and the rod's end disc 12223 mm2, and with
+    # neither measure inside the band, every engine refused the part before meshing (2026-10-04).
+    def _filled(own_idx, opening) -> float:
+        if opening is None or not opening.get("area_m2"):
+            return 0.0
+        wh = opening.get("wh_m") or ()
+        reach = 0.5 * min(wh) if len(wh) == 2 and min(wh) > 0 else (
+            float(opening["area_m2"]) / math.pi) ** 0.5
+        oc = tuple(opening.get("centroid") or ())
+        if len(oc) != 3:
+            return 0.0
+        return sum(a for i, (a, c, _o) in all_faces.items()
+                   if i != own_idx and a < float(opening["area_m2"]) and _dist(c, oc) < reach)
+
+    all_faces = dict(remaining)
+    filled = {i: _filled(i, o) for i, (_a, _c, o) in remaining.items()}
+
+    def _size_err(idx, area, opening, port):
         # the smallest relative disagreement any admissible measure achieves inside the
-        # band, or None when the declared size fits by neither measure
+        # band, or None when the declared size fits by no measure
         declared_area = float(port["area_m2"])
         errs = []
         if _band_ok(area, declared_area):
             errs.append(abs(area / declared_area - 1.0))
         if (opening is not None and opening.get("area_m2")
-                and _shape_agrees(opening, port)
-                and _band_ok(float(opening["area_m2"]), declared_area)):
-            errs.append(abs(float(opening["area_m2"]) / declared_area - 1.0))
+                and _shape_agrees(opening, port)):
+            for measure in {float(opening["area_m2"]),
+                            float(opening["area_m2"]) - filled.get(idx, 0.0)}:
+                if measure > 0.0 and _band_ok(measure, declared_area):
+                    errs.append(abs(measure / declared_area - 1.0))
         return min(errs) if errs else None
 
     hinted = sorted((p for p in declared if p.get("near_m")), key=lambda p: str(p.get("name")))
@@ -185,7 +208,7 @@ def select_declared_openings(candidates: list, declared: list) -> list:
         best = None
         for idx, (area, cen, opening) in remaining.items():
             if port.get("area_m2"):
-                err = _size_err(area, opening, port)
+                err = _size_err(idx, area, opening, port)
                 if err is None:
                     continue
                 err_bucket = int(err / _SIZE_ERR_QUANTUM)
@@ -1333,7 +1356,33 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             rec["opening"] = {"area": round(prof["area_m2"], 8),
                               "centroid": [round(v, 6) for v in prof["centroid"]],
                               "wh": [round(v, 6) for v in prof["wh_m"]]}
+            filled = _filled_area(pi, prof)
+            if filled > 0.0:
+                # a body standing in the bore (a centre rod) shows a flat face inside the
+                # inner wire: the flow crosses the opening less that face (port_binding)
+                rec["opening"]["filled"] = round(filled, 8)
         return rec
+
+    def _filled_area(pi, prof) -> float:
+        """Area of the other flat faces lying inside a ring face's inner wire, in its plane."""
+        oc = prof["centroid"]
+        wh = prof.get("wh_m") or ()
+        reach = (0.5 * min(wh) if len(wh) == 2 and min(wh) > 0
+                 else _m.sqrt(float(prof["area_m2"]) / _m.pi))
+        ax = BRepAdaptor_Surface(faces[pi]).Plane().Axis().Direction()
+        n = (ax.X(), ax.Y(), ax.Z())
+        total = 0.0
+        for j, fj in enumerate(faces):
+            if j == pi or BRepAdaptor_Surface(fj).GetType() != GeomAbs_Plane:
+                continue
+            a, c = _face_props(fj)
+            if a >= float(prof["area_m2"]):
+                continue
+            off = [c[k] - oc[k] for k in range(3)]
+            if (abs(sum(off[k] * n[k] for k in range(3))) <= 1e-3 * reach
+                    and _m.sqrt(sum(v * v for v in off)) < reach):
+                total += a
+        return total
 
     return {
         "stls": {k: str(v) for k, v in stls.items()},
