@@ -335,6 +335,11 @@ def _gmsh_boundary(ws: Path) -> CaseBoundary | None:
         raise CaseUnreadable("gmsh_spec.json has no groups list")
     patches = {str(g.get("name") or "").strip(): str(g.get("role") or "free").strip()
                for g in groups if isinstance(g, dict) and str(g.get("name") or "").strip()}
+    if read_flow_topology(ws) == "external"             and read_input_kind(ws) in ("solid-body", "body-surface")             and "farfield" not in patches.values():
+        # the far-field box is cut around the body after the builder named its faces: the
+        # engine adds the declared far field when the builder named none (driver._external_groups)
+        far = next((p["name"] for p in declared if p.get("type") == "farfield"), "farfield")
+        patches[str(far)] = "farfield"
     return CaseBoundary(patches=patches, kind="roles", authored_by=BUILDER,
                         undeclared_ok_roles=frozenset({"free"}))
 

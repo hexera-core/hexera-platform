@@ -129,3 +129,17 @@ def test_the_case_contract_reads_the_builders_external_groups(tmp_path):
     (tmp_path / "port_declaration.json").write_text(json.dumps(
         [{"name": "body", "type": "wall"}, {"name": "far", "type": "farfield"}]))
     assert CC._gmsh_boundary(tmp_path).patches == {"body": "wall", "far": "farfield"}
+
+
+def test_the_case_contract_adds_the_far_field_the_engine_adds(tmp_path):
+    import json
+
+    from meshpipeline.engines import case_contract as CC
+    # the builder named the body only: the box is cut after, and the engine names it
+    (tmp_path / "gmsh_spec.json").write_text(json.dumps({"groups": [
+        {"name": "body", "role": "wall", "surface_tags": [1, 2]}]}))
+    (tmp_path / "flow_topology").write_text("external")
+    (tmp_path / "input_kind").write_text("solid-body")
+    (tmp_path / "port_declaration.json").write_text(json.dumps(
+        [{"name": "body", "type": "wall"}, {"name": "farfield", "type": "farfield"}]))
+    assert CC._gmsh_boundary(tmp_path).patches == {"body": "wall", "farfield": "farfield"}
