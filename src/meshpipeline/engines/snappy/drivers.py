@@ -854,39 +854,74 @@ def _bore_area_m2(t: dict) -> float:
     return float(t["openings"]["inlet"]["area"])
 
 
+async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id: str) -> dict:
+    """The fluid's closed boundary, named patch by patch, and a point inside it - the one
+    internal-flow staging every engine reads (cad/internal_surface). A CAD solid is separated on
+    its B-rep (tessellate_internal); any other upload is the staged metre surface (input.stl) with
+    the openings the user confirmed on it. When the B-rep path cannot separate a solid (an opening
+    that is not a flat face), the solid's own staged surface is tried the surface way before
+    anything is refused. A declaration the geometry disagrees with is never retried."""
+    import asyncio as _asyncio
+
+    from meshpipeline.cad.internal_surface import is_cad
+    from meshpipeline.engines.port_binding import declaration_targets
+
+    patches = state.get("intake_patches") or []
+    kind = str(state.get("input_kind") or "").strip()
+    surface = Path(workspace) / "input.stl"
+
+    def _surface_way() -> dict:
+        return R.stage_internal_surface(surface, Path(workspace) / "_internal_stls",
+                                        intake_patches=patches, input_kind=kind)
+
+    if not is_cad(source_path):
+        return await _asyncio.to_thread(_surface_way)
+    # The coordinate state staging would have supplied. This path tessellates the CAD itself
+    # instead of going through prepare_surface, and cad_tessellate refuses outright without it -
+    # rightly, since the conversion to metres would otherwise be a guess. Omitting it killed
+    # every internal-flow job in 8 seconds, before the mesher was ever reached: the external
+    # path gets the same state from _plan_surface, so take it from there rather than
+    # reconstructing a second opinion about the scale.
+    _prepared = _plan_surface(state, workspace).consumed
+    try:
+        return await _asyncio.to_thread(
+            R.tessellate_internal, source_path, Path(workspace) / "_internal_stls",
+            fluid_solid=(kind == "fluid-domain"), prepared=_prepared,
+            declared_ports=declaration_targets(patches))
+    except (_fence.StaleWorkerFenced, StaleExecutionPublish, _PortBindError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - the surface way is tried, else this is raised
+        if not surface.exists():
+            raise
+        logger.warning("internal build: the B-rep could not be separated (%s: %s) - staging its "
+                       "surface with the confirmed openings instead - job_id=%s",
+                       type(exc).__name__, exc, job_id)
+        t = await _asyncio.to_thread(_surface_way)
+        t.setdefault("facts", {})["cad_path_failed"] = f"{type(exc).__name__}: {exc}"[:300]
+        return t
+
+
 async def _build_internal_deterministic(workspace: Path, state: PipelineState, *, job_id: str,
                                         publish: ExecutionEventPublisher, source_path: str,
                                         initial_plan: dict | None,
                                         run: BuilderDriverRun) -> bool:
-    import asyncio as _asyncio
     import json as _json
     import math as _math
     import time as _time
 
+    from meshpipeline.cad.internal_surface import InternalSurfaceError, is_cad
     from meshpipeline.engines.snappy import snappy_runner as R
     from meshpipeline.engines.snappy.planner import clamp_cell_budget, plan_with_accounting
 
-    # tessellate the fluid solid ONCE (geometry is fixed across attempts; only strategy changes)
+    # separate the fluid ONCE (geometry is fixed across attempts; only strategy changes)
     if not (source_path and Path(source_path).exists()):
-        logger.error("internal build: no CAD file to tessellate - job_id=%s", job_id)
-        return False
-    if Path(source_path).suffix.lower() == ".stl":
-        logger.error("internal build: needs a CAD SOLID (STEP/IGES), got an STL - job_id=%s", job_id)
+        logger.error("internal build: no geometry file to stage - job_id=%s", job_id)
         return False
     try:
-        # The coordinate state staging would have supplied. This path tessellates the CAD itself
-        # instead of going through prepare_surface, and cad_tessellate refuses outright without it -
-        # rightly, since the conversion to metres would otherwise be a guess. Omitting it killed
-        # every internal-flow job in 8 seconds, before the mesher was ever reached: the external
-        # path gets the same state from _plan_surface, so take it from there rather than
-        # reconstructing a second opinion about the scale.
-        _prepared = _plan_surface(state, workspace).consumed
-        from meshpipeline.engines.port_binding import declaration_targets
-        t = await _asyncio.to_thread(
-            R.tessellate_internal, source_path, workspace / "_internal_stls",
-            fluid_solid=(str(state.get("input_kind") or "").strip() == "fluid-domain"),
-            prepared=_prepared,
-            declared_ports=declaration_targets(state.get("intake_patches") or []))
+        if not is_cad(source_path) and not (workspace / "input.stl").exists():
+            raise InternalSurfaceError("the uploaded surface was not staged for meshing (input.stl is "
+                                       "missing), so nothing was meshed")
+        t = await _separate_fluid(R, workspace, state, source_path, job_id=job_id)
         t, _wall_key, _bound_note = _bind_declared_ports(
             t, state.get("intake_patches") or [])
         _srcs = dict(t["stls"])
@@ -904,10 +939,14 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                       f"measured on the geometry. {exc}",
                 op_id="internal:port-binding-refused")
         return False
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("internal build: tessellation/prep failed - job_id=%s", job_id)
-        await publish.aerror("The fluid volume could not be separated from the solid - the "
-                      "geometry has no clean inlet/outlet openings to close off",
+        # a surface whose confirmed openings do not close a fluid region: the staging says why in
+        # the user's terms and what to change on the picture; anything else is the solid's case
+        await publish.aerror(f"The fluid could not be closed off from this surface: {exc}"
+                             if isinstance(exc, InternalSurfaceError) else
+                             "The fluid volume could not be separated from the solid - the "
+                             "geometry has no clean inlet/outlet openings to close off",
                 op_id="internal:volume-unseparable")
         return False
 

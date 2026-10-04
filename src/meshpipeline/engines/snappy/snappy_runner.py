@@ -13,6 +13,10 @@ from meshpipeline.cad.cad_tessellate import (  # noqa: F401
     tessellate_internal,
     tessellate_to_stl,
 )
+
+# The internal-flow staging of a triangle surface (any upload that is not a CAD solid): the same
+# record tessellate_internal returns, from the staged metre surface and the confirmed openings.
+from meshpipeline.cad.internal_surface import stage_internal_surface  # noqa: F401
 from meshpipeline.cad.stl_io import (  # noqa: F401
     _write_solid,
     drop_degenerate,

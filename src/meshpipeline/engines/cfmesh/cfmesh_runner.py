@@ -14,6 +14,13 @@ from meshpipeline.cad.cad_tessellate import (  # noqa: F401
 from meshpipeline.cad.cad_tessellate import (
     tessellate_to_stl as _cad_tessellate_to_stl,
 )
+
+# The internal-flow staging of a triangle surface (any upload that is not a CAD solid), in the
+# record tessellate_internal returns.
+from meshpipeline.cad.internal_surface import (  # noqa: F401
+    InternalSurfaceError,
+    stage_internal_surface,
+)
 from meshpipeline.cad.stl_io import (  # noqa: F401
     _box_triangles,
     _write_solid,
@@ -350,25 +357,56 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     from meshpipeline.cad.prepared_surface import require_metre_surface
 
     ws = Path(workspace)
-    prepared_state = require_metre_surface(surface, ws, "geometry.step").consumed
+    staged = require_metre_surface(surface, ws, "geometry.step")
+    prepared_state = staged.consumed
     solid = ws / "geometry.step"
-    if not solid.exists():
-        return {"success": False,
-                "error": "internal topology needs the CAD solid (geometry.step). The upload "
-                         "was a surface (STL/VTP), from which the inlet/outlet openings and "
-                         "an interior point cannot be recovered.",
-                "next": "Re-submit the fluid domain as a CAD solid (STEP/IGES), or use the "
-                        "external topology if you meant flow around this body."}
 
-    from meshpipeline.engines.port_binding import declaration_targets
-    from meshpipeline.engines.workspace_facts import port_declaration as _port_decl
-    t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
-                            opening_faces=args.get("opening_faces") or None,
-                            declared_ports=declaration_targets(_port_decl(workspace)))
-    from meshpipeline.engines.port_binding import BindError
+    from meshpipeline.engines.port_binding import BindError, declaration_targets
     from meshpipeline.engines.workspace_facts import port_declaration
+    _decl = port_declaration(workspace)
+
+    def _surface_way() -> dict:
+        # THE UPLOAD IS A SURFACE (STL, OBJ, PLY, ...): the staged metre surface, closed at the
+        # openings the user confirmed on it - lids on open ends, the capped faces of a fluid body
+        return stage_internal_surface(staged.path, ws / "_internal_stls", intake_patches=_decl)
+
+    if not solid.exists() and not Path(staged.path).exists():
+        return {"success": False,
+                "error": f"the staged surface ({Path(staged.path).name}) is missing from the "
+                         "workspace, so the fluid cannot be closed off - nothing was meshed.",
+                "next": "This is a staging fault, not the user's geometry: report it. Do NOT "
+                        "retry with a different strategy."}
     try:
-        t, _wall_key, _bound_note = _bind_intake_shared(t, port_declaration(workspace))
+        if solid.exists():
+            try:
+                t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
+                                        opening_faces=args.get("opening_faces") or None,
+                                        declared_ports=declaration_targets(_decl))
+            except BindError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the solid's own surface is tried next
+                if not Path(staged.path).exists():
+                    raise
+                logger.warning("cfMesh internal: the B-rep could not be separated (%s: %s) - "
+                               "staging its surface with the confirmed openings instead",
+                               type(exc).__name__, exc)
+                t = _surface_way()
+        else:
+            t = _surface_way()
+    except InternalSurfaceError as exc:
+        return {"success": False,
+                "error": f"The fluid could not be closed off from this surface: {exc}",
+                "next": "Relay this to the user verbatim - the openings on the picture need "
+                        "changing, which only they can do. Do NOT retry with a different strategy."}
+    except BindError as exc:
+        return {"success": False,
+                "error": f"Your declared ports could not be matched to the openings measured "
+                         f"on the geometry. {exc}",
+                "next": "Relay this to the user verbatim - the declaration needs a size, "
+                        "location or interchangeability answer only they can give. Do NOT "
+                        "retry with invented values."}
+    try:
+        t, _wall_key, _bound_note = _bind_intake_shared(t, _decl)
     except BindError as exc:
         # a refusal, not a failure: the declaration and the measured geometry disagree, and
         # only the user can settle it
