@@ -149,11 +149,21 @@ SPEC = EngineSpec(
         # default mode; EXTERNAL is the one needing a bounding box bolted on (what
         # surfaceGenerateBoundingBox exists to do).
         capabilities=(MeshCapability("body-surface", "fluid-volume",
-                                     topologies=("internal", "external")),),
-        # WHAT FILE IT TAKES, per flow - the true path on main. EXTERNAL wraps a surface, so a CAD
-        # solid (tessellated first) and a surface mesh both reach it. INTERNAL carves the fluid out
-        # of the CAD solid (geometry.step + tessellate_internal); a surface upload is refused by
-        # cfmesh_runner._configure_internal. When surface internal flow lands, widen it here.
+                                     topologies=("internal", "external")),
+                      # A PREPARED fluid domain for internal flow: the solid IS the fluid, its
+                      # skin is exactly the closed surface cartesianMesh fills from the inside
+                      # (the same tessellate_internal staging, the fluid read as the solid). The
+                      # catalog alone refused it: on main every fluid-domain internal case was
+                      # turned away before staging ("cfmesh cannot produce a internal_cfd mesh
+                      # from a 'fluid-domain' geometry"), while the same staging meshed the
+                      # corpus's fluid twins when admitted (lab, 2026-10-04). External flow is
+                      # not admitted from a fluid domain: the far field is a box around a body.
+                      MeshCapability("fluid-domain", "fluid-volume",
+                                     topologies=("internal",))),
+        # WHAT FILE IT TAKES, per flow. EXTERNAL wraps a surface, so a CAD solid (tessellated
+        # first) and a surface mesh both reach it. INTERNAL carves the fluid out of the CAD solid
+        # (geometry.step + tessellate_internal); a surface upload is taken for internal flow too,
+        # declared once below as input_contract.internal_from_surface (cad/internal_surface).
         accepts=(FlowSupport("external", ("cad", "surface")),
                  FlowSupport("internal", ("cad",))),
         # the most forgiving input handling (it wraps dirty surfaces): first on the ladder
