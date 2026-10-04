@@ -12,8 +12,10 @@ def test_topology_is_not_a_declared_param():
 
 
 def test_capabilities_declare_their_flow_topologies():
-    caps = {c.output_kind: c.topologies for c in ec.get_spec("cfmesh").capabilities}
-    assert set(caps["fluid-volume"]) == {"internal", "external"}
+    caps: dict[str, set] = {}
+    for c in ec.get_spec("cfmesh").capabilities:
+        caps.setdefault(c.output_kind, set()).update(c.topologies)
+    assert caps["fluid-volume"] == {"internal", "external"}
     # vmtk is a lumen mesher: internal only, no far field
     vmtk_caps = ec.get_spec("vmtk").capabilities
     assert set(vmtk_caps[0].topologies) == {"internal"}
