@@ -325,7 +325,8 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     # refused here, before the announcement - the same engine, spec and surfaces give the same
     # result back, and another attempt would only repeat it (agents/builder/rerun_guard.py).
     from meshpipeline.agents.builder import rerun_guard
-    _digest = rerun_guard.case_digest(workspace, _policy.required_files)
+    _digest = rerun_guard.case_digest(workspace,
+                                      _policy.required_files if _policy is not None else ())
     _earlier = rerun_guard.earlier_identical(workspace, _digest)
     if _earlier is not None:
         logger.warning("run_mesh: the case in %s already ran in %s (%s) - refusing an identical "
