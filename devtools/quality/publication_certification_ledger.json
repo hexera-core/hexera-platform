@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 69,
- "proven": 69,
+ "denominator": 70,
+ "proven": 70,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 8
+  "new_since_reconciliation": 9
  },
  "rows": [
   {
@@ -622,6 +622,15 @@
    "mapping_reason": "the internal driver tells the user a plate thinner than the wall cell was found and is being refined locally instead of vanishing from the mesh (fix #4, the orifice cluster)",
    "status": "proven",
    "proof_scenario": "snappy-driver:internal-thin-feature"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::note#8",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the narrow-passage disclosure: the passages the wall cell leaves under the resolution floor, refined locally",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-narrow-passage"
   },
   {
    "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::note#7",
