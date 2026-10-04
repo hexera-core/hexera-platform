@@ -143,6 +143,63 @@ def test_a_tet_volume_becomes_its_closed_outward_boundary(box, tmp_path, fmt, ex
     assert signed == pytest.approx(VOLUME, rel=1e-5)
 
 
+def _write_fluent(path, pts, tets, tris, names, *, binary: bool) -> None:
+    """A Fluent mesh as Fluent writes one: nodes, then FACES with their two cells (c0, c1), the
+    boundary faces one-sided (c1 = 0) and turned so their right-hand normal points into c0, an
+    interior zone, and the zone names in (45 ...) sections."""
+    by_key: dict = {}
+    for ci, t in enumerate(tets, start=1):
+        for f in ((t[0], t[1], t[2]), (t[0], t[1], t[3]), (t[0], t[2], t[3]), (t[1], t[2], t[3])):
+            by_key.setdefault(tuple(sorted(int(v) for v in f)), []).append((ci, f))
+    name_of = {tuple(sorted(int(v) for v in t)): n for t, n in zip(tris, names)}
+    zones: dict = {"interior": [], "inlet": [], "outlet": [], "wall": []}
+    for key, owners in by_key.items():
+        if len(owners) == 2:
+            (c0, f), (c1, _) = owners
+            zones["interior"].append((f, c0, c1))
+            continue
+        c0, f = owners[0]
+        a, b, c = pts[list(f)]
+        if np.dot(np.cross(b - a, c - a), pts[tets[c0 - 1]].mean(axis=0) - a) < 0:
+            f = (f[0], f[2], f[1])
+        zones[name_of[key]].append((f, c0, 0))
+    out = bytearray(b'(0 "written by a Hexera test as Fluent writes meshes")\n(2 3)\n')
+    out += f"(10 (0 1 {len(pts):x} 0 3))\n".encode()
+    if binary:
+        out += f"(3010 (1 1 {len(pts):x} 1 3)(".encode() + pts.astype("<f8").tobytes()
+        out += b")End of Binary Section   3010)\n"
+    else:
+        out += f"(10 (1 1 {len(pts):x} 1 3)(\n".encode()
+        out += "".join(f"{p[0]:.17g} {p[1]:.17g} {p[2]:.17g}\n" for p in pts).encode() + b"))\n"
+    out += f"(12 (0 1 {len(tets):x} 0))\n(12 (2 1 {len(tets):x} 1 2))\n".encode()
+    first = 1
+    bc = {"interior": 2, "inlet": 10, "outlet": 5, "wall": 3}
+    for zid, (zname, faces) in enumerate(zones.items(), start=3):
+        last = first + len(faces) - 1
+        rows = [[v + 1 for v in f] + [c0, c1] for f, c0, c1 in faces]
+        if binary:
+            out += f"(3013 ({zid:x} {first:x} {last:x} {bc[zname]:x} 3)(".encode()
+            out += np.asarray(rows, dtype="<i8").tobytes() + b")End of Binary Section   3013)\n"
+        else:
+            out += f"(13 ({zid:x} {first:x} {last:x} {bc[zname]:x} 3)(\n".encode()
+            out += "".join(" ".join(f"{v:x}" for v in r) + "\n" for r in rows).encode() + b"))\n"
+        first = last + 1
+        kind = {"interior": "interior", "wall": "wall", "inlet": "velocity-inlet",
+                "outlet": "pressure-outlet"}[zname]
+        out += f"(45 ({zid} {kind} {zname}{'-fluid' if zname == 'interior' else ''})())\n".encode()
+    Path(path).write_bytes(bytes(out))
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_a_fluent_face_mesh_becomes_its_boundary_named_by_zone(box, tmp_path, binary):
+    src = tmp_path / "fluent.msh"
+    _write_fluent(src, box["points"], box["tets"], box["tris"], box["names"], binary=binary)
+    assert sniff_format(src) == "msh"
+    canonical = canonicalise(src, tmp_path / "out", stem="source")
+    # the interior zone's faces have two cells and fall away; the named boundary zones remain
+    _assert_box(canonical, groups=GROUPS)
+
+
 # surface formats, written from the same boundary triangles
 
 def _write_obj(path, pts, tris, names):

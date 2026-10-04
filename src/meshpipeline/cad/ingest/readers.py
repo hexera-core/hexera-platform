@@ -690,7 +690,16 @@ def read_surface(path: Path, key: str) -> SurfaceMesh:
     if key in ("vtk", "vtu", "vtp", "ply"):
         return read_vtk_family(p)
     if key == "msh":
-        return read_meshio(p, _msh_flavour(p))
+        if _msh_flavour(p) == "ansys":
+            from meshpipeline.cad.ingest.fluent import FluentNoFaces, read_fluent
+
+            try:
+                # Fluent stores faces, not cells: the boundary is the faces one cell owns, named
+                # by their zones. meshio would return every interior face as surface too.
+                return read_fluent(p)
+            except FluentNoFaces:
+                return read_meshio(p, "ansys")       # a cell-based file some tools write
+        return read_meshio(p, "gmsh")
     if key in _MESHIO:
         return read_meshio(p, _MESHIO[key])
     raise SurfaceError(f"no surface reader for {key!r}")
