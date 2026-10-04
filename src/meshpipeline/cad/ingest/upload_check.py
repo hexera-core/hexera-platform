@@ -29,7 +29,7 @@ _STRONGLY_MARKED = frozenset({"step", "brep", "vtp", "vtu", "vtk", "ply", "off",
 #: this the check is left to the worker, which reports the same sentence on the geometry stage.
 _3DM_CHECK_MAX_BYTES = 64 * 1024 * 1024
 #: A .gltf is JSON, possibly with its buffers inlined as base64; read whole only below this.
-_GLTF_CHECK_MAX_BYTES = 512 * 1024 * 1024
+_GLTF_CHECK_MAX_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -84,8 +84,7 @@ def _format_refusal(path: Path, key: str) -> str:
     if key in ("gltf", "glb"):
         size = path.stat().st_size
         if key == "gltf" and size > _GLTF_CHECK_MAX_BYTES:
-            return ("This .gltf file is too large to read as text. Export it as a binary .glb "
-                    "file and upload that.")
+            return ""        # read on the worker, which refuses the same things in the same words
         data = path.read_bytes() if key == "gltf" else _glb_head(path)
         return _sentence(limits.gltf_refusal(data))
     if key == "3dm" and path.stat().st_size <= _3DM_CHECK_MAX_BYTES:

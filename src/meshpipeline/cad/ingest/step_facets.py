@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+from meshpipeline.cad.ingest.limits import MAX_TRIANGLES, too_many_triangles
+
 #: A faceted STEP has many faces; a real CAD part with a few flat faces stays CAD whatever they
 #: look like. 100 faces is far more than a hand-modelled prism, far fewer than any scan or STL.
 MIN_FACES = 100
@@ -179,6 +181,10 @@ def read_faceted(path) -> tuple[np.ndarray, np.ndarray]:
             ids.append(index[p])
         for k in range(1, len(ids) - 1):
             tris.append((ids[0], ids[k], ids[k + 1]))
+        if len(tris) > MAX_TRIANGLES:
+            from meshpipeline.cad.ingest.surface import SurfaceError
+
+            raise SurfaceError(too_many_triangles())
     if not tris:
         raise FacetedReadError("the faceted STEP has no polygon faces")
     try:

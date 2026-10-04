@@ -176,7 +176,17 @@ def _doubled_to_drop(t: np.ndarray, group: np.ndarray) -> np.ndarray:
     edge_of = np.asarray(einv).ravel().reshape(3, -1).T          # (m, 3) edge ids
     others = ecount[edge_of] - k[:, None]                         # uses by any OTHER triangle
     doubled = k > 1
-    sliver = doubled & ((others == 0).sum(axis=1) >= 2)
+    # copies that all run the SAME way round are one face written twice; copies facing opposite
+    # ways are the two sides of a zero-thickness sheet (a baffle), which is kept
+    rot = np.argmin(t, axis=1)
+    oriented = np.stack([t[np.arange(m), rot], t[np.arange(m), (rot + 1) % 3],
+                         t[np.arange(m), (rot + 2) % 3], group], axis=1)
+    _, oriented_id = np.unique(oriented, axis=0, return_inverse=True)
+    set_ids = np.asarray(set_of).ravel()
+    pairs = np.unique(np.c_[set_ids, np.asarray(oriented_id).ravel()], axis=0)
+    ways = np.bincount(pairs[:, 0], minlength=len(copies))
+    same_way = ways[set_ids] == 1
+    sliver = doubled & same_way & ((others == 0).sum(axis=1) >= 2)
     written_twice = doubled & ~sliver & (others.max(axis=1) <= 1)
     is_first = np.zeros(m, dtype=bool)
     is_first[first] = True
@@ -246,6 +256,7 @@ def named_groups(mesh: SurfaceMesh) -> dict[str, np.ndarray]:
     from meshpipeline.cad.regions import _meaningful
 
     by_name: dict[str, np.ndarray] = {}
+    owner: dict[str, str] = {}              # written name -> the file's own spelling of it
     for gi, raw in enumerate(mesh.names):
         name = safe_solid_name(raw)
         if not _meaningful(name):
@@ -253,6 +264,14 @@ def named_groups(mesh: SurfaceMesh) -> dict[str, np.ndarray]:
         mask = np.asarray(mesh.group == gi, dtype=bool)
         if not mask.any():
             continue
+        # two different names that clean to the same text ("inlet 1" and "inlet_1", or two long
+        # names alike in their first 64 characters) stay two boundaries
+        n = 2
+        base = name
+        while name in owner and owner[name] != str(raw):
+            name = f"{base[:60]}_{n}"
+            n += 1
+        owner[name] = str(raw)
         if name in by_name:
             mask = np.logical_or(by_name[name], mask)
         by_name[name] = mask
@@ -331,7 +350,12 @@ def read_stl(path: Path) -> SurfaceMesh:
 
 
 def _looks_ascii(data: bytes) -> bool:
-    head = data[:4096].lstrip(b"\xef\xbb\xbf \t\r\n")
+    """Text - not a binary STL whose 80-byte header merely says "solid ... facet": a binary file's
+    records hold zero bytes (attribute words, small floats) within the first few hundred."""
+    head = data[:4096]
+    if b"\x00" in head[80:]:
+        return False
+    head = head.lstrip(b"\xef\xbb\xbf \t\r\n")
     return head[:5].lower() == b"solid" and re.search(rb"(?i)\bfacet\b", head) is not None
 
 

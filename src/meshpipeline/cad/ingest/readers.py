@@ -394,9 +394,17 @@ def read_3mf(path: Path) -> SurfaceMesh:
 
         root = model(root_part)
         parts: list[SurfaceMesh] = []
+        budget = [limits.MAX_TRIANGLES]          # shared by every build item
+        # what the build WOULD produce, counted object by object (memoised), before any of it is
+        # built: a few components placing each other twice can ask for billions of triangles
+        memo: dict = {}
+        total = sum(_count_3mf(model, item.get("path") or root_part, item["objectid"], memo, 0)
+                    for item in root["build"])
+        if total > limits.MAX_TRIANGLES:
+            raise SurfaceError(limits.too_many_triangles())
         for item in root["build"]:
             m = _instance_3mf(model, root_part, item.get("path") or root_part, item["objectid"],
-                              item["transform"], depth=0)
+                              item["transform"], depth=0, budget=budget)
             if m is not None:
                 name = root["objects"].get(item["objectid"], {}).get("name") \
                     if not item.get("path") else ""
@@ -503,8 +511,35 @@ def _3mf_matrix(text: str | None) -> np.ndarray:
     return m
 
 
+def _count_3mf(model, part: str, objectid: str, memo: dict, depth: int) -> int:
+    """Triangles one object places, components included - each object counted once."""
+    key = (part, str(objectid))
+    if key in memo:
+        return memo[key]
+    if depth > 32:
+        raise SurfaceError("the 3MF file nests its components more than 32 deep")
+    obj = model(part)["objects"].get(str(objectid))
+    if obj is None:
+        raise SurfaceError(f"the 3MF build refers to a missing object {objectid!r}")
+    if obj["mesh"] is not None:
+        n = int(len(obj["mesh"][1]))
+    else:
+        n = 0
+        for comp in obj["components"]:
+            n += _count_3mf(model, comp["path"] or part, comp["objectid"], memo, depth + 1)
+            if n > limits.MAX_TRIANGLES:
+                break
+    memo[key] = n
+    return n
+
+
 def _instance_3mf(model, root_part: str, part: str, objectid: str, xf: np.ndarray, *,
-                  depth: int) -> SurfaceMesh | None:
+                  depth: int, budget: list[int] | None = None) -> SurfaceMesh | None:
+    """One object placed by `xf`. `budget` is the triangles the whole build may still add: a
+    component can place another twice, and that one the next twice - a few bytes of XML asking
+    for billions of triangles - so every placement is paid for BEFORE it is built."""
+    if budget is None:
+        budget = [limits.MAX_TRIANGLES]
     if depth > 32:
         raise SurfaceError("the 3MF file nests its components more than 32 deep")
     obj = model(part)["objects"].get(str(objectid))
@@ -514,13 +549,16 @@ def _instance_3mf(model, root_part: str, part: str, objectid: str, xf: np.ndarra
         v, t = obj["mesh"]
         if len(t) == 0:
             return None
+        budget[0] -= len(t)
+        if budget[0] < 0:
+            raise SurfaceError(limits.too_many_triangles())
         pts = (np.c_[v, np.ones(len(v))] @ xf.T)[:, :3]
         names = [obj["name"]] if obj["name"] else []
         return SurfaceMesh(pts, t, np.zeros(len(t), dtype=np.int64) if names else None, names)
     parts = []
     for comp in obj["components"]:
         sub = _instance_3mf(model, root_part, comp["path"] or part, comp["objectid"],
-                            xf @ comp["transform"], depth=depth + 1)
+                            xf @ comp["transform"], depth=depth + 1, budget=budget)
         if sub is not None:
             parts.append(sub)
     if not parts:

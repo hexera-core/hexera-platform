@@ -167,7 +167,9 @@ async def upload_step_file(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Uploaded file is empty")
 
-    dest, suffix = checked_upload(dest, suffix)
+    # off the event loop: the check reads the file, and a large one must not stall other requests
+    import asyncio as _asyncio
+    dest, suffix = await _asyncio.to_thread(checked_upload, dest, suffix)
 
     step_filename = filename
 

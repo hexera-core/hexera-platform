@@ -207,3 +207,88 @@ def test_real_cad_stays_cad(tmp_path):
     write_step(BRepPrimAPI_MakeCylinder(5.0, 40.0).Shape(), step)
     c = canonicalise(step, tmp_path / "out", stem="source")
     assert c.kind is GeometryKind.cad and c.path == step and not c.converted
+
+
+# hostile or odd files are refused quickly, never expanded
+
+def test_a_3mf_whose_components_double_each_other_is_refused_before_expanding(tmp_path):
+    import time
+    import zipfile
+
+    from meshpipeline.cad.ingest import IngestError
+
+    objs = ['<object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/>'
+            '<vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles>'
+            '<triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>']
+    for i in range(2, 31):          # object i places object i-1 twice: 2^29 triangles
+        objs.append(f'<object id="{i}" type="model"><components><component objectid="{i - 1}"/>'
+                    f'<component objectid="{i - 1}"/></components></object>')
+    model = ('<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/'
+             f'3dmanufacturing/core/2015/02"><resources>{"".join(objs)}</resources>'
+             '<build><item objectid="30"/></build></model>')
+    src = tmp_path / "bomb.3mf"
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("3D/3dmodel.model", model)
+    t0 = time.time()
+    with pytest.raises(IngestError, match="triangles"):
+        canonicalise(src, tmp_path / "out", stem="source")
+    assert time.time() - t0 < 5
+
+
+def test_a_fluent_node_range_larger_than_its_data_is_refused_not_allocated(tmp_path):
+    from meshpipeline.cad.ingest import IngestError
+
+    src = tmp_path / "huge.msh"
+    src.write_bytes(b'(0 "x")\n(10 (1 1 7fffffff 1 3)(\n0 0 0\n))\n'
+                    b'(13 (3 1 1 3 3)(\n1 1 1 1 0\n))\n')
+    with pytest.raises(IngestError):
+        canonicalise(src, tmp_path / "out", stem="source")
+
+
+def test_an_archive_with_too_many_members_is_not_read_as_3mf(tmp_path):
+    import zipfile
+
+    from meshpipeline.cad.ingest import check_upload
+    from meshpipeline.cad.ingest.limits import MAX_ZIP_ENTRIES
+
+    src = tmp_path / "many.3mf"
+    with zipfile.ZipFile(src, "w") as zf:
+        zf.writestr("3D/3dmodel.model", "<model/>")
+        for i in range(MAX_ZIP_ENTRIES + 5):
+            zf.writestr(f"f/{i}", "")
+    assert not check_upload(src, ".3mf").ok
+
+
+def test_two_names_that_clean_to_the_same_text_stay_two_boundaries(tmp_path):
+    from meshpipeline.cad.ingest.surface import write_canonical_stl
+
+    p, t = _sphere()
+    group = np.repeat(np.arange(3), int(np.ceil(len(t) / 3)))[:len(t)]
+    regions = write_canonical_stl(SurfaceMesh(p, t, group, ["inlet 1", "inlet_1", "wall"]),
+                                  tmp_path / "s.stl")
+    assert len(regions) == 3 and len(set(regions)) == 3
+
+
+def test_a_binary_stl_whose_header_reads_like_text_is_still_binary(tmp_path):
+    from meshpipeline.cad.ingest.surface import write_binary_stl
+
+    p, t = _sphere()
+    src = tmp_path / "hdr.stl"
+    write_binary_stl(src, p[t])
+    data = bytearray(src.read_bytes())
+    data[:80] = b"solid part facet normal exported".ljust(80, b" ")
+    src.write_bytes(bytes(data))
+    mesh = read_stl(src)
+    assert mesh.n_triangles == len(t)
+    c = canonicalise(src, tmp_path / "out", stem="source")
+    assert c.converted and stats(read_stl(c.path))["watertight"]
+
+
+def test_a_two_sided_sheet_hanging_off_an_edge_is_kept():
+    # copies facing OPPOSITE ways are the two sides of a zero-thickness baffle, not a sliver
+    p, t = _sphere()
+    a, b, _ = t[0]
+    p2 = np.vstack([p, (p[a] + p[b]) / 2 + np.array([0.0, 0.0, 3.0])])
+    sheet = np.array([[a, b, len(p)], [b, a, len(p)]])
+    out, report = tidy(SurfaceMesh(p2, np.vstack([t, sheet])))
+    assert report.duplicates == 0 and out.n_triangles == len(t) + 2

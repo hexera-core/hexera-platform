@@ -36,6 +36,15 @@ def is_fluent(head: bytes) -> bool:
 def read_fluent(path: Path) -> SurfaceMesh:
     """The faces that only one cell owns (c0 or c1 = 0) - the boundary of the fluid - with the name
     of the zone each lies in (inlet, wall, outlet ...). Interior zones fall away by that same rule."""
+    try:
+        return _read_fluent(Path(path))
+    except (ValueError, IndexError, OverflowError) as exc:
+        if isinstance(exc, FluentFormatError):
+            raise
+        raise FluentFormatError(f"the Fluent mesh is malformed ({str(exc)[:80]})") from exc
+
+
+def _read_fluent(path: Path) -> SurfaceMesh:
     data = Path(path).read_bytes()
     node_blocks: list[tuple[int, np.ndarray]] = []
     face_zones: list[tuple[int, np.ndarray, np.ndarray]] = []   # (zone, per-face node lists, c0c1)
@@ -127,6 +136,8 @@ def _read_nodes(data: bytes, hm, index: int, out: list) -> int:
     else:
         dt = np.dtype("<f8") if index == 3010 else np.dtype("<f4")
         nbytes = count * nd * dt.itemsize
+        if count <= 0 or nd not in (2, 3) or body + nbytes > len(data):
+            raise FluentFormatError("a Fluent node section declares more nodes than it holds")
         vals = np.frombuffer(data, dtype=dt, count=count * nd, offset=body).astype(np.float64)
         end = _skip_section(data, body + nbytes, index)
     if vals.size != count * nd:
@@ -164,13 +175,19 @@ def _binary_face_ints(data: bytes, body: int, dt: np.dtype, count: int, ftype: i
     fixed = _FACE_NODES.get(ftype)
     if fixed:
         k = count * (fixed + 2)
+        if count <= 0 or body + k * dt.itemsize > len(data):
+            raise FluentFormatError("a Fluent face section declares more faces than it holds")
         return np.frombuffer(data, dtype=dt, count=k, offset=body).astype(np.int64), \
             k * dt.itemsize
     # mixed or polygonal: every face states its own node count first
     vals: list[int] = []
     off = body
     for _ in range(count):
+        if off + dt.itemsize > len(data):
+            raise FluentFormatError("a Fluent face section is truncated")
         nn = int(np.frombuffer(data, dtype=dt, count=1, offset=off)[0])
+        if nn < 2 or nn > 4096 or off + (nn + 3) * dt.itemsize > len(data):
+            raise FluentFormatError("a Fluent face section is malformed")
         row = np.frombuffer(data, dtype=dt, count=nn + 3, offset=off)
         vals.extend(row.tolist())
         off += (nn + 3) * dt.itemsize
@@ -197,10 +214,13 @@ def _split_faces(ints: np.ndarray, count: int, ftype: int):
 
 
 def _boundary(node_blocks, face_zones, names: dict[int, str]) -> SurfaceMesh:
-    last = max(first + len(xyz) - 1 for first, xyz in node_blocks)
-    pts = np.full((last + 1, 3), np.nan)
-    for first, xyz in node_blocks:
-        pts[first:first + len(xyz)] = xyz
+    # Only the nodes the file SUPPLIES are stored, keyed by their ids: a header may declare any
+    # index range, and sizing an array by a declared index lets a tiny file ask for gigabytes.
+    node_ids = np.concatenate([np.arange(first, first + len(xyz), dtype=np.int64)
+                               for first, xyz in node_blocks])
+    coords = np.vstack([xyz for _first, xyz in node_blocks])
+    order = np.argsort(node_ids, kind="stable")
+    node_ids, coords = node_ids[order], coords[order]
     tris: list = []
     group: list[int] = []
     zone_names: list[str] = []
@@ -223,13 +243,16 @@ def _boundary(node_blocks, face_zones, names: dict[int, str]) -> SurfaceMesh:
             for j in range(1, len(nodes) - 1):
                 tris.append((nodes[0], nodes[j], nodes[j + 1]))
                 group.append(gi)
+            if len(tris) > limits.MAX_TRIANGLES:
+                raise FluentFormatError(limits.too_many_triangles())
     if not tris:
         raise FluentFormatError("the Fluent mesh has no boundary faces")
     t = np.asarray(tris, dtype=np.int64)
-    if not np.isfinite(pts[np.unique(t)]).all():
-        raise FluentFormatError("a Fluent face refers to a node that is not defined")
     used = np.unique(t)
-    mesh = SurfaceMesh(pts[used].copy(), np.asarray(np.searchsorted(used, t), dtype=np.int64),
+    at = np.searchsorted(node_ids, used)
+    if (at >= len(node_ids)).any() or not (node_ids[np.clip(at, 0, len(node_ids) - 1)] == used).all():
+        raise FluentFormatError("a Fluent face refers to a node that is not defined")
+    mesh = SurfaceMesh(coords[at].copy(), np.asarray(np.searchsorted(used, t), dtype=np.int64),
                        np.asarray(group, dtype=np.int64), zone_names)
     return _outward(mesh)
 

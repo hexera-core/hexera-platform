@@ -37,11 +37,35 @@ def _binary_stl_count(head: bytes, size: int) -> int | None:
     return n if n > 0 and 84 + 50 * n == size else None
 
 
+def _zip_entry_count(path: Path) -> int | None:
+    """How many members the archive's end record declares, read from its last 64 KiB - before
+    zipfile builds a Python object for every one of them."""
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        fh.seek(max(0, size - 65_557))
+        tail = fh.read()
+    at = tail.rfind(b"PK\x05\x06")
+    if at < 0 or at + 22 > len(tail):
+        return None
+    return struct.unpack("<H", tail[at + 10:at + 12])[0]
+
+
 def _zip_kind(path: Path | None) -> str | None:
     if path is None:
         return None
+    from meshpipeline.cad.ingest.limits import MAX_ZIP_ENTRIES
+
+    try:
+        entries = _zip_entry_count(path)
+    except OSError:
+        return None
+    # a ZIP64 directory says 0xFFFF here; zipfile reads the real count, still bounded below
+    if entries is not None and MAX_ZIP_ENTRIES < entries < 0xFFFF:
+        return None
     try:
         with zipfile.ZipFile(path) as zf:
+            if len(zf.infolist()) > MAX_ZIP_ENTRIES:
+                return None
             names = [n.lower() for n in zf.namelist()]
     except (zipfile.BadZipFile, OSError, ValueError):
         return None

@@ -282,8 +282,8 @@ def _canonical_stl(src: Path, workdir: Path, stem: str) -> CanonicalGeometry:
 
 #: Above these an uploaded STL is passed on unchecked, as it always was: the safe cleanup reads
 #: every triangle, and a file this large is better left to the engines than held in memory twice.
-_TIDY_MAX_BINARY_TRIANGLES = 5_000_000
-_TIDY_MAX_ASCII_BYTES = 300 * 1024 * 1024
+_TIDY_MAX_BINARY_TRIANGLES = 2_000_000
+_TIDY_MAX_ASCII_BYTES = 200 * 1024 * 1024
 
 
 def _tidied_stl(src: Path, dest: Path) -> CanonicalGeometry | None:
@@ -339,7 +339,7 @@ def _ascii_solid_names(path: Path) -> tuple[str, ...]:
     """The distinct, meaningful solid names of an ASCII STL - () for binary or a single solid."""
     from meshpipeline.cad.regions import _meaningful
 
-    names: list[str] = []
+    names: dict[str, None] = {}          # insertion-ordered set: one lookup per solid line
     with path.open("rb") as fh:
         if fh.read(5) != b"solid":
             return ()
@@ -347,8 +347,8 @@ def _ascii_solid_names(path: Path) -> tuple[str, ...]:
         for line in fh:
             if line.startswith(b"solid"):
                 name = line[5:].decode("latin-1").strip()
-                if _meaningful(name) and name not in names:
-                    names.append(name)
+                if name not in names and _meaningful(name):
+                    names[name] = None
     return tuple(names) if len(names) > 1 else ()
 
 
