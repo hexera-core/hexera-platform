@@ -51,6 +51,33 @@ class FailedReason(str, PyEnum):
     unhandled          = "unhandled"
 
 
+class RepairJobStatus(str, PyEnum):
+    """Where one customer repair job stands. The legal movements between these, and which of them
+    wait on a person, are declared once in persistence/repair_job_state.py."""
+
+    received          = "received"            # the file is here; nothing has looked at it yet
+    inspecting        = "inspecting"          # repair inspection is measuring it
+    awaiting_strategy = "awaiting_strategy"   # an operator chooses the route
+    repairing         = "repairing"           # a repair attempt is running
+    repair_review     = "repair_review"       # a person is judging a repair's before/after
+    meshing           = "meshing"             # a mesh run is under way
+    mesh_review       = "mesh_review"         # a person is judging the mesh
+    manual_cleanup    = "manual_cleanup"      # an operator is fixing it by hand
+    retrying          = "retrying"            # a review chose another attempt
+    escalated         = "escalated"           # it needs someone more senior than the queue
+    waiting_customer  = "waiting_customer"    # the customer owes us a file, a unit or an intent
+    customer_blocked  = "customer_blocked"    # we cannot proceed on what they have given us
+    service_failed    = "service_failed"      # OUR failure - storage, worker, kernel, infra
+    delivered         = "delivered"           # repaired geometry (if any) AND a mesh went out
+    # Repaired geometry handed over with NO mesh. A real outcome of this service and a distinct
+    # one: reporting it as a mesh success would promise something that was never produced.
+    repair_delivered  = "repair_delivered"
+    delivery_disputed = "delivery_disputed"   # the customer rejected what we delivered
+    dead_lettered     = "dead_lettered"       # abandoned after repeated service failure
+    expired           = "expired"             # the customer never came back in time
+    cancelled         = "cancelled"           # the owner stopped it
+
+
 class ArtifactType(str, PyEnum):
     mesh             = "mesh"
     mesh_bundle      = "mesh_bundle"
@@ -334,6 +361,134 @@ class Artifact(Base):
     )
 
     job: Mapped[SimulationJob] = relationship("SimulationJob", back_populates="artifacts")
+
+
+class CadRepairJob(Base):
+    """ONE CUSTOMER SERVICE JOB, from the file arriving to something going back out.
+
+    Separate from `simulation_jobs` on purpose. A simulation job is one attempt to mesh an
+    approved request, and it ends. A repair job is the engagement around a customer's unusable
+    geometry: it may inspect, repair, mesh, go to a person, go back to the customer, and be
+    reopened after delivery - outliving any single mesh run, and sometimes producing none at all.
+    Folding the two together would mean either a simulation job that never meshes or a repair
+    history with nowhere to live.
+    """
+
+    __tablename__ = "cad_repair_jobs"
+
+    id:              Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                       default=uuid.uuid4)
+    owner_id:        Mapped[str]       = mapped_column(String(256), nullable=False, index=True)
+    # WHICH ORGANISATION this row belongs to - the tenant key reads scope on, nullable like every
+    # other tenant column so a principal that names none falls back to the owner.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True,
+        index=True)
+    # THE IMMUTABLE CUSTOMER FILE, and what one of its coordinate units means. Both are the
+    # upload's own records, referenced rather than copied: a repair job must never become a second
+    # opinion on which bytes the customer sent or what size they are.
+    geometry_source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("geometry_sources.id", ondelete="RESTRICT"),
+        nullable=False, index=True)
+    geometry_interpretation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("geometry_interpretations.id", ondelete="RESTRICT"),
+        nullable=True)
+    # The mesh run this job's geometry reached, once one exists. NULL for a job still being
+    # repaired, and for one delivered as repaired geometry alone.
+    simulation_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("simulation_jobs.id", ondelete="SET NULL"), nullable=True,
+        index=True)
+    status:          Mapped[RepairJobStatus] = mapped_column(
+        Enum(RepairJobStatus), nullable=False, default=RepairJobStatus.received, index=True)
+    # The engine this job is being prepared FOR. Geometry is only repairable or unrepairable
+    # relative to what has to mesh it, so the target is part of the job, not a later detail.
+    target_engine:   Mapped[str]       = mapped_column(String(64), nullable=False,
+                                                       server_default="")
+    # QUEUE ORDER, low first. A plain integer because the priority formula belongs to the queue
+    # that reads it, not to the row.
+    service_priority: Mapped[int]      = mapped_column(Integer, nullable=False,
+                                                       server_default="100")
+    # What the customer said they need, in their words. Load-bearing: whether deleting a feature
+    # is a repair or a ruined part is a question only their intent answers.
+    customer_intent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The route an operator chose (a RepairProfile value, or "" before anyone has chosen).
+    # Vocabulary owned by cad/repair/contracts.py, stored as text so that one source of truth is
+    # not duplicated into a database enum that would then need a migration to follow it.
+    current_strategy: Mapped[str]      = mapped_column(String(32), nullable=False,
+                                                       server_default="")
+    # The latest inspection's conclusion (a RepairStatus value), denormalised for the queue so
+    # listing a hundred jobs does not read a hundred attempt rows.
+    repair_status:   Mapped[str]       = mapped_column(String(32), nullable=False,
+                                                       server_default="")
+    # WHY it is waiting or stopped, for the customer-facing message and for the metrics bucket.
+    blocked_reason:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True),
+                                                       server_default=func.now())
+    updated_at:      Mapped[datetime]  = mapped_column(DateTime(timezone=True),
+                                                       server_default=func.now(),
+                                                       onupdate=func.now())
+
+    attempts: Mapped[list[CadRepairAttempt]] = relationship(
+        "CadRepairAttempt", back_populates="repair_job", cascade="all, delete-orphan")
+
+    __table_args__: tuple = (
+        Index("ix_cad_repair_jobs_queue", "status", "service_priority", "created_at"),
+    )
+
+
+class CadRepairAttempt(Base):
+    """ONE INSPECT OR REPAIR EXECUTION against a repair job, and what it measured.
+
+    APPEND-ONLY HISTORY. Nothing updates an attempt: a second look is a second row. The before and
+    after hashes are what makes a repair auditable - they are the proof that the customer's
+    original bytes were never replaced, only added to.
+    """
+
+    __tablename__ = "cad_repair_attempts"
+
+    id:            Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                     default=uuid.uuid4)
+    repair_job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cad_repair_jobs.id", ondelete="CASCADE"),
+        nullable=False, index=True)
+    # 1-based, and UNIQUE per job (below): the attempt budget is counted on these, so two writers
+    # must not both be able to call themselves attempt 3.
+    attempt_no:    Mapped[int]       = mapped_column(Integer, nullable=False)
+    # RepairMode and RepairProfile values - cad/repair/contracts.py owns both vocabularies.
+    mode:          Mapped[str]       = mapped_column(String(32), nullable=False)
+    profile:       Mapped[str]       = mapped_column(String(32), nullable=False,
+                                                     server_default="")
+    # WHICH TOOL, at WHICH version, produced this. A repair is only reproducible against the
+    # kernel that made it, and "the same file repaired differently after an upgrade" is a support
+    # question that cannot be answered without this column.
+    tool_version:  Mapped[str]       = mapped_column(String(128), nullable=False,
+                                                     server_default="")
+    # THE AUDIT PAIR. input_sha256 is the bytes this attempt read; output_sha256 is what it
+    # produced, or NULL for an inspection, which produces no geometry at all. An attempt whose
+    # input digest is not the job's source digest is operating on something it should not be.
+    input_sha256:  Mapped[str]       = mapped_column(String(64), nullable=False)
+    output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A RepairStatus value: what this attempt concluded.
+    status:        Mapped[str]       = mapped_column(String(32), nullable=False,
+                                                     server_default="")
+    # The typed RepairResult payload, verbatim, and the caps the attempt was allowed to work
+    # inside. Kept together because a repair's safety claim is the pair of them: what it did, and
+    # what it was permitted to do.
+    report:        Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    caps:          Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Before/after measurements - deviation, tolerance, topology counts - as the executor
+    # measured them. The evidence a reviewer approves or rejects on.
+    measurements:  Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    started_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at:      Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at:    Mapped[datetime]  = mapped_column(DateTime(timezone=True),
+                                                     server_default=func.now())
+
+    repair_job: Mapped[CadRepairJob] = relationship("CadRepairJob", back_populates="attempts")
+
+    __table_args__: tuple = (
+        UniqueConstraint("repair_job_id", "attempt_no", name="uq_cad_repair_attempts_job_no"),
+    )
 
 
 class TerminalOutbox(Base):

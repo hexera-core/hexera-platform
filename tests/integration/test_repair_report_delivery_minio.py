@@ -112,8 +112,7 @@ async def test_the_report_alone_never_makes_a_job_look_delivered(SessionLocal, r
     assert optional_warnings(delivered) == ["mesh"]
 
 
-async def test_redelivering_the_same_attempt_is_idempotent_and_keeps_one_row(SessionLocal,
-                                                                            real_store):
+async def test_redelivering_the_same_attempt_leaves_one_unchanged_row(SessionLocal, real_store):
     job_id = await _seed_job(SessionLocal)
 
     first = await deliver_repair_report(SessionLocal, job_id=str(job_id), report=_REPORT,
@@ -123,10 +122,18 @@ async def test_redelivering_the_same_attempt_is_idempotent_and_keeps_one_row(Ses
                                          repair_status="repairable", delivery_attempt=1,
                                          execution_generation=1)
 
-    # inspection reads the IMMUTABLE uploaded source, so a re-delivery of one attempt is the same
-    # evidence, not a competing version of it
-    assert (first, second) == ("created", "idempotent")
-    assert len(await _artifacts(SessionLocal, job_id)) == 1
+    # BOTH SUCCEED, and the second is not a conflict: inspection reads the immutable uploaded
+    # source, so a re-delivery of one attempt is the same evidence, not a competing version of it.
+    # The repository reports it as `created` rather than `idempotent` because the compare-and-set
+    # permits the write and rewrites the row to identical values - `idempotent` is reserved for a
+    # write the CAS BLOCKED. What matters to this service is the state that follows, asserted
+    # below: one row, the same bytes, nothing superseded.
+    assert (first, second) == ("created", "created")
+    rows = await _artifacts(SessionLocal, job_id)
+    assert len(rows) == 1
+    assert rows[0].delivery_attempt == 1 and rows[0].execution_generation == 1
+    assert json.loads(real_store.get_bytes(object_key=rows[0].storage_key))[
+        "report"] == _REPORT
 
 
 async def test_a_newer_generation_supersedes_the_earlier_report(SessionLocal, real_store):

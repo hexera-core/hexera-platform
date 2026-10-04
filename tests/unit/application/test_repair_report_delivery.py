@@ -84,8 +84,8 @@ def test_the_same_report_delivered_twice_writes_the_same_bytes(store, delivered)
     asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id,
                                       report=dict(reversed(list(_REPORT.items())))))
 
-    # byte-identical, so the repository's CAS reads a re-delivery of one attempt as idempotent
-    # rather than as a conflicting second version of the same evidence
+    # byte-identical, so the repository's compare-and-set permits a re-delivery of one attempt
+    # instead of calling it a conflicting second version of the same evidence
     assert store.get_bytes(object_key=repair_report_key(job_id)) == first
 
 
