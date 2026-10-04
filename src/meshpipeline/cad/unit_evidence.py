@@ -120,6 +120,11 @@ def read_declared_unit(path: str | Path) -> UnitEvidence:
             str(declared.get("detail") or "")
             or f"the uploaded {source.label if source else 'file'} does not record a unit")
     if suffix in (".step", ".stp"):
+        if _faceted(p):
+            # a mesh wrapped as STEP: the unit context is the converter's default, not evidence
+            from meshpipeline.cad.ingest.canonical import _faceted_unit_detail
+
+            return UnitEvidence.unresolved(_faceted_unit_detail(p))
         return _step_evidence(p)
     if suffix in (".iges", ".igs"):
         return _iges_evidence(p)
@@ -131,6 +136,15 @@ def read_declared_unit(path: str | Path) -> UnitEvidence:
         if evidence is not None:
             return evidence
     return UnitEvidence.unresolved(f"{suffix or 'this format'} does not record a unit")
+
+
+def _faceted(path: Path) -> bool:
+    from meshpipeline.cad.ingest.step_facets import is_faceted_step
+
+    try:
+        return is_faceted_step(path) is not None
+    except (OSError, ValueError):
+        return False
 
 
 def parser_applied_unit(path: str | Path) -> LengthUnit:

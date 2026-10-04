@@ -73,9 +73,8 @@ def concat(parts: list[SurfaceMesh]) -> SurfaceMesh:
 
 
 def clean(mesh: SurfaceMesh) -> SurfaceMesh:
-    """Refuse what cannot be meshed from; drop triangles that have collapsed to a line or a point.
-
-    Nothing is moved, merged or re-oriented: the surface stays the one the file describes."""
+    """Refuse what cannot be meshed from, then the SAFE cleanup (`tidy`): nothing it does moves a
+    point or changes the shape."""
     if mesh.n_triangles == 0 or len(mesh.points) == 0:
         raise SurfaceError("the file holds no surface triangles")
     if not np.isfinite(mesh.points).all():
@@ -83,16 +82,156 @@ def clean(mesh: SurfaceMesh) -> SurfaceMesh:
     t = mesh.triangles
     if t.min() < 0 or t.max() >= len(mesh.points):
         raise SurfaceError("the file's faces point at vertices that do not exist")
-    c = mesh.points[t]
+    tidied, _report = tidy(mesh)
+    return tidied
+
+
+@dataclass(frozen=True)
+class TidyReport:
+    """What the safe cleanup changed. Every item leaves the shape exactly as it was."""
+
+    merged_points: int = 0          # corners that sat on the same spot, made one vertex
+    zero_area: int = 0              # triangles collapsed to a line or a point, left out
+    duplicates: int = 0             # second copies of a triangle in the same group, left out
+    turned: int = 0                 # triangles turned to face the same way as their neighbours
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.zero_area or self.duplicates or self.turned)
+
+    def notes(self) -> list[str]:
+        out = []
+        if self.duplicates:
+            out.append(f"{self.duplicates} doubled triangle(s) were left out: second copies of "
+                       "a face, or zero-thickness slivers made of two copies")
+        if self.zero_area:
+            out.append(f"{self.zero_area} zero-area triangle(s) were left out")
+        if self.turned:
+            out.append(f"{self.turned} triangle(s) were turned to face the same way as their "
+                       "neighbours")
+        return out
+
+
+def tidy(mesh: SurfaceMesh) -> tuple[SurfaceMesh, TidyReport]:
+    """The shape-preserving cleanup of a canonical surface, and what it changed.
+
+    1. corners at exactly the same coordinates become one vertex (nothing moves);
+    2. triangles collapsed to a line or a point are left out (they enclose nothing);
+    3. a second copy of a triangle WITHIN ONE GROUP is left out - two regions that share a face
+       (a multi-region interface) keep their copy each;
+    4. triangles are turned so that every edge two of them share is walked in opposite
+       directions - per connected piece, the way the majority already faces wins, so a file that
+       was consistent is left exactly as it was.
+    Nothing is filled, smoothed, cut or moved."""
+    corners = mesh.points[mesh.triangles]
+    pts, inv = np.unique(corners.reshape(-1, 3), axis=0, return_inverse=True)
+    t = inv.reshape(-1, 3).astype(np.int64)
+    merged = int(len(np.unique(mesh.triangles)) - len(pts))
+    group = np.asarray(mesh.group, dtype=np.int64)
+
+    c = pts[t]
     area2 = np.linalg.norm(np.cross(c[:, 1] - c[:, 0], c[:, 2] - c[:, 0]), axis=1)
     keep = (t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2]) & (area2 > 0.0)
-    dropped = int((~keep).sum())
+    zero_area = int((~keep).sum())
     if not keep.any():
         raise SurfaceError("every triangle in the file has zero area")
-    notes = list(mesh.notes)
-    if dropped:
-        notes.append(f"{dropped} zero-area triangle(s) were left out")
-    return SurfaceMesh(mesh.points, t[keep], mesh.group[keep], list(mesh.names), notes)
+    t, group = t[keep], group[keep]
+
+    key = np.c_[np.sort(t, axis=1), group]
+    _, first, copies = np.unique(key, axis=0, return_index=True, return_counts=True)
+    duplicates = int(len(t) - len(first))
+    if duplicates:
+        doubled = first[copies > 1]
+        order = np.argsort(first)
+        first = first[order]
+        t, group = t[first], group[first]
+        # A doubled triangle is either a real face written twice (keep one copy: its edges are
+        # shared with its neighbours) or a zero-thickness sliver of two copies hanging off one
+        # edge (drop both: one copy alone would flap loose). Which one is MEASURED: whichever
+        # leaves fewer open and non-manifold edges.
+        drop = _loose_copies(t, np.searchsorted(first, np.sort(doubled)))
+        if drop.any():
+            duplicates += int(drop.sum())
+            t, group = t[~drop], group[~drop]
+
+    flip = _consistent_flips(t)
+    turned = int(flip.sum())
+    if turned:
+        t = np.where(flip[:, None], t[:, ::-1], t)
+    report = TidyReport(max(merged, 0), zero_area, duplicates, turned)
+    notes = list(mesh.notes) + [n for n in report.notes() if n not in mesh.notes]
+    return SurfaceMesh(pts, t, group, list(mesh.names), notes), report
+
+
+def _loose_copies(t: np.ndarray, kept: np.ndarray) -> np.ndarray:
+    """Of the kept copies of doubled triangles, those that are better gone: dropping the last copy
+    leaves fewer edges used once (open) or more than twice (non-manifold) than keeping it."""
+    drop = np.zeros(len(t), dtype=bool)
+    if len(kept) == 0:
+        return drop
+    e = np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1)
+    _, inv, counts = np.unique(e, axis=0, return_inverse=True, return_counts=True)
+    use = counts.copy()
+    edge_of = inv.reshape(3, -1).T                      # (m, 3) edge ids of each triangle
+
+    def defects(c: np.ndarray) -> int:
+        return int(((c == 1) | (c > 2)).sum())
+
+    for i in kept.tolist():
+        ids = edge_of[i]
+        if defects(use[ids] - 1) < defects(use[ids]):
+            drop[i] = True
+            use[ids] -= 1
+    return drop
+
+
+def _consistent_flips(t: np.ndarray) -> np.ndarray:
+    """Which triangles to turn so that neighbours agree, across edges exactly two triangles share.
+    Per connected piece the smaller set is turned. Edges shared by three or more (a junction of
+    regions) are not walked: there is no single right answer across them."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import breadth_first_order
+
+    m = len(t)
+    he = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    face = np.tile(np.arange(m), 3)
+    key = np.sort(he, axis=1)
+    order = np.lexsort((key[:, 1], key[:, 0]))
+    ks = key[order]
+    new_group = np.r_[True, np.any(ks[1:] != ks[:-1], axis=1)]
+    starts = np.flatnonzero(new_group)
+    sizes = np.diff(np.r_[starts, len(ks)])
+    pair = starts[sizes == 2]
+    a, b = order[pair], order[pair + 1]
+    fa, fb = face[a], face[b]
+    # walked the same way along the shared edge -> the two triangles disagree
+    disagree = np.all(he[a] == he[b], axis=1)
+    if not disagree.any():
+        return np.zeros(m, dtype=bool)
+    # weight 2 = the pair disagrees, 1 = it agrees (0 would vanish from a sparse matrix)
+    graph = coo_matrix((np.r_[disagree, disagree].astype(np.int8) + 1,
+                        (np.r_[fa, fb], np.r_[fb, fa])), shape=(m, m)).tocsr()
+    flip = np.zeros(m, dtype=bool)
+    seen = np.zeros(m, dtype=bool)
+    for root in np.flatnonzero(np.diff(graph.indptr) > 0):
+        if seen[root]:
+            continue
+        order_c, pred = breadth_first_order(graph, int(root), directed=False,
+                                            return_predecessors=True)
+        seen[order_c] = True
+        nodes = order_c[1:]
+        if len(nodes) == 0:
+            continue
+        parents = pred[nodes]
+        parity = (np.asarray(graph[nodes, parents]).ravel() == 2).tolist()
+        state = {int(root): False}
+        for node, parent, odd in zip(nodes.tolist(), parents.tolist(), parity):
+            state[node] = state[parent] ^ odd
+        piece = np.fromiter(state.keys(), dtype=np.int64, count=len(state))
+        turn = np.fromiter(state.values(), dtype=bool, count=len(state))
+        # the majority of the piece keeps its facing
+        flip[piece] = ~turn if turn.sum() * 2 > len(turn) else turn
+    return flip
 
 
 def safe_solid_name(name: str) -> str:

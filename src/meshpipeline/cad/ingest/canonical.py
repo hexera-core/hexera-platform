@@ -9,6 +9,8 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from meshpipeline.contracts.intake_formats import (
     CANONICAL_SUFFIX,
     NATIVE_UNKNOWN_TOOL,
@@ -88,6 +90,10 @@ def canonicalise(src, workdir=None, *, stem: str | None = None) -> CanonicalGeom
 
     if key == "stl":
         return _canonical_stl(src, workdir, stem)
+    if key == "step":
+        faceted = _faceted_census(src)
+        if faceted is not None:
+            return _faceted_step(src, workdir / f"{stem}.stl", faceted)
     if fmt.canonical:
         path = src
         if format_for_suffix(src.suffix) is not fmt:
@@ -107,6 +113,70 @@ def canonicalise(src, workdir=None, *, stem: str | None = None) -> CanonicalGeom
         result = _surface_to_stl(src, key, dest)
     _write_sidecar(result, declared_unit=_source_unit(src, fmt))
     return result
+
+
+def _faceted_census(src: Path):
+    from meshpipeline.cad.ingest.step_facets import is_faceted_step
+
+    try:
+        return is_faceted_step(src)
+    except (OSError, ValueError):
+        return None                  # unreadable here: OpenCASCADE has the last word, as before
+
+
+def _faceted_step(src: Path, dest: Path, census) -> CanonicalGeometry:
+    """A STEP that is a triangle mesh (a scan or an STL a converter wrapped as STEP) goes down
+    the SURFACE road: its flat triangles become the canonical STL, exactly, in the file's own
+    numbers. On the CAD road every facet would be a face - an opening candidate, a region to
+    separate - and OpenCASCADE takes minutes over a hundred thousand of them."""
+    from meshpipeline.cad.ingest import limits
+    from meshpipeline.cad.ingest.step_facets import (
+        FacetedReadError,
+        read_faceted,
+        read_faceted_occ,
+    )
+    from meshpipeline.cad.ingest.surface import (
+        SurfaceError,
+        SurfaceMesh,
+        clean,
+        stats,
+        write_canonical_stl,
+    )
+
+    try:
+        try:
+            pts, tris = read_faceted(src)
+        except FacetedReadError:
+            pts, tris = read_faceted_occ(src)
+        mesh = clean(SurfaceMesh(pts, tris))
+    except (FacetedReadError, SurfaceError, limits.ReadLimitExceeded) as exc:
+        raise IngestError(f"the faceted STEP file could not be read ({exc})") from exc
+    if mesh.n_triangles > limits.MAX_TRIANGLES:
+        raise IngestError(limits.too_many_triangles())
+    write_canonical_stl(mesh, dest)
+    result = CanonicalGeometry(
+        path=dest, kind=GeometryKind.surface, source_format="step", converted=True,
+        notes=(f"the STEP file is a faceted mesh ({census.describe()}), so it is read as the "
+               "triangle surface it is",) + tuple(mesh.notes),
+        stats=stats(mesh))
+    _write_sidecar(result, declared_unit={"resolved": False, "detail": _faceted_unit_detail(src)})
+    return result
+
+
+def _faceted_unit_detail(src: Path) -> str:
+    """Why a faceted STEP's unit is asked: the label is the converter's, not the designer's - a
+    mesh has no unit to carry, so whatever the converter wrote is a default (a metre header over
+    millimetre numbers makes a 300 mm aorta 300 m long)."""
+    try:
+        from meshpipeline.cad.unit_evidence import _step_evidence
+
+        said = _step_evidence(src)
+        label = said.unit.value if said.resolved and said.unit is not None else ""
+    except Exception:  # noqa: BLE001 - the detail is a courtesy
+        label = ""
+    states = f" (it states {label})" if label else ""
+    return (f"the STEP file is a faceted mesh: its unit label{states} was written by the "
+            "program that converted it, so it is not taken as the part's unit")
 
 
 def surface_to_stl(src, dest) -> CanonicalGeometry:
@@ -178,6 +248,11 @@ def _canonical_stl(src: Path, workdir: Path, stem: str) -> CanonicalGeometry:
     follow (leading blanks, upper-case keywords)."""
     named_stl = src.suffix.lower() == ".stl"
     if _stl_reads_as_is(src):
+        tidied = _tidied_stl(src, workdir / f"{stem}.canonical.stl" if named_stl
+                             else workdir / f"{stem}.stl")
+        if tidied is not None:
+            _write_sidecar(tidied)
+            return tidied
         path = src
         if not named_stl:
             path = workdir / f"{stem}.stl"       # an STL named as something else
@@ -203,6 +278,61 @@ def _canonical_stl(src: Path, workdir: Path, stem: str) -> CanonicalGeometry:
                                stats=result.stats)
     _write_sidecar(result)
     return result
+
+
+#: Above these an uploaded STL is passed on unchecked, as it always was: the safe cleanup reads
+#: every triangle, and a file this large is better left to the engines than held in memory twice.
+_TIDY_MAX_BINARY_TRIANGLES = 5_000_000
+_TIDY_MAX_ASCII_BYTES = 300 * 1024 * 1024
+
+
+def _tidied_stl(src: Path, dest: Path) -> CanonicalGeometry | None:
+    """The uploaded STL after the safe cleanup (surface.tidy) - or None when the cleanup changes
+    nothing, so a clean file stays the very bytes the user uploaded. An ASCII file keeps its
+    solids under their own names; a binary one stays binary."""
+    import struct
+
+    from meshpipeline.cad.ingest.surface import (
+        SurfaceError,
+        read_stl,
+        safe_solid_name,
+        stats,
+        tidy,
+        write_ascii_solids,
+        write_binary_stl,
+    )
+
+    size = src.stat().st_size
+    with src.open("rb") as fh:
+        head = fh.read(84)
+    binary = len(head) == 84 and 84 + 50 * struct.unpack("<I", head[80:84])[0] == size
+    if binary and (size - 84) // 50 > _TIDY_MAX_BINARY_TRIANGLES:
+        return None
+    if not binary and size > _TIDY_MAX_ASCII_BYTES:
+        return None
+    try:
+        mesh, report = tidy(read_stl(src))
+    except (SurfaceError, ValueError, MemoryError):
+        return None
+    if not report.changed:
+        return None
+    corners = mesh.corners()
+    if binary:
+        write_binary_stl(dest, corners)
+        regions: tuple[str, ...] = ()
+    else:
+        solids: dict = {}
+        for gi in sorted(set(mesh.group.tolist())):
+            raw = mesh.names[gi] if 0 <= gi < len(mesh.names) else ""
+            name = safe_solid_name(raw) or "surface"
+            prev = solids.get(name)
+            part = corners[mesh.group == gi]
+            solids[name] = part if prev is None else np.vstack([prev, part])
+        write_ascii_solids(dest, solids)
+        regions = tuple(n for n in solids) if len(solids) > 1 else ()
+    return CanonicalGeometry(path=dest, kind=GeometryKind.surface, source_format="stl",
+                             converted=True, regions=regions,
+                             notes=tuple(report.notes()), stats=stats(mesh))
 
 
 def _ascii_solid_names(path: Path) -> tuple[str, ...]:

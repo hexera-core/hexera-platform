@@ -2504,6 +2504,45 @@
   "roots": []
  },
  {
+  "context": "cad/ingest/step_facets.py::census::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/step_facets.py",
+  "qualname": "census",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_FACETED_BREP",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/step_facets.py::census::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/step_facets.py",
+  "qualname": "census",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_ASSEMBLY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/step_facets.py::read_faceted::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/step_facets.py",
+  "qualname": "read_faceted",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ASSEMBLY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/ingest/surface.py::_looks_ascii::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/ingest/surface.py",
   "qualname": "_looks_ascii",
