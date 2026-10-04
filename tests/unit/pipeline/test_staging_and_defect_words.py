@@ -116,6 +116,20 @@ def test_our_staging_failure_goes_to_the_infrastructure_replay(tmp_path, monkeyp
     assert not any("from your file" in n for n in notes), "our failure was told as the file's"
 
 
+def test_a_replayed_retry_attempt_does_not_copy_its_workspace_onto_itself(tmp_path, monkeypatch):
+    # the replay comes back to the workspace it left (state's openfoam_workspace IS this attempt's
+    # directory): carrying files from it onto itself would raise before staging could run again
+    import meshpipeline.settings.runtime as rtcfg
+    monkeypatch.setattr(rtcfg, "WORKSPACE_BASE", tmp_path / "workspaces")
+    ws = tmp_path / "workspaces" / "j" / "generation_0" / "attempt_2"
+    ws.mkdir(parents=True)
+    (ws / "input.stl").write_text("solid s\nendsolid s\n")
+    state = {"job_id": "j", "engine": "vmtk", "retry_count": 1, "builder_mode": "retry",
+             "geometry": {}, "openfoam_workspace": str(ws), "intake_patches": []}
+    att = attempt_mod.prepare(state, job_id="j", mode="retry")
+    assert att.workspace == ws and (ws / "input.stl").read_text() == "solid s\nendsolid s\n"
+
+
 def test_our_staging_failure_is_said_as_ours():
     from meshpipeline.contracts.failure_cause import describe
     what, way_on = describe("run_infrastructure", {

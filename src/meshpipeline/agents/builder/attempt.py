@@ -291,6 +291,13 @@ def staging_failure(workspace: Path):
     return refusal if refusal is not None and refusal.gate == STAGING_GATE else None
 
 
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
 def _carry_forward(prev: Path, workspace: Path, engine: str, job_id: str) -> None:
     from meshpipeline.agents.builder.tools import get_spec_run_files
 
@@ -359,7 +366,10 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
         # valid retry mesh.
         request_txt, review_brief_txt = _context_files(workspace, state, source_path)
         prev = Path(state.get("openfoam_workspace", ""))
-        if prev.is_dir():
+        # A REPLAY of this same attempt (graph.node_infra_retry, after a failure on our side)
+        # comes back to the workspace it left: what it carried is already here, and copying it
+        # onto itself would raise (shutil.SameFileError) before staging could run again.
+        if prev.is_dir() and not _same_dir(prev, workspace):
             _carry_forward(prev, workspace, engine, job_id)
         _ensure_surface(workspace, geometry, source_path, engine, job_id)
         if source_path and Path(source_path).exists():
