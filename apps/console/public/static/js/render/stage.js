@@ -19,6 +19,8 @@ import { prettyText } from "../core/engineering_text.js";
 import { SENT_BACK, attemptsLabel, laneLabel, reasoningHeader } from "../core/events.js";
 import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestion, followUnit, formHtml, markConfirmed,
   readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
+// the card keeps the user's answers through a re-draw and says back what they changed
+import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -123,11 +125,16 @@ export const Stage = {
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
     const p=d.proposal||{},pics=d.pictures||[];
+    // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
+    this._gcServed=servedProposal(null,p);
     // WHAT WAS TYPED ON THE CARD BEFORE outlives its re-draw (the model's labels arriving): a
-    // name or role the user set, a typed diameter, the kind, the flow, the unit box - read before
-    // the new form is built, so the unit box is drawn with the user's unit
+    // name or role the user set, a typed diameter, the kind, the flow, the far-field box, the
+    // ground, the unit box - read before the new form is built, so it is drawn with the user's
+    // answers. Only what the user CHANGED is carried: an answer they left as drawn takes the
+    // model's word, where it used to put the measuring step's back over it.
     const was=this._gcEl&&!this._gcEl.querySelector('.gc-done')?this._gcTyped(this._gcEl,this._gcP):null;
     if(was&&was.unit){p.unit=was.unit;p.unit_basis='chosen';p.unit_touched=true;}
+    if(was&&Object.keys(was.answers).length){p.user_set=was.answers;Object.assign(p,was.answers);}
     const hero=pics.find(x=>x.name==='iso')||pics.find(x=>x.name!=='overview')||pics[0];
     const thumbs=pics.filter(x=>x!==hero&&x.name!=='overview').slice(0,8).map(x=>
       `<img class="gc-thumb" src="${x.url}" alt="${esc(x.name)}" title="${esc(x.name)}" loading="lazy">`).join('');
@@ -144,7 +151,7 @@ export const Stage = {
     const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
     this.col().appendChild(g);this._gcEl=g;this._gcP=p;
     if(was)this._gcRestore(g,was,p);
-    applyFlow(g);bindUnit(g,p);bindAxis(g,p);
+    applyFlow(g);bindUnit(g,p);bindAxis(g,p);noteDrawn(g);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
     btn.onclick=async()=>{
@@ -153,7 +160,7 @@ export const Stage = {
       const body=readForm(g,p);
       btn.disabled=true;btn.textContent='Confirming…';
       try{
-        await confirm(body);
+        await confirm(body,editsLine(this._gcServed,body,p));     // the chat says back what the user changed
         markConfirmed(g);
         g.querySelector('.gc-card').classList.add('ok');
       }catch(e){
@@ -171,12 +178,13 @@ export const Stage = {
       // each field on its own: a row whose role was changed keeps the model's name when it lands
       const r={};if(name!==undefined&&name!==(o.name||''))r.name=name;if(role!==undefined&&role!==o.role)r.role=role;if(dia)r.dia=dia;
       if(Object.keys(r).length)rows[id]=r;});
-    return {kind:v('.gc-kind'),flow:v('.gc-flow'),unit:p&&p.unit_touched?p.unit:undefined,rows,
+    // the kind, the flow, the far field and the ground: only those the user changed, on top of
+    // what they changed before an earlier re-draw
+    return {answers:{...((p&&p.user_set)||{}),...changedAnswers(g)},unit:p&&p.unit_touched?p.unit:undefined,rows,
             // the flow axis the user turned, and a reference length they typed (as typed, in the file's units)
             axis:p&&p.flow_axis_touched?p.flow_axis:undefined,ref:p&&p.reference_length_typed?v('.gc-ref'):undefined};},
   _gcRestore(g,was,p){
     const set=(sel,val)=>{const el=g.querySelector(sel);if(el&&val!==undefined)el.value=val;};
-    set('.gc-kind',was.kind);set('.gc-flow',was.flow);
     if(was.ref!==undefined){set('.gc-ref',was.ref);p.reference_length_typed=true;}
     if(was.axis)followAxis(g,p,was.axis);        // an untyped reference length follows the user's axis
     Object.entries(was.rows).forEach(([id,r])=>{const tr=g.querySelector(`.gc-table tr[data-id="${id}"]`);if(!tr)return;
@@ -189,6 +197,7 @@ export const Stage = {
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};
+    if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
     followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
