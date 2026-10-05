@@ -116,9 +116,6 @@ HOME_TURF = (
     TurfRow("closed", "is", False, "weak",
             "A solid that is not closed cannot become a region of its own; gaps or overlaps between "
             "solids keep the interfaces from matching."),
-    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
-            "Solid walls thinner than about two cells can vanish from their region or leak into the "
-            "fluid."),
 )
 
 

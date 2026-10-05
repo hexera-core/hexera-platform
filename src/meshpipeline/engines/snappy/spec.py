@@ -138,7 +138,8 @@ HOME_TURF = (
             "It lays the ground plane as a wall under the body (a car on a road).", flow="external"),
     TurfRow("thin_wall_fraction", ">", 0.3, "weak",
             "Much of this body is a thin hollow shell: walls thinner than a cell are smoothed over and "
-            "near-wall layers cover only about half of the wall (a hollow car shell measured 53%)."),
+            "near-wall layers cover only about half of the wall (a hollow car shell measured 53%).",
+            flow="external"),
     TurfRow("cells_across_at_budget", "<", 12.0, "weak",
             "The narrowest passage gets fewer than 12 cells across within the cell budget: the "
             "mesh needs a local refinement or a bigger budget to resolve it.", flow="internal"),
