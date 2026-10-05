@@ -261,9 +261,9 @@ GOLDEN_SNAPPY_DICT = (
     '\ncastellatedMesh true; snap true; addLayers true;\n'
     'geometry { body.stl { type triSurfaceMesh; name body; } }\n'
     'castellatedMeshControls { maxLocalCells 2000000; maxGlobalCells 2000000; minRefinementCells 10;\n'
-    '  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( { file "body.eMesh"; level 4; } );\n'
-    '  refinementSurfaces { body { level (3 3); } } resolveFeatureAngle 35;\n'
-    '  refinementRegions { body { mode distance; levels ((0.0625 3) (0.25 2)); } }\n'
+    '  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( { file "body.eMesh"; level 5; } );\n'
+    '  refinementSurfaces { body { level (4 4); } } resolveFeatureAngle 35;\n'
+    '  refinementRegions { body { mode distance; levels ((0.0625 4) (0.25 3)); } }\n'
     '  locationInMesh (-3.78 -2.86 -2.86); allowFreeStandingZoneFaces true; }\n'
     'snapControls { nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;\n'
     '  implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }\n'
@@ -283,13 +283,17 @@ def test_no_thin_features_authors_the_byte_identical_historical_dict(tmp_path):
     # Captured from the renderer BEFORE the thin-feature layer policy existed (fixed inputs).
     # A geometry with no thin features - policy None, no counts, no overrides - must author
     # EXACTLY this case: the policy is an addition at thin features, never a drift elsewhere.
+    # Re-captured once when the background grid became cubic (snappy_runner.background_grid):
+    # the 11 x 7 x 7 box was 82 x 83 x 83 (cells 1.6x longer along x) at level 3; it is now
+    # 66 x 42 x 42 cubic cells at level 4 - the same 0.0104 wall cell the recommender intends,
+    # on every axis instead of only two.
     ws = _workspace(tmp_path)
     summary = R.render_snappy_case(
         ws, surface_name="body", feature_file="body.eMesh", analysis=ANALYSIS,
         recommendation=REC, domain_min=[-4.0, -3.0, -3.0], domain_max=[7.0, 4.0, 4.0],
         strategy=STRATEGY)
     assert (ws / "system" / "snappyHexMeshDict").read_text() == GOLDEN_SNAPPY_DICT
-    assert summary == {"divisions": [82, 83, 83], "surface_level": [3, 3], "feature_level": 4,
+    assert summary == {"divisions": [66, 42, 42], "surface_level": [4, 4], "feature_level": 5,
                        "location_in_mesh": [-3.78, -2.86, -2.86], "max_cells": 2000000,
                        "n_layers": 5, "domain_min": [-4.0, -3.0, -3.0],
                        "domain_max": [7.0, 4.0, 4.0]}, (
