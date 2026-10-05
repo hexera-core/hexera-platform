@@ -72,3 +72,29 @@ def test_the_new_class_is_evidence_and_never_a_deliverable():
     assert ap.required_ready("snappy", [label]) is False
     assert ap.optional_warnings([ap.REQUIRED_BUNDLE_CLASS, ap.REQUIRED_VIEWER_CLASS,
                                  "mesh", label]) == []
+
+
+def test_the_repaired_cad_label_matches_the_model():
+    import ast as _ast
+    from pathlib import Path
+
+    from meshpipeline.persistence.models import ArtifactType
+
+    source = (REPO / "alembic" / "versions" / "0014_repaired_cad_artifact.py").read_text()
+    values = {n.targets[0].id: n.value.value for n in _ast.parse(source).body
+              if isinstance(n, _ast.Assign) and isinstance(n.targets[0], _ast.Name)
+              and isinstance(n.value, _ast.Constant)}
+    assert values["_LABEL"] == ArtifactType.repaired_cad.value
+    assert Path(REPO / "alembic" / "versions" / "0014_repaired_cad_artifact.py").exists()
+
+
+def test_the_repaired_cad_is_a_deliverable_but_never_a_required_one():
+    from meshpipeline.application import artifact_policy as ap
+    from meshpipeline.persistence.models import ArtifactType
+
+    label = ArtifactType.repaired_cad.value
+    # most jobs mesh the upload as it arrived and have no repaired file to hand back, so a job
+    # without one is not short a deliverable
+    assert not ap.is_required_class("snappy", label)
+    assert ap.required_ready("snappy", [label]) is False
+    assert label not in ap.OPTIONAL_CLASSES

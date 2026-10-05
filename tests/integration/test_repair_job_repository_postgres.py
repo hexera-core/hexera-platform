@@ -392,3 +392,64 @@ async def test_deleting_a_repair_job_takes_its_decisions_with_it(db):
     await db.execute(delete(CadRepairJob).where(CadRepairJob.id == job.id))
     await db.commit()
     assert await repo.decisions_for_job(db, job.id) == []
+
+
+# WHAT THE SERVICE IS DELIVERING
+
+
+async def test_throughput_counts_delivery_and_tells_the_waits_apart(db):
+    repo = RepairJobRepository()
+
+    # one delivered with a mesh, one waiting on the customer, one blocked, one still ours
+    delivered = await _job(db, _A)
+    for target in (S.inspecting, S.awaiting_strategy, S.meshing, S.mesh_review, S.delivered):
+        assert await repo.transition(db, delivered.id, target) == TransitionResult.applied
+
+    waiting = await _job(db, _A)
+    await repo.transition(db, waiting.id, S.waiting_customer, blocked_reason="no units")
+
+    blocked = await _job(db, _B)
+    await repo.transition(db, blocked.id, S.waiting_customer, blocked_reason="no units")
+    await repo.transition(db, blocked.id, S.customer_blocked, blocked_reason="wrong part")
+
+    await _job(db, _A)      # received: ours to move
+    await db.commit()
+
+    out = await repo.service_throughput(db)
+
+    assert out["jobs_total"] == 4
+    assert out["delivered_with_mesh"] == 1 and out["delivered_repair_only"] == 0
+    assert out["delivery_rate"] == 0.25
+    # A JOB WAITING ON A CUSTOMER IS NOT LATE BECAUSE WE ARE SLOW: the buckets are kept apart
+    assert out["awaiting_human"] == 1
+    assert out["blocked"] == 1 and out["blocked_rate"] == 0.25
+    assert out["in_flight"] == 1
+    assert out["by_state"]["delivered"] == 1
+    # it took SOME measurable time, counted from the row's own timestamps
+    assert out["mean_seconds_to_delivery"] is not None
+
+
+async def test_throughput_reports_no_rate_rather_than_zero_percent_of_nothing(db):
+    out = await RepairJobRepository().service_throughput(db)
+    # "we delivered 0% of nothing" has misled every dashboard that ever printed it
+    assert out["jobs_total"] == 0
+    assert out["delivery_rate"] is None and out["blocked_rate"] is None
+    assert out["mean_seconds_to_delivery"] is None
+
+
+async def test_throughput_counts_operator_effort_as_decisions_not_minutes(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor="ana")
+    await repo.record_decision(db, repair_job_id=job.id, decision="retry", actor="ana")
+    await repo.record_attempt(db, repair_job_id=job.id, mode="inspect", input_sha256=_SHA_IN)
+    await db.commit()
+
+    out = await repo.service_throughput(db)
+
+    # NOT minutes: nothing here times an operator, so the field is named for what it counts
+    assert out["operator_decisions_total"] == 2
+    assert out["jobs_touched_by_an_operator"] == 1
+    assert out["retry_decisions"] == 1
+    assert out["attempts_total"] == 1 and out["jobs_with_attempts"] == 1
+    assert "operator_minutes" not in out

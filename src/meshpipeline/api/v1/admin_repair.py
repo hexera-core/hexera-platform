@@ -134,6 +134,14 @@ def _decision_row(d) -> dict:
     }
 
 
+def _latest_report(attempts) -> dict:
+    """The most recent attempt's report, which is the evidence advice rests on."""
+    for attempt in reversed(list(attempts or [])):
+        if isinstance(attempt.report, dict) and attempt.report:
+            return attempt.report
+    return {}
+
+
 def _parse(job_id: str) -> uuid.UUID:
     try:
         return uuid.UUID(job_id)
@@ -170,6 +178,18 @@ async def read_queue(status: str = "", operator: str = "", unassigned: bool = Fa
                        "unassigned": unassigned, "limit": bounded}}
 
 
+@router.get("/throughput", dependencies=[Depends(admin_dep)])
+async def read_throughput() -> dict:
+    """What the service is delivering, counted from the same rows the queue is worked from.
+
+    Deliberately NOT a time-windowed report. A window is a product decision - last 7 days? since
+    launch? - and getting it wrong silently is how a dashboard comes to disagree with the queue
+    beside it. These are the lifetime counts; a window belongs in whatever asks for one.
+    """
+    async with get_db() as db:
+        return {"throughput": await repo().service_throughput(db)}
+
+
 @router.get("/jobs/{job_id}", dependencies=[Depends(admin_dep)])
 async def read_job(job_id: str) -> dict:
     jid = _parse(job_id)
@@ -179,10 +199,26 @@ async def read_job(job_id: str) -> dict:
             raise HTTPException(status_code=404, detail="repair job not found")
         attempts = await repo().attempts_for_job(db, jid)
         decisions = await repo().decisions_for_job(db, jid)
+    # THE SHADOW RECOMMENDATION, computed from the stored report on every read. It is advice: a
+    # pure function with no session and no repository, so there is no path by which it can move
+    # the job - and it is deliberately NOT persisted as a prediction, because recomputing it from
+    # the same evidence is reproducible while a stored guess is not checkable. When a model takes
+    # this over, its output WILL have to be stored, because a model's answer is not a function of
+    # the report alone.
+    from meshpipeline.cad.repair.triage import recommend
+
+    recommendation = recommend(
+        repair_status=job.repair_status,
+        # from the rows already read, never through the job's lazy relationship: a relationship
+        # touched outside its session is how an async read turns into a confusing greenlet error
+        report=_latest_report(attempts),
+        target_engine=job.target_engine)
+
     return {
         "job": _job_row(job),
         "attempts": [_attempt_row(a) for a in attempts],
         "decisions": [_decision_row(d) for d in decisions],
+        "recommendation": recommendation.to_dict(),
         # WHAT THIS JOB MAY DO NEXT, from the one transition table. A screen that composed its own
         # list of buttons would drift from what the database will actually accept.
         "available_decisions": sorted(

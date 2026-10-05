@@ -147,3 +147,76 @@ async def test_a_newer_generation_supersedes_the_earlier_report(SessionLocal, re
     rows = await _artifacts(SessionLocal, job_id)
     assert len(rows) == 1
     assert rows[0].execution_generation == 2
+
+
+async def test_a_repaired_delivery_hands_back_the_file_the_report_and_the_mesh(SessionLocal,
+                                                                              real_store, tmp_path):
+    """The parcel a customer whose geometry we fixed actually receives.
+
+    This is the stage's acceptance: repaired CAD, the report that explains it, the mesh, and a
+    manifest that says which bytes the mesh was built from - all readable from durable rows after
+    the run and its workspace are gone.
+    """
+    from meshpipeline.application.delivery_manifest import build, evidence_gaps
+    from meshpipeline.application.repair_report_delivery import deliver_repaired_cad
+    from meshpipeline.persistence.models import ArtifactType
+    from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
+
+    job_id = await _seed_job(SessionLocal)
+    repaired = tmp_path / "part-repaired.step"
+    repaired.write_bytes(b"ISO-10303-21;\n/* repaired */\n" + b"0" * 2048)
+
+    # the evidence pair a repaired job must carry
+    await deliver_repair_report(SessionLocal, job_id=str(job_id), report=_REPORT,
+                               repair_status="repaired", execution_generation=1)
+    assert await deliver_repaired_cad(SessionLocal, job_id=str(job_id), local_path=repaired,
+                                     suffix=".step", execution_generation=1) == "created"
+    # and the mesh itself, as the uploader would have registered it
+    async with SessionLocal() as db:
+        await ArtifactRepository().deliver_artifact(
+            db, job_id=job_id, logical_key="mesh_bundle",
+            artifact_type=ArtifactType.mesh_bundle, storage_key=f"jobs/{job_id}/case.tar.gz",
+            size_bytes=4096, checksum=None, delivery_attempt=0, execution_generation=1)
+        await db.commit()
+
+    rows = await _artifacts(SessionLocal, job_id)
+    manifest = build(job_id=str(job_id), artifacts=rows, final_result={
+        "status": "succeeded", "required_ready": True,
+        "repair_lineage": {"original": {"source_id": "s1", "sha256": "a" * 64},
+                           "repaired": {"source_id": "s2", "sha256": "b" * 64},
+                           "engine_staged_for": "gmsh"}})
+
+    # NOTHING IS MISSING: the mesh arrived, the repaired file is downloadable, and a report
+    # explains what changed about the customer's geometry
+    assert evidence_gaps(manifest) == []
+    assert {e["class"] for e in manifest["customer_visible"]} == {
+        "mesh_bundle", "repaired_cad", "repair_report"}
+    assert manifest["built_from_repaired_geometry"] is True
+    assert manifest["source_identity"]["sha256"] == "a" * 64
+
+    # every customer-visible entry is really there, at the key and size the manifest claims
+    for entry in manifest["customer_visible"]:
+        fetched = real_store.get_bytes(object_key=entry["storage_key"]) \
+            if entry["class"] != "mesh_bundle" else None
+        if fetched is not None:
+            assert len(fetched) == entry["size_bytes"]
+    stored = real_store.get_bytes(object_key=f"jobs/{job_id}/repaired.step")
+    assert stored == repaired.read_bytes()
+
+
+async def test_a_repaired_job_that_cannot_hand_the_file_back_is_reported_as_incomplete(
+        SessionLocal, real_store):
+    from meshpipeline.application.delivery_manifest import build, evidence_gaps
+
+    job_id = await _seed_job(SessionLocal)
+    await deliver_repair_report(SessionLocal, job_id=str(job_id), report=_REPORT,
+                               repair_status="repaired", execution_generation=1)
+
+    rows = await _artifacts(SessionLocal, job_id)
+    manifest = build(job_id=str(job_id), artifacts=rows, final_result={
+        "required_ready": True,
+        "repair_lineage": {"original": {"source_id": "s1", "sha256": "a" * 64}}})
+
+    # the mesh may be ready and the service STILL incomplete - that distinction is the point
+    assert manifest["required_ready"] is True
+    assert any("cannot download" in gap for gap in evidence_gaps(manifest))

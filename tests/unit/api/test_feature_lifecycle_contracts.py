@@ -160,6 +160,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # people working it are this service's own staff and the queue is one list over every
         # customer's repair jobs. Its writes name the operator, who the shared credential cannot.
         ("GET", "/api/v1/admin/repair/queue"),
+        ("GET", "/api/v1/admin/repair/throughput"),
         ("GET", "/api/v1/admin/repair/jobs/{job_id}"),
         ("POST", "/api/v1/admin/repair/jobs/{job_id}/assign"),
         ("POST", "/api/v1/admin/repair/jobs/{job_id}/decide"),

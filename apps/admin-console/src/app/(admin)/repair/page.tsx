@@ -3,8 +3,11 @@ import Link from "next/link";
 import { Alert, EmptyState, Panel, StatRow } from "@/app/_components/panel";
 import {
   compactDate,
+  formatDuration,
+  formatRate,
   groupRepairQueue,
   readRepairQueue,
+  readRepairThroughput,
   repairStatusLabel,
   type RepairJobRow,
 } from "@/lib/admin/read";
@@ -71,7 +74,10 @@ export default async function RepairQueuePage({
   const operator = typeof params.operator === "string" ? params.operator : "";
   const unassigned = params.unassigned === "true";
 
-  const queue = await readRepairQueue({ limit: 100, operator, status, unassigned });
+  const [queue, throughput] = await Promise.all([
+    readRepairQueue({ limit: 100, operator, status, unassigned }),
+    readRepairThroughput(),
+  ]);
   const jobs = queue.data?.jobs ?? [];
   const groups = groupRepairQueue(jobs);
 
@@ -84,6 +90,35 @@ export default async function RepairQueuePage({
     <>
       <h1>Repair</h1>
       {queue.error ? <Alert>{queue.error}</Alert> : null}
+
+      {throughput.data ? (
+        <Panel
+          title="What the service is delivering"
+          heading="counted from the same rows this queue is worked from"
+        >
+          <StatRow
+            stats={[
+              { label: "Jobs", value: String(throughput.data.throughput.jobs_total) },
+              {
+                label: "Delivered",
+                value: formatRate(throughput.data.throughput.delivery_rate),
+              },
+              {
+                label: "Blocked",
+                value: formatRate(throughput.data.throughput.blocked_rate),
+              },
+              {
+                label: "Mean time to delivery",
+                value: formatDuration(throughput.data.throughput.mean_seconds_to_delivery),
+              },
+              {
+                label: "Operator decisions",
+                value: String(throughput.data.throughput.operator_decisions_total),
+              },
+            ]}
+          />
+        </Panel>
+      ) : null}
 
       <Panel title="The queue right now">
         <StatRow

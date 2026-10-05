@@ -5,6 +5,7 @@ import {
   compactDate,
   readRepairJob,
   repairDecisionLabel,
+  repairRouteLabel,
   repairStatusLabel,
   REPAIR_DECISIONS_NEEDING_REASON,
   type RepairAttemptRow,
@@ -121,7 +122,8 @@ export default async function RepairJobPage({
     );
   }
 
-  const { attempts, available_decisions: available, decisions, job } = detail.data;
+  const { attempts, available_decisions: available, decisions, job, recommendation } =
+    detail.data;
 
   return (
     <>
@@ -158,6 +160,40 @@ export default async function RepairJobPage({
           <button type="submit">{job.assigned_operator ? "Release it" : "Claim it"}</button>
         </form>
       </Panel>
+
+      {recommendation ? (
+        <Panel
+          title="Suggestion"
+          heading={`advice only — ${recommendation.advisor}, not applied to this job`}
+        >
+          {/* SHOWN BESIDE THE EVIDENCE, NOT INSTEAD OF IT. An operator should be able to
+              disagree with the reasoning rather than only the conclusion - which is also what
+              makes a disagreement useful later as a training signal. */}
+          <StatRow
+            stats={[
+              { label: "Suggests", value: repairRouteLabel(recommendation.route) },
+              {
+                label: "Confidence",
+                value:
+                  recommendation.route === "abstain"
+                    ? "—"
+                    : `${Math.round(recommendation.confidence * 100)}%`,
+              },
+              { label: "Profile", value: recommendation.profile || "—" },
+            ]}
+          />
+          {recommendation.abstain_reason ? (
+            <EmptyState note={`No suggestion: ${recommendation.abstain_reason}`} />
+          ) : null}
+          {recommendation.reasons.length > 0 ? (
+            <ul>
+              {recommendation.reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          ) : null}
+        </Panel>
+      ) : null}
 
       <Panel title="Decide" heading="What this job may do next, from the transition table">
         {available.length === 0 ? (

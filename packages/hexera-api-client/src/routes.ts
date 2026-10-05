@@ -40,6 +40,7 @@ export const hexeraApiRoutes = {
     const suffix = params.toString();
     return `${HEXERA_API_PREFIX}/admin/repair/queue${suffix ? `?${suffix}` : ""}`;
   },
+  adminRepairThroughput: `${HEXERA_API_PREFIX}/admin/repair/throughput`,
   adminRepairJob: (jobId: PathSegment): ApiPath =>
     `${HEXERA_API_PREFIX}/admin/repair/jobs/${segment(jobId)}`,
   adminRepairJobAssign: (jobId: PathSegment): ApiPath =>

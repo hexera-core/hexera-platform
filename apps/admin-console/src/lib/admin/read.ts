@@ -241,12 +241,39 @@ export type RepairDecisionRow = {
   reason: string | null;
 };
 
+export type RepairRecommendation = {
+  abstain_reason: string;
+  advisor: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  profile: string;
+  reasons: string[];
+  route: string;
+  // Always true for now. A screen that renders this as anything but advice is contradicting the
+  // payload - which is why the flag travels with it rather than being assumed by the reader.
+  shadow: boolean;
+};
+
 export type RepairJobDetail = {
   attempts: RepairAttemptRow[];
   available_decisions: string[];
   decisions: RepairDecisionRow[];
   job: RepairJobRow;
+  recommendation: RepairRecommendation | null;
 };
+
+// WHAT THE ADVICE IS SUGGESTING, in the operator's words rather than the route's name.
+export const REPAIR_ROUTE_LABELS: Readonly<Record<string, string>> = {
+  abstain: "No recommendation",
+  ask_customer: "Ask the customer for a different file",
+  conservative_repair: "Try a conservative repair",
+  manual_cleanup: "Needs a person",
+  mesh_as_is: "Mesh it as it arrived",
+};
+
+export function repairRouteLabel(route: string): string {
+  return REPAIR_ROUTE_LABELS[route] ?? route.replace(/_/g, " ");
+}
 
 export async function readRepairQueue(query: {
   limit?: number;
@@ -255,6 +282,42 @@ export async function readRepairQueue(query: {
   unassigned?: boolean;
 } = {}): Promise<Read<{ filter: Record<string, unknown>; jobs: RepairJobRow[] }>> {
   return request(hexeraApiRoutes.adminRepairQueue(query));
+}
+
+export type RepairThroughput = {
+  attempts_total: number;
+  awaiting_human: number;
+  blocked: number;
+  blocked_rate: number | null;
+  by_state: Record<string, number>;
+  delivered_repair_only: number;
+  delivered_with_mesh: number;
+  // null, not zero, when there are no jobs yet: "0% of nothing" reads as a failure.
+  delivery_rate: number | null;
+  in_flight: number;
+  jobs_total: number;
+  jobs_touched_by_an_operator: number;
+  jobs_with_attempts: number;
+  mean_seconds_to_delivery: number | null;
+  operator_decisions_total: number;
+  retry_decisions: number;
+};
+
+export async function readRepairThroughput(): Promise<Read<{ throughput: RepairThroughput }>> {
+  return request(hexeraApiRoutes.adminRepairThroughput);
+}
+
+export function formatRate(rate: number | null): string {
+  // A missing rate is "—", never "0%": the two mean opposite things to someone reading a launch
+  // dashboard, and printing the wrong one has sunk confidence in better services than this.
+  return rate === null ? "—" : `${Math.round(rate * 100)}%`;
+}
+
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null) return "—";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 export async function readRepairJob(jobId: string): Promise<Read<RepairJobDetail>> {

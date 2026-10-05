@@ -911,6 +911,26 @@ async def _run_async(req: JobRequest) -> dict:
                         delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                         execution_generation=_generation,
                         fence_commit=_fence_report)
+                    # AND THE REPAIRED FILE ITSELF, when a repair was promoted: `geometry` names
+                    # the repaired bytes from that moment on, and repair_lineage is the record
+                    # that they ARE repaired rather than the upload. A customer whose CAD we fixed
+                    # paid for the fixed CAD as much as for the mesh built from it.
+                    if final_state.get("repair_lineage"):
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_repaired_cad,
+                        )
+                        from meshpipeline.pipeline.geometry_state import (
+                            materialized as _mat,
+                        )
+                        _repaired = _mat(final_state)
+                        if _repaired is not None:
+                            await deliver_repaired_cad(
+                                AsyncSessionLocal, job_id=job_id,
+                                local_path=_repaired.path,
+                                suffix=_repaired.ref.suffix_hint or ".step",
+                                delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                                execution_generation=_generation,
+                                fence_commit=_fence_report)
             except _StaleFenced:
                 jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
                              "or taken over) - producing no terminal side effects. job_id=%s",

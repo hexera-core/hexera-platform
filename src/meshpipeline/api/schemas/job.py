@@ -46,6 +46,12 @@ class JobStatus_(BaseModel):
     # The application-owned terminal verdict (deterministic message + sanitized facts), rendered
     # from durable state - never model prose. Present once the job is finalized; survives restart.
     final_message: str | None = None
+    # WHAT THE CUSTOMER WAS GIVEN, as one parcel: every artifact with its integrity claim, the
+    # caveats that came with it, and - when we repaired their geometry - which bytes the mesh was
+    # actually built from. Composed from the durable artifact rows and the terminal record
+    # (application/delivery_manifest.py), never from a live run, so it reads the same a year
+    # later. None until a job has finalized.
+    delivery_manifest: dict | None = None
     final_result: dict | None = None
     # WHAT THE REVIEW CAME TO, in one word (application/final_result.REVIEW_OUTCOMES): "passed",
     # "delivered_with_concerns" (a succeeded run whose review left points open - never a pass),

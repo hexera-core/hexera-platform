@@ -91,6 +91,10 @@ class ArtifactType(str, PyEnum):
     # EVIDENCE, never a deliverable: artifact_policy keeps it out of the required classes, so it
     # can never make an undelivered job look ready. Added by revision 0011.
     repair_report    = "repair_report"
+    # THE REPAIRED GEOMETRY ITSELF, when a repair was promoted and meshed. The customer paid for
+    # a fixed file as much as for the mesh, and a service that fixed their CAD without handing it
+    # back has delivered half the work. Added by revision 0014.
+    repaired_cad     = "repaired_cad"
 
 
 

@@ -24,6 +24,7 @@ _REPAIR_REVISIONS = (
     "0011_repair_report_artifact",
     "0012_cad_repair_jobs",
     "0013_repair_operator_queue",
+    "0014_repaired_cad_artifact",
 )
 
 
@@ -123,4 +124,5 @@ def test_the_repair_revisions_form_one_unbroken_chain():
         "0011_repair_report_artifact": "0010_source_upload_hold",
         "0012_cad_repair_jobs": "0011_repair_report_artifact",
         "0013_repair_operator_queue": "0012_cad_repair_jobs",
+        "0014_repaired_cad_artifact": "0013_repair_operator_queue",
     }

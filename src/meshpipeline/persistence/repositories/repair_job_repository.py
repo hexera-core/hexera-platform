@@ -248,3 +248,84 @@ class RepairJobRepository:
             .where(CadRepairDecision.repair_job_id == repair_job_id)
             .order_by(CadRepairDecision.created_at.asc()))
         return list(res.scalars().all())
+
+    async def service_throughput(self, db: AsyncSession) -> dict:
+        """What the repair service is actually delivering, counted from rows. CROSS-TENANT.
+
+        THE LAUNCH METRIC THIS SERVICE IS JUDGED ON is the share of customer CAD that reaches a
+        downloadable mesh without ad hoc shell work, and the operator time each delivery costs.
+        Both are counted here from the states and timestamps the queue already writes, so the
+        dashboard cannot disagree with the queue it is reporting on.
+
+        Counted, never estimated. Every number below is a COUNT or a timestamp difference over
+        rows; nothing is sampled, inferred or averaged across a window this method chose.
+        """
+        from sqlalchemy import case
+
+        # Iterated rather than dict()-ed over the result: a Row is not a 2-tuple to a type
+        # checker, and the state's value is the key every caller reads anyway.
+        state_rows = (await db.execute(
+            select(CadRepairJob.status, func.count())
+            .group_by(CadRepairJob.status))).all()
+        by_state: dict[str, int] = {
+            getattr(row[0], "value", str(row[0])): int(row[1] or 0) for row in state_rows}
+
+        delivered = by_state.get(RepairJobStatus.delivered.value, 0)
+        repair_only = by_state.get(RepairJobStatus.repair_delivered.value, 0)
+        total = sum(by_state.values())
+
+        # WAITING ON US versus WAITING ON SOMEBODY ELSE, which an SLA has to tell apart: a job
+        # sitting in waiting_customer is not late because we are slow.
+        from meshpipeline.persistence.repair_job_state import (
+            AWAITING_HUMAN,
+            BLOCKED,
+            IN_FLIGHT,
+        )
+        bucket = lambda group: sum(by_state.get(s.value, 0) for s in group)  # noqa: E731
+
+        # HOW LONG A DELIVERED JOB TOOK, from the row's own timestamps. Median would be the better
+        # statistic and SQL makes it awkward across backends; the average is reported as what it
+        # is rather than being called a median.
+        settled = (RepairJobStatus.delivered, RepairJobStatus.repair_delivered)
+        elapsed = (await db.execute(
+            select(
+                func.count(),
+                func.avg(
+                    func.extract("epoch", CadRepairJob.updated_at - CadRepairJob.created_at)),
+            ).where(CadRepairJob.status.in_(settled)))).first()
+
+        attempts = (await db.execute(
+            select(func.count(), func.count(func.distinct(CadRepairAttempt.repair_job_id)))
+        )).first()
+
+        decisions = (await db.execute(
+            select(
+                func.count(),
+                func.count(func.distinct(CadRepairDecision.repair_job_id)),
+                func.coalesce(func.sum(case((CadRepairDecision.decision == "retry", 1), else_=0)), 0),
+            ))).first()
+
+        return {
+            "jobs_total": total,
+            "by_state": by_state,
+            "delivered_with_mesh": delivered,
+            "delivered_repair_only": repair_only,
+            # THE HEADLINE: the share of jobs that reached something the customer can download.
+            # None rather than 0 when there are no jobs - "we delivered 0% of nothing" is a
+            # sentence that has misled every dashboard that has ever printed it.
+            "delivery_rate": (round((delivered + repair_only) / total, 4) if total else None),
+            "blocked_rate": (round(bucket(BLOCKED) / total, 4) if total else None),
+            "awaiting_human": bucket(AWAITING_HUMAN),
+            "in_flight": bucket(IN_FLIGHT),
+            "blocked": bucket(BLOCKED),
+            "mean_seconds_to_delivery": (
+                round(float(elapsed[1]), 1) if elapsed and elapsed[1] is not None else None),
+            "attempts_total": int(attempts[0] or 0) if attempts else 0,
+            "jobs_with_attempts": int(attempts[1] or 0) if attempts else 0,
+            # OPERATOR EFFORT, as the only honest proxy the rows support: how many recorded human
+            # decisions a job takes. It is NOT minutes - nothing here times an operator - and it
+            # is named for what it counts so no dashboard can relabel it as effort it never saw.
+            "operator_decisions_total": int(decisions[0] or 0) if decisions else 0,
+            "jobs_touched_by_an_operator": int(decisions[1] or 0) if decisions else 0,
+            "retry_decisions": int(decisions[2] or 0) if decisions else 0,
+        }

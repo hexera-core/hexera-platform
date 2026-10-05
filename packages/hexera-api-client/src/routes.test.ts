@@ -90,3 +90,7 @@ test("builds repair job routes with encoded path segments", () => {
     "/api/v1/admin/repair/jobs/job%20one/decide",
   );
 });
+
+test("the throughput route is a constant, not a window someone has to choose", () => {
+  assert.equal(hexeraApiRoutes.adminRepairThroughput, "/api/v1/admin/repair/throughput");
+});

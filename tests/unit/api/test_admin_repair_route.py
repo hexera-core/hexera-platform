@@ -388,3 +388,90 @@ def test_every_named_decision_targets_a_real_state():
     for name, target in admin_repair._DECISIONS.items():
         assert isinstance(target, S), name
     assert set(admin_repair._NEEDS_REASON) <= set(admin_repair._DECISIONS)
+
+
+# SHADOW TRIAGE
+
+
+class _AttemptRow:
+    def __init__(self, report):
+        self.attempt_no = 1
+        self.mode = "inspect"
+        self.profile = ""
+        self.tool_version = ""
+        self.input_sha256 = "a" * 64
+        self.output_sha256 = None
+        self.status = "repairable"
+        self.report = report
+        self.caps = None
+        self.measurements = None
+        self.created_at = datetime(2026, 10, 4, tzinfo=UTC)
+
+
+def test_a_job_shows_advice_beside_the_evidence(monkeypatch):
+    job = _Job(status=S.inspecting, repair_status="repairable")
+    repo = _Repo([job])
+
+    async def _attempts(db, job_id):
+        return [_AttemptRow({"report": {"defects": [{"code": "wire_gap", "severity": "error"}]}})]
+
+    repo.attempts_for_job = _attempts
+    client = _client(monkeypatch, repo)
+
+    body = client.get(f"/api/v1/admin/repair/jobs/{job.id}", headers=HEADERS).json()
+
+    advice = body["recommendation"]
+    assert advice["route"] == "conservative_repair"
+    # SHADOW: the payload says so itself, and the job did not move
+    assert advice["shadow"] is True
+    assert body["job"]["status"] == "inspecting"
+    assert job.status is S.inspecting
+
+
+def test_advice_cannot_move_a_job_however_often_it_is_read(monkeypatch):
+    job = _Job(status=S.inspecting, repair_status="repairable")
+    repo = _Repo([job])
+    client = _client(monkeypatch, repo)
+
+    for _ in range(3):
+        client.get(f"/api/v1/admin/repair/jobs/{job.id}", headers=HEADERS)
+
+    # reading advice is a read: no transition, no decision row, nothing recorded as done
+    assert job.status is S.inspecting
+    assert repo.decisions == []
+
+
+def test_a_job_with_no_inspection_gets_an_honest_abstention(monkeypatch):
+    job = _Job(status=S.received)
+    client = _client(monkeypatch, _Repo([job]))
+
+    advice = client.get(f"/api/v1/admin/repair/jobs/{job.id}",
+                        headers=HEADERS).json()["recommendation"]
+
+    assert advice["route"] == "abstain"
+    assert advice["abstain_reason"]
+    assert advice["confidence"] == 0.0
+
+
+# THROUGHPUT
+
+
+def test_throughput_is_served_from_the_repository_without_reshaping_it(monkeypatch):
+    repo = _Repo([])
+    counted = {"jobs_total": 3, "delivery_rate": 0.6667, "by_state": {"delivered": 2}}
+
+    async def _throughput(db):
+        return counted
+
+    repo.service_throughput = _throughput
+    client = _client(monkeypatch, repo)
+
+    body = client.get("/api/v1/admin/repair/throughput", headers=HEADERS).json()
+
+    # the route is transport: a second place that rounds or relabels these is a second authority
+    assert body["throughput"] == counted
+
+
+def test_throughput_needs_the_admin_credential(monkeypatch):
+    assert _client(monkeypatch, _Repo([])).get(
+        "/api/v1/admin/repair/throughput").status_code == 403
