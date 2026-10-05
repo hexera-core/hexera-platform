@@ -1,10 +1,15 @@
 # Responsibility: Declare how a mesh job is executed, wherever it runs.
-# Owns: the outer executor Protocol, its process-wide binding, and the error kinds a caller must tell apart.
+# Owns: the outer executor Protocol, its process-wide binding, the error kinds a caller must tell apart, and the abandonment watch.
 # Boundaries: a Protocol and its binding; the local and Cloud Run implementations live in adapters/mesh_execution/.
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 #: The infrastructure failure the product already speaks. A run whose submission cannot be
 #: resolved is not a mesh verdict and not a success - it is the same class of outcome as the
@@ -179,6 +184,45 @@ def set_mesh_executor(executor: MeshExecutor | None) -> None:
 def set_launch_check(check: Callable[[Any, str], dict | None] | None) -> None:
     global _launch_check
     _launch_check = check
+
+
+#: THE ABANDONMENT WATCH: () -> why the run should stop waiting on its remote mesh, or None to
+#: keep waiting. A worker waiting on a Cloud Run execution sits in a poll loop for up to its whole
+#: deadline, and that loop used to ask nothing: on shared dev, 2026-10-01, job 470c3eb9 was
+#: cancelled at 08:56 UTC and its execution dev-mesh-796ll ran on for another 54 minutes, paid
+#: for, with nobody left to read its result. The submission authority (application/
+#: native_submission) binds a watch around its provider call; the provider's poll loop reads it.
+#: A ContextVar, like the execution guard's owner check, so it follows the run into the thread
+#: the mesher is waited on from.
+_abandon_watch: ContextVar[Callable[[], str | None] | None] = ContextVar(
+    "mesh_abandon_watch", default=None)
+
+
+@contextmanager
+def abandonment_watch(check: Callable[[], str | None] | None) -> Iterator[None]:
+    token = _abandon_watch.set(check)
+    try:
+        yield
+    finally:
+        _abandon_watch.reset(token)
+
+
+def abandonment_reason() -> str | None:
+    """Why the run waiting on a remote mesh should give it up now - None to keep waiting.
+
+    Never raises. A watch that cannot answer reads as "keep waiting": a wrong "keep waiting" costs
+    what it always did (the run waits out its deadline and the fence refuses the result), while a
+    wrong "stop" kills a paid mesh its owner was about to collect."""
+    check = _abandon_watch.get()
+    if check is None:
+        return None
+    try:
+        reason = check()
+    except Exception as exc:  # noqa: BLE001 - see the docstring: an unanswerable watch is a no
+        logger.warning("the mesh abandonment watch failed (%s) - still waiting on the run",
+                       type(exc).__name__)
+        return None
+    return str(reason) if reason else None
 
 
 def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
