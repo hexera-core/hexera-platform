@@ -349,3 +349,66 @@ def test_every_flat_face_stays_selectable_however_many_there_are(tmp_path):
     """The stage's "add an opening" snaps to any measured flat, probed or not."""
     r = _scout(_tee(tmp_path / "tee.step"))
     assert len(r.faces) >= r.planar_faces - 0 and len(r.faces) >= 3
+
+
+# ------------------------------------------------ bodies that carry tubes, skins that carry flats ----
+def _compound(*shapes):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    comp = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(comp)
+    for s in shapes:
+        b.Add(comp, s)
+    return comp
+
+
+def _small_tube(y: float):
+    """A 6 mm exhaust tip: starts inside the body's tail, sticks 20 mm out of it along +x."""
+    return BRepAlgoAPI_Cut(_cyl(3.0, 40.0, (180, y, 30)), _cyl(2.5, 40.0, (180, y, 30))).Shape()
+
+
+def test_small_open_tubes_on_a_body_do_not_make_it_a_pipe_wall(tmp_path):
+    """A body of several solids with two small open tubes at its tail - a car's exhaust tips. The
+    tubes' ends are open rings, but 5 mm against a 60 mm thinnest side and on their own small
+    solids: tubes on a body, not the ends of a passage. Read as a body in a flow, with a note."""
+    body = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 200.0, 100.0, 60.0).Shape()
+    r = _scout(_write(_compound(body, _small_tube(25.0), _small_tube(75.0)), tmp_path / "car.step"))
+    assert r.flow == "external" and r.openings == []
+    assert any("small open tubes" in n for n in r.notes)
+
+
+def test_a_vessel_whose_small_nozzles_are_the_part_itself_stays_a_pipe_wall(tmp_path):
+    """A tank wall with two small nozzles, all one solid: the nozzles are small against the tank,
+    but they open the very part - the vessel is the passage. Internal, with both nozzles."""
+    shell = BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 200.0, 200.0, 200.0).Shape(),
+                            BRepPrimAPI_MakeBox(gp_Pnt(4, 4, 4), 192.0, 192.0, 192.0).Shape()).Shape()
+    nozzles = BRepAlgoAPI_Fuse(_cyl(7.0, 40.0, (190, 100, 100)), _cyl(7.0, 40.0, (10, 100, 100), (-1, 0, 0))).Shape()
+    bores = BRepAlgoAPI_Fuse(_cyl(5.0, 40.0, (190, 100, 100)), _cyl(5.0, 40.0, (10, 100, 100), (-1, 0, 0))).Shape()
+    vessel = BRepAlgoAPI_Cut(BRepAlgoAPI_Fuse(shell, nozzles).Shape(), bores).Shape()
+    r = _scout(_write(vessel, tmp_path / "vessel.step"))
+    assert (r.body_kind, r.flow) == ("pipe_wall", "internal")
+    assert len(r.openings) == 2
+
+
+def test_flats_on_a_thin_skin_are_not_the_mouths_of_a_fluid_body(tmp_path):
+    """A thin dome shell (0.5 mm) carrying three round pads: the pads' tops are round flats, clear
+    ahead and a fair size, but under a millimetre of skin lies behind them - a panel's flats, not
+    the ends of a fluid volume. The Supra's body shell gave three such "mouths" at its nose."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+
+    def dome(r):
+        ball = BRepPrimAPI_MakeSphere(r).Shape()
+        return BRepAlgoAPI_Cut(ball, BRepPrimAPI_MakeBox(gp_Pnt(-100, -100, -100), 200.0, 200.0, 100.0).Shape()).Shape()
+
+    part = BRepAlgoAPI_Cut(dome(50.0), dome(49.5)).Shape()
+    for az in (0.0, 120.0, 240.0):
+        pol, a = math.radians(30.0), math.radians(az)
+        n = (math.sin(pol) * math.cos(a), math.sin(pol) * math.sin(a), math.cos(pol))
+        base = tuple(49.8 * c for c in n)
+        pad = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*base), gp_Dir(*n)), 6.0, 0.5).Shape()
+        part = BRepAlgoAPI_Fuse(part, pad).Shape()
+    r = _scout(_write(part, tmp_path / "skin.step"))
+    assert r.input_kind != "fluid-domain"
+    assert r.flow == "external" and r.openings == []
