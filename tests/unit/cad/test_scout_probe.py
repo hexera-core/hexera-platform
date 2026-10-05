@@ -214,3 +214,33 @@ def test_a_mesh_index_that_cannot_be_built_leaves_the_exact_answers(monkeypatch)
     assert probe.inside_any((0.0, 0.0, 100.0)) is False             # in the bore
     assert probe.meets_beyond((0.0, 0.0, 100.0), (1.0, 0.0, 0.0), 0.0) is True
     assert probe.first_beyond((0.0, 0.0, 100.0), (1.0, 0.0, 0.0), 0.0) == pytest.approx(40.0)
+
+
+def test_the_geometry_check_reads_a_step_once_and_measures_and_draws_it_as_reading_twice(tmp_path):
+    """The check reads the file once and hands the same shape to the scout and the view skin, each
+    scaling and meshing a copy of its own. Its facts and skin are what two separate reads give."""
+    from types import SimpleNamespace
+
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    from meshpipeline.application import geometry_check as gc
+    from meshpipeline.cad.scout import scout_cad, write_view_stl
+
+    for name in ("tee", "overlapping"):
+        path = tmp_path / f"{name}.step"
+        w = STEPControl_Writer()
+        assert Interface_Static.SetCVal_s("write.step.unit", "MM")
+        w.Transfer(SHAPES[name](), STEPControl_AsIs)
+        w.Write(str(path))
+        once = tmp_path / f"once_{name}"
+        once.mkdir()
+        facts, skin = gc._scout_exact(path, once, None, SimpleNamespace(owner_id="o", source_id="s"))
+        prepared, _note = gc._prepared_coordinates(path, None, SimpleNamespace(owner_id="o", source_id="s"))
+        twice = tmp_path / f"twice_{name}"
+        twice.mkdir()
+        separate = scout_cad(path, prepared=prepared).as_dict()
+        separate_skin = write_view_stl(path, twice / "skin.stl", prepared=prepared)
+        assert skin.read_bytes() == separate_skin.read_bytes(), name
+        for key, value in separate.items():
+            assert facts[key] == value, (name, key)

@@ -88,10 +88,16 @@ def _face_mesh(face) -> _FaceMesh | None:
     return _FaceMesh(nodes[idx], float(tri.Deflection()), _rim_segments(face, tri, loc, nodes))
 
 
+#: Where along each rim segment its stray from the true edge is measured: the middle, where a
+#: smooth curve bows furthest from its chord, and the quarter points either side, where a curve
+#: whose bend is not centred on the segment bows furthest.
+_RIM_SAMPLES = (0.25, 0.5, 0.75)
+
+
 def _rim_segments(face, tri, loc, nodes: np.ndarray):
-    """(starts, ends, strays) of every segment of the face's rim polygons, each stray the distance
-    from the segment's midpoint to the true edge curve at the middle parameter; None when an edge's
-    polygon carries no parameters or the edge has no curve to hold it to."""
+    """(starts, ends, strays) of every segment of the face's rim polygons, each stray the farthest
+    the true edge curve lies from the segment at _RIM_SAMPLES of its parameter span; None when an
+    edge's polygon carries no parameters or the edge has no curve to hold it to."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.TopAbs import TopAbs_EDGE
@@ -114,14 +120,18 @@ def _rim_segments(face, tri, loc, nodes: np.ndarray):
         ids, prm = pol.Nodes(), pol.Parameters()
         pts = nodes[[ids.Value(ids.Lower() + i) - 1 for i in range(n)]]
         ts = [prm.Value(prm.Lower() + i) for i in range(n)]
+        stray = np.zeros(n - 1)
         try:
             curve = BRepAdaptor_Curve(edge)
-            mids = np.array([curve.Value(0.5 * (ts[i] + ts[i + 1])).Coord() for i in range(n - 1)], dtype=float)
+            for f in _RIM_SAMPLES:
+                on_curve = np.array([curve.Value((1.0 - f) * ts[i] + f * ts[i + 1]).Coord() for i in range(n - 1)],
+                                    dtype=float)
+                stray = np.maximum(stray, np.linalg.norm(on_curve - ((1.0 - f) * pts[:-1] + f * pts[1:]), axis=1))
         except Exception:  # noqa: BLE001 - an edge with no 3D curve to hold the polygon to
             return None
         starts.append(pts[:-1])
         ends.append(pts[1:])
-        strays.append(np.linalg.norm(mids - 0.5 * (pts[:-1] + pts[1:]), axis=1))
+        strays.append(stray)
     if not starts:
         return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0)
     return np.concatenate(starts), np.concatenate(ends), np.concatenate(strays)
@@ -529,9 +539,14 @@ class PartProbe(ExactProbe):
             ball_f.append(self._cap_face)
             np.minimum.at(lo, self._cap_face, mid - r[:, None])
             np.maximum.at(hi, self._cap_face, mid + r[:, None])
-        self._ball_c = np.concatenate(ball_c) if ball_c else np.zeros((0, 3))
-        self._ball_r = np.concatenate(ball_r) if ball_r else np.zeros(0)
-        self._ball_f = np.concatenate(ball_f) if ball_f else np.zeros(0, dtype=np.int64)
+        # the balls sorted by face, with each face's run, so a question reads only its faces' balls
+        bf = np.concatenate(ball_f) if ball_f else np.zeros(0, dtype=np.int64)
+        by_face = np.argsort(bf, kind="stable")
+        self._ball_c = (np.concatenate(ball_c) if ball_c else np.zeros((0, 3)))[by_face]
+        self._ball_r = (np.concatenate(ball_r) if ball_r else np.zeros(0))[by_face]
+        self._ball_f = bf[by_face]
+        self._ball_start = np.searchsorted(self._ball_f, np.arange(nf), side="left")
+        self._ball_end = np.searchsorted(self._ball_f, np.arange(nf), side="right")
         self._face_lo, self._face_hi = lo, hi
         bare_ids = np.flatnonzero(self._bare)
         self._hole_lo, self._hole_hi = lo[bare_ids], hi[bare_ids]
@@ -739,9 +754,10 @@ class PartProbe(ExactProbe):
         if len(bare):
             b_in, _b_out = _slab(o, d, self._face_lo[bare], self._face_hi[bare])
             touch[bare] = np.maximum(b_in, beyond)
-        mask = np.zeros(nf, dtype=bool)
-        mask[live] = True
-        sel = np.flatnonzero(mask[self._ball_f])
+        starts, ends = self._ball_start[live], self._ball_end[live]
+        counts = ends - starts
+        total = int(counts.sum())
+        sel = np.repeat(starts - np.concatenate(([0], np.cumsum(counts)[:-1])), counts) + np.arange(total)
         if len(sel):
             v = self._ball_c[sel] - o
             t = v @ d
