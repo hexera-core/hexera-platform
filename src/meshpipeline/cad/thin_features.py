@@ -39,6 +39,12 @@ class ThinFeatureField:
     `partner` is the index of the opposing triangle each finite thickness was measured to (-1
     where none), so a consumer can judge the PAIR - e.g. whether the reading is within the two
     faces' own tessellation error. None when the probe did not record it.
+
+    `fluid_gap_m`, when the probe was told which side of each face the fluid is on, is the same
+    reading taken only ACROSS THE FLUID: the distance to the nearest opposing face in front of
+    this one. It is what decides whether two prism stacks collide - stacks grow into the fluid,
+    away from the wall, so a plate's own thickness never brings them together; a slot, a gap
+    between two parts, a passage does. None when the sides were not known.
     """
 
     thickness_m: np.ndarray
@@ -46,6 +52,7 @@ class ThinFeatureField:
     area_m2: np.ndarray
     measured: bool
     partner: np.ndarray | None = None
+    fluid_gap_m: np.ndarray | None = None
 
     @property
     def n_triangles(self) -> int:
@@ -61,9 +68,21 @@ def _unmeasured(n: int, area: np.ndarray | None = None) -> ThinFeatureField:
 
 
 def measure_from_triangles(tris, *, neighbours: int = 32, opposing_dot: float = -0.2,
-                           sharp_span: float = 0.75, chunk: int = 65536) -> ThinFeatureField:
+                           sharp_span: float = 0.75, chunk: int = 65536,
+                           wet_sides: np.ndarray | None = None) -> ThinFeatureField:
     """The probe itself, on raw triangles (N,3,3). Unit-agnostic: thickness comes back in the
-    triangles' own unit, so callers that need metres must hand in metre triangles."""
+    triangles' own unit, so callers that need metres must hand in metre triangles.
+
+    `wet_sides`, when given, says per triangle which side the fluid is on - +1 the side its
+    normal points to, -1 the other, 2 both, 0 neither (engines/sealed_cavities.CavityReading).
+    Then:
+    - a face the fluid never touches (0) - the inner skin of a hollow shell whose inside is kept
+      out of the mesh - is neither measured (+inf, never sharp, zero area: it is no part of the
+      meshed wall) nor measured AGAINST: a wall backed by a sealed space is as thick as that
+      space, however close its other skin lies;
+    - `fluid_gap_m` is read too: the gap to the nearest opposing face ON THE FLUID SIDE (both
+      sides for a face wetted on both).
+    A trailing edge, a fin or a slot keep their readings - the fluid touches both their faces."""
     T = np.asarray(tris, dtype=float)
     n = int(len(T))
     if n == 0 or T.ndim != 3:
@@ -73,6 +92,13 @@ def measure_from_triangles(tris, *, neighbours: int = 32, opposing_dot: float = 
     a2 = np.linalg.norm(fn, axis=1)
     area = 0.5 * a2
     ok = a2 > 0
+    side = None
+    if wet_sides is not None:
+        side = np.asarray(wet_sides).astype(np.int8).reshape(-1)
+        if len(side) != n:
+            raise ValueError(f"wet_sides has {len(side)} entries for {n} triangles")
+        ok = ok & (side != 0)
+        area = np.where(side != 0, area, 0.0)
     n_ok = int(ok.sum())
     if n_ok < 2:
         return _unmeasured(n, area)
@@ -88,6 +114,7 @@ def measure_from_triangles(tris, *, neighbours: int = 32, opposing_dot: float = 
     tree = cKDTree(c[idx_ok])
     k = min(int(neighbours) + 1, n_ok)          # +1: the query returns the face itself first
     thickness = np.full(n, np.inf)
+    fluid_gap = np.full(n, np.inf) if side is not None else None
     partner = np.full(n, -1, dtype=np.int64)
     sharp = np.zeros(n, dtype=bool)
     for s in range(0, len(idx_ok), max(1, int(chunk))):
@@ -116,21 +143,38 @@ def measure_from_triangles(tris, *, neighbours: int = 32, opposing_dot: float = 
         best = gaps[np.arange(len(rows)), at]
         thickness[rows] = best
         partner[rows] = np.where(np.isfinite(best), nb[np.arange(len(rows)), at], -1)
+        if fluid_gap is not None and side is not None:
+            # in front of the face on its fluid side: the far wall of a slot or a passage. A face
+            # wetted on both sides (2) is a sheet: every opposing face is across fluid.
+            s_i = side[rows].astype(float)[:, None]
+            ahead = (s_i == 2.0) | (s_i * (sep * ni).sum(-1) > 0.0)
+            fluid_gap[rows] = np.where(opposing & ahead, proj, np.inf).min(axis=1)
     return ThinFeatureField(thickness_m=thickness, sharp=sharp, area_m2=area, measured=True,
-                            partner=partner)
+                            partner=partner, fluid_gap_m=fluid_gap)
 
 
 def measure_thin_features(surface, **kw) -> ThinFeatureField:
     """Measure a metre-normalised PreparedSurface (the same contract analyze_surface holds)."""
     from meshpipeline.cad.analysis import AmbiguousSurfaceUnits
     from meshpipeline.cad.prepared_surface import PreparedSurface
-    from meshpipeline.cad.stl_io import read_stl_triangles
 
     if not isinstance(surface, PreparedSurface):
         raise AmbiguousSurfaceUnits(
             "measure_thin_features reports physical thickness, so it needs a PreparedSurface "
             f"that states its coordinates are metres - got {type(surface).__name__}.")
-    return measure_from_triangles(read_stl_triangles(surface.path), **kw)
+    return measure_from_triangles(staged_triangles(surface.path), **kw)
+
+
+def staged_triangles(path):
+    """The wall's triangles exactly as the snappy surface prep stages them - degenerate facets
+    dropped - so a per-triangle reading lines up with the staged surface one for one. Read
+    without the drop, a car with 35 degenerate facets among 485 757 measured 485 757 labels for
+    485 722 staged triangles, and its whole layer policy was silently switched off."""
+    from pathlib import Path
+
+    from meshpipeline.cad.stl_io import drop_degenerate, read_stl_triangles
+
+    return drop_degenerate(read_stl_triangles(Path(path)))
 
 
 def classify_faces(field: ThinFeatureField, *, thin_below_m: float, razor_below_m: float,
@@ -139,7 +183,10 @@ def classify_faces(field: ThinFeatureField, *, thin_below_m: float, razor_below_
 
     razor: thinner than razor_below_m outright, or SHARP and within sharp_razor_factor of it
            (the wedge band walking into a knife edge fails like the edge, not like a plate).
-    thin:  thinner than thin_below_m.
+    thin:  thinner than thin_below_m - measured ACROSS THE FLUID when the field knows the fluid
+           side (fluid_gap_m): prism stacks collide only where they grow towards each other, in
+           a slot or a passage. A solid plate a few cells thick keeps its full stack on both faces;
+           only one thinner than razor_below_m (it cannot be castellated) is still razor.
     normal: everything else - including everything, when the field is unmeasured.
     """
     n = field.n_triangles
@@ -147,7 +194,8 @@ def classify_faces(field: ThinFeatureField, *, thin_below_m: float, razor_below_
     if not field.measured or n == 0:
         return labels
     t = field.thickness_m
-    labels[t < float(thin_below_m)] = CLASS_THIN
+    gap = field.fluid_gap_m if field.fluid_gap_m is not None else t
+    labels[gap < float(thin_below_m)] = CLASS_THIN
     razor = (t < float(razor_below_m)) | (
         field.sharp & (t < float(sharp_razor_factor) * float(razor_below_m)))
     labels[razor] = CLASS_RAZOR

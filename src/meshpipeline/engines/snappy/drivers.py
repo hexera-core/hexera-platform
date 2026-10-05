@@ -451,6 +451,64 @@ def _plan_surface(state, workspace):
     return staged_surface(_materialized(state), Path(workspace) / "input.stl")
 
 
+async def _sealed_cavities(cache: dict, surface, rec: dict, strategy: dict):
+    """The external body's sealed-space reading at this plan's wall cell (engines/sealed_cavities),
+    measured once per cell size per build and off the event loop. None when switched off or not
+    measurable - the case is then authored exactly as before."""
+    if not scfg.SNAPPY_SEAL_CAVITIES:
+        return None
+    try:
+        from meshpipeline.engines.snappy.layer_policy import intended_surface_cell
+        key = round(float(intended_surface_cell(rec, strategy)), 12)
+    except (TypeError, ValueError, KeyError, IndexError):
+        return None
+    if not (key > 0.0) or getattr(surface, "path", None) is None:
+        return None
+    if key not in cache:
+        import asyncio as _asyncio
+
+        from meshpipeline.cad.thin_features import staged_triangles
+        from meshpipeline.engines.sealed_cavities import read_cavities
+
+        def _read():
+            try:
+                # the staged triangles, one for one: wet_sides indexes them for the layer policy
+                return read_cavities(staged_triangles(surface.path), cell_m=key)
+            except Exception:  # noqa: BLE001 - a reading is an improvement, never a prerequisite
+                logger.warning("sealed-cavity reading failed; meshing without it", exc_info=True)
+                return None
+        cache[key] = await _asyncio.to_thread(_read)
+    return cache[key]
+
+
+async def _wetted_field(cache: dict, surface, reading, fallback):
+    """The thin-feature field to classify: re-measured with the reading's wetted sides when there
+    is a reading (the faces only a sealed space touches drop out, and the thin class is read
+    across the fluid), else the build's own field unchanged."""
+    if reading is None or fallback is None:
+        return fallback
+    key = id(reading)
+    if key not in cache:
+        import asyncio as _asyncio
+
+        from meshpipeline.engines.snappy import layer_policy as LP
+        field = await _asyncio.to_thread(LP.measure_field, surface, reading.wet_sides)
+        cache[key] = field if field is not None else fallback
+    return cache[key]
+
+
+def _sealed_note(reading) -> str:
+    """The carving note's tail when spaces inside the body are kept out of the mesh."""
+    if reading is None or not reading.cavities:
+        return ""
+    n = len(reading.cavities)
+    vol = sum(c.volume_m3 for c in reading.cavities)
+    return (f"; {n} enclosed space{'s' if n > 1 else ''} inside the body ({vol * 1e6:.3g} cm³) "
+            f"reach{'' if n > 1 else 'es'} the outside only through gaps narrower than "
+            f"{reading.seal_gap_m * 1e3:.2g} mm - too narrow to mesh flow through - so "
+            f"{'they are' if n > 1 else 'it is'} kept out of the mesh and the gaps are closed")
+
+
 def _pass_shape(q: dict, wall_faces: int) -> str:
     _cells = f"{int(q['cells']):,}" if q.get("cells") else "no"
     _skew = int(q.get("skew_faces") or 0)
@@ -483,6 +541,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # the escalation ladder's durable stage: 0 on a fresh geometry, advanced by layer-fatal
     # passes below, carried across pipeline retries via the sibling attempt's fact
     _esc_stage = LP.read_escalation(workspace)
+    # sealed-space readings, one per wall-cell size this build plans (engines/sealed_cavities),
+    # and the thin-feature field re-read with each reading's wetted sides
+    _cavity_cache: dict = {}
+    _field_cache: dict = {}
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
     # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
@@ -666,11 +728,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             if _dom is not None:
                 raise PreflightStop(_dom)
             wall = _contract_wall_patch(workspace) or "body"
+            # SEALED SPACES: a hollow body's inside, reached by the far field only through gaps
+            # too narrow to mesh, is kept out of the mesh (engines/sealed_cavities.py) - and the
+            # faces only it touches are no part of the wall the layer policy judges
+            _cavities = await _sealed_cavities(_cavity_cache, _surface, rec, strategy)
+            _field = await _wetted_field(_field_cache, _surface, _cavities, _thin_field)
             # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
             # (no thin features, policy off, no layers requested) authors the historical case
             # exactly; otherwise razor/thin regions get locally fewer, thinner layers instead
             # of one global count that folds at the sharp features or collapses everywhere.
-            _policy = LP.plan_layer_policy(_thin_field, rec=rec, strategy=strategy,
+            _policy = LP.plan_layer_policy(_field, rec=rec, strategy=strategy,
                                            wall_name=wall, stage=_esc_stage)
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
@@ -695,7 +762,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 symmetry=symmetry, surface_regions=_dict_regions,
                 layer_counts=LP.layer_counts_for(_policy),
                 layer_overrides=LP.overrides_for(_policy), ground=_ground,
-                farfield=_farfield, class_regions=_split)
+                farfield=_farfield, class_regions=_split,
+                outside_points=[c.point for c in _cavities.cavities] if _cavities else None)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -712,7 +780,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             if _repeats_timed_out_case(workspace, _timeout_case):
                 raise TimedOutCaseRepeats(f"external pass {attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
-                            f"{summary['surface_level']}, {summary['n_layers']} boundary layers",
+                            f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
+                            + _sealed_note(_cavities),
                     op_id=f"snappy:carving:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
