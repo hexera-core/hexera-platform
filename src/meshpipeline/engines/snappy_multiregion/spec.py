@@ -17,6 +17,7 @@ from meshpipeline.engines.base import (
     MeshCapability,
     ParamSpec,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -102,6 +103,25 @@ def _viewer_surface():
     return polymesh_viewer
 
 
+
+# WHERE multi-region snappyHexMesh IS AT HOME (engines/home_turf.py reads these; thresholds from
+# the HOME-TURF lab sweep, 2026-10-05). One body-fitted background mesh cut into a polyMesh per
+# solid with conformal interfaces: conjugate heat transfer and other coupled fluid + solid
+# assemblies. A single body is not a multi-region case.
+HOME_TURF = (
+    TurfRow("n_solids", ">=", 2, "home",
+            "Each solid becomes its own region, with matching faces on every shared interface."),
+    TurfRow("n_solids", "<", 2, "outside",
+            "A single solid is a single-region job: mesh it with snappyHexMesh, cfMesh or Gmsh."),
+    TurfRow("closed", "is", False, "weak",
+            "A solid that is not closed cannot become a region of its own; gaps or overlaps between "
+            "solids keep the interfaces from matching."),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Solid walls thinner than about two cells can vanish from their region or leak into the "
+            "fluid."),
+)
+
+
 SPEC = EngineSpec(
 
         name="snappy_multiregion",
@@ -166,6 +186,7 @@ SPEC = EngineSpec(
         # (snappy_multiregion/surface_solids.py).
         accepts=(FlowSupport("multi-region", ("cad", "surface")),),
         ladder_rank=50,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
             dimensionalities=("3D",),
             input_kind="solid",

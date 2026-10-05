@@ -15,6 +15,7 @@ from meshpipeline.engines.base import (
     InputContract,
     MeshCapability,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -118,6 +119,32 @@ def _build_driver():
     return drive
 
 
+
+# WHERE snappyHexMesh IS AT HOME (engines/home_turf.py reads these; thresholds from the HOME-TURF lab
+# sweep, 2026-10-05). Castellate, snap, then add layers: it wraps any closed or nearly closed
+# surface, however detailed, from a CAD solid or a triangle file - its turf is external AND internal
+# CFD on complex geometry. Its weak spots are where the method pulls layers back or must spend
+# cells: knife edges, hollow thin shells, long thin gaps.
+HOME_TURF = (
+    TurfRow("n_solids", ">", 1, "home",
+            "Overlapping or touching solids are wrapped as one surface, so an assembly of parts "
+            "meshes as one body.", flow="external"),
+    TurfRow("sharp_edges", ">=", 4.0, "home",
+            "It snaps the mesh to the feature edges, so sharp, detailed geometry keeps its shape."),
+    TurfRow("closed", "is", False, "home",
+            "It tolerates a surface that is not perfectly watertight: the castellated mesh is cut "
+            "by the surface, not filled from it."),
+    TurfRow("ground", "is", True, "home",
+            "It lays the ground plane as a wall under the body (a car on a road).", flow="external"),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Much of this body is a thin hollow shell: walls thinner than a cell are smoothed over and "
+            "near-wall layers cover only about half of the wall (a hollow car shell measured 53%)."),
+    TurfRow("cells_across_at_budget", "<", 12.0, "weak",
+            "The narrowest passage gets fewer than 12 cells across within the cell budget: the "
+            "mesh needs a local refinement or a bigger budget to resolve it.", flow="internal"),
+)
+
+
 SPEC = EngineSpec(
 
         name="snappy",
@@ -191,6 +218,7 @@ SPEC = EngineSpec(
                  FlowSupport("internal", ("cad",))),
         # the body-fitted hex mesher: after cfMesh on the ladder, before the tet engines
         ladder_rank=20,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)

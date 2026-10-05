@@ -16,6 +16,7 @@ from meshpipeline.engines.base import (
     InputContract,
     MeshCapability,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -97,6 +98,32 @@ def _viewer_surface():
     return polymesh_viewer
 
 
+
+# WHERE cfMesh IS AT HOME (engines/home_turf.py reads these; thresholds from the HOME-TURF lab
+# sweep, 2026-10-05). An octree of cartesian cells fitted to a watertight surface, with
+# polyhedral cells at the wall and layers extruded over the whole boundary: fast and robust on
+# clean external bodies and internal passages. It is weaker where a gap holds only a few cells
+# and where the surface is not closed, and it cannot lay a ground plane today.
+HOME_TURF = (
+    TurfRow("layers_requested", "is", True, "home",
+            "Its boundary layers are extruded over the whole wall, so near-wall layers reach "
+            "almost all of it."),
+    TurfRow("ground", "is", True, "outside",
+            "It cannot lay a ground plane under the body yet: the far-field box is all open air.",
+            flow="external"),
+    TurfRow("closed", "is", False, "weak",
+            "The surface is not watertight; cfMesh fills a closed surface, so holes have to be "
+            "closed first."),
+    TurfRow("cells_across_at_budget", "<", 10.0, "weak",
+            "The narrowest passage gets fewer than 10 cells across within the cell budget; cfMesh "
+            "refines the wall band, not the gap, so tight gaps (a tube bank) can come out under the "
+            "resolution floor.", flow="internal"),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Much of this body is a thin hollow shell: at the default size it is meshed as a rough "
+            "envelope, and finer sizing breaks the mesh quality.", flow="external"),
+)
+
+
 SPEC = EngineSpec(
 
         name="cfmesh",
@@ -168,6 +195,7 @@ SPEC = EngineSpec(
                  FlowSupport("internal", ("cad",))),
         # the most forgiving input handling (it wraps dirty surfaces): first on the ladder
         ladder_rank=10,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
