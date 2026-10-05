@@ -199,9 +199,10 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
     monkeypatch.setattr(gc, "_fetch", lambda ref, work: (work / "geometry.step").write_text("step") or work / "geometry.step")
     monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
     monkeypatch.setattr(gc, "_name_with_vision", lambda *a, **k: {"error": "no model in this test"})
-    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared: _Scout(_facts()))
+    monkeypatch.setattr(scout_mod, "read_cad", lambda path: None)
+    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared, shape=None: _Scout(_facts()))
 
-    def _skin(path, dest, *, prepared):
+    def _skin(path, dest, *, prepared, shape=None):
         write_stl_binary(Path(dest), _box_triangles((0, 0, 0), (1, 1, 1)))
         return Path(dest)
     monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
@@ -244,7 +245,8 @@ def test_a_step_files_check_serves_the_holes_of_the_skin_the_stage_is_clicked_on
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(gc, "_fetch", lambda ref, work: (work / "geometry.step").write_text("step") or work / "geometry.step")
     monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
-    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared: _Scout(_facts()))
+    monkeypatch.setattr(scout_mod, "read_cad", lambda path: None)
+    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared, shape=None: _Scout(_facts()))
     import math
 
     def at(x, r, k):
@@ -257,7 +259,7 @@ def test_a_step_files_check_serves_the_holes_of_the_skin_the_stage_is_clicked_on
         tube += [(a0, b1, b0), (a0, a1, b1), (c0, d0, d1), (c0, d1, c1),
                  (a0, c0, c1), (a0, c1, a1), (b0, d1, d0), (b0, b1, d1)]
 
-    def _skin(path, dest, *, prepared):
+    def _skin(path, dest, *, prepared, shape=None):
         write_stl_binary(Path(dest), tube)
         return Path(dest)
     monkeypatch.setattr(scout_mod, "write_view_stl", _skin)

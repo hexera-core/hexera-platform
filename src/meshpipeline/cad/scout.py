@@ -166,9 +166,10 @@ class ScoutResult:
 
 
 # ------------------------------------------------------------------- reading the part ----
-def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3) -> Path:
+def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None) -> Path:
     """The part's skin as a binary STL in metres, for the pictures the user and the vision model
-    look at. Coarser than a meshing surface on purpose: it only has to look right."""
+    look at. Coarser than a meshing surface on purpose: it only has to look right. `shape` is the
+    part as read_cad read it, when the caller has it already: a big STEP takes 10-25 s to read."""
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -177,7 +178,8 @@ def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3) -> 
 
     from meshpipeline.cad.normalise import occ_scale_transform
 
-    shape = _read_shape(Path(path))
+    shape = _read_shape(Path(path)) if shape is None else shape
+    # a scaled COPY: the shape as read is left untouched (unmeshed) for anyone else reading it
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
     box = Bnd_Box()
     BRepBndLib.Add_s(shape, box)
@@ -191,6 +193,12 @@ def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3) -> 
     if not writer.Write(shape, str(dest)):
         raise UnreadableCad("the part's skin could not be written for viewing")
     return dest
+
+
+def read_cad(path):
+    """The part in a STEP or IGES file, as read - unscaled and unmeshed. scout_cad and
+    write_view_stl both take it (shape=), so the geometry check reads a file once, not twice."""
+    return _read_shape(Path(path))
 
 
 def _read_shape(path: Path):
@@ -307,31 +315,31 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
 
 
 # --------------------------------------------------------------------------- the scout ----
-def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult:
+def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None) -> ScoutResult:
     """Everything the geometry can say about itself, in metres, as a proposal.
 
     `prepared` is the coordinate state the tessellation seam uses (contracts/coordinate_state),
-    so this reads the same metres every downstream step reads."""
+    so this reads the same metres every downstream step reads. `shape` is the part as read_cad
+    read it, when the caller has it already."""
     from OCP.Bnd import Bnd_Box
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepGProp import BRepGProp
-    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
-    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
     from OCP.GProp import GProp_GProps
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_IN, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
     from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.scout_probe import LazyProbe
 
     path = Path(path)
-    shape = _read_shape(path)
+    shape = _read_shape(path) if shape is None else shape
+    # a scaled COPY, meshed below: the shape as read stays untouched for the view skin
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
 
     box = Bnd_Box()
@@ -341,7 +349,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
     diag = _norm(_sub(bbox_max, bbox_min))
     if not math.isfinite(diag) or diag <= 0:
         raise UnreadableCad("the part has no size (empty or degenerate geometry)")
-    BRepMesh_IncrementalMesh(shape, diag / 2500.0, False, angular_deflection, True)
+    lin = diag / 2500.0
+    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
 
     solids: list = []
     se = TopExp_Explorer(shape, TopAbs_SOLID)
@@ -356,39 +365,22 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
             n += 1
             he.Next()
         shells_per_solid.append(n)
-    classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
     vg = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, vg)
     volume = abs(float(vg.Mass()))
-
-    def inside_any(p) -> bool:
-        for c in classifiers:
-            c.Perform(gp_Pnt(*p), 1e-9)
-            if c.State() == TopAbs_IN:
-                return True
-        return False
+    # THE PROBES' ANSWERS come from the part's own mesh wherever the mesh cannot be wrong, and from
+    # the exact B-rep everywhere else (cad/scout_probe): the same answers, minutes faster on a
+    # part with hundreds of curved faces.
+    part_probe = LazyProbe(shape, solids, deflection=lin)
+    inside_any = part_probe.inside_any
 
     def clear_ahead(origin, direction, skip: float) -> bool:
         """Nothing of the part lies along `direction` from `origin` beyond `skip`."""
-        inter = BRepIntCurveSurface_Inter()
-        inter.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
-        while inter.More():
-            if inter.W() > skip:
-                return False
-            inter.Next()
-        return True
+        return not part_probe.meets_beyond(origin, direction, skip)
 
     def first_hit(origin, direction, skip: float) -> float:
         """Distance to the first surface along `direction` beyond `skip`, or 0.0 when none."""
-        inter = BRepIntCurveSurface_Inter()
-        inter.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
-        best = 0.0
-        while inter.More():
-            w = inter.W()
-            if w > skip and (best == 0.0 or w < best):
-                best = w
-            inter.Next()
-        return best
+        return part_probe.first_beyond(origin, direction, skip)
 
     def rim_is_free(face, centroid, normal) -> bool:
         """The face's plane just outside its outer rim holds no material: an end face, not a plate
