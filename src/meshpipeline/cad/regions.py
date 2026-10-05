@@ -113,11 +113,13 @@ def _cad_regions(path: Path) -> CadRegions:
 def regions_of(path) -> CadRegions:
     # Never fatal: a file this cannot describe is reported as carrying no regions, which is what
     # the caller would otherwise have assumed anyway.
+    from meshpipeline.contracts.intake_formats import is_cad
+
     p = Path(path)
     try:
-        if p.suffix.lower() == ".stl":
+        if p.suffix.lower() == ".stl":       # the canonical surface: its named solids
             return _stl_regions(p)
-        if p.suffix.lower() in (".step", ".stp", ".igs", ".iges"):
+        if is_cad(p):
             return _cad_regions(p)
     except Exception as exc:
         logger.info("cad regions: %s could not be described (%s)", p.name, exc)

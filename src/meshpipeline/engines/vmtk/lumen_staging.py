@@ -26,7 +26,6 @@ STAGING_FACT = "vmtk_staging.json"
 LUMEN_OPEN = "lumen_open.vtp"
 #: point array on lumen_open.vtp: the local radius of the lumen at each wall point (metres)
 SIZING_ARRAY = "LocalRadius"
-_CAD_SUFFIXES = (".step", ".stp", ".iges", ".igs")
 
 #: The remesh edge length is the smallest declared port divided by this: about twelve edges across
 #: the narrowest opening, fine enough for a clean Voronoi diagram (the centerline) and coarse enough
@@ -50,7 +49,10 @@ RADIUS_HI_FRACTION = 0.75
 
 
 def is_cad(path) -> bool:
-    return Path(path).suffix.lower() in _CAD_SUFFIXES
+    # the one CAD-or-surface answer (contracts/intake_formats), not a suffix list of its own
+    from meshpipeline.contracts.intake_formats import is_cad as _is_cad
+
+    return _is_cad(path)
 
 
 def _match_score(m: dict, t: dict) -> float:

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
 from meshpipeline.engines.base import RunPolicy
 from meshpipeline.sandbox.safe_exec import (
@@ -26,6 +27,9 @@ _CENTERLINES = "centerlines.vtp"
 _DIST = "lumen_dist.vtp"
 _MESH = "mesh.vtu"
 _LUMEN_OPEN = "lumen_open.vtp"     # the staged open wall (engines/vmtk/lumen_staging.py)
+#: The surface formats this bundle reads itself (cad/staging.py hands them over unconverted):
+#: a segmented vessel's VTK PolyData, with whatever arrays it carries.
+native_surface_suffixes = (".vtp",)
 #: A boundary layer whose tets sum to more than this above the enclosed volume has folded;
 #: tets summing to less than the enclosed volume by more than this never filled it.
 OVERLAP_TOLERANCE = 0.02
@@ -209,7 +213,7 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     geom_path, out_stl = Path(geom_path), Path(out_stl)
     ws = out_stl.parent
     suffix = geom_path.suffix.lower()
-    if suffix in (".step", ".stp", ".iges", ".igs"):
+    if is_cad(geom_path):
         from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _cad
         _cad(geom_path, out_stl, prepared=prepared)    # CAD -> surface STL, already metres
         surf = _read_surface(out_stl)

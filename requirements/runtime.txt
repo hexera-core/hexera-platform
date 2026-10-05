@@ -105,6 +105,14 @@ pyamg==5.3.0
 # LD_LIBRARY_PATH (set in worker_entrypoint.sh).
 cadquery-ocp==7.9.3.1.1
 
+# Geometry ingestion (cad/ingest): every accepted mesh format becomes the canonical STL before an
+# engine sees it. meshio reads Gmsh/Fluent .msh, Nastran, Abaqus, Medit, SU2 and OFF (needs only
+# numpy + rich, both already here); trimesh reads glTF/GLB (numpy only); rhino3dm (openNURBS) reads
+# the meshes a Rhino .3dm stores. All three are MIT-licensed; rhino3dm ships a manylinux_2_28 wheel.
+meshio==5.3.5
+trimesh==4.8.3
+rhino3dm==8.17.0
+
 
 # --- Observability: OpenTelemetry distributed tracing (env-gated, off by default) ---
 opentelemetry-sdk==1.41.1
