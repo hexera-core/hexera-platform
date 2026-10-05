@@ -392,6 +392,47 @@ def test_a_vessel_whose_small_nozzles_are_the_part_itself_stays_a_pipe_wall(tmp_
     assert len(r.openings) == 2
 
 
+def test_each_piece_of_a_pipe_drawn_in_pieces_is_a_real_share_of_it():
+    """A pipe drawn as three solids end to end: each piece holds a third of the part, far above the
+    minor-part share, so a small end ring on any piece still counts."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.scout import MINOR_PART_SHARE, _volume_share
+
+    pipe = _compound(*(BRepAlgoAPI_Cut(_cyl(6.0, 100.0, (100.0 * i, 0, 0)), _cyl(5.0, 100.0, (100.0 * i, 0, 0))).Shape()
+                       for i in range(3)))
+    solids, faces = [], []
+    se = TopExp_Explorer(pipe, TopAbs_SOLID)
+    while se.More():
+        solids.append(TopoDS.Solid_s(se.Current()))
+        se.Next()
+    fe = TopExp_Explorer(pipe, TopAbs_FACE)
+    while fe.More():
+        faces.append(TopoDS.Face_s(fe.Current()))
+        fe.Next()
+    share = _volume_share(solids, faces, list(range(len(faces))))
+    assert all(abs(v - 1.0 / 3.0) < 1e-6 for v in share.values())
+    assert min(share.values()) >= MINOR_PART_SHARE
+
+
+def test_a_small_tube_on_a_minor_part_is_not_proposed_beside_a_vessels_nozzles(tmp_path):
+    """A tank with two small nozzles (all one solid) and a 3 mm tap on its own tiny solid: the
+    nozzles open the part itself and stay its ports; the tap is an open ring too, but on a minor
+    part - not proposed, and the note says why."""
+    shell = BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 200.0, 200.0, 200.0).Shape(),
+                            BRepPrimAPI_MakeBox(gp_Pnt(4, 4, 4), 192.0, 192.0, 192.0).Shape()).Shape()
+    nozzles = BRepAlgoAPI_Fuse(_cyl(7.0, 40.0, (190, 100, 100)), _cyl(7.0, 40.0, (10, 100, 100), (-1, 0, 0))).Shape()
+    bores = BRepAlgoAPI_Fuse(_cyl(5.0, 40.0, (190, 100, 100)), _cyl(5.0, 40.0, (10, 100, 100), (-1, 0, 0))).Shape()
+    vessel = BRepAlgoAPI_Cut(BRepAlgoAPI_Fuse(shell, nozzles).Shape(), bores).Shape()
+    tap = BRepAlgoAPI_Cut(_cyl(2.0, 20.0, (100, 100, 195), (0, 0, 1)), _cyl(1.5, 20.0, (100, 100, 195), (0, 0, 1))).Shape()
+    r = _scout(_write(_compound(vessel, tap), tmp_path / "tapped.step"))
+    assert (r.body_kind, r.flow) == ("pipe_wall", "internal")
+    assert sorted(round(o.centroid[0], 3) for o in r.openings) == [-0.03, 0.23]
+    assert any("small open tube" in n for n in r.notes)
+
+
 def test_flats_on_a_thin_skin_are_not_the_mouths_of_a_fluid_body(tmp_path):
     """A thin dome shell (0.5 mm) carrying three round pads: the pads' tops are round flats, clear
     ahead and a fair size, but under a millimetre of skin lies behind them - a panel's flats, not

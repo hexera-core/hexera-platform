@@ -30,10 +30,11 @@ MIN_MOUTH_OF_THICKNESS = 0.1
 #: thickness behind it: the Toyota Supra's 0.3 mm body shell gave three "mouths" 0.2 mm deep at its
 #: nose. The shallowest real mouth in the corpus runs back half its size (a short elbow's).
 MIN_MOUTH_DEPTH = 0.25
-#: An open ring under the mouth bar still rims a port when it sits on the part itself - on the
-#: solid (or solids) holding at least this share of the part's volume: a coil or a vessel is the
-#: tube its small ports open, one solid; a car's exhaust tips are their own small solids.
-MAIN_PART_SHARE = 0.5
+#: An open ring under the mouth bar still rims a port unless it sits on a minor part - solids
+#: holding under this share of the part's volume. A coil or a vessel is the tube its small ports
+#: open; a pipe drawn in pieces keeps its ends (each piece is a real share); a car's exhaust tips are
+#: their own solids, a thousandth of the car.
+MINOR_PART_SHARE = 0.02
 #: A mouth is a duct section, not a plate's edge or a pin's end: a flat with sides beyond this
 #: ratio is a mouth only when its narrow side is a real size against the part (THIN_FLAT of the
 #: diagonal); a wide flat HVAC duct's 6:1 mouth stays, a bracket's 3 mm edge goes.
@@ -501,21 +502,22 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
     # a mouth too. Small open tubes on a body - a car's exhaust tips, a housing's drain and vent - are
     # tubes on a body, not the ends of the passage the part is: the Toyota Supra (57 x 128 x 37 mm, a
     # thin-shelled body of 62 solids) read as "pipe_wall, 2 openings" off its two 2.5 mm exhaust tips.
-    # A smaller ring still counts when it sits on the part itself (MAIN_PART_SHARE): the part IS the
-    # tube - a coil, a vessel with small nozzles - not a body carrying one.
+    # A smaller ring still counts unless it sits on a minor part (MINOR_PART_SHARE): a coil or a vessel
+    # with small nozzles IS the tube, not a body carrying one.
     small = [c for c in rings if c.equivalent_diameter < MIN_MOUTH_OF_THICKNESS * thinnest]
     share = _volume_share(solids, faces, [c.face_index for c in small]) if small else {}
     mouth_rings = [c for c in rings if c.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
-                   or share.get(c.face_index, 1.0) >= MAIN_PART_SHARE]
-    if len(rings) >= 2 and len(mouth_rings) < 2 and not (mouth_rings and hollow):
-        widest = max(c.equivalent_diameter for c in rings)
-        notes.append(f"{len(rings)} small open tubes (the widest {1000 * widest:.1f} mm across) are under a tenth "
-                     f"of the part's thinnest side ({1000 * thinnest:.0f} mm), so they read as tubes on a body, "
-                     "not the ends of a passage")
+                   or share.get(c.face_index, 1.0) >= MINOR_PART_SHARE]
+    tubes = [c for c in rings if all(c is not m for m in mouth_rings)]
+    if tubes:
+        widest = max(c.equivalent_diameter for c in tubes)
+        notes.append(f"{len(tubes)} small open tube{'s' if len(tubes) > 1 else ''} on minor parts (the widest "
+                     f"{1000 * widest:.1f} mm across, under a tenth of the part's {1000 * thinnest:.0f} mm thinnest "
+                     "side) read as tubes on a body, not ends of a passage, and are not proposed as openings")
 
     if len(mouth_rings) >= 2 or (mouth_rings and hollow):
         body_kind, input_kind, flow = "pipe_wall", "body-surface", "internal"
-        pool = rings
+        pool = mouth_rings
         confidence_kind = 0.9
     elif hollow:
         body_kind, input_kind, flow = "hollow_wall", "body-surface", "internal"
