@@ -1589,6 +1589,15 @@
           <h2>Build plan</h2>
           <p>The fastest path to revenue is an internal service console, not a polished self-serve repair product. Build the narrow repair-to-mesh loop first, then automate the operator decisions that repeat.</p>
 
+          <h3>What is built, as of 5 October 2026</h3>
+          <p>All ten tickets below are implemented on <code>pranavkannepalli/cad-repair-research</code> and deployed to the <code>pranav</code> personal environment. CI passes in full, including four integration-tier shards against real PostgreSQL and MinIO. What follows is the state of each acceptance, not a summary of the code.</p>
+          <ul>
+            <li><strong>Proved on the host and in CI:</strong> inspection on every mesh-intended job without touching the geometry handle; inspect reports as durable artifacts, delivered on every terminal outcome including the runs that built no mesh; repair job, attempt and decision tables with owner isolation and a compare-and-set state machine; the operator queue API and its decision audit; two admin console pages; conservative OpenCASCADE repair behind a kill switch, with caps measured on the result; promotion of repaired geometry only once it stages; the repaired file and a delivery manifest; rules-based shadow triage that structurally cannot move a job; counted throughput.</li>
+            <li><strong>Proved against the deployed environment:</strong> the API serves and reaches PostgreSQL, Redis and the object store; revisions 0011&ndash;0014 applied to the real Cloud SQL database &mdash; the API refuses to boot against a schema missing a table its models declare, so a ready service is the proof. Re-runnable: <code>devtools/validation/smoke_hosted_repair.sh pranav</code>.</li>
+            <li><strong>Not proved, and not to be claimed:</strong> no worker has consumed a repair task from the slug-prefixed queue; the Cloud Run mesh job has not been exercised for this environment; no real customer file has gone through inspect &rarr; repair &rarr; promote &rarr; mesh end to end. That last one needs a licensed broken CAD file, because every shape the kernel builds is sound by construction &mdash; it cannot be fabricated from OpenCASCADE's own constructors.</li>
+          </ul>
+          <p><strong>The finding that justifies the hosted tiers.</strong> Release validation, running the real kernel, caught the conservative repair turning a sound box's single solid into none: sewing returns a shell, and a shape that already had a solid loses it. The unit tier mocks the kernel and never saw it; CI was green. A closed body reduced to loose surfaces would have reached a customer as a silently ruined part. Sewing now runs only where there is no solid to lose, and losing one is a refusal in its own right. Any future repair operation should assume it will damage geometry in a way only a real part reveals.</p>
+
           <div class="table-wrap">
             <table>
               <thead>
