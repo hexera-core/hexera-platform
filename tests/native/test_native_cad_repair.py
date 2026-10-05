@@ -98,20 +98,30 @@ def test_a_real_repaired_part_can_be_promoted_to_the_runs_geometry(tmp_path):
     construction. Until such a fixture exists (a real customer file, licensed and reduced), the
     honest claim is this one: a repaired part is accepted only because it provably staged.
     """
-    from tests._geometry_support import geometry_state
-
     from meshpipeline.contracts.geometry_source import (
+        GeometryInterpretationRef,
         GeometrySourceRef,
         MaterializedGeometry,
         sha256_of,
     )
-    from meshpipeline.pipeline.geometry_state import materialized
     from meshpipeline.pipeline.repair_promote import derived_interpretation, promote
 
     source = write_step(tmp_path / "part.step", "MM")
-    state = {"job_id": "native-1", "engine": "gmsh",
-             "geometry": geometry_state(tmp_path, filename="part.step")}
-    original = materialized(state)
+    # THE HANDLE IS BUILT FROM THE REAL FILE, not from tests._geometry_support: that helper WRITES
+    # placeholder bytes at the path it is given, which would overwrite the STEP this test just
+    # authored and leave the kernel parsing a comment. The handle has to describe the bytes that
+    # are actually there - that is the whole contract being exercised.
+    src_digest, src_size = sha256_of(source)
+    original = MaterializedGeometry(
+        ref=GeometrySourceRef(
+            source_id="native-original-source", owner_id="native",
+            object_key="sources/native-original-source", sha256=src_digest,
+            size_bytes=src_size, original_filename="part.step", suffix_hint=".step"),
+        interpretation=GeometryInterpretationRef(
+            interpretation_id="native-fixture", geometry_source_id="native-original-source",
+            unit="mm", scale_to_metres=0.001, basis="user_confirmed"),
+        local_path=source)
+    state = {"job_id": "native-1", "engine": "gmsh", "geometry": original.to_state()}
 
     repaired_path = tmp_path / "part-repaired.step"
     repair_step_file(source, repaired_path)

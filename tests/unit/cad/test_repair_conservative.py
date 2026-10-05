@@ -86,6 +86,20 @@ def test_face_removal_is_allowed_only_where_a_deployment_said_so(monkeypatch):
     assert _refusal(_BEFORE, _after(faces=19)) == ""
 
 
+def test_a_repair_that_lost_a_solid_is_refused():
+    # FOUND BY THE REAL KERNEL, not by reasoning: a sound box went through sewing and came out
+    # with no solid. A closed body reduced to loose surfaces is damage - most meshers either
+    # refuse it or quietly mesh something else - so it is refused whatever produced it.
+    reason = _refusal(_BEFORE, _after(solids=0))
+    assert "lost 1 solid" in reason and "damage rather than repair" in reason
+
+
+def test_a_shape_that_never_had_a_solid_is_not_refused_for_not_gaining_one():
+    # a loose surface model is why sewing exists; it is not required to become a volume
+    surfaces = {**_BEFORE, "solids": 0}
+    assert _refusal(surfaces, {**surfaces, "shells": 1}) == ""
+
+
 def test_a_repair_that_inflated_a_tolerance_past_the_cap_is_refused():
     reason = _refusal(_BEFORE, _after(max_tolerance_mm=0.5))
     # "valid" that means "the kernel agreed to stop complaining" is not a repair

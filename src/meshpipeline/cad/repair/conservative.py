@@ -108,11 +108,18 @@ def _write_step(shape, destination: Path) -> None:
 
 
 def _fix(shape, *, tolerance_mm: float):
-    """Run the conservative operation set. One ShapeFix pass, then a sewing pass.
+    """Run the conservative operation set: a ShapeFix pass, and sewing ONLY where it belongs.
 
     ShapeFix_Shape is given a tolerance to WORK AT, which is not a promise about what it leaves
     behind - it may raise a sub-shape's tolerance well past this to make the shape close. That is
     precisely why the caps below are measured on the RESULT rather than trusted from the request.
+
+    SEWING IS FOR SHAPES THAT ARE NOT CLOSED YET. BRepBuilderAPI_Sewing joins coincident face
+    boundaries and returns a shell; handed a shape that already contains a solid it returns the
+    sewn shell and the solid is GONE. A real-kernel test caught exactly that - a sound box went in
+    with one solid and came out with none - which is damage, not repair. So the sewing pass runs
+    only when there is no solid to lose, and the refusal below treats a lost solid as damage
+    whatever produced it.
     """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.ShapeFix import ShapeFix_Shape
@@ -130,6 +137,11 @@ def _fix(shape, *, tolerance_mm: float):
     fixer.FixVertexPositionMode = 0
     fixer.Perform()
     fixed = fixer.Shape()
+
+    if _counts(fixed)["solids"] > 0:
+        # Already closed. ShapeFix has done the conservative work; sewing from here could only
+        # take the solid away.
+        return fixed
 
     sewing = BRepBuilderAPI_Sewing(tolerance_mm)
     # NON-MANIFOLD MODE OFF: joining three faces along one edge produces a shape no mesher will
@@ -219,6 +231,12 @@ def _refusal(before: dict, after: dict) -> str:
     """The one place a repair result is judged. Returns the reason, or "" to accept."""
     if after["faces"] == 0:
         return "the repair left no faces to mesh"
+    if after["solids"] < before["solids"]:
+        # A SOLID IS WHAT MAKES A PART A VOLUME. Losing one turns a closed body into a bag of
+        # surfaces, which most meshers will either refuse or quietly mesh as something else. It is
+        # damage however it happened, so it is refused here rather than only prevented upstream.
+        return (f"the repair lost {before['solids'] - after['solids']} solid(s) - a closed body "
+                "became loose surfaces, which is damage rather than repair")
     if after["faces"] < before["faces"] and not rcfg.CAD_REPAIR_ALLOW_FACE_REMOVAL:
         # DELETING A FACE IS DEFEATURING, which is a judgement about what the part is for. A
         # conservative pass that quietly removed one has changed the customer's design.
