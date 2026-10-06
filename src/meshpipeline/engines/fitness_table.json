@@ -1,47 +1,47 @@
 {
- "version": "2026-10-05-6af41552",
+ "version": "2026-10-05-4196ef85",
  "traits_version": 2,
- "generated": "2026-10-06T00:45:13Z",
+ "generated": "2026-10-06T00:48:52Z",
  "command": "devtools/fitness/build_engine_fitness.py --out /home/areen/overnight/lab/out --since a4595577 --cases /home/areen/overnight/lab/testset/cases --cases /home/areen/overnight/recommend/cases --cases /home/areen/overnight/vmtk-tubular/cases --cases /home/areen/overnight/home-turf/cases --cases /home/areen/overnight/matrix/cases_lab --cases /home/areen/overnight/stl-internal/cases --cases /home/areen/overnight/snappy-thin/cht --root /home/areen/overnight/lab/testset --recount vmtk:input_kind=body-surface:wrong region - kept the outer skin of a pipe wall (VMTK-TUBULAR, fixed on ov/vmtk-tubular) --recount vmtk:annulus=1:wrong region - dropped the inner rod of an annulus (VMTK-TUBULAR, fixed on ov/vmtk-tubular) --cache /home/areen/overnight/recommend/traits_cache.json --jobs 4",
  "provenance": {
-  "base_commit": "6af41552b45333b3904d48dd60ee3d47e87ad684",
+  "base_commit": "4196ef85a324df673de99f4efdd0bd704f41190a",
   "since_commit": "a4595577992bd4416901b5ccd9f3ba70f3322464",
   "rule": "runs whose commit descends from since_commit and is an ancestor of base_commit; newest result per (case, engine, format); refusals and lab-runner crashes left out",
-  "runs": 500,
-  "shapes": 95,
-  "cases": 152,
+  "runs": 509,
+  "shapes": 96,
+  "cases": 157,
   "commits": {
    "a4595577": 261,
    "aa00a6e6": 2,
-   "cf9bc0bc": 237
+   "cf9bc0bc": 246
   },
   "tag_prefixes": {
    "ht0": 6,
-   "htb": 64,
+   "htb": 67,
    "integfz": 54,
    "integt": 5,
    "integz": 207,
-   "rec1": 31,
+   "rec1": 33,
    "rec2": 42,
    "sthin": 45,
-   "vtub": 46
+   "vtub": 50
   },
   "excluded": {
    "case or geometry file not found": 13,
-   "code not in since..base": 1244,
+   "code not in since..base": 1245,
    "geometry could not be measured": 5,
    "older duplicate": 37,
    "status refused": 9
   },
   "recounted": {
    "vmtk: wrong region - dropped the inner rod of an annulus (VMTK-TUBULAR, fixed on ov/vmtk-tubular)": 4,
-   "vmtk: wrong region - kept the outer skin of a pipe wall (VMTK-TUBULAR, fixed on ov/vmtk-tubular)": 22
+   "vmtk: wrong region - kept the outer skin of a pipe wall (VMTK-TUBULAR, fixed on ov/vmtk-tubular)": 24
   }
  },
  "summary": {
   "external / thick body / cad": {
    "cfmesh": "35/36",
-   "gmsh": "7/24",
+   "gmsh": "7/27",
    "snappy": "29/29"
   },
   "external / thick body / surface": {
@@ -63,7 +63,7 @@
    "cfmesh": "5/5",
    "gmsh": "4/4",
    "snappy": "14/14",
-   "vmtk": "6/6"
+   "vmtk": "7/8"
   },
   "internal / branched / surface": {
    "cfmesh": "4/6",
@@ -80,7 +80,7 @@
    "cfmesh": "6/6",
    "gmsh": "1/1",
    "snappy": "1/1",
-   "vmtk": "1/4"
+   "vmtk": "1/5"
   },
   "internal / obstacles / cad": {
    "cfmesh": "7/11",
@@ -108,10 +108,10 @@
    "cfmesh": "21/21",
    "gmsh": "10/13",
    "snappy": "16/16",
-   "vmtk": "14/21"
+   "vmtk": "14/22"
   },
   "internal / tube / surface": {
-   "cfmesh": "16/16",
+   "cfmesh": "18/18",
    "gmsh": "10/19",
    "snappy": "14/14",
    "vmtk": "6/11"
@@ -6678,6 +6678,56 @@
    "shape": "blade_row_rotor_001",
    "case": "ht_blade_row_rotor_001",
    "family": "blade_row_rotor",
+   "engine": "gmsh",
+   "format": "step",
+   "form": "cad",
+   "status": "fail",
+   "failure_class": "gate:sicn_floor:mesh_quality",
+   "cells": 122481,
+   "seconds": 120.0,
+   "layers_pct": null,
+   "cells_across_p05": null,
+   "quality": {
+    "min_sicn": 0.0108,
+    "sicn_low_fraction": 0.003021
+   },
+   "tag": "htb-blade_row_rotor_001-gmsh-step",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "external",
+    "form": "cad",
+    "input_kind": "body-surface",
+    "n_triangles": 31944,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 0,
+    "ports": null,
+    "sharp_edges": 11.4818,
+    "knife_edges": 0.0,
+    "passage_rel": null,
+    "passage": null,
+    "narrow_vs_volume": null,
+    "neck": null,
+    "scale_ratio": 774.9217,
+    "slenderness": null,
+    "gap_vs_port": null,
+    "wet_share": null,
+    "thin_wall_fraction": 0.6387,
+    "thickness_ratio": 7.1424,
+    "gap_share": 0.0,
+    "notes": []
+   }
+  },
+  {
+   "shape": "blade_row_rotor_001",
+   "case": "ht_blade_row_rotor_001",
+   "family": "blade_row_rotor",
    "engine": "snappy",
    "format": "step",
    "form": "cad",
@@ -7502,6 +7552,56 @@
    "shape": "blade_row_rotor_006",
    "case": "ht_blade_row_rotor_006",
    "family": "blade_row_rotor",
+   "engine": "gmsh",
+   "format": "step",
+   "form": "cad",
+   "status": "fail",
+   "failure_class": "gate:sicn_floor:mesh_quality",
+   "cells": 106249,
+   "seconds": 91.5,
+   "layers_pct": null,
+   "cells_across_p05": null,
+   "quality": {
+    "min_sicn": 0.0164,
+    "sicn_low_fraction": 0.003454
+   },
+   "tag": "htb-blade_row_rotor_006-gmsh-step",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "external",
+    "form": "cad",
+    "input_kind": "body-surface",
+    "n_triangles": 14154,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 0,
+    "ports": null,
+    "sharp_edges": 11.1456,
+    "knife_edges": 0.0,
+    "passage_rel": null,
+    "passage": null,
+    "narrow_vs_volume": null,
+    "neck": null,
+    "scale_ratio": 507.3182,
+    "slenderness": null,
+    "gap_vs_port": null,
+    "wet_share": null,
+    "thin_wall_fraction": 0.5713,
+    "thickness_ratio": 7.9024,
+    "gap_share": 0.0,
+    "notes": []
+   }
+  },
+  {
+   "shape": "blade_row_rotor_006",
+   "case": "ht_blade_row_rotor_006",
+   "family": "blade_row_rotor",
    "engine": "snappy",
    "format": "step",
    "form": "cad",
@@ -7570,6 +7670,53 @@
     "skew_fraction": 6.589742406969312e-06
    },
    "tag": "htb-crm_highlift_landing-cfmesh-step",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 4000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "external",
+    "form": "cad",
+    "input_kind": "body-surface",
+    "n_triangles": 38928,
+    "n_solids": 3,
+    "closed": true,
+    "genus": 1,
+    "ports": null,
+    "sharp_edges": 15.8625,
+    "knife_edges": 1.2157,
+    "passage_rel": null,
+    "passage": null,
+    "narrow_vs_volume": null,
+    "neck": null,
+    "scale_ratio": 1684.977,
+    "slenderness": null,
+    "gap_vs_port": null,
+    "wet_share": null,
+    "thin_wall_fraction": 0.3887,
+    "thickness_ratio": 0.2801,
+    "gap_share": 0.02,
+    "notes": []
+   }
+  },
+  {
+   "shape": "crm_highlift_landing",
+   "case": "ht_crm_highlift_landing",
+   "family": "corpus_body",
+   "engine": "gmsh",
+   "format": "step",
+   "form": "cad",
+   "status": "fail",
+   "failure_class": "mesher_failed:gmsh",
+   "cells": null,
+   "seconds": 245.4,
+   "layers_pct": null,
+   "cells_across_p05": null,
+   "quality": {},
+   "tag": "htb-crm_highlift_landing-gmsh-step",
    "commit": "cf9bc0bc",
    "brief": {
     "layers_requested": true,
@@ -15413,6 +15560,58 @@
    }
   },
   {
+   "shape": "s_duct_008",
+   "case": "rc_s_duct_008_fluid",
+   "family": "s_duct",
+   "engine": "cfmesh",
+   "format": "stl",
+   "form": "surface",
+   "status": "pass",
+   "failure_class": "",
+   "cells": 239820,
+   "seconds": 69.2,
+   "layers_pct": null,
+   "cells_across_p05": 23.6,
+   "quality": {
+    "max_non_ortho": 36.945,
+    "max_skewness": 1.60492,
+    "skew_faces": 0,
+    "skew_fraction": 0.0
+   },
+   "tag": "rec1-rc_s_duct_008_fluid-cfmesh-stl",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "internal",
+    "form": "surface",
+    "input_kind": "fluid-domain",
+    "n_triangles": 3374,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 0,
+    "ports": 2,
+    "sharp_edges": 3.1729,
+    "knife_edges": 0.0,
+    "passage_rel": 0.1303,
+    "passage": 0.1914,
+    "narrow_vs_volume": 0.4008,
+    "neck": 0.7214,
+    "scale_ratio": 10.6373,
+    "slenderness": 7.6755,
+    "gap_vs_port": 1.0304,
+    "wet_share": 0.952,
+    "thin_wall_fraction": null,
+    "thickness_ratio": null,
+    "gap_share": null,
+    "notes": []
+   }
+  },
+  {
    "shape": "s_duct_010",
    "case": "rc_s_duct_010_fluid",
    "family": "s_duct",
@@ -15665,6 +15864,58 @@
     "scale_ratio": 10.6677,
     "slenderness": 3.9035,
     "gap_vs_port": 0.7657,
+    "wet_share": 0.37,
+    "thin_wall_fraction": 0.0,
+    "thickness_ratio": null,
+    "gap_share": null,
+    "notes": []
+   }
+  },
+  {
+   "shape": "straight_reducer_015",
+   "case": "rc_straight_reducer_015_body",
+   "family": "straight_reducer",
+   "engine": "cfmesh",
+   "format": "stl",
+   "form": "surface",
+   "status": "pass",
+   "failure_class": "",
+   "cells": 167114,
+   "seconds": 45.2,
+   "layers_pct": null,
+   "cells_across_p05": 18.6,
+   "quality": {
+    "max_non_ortho": 38.8989,
+    "max_skewness": 0.550378,
+    "skew_faces": 0,
+    "skew_fraction": 0.0
+   },
+   "tag": "rec1-rc_straight_reducer_015_body-cfmesh-stl",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "internal",
+    "form": "surface",
+    "input_kind": "body-surface",
+    "n_triangles": 2808,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 1,
+    "ports": 2,
+    "sharp_edges": 5.8692,
+    "knife_edges": 0.0,
+    "passage_rel": 0.1842,
+    "passage": 0.323,
+    "narrow_vs_volume": 0.3534,
+    "neck": 0.5102,
+    "scale_ratio": 10.6417,
+    "slenderness": 3.8291,
+    "gap_vs_port": 0.7736,
     "wet_share": 0.37,
     "thin_wall_fraction": 0.0,
     "thickness_ratio": null,
@@ -23345,6 +23596,56 @@
    }
   },
   {
+   "shape": "bend_elbow_021",
+   "case": "vt_bend_elbow_021_step_metal",
+   "family": "bend_elbow",
+   "engine": "vmtk",
+   "format": "step",
+   "form": "cad",
+   "status": "fail",
+   "failure_class": "recounted:wrong region - kept the outer skin of a pipe wall (VMTK-TUBULAR, fixed on ov/vmtk-tubular)",
+   "cells": 713009,
+   "seconds": 162.2,
+   "layers_pct": 100.0,
+   "cells_across_p05": 14.1,
+   "quality": {
+    "min_quality": 0.08866265525704814,
+    "layer_min_quality": 0.03374503871768399
+   },
+   "tag": "vtub-a1-bend_elbow_021_step_metal",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "internal",
+    "form": "cad",
+    "input_kind": "body-surface",
+    "n_triangles": 4904,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 1,
+    "ports": 2,
+    "sharp_edges": 3.7077,
+    "knife_edges": 0.0,
+    "passage_rel": 0.1372,
+    "passage": 0.0683,
+    "narrow_vs_volume": 0.3992,
+    "neck": 0.7554,
+    "scale_ratio": 9.6494,
+    "slenderness": 8.63,
+    "gap_vs_port": 0.9962,
+    "wet_share": 0.4473,
+    "thin_wall_fraction": 0.9866,
+    "thickness_ratio": null,
+    "gap_share": null,
+    "notes": []
+   }
+  },
+  {
    "shape": "bend_elbow_030",
    "case": "vt_bend_elbow_030_step",
    "family": "bend_elbow",
@@ -23798,6 +24099,59 @@
     "thickness_ratio": null,
     "gap_share": null,
     "notes": []
+   }
+  },
+  {
+   "shape": "diffuser_plenum_006",
+   "case": "vt_diffuser_plenum_006_stl_open",
+   "family": "diffuser_plenum",
+   "engine": "vmtk",
+   "format": "stl",
+   "form": "surface",
+   "status": "fail",
+   "failure_class": "recounted:wrong region - kept the outer skin of a pipe wall (VMTK-TUBULAR, fixed on ov/vmtk-tubular)",
+   "cells": 3771373,
+   "seconds": 652.2,
+   "layers_pct": 100.0,
+   "cells_across_p05": 14.0,
+   "quality": {
+    "min_quality": 0.0836865679551105,
+    "layer_min_quality": 0.026311705907352264
+   },
+   "tag": "vtub-b-diffuser_plenum_006_stl_open",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "internal",
+    "form": "surface",
+    "input_kind": "body-surface",
+    "n_triangles": 12104,
+    "n_solids": 1,
+    "closed": false,
+    "genus": null,
+    "ports": 4,
+    "sharp_edges": 1.4521,
+    "knife_edges": 0.0,
+    "passage_rel": 0.3814,
+    "passage": 0.2982,
+    "narrow_vs_volume": 0.21,
+    "neck": 0.2276,
+    "scale_ratio": 11.5193,
+    "slenderness": 1.6212,
+    "gap_vs_port": 3.1013,
+    "wet_share": 0.956,
+    "thin_wall_fraction": null,
+    "thickness_ratio": null,
+    "gap_share": null,
+    "notes": [
+     "open surface: 252 open and 0 non-manifold edges",
+     "open wall: the fluid side read from the chords"
+    ]
    }
   },
   {
@@ -24308,6 +24662,56 @@
   },
   {
    "shape": "manifold_008",
+   "case": "vt_manifold_008_step",
+   "family": "manifold",
+   "engine": "vmtk",
+   "format": "step",
+   "form": "cad",
+   "status": "pass",
+   "failure_class": "",
+   "cells": 2274392,
+   "seconds": 612.6,
+   "layers_pct": 100.0,
+   "cells_across_p05": 14.0,
+   "quality": {
+    "min_quality": 0.06317233567646732,
+    "layer_min_quality": 0.016487571870033167
+   },
+   "tag": "vtub-b-manifold_008_step",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "internal",
+    "form": "cad",
+    "input_kind": "fluid-domain",
+    "n_triangles": 1088,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 0,
+    "ports": 6,
+    "sharp_edges": 3.8725,
+    "knife_edges": 0.0,
+    "passage_rel": 0.1572,
+    "passage": 0.1061,
+    "narrow_vs_volume": 0.2198,
+    "neck": 0.381,
+    "scale_ratio": 16.6948,
+    "slenderness": 7.8837,
+    "gap_vs_port": 0.9962,
+    "wet_share": 0.9881,
+    "thin_wall_fraction": null,
+    "thickness_ratio": null,
+    "gap_share": null,
+    "notes": []
+   }
+  },
+  {
+   "shape": "manifold_008",
    "case": "vt_manifold_008_stl_open",
    "family": "manifold",
    "engine": "vmtk",
@@ -24357,6 +24761,56 @@
      "open surface: 378 open and 0 non-manifold edges",
      "open wall: the fluid side read from the chords"
     ]
+   }
+  },
+  {
+   "shape": "manifold_015",
+   "case": "vt_manifold_015_step",
+   "family": "manifold",
+   "engine": "vmtk",
+   "format": "step",
+   "form": "cad",
+   "status": "fail",
+   "failure_class": "mesher_failed:vmtk",
+   "cells": 1680925,
+   "seconds": 327.5,
+   "layers_pct": 100.0,
+   "cells_across_p05": 14.0,
+   "quality": {
+    "min_quality": 0.08796867879852999,
+    "layer_min_quality": 0.02301187594389629
+   },
+   "tag": "vtub-b-manifold_015_step",
+   "commit": "cf9bc0bc",
+   "brief": {
+    "layers_requested": true,
+    "ground": false,
+    "cell_budget": 2000000.0
+   },
+   "traits": {
+    "version": 2,
+    "flow": "internal",
+    "form": "cad",
+    "input_kind": "fluid-domain",
+    "n_triangles": 512,
+    "n_solids": 1,
+    "closed": true,
+    "genus": 0,
+    "ports": 3,
+    "sharp_edges": 3.4672,
+    "knife_edges": 0.0,
+    "passage_rel": 0.2839,
+    "passage": 0.1432,
+    "narrow_vs_volume": 0.3113,
+    "neck": 0.4206,
+    "scale_ratio": 8.3744,
+    "slenderness": 4.0354,
+    "gap_vs_port": 0.9966,
+    "wet_share": 0.9785,
+    "thin_wall_fraction": null,
+    "thickness_ratio": null,
+    "gap_share": null,
+    "notes": []
    }
   },
   {
