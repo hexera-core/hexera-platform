@@ -11,7 +11,7 @@ layers. For production external aerodynamics with boundary layers, use [snappy](
 | Accepted input | a **surface** (body surface) |
 | Dimensionality | 2D and 3D |
 | Purposes | `external_cfd`, `internal_cfd` |
-| Capability | body-surface → fluid-volume, internal and external topologies |
+| Capability | body-surface → fluid-volume, internal and external topologies; fluid-domain → fluid-volume, internal (the fluid solid's skin is the surface it fills) |
 | Deliverable | `openfoam_case.tar.gz`, marked by `constant/polyMesh/owner` |
 | Exports | `openfoam_polymesh`, `stl_surface` |
 | Multiple wall patches | yes |

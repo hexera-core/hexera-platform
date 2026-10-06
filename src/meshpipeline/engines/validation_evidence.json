@@ -163,6 +163,27 @@
           "summary": "straight_reducer_004 fluid twin (corpus, HEX-11): the engine opened the declared ports, builder attempt 1, Cloud Run 3 min, 97,465 tets, min SJ 0.119 on the isotropic fill, all gates green, reviewer PASS (13 rounds), 502 s end to end; straight_reducer_006 (9dc8f08a) likewise, 148,264 tets"
         }
       ]
+    },
+    {
+      "engine": "cfmesh",
+      "input_kind": "fluid-domain",
+      "output_kind": "fluid-volume",
+      "supported": true,
+      "tier": "T4 (overnight cloud lab: the production graph and mesh image, scripted builder, no reviewer) - T5 pending the integration deploy",
+      "deliveries": [
+        {
+          "purpose": "internal_cfd",
+          "job": "lab mx2-bend_elbow_021_fluid-cfmesh-step",
+          "date": "2026-10-04",
+          "summary": "bend_elbow_021 fluid solid, STEP: every executor gate passed, 176,950 cells, max non-ortho 50.6, max skew 0.58, 78 s end to end (commit bb9edfc)"
+        },
+        {
+          "purpose": "internal_cfd",
+          "job": "lab mx-cfbase-*_fluid-cfmesh-step (corpus)",
+          "date": "2026-10-04",
+          "summary": "corpus fluid solids through the same path: tee_wye_003/011/014/018/019, straight_reducer_014/015, transition_006/007 all gates passed (57k-431k cells, 37-132 s)"
+        }
+      ]
     }
   ]
 }
