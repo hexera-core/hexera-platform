@@ -32,8 +32,9 @@ flow. Its pass rate is read from the most specific level that has runs, plus two
 rate of the next broader group that has more, so a few runs on shapes exactly like this count, but
 only as much as a few runs can.
 Engines rank by a CAUTIOUS score - that rate less one standard error of it - so an engine with a
-long record on shapes like this outranks one that was never tried on them, and three passes out
-of three never outrank thirty out of thirty-two. Scores within 5% tie; then measured layer
+long record on shapes like this outranks one that was never tried on them (whose record on other
+kinds of shape is halved toward even odds and weighs no more than the pseudo runs), and three
+passes out of three never outrank thirty out of thirty-two. Scores within 5% tie; then measured layer
 coverage, then time decide. Every number in a reason is a count of real runs; thin evidence says
 so.
 
@@ -347,9 +348,18 @@ def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str) -
     # THE RATE: the most specific runs, plus PRIOR_RUNS pseudo runs at the (Laplace) rate of the
     # next broader group that holds more runs - each run counted once, never shrunk toward itself
     spec_rows = stats[with_runs[0]][2]
+    # AN ENGINE NEVER TRIED ON THIS CLASS is read off its record on other shapes; how it does on
+    # this kind is unknown, so that record is halved toward even odds and weighs no more than the
+    # pseudo runs
+    extrapolated = bool(cls) and not stats[with_runs[0]][0][1]
+    weight = PRIOR_RUNS if extrapolated else len(spec_rows) + PRIOR_RUNS
     broader = next((st[2] for st in stats[with_runs[0] + 1:] if len(st[2]) > len(spec_rows)), [])
     prior = (sum(r.passed for r in broader) + 1.0) / (len(broader) + 2.0) if broader else 0.5
     rate = (sum(r.passed for r in spec_rows) + PRIOR_RUNS * prior) / (len(spec_rows) + PRIOR_RUNS)
+    if extrapolated:
+        # its record elsewhere counts as PRIOR_RUNS pseudo runs, and not knowing how this kind of
+        # shape goes as PRIOR_RUNS more at even odds
+        rate = (rate + 0.5) / 2.0
     quoted = next((i for i in with_runs if len({r.shape for r in stats[i][2]}) >= MIN_SHAPES),
                   with_runs[-1])
     key, words, rows = stats[quoted]
@@ -361,7 +371,7 @@ def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str) -
                 "near_shapes": len({r.shape for r in nrows}), "near_words": nwords}
     return Evidence(
         runs=len(rows), passed=len(ok), shapes=len({r.shape for r in rows}), level=quoted,
-        words=words, rate=rate, weight=len(spec_rows) + PRIOR_RUNS,
+        words=words, rate=rate, weight=weight,
         layers_pct=_median([r.layers_pct for r in ok if r.layers_pct is not None]),
         cells=_int(_median([r.cells for r in ok if r.cells is not None])),
         seconds=_median([r.seconds for r in ok if r.seconds is not None]),

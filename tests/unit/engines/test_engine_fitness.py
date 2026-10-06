@@ -210,3 +210,13 @@ def test_on_shapes_the_table_never_saw_the_recommendation_beats_the_fixed_order(
     # first engine did, and comes within a few cases of the best any choice could do
     assert res["recommended_passed"] >= res["ladder_passed"], res
     assert res["recommended_passed"] >= 0.9 * res["any_passed"], res
+
+
+def test_an_engine_never_tried_on_this_kind_of_shape_ranks_below_one_tried_and_mostly_passing():
+    rows = [_row(f"t{i}", "vmtk", TUBE) for i in range(30)]               # a long record on tubes
+    rows += [_row(f"g{i}", "cfmesh", GAP, "pass" if i < 7 else "fail") for i in range(10)]
+    rec = F.recommend(_t(GAP), ["vmtk", "cfmesh"], table=_table(rows))
+    assert rec.engine == "cfmesh", [f.as_dict() for f in rec.fits]
+    vmtk = rec.fit_of("vmtk")
+    assert vmtk.evidence.level > 0 and vmtk.evidence.weight == F.PRIOR_RUNS
+    assert vmtk.reason.startswith("no lab results on shapes exactly like this")
