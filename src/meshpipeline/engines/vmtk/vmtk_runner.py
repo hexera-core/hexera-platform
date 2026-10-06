@@ -525,15 +525,19 @@ def repair_ladder(strategy: dict) -> list[dict]:
     s = resolve_strategy(strategy)
     if not s.get("sizing_array"):
         return [s]
+    layered = int(s.get("boundary_layers") or 0) > 0
     steps = [s]
-    if s.get("generator_remesh", True):
+    # WITHOUT LAYERS THE GENERATOR'S OWN REMESH STAYS ON: a layer-free fill caps the openings up
+    # front with polygon caps (vmtk's capper, TriangleOutput off) and only that remesh turns them
+    # into triangles - skipped, the sizing function meets polygons ("Cell not triangle") and the
+    # fill crashes (venturi_orifice_003, rc -11), so that step could never succeed
+    if s.get("generator_remesh", True) and layered:
         steps.append({**s, "generator_remesh": False})
-    if int(s.get("boundary_layers") or 0) > 0:
+    if layered:
         steps.append({**s, "generator_remesh": False,
                       "boundary_layer_thickness_factor":
                           float(s["boundary_layer_thickness_factor"]) / 2.0})
-        steps.append({**s, "boundary_layers": 0})
-        steps.append({**s, "boundary_layers": 0, "generator_remesh": False})
+        steps.append({**s, "boundary_layers": 0, "generator_remesh": True})
     return steps
 
 

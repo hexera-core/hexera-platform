@@ -217,9 +217,10 @@ def test_repair_ladder_varies_the_generator_remesh_then_the_layers_for_staged_ru
                                        "boundary_layer_thickness_factor": 0.2})
     assert [(s["boundary_layers"], s["boundary_layer_thickness_factor"], s["generator_remesh"])
             for s in steps] == [(3, 0.2, True), (3, 0.2, False), (3, 0.1, False),
-                                (0, 0.2, True), (0, 0.2, False)]
+                                (0, 0.2, True)]
+    # a layer-free fill keeps the generator's remesh: without it the polygon caps crash the fill
     bare = vmtk_runner.repair_ladder({"sizing_array": "LocalRadius", "boundary_layers": 0})
-    assert [s["generator_remesh"] for s in bare] == [True, False]
+    assert [s["generator_remesh"] for s in bare] == [True]
     assert len(vmtk_runner.repair_ladder({"source_ids": [0], "target_ids": [1]})) == 1
 
 
