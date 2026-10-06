@@ -65,6 +65,63 @@ def test_every_cell_is_closed_and_every_face_points_out_of_its_owner():
     assert np.abs(total).max() < 1e-12, "every cell's faces must close it"
 
 
+def _polygon_area_vectors(points, off, pts):
+    """0.5 * sum of p_i x p_{i+1} for each polygon (exact for planar polygons)."""
+    out = np.zeros((len(off) - 1, 3))
+    for f in range(len(off) - 1):
+        loop = points[pts[off[f]:off[f + 1]]]
+        out[f] = 0.5 * np.cross(loop, np.roll(loop, -1, axis=0)).sum(axis=0)
+    return out
+
+
+def test_blocks_meet_with_hanging_nodes_and_every_cell_still_closes():
+    from meshpipeline.engines.snapgrid import blocks as B
+    from meshpipeline.engines.snapgrid import boxmesh
+
+    pl = place(read_ecxml(set_top_box().xml()))
+    plan = G.GridPlan(max_cells=10**7)
+    geo = B.geometry_of(pl, plan)
+    H = max(geo.domain.hi[i] - geo.domain.lo[i] for i in range(3)) / 12
+    layout = B.decompose(geo, plan, H, leaf_cells=64)
+    assert len(layout.blocks) > 4
+    topo = boxmesh.build_topology(layout)
+    assert topo.block_faces > 0 and topo.hanging_faces > 0
+    keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
+    ix, iy, iz = boxmesh._decode(keys, topo.dims)
+    g = layout.global_lines
+    points = np.stack([g[0][ix], g[1][iy], g[2][iz]], axis=1)
+    ids_i = np.searchsorted(keys, topo.face_pts)
+    ids_b = np.searchsorted(keys, topo.b_pts)
+    area_i = _polygon_area_vectors(points, topo.face_off, ids_i)
+    area_b = _polygon_area_vectors(points, topo.b_off, ids_b)
+    # cell centres, block by block
+    centres = []
+    for blk in layout.blocks:
+        c = [(layout.coords(blk, a)[1:] + layout.coords(blk, a)[:-1]) / 2 for a in range(3)]
+        cz, cy, cx = np.meshgrid(c[2], c[1], c[0], indexing="ij")
+        centres.append(np.stack([cx.ravel(), cy.ravel(), cz.ravel()], axis=1))
+    centres = np.concatenate(centres)
+    assert (topo.owner < topo.neighbour).all()
+    assert (np.diff(topo.owner * topo.n_cells + topo.neighbour) > 0).all()
+    d = centres[topo.neighbour] - centres[topo.owner]
+    assert (np.einsum("ij,ij->i", area_i, d) > 0).all(), "faces point from owner to neighbour"
+    total = np.zeros((topo.n_cells, 3))
+    np.add.at(total, topo.owner, area_i)
+    np.add.at(total, topo.neighbour, -area_i)
+    np.add.at(total, topo.b_owner, area_b)
+    scale = np.abs(area_i).max()
+    assert np.abs(total).max() < 1e-9 * scale, "every cell's faces close it"
+    # every point on a face's edge is in that face: no edge is used by one face only
+    edges: dict[tuple[int, int], int] = {}
+    for off, ids in ((topo.face_off, ids_i), (topo.b_off, ids_b)):
+        for f in range(len(off) - 1):
+            loop = ids[off[f]:off[f + 1]].tolist()
+            for a_, b_ in zip(loop, loop[1:] + loop[:1]):
+                key = (min(a_, b_), max(a_, b_))
+                edges[key] = edges.get(key, 0) + 1
+    assert min(edges.values()) >= 2
+
+
 # ------------------------------------------------------------------------------ the grid ------
 def test_the_grid_holds_every_plane_the_model_states_and_grows_smoothly():
     pl = place(read_ecxml(tiny_board().xml()))

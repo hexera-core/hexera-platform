@@ -24,19 +24,17 @@ What the file says and the mesh holds, checked before anything is written:
 from __future__ import annotations
 
 import json
-import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from meshpipeline.cad.ingest.ecxml import SPEC, EcxmlError, read_ecxml
+from meshpipeline.cad.ingest.ecxml import EcxmlError, read_ecxml
 from meshpipeline.cad.ingest.ecxml_build import (
     _AXES,
     FLUID_NAME,
     SIDECAR_SUFFIX,
-    SIDECAR_VERSION,
     VOLUME_RTOL,
     FidelityError,
     _Box,
@@ -48,14 +46,21 @@ from meshpipeline.cad.ingest.ecxml_build import (
     _unique_namer,
     physics_summary,
 )
-from meshpipeline.cad.ingest.ecxml_place import Placement, describe, place
+from meshpipeline.cad.ingest.ecxml_place import (
+    Placement,
+    describe,
+    place,
+    placement_sidecar,
+)
+from meshpipeline.engines.snapgrid import blocks as B
+from meshpipeline.engines.snapgrid import boxmesh
 from meshpipeline.engines.snapgrid import grid as G
-from meshpipeline.engines.snapgrid.polymesh import SIDES, Patch, side_shape, write_polymesh
+from meshpipeline.engines.snapgrid.polymesh import SIDES, Patch
 
 REPORT_NAME = "snapgrid_report.json"
 SIDECAR_NAME = "thermal_model.json"
 MESHER = "snapgrid"
-REPORT_VERSION = 1
+REPORT_VERSION = 2
 #: Thin-layer rows the report keeps (thinnest first); the counts cover every part.
 _THIN_ROWS = 200
 
@@ -106,44 +111,46 @@ def render_region_properties(fluids: list[str], solids: list[str]) -> str:
 
 # ------------------------------------------------------------------------------ the mesh ------
 def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None = None,
-               dry_run: bool = False) -> SnapgridMesh:
-    """Read `src` (ECXML), mesh it on a snap grid and write the single-region polyMesh with a
-    cellZone per region, constant/regionProperties, the report and the physics sidecar into the
-    OpenFOAM case `case`. `dry_run` stops after the grid is sized (nothing written but the
-    report). Raises EcxmlError (a file that cannot be read or placed), G.OverBudget (a model that
-    needs more cells than the budget to keep its layers) or FidelityError (a mesh that would not be
-    the file's model - a bug, never a model fault)."""
+               dry_run: bool = False, local: bool = True) -> SnapgridMesh:
+    """Read `src` (ECXML), mesh it on a snap grid refined locally (blocks) and write the
+    single-region polyMesh with a cellZone per region, constant/regionProperties, the report and
+    the physics sidecar into the OpenFOAM case `case`. `dry_run` stops after the grid is sized
+    (nothing written but the report); `local=False` meshes one tensor grid over the whole domain.
+    Raises EcxmlError (a file that cannot be read or placed), G.OverBudget (a model that needs
+    more cells than the budget to keep its layers) or FidelityError (a mesh that would not be the
+    file's model - a bug, never a model fault)."""
     plan = plan or G.GridPlan()
     case = Path(case)
     t = {"start": time.perf_counter()}
     model = read_ecxml(src)
     placement = place(model)
     t["placed"] = time.perf_counter()
-    grid = G.build_grid(placement, plan)
+    layout = B.build_layout(placement, plan, local=local)
     t["gridded"] = time.perf_counter()
     report: dict = {"mesher": MESHER, "report_version": REPORT_VERSION,
                     "input": {"file": Path(src).name, "model_name": model.name,
                               "producer": model.producer,
                               "active_objects": sum(1 for o in model.active_objects
                                                     if o.kind not in ("assembly", "heatsink"))},
-                    "plan": asdict(plan), "plan_used": asdict(grid.plan),
-                    "relaxed": grid.relaxed, "grid": G.stats(grid)}
+                    "plan": asdict(plan), "plan_used": asdict(layout.plan),
+                    "relaxed": layout.relaxed, "grid": layout_stats(layout)}
     if dry_run:
         report["dry_run"] = True
         report["timings_s"] = _timings(t)
         return SnapgridMesh(case=case, report=report, sidecar={})
 
-    zone = G.paint(placement, grid)
+    B.paint_blocks(placement, layout)
+    zone = np.concatenate([blk.zone.ravel() for blk in layout.blocks])
+    vols = np.concatenate([_block_volumes(layout, blk).ravel() for blk in layout.blocks])
     t["painted"] = time.perf_counter()
-    vols = G.cell_volumes(grid)
-    airs, n_air = G.air_spaces(zone, vols)
+    topo = boxmesh.build_topology(layout)
+    t["topology"] = time.perf_counter()
+    airs, n_air = _air_spaces(layout, topo, vols)
     P = len(placement.parts)
-    flat = zone.ravel()
-    part_cells = np.bincount(flat + 1, minlength=P + 1)[1:]
-    part_vol = np.bincount(flat + 1, weights=vols.ravel(), minlength=P + 1)[1:]
-    air_flat = airs.ravel()
-    air_vol = np.bincount(air_flat + 1, weights=vols.ravel(), minlength=n_air + 1)[1:]
-    air_cells = np.bincount(air_flat + 1, minlength=n_air + 1)[1:]
+    part_cells = np.bincount(zone + 1, minlength=P + 1)[1:]
+    part_vol = np.bincount(zone + 1, weights=vols, minlength=P + 1)[1:]
+    air_vol = np.bincount(airs + 1, weights=vols, minlength=n_air + 1)[1:]
+    air_cells = np.bincount(airs + 1, minlength=n_air + 1)[1:]
     t["measured"] = time.perf_counter()
 
     notes = placement.notes
@@ -186,17 +193,18 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                          "material": o.material or None} for o in p.objects],
             "notes": list(p.notes)})
 
-    checks, contacts, staircase = _fidelity(placement, grid, zone, part_vol, live, part_region,
+    checks, contacts, staircase = _fidelity(placement, topo, zone, part_vol, live, part_region,
                                             regions, vols)
-    thin = _thin_layers(placement, grid, live, part_region)
-    interfaces = _interfaces(cell_zone, zone_names, n_air)
-    patches, side_ids, patch_rows = _boundary(placement, grid, zone_names)
+    thin = _thin_layers(placement, layout, live, part_region)
+    interfaces = _interfaces(topo, cell_zone, zone_names, n_air)
+    patches, chunk_ids, patch_rows = _boundary(placement, layout, topo, zone_names)
     t["checked"] = time.perf_counter()
 
     case.mkdir(parents=True, exist_ok=True)
     write_case_skeleton(case)
-    written = write_polymesh(case, grid.lines, cell_zone=cell_zone, zone_names=zone_names,
-                             side_patches=side_ids, patches=patches, binary=binary)
+    written = boxmesh.write(case, layout, topo, cell_zone=cell_zone, zone_names=zone_names,
+                            chunk_patches=chunk_ids, patches=patches,
+                            binary=binary if binary is not None else topo.n_cells > 20_000)
     fluids = list(air_names)
     solids = [part_region[k] for k in live]
     (case / "constant" / "regionProperties").write_text(render_region_properties(fluids, solids))
@@ -211,9 +219,11 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
         build_report.append("Not meshed (a later object on the same domain side covers all of "
                             "it): " + ", ".join(lost[:12]) + ".")
 
-    build_report += _report_lines(placement, grid, thin, staircase, records)
+    stats = layout_stats(layout, topo)
+    report["grid"] = stats
+    build_report += _report_lines(placement, layout, stats, thin, staircase, records)
     build_report += checks
-    sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, grid)
+    sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, stats)
     (case / SIDECAR_NAME).write_text(json.dumps(sidecar, indent=1, default=float))
     report.update({
         "regions": [{k: r.get(k) for k in ("name", "type", "kind", "material", "power_W",
@@ -221,11 +231,12 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                                            "volume_error")}
                     for r in regions],
         "fluid_regions": fluids, "solid_regions": solids,
-        "thin_layers": thin, "staircased": staircase,
+        "thin_layers": thin[:_THIN_ROWS], "thin_layers_short": [r for r in thin if not r["ok"]],
+        "staircased": staircase,
         "interfaces": interfaces, "patches": written["patches"],
         "solid_contacts": sorted(sorted(c) for c in contacts),
         "polymesh": {k: written[k] for k in ("cells", "faces", "internal_faces", "points",
-                                             "binary")},
+                                             "binary", "hanging_node_faces", "block_faces")},
         "build_report": build_report, "notes": notes,
         "physics": physics_summary(sidecar),
     })
@@ -234,6 +245,70 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     return SnapgridMesh(case=case, report=report, sidecar=sidecar,
                         regions=[{"name": r["name"], "type": r["type"], "cells": r["cells"]}
                                  for r in regions])
+
+
+def _block_volumes(layout: B.Layout, blk: B.Block) -> np.ndarray:
+    dx, dy, dz = (np.diff(layout.coords(blk, a)) for a in range(3))
+    return dz[:, None, None] * dy[None, :, None] * dx[None, None, :]
+
+
+def _air_spaces(layout: B.Layout, topo: boxmesh.BoxTopology, vols: np.ndarray
+                ) -> tuple[np.ndarray, int]:
+    """Each cell's air space (-1: not air), the spaces numbered largest first: the air of each
+    block labelled by face neighbours, then joined across the faces where blocks meet."""
+    from scipy import ndimage
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    comp_parts = []
+    n_comp = 0
+    for blk in layout.blocks:
+        assert blk.zone is not None
+        lab, n = ndimage.label(blk.zone == G.AIR)
+        lab = lab.ravel().astype(np.int64)
+        comp_parts.append(np.where(lab > 0, lab - 1 + n_comp, -1))
+        n_comp += n
+    comp = np.concatenate(comp_parts) if comp_parts else np.zeros(0, dtype=np.int64)
+    if n_comp == 0:
+        return np.full(len(comp), -1, dtype=np.int64), 0
+    ca, cb = comp[topo.owner], comp[topo.neighbour]
+    join = (ca >= 0) & (cb >= 0) & (ca != cb)
+    graph = coo_matrix((np.ones(int(join.sum())), (ca[join], cb[join])), shape=(n_comp, n_comp))
+    n_space, label = connected_components(graph, directed=False)
+    space = np.where(comp >= 0, label[np.maximum(comp, 0)], -1)
+    size = np.bincount(space + 1, weights=vols, minlength=n_space + 1)[1:]
+    order = np.argsort(-size, kind="stable")
+    remap = np.full(n_space + 1, -1, dtype=np.int64)
+    remap[order + 1] = np.arange(n_space)
+    return remap[space + 1], int(n_space)
+
+
+def layout_stats(layout: B.Layout, topo: boxmesh.BoxTopology | None = None) -> dict:
+    """Plain numbers about the grid: cells, blocks, cell sizes per axis, the largest size ratio
+    between neighbouring cells inside a block, the bound on cell aspect."""
+    out: dict = {"cells": layout.n_cells, "blocks": len(layout.blocks),
+                 "background_cell_m": layout.H,
+                 "global_lines_xyz": [len(g) for g in layout.global_lines]}
+    worst = 1.0
+    wmin_all, wmax_all = [], []
+    for a, name in enumerate("xyz"):
+        wmin, wmax, ratio = np.inf, 0.0, 1.0
+        for blk in layout.blocks:
+            w = np.diff(layout.coords(blk, a))
+            wmin, wmax = min(wmin, float(w.min())), max(wmax, float(w.max()))
+            if len(w) > 1:
+                ratio = max(ratio, float(np.max(np.maximum(w[1:] / w[:-1], w[:-1] / w[1:]))))
+        out[f"{name}_min_m"], out[f"{name}_max_m"] = wmin, wmax
+        out[f"{name}_max_neighbour_ratio"] = ratio
+        worst = max(worst, ratio)
+        wmin_all.append(wmin)
+        wmax_all.append(wmax)
+    out["max_neighbour_ratio"] = worst
+    out["max_aspect_ratio_bound"] = max(wmax_all) / min(wmin_all)
+    if topo is not None:
+        out["block_faces"] = topo.block_faces
+        out["hanging_node_faces"] = topo.hanging_faces
+    return out
 
 
 def _timings(t: dict) -> dict:
@@ -310,8 +385,8 @@ def _name_regions(placement: Placement, live: list[int], n_air: int) -> dict:
 
 
 # ------------------------------------------------------------------------------ boundary ------
-def _boundary(placement: Placement, grid: G.Grid, region_names: list[str]
-              ) -> tuple[list[Patch], list[np.ndarray], list[dict]]:
+def _boundary(placement: Placement, layout: B.Layout, topo: boxmesh.BoxTopology,
+              region_names: list[str]) -> tuple[list[Patch], list[np.ndarray], list[dict]]:
     """The patches on the six domain sides: each side is its own patch, and every 2D object the
     file puts on a side (a fan, a vent, a wall plate, a surface heat source) takes the faces of its
     own rectangle, under its own name - later objects over earlier ones, as everywhere in ECXML.
@@ -351,38 +426,46 @@ def _boundary(placement: Placement, grid: G.Grid, region_names: list[str]
             meta["mesh_patch"] = name
             meta["mesh_patch_type"] = "patch"
             rows.append(meta)
-    tol = G.plane_tolerance(placement)
-    side_ids: list[np.ndarray] = []
-    shape = grid.shape
-    for axis, side in SIDES:
-        face = f"{'-+'[side]}{_AXES[axis]}"
-        arr = np.full(side_shape(shape, axis), side_base[face], dtype=np.int32)
-        side_ids.append(arr)
+    painted: list[tuple[dict, int, _Box]] = []
     for obj in sorted(objects, key=lambda r: r.get("order", 0)):
-        face = obj["domain_face"]
-        axis = _AXES.index(face[1])
-        side = 0 if face[0] == "-" else 1
         ptype = "wall" if obj.get("role") in ("wall", "heat_flux") else "patch"
         name = unique(obj["name"], "patch")
-        pid = len(patches)
+        painted.append((obj, len(patches), _rect_box(obj)))
         patches.append(Patch(name=name, type=ptype))
         rows.append({**obj, "mesh_patch": name, "mesh_patch_type": ptype})
-        rect = _rect_box(obj)
+    tol = G.plane_tolerance(placement)
+    chunk_ids: list[np.ndarray] = []
+    for ch in topo.chunks:
+        axis, side = SIDES[ch.side]
+        face = f"{'-+'[side]}{_AXES[axis]}"
+        arr = np.full(ch.shape, side_base[face], dtype=np.int32)
+        blk = layout.blocks[ch.block]
         cross = [i for i in range(3) if i != axis]
-        rng: list[slice] = []
-        for i in cross:
-            lo = max(rect.lo[i], domain.lo[i])
-            hi = min(rect.hi[i], domain.hi[i])
-            if hi - lo <= tol:
-                rng = []
-                break
-            rng.append(slice(grid.index(i, lo, tol), grid.index(i, hi, tol)))
-        if len(rng) != 2:
-            continue
-        arr = side_ids[SIDES.index((axis, side))]
-        # side arrays are (slower axis, faster axis) = (cross[1], cross[0])
-        arr[rng[1], rng[0]] = pid
-    return patches, side_ids, rows
+        lines = {i: layout.coords(blk, i) for i in cross}
+        for obj, pid, rect in painted:
+            if obj["domain_face"] != face:
+                continue
+            rng: list[slice] = []
+            for i in cross:
+                lo = max(rect.lo[i], domain.lo[i], lines[i][0])
+                hi = min(rect.hi[i], domain.hi[i], lines[i][-1])
+                if hi - lo <= tol:
+                    break
+                rng.append(slice(_line_index(lines[i], lo, tol), _line_index(lines[i], hi, tol)))
+            if len(rng) != 2:
+                continue
+            # side arrays are (slower axis, faster axis) = (cross[1], cross[0])
+            arr[rng[1], rng[0]] = pid
+        chunk_ids.append(arr)
+    return patches, chunk_ids, rows
+
+
+def _line_index(lines: np.ndarray, value: float, tol: float) -> int:
+    k = int(np.searchsorted(lines, value))
+    best = min((c for c in (k - 1, k) if 0 <= c < len(lines)), key=lambda c: abs(lines[c] - value))
+    if abs(lines[best] - value) > tol:
+        raise ValueError(f"internal: {value!r} is not a grid plane of the block")
+    return best
 
 
 def _rect_box(row: dict) -> _Box:
@@ -395,30 +478,22 @@ def _rect_box(row: dict) -> _Box:
 
 
 # ------------------------------------------------------------------------------ evidence ------
-def _neighbours(arr: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
-    """The values on the two sides of every internal face normal to `axis` (arrays are z, y, x)."""
-    if axis == 0:
-        return arr[:, :, :-1].ravel(), arr[:, :, 1:].ravel()
-    if axis == 1:
-        return arr[:, :-1, :].ravel(), arr[:, 1:, :].ravel()
-    return arr[:-1, :, :].ravel(), arr[1:, :, :].ravel()
+def _pairs(a: np.ndarray, b: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Unordered pairs of different values across faces, encoded lo * n + hi, with their counts."""
+    diff = a != b
+    lo = np.minimum(a[diff], b[diff]).astype(np.int64)
+    hi = np.maximum(a[diff], b[diff]).astype(np.int64)
+    return np.unique(lo * n + hi, return_counts=True)
 
 
-def _interfaces(cell_zone: np.ndarray, names: list[str], n_air: int) -> list[dict]:
+def _interfaces(topo: boxmesh.BoxTopology, cell_zone: np.ndarray, names: list[str],
+                n_air: int) -> list[dict]:
     """Every pair of regions that share faces, with the number of faces: what splitMeshRegions
     must turn into a matching pair of mappedWall patches."""
     nz = len(names)
-    counts: dict[int, int] = {}
-    for axis in range(3):
-        a, b = _neighbours(cell_zone, axis)
-        diff = a != b
-        lo = np.minimum(a[diff], b[diff]).astype(np.int64)
-        hi = np.maximum(a[diff], b[diff]).astype(np.int64)
-        keys, n = np.unique(lo * nz + hi, return_counts=True)
-        for key, c in zip(keys.tolist(), n.tolist()):
-            counts[key] = counts.get(key, 0) + c
+    keys, counts = _pairs(cell_zone[topo.owner], cell_zone[topo.neighbour], nz)
     out = []
-    for key, c in sorted(counts.items()):
+    for key, c in zip(keys.tolist(), counts.tolist()):
         za, zb = divmod(key, nz)
         kind = ("fluid-solid" if (za < n_air) != (zb < n_air) else
                 "solid-solid" if za >= n_air else "fluid-fluid")
@@ -426,27 +501,36 @@ def _interfaces(cell_zone: np.ndarray, names: list[str], n_air: int) -> list[dic
     return out
 
 
-def _thin_layers(placement: Placement, grid: G.Grid, live: list[int], names: dict) -> list[dict]:
+def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names: dict
+                 ) -> list[dict]:
     """Each part's thinnest extent and the cells through it (thinnest first): how every thin layer
     - a thermal interface, a die attach, a board - is resolved. A part always has at least one
-    cell through each of its boxes on each axis, because the grid holds both of its faces."""
+    cell through each of its boxes on each axis: the blocks it reaches into hold both of its faces.
+    Counted in every block the part reaches into; the fewest is reported."""
     tol = G.plane_tolerance(placement)
-    want = grid.plan.min_cells_across
+    want = layout.plan.min_cells_across
     rows = []
+    bounds = [(np.array([layout.coords(b, a)[0] for a in range(3)]),
+               np.array([layout.coords(b, a)[-1] for a in range(3)])) for b in layout.blocks]
     for k in live:
         p = placement.parts[k]
         best = None
-        for b in _material(p):
-            c = b.common(placement.domain)
+        for box in _material(p):
+            c = box.common(placement.domain)
             if c is None:
                 continue
-            for i in range(3):
-                t = c.hi[i] - c.lo[i]
-                if t <= tol:
+            for bi, (blo, bhi) in enumerate(bounds):
+                if not all(min(c.hi[i], bhi[i]) - max(c.lo[i], blo[i]) > tol for i in range(3)):
                     continue
-                n = grid.index(i, c.hi[i], tol) - grid.index(i, c.lo[i], tol)
-                if best is None or (t, n) < (best[0], best[1]):
-                    best = (t, n, i)
+                blk = layout.blocks[bi]
+                for i in range(3):
+                    t = c.hi[i] - c.lo[i]
+                    if t <= tol or c.lo[i] < blo[i] - tol or c.hi[i] > bhi[i] + tol:
+                        continue                  # the part runs on into the next block
+                    lines = layout.coords(blk, i)
+                    n = int(np.count_nonzero((lines > c.lo[i] + tol) & (lines < c.hi[i] - tol))) + 1
+                    if best is None or (t, n) < (best[0], best[1]):
+                        best = (t, n, i)
         if best is None:
             continue
         t, n, i = best
@@ -456,9 +540,9 @@ def _thin_layers(placement: Placement, grid: G.Grid, live: list[int], names: dic
     return rows
 
 
-def _fidelity(placement: Placement, grid: G.Grid, zone: np.ndarray, part_vol: np.ndarray,
-              live: list[int], names: dict, regions: list[dict], vols: np.ndarray
-              ) -> tuple[list[str], set, list[dict]]:
+def _fidelity(placement: Placement, topo: boxmesh.BoxTopology, zone: np.ndarray,
+              part_vol: np.ndarray, live: list[int], names: dict, regions: list[dict],
+              vols: np.ndarray) -> tuple[list[str], set, list[dict]]:
     """The hard checks that the mesh is the file's model; a FidelityError names the first one
     that fails. Returns the report line for those that pass, the solid contacts, and the
     staircased parts with their volume error."""
@@ -503,13 +587,10 @@ def _fidelity(placement: Placement, grid: G.Grid, zone: np.ndarray, part_vol: np
         raise FidelityError("two regions came out under the same name")
     # contacts between solid parts: faces the grid shares vs the file's boxes
     P = len(placement.parts)
-    pairs: set[int] = set()
-    for axis in range(3):
-        a, b = _neighbours(zone, axis)
-        sel = (a != b) & (a >= 0) & (b >= 0)
-        lo = np.minimum(a[sel], b[sel]).astype(np.int64)
-        hi = np.maximum(a[sel], b[sel]).astype(np.int64)
-        pairs |= set(np.unique(lo * P + hi).tolist())
+    za, zb = zone[topo.owner], zone[topo.neighbour]
+    solid = (za >= 0) & (zb >= 0)
+    keys, _n = _pairs(za[solid], zb[solid], P)
+    pairs = set(keys.tolist())
     contacts = {frozenset((names[a], names[b])) for a, b in (divmod(x, P) for x in pairs)}
     live_parts = [placement.parts[k] for k in live]
     allowed, required = _file_contacts(live_parts, domain, placement.tol)
@@ -533,37 +614,38 @@ def _fidelity(placement: Placement, grid: G.Grid, zone: np.ndarray, part_vol: np
     return lines, contacts, staircase
 
 
-def _report_lines(placement: Placement, grid: G.Grid, thin: list[dict], staircase: list[dict],
-                  records: dict) -> list[str]:
-    st = G.stats(grid)
-    lines = [f"Grid: {st['cells']:,} cells ({st['x_cells']} x {st['y_cells']} x {st['z_cells']}); "
-             f"cell sizes {_um(min(st['x_min_m'], st['y_min_m'], st['z_min_m']))} to "
-             f"{_um(max(st['x_max_m'], st['y_max_m'], st['z_max_m']))}; neighbouring cells "
-             f"differ by at most {st['max_neighbour_ratio']:.3g}x; every cell is an orthogonal "
-             "hexahedron."]
-    lines += [f"Budget: {r}." for r in grid.relaxed]
+def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[dict],
+                  staircase: list[dict], records: dict) -> list[str]:
+    lines = [f"Grid: {st['cells']:,} cells in {st['blocks']} block(s), refined locally; cell "
+             f"sizes {_um(min(st['x_min_m'], st['y_min_m'], st['z_min_m']))} to "
+             f"{_um(max(st['x_max_m'], st['y_max_m'], st['z_max_m']))}; inside a block "
+             f"neighbouring cells differ by at most {st['max_neighbour_ratio']:.3g}x; every cell is "
+             "an axis-aligned box"
+             + (f" ({st.get('hanging_node_faces', 0):,} faces carry a hanging node where a finer "
+                "block meets a coarser one)." if st.get("hanging_node_faces") else ".")]
+    lines += [f"Budget: {r}." for r in layout.relaxed]
     if thin:
         t0 = thin[0]
         lines.append(f"Thinnest part: {t0['part']}, {_um(t0['thickness_m'])} on {t0['axis']}, "
                      f"{t0['cells_across']} cell(s) through it.")
     short = [r for r in thin if not r["ok"]]
     if short:
-        lines.append(f"Thin layers with fewer than {grid.plan.min_cells_across} cells through "
+        lines.append(f"Thin layers with fewer than {layout.plan.min_cells_across} cells through "
                      f"them ({len(short)}): " + ", ".join(
                          f"{r['part']} ({_um(r['thickness_m'])}, {r['cells_across']})"
                          for r in short[:8]) + ("..." if len(short) > 8 else "") + ".")
-    for s in staircase:
-        lines.append(f"Staircased: {s['part']} is built from cubes on the grid; its volume is "
-                     f"{s['error_pct']:+.2g}% of the file's.")
+    for s_ in staircase:
+        lines.append(f"Staircased: {s_['part']} is built from cubes on the grid; its volume is "
+                     f"{s_['error_pct']:+.2g}% of the file's.")
     if records["inactive"]:
         names = ", ".join(r["name"] for r in records["inactive"][:8])
         more = f" and {len(records['inactive']) - 8} more" if len(records["inactive"]) > 8 else ""
         lines.append(f"Switched off in the file, so not meshed: {names}{more}.")
     for r in records["not_built"]:
         lines.append(f"Not built: {r['name']} - {r['why']}.")
-    for b in records["baffles"]:
-        lines.append(f"Not meshed: {b['name']}, a plate without a usable thickness "
-                     f"({_um(b['thickness_m'])}): the air flows through it; its outline lies on "
+    for bf in records["baffles"]:
+        lines.append(f"Not meshed: {bf['name']}, a plate without a usable thickness "
+                     f"({_um(bf['thickness_m'])}): the air flows through it; its outline lies on "
                      "grid planes, so a solver can make it a baffle exactly.")
     meta = {k: len(records[k]) for k in ("fans", "grilles", "flow_resistances",
                                          "volume_heat_sources", "surface_heat_sources",
@@ -580,61 +662,12 @@ def _report_lines(placement: Placement, grid: G.Grid, thin: list[dict], staircas
 
 
 def _sidecar(placement: Placement, regions: list[dict], patches: list[dict],
-             build_report: list[str], contacts: set, grid: G.Grid) -> dict:
-    """The physics the mesh does not carry, in the fused build's sidecar shape, so whatever reads
-    one reads the other: materials, regions (now with their cells), patches (now with the mesh
-    patch each became), fans, vents, sources, compact models, monitor points, the report."""
-    model, records, tol = placement.model, placement.records, placement.tol
-    objs = model.active_objects
-    live_power = sum(float(r.get("power_W") or 0.0) for r in regions if r["type"] == "solid")
-    return {
-        "format": "ECXML", "spec": SPEC, "sidecar_version": SIDECAR_VERSION,
-        "model_name": model.name, "producer": model.producer,
-        "mesher": MESHER,
-        "units": {"length": "m", "temperature": "K", "pressure": "Pa", "power": "W",
-                  "thermal_conductivity": "W/mK", "thermal_resistance": "K/W",
-                  "specific_heat": "J/kgK", "density": "kg/m3", "flow_rate": "m3/s"},
-        "geometry_unit": "m (the mesh is in the file's metres)",
-        "domain": {"box_m": placement.domain.as_dict(), "source": placement.domain_source,
-                   "ambient": model.domain.ambient if model.domain else None},
-        "materials": {n: m.as_dict() for n, m in model.materials.items()},
-        "regions": regions,
-        "patches": patches,
-        "fans": records["fans"], "grilles": records["grilles"],
-        "flow_resistances": records["flow_resistances"],
-        "volume_heat_sources": records["volume_heat_sources"],
-        "surface_heat_sources": records["surface_heat_sources"],
-        "baffles": records["baffles"], "compact_models": records["compact_models"],
-        "monitor_points": records["monitor_points"],
-        "inactive_objects": records["inactive"], "not_built": records["not_built"],
-        "ignored_elements": model.ignored_elements,
-        "total_power_W": sum(float(o.power or 0.0) for o in objs
-                             if o.kind not in ("assembly", "heatsink")),
-        "power_W": {
-            "in_solid_regions": live_power,
-            "in_heat_sources": sum(float(s.get("power_W") or 0.0)
-                                   for k in ("volume_heat_sources", "surface_heat_sources")
-                                   for s in records[k])
-                               + sum(float(p.get("power_W") or 0.0) for p in records["patches"]
-                                     if p.get("role") == "heat_flux"),
-            "in_plates_not_meshed": sum(float(b.get("power_W") or 0.0)
-                                        for b in records["baffles"])
-                                    + sum(float(p.get("power_W") or 0.0)
-                                          for p in records["patches"] if p.get("role") == "wall"),
-            "in_parts_not_built": sum(float(r.get("power_W") or 0.0)
-                                      for r in records["not_built"]),
-        },
-        "tolerances_m": {"file_precision": tol.noise, "boolean_fuzzy": None,
-                         "smallest_gap": tol.gap if math.isfinite(tol.gap) else None,
-                         "smallest_gap_between": tol.gap_where,
-                         "thinnest_part": tol.thick if math.isfinite(tol.thick) else None,
-                         "thinnest_part_is": tol.thick_where,
-                         "coordinates_snapped": tol.snapped, "largest_snap": tol.snap_shift},
-        "grid": G.stats(grid),
-        "build_report": build_report,
-        "solid_contacts": sorted(sorted(c) for c in contacts),
-        "notes": placement.notes,
-    }
+             build_report: list[str], contacts: set, stats: dict) -> dict:
+    """The fused build's sidecar shape, with the mesh's regions, patches and grid."""
+    return placement_sidecar(placement, regions=regions, patches=patches,
+                             build_report=build_report, solid_contacts=contacts, mesher=MESHER,
+                             geometry_unit="m (the mesh is in the file's metres)",
+                             extra={"grid": stats})
 
 
 def write_sidecar_beside(path: Path, sidecar: dict) -> None:

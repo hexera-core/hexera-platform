@@ -4,7 +4,7 @@
 
     python -m meshpipeline.engines.snapgrid.cli MODEL.ecxml OUT_DIR [--max-cells N]
         [--background-cells N] [--min-cells-across N] [--cylinder-cells N] [--growth G]
-        [--no-split] [--ascii] [--dry-run] [--bashrc PATH]
+        [--no-split] [--ascii] [--dry-run] [--global-grid] [--bashrc PATH]
 
 OUT_DIR becomes an OpenFOAM case: constant/<region>/polyMesh for every region (after the split),
 constant/regionProperties, snapgrid_report.json (grid, regions, thin layers, interfaces, checks,
@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="keep constant/polyMesh after the split")
     ap.add_argument("--ascii", action="store_true", help="ASCII files (small meshes)")
     ap.add_argument("--dry-run", action="store_true", help="size the grid, write nothing")
+    ap.add_argument("--global-grid", action="store_true",
+                    help="one tensor grid over the whole domain (no local refinement)")
     ap.add_argument("--bashrc", default=None, help="OpenFOAM bashrc to source")
     a = ap.parse_args(argv)
     plan = GridPlan(max_cells=a.max_cells, background_cells=a.background_cells,
@@ -48,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.perf_counter()
     try:
         result = mesh_ecxml(a.ecxml, a.out, plan, binary=False if a.ascii else None,
-                            dry_run=a.dry_run)
+                            dry_run=a.dry_run, local=not a.global_grid)
     except OverBudget as exc:
         print(f"NOT MESHED: {exc}", file=sys.stderr)
         return 2
@@ -57,8 +59,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     rep = result.report
     g = rep["grid"]
-    print(f"grid {g['x_cells']} x {g['y_cells']} x {g['z_cells']} = {g['cells']:,} cells, "
-          f"max neighbour ratio {g['max_neighbour_ratio']:.3g}")
+    print(f"grid {g['cells']:,} cells in {g['blocks']} block(s), max neighbour ratio "
+          f"{g['max_neighbour_ratio']:.3g}")
     if a.dry_run:
         print(json.dumps(rep, indent=1, default=float))
         return 0

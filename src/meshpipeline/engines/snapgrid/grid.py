@@ -112,6 +112,9 @@ def cluster(values, tol: float) -> np.ndarray:
 class _Axis:
     planes: np.ndarray                  # the stated planes on this axis (first/last = domain)
     covers: list[tuple[int, int, float]]   # (plane index from, to, size): h <= size between them
+    #: the size each interval between two planes asks for as a source (default: its length; an
+    #: interval cut by a plane that is no face - a split candidate - asks for its whole length)
+    interval_size: np.ndarray | None = None
 
 
 def _place_axis(ax: _Axis, H: float, m: float) -> np.ndarray:
@@ -125,12 +128,13 @@ def _place_axis(ax: _Axis, H: float, m: float) -> np.ndarray:
     p = ax.planes
     n = len(p) - 1
     L = np.diff(p)
-    cover = np.minimum(np.full(n, H), L)     # each interval is its own source (one cell at most)
+    S = L if ax.interval_size is None else np.maximum(L, ax.interval_size)
+    cover = np.minimum(np.full(n, H), S)     # each interval is its own source (one cell at most)
     end_size = np.full(n + 1, np.inf)        # smallest source size ending at plane e
     start_size = np.full(n + 1, np.inf)      # ... starting at plane b
     for i in range(n):
-        end_size[i + 1] = min(end_size[i + 1], L[i])
-        start_size[i] = min(start_size[i], L[i])
+        end_size[i + 1] = min(end_size[i + 1], S[i])
+        start_size[i] = min(start_size[i], S[i])
     for a, b, s in ax.covers:
         if b <= a:
             continue
@@ -396,34 +400,43 @@ def paint(placement: Placement, grid: Grid) -> np.ndarray:
     zone = np.full((grid.shape[2], grid.shape[1], grid.shape[0]), AIR, dtype=np.int32)
     for k in placement.paint:
         p = placement.parts[k]
-        if p.dropped:
-            continue
-        sl = _slice(grid, p.box, tol)
-        if sl is None:
-            continue
-        shape = tuple(s.stop - s.start for s in sl)
-        mask = np.zeros(shape, dtype=bool)
-        for b in _material(p):
-            sub = _slice(grid, b, tol)
-            if sub is None:
-                continue
-            mask[tuple(slice(sub[d].start - sl[d].start, sub[d].stop - sl[d].start)
-                       for d in range(3))] = True
-        if p.kind == "solidCylinder":
-            from meshpipeline.cad.ingest.ecxml import axis_of_plane
-            mask &= _ellipse_mask(grid, p.box, axis_of_plane(p.objects[0].plane), sl)
-        for kind, cut, axis in p.cutters:
-            hole = _cut_slice(grid, cut, axis, tol, sl)
-            if hole is None:
-                continue
-            local = tuple(slice(hole[d].start - sl[d].start, hole[d].stop - sl[d].start)
-                          for d in range(3))
-            if kind == "round":
-                mask[local] &= ~_ellipse_mask(grid, cut, axis, hole)
-            else:
-                mask[local] = False
-        zone[sl][mask] = k
+        if not p.dropped:
+            paint_part(zone, grid, p, k, tol)
     return zone
+
+
+def paint_part(zone: np.ndarray, grid: Grid, p, k: int, tol: float) -> None:
+    """Paint part `p` (index `k`) into `zone` over `grid`: its material boxes exactly (their bounds
+    are grid planes, or the grid's own bounds where the part reaches past them), a cylinder and a
+    round vent by cell centre."""
+    sl = _slice(grid, p.box, tol)
+    if sl is None:
+        return
+    shape = tuple(s.stop - s.start for s in sl)
+    mask = np.zeros(shape, dtype=bool)
+    for b in _material(p):
+        sub = _slice(grid, b, tol)
+        if sub is None:
+            continue
+        lo = [max(sub[d].start, sl[d].start) for d in range(3)]
+        hi = [min(sub[d].stop, sl[d].stop) for d in range(3)]
+        if any(hi[d] <= lo[d] for d in range(3)):
+            continue
+        mask[tuple(slice(lo[d] - sl[d].start, hi[d] - sl[d].start) for d in range(3))] = True
+    if p.kind == "solidCylinder":
+        from meshpipeline.cad.ingest.ecxml import axis_of_plane
+        mask &= _ellipse_mask(grid, p.box, axis_of_plane(p.objects[0].plane), sl)
+    for kind, cut, axis in p.cutters:
+        hole = _cut_slice(grid, cut, axis, tol, sl)
+        if hole is None:
+            continue
+        local = tuple(slice(hole[d].start - sl[d].start, hole[d].stop - sl[d].start)
+                      for d in range(3))
+        if kind == "round":
+            mask[local] &= ~_ellipse_mask(grid, cut, axis, hole)
+        else:
+            mask[local] = False
+    zone[sl][mask] = k
 
 
 def _cut_slice(grid: Grid, cut: _Box, axis: int, tol: float, within) -> tuple | None:
@@ -431,7 +444,9 @@ def _cut_slice(grid: Grid, cut: _Box, axis: int, tol: float, within) -> tuple | 
     lies on grid planes), by cell centre along the wall's normal (the cutter reaches past the wall
     on purpose, to planes the grid does not hold)."""
     idx: list[slice] = [slice(0), slice(0), slice(0)]
-    for i in range(3):
+    # along the wall's normal first: a cutter that reaches no cell centre here cuts nothing here
+    # (and its outline need not be planes of this grid)
+    for i in (axis, *(c for c in range(3) if c != axis)):
         if i == axis:
             s = _centre_slice(grid, i, cut.lo[i], cut.hi[i])
         else:

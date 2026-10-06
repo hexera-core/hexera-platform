@@ -483,37 +483,63 @@ def _cylinder_tris(box: _Box, axis: int, segments: int):
     return np.array(out)
 
 
+#: Muted part colours for the stage (RGB 0..1), cycled in file order.
+PART_COLOURS: tuple[tuple[float, float, float], ...] = (
+    (0.55, 0.66, 0.78), (0.80, 0.63, 0.46), (0.57, 0.72, 0.58), (0.78, 0.57, 0.59),
+    (0.67, 0.62, 0.78), (0.82, 0.75, 0.49), (0.50, 0.70, 0.72), (0.72, 0.61, 0.51),
+    (0.63, 0.69, 0.50), (0.61, 0.63, 0.68), (0.76, 0.66, 0.73), (0.53, 0.62, 0.68))
+
+
 def placed_skin(placement: Placement) -> dict:
-    """The placed parts as the geometry stage draws them: one block per part (its own name, so its
-    own colour), built from the file's boxes and cylinders - no fused STEP needed. Metres."""
+    """The placed parts as the geometry stage draws them: one block per part under its own name
+    and colour, its sharp edges beside it, built from the file's boxes and cylinders - no fused
+    STEP needed. Metres."""
+    import base64
+
+    import numpy as np
+
     from meshpipeline.render.skin_mesh import prepare_skin, skin_patch
 
     patches = []
-    for p, name in zip(placement.parts, placement.names):
+    edge_pts: list = []
+    edge_lines: list = []
+    offset = 0
+    for k, (p, name) in enumerate(zip(placement.parts, placement.names)):
         if p.dropped:
             continue
         tris = part_triangles(p)
         if not len(tris):
             continue
-        patch = skin_patch(prepare_skin(tris), name=name)
-        patch["kind"] = p.kind
-        patch["material"] = p.material
-        patch["power_W"] = p.power
+        prepared = prepare_skin(tris)
+        patch = skin_patch(prepared, name=name)
+        patch.update(kind=p.kind, material=p.material, power_W=p.power,
+                     color=list(PART_COLOURS[k % len(PART_COLOURS)]))
         patches.append(patch)
-    return {"kind": "skin", "mesh_units": "m", "is_mesh": False, "cell_count": 0,
-            "parts": True, "patches": patches}
+        lines = prepared["edge_lines"].reshape(-1, 3).astype(np.int64)
+        lines[:, 1:] += offset
+        edge_pts.append(prepared["edge_points"])
+        edge_lines.append(lines)
+        offset += len(prepared["edge_points"])
+    out = {"kind": "skin", "mesh_units": "m", "is_mesh": False, "cell_count": 0,
+           "parts": True, "patches": patches}
+    if edge_pts:
+        b64 = lambda a: base64.b64encode(np.ascontiguousarray(a).tobytes()).decode("ascii")  # noqa: E731
+        lines_all = np.concatenate(edge_lines).astype(np.uint32).ravel()
+        out["edges"] = {"points_b64": b64(np.concatenate(edge_pts).astype(np.float32)),
+                        "lines_b64": b64(lines_all), "count": int(len(lines_all) // 3)}
+    return out
 
 
-def placed_stl(placement: Placement, dest) -> None:
-    """The placed parts as one ASCII STL with a named solid per part (metres): what the geometry
-    check measures and pictures in place of a fused STEP."""
+def placed_stl(placement: Placement, dest, *, scale: float = 1.0) -> None:
+    """The placed parts as one ASCII STL with a named solid per part (metres x `scale`): what the
+    geometry check measures and pictures in place of a fused STEP."""
     from pathlib import Path
 
     with Path(dest).open("w") as fh:
         for p, name in zip(placement.parts, placement.names):
             if p.dropped:
                 continue
-            tris = part_triangles(p)
+            tris = part_triangles(p) * scale
             fh.write(f"solid {name}\n")
             for t in tris:
                 n = _normal(t)
@@ -530,6 +556,107 @@ def _normal(t):
     n = np.cross(t[1] - t[0], t[2] - t[0])
     length = float(np.linalg.norm(n))
     return n / length if length > 0 else n
+
+
+def placement_sidecar(placement: Placement, *, regions: list[dict] | None = None,
+                      patches: list[dict] | None = None, build_report: list[str] | None = None,
+                      solid_contacts=None, mesher: str = "", geometry_unit: str = "",
+                      extra: dict | None = None) -> dict:
+    """The physics in the fused build's sidecar shape (cad/ingest/ecxml_build: what reads one
+    reads the other): materials, regions, patches, fans, vents, sources, compact models, monitor
+    points, the power balance, the tolerances and the build report. Without `regions` the placed
+    parts are the regions (the air first), as the geometry check reads them before any mesh."""
+    from meshpipeline.cad.ingest.ecxml import SPEC
+    from meshpipeline.cad.ingest.ecxml_build import SIDECAR_VERSION, _domain_patches
+
+    model, records, tol = placement.model, placement.records, placement.tol
+    objs = model.active_objects
+    if regions is None:
+        regions = [{"name": FLUID_NAME, "type": "fluid", "kind": "air",
+                    "notes": ["the solution domain less every part"]}]
+        for p, name in zip(placement.parts, placement.names):
+            if p.dropped:
+                continue
+            regions.append({
+                "name": name, "type": "solid", "kind": p.kind, "material": p.material,
+                "power_W": p.power, "box_m": p.box.as_dict(),
+                "objects": [{"name": o.name, "path": list(o.path), "kind": o.kind,
+                             "power_W": o.power, "material": o.material or None}
+                            for o in p.objects],
+                "notes": list(p.notes)})
+    if patches is None:
+        patches = _domain_patches(placement.domain, records["patches"]) + records["patches"]
+    out = {
+        "format": "ECXML", "spec": SPEC, "sidecar_version": SIDECAR_VERSION,
+        "model_name": model.name, "producer": model.producer,
+        "units": {"length": "m", "temperature": "K", "pressure": "Pa", "power": "W",
+                  "thermal_conductivity": "W/mK", "thermal_resistance": "K/W",
+                  "specific_heat": "J/kgK", "density": "kg/m3", "flow_rate": "m3/s"},
+        "geometry_unit": geometry_unit or "mm (the placed parts carry the file's metres x 1000)",
+        "domain": {"box_m": placement.domain.as_dict(), "source": placement.domain_source,
+                   "ambient": model.domain.ambient if model.domain else None},
+        "materials": {n: m.as_dict() for n, m in model.materials.items()},
+        "regions": regions,
+        "patches": patches,
+        "fans": records["fans"], "grilles": records["grilles"],
+        "flow_resistances": records["flow_resistances"],
+        "volume_heat_sources": records["volume_heat_sources"],
+        "surface_heat_sources": records["surface_heat_sources"],
+        "baffles": records["baffles"], "compact_models": records["compact_models"],
+        "monitor_points": records["monitor_points"],
+        "inactive_objects": records["inactive"], "not_built": records["not_built"],
+        "ignored_elements": model.ignored_elements,
+        "total_power_W": sum(float(o.power or 0.0) for o in objs
+                             if o.kind not in ("assembly", "heatsink")),
+        "power_W": {
+            "in_solid_regions": sum(float(r.get("power_W") or 0.0) for r in regions
+                                    if r.get("type") == "solid"),
+            "in_heat_sources": sum(float(s.get("power_W") or 0.0)
+                                   for k in ("volume_heat_sources", "surface_heat_sources")
+                                   for s in records[k])
+                               + sum(float(p.get("power_W") or 0.0) for p in records["patches"]
+                                     if p.get("role") == "heat_flux"),
+            "in_plates_not_meshed": sum(float(b.get("power_W") or 0.0)
+                                        for b in records["baffles"])
+                                    + sum(float(p.get("power_W") or 0.0)
+                                          for p in records["patches"] if p.get("role") == "wall"),
+            "in_parts_not_built": sum(float(r.get("power_W") or 0.0)
+                                      for r in records["not_built"]),
+        },
+        "tolerances_m": {"file_precision": tol.noise, "boolean_fuzzy": None,
+                         "smallest_gap": tol.gap if math.isfinite(tol.gap) else None,
+                         "smallest_gap_between": tol.gap_where,
+                         "thinnest_part": tol.thick if math.isfinite(tol.thick) else None,
+                         "thinnest_part_is": tol.thick_where,
+                         "coordinates_snapped": tol.snapped, "largest_snap": tol.snap_shift},
+        "build_report": list(build_report if build_report is not None
+                             else describe(placement) + placement.report),
+        "solid_contacts": sorted(sorted(c) for c in (solid_contacts or ())),
+        "notes": placement.notes,
+        "placed_parts": True,
+    }
+    if mesher:
+        out["mesher"] = mesher
+    out.update(extra or {})
+    return out
+
+
+def write_placed(src, dest) -> tuple[Placement, dict]:
+    """The canonical form of an ECXML model on the placed-parts path: the parts as one STL of
+    named solids in millimetres (the unit ECXML geometry is read in), the physics sidecar beside
+    it (cad/ingest/ecxml_build.SIDECAR_SUFFIX). No boolean, so it never fails on a model the
+    reader accepts. Returns the placement and the sidecar."""
+    import json
+    from pathlib import Path
+
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_build import SIDECAR_SUFFIX, UNIT
+
+    placement = place(read_ecxml(src))
+    placed_stl(placement, dest, scale=UNIT)
+    sidecar = placement_sidecar(placement)
+    Path(str(dest) + SIDECAR_SUFFIX).write_text(json.dumps(sidecar, indent=1, default=float))
+    return placement, sidecar
 
 
 def describe(placement: Placement) -> list[str]:
