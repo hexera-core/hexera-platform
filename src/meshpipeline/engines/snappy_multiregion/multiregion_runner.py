@@ -13,6 +13,7 @@ from meshpipeline.cad.stl_io import _write_solid, read_stl_triangles
 # needs, and how to read its log. gave them their own authority, so this engine no
 # longer depends on another engine's runner for either.
 from meshpipeline.engines.snappy_hexmesh import _write_case_skeleton, parse_layer_coverage
+from meshpipeline.engines.snappy_multiregion import region_select as _select
 from meshpipeline.engines.snappy_multiregion import thermal_fidelity as _thermal
 from meshpipeline.engines.snappy_multiregion.foam_exec import (  # noqa: F401  re-exported for the adapter
     _CM,
@@ -535,26 +536,61 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
     scale_ratio = (min(p["char_size"] for p in per_solid) / assembly_diag) if per_solid else 1.0
     warnings = []
     if small:
+        listed = small if len(small) <= 20 else small[:20] + [f"... {len(small) - 20} more"]
         warnings.append(
-            f"solids {small} are TINY relative to the assembly (scale ratio "
+            f"solids {listed} are TINY relative to the assembly (scale ratio "
             f"{scale_ratio:.2e}): resolving them needs surface level >= 5 at the default "
             "background. Give THEIR region a higher region_refinement level instead of "
             "raising the global surface_level (which multiplies cells everywhere); if the "
             "budget cannot afford their needed_level, say so and stop - do not silently "
             "under-resolve them (their cellZone will leak and the region split will fail).")
-    return {"solids": [{k: s[k] for k in ("index", "name", "volume", "bbox_min", "bbox_max",
-                                          "centroid") if k in s}
-                       for s in solids],
-            "n_solids": len(solids),
-            "assembly_diag": round(assembly_diag, 6),
-            "base_cell_estimate": round(base_cell, 6),
-            "per_solid_scale": per_solid,
-            "small_solids": small,
-            "scale_ratio": scale_ratio,
-            "scale_ratio_warnings": warnings,
-            "note": "assign every solid index to a fluid or solid region in configure_mesh; "
-                    "use region_refinement {region: [min,max]} for regions holding small "
-                    "solids (see per_solid_scale.needed_level)"}
+    # THE REGION MAP, WHEN THE FILE SAYS WHICH SOLIDS ARE THE FLUID: a thermal model's sidecar
+    # names its air; otherwise a named solid whose box is the whole assembly is the air box.
+    thermal = _thermal.load(ws)
+    fluids = ([str(r["name"]) for r in thermal.get("regions") or [] if r.get("type") == "fluid"]
+              if thermal else _select.enclosing(solids))
+    suggested = _select.suggested_regions(solids, fluids)
+    note = ("assign every solid to a fluid or solid region in configure_mesh - by index, by the "
+            "name below, or by a glob pattern over the names ('Cap_*'); one entry "
+            "{per_solid: true, type: 'solid', solids: ['*']} makes every solid no other entry "
+            "claims its own region, named after it. region_refinement {region or pattern: "
+            "[min,max]} refines regions holding small solids (see needed_level)")
+    if len(solids) <= _select.COMPACT_ABOVE:
+        out = {"solids": [{k: s[k] for k in ("index", "name", "volume", "bbox_min", "bbox_max",
+                                             "centroid") if k in s}
+                          for s in solids],
+               "n_solids": len(solids),
+               "assembly_diag": round(assembly_diag, 6),
+               "base_cell_estimate": round(base_cell, 6),
+               "per_solid_scale": per_solid,
+               "small_solids": small,
+               "scale_ratio": scale_ratio,
+               "scale_ratio_warnings": warnings,
+               "note": note}
+    else:
+        # A LARGE ASSEMBLY, COMPACTLY: name groups, then one short row per solid (geometry.py
+        # pages the rows when even they do not fit). A full dict per solid ran to 241k chars for
+        # 1,000 solids against the 16k tool reply, and the builder never saw one.
+        needed = {int(p["index"]): int(p["needed_level"]) for p in per_solid}
+        grp, more = _select.groups(solids, needed)
+        out = {"n_solids": len(solids),
+               "assembly_diag": round(assembly_diag, 6),
+               "base_cell_estimate": round(base_cell, 6),
+               "solid_groups": grp,
+               **({"solid_groups_omitted": more} if more else {}),
+               "solids_format": _select.ROW_FORMAT,
+               "solids": _select.compact_rows(solids, needed),
+               "small_solids_count": len(small),
+               "scale_ratio": scale_ratio,
+               "scale_ratio_warnings": warnings,
+               "note": note}
+    if suggested:
+        out["suggested_regions"] = suggested
+    if thermal:
+        out["thermal_model"] = ("an electronics thermal model: configure_mesh raises each region "
+                                "to the level its thinnest layer needs and refuses, with the "
+                                "reason, a model this engine cannot mesh faithfully")
+    return out
 
 
 def staged_cad(ws: Path) -> Path | None:
@@ -623,10 +659,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                    geometry_file: str = "input.stl", **_ignored) -> dict:
     import json
     ws = Path(workspace)
-    regions = strategy.get("regions") or []
-    rmap = region_map(regions)
     surface_level = tuple(strategy.get("surface_level") or (2, 2))
-    region_refinement = strategy.get("region_refinement") or {}
     interface_refinement = int(strategy.get("interface_refinement", 1))
     n_layers = int(strategy.get("n_layers", 3))
     first_rel = float(strategy.get("first_layer_rel", 0.35))
@@ -640,6 +673,21 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     # dropped unknown indices instead of rejecting them.)
     solids = ensure_assembly_solids(ws)
     by_index = {int(s["index"]): s for s in solids}
+    # A LARGE ASSEMBLY'S REGIONS BY NAME (region_select): solids by index, by the name the file
+    # gives them or by a pattern, and one region per solid from one entry - resolved to indices
+    # here, before anything reads the map, so every rule below sees plain indices.
+    regions, _unresolved = _select.resolve_regions(list(strategy.get("regions") or []), solids)
+    region_refinement, _unmatched = _select.expand_refinement(
+        dict(strategy.get("region_refinement") or {}), [str(r.get("name")) for r in regions])
+    if _unresolved or _unmatched:
+        problems = _unresolved + _unmatched
+        return {"success": False, "code": "multiregion_region_names_unresolved",
+                "problems": problems[:20], "problems_total": len(problems),
+                "error": ("Some region entries name no solid of this assembly: "
+                          + "; ".join(problems[:5])
+                          + ". Name solids by index, by their exact name in geometry_report, or "
+                            "by a glob pattern over those names.")}
+    rmap = region_map(regions)
     _assigned: list[int] = [int(i) for r in rmap.values() for i in r["solids"]]
     _seen: set[int] = set()
     _dups: set[int] = set()
@@ -649,12 +697,15 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     unknown = sorted({i for i in _assigned if i not in by_index})
     missing = sorted(set(by_index) - set(_assigned))
     if duplicate or unknown or missing:
+        # (lists capped: on a 2,000-solid assembly the whole list would overrun the tool reply)
         return {
             "success": False,
             "code": "multiregion_region_coverage_invalid",
-            "missing_indices": missing,
-            "unknown_indices": unknown,
-            "duplicate_indices": duplicate,
+            "missing_indices": missing[:50],
+            "unknown_indices": unknown[:50],
+            "duplicate_indices": duplicate[:50],
+            "missing_count": len(missing), "unknown_count": len(unknown),
+            "duplicate_count": len(duplicate),
             "expected_inventory_count": len(by_index),
             "assigned_count": len(set(_assigned) & set(by_index)),
             "error": ("Every assembly solid must be assigned exactly once to either the fluid "
@@ -766,8 +817,16 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
         raise ValueError(f"case dicts rejected: {reason}")
     out = {"regions": list(rmap), "fluids": fluid_regions(rmap), "solids": solid_regions(rmap),
            "surface_level": list(surface_level), "n_layers": n_layers, "base_cell": base_cell}
+    if len(rmap) > _select.COMPACT_ABOVE:
+        # a large assembly's reply names a few regions and counts the rest: listing 2,000 region
+        # names overran the tool reply, and the builder read a successful configure as a failure
+        shown = _select.COMPACT_ABOVE // 2
+        out["n_regions"], out["n_solid_regions"] = len(rmap), len(out["solids"])
+        out["regions"] = list(rmap)[:shown] + [f"... and {len(rmap) - shown} more"]
+        out["solids"] = out["solids"][:shown] + [f"... and {len(out['solids']) - shown} more"]
     if thermal_plan is not None:
-        out["thermal_model"] = {"levels_raised": thermal_plan.raised,
+        out["thermal_model"] = {"levels_raised": thermal_plan.raised[:20],
+                                "levels_raised_count": len(thermal_plan.raised),
                                 "cells_at_least": round(thermal_plan.cells),
                                 "cells_allowed": round(thermal_plan.limit_cells)}
     return out
@@ -997,7 +1056,9 @@ def check_mesh(workspace) -> dict:
     if thermal:
         # the way on first: a caller that shortens the list keeps it
         fatal += [f"thermal model: not the file's model - {_thermal.WAY_ON}"]
-        fatal += [f"thermal model: {x}" for x in thermal]
+        fatal += [f"thermal model: {x}" for x in thermal[:20]]
+        if len(thermal) > 20:                  # a 2,000-region case: the run reply stays small
+            fatal.append(f"thermal model: ... and {len(thermal) - 20} more")
     iface = check_interfaces(ws, rmap)
     # RECONCILIATION: actual split regions vs the declared plan. An undeclared region is a
     # semantic defect, not cosmetic - the delivered domain0 carried a coupled domain0_to_air
@@ -1127,7 +1188,10 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         flow_topology=flow_topology,
         engine_params=ep,
     )
-    out = (f"[SNAPPY_MULTIREGION] regions={[r['name'] for r in q['regions']]} "
-           f"cells={q['cells']} missing={q['regions_missing']} "
-           f"interfaces_ok={q['interface_ok']} fatal={q['fatal']}")
+    names = [r["name"] for r in q["regions"]]
+    if len(names) > _select.COMPACT_ABOVE:          # a 2,000-region case: count, do not list
+        names = names[:20] + [f"... {len(names) - 20} more ({len(names)} regions)"]
+    out = (f"[SNAPPY_MULTIREGION] regions={names} "
+           f"cells={q['cells']} missing={q['regions_missing'][:20]} "
+           f"interfaces_ok={q['interface_ok']} fatal={q['fatal'][:20]}")
     return {"success": q["mesh_ok"], "stdout": out, "stderr": "", "output": out}
