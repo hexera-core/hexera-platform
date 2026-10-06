@@ -987,6 +987,13 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         wires = _wires_of(f)
         if len(wires) < 2:
             return []
+        if fluid_solid is True:
+            # A DECLARED FLUID DOMAIN's ring-shaped port face IS the opening: the flow crosses the
+            # ring, and its inner hole (a hub, a shaft) is outside the fluid. Capping that hole
+            # closed a second pocket - hub surface + disc - beside the fluid (blade-row passages:
+            # staged ports 1.5-1.8x the declared annulus, 140 edges used three times), which only
+            # a lucky seed or fill kept out of the mesh. The ring face is the whole lid.
+            return []
         outer_w = BRepTools.OuterWire_s(f)
         pln = BRepAdaptor_Surface(f).Plane()
         host = _owner(f)

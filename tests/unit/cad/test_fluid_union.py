@@ -83,3 +83,31 @@ def test_a_solid_touching_no_port_carrying_solid_is_left_alone(tmp_path):
     t = tessellate_internal(_stack(tmp_path, [150.0]), tmp_path / "stls", prepared=_prepared(),
                             fluid_solid=True)
     assert t["stls"]
+
+
+def test_a_declared_fluid_annulus_is_lidded_by_its_ring_not_over_its_hub(tmp_path):
+    # a blade-row passage in miniature: the fluid is a tube-shaped solid (hub hole r 20, shroud
+    # r 40); its ring faces ARE the openings, and the hub hole is outside the fluid
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    ring = BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(ax, 40.0, 300.0).Shape(),
+                           BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)),
+                                                    20.0, 302.0).Shape()).Shape()
+    w = STEPControl_Writer()
+    w.Transfer(ring, STEPControl_AsIs)
+    w.Write(str(tmp_path / "ring.step"))
+    ports = [{"name": "inlet", "type": "inlet", "near_mm": [30, 0, 0], "diameter_mm": 80.0,
+              "inner_diameter_mm": 40.0},
+             {"name": "outlet", "type": "outlet", "near_mm": [30, 0, 300], "diameter_mm": 80.0,
+              "inner_diameter_mm": 40.0}]
+    t = tessellate_internal(tmp_path / "ring.step", tmp_path / "stls", prepared=_prepared(),
+                            fluid_solid=True, declared_ports=declaration_targets(ports))
+    annulus = math.pi * (0.04 ** 2 - 0.02 ** 2)
+    for name in ("inlet", "outlet"):
+        tris = np.asarray(read_stl_triangles(Path(t["stls"][name])), float).reshape(-1, 3, 3)
+        a = 0.5 * float(np.linalg.norm(np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]),
+                                       axis=1).sum())
+        assert a == pytest.approx(annulus, rel=0.02), "the hub hole was capped"
+    alltris = np.concatenate([np.asarray(read_stl_triangles(Path(p)), float).reshape(-1, 3, 3)
+                              for p in t["stls"].values()])
+    assert _edge_use(alltris) == {2}
