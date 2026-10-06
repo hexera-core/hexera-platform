@@ -35,6 +35,18 @@ def test_the_files_sides_fans_vents_and_plates_become_exterior_patches():
         (f"domain_{a}{m}", "patch", "side") for a in "xyz" for m in ("min", "max")]
 
 
+def test_each_side_takes_the_faces_the_mesh_leaves_a_fraction_of_a_micrometre_off_its_plane():
+    # lab, 2026-10-06: the ducted board's meshed outside sat up to 0.62 um off the file's planes
+    # (0.27 m model) and a 1e-6-of-the-diagonal band left 252 of its side faces unnamed
+    rects = {r["name"]: r for r in R.thermal_exterior_patches(_sidecar(ducted_board()))}
+    low_z, low_x = rects["Low_Z"], rects["Low_X"]
+    for off in (6.15e-7, -6.15e-7):
+        assert low_z["lo"][2] < -0.006 + off < low_z["hi"][2]
+        assert low_x["lo"][0] < -0.06 + off < low_x["hi"][0]
+    # and no face a cell inside the domain (the finest cell here is ~0.2 mm) is taken for a side
+    assert low_z["hi"][2] - (-0.006) < 1e-5
+
+
 def test_a_side_keeps_only_what_its_devices_leave_and_a_declared_port_names_its_rectangle():
     rects = [{"name": "Fan", "kind": "device", "face": "+x", "type": "patch",
               "lo": [1.0, 0.2, 0.2], "hi": [1.0, 0.4, 0.4]},

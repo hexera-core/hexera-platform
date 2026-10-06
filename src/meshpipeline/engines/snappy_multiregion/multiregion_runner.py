@@ -195,19 +195,28 @@ def render_zoned_set_dict(rmap: dict) -> str:
 THERMAL_MODEL = "thermal_model.json"
 #: The exterior patches the native stage cuts the fluid's outside into, when the file names them.
 EXTERIOR_PATCHES = "exterior_patches.json"
+#: The band around each domain side, as a fraction of the domain's diagonal (a thousandth of the
+#: background cell). The meshed outside sits up to ~2.3e-6 of the diagonal off the file's planes:
+#: 0.5 um on a 0.25 m set-top box, 0.62 um on a 0.27 m ducted board (lab, 2026-10-06). A 1e-6
+#: band left those faces unnamed. 2.5e-5 is ten times the worst seen, and still an eighth of a
+#: cell at refinement level 7, so no face a cell inside the domain is taken for a side.
+EXTERIOR_BAND = 2.5e-5
 
 
-def thermal_exterior_patches(sidecar: dict, *, tol: float) -> list[dict]:
+def thermal_exterior_patches(sidecar: dict, *, tol: float | None = None) -> list[dict]:
     """The fluid's outside as the thermal model declares it, as boxes (metres) around each
     rectangle on a domain side: the fans, vents and plates on the sides first ("device"), then
     each side ("side"), which keeps what the devices leave of it. Fans and vents are open
-    boundaries (type patch); plates and heat-flux rectangles are walls."""
+    boundaries (type patch); plates and heat-flux rectangles are walls. `tol` is the band around
+    each rectangle; by default EXTERIOR_BAND of the domain's diagonal."""
     from meshpipeline.contracts.patch_names import mesh_safe, unreserved
 
     box = (sidecar.get("domain") or {}).get("box_m") or {}
     lo, hi = box.get("min"), box.get("max")
     if not (lo and hi):
         return []
+    if tol is None:
+        tol = EXTERIOR_BAND * sum((float(hi[k]) - float(lo[k])) ** 2 for k in range(3)) ** 0.5
     rows = [p for p in sidecar.get("patches") or [] if p.get("domain_face")]
     devices = [p for p in rows if p.get("role") != "domain_boundary"]
     sides = [p for p in rows if p.get("role") == "domain_boundary"]
@@ -708,7 +717,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     thermal = ws / THERMAL_MODEL
     if thermal.exists() and _pad == 0.0:
         (ws / EXTERIOR_PATCHES).write_text(json.dumps(
-            thermal_exterior_patches(json.loads(thermal.read_text()), tol=1e-6 * diag)))
+            thermal_exterior_patches(json.loads(thermal.read_text()))))
     (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
     (ws / "system" / "snappyHexMeshDict").write_text(
         render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
