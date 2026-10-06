@@ -597,6 +597,8 @@ def _thinner(ladder: list[dict], i: int) -> int | None:
     return None
 
 
+#: the share of the remaining clock a LAYERED ladder step may take while a layer-free step waits
+LAYERED_SHARE = 0.6
 _LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
 _LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
 _now = time.monotonic       # the run clock; tests substitute it
