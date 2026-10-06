@@ -80,7 +80,9 @@
    "group_completeness"
   ],
   "criteria": [
+   "elements_under_floor",
    "fatal",
+   "max_non_ortho",
    "min_sicn",
    "rc",
    "sicn_low_fraction",
