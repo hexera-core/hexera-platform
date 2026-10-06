@@ -263,6 +263,10 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                                           dialect=dialect)
     for rname in zone_names:
         _write_region_system(case, rname)
+    # what the viewer draws: every part's meshed surface under its name, and the domain's sides
+    from meshpipeline.engines.snapgrid.viewer import write_viewer
+    write_viewer(case, points=points, keys=keys, topo=topo, cell_zone=cell_zone,
+                 zone_names=zone_names, fluid=set(air_names))
     fluids = list(air_names)
     solids = [part_region[k] for k in live]
     (case / "constant" / "regionProperties").write_text(render_region_properties(fluids, solids))

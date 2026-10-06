@@ -99,13 +99,14 @@ def find_source(source_path: str) -> Path | None:
 # native: the CLI in a guarded child process (an out-of-memory kill or a timeout is the child's)
 
 def _pythonpath() -> str:
+    """The import path the child needs: where this meshpipeline is, then this process's own
+    path - so the child runs exactly the code that dispatched it (the lab overlay, a worktree)."""
     import os
 
     import meshpipeline
 
     here = str(Path(meshpipeline.__file__).resolve().parents[1])
-    have = os.environ.get("PYTHONPATH", "")
-    return here + (os.pathsep + have if have else "")
+    return os.pathsep.join(dict.fromkeys([here] + [p for p in sys.path if p]))
 
 
 def run_native_build(workspace, *, bashrc: str, timeout: int) -> dict:
@@ -262,6 +263,10 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
     except (OSError, ValueError):
         sidecar = {}
     q = quality_of(ws, report)
+    from meshpipeline.engines.snapgrid.driver import thin_layer_warning
+    warning = thin_layer_warning(report)
+    if warning:
+        q["thin_layers_warning"] = warning
     patch_types = delivered_boundary_types(sidecar, intake_patches)
     box = ((sidecar.get("domain") or {}).get("box_m")) or {"min": [0.0] * 3, "max": [1.0] * 3}
     lo, hi = [float(v) for v in box["min"]], [float(v) for v in box["max"]]
@@ -292,7 +297,8 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
         flow_topology=flow_topology, engine_params=ep)
     out = (f"[SNAPGRID] regions={len(q['regions'])} cells={q['cells']} "
            f"missing={q['regions_missing']} interfaces_ok={q['interface_ok']} fatal={q['fatal']} "
-           f"thin_layers_short={len(q['thin_layers_short'])}")
+           f"thin_layers_short={len(q['thin_layers_short'])}"
+           + (f" WARNING: {warning}" if warning else ""))
     return {"success": q["mesh_ok"], "stdout": out, "stderr": "", "output": out}
 
 

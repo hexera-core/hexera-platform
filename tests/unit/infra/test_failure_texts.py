@@ -118,7 +118,7 @@ async def _refuse(monkeypatch, exc):
 
     async def _classify(thread): return "pending"
 
-    async def _materialize(src, interp, *, job_id):
+    async def _materialize(src, interp, *, job_id, engine=""):
         raise exc
 
     monkeypatch.setattr(gm, "prepare_execution_geometry", _materialize)

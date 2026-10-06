@@ -62,6 +62,11 @@ def _review_renderer():
     return RENDERER
 
 
+def _viewer_surface():
+    from meshpipeline.engines.snapgrid.viewer import snapgrid_viewer
+    return snapgrid_viewer
+
+
 def _build_driver():
     from meshpipeline.engines.snapgrid.driver import drive
     return drive
@@ -162,6 +167,7 @@ SPEC = EngineSpec(
         _load_workspace_scaffold=_workspace_scaffold,
         _load_review_renderer=_review_renderer,
         _load_build_driver=_build_driver,
+        _load_viewer_surface=_viewer_surface,
         render_artifacts=_RENDER_ARTIFACTS,
         inspection_targets=_INSPECTION_TARGETS,
         _load_target_obligations=lambda: _target_obligations,
@@ -178,6 +184,7 @@ SPEC = EngineSpec(
                 M("snapgrid_report.json"),
                 M("thermal_model.json"),
                 M("source.ecxml"),
+                M("snapgrid_viewer.npz", required=False),
             ),
         ),
         downstream=DownstreamTarget(

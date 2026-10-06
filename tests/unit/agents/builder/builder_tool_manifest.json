@@ -63,6 +63,12 @@
    "run_mesh",
    "run_python"
   ],
+  "snapgrid": [
+   "read_file",
+   "list_directory",
+   "submit_mesh",
+   "run_mesh"
+  ],
   "snappy": [
    "read_file",
    "list_directory",

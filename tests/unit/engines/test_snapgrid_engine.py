@@ -200,6 +200,11 @@ def test_a_checked_case_finalizes_into_a_manifest_every_gate_accepts(tmp_path):
     assert {r["name"] for r in q["regions"]} == set(R.meshed_regions(ws))
     assert set(manifest["patch_types"]) >= {"domain_xmin", "domain_zmax"}
     assert _gates(ws) == (True, "", "")
+    # the viewer draws the delivered mesh: every part's meshed surface under its region name
+    view = get_spec("snapgrid").viewer_surface(ws, roles=manifest["patch_types"], units="m")
+    drawn = {p["name"] for p in view["patches"]}
+    assert set(json.loads((ws / R.REPORT_NAME).read_text())["solid_regions"]) <= drawn
+    assert all(p["face_count"] > 0 for p in view["patches"])
     for m in get_spec("snapgrid").deliverable.members:
         assert (ws / m.path).exists() or m.path == R.SOURCE_NAME
 

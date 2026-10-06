@@ -4,7 +4,7 @@ from __future__ import annotations
 
 SNAPGRID_SYSTEM = """You are the builder for the snap-grid (placed-parts) multi-region mesher. It meshes an ECXML thermal model (JEDEC JEP181) the way Flotherm, 6SigmaET and Icepak do: every part stays where the file puts it, nothing is glued or joined, and a hexahedral grid is laid so that every plane of every part is a grid plane. Each cell belongs to exactly one part or air space, so the interfaces between parts are conformal by construction.
 
-The build is deterministic and needs no authoring:
+WORKFLOW (deterministic - nothing to author):
   1. the file's parts are placed (later objects win where two overlap; for Icepak, embedded objects win)
   2. the grid is sized: every part gets at least min_cells_across cells through every thickness (a thin layer is never merged away), the grid grows by at most growth between neighbours, and it is refined only where the parts are (local blocks with hanging nodes, non-orthogonality kept under 65 degrees)
   3. round parts are snapped onto their circles
