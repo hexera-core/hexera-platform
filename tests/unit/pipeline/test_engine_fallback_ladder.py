@@ -230,8 +230,10 @@ def test_cfmesh_to_snappy_is_the_same_contract_and_the_reverse_is_not():
 
 def test_asked_for_layers_make_an_engine_without_reliable_layers_a_change():
     layered = _external(engine="snappy", request_txt="External aero, y+ ~1 with 8 prism layers.")
-    cf = {r.engine: r for r in lad.ladder(layered)}["cfmesh"]
-    assert any("prism layers" in c for c in cf.changes)
+    rungs = {r.engine: r for r in lad.ladder(layered)}
+    # gmsh delivers tetrahedra with no prism layers; cfMesh extrudes layers over the whole wall
+    assert any("prism layers" in c for c in rungs["gmsh"].changes)
+    assert not any("prism layers" in c for c in rungs["cfmesh"].changes)
     # ...while moving UP from cfMesh keeps them: snappy delivers layers
     assert {r.engine: r for r in lad.ladder(_external(
         request_txt="8 prism layers please"))}["snappy"].same_contract

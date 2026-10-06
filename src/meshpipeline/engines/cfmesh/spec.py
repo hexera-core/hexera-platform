@@ -118,8 +118,9 @@ SPEC = EngineSpec(
         "Tolerates dirty/non-watertight geometry (gaps, thin trailing edges) and meshes quickly. "
         "Also the system's TRUE-2D engine: native cartesian2DMesh meshes a profile ribbon "
         "one cell thick with empty front/back planes (airfoil sections, 2D studies). "
-        "PRODUCES an OpenFOAM polyMesh of the fluid. The staircased surface does not resolve "
-        "the wall, so it does not support wall-resolved y+ or reliable near-wall boundary layers."
+        "PRODUCES an OpenFOAM polyMesh of the fluid, with boundary layers extruded over the whole "
+        "wall (their coverage is measured on every mesh). Wall-resolved y+ ~1 stacks on sharp "
+        "edges are better served by a body-fitted layer mesher."
     ),
         _load_prompt=_prompt,
         _load_tools=_tools,
@@ -241,9 +242,12 @@ SPEC = EngineSpec(
         downstream=DownstreamTarget(
             solvers=("OpenFOAM",),   # the polyMesh feeds OpenFOAM's FV solvers
         ),
-        # an OpenFOAM hex-dominant octree mesh whose wall is STAIRCASED (the descriptor above), and
-        # whose boundaryLayers the descriptor itself calls unreliable for a y+ target
-        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="staircased", prism_layers=False),
+        # an OpenFOAM hex-dominant octree mesh. Its boundaryLayers are extruded over the whole wall,
+        # MEASURED on the mesh (engines/layer_census.py, HOME-TURF lab 2026-10-06): ONERA M6 at
+        # 3.8M cells 100% of the wall area with a layer and 99.95% with all requested; blade-row
+        # passages 99.9% / 99.6%; heat-exchanger shell side 99.6% / 98.2%. The finalize step
+        # reports the coverage of every mesh, so a run that loses layers says so.
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="staircased", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/meshDict",),
             # 20 MINUTES: at industry density (the passage caps put ~13 cells across every
