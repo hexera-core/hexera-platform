@@ -699,7 +699,7 @@ def _checked_port_groups(gmsh, groups, surfaces, ports, *, cad: bool = False) ->
         if not PORT_GROUP_BAND[0] <= got / want <= PORT_GROUP_BAND[1]:
             wrong[str(g["name"])] = got / want
     if not wrong:
-        return groups
+        return _with_wall(groups, surfaces, ports)
     bound = bind_ports(table, [declared[n] for n in wrong])
     out = [dict(g) for g in groups]
     freed: list[int] = []
@@ -714,10 +714,25 @@ def _checked_port_groups(gmsh, groups, surfaces, ports, *, cad: bool = False) ->
     wall = next((g for g in out if str(g.get("role")) == "wall"), None)
     if wall is not None:
         wall["surface_tags"] = list(dict.fromkeys([*wall["surface_tags"], *freed]))
+    out = _with_wall(out, surfaces, ports)
     print(f"[GMSH] port group(s) {', '.join(f'{n} ({r:.2f}x its declared opening)' for n, r in wrong.items())} "
           f"rebound to the opening face(s) {bound}; {len(freed)} face(s) returned to the wall",
           file=sys.stderr)
     return out
+
+
+def _with_wall(groups, surfaces, ports) -> list[dict]:
+    """The groups with the declared wall in them: when the builder named no wall group, every face
+    no group holds is the declared wall (internal flow - what the patch contract approved)."""
+    if any(str(g.get("role")) == "wall" for g in groups):
+        return groups
+    held = {int(t) for g in groups for t in g.get("surface_tags") or []}
+    rest = [int(t) for t in surfaces if int(t) not in held]
+    if not rest:
+        return groups
+    name = next((str(p.get("name")) for p in ports or [] if isinstance(p, dict)
+                 and str(p.get("type") or "") == "wall" and p.get("name")), "wall")
+    return [*groups, {"name": name, "role": "wall", "surface_tags": rest}]
 
 
 def _group_areas(gmsh) -> dict[str, float]:

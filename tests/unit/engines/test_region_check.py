@@ -105,3 +105,41 @@ def test_gmsh_holds_a_builders_port_group_to_its_opening():
         assert driver._checked_port_groups(gmsh, sound, faces, ports, cad=True) == sound
     finally:
         gmsh.finalize()
+
+
+def test_gmsh_walls_the_faces_a_swept_port_gave_back_when_the_builder_named_no_wall():
+    gmsh = pytest.importorskip("gmsh")
+    from meshpipeline.engines.gmsh import driver
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("t")
+        gmsh.model.occ.addCylinder(0, 0, 0, 0.2, 0, 0, 0.02)
+        gmsh.model.occ.synchronize()
+        faces = [t for _, t in gmsh.model.getEntities(2)]
+        area = {t: gmsh.model.occ.getMass(2, t) for t in faces}
+        side = max(faces, key=lambda t: area[t])
+        discs = sorted((t for t in faces if t != side),
+                       key=lambda t: gmsh.model.occ.getCenterOfMass(2, t)[0])
+        ports = [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 40.0},
+                 {"name": "outlet", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 40.0},
+                 {"name": "wall", "type": "wall"}]
+        swept = [{"name": "inlet", "role": "inlet", "surface_tags": [discs[0], side]},
+                 {"name": "outlet", "role": "outlet", "surface_tags": [discs[1]]}]
+        out = {g["name"]: g["surface_tags"] for g in
+               driver._checked_port_groups(gmsh, swept, faces, ports, cad=True)}
+        assert out == {"inlet": [discs[0]], "outlet": [discs[1]], "wall": [side]}
+    finally:
+        gmsh.finalize()
+
+
+def test_the_prelaunch_check_lets_the_engine_build_the_declared_wall(tmp_path):
+    from meshpipeline.engines.case_contract import _gmsh_boundary
+    (tmp_path / "gmsh_spec.json").write_text(json.dumps({"groups": [
+        {"name": "inlet", "role": "inlet", "surface_tags": [1, 2]},
+        {"name": "outlet", "role": "outlet", "surface_tags": [3]}]}))
+    (tmp_path / "port_declaration.json").write_text(json.dumps([
+        {"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"},
+        {"name": "wall", "type": "wall"}]))
+    (tmp_path / "flow_topology").write_text("internal")
+    assert _gmsh_boundary(tmp_path).patches == {"inlet": "inlet", "outlet": "outlet", "wall": "wall"}
