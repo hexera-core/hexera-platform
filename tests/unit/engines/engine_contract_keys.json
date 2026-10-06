@@ -162,6 +162,7 @@
   "deliverable": [
    "constant",
    "snapgrid_report.json",
+   "snapgrid_viewer.npz",
    "source.ecxml",
    "system",
    "thermal_model.json"
@@ -204,6 +205,7 @@
   ],
   "input_contract": {
    "input_kind": "solid",
+   "internal_from_surface": false,
    "min_thickness_ratio": 0.0,
    "rationale": "An ECXML thermal model is a 3D assembly of axis-aligned parts the file places itself; the snap grid resolves any thinness by putting grid planes on both faces of every layer, so no thin-feature floor applies.",
    "require_no_self_intersection": false
