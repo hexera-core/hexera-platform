@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake import engine_selection as es
-from meshpipeline.agents.intake import refusal, turn
+from meshpipeline.agents.intake import measured_choice, refusal, turn
 from meshpipeline.agents.intake import settings as icfg
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.executor import (
@@ -733,7 +733,11 @@ def _block_engine_first() -> str:
         "     fits the mesh to the nozzle's curved walls and grows thin layers along them'). The "
         "     application asks the user 'I'd mesh this with X: <reason>. OK, or do you use a "
         "     different mesher?' and the turn ends there. Their 'ok' (or 'your call') confirms it "
-        "     (engine_source=suggested_confirmed); naming another engine replaces it. Pick from "
+        "     (engine_source=suggested_confirmed); naming another engine replaces it. When a "
+        "     MEASURED ENGINE RECOMMENDATION block follows, the application measured the upload "
+        "     and ranked the engines on lab evidence: propose ITS recommended engine - the question "
+        "     then carries that evidence and lists the alternatives with their fit, and the user "
+        "     picks. Without one, pick from "
         "     this catalog, judged against the purpose, the geometry check and what the user said. "
         "     Each engine's 'Takes' line is a hard limit: propose only one that takes the uploaded "
         "     file (a CAD solid, or a surface mesh such as an STL) for this flow - the application "
@@ -981,6 +985,31 @@ def _extract_reply(result: dict) -> str:
 
 
 
+async def _measured_recommendation(state, state_messages):
+    """The measured engine recommendation for this conversation's upload, or None: when the engine
+    is already settled (pinned on the session, or confirmed), when no flow is known yet, or when no
+    uploaded file is staged to measure (nothing to compare with the lab's shapes)."""
+    if state.get("engine"):
+        return None
+    gate = state.get("intake_gate") if isinstance(state.get("intake_gate"), Mapping) else {}
+    if es.state_of((gate or {}).get("selection")) == es.CONFIRMED:
+        return None
+    declared = _declared_case(state_messages)
+    purpose = declared[0] if declared else str(state.get("purpose") or "")
+    kind = declared[1] if declared else str(state.get("input_kind") or "")
+    if not purpose:
+        return None
+    staged = measured_choice.staged_upload(str(state.get("session_id") or ""))
+    if not staged:
+        return None
+    from meshpipeline.pipeline.geometry_state import geometry_ref
+    form = measured_choice.upload_form(staged, geometry_ref(state))
+    return await measured_choice.rank_in_time(
+        path=staged, purpose=purpose, input_kind=kind, form=form, engines=_IMPLEMENTED_ENGINES,
+        patches=list(state.get("intake_patches") or []),
+        said="\n".join(turn.user_texts(state_messages)))
+
+
 def _declared_case(state_messages) -> tuple | None:
     from meshpipeline.application.geometry_confirmation import declared_case
     return declared_case(state_messages)
@@ -1009,6 +1038,11 @@ async def node_intake(state: PipelineState) -> dict:
         # the conversation's run has ended and this turn starts another; once the new
         # requirements are submitted the confirmation block above takes over
         system += _previous_run_block(state)
+    # THE MEASURED RECOMMENDATION. While the engine is unsettled, the uploaded geometry is measured
+    # and every engine that can take it is ranked by its lab record on shapes like it; the model
+    # reads the ranking, and the one engine question proposes its best engine with the evidence.
+    _recommendation = await _measured_recommendation(state, state.get("messages", []))
+    system += measured_choice.prompt_block(_recommendation, settled=False)
     state_messages = state.get("messages", [])
     llm_messages = _build_llm_messages(system=system, state_messages=state_messages)
 
@@ -1039,6 +1073,18 @@ async def node_intake(state: PipelineState) -> dict:
         logger.info("Intake: engine selection CONFIRMED by the user's plain yes engine=%s - "
                     "job_id=%s", _assented["engine"], job_id)
         _ctx = dataclasses.replace(_ctx, selection=_assented)
+    else:
+        # THE USER PICKS. The question listed every engine that can take the file; naming one of
+        # them plainly ("use cfMesh" - what the console's engine buttons send) selects it here,
+        # before the model runs, the way a plain yes selects the proposed one.
+        _picked = es.choose_listed(
+            _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+            revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
+            user_msg_count=_ctx.user_msg_count)
+        if _picked is not None:
+            logger.info("Intake: engine selection CONFIRMED - the user picked %s from the list "
+                        "- job_id=%s", _picked["engine"], job_id)
+            _ctx = dataclasses.replace(_ctx, selection=_picked)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a
     # fake job id or instantiate a worker-owned publisher in the request path, the turn collects
     # the same typed events through a sink and returns them with the response.
@@ -1050,7 +1096,8 @@ async def node_intake(state: PipelineState) -> dict:
         user_texts=turn.user_texts(state_messages),
         declared_case=_declared_case(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
-        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval)
+        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
+        recommendation=_recommendation)
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)
