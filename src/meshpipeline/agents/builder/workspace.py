@@ -23,6 +23,7 @@ def _write_workspace_context_files(
     engine_params: dict | None = None,
     flow_topology: str = "",
     purpose: str = "",
+    far_field: dict | None = None,
 ) -> tuple[str, str]:
     if not request_txt:
         step_basename = os.path.basename(source_path) if source_path else "input.stl"
@@ -95,6 +96,13 @@ def _write_workspace_context_files(
         # a full-aircraft external run and a pipe internal run are not the same population.
         if purpose:
             (workspace / "purpose").write_text(str(purpose), encoding="utf-8")
+        # The approved FAR-FIELD request (typed extents, the reference length they are quoted
+        # in, the flow axis): what the domain-extent gate will judge the box against. Same
+        # neutral-file treatment, so an engine that builds its own box (cfMesh) sizes it in the
+        # unit it is judged in instead of re-deriving one.
+        ff = {k: v for k, v in (far_field or {}).items() if v not in (None, "", {})}
+        if ff:
+            (workspace / "far_field_request.json").write_text(json.dumps(ff), encoding="utf-8")
     except Exception as exc:
         logger.warning("Builder: failed to write workspace context files - %s", exc)
 
