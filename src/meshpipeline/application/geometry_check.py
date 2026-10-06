@@ -471,16 +471,25 @@ def declared_openings(facts: dict, thermal: dict) -> None:
                     openings.append(_declared_opening(p, face, role, scale, mesh_safe))
             elif side is not None and not (side_area > 0 and walls >= _WALLED * side_area):
                 plates = [p for p in on_face if p["role"] in ("wall", "heat_flux")]
-                open_part = _open_part(side, plates) if plates else side
-                if open_part is None:
+                if len(plates) > _MAX_SIDE_PLATES:
+                    facts.setdefault("notes", []).append(
+                        f"the domain's {face} side carries {len(plates)} plates, too many to read "
+                        "its open part from; add its opening on the stage")
+                    continue
+                parts = _open_rects(side, plates) if plates else [side]
+                if not parts:
                     walled.append(face)
                     continue
-                opening = _declared_opening(open_part, face, vent_role, scale, mesh_safe)
-                opening["confidence"] = 0.6       # open air: which way it flows is the user's
-                if plates:
-                    opening["notes"] = [f"the open part of the side: {', '.join(p['name'] for p in plates[:6])} "
-                                        "close(s) the rest"]
-                openings.append(opening)
+                for k, part in enumerate(parts, 1):
+                    if len(parts) > 1:
+                        part = {**part, "name": f"{side['name']}_{k}"}
+                    opening = _declared_opening(part, face, vent_role, scale, mesh_safe)
+                    opening["confidence"] = 0.6   # open air: which way it flows is the user's
+                    if plates:
+                        opening["notes"] = [
+                            "an open part of the side: "
+                            f"{', '.join(p['name'] for p in plates[:6])} close(s) the rest"]
+                    openings.append(opening)
             else:
                 walled.append(face)
     for i, o in enumerate(openings, 1):
@@ -492,10 +501,19 @@ def declared_openings(facts: dict, thermal: dict) -> None:
             + " side(s) with walls, so they are not offered as openings")
 
 
-def _open_part(side: dict, plates: list[dict]) -> dict | None:
-    """What is left open of a domain side its plates partly close: the uncovered area, at its
-    own centroid, inside the smallest rectangle that holds it - or None when nothing is left.
-    Exact for any set of axis-aligned plates (the side is cut on every plate edge)."""
+#: Plates on one domain side the open-part reading takes (each adds two grid lines per axis).
+_MAX_SIDE_PLATES = 256
+#: Open rectangles offered for one side; the largest are kept.
+_MAX_SIDE_OPENINGS = 8
+
+
+def _open_rects(side: dict, plates: list[dict]) -> list[dict]:
+    """What is left open of a domain side its plates partly close, as rectangles that tile the
+    open area exactly - one for a strip, two for an L - largest first; [] when nothing is left.
+    The side is cut on every plate edge into a grid; covered cells are marked plate by plate
+    (one array slice each), and the open cells are merged row by row into rectangles."""
+    import numpy as np
+
     def rect(p):
         c, s = p["centre_m"], p["size_m"]
         axes = ["xyz".index(a) for a in p["size_axes"]]
@@ -505,28 +523,45 @@ def _open_part(side: dict, plates: list[dict]) -> dict | None:
     covers = []
     for p in plates:
         (pu, pv), paxes = rect(p)
-        if paxes != axes:
-            continue
-        covers.append(((max(pu[0], su[0]), min(pu[1], su[1])), (max(pv[0], sv[0]), min(pv[1], sv[1]))))
+        if paxes == axes:
+            covers.append(((max(pu[0], su[0]), min(pu[1], su[1])),
+                           (max(pv[0], sv[0]), min(pv[1], sv[1]))))
     us = sorted({su[0], su[1], *(v for c in covers for v in c[0] if su[0] < v < su[1])})
     vs = sorted({sv[0], sv[1], *(v for c in covers for v in c[1] if sv[0] < v < sv[1])})
-    area, cu, cv = 0.0, 0.0, 0.0
-    box = [float("inf"), float("-inf"), float("inf"), float("-inf")]
-    for u0, u1 in zip(us, us[1:]):
-        for v0, v1 in zip(vs, vs[1:]):
-            mu, mv = (u0 + u1) / 2, (v0 + v1) / 2
-            if any(c[0][0] <= mu <= c[0][1] and c[1][0] <= mv <= c[1][1] for c in covers):
-                continue
-            a = (u1 - u0) * (v1 - v0)
-            area, cu, cv = area + a, cu + a * mu, cv + a * mv
-            box = [min(box[0], u0), max(box[1], u1), min(box[2], v0), max(box[3], v1)]
-    if area <= 1e-6 * (su[1] - su[0]) * (sv[1] - sv[0]):
-        return None
-    centre = list(side["centre_m"])
-    centre[axes[0]], centre[axes[1]] = cu / area, cv / area
-    out = dict(side)
-    out.update(centre_m=centre, size_m=[box[1] - box[0], box[3] - box[2]], open_area_m2=area)
-    return out
+    iu, iv = {v: i for i, v in enumerate(us)}, {v: j for j, v in enumerate(vs)}
+    covered = np.zeros((len(vs) - 1, len(us) - 1), dtype=bool)
+    for (cu0, cu1), (cv0, cv1) in covers:
+        if cu1 > cu0 and cv1 > cv0:
+            covered[iv[cv0]:iv[cv1], iu[cu0]:iu[cu1]] = True
+    rects: list[tuple[int, int, int, int]] = []          # (i0, i1, j0, j1) in grid indices
+    active: dict[tuple[int, int], int] = {}
+    for j in range(covered.shape[0] + 1):
+        runs: list[tuple[int, int]] = []
+        if j < covered.shape[0]:
+            open_row = ~covered[j]
+            i = 0
+            while i < len(open_row):
+                if open_row[i]:
+                    start = i
+                    while i < len(open_row) and open_row[i]:
+                        i += 1
+                    runs.append((start, i))
+                else:
+                    i += 1
+        nxt = {run: active.pop(run, j) for run in runs}
+        rects += [(r[0], r[1], j0, j) for r, j0 in active.items()]
+        active = nxt
+    side_area = (su[1] - su[0]) * (sv[1] - sv[0])
+    out = []
+    for i0, i1, j0, j1 in rects:
+        u0, u1, v0, v1 = us[i0], us[i1], vs[j0], vs[j1]
+        if (u1 - u0) * (v1 - v0) <= 1e-6 * side_area:
+            continue
+        centre = list(side["centre_m"])
+        centre[axes[0]], centre[axes[1]] = (u0 + u1) / 2, (v0 + v1) / 2
+        out.append({**side, "centre_m": centre, "size_m": [u1 - u0, v1 - v0]})
+    out.sort(key=lambda p: -p["size_m"][0] * p["size_m"][1])
+    return out[:_MAX_SIDE_OPENINGS]
 
 
 def _side_area(box: dict, axis: int) -> float:
@@ -547,7 +582,7 @@ def _declared_opening(patch: dict, face: str, role, scale: float, mesh_safe) -> 
     normal[axis] = 1.0 if face[0] == "+" else -1.0         # out of the air, like every opening
     centre = [float(v) * scale for v in patch["centre_m"]]
     w, h = (float(v) * scale for v in patch["size_m"])
-    area = float(patch["open_area_m2"]) * scale * scale if "open_area_m2" in patch else w * h
+    area = w * h
     return {"id": 0, "face": None, "name": mesh_safe(patch["name"], fallback=f"side_{face[1]}"),
             "role": role if role in ("inlet", "outlet") else "outlet", "kind": "disc",
             "shape": "rectangle", "confidence": 0.95, "centroid_m": centre,

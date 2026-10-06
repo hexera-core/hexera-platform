@@ -617,6 +617,22 @@ def test_a_partly_walled_side_offers_only_its_open_part():
     assert (side["width_mm"], side["height_mm"]) == pytest.approx((100.0, 20.0))
 
 
+def test_an_l_shaped_gap_is_offered_as_rectangles_that_hold_only_open_area():
+    from meshpipeline.application.geometry_check import declared_openings
+    from meshpipeline.cad.ingest.ecxml_build import build
+
+    doc = Ecxml("corner").domain((0, 0, 0), (0.1, 0.2, 0.05))
+    doc.plate("Corner", (0.0, 0.2, 0.0), (0.06, 0.001, 0.03), "+xz", "M")
+    doc.block("B", (0.02, 0.05, 0.01), (0.02, 0.02, 0.02), "M")
+    facts = {"scale_to_m": 1.0, "notes": [], "openings": []}
+    declared_openings(facts, build(read_ecxml(doc.xml())).sidecar)
+    gap = {o["name"]: o for o in facts["openings"] if o["name"].startswith("domain_ymax")}
+    assert set(gap) == {"domain_ymax_1", "domain_ymax_2"}
+    for o in gap.values():
+        assert o["area_m2"] == pytest.approx(o["width_mm"] * o["height_mm"] * 1e-6)
+    assert sum(o["area_m2"] for o in gap.values()) == pytest.approx(0.1 * 0.05 - 0.06 * 0.03)
+    assert gap["domain_ymax_1"]["centroid_m"] == pytest.approx([0.05, 0.2, 0.04])
+
 def test_a_rectangular_opening_reaches_the_patches_as_a_rectangle():
     from types import SimpleNamespace
 
