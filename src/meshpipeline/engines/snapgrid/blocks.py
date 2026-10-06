@@ -44,7 +44,7 @@ SPLIT_GAIN = 0.85
 #: Recursion depth of the kd-tree.
 MAX_DEPTH = 40
 #: Candidate split positions, as fractions of the block's span on an axis.
-_FRACTIONS = (0.25, 0.375, 0.5, 0.625, 0.75)
+_FRACTIONS = (0.25, 0.5, 0.75)
 
 
 @dataclass
@@ -80,6 +80,10 @@ class Geometry:
     src_lo: np.ndarray                     # (S, 3) metres
     src_hi: np.ndarray
     src_size: np.ndarray                   # (S, 3) metres
+    # curved parts (cylinders, round vents) with a margin: no block wall cuts through one, so the
+    # snapped surface and the cells that follow it never carry a hanging node
+    curved_lo: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    curved_hi: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
 
 @dataclass
@@ -172,6 +176,16 @@ def geometry_of(placement: Placement, plan: G.GridPlan) -> Geometry:
             c = _clip(_Box(r["box_m"]["min"], r["box_m"]["max"]), dom)
             if c is not None:
                 boxes.append((c, True, -1))
+    curved = []
+    for p in placement.parts:
+        if p.dropped:
+            continue
+        boxes_c = [p.box] if p.kind == "solidCylinder" else []
+        boxes_c += [cut for kind, cut, _axis in p.cutters if kind == "round"]
+        for b in boxes_c:
+            extent = max(b.hi[i] - b.lo[i] for i in range(3))
+            curved.append(([b.lo[i] - CURVED_MARGIN * extent for i in range(3)],
+                           [b.hi[i] + CURVED_MARGIN * extent for i in range(3)]))
     plane_lo = np.array([[kidx(i, b.lo[i]) for i in range(3)] for b, _c, _s in boxes] or
                         np.zeros((0, 3)), dtype=np.int64).reshape(-1, 3)
     plane_hi = np.array([[kidx(i, b.hi[i]) for i in range(3)] for b, _c, _s in boxes] or
@@ -181,7 +195,10 @@ def geometry_of(placement: Placement, plan: G.GridPlan) -> Geometry:
     src_lo = np.array([b.lo for b, _s in src], dtype=float).reshape(-1, 3)
     src_hi = np.array([b.hi for b, _s in src], dtype=float).reshape(-1, 3)
     src_size = np.array([s for _b, s in src], dtype=float).reshape(-1, 3)
-    return Geometry(domain=dom, keys=keys, real=real, plane_lo=plane_lo, plane_hi=plane_hi,
+    geo_curved = {"curved_lo": np.array([c[0] for c in curved], dtype=float).reshape(-1, 3),
+                  "curved_hi": np.array([c[1] for c in curved], dtype=float).reshape(-1, 3)}
+    return Geometry(**geo_curved, domain=dom, keys=keys, real=real, plane_lo=plane_lo,
+                    plane_hi=plane_hi,
                     plane_closed=closed, plane_skip=skip, src_lo=src_lo, src_hi=src_hi,
                     src_size=src_size)
 
@@ -247,7 +264,9 @@ class _Lines:
             gap = np.maximum(0.0, np.maximum(geo.src_lo[:, c] - bhi[c], blo[c] - geo.src_hi[:, c]))
             cross += gap * gap
         eff = size + m * np.sqrt(cross)
-        rel = np.isfinite(eff) & (eff < H)
+        along = np.maximum(0.0, np.maximum(geo.src_lo[:, axis] - bhi[axis],
+                                           blo[axis] - geo.src_hi[:, axis]))
+        rel = np.isfinite(eff) & (eff + m * along < H)
         cover = np.full(n, H)
         end_val = np.full(n, np.inf)
         start_val = np.full(n, np.inf)
@@ -412,7 +431,23 @@ def _split_candidates(g: np.ndarray, own: np.ndarray, lo: int, hi: int) -> list[
 
 
 #: Cut positions tried per axis (inside the widest cells).
-SPLIT_CANDIDATES = 4
+SPLIT_CANDIDATES = 2
+#: The margin, as a share of its size, kept between a curved part and any block wall.
+CURVED_MARGIN = 0.0
+
+
+def _cuts_curved(geo: Geometry, glines, lo, hi, a: int, j: int) -> bool:
+    """Whether a wall at global line j on axis a, inside the block (lo, hi), would cut through a
+    curved part's box (with its margin)."""
+    if not len(geo.curved_lo):
+        return False
+    x = glines[a][j]
+    hit = (geo.curved_lo[:, a] < x) & (geo.curved_hi[:, a] > x)
+    for i in range(3):
+        if i == a:
+            continue
+        hit &= (geo.curved_hi[:, i] > glines[i][lo[i]]) & (geo.curved_lo[:, i] < glines[i][hi[i]])
+    return bool(hit.any())
 
 
 def relayout(layout: Layout, plan: G.GridPlan, H: float) -> Layout:
@@ -494,7 +529,9 @@ def _balance_pair(A: Block, C: Block, a: int, G_, T: float) -> int:
                 continue
             # Q's lines inside the offending P cells go into P
             cells = np.unique(pi[bad])
-            inner = ql[(ql > o0) & (ql < o1)]
+            # Q's lines across the shared rectangle, its two edges included: a coarse P cell that
+            # runs past the edge of the rectangle must be cut there too
+            inner = ql[(ql >= o0) & (ql <= o1)]
             take = np.zeros(len(inner), dtype=bool)
             for lo_, hi_ in zip(pl[cells].tolist(), pl[cells + 1].tolist()):
                 take |= (inner > lo_) & (inner < hi_)

@@ -174,9 +174,13 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     snapped = C.Snapped()
     if curves:
         solid_box = np.array([p.kind != "solidCylinder" for p in placement.parts], dtype=bool)
-        snapped = C.snap(curves, points, keys, topo, zone, solid_box, _wall_keys(topo))
+        snapped = C.snap(curves, points, keys, topo, zone, solid_box,
+                         _hanging_keys(topo, points, keys))
+        if snapped.topo is not None:            # risers collapsed: fewer faces, fewer points
+            topo = snapped.topo
+            keys = snapped.keys
         if len(snapped.keys):
-            points[np.searchsorted(keys, snapped.keys)] = snapped.xyz
+            points = snapped.xyz
             ids_i = np.searchsorted(keys, topo.face_pts)
             ids_b = np.searchsorted(keys, topo.b_pts)
             a_i, c_i = C.face_geometry(points, topo.face_off, ids_i)
@@ -291,18 +295,25 @@ def _points_of(layout: B.Layout, topo: boxmesh.BoxTopology, keys: np.ndarray) ->
     return np.stack([g[0][ix], g[1][iy], g[2][iz]], axis=1)
 
 
-def _wall_keys(topo: boxmesh.BoxTopology) -> np.ndarray:
-    """The points on a wall between two blocks: every point of a face whose two cells are in
-    different blocks (the hanging nodes of the coarser side among them)."""
-    bo = np.searchsorted(topo.offsets, topo.owner, side="right")
-    bn = np.searchsorted(topo.offsets, topo.neighbour, side="right")
-    faces = np.flatnonzero(bo != bn)
-    if not len(faces):
-        return np.zeros(0, dtype=np.int64)
-    sizes = np.diff(topo.face_off)[faces]
-    idx = np.repeat(topo.face_off[:-1][faces], sizes) + \
-        (np.arange(int(sizes.sum())) - np.repeat(np.cumsum(sizes) - sizes, sizes))
-    return np.unique(topo.face_pts[idx])
+def _hanging_keys(topo: boxmesh.BoxTopology, points: np.ndarray, keys: np.ndarray) -> np.ndarray:
+    """The hanging nodes: points that lie on the straight edge of some face between two of its
+    corners (where a finer block meets a coarser one). Moving one would bend that edge, so they
+    never move; every other point - a wall point that is a corner of all its faces included -
+    may."""
+    out = []
+    for off, flat in ((topo.face_off, topo.face_pts), (topo.b_off, topo.b_pts)):
+        ids = np.searchsorted(keys, flat)
+        sizes = np.diff(off)
+        prev = np.arange(len(ids)) - 1
+        prev[off[:-1]] = off[1:] - 1
+        nxt = np.arange(len(ids)) + 1
+        nxt[off[1:] - 1] = off[:-1]
+        p, a, b = points[ids], points[ids[prev]], points[ids[nxt]]
+        cross = np.linalg.norm(np.cross(p - a, b - p), axis=1)
+        scale = np.linalg.norm(p - a, axis=1) * np.linalg.norm(b - p, axis=1)
+        straight = (cross <= 1e-9 * scale) & (np.repeat(sizes, sizes) > 4)
+        out.append(flat[straight])
+    return np.unique(np.concatenate(out)) if out else np.zeros(0, dtype=np.int64)
 
 
 def _curved_rows(staircase: list[dict], curved: list[dict], snapped: C.Snapped) -> list[dict]:
@@ -531,15 +542,14 @@ def _boundary(placement: Placement, layout: B.Layout, topo: boxmesh.BoxTopology,
         for obj, pid, rect in painted:
             if obj["domain_face"] != face:
                 continue
-            rng: list[slice] = []
-            for i in cross:
-                lo = max(rect.lo[i], domain.lo[i], lines[i][0])
-                hi = min(rect.hi[i], domain.hi[i], lines[i][-1])
-                if hi - lo <= tol:
-                    break
-                rng.append(slice(_line_index(lines[i], lo, tol), _line_index(lines[i], hi, tol)))
-            if len(rng) != 2:
+            # the rectangle must reach into this block's side on both axes before any of its
+            # edges is looked up (an edge it does not reach need not be a line here)
+            spans = [(max(rect.lo[i], domain.lo[i], lines[i][0]),
+                      min(rect.hi[i], domain.hi[i], lines[i][-1])) for i in cross]
+            if any(hi - lo <= tol for lo, hi in spans):
                 continue
+            rng = [slice(_line_index(lines[i], lo, tol), _line_index(lines[i], hi, tol))
+                   for i, (lo, hi) in zip(cross, spans)]
             # side arrays are (slower axis, faster axis) = (cross[1], cross[0])
             arr[rng[1], rng[0]] = pid
         chunk_ids.append(arr)

@@ -348,13 +348,18 @@ def _relaxed_words(want: GridPlan, got: GridPlan) -> list[str]:
 
 # ------------------------------------------------------------------------------ the paint -----
 def _slice(grid: Grid, box: _Box, tol: float) -> tuple[slice, slice, slice] | None:
-    """The (z, y, x) cell slice a box covers exactly, or None when it covers no cell."""
-    idx = []
+    """The (z, y, x) cell slice a box covers exactly, or None when it covers no cell. A box that
+    does not reach into the grid on EVERY axis covers nothing - and its faces need not be planes
+    of this grid - so that is settled before any face is looked up."""
+    spans = []
     for i in range(3):
         lo = max(box.lo[i], float(grid.lines[i][0]))
         hi = min(box.hi[i], float(grid.lines[i][-1]))
         if hi - lo <= tol:
             return None
+        spans.append((lo, hi))
+    idx = []
+    for i, (lo, hi) in enumerate(spans):
         a, b = grid.index(i, lo, tol), grid.index(i, hi, tol)
         if b <= a:
             return None
@@ -404,20 +409,24 @@ def paint(placement: Placement, grid: Grid) -> np.ndarray:
             paint_part(zone, grid, p, k, tol)
     return zone
 
+def _span(subs, d: int) -> slice:
+    return slice(min(s_[d].start for s_ in subs), max(s_[d].stop for s_ in subs))
+
+
 
 def paint_part(zone: np.ndarray, grid: Grid, p, k: int, tol: float) -> None:
     """Paint part `p` (index `k`) into `zone` over `grid`: its material boxes exactly (their bounds
     are grid planes, or the grid's own bounds where the part reaches past them), a cylinder and a
     round vent by cell centre."""
-    sl = _slice(grid, p.box, tol)
-    if sl is None:
+    # the part's reach here: the cells its material boxes cover (a heat sink's box is not its
+    # material - its blocks are, and only they need be planes of this grid)
+    subs = [s_ for s_ in (_slice(grid, b, tol) for b in _material(p)) if s_ is not None]
+    if not subs:
         return
+    sl = (_span(subs, 0), _span(subs, 1), _span(subs, 2))
     shape = tuple(s.stop - s.start for s in sl)
     mask = np.zeros(shape, dtype=bool)
-    for b in _material(p):
-        sub = _slice(grid, b, tol)
-        if sub is None:
-            continue
+    for sub in subs:
         lo = [max(sub[d].start, sl[d].start) for d in range(3)]
         hi = [min(sub[d].stop, sl[d].stop) for d in range(3)]
         if any(hi[d] <= lo[d] for d in range(3)):
