@@ -205,6 +205,7 @@ class Run:
     cells: int | None = None
     seconds: float | None = None
     cells_across: float | None = None
+    non_ortho: float | None = None
 
     @classmethod
     def from_row(cls, row: Mapping) -> Run | None:
@@ -216,7 +217,8 @@ class Run:
                        cls=shape_class(traits), passed=row.get("status") == "pass",
                        layers_pct=_num(row.get("layers_pct")), cells=_int(row.get("cells")),
                        seconds=_num(row.get("seconds")),
-                       cells_across=_num(row.get("cells_across_p05")))
+                       cells_across=_num(row.get("cells_across_p05")),
+                       non_ortho=_num((row.get("quality") or {}).get("max_non_ortho")))
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -298,6 +300,7 @@ class Evidence:
     cells: int | None = None
     seconds: float | None = None
     cells_across: float | None = None
+    non_ortho: float | None = None  # median max non-orthogonality (deg) of the passes
     per_form: bool = False      # the level fixes the file's form: one run per shape
     near_runs: int = 0          # the few runs at a more specific level than `level`
     near_passed: int = 0
@@ -315,6 +318,7 @@ class Evidence:
              "cells": self.cells,
              "seconds": None if self.seconds is None else round(self.seconds, 1),
              "cells_across": None if self.cells_across is None else round(self.cells_across, 1),
+             "max_non_ortho": None if self.non_ortho is None else round(self.non_ortho, 1),
              "low_evidence": self.low}
         if self.near_runs:
             d["near"] = {"runs": self.near_runs, "passed": self.near_passed,
@@ -376,6 +380,7 @@ def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str) -
         cells=_int(_median([r.cells for r in ok if r.cells is not None])),
         seconds=_median([r.seconds for r in ok if r.seconds is not None]),
         cells_across=_median([r.cells_across for r in ok if r.cells_across is not None]),
+        non_ortho=_median([r.non_ortho for r in ok if r.non_ortho is not None]),
         per_form=bool(key[2]), **near)
 
 

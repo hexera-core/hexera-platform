@@ -111,6 +111,13 @@ def _status(result: dict) -> str | None:
     return None          # refused: the capability filter's business, not fitness
 
 
+def _render(table: dict) -> str:
+    """The table as committed: the header readable, one run per line (a diff shows runs)."""
+    head = json.dumps({k: v for k, v in table.items() if k != "rows"}, indent=1)
+    rows = ",\n".join("  " + json.dumps(r, sort_keys=True) for r in table["rows"])
+    return head[:-2] + ',\n "rows": [\n' + rows + "\n ]\n}\n"
+
+
 def _rule(text: str) -> tuple[str, dict[str, str], str]:
     engine, _, rest = text.partition(":")
     cond, _, reason = rest.partition(":")
@@ -317,7 +324,7 @@ def main(argv=None) -> int:
                     for k, v in sorted(summary.items())},
         "rows": rows,
     }
-    Path(args.table).write_text(json.dumps(table, indent=1, sort_keys=False) + "\n")
+    Path(args.table).write_text(_render(table))
     t = table_from(table)
     print(f"wrote {args.table}: {len(rows)} runs on {table['provenance']['shapes']} shapes "
           f"({len(t.runs)} readable); excluded {dict(excluded)}", file=sys.stderr)

@@ -163,6 +163,10 @@ def prompt_block(rec, *, settled: bool) -> str:
         return ""
     rows = "\n".join(
         f"  {f.rank}. {_display(f.engine)} - {_fit(f)}: {f.reason}"
+        + (f"; median cells across the narrowest passage {f.evidence.cells_across:.0f}"
+           if f.evidence.cells_across is not None else "")
+        + (f"; median max non-orthogonality {f.evidence.non_ortho:.0f} deg"
+           if f.evidence.non_ortho is not None else "")
         + (f". Heads-up: {f.heads_up}" if f.heads_up else "")
         + (" [RECOMMENDED]" if f.recommended else "") for f in rec.fits)
     shape = f"  Shape: {rec.shape}.\n" if rec.shape else ""
