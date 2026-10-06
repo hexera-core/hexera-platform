@@ -219,6 +219,27 @@ def _timed_out(engine: str, deadline_s: float,
                          "time; the mesh is too big or too slow for the budget.")}
 
 
+#: Compressed bytes a returned workspace carries per mesh cell, with margin. Measured: a 7 M-cell
+#: snappy passage came back as 557 MB (80 B a cell, job 3cd77f85), and VMTK's Fluent aorta as
+#: 560 MB (lab, 2026-10-04) - both past the generic 512 MiB extraction ceiling, so meshes the cell
+#: budget allows were built, paid for and lost on the way back.
+RESULT_BYTES_PER_CELL = 100
+
+
+def result_extraction_limits():
+    """The extraction limits for a RETURNED mesh workspace: the generic limits, with the archive
+    ceiling sized from the cell budget - CELL_HARD_LIMIT cells at RESULT_BYTES_PER_CELL (800 MB
+    at the default 8 M) - never below the generic one. Every other bound (entries, expanded
+    size, per-file size, ratio, member types) is unchanged."""
+    from dataclasses import replace
+
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.sandbox.safe_extract import default_limits
+    base = default_limits()
+    by_budget = int(polcfg.CELL_HARD_LIMIT) * RESULT_BYTES_PER_CELL
+    return replace(base, max_archive_bytes=max(base.max_archive_bytes, by_budget))
+
+
 RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 
 
@@ -306,11 +327,17 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         if not isinstance(result, dict) or "rc" not in result:
             return _fail(engine, "the result document is not a recognised mesh result")
 
-        out_bytes = bucket.blob(out_key).download_as_bytes()
         # bounded, fail-closed extraction of the returned workspace tar (size/entry/ratio/type
-        # limits) - never unbounded extractall, even for our own tar.
+        # limits) - never unbounded extractall, even for our own tar. Streamed to a file beside
+        # the workspace, not held in memory: the archive of a mesh at the cell budget is most of
+        # a gigabyte, and holding it (twice, as bytes and as a buffer) was the worker's peak.
+        import tempfile
+
         from meshpipeline.sandbox.safe_extract import safe_extract_tar
-        safe_extract_tar(fileobj=io.BytesIO(out_bytes), dest=str(ws))
+        with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
+            _archive = Path(_tmp) / "result.tar.gz"
+            bucket.blob(out_key).download_to_filename(str(_archive))
+            safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits())
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.

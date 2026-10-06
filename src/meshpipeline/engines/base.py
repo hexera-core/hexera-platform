@@ -78,6 +78,11 @@ class InputContract:
     # closed surface (TetGen-backed, e.g. vmtk) requires this; a wrap-then-fill engine that
     # tolerates a dirty surface (snappy/cfMesh) does not - so it is opt-in per engine.
     require_no_self_intersection: bool = False
+    # INTERNAL FLOW FROM A TRIANGLE SURFACE (STL, OBJ, PLY, ...): the engine's internal path takes
+    # the staged surface and the openings the user confirmed on it (cad/internal_surface: lids on
+    # open ends, capped faces kept, the fluid's side of a thick wall) instead of needing a CAD
+    # solid. An engine without it meshes internal flow from a CAD solid only.
+    internal_from_surface: bool = False
 
 
 @dataclass(frozen=True)

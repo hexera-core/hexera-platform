@@ -84,6 +84,92 @@ def _metre_factor(prepared) -> float:
     return prepared.to_metres
 
 
+#: A surface upload staged for internal flow (cad/internal_surface): the closed fluid boundary, one
+#: named solid per patch - the wall and each confirmed opening. The driver fills it when there is
+#: no CAD solid (geometry.step) to mesh.
+FLUID_BOUNDARY = "fluid_boundary.stl"
+
+
+def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
+                   input_kind: str = "") -> dict | None:
+    """A fluid with declared openings whose volume is not the uploaded solid itself - a triangle
+    surface (STL, OBJ, PLY, ...), or a CAD part declared to be the WALL around the fluid: the
+    shared internal-flow staging closes the staged surface at the confirmed openings and names
+    every patch, and the result is staged as FLUID_BOUNDARY for the driver to fill (it takes
+    precedence over geometry.step, which would be the metal). None when it does not apply - a CAD
+    solid that is the fluid or the part itself (meshed from geometry.step as before), or nothing
+    declared to open."""
+    import shutil
+
+    from meshpipeline.cad.internal_surface import is_cad, stage_internal_surface
+    ws = Path(workspace)
+    ports = [p for p in (intake_patches or []) if isinstance(p, dict)
+             and str(p.get("type") or "").strip() in ("inlet", "outlet")]
+    if not ports or not (ws / "input.stl").exists():
+        return None
+    if is_cad(geometry_path) and str(input_kind or "").strip() != "body-surface":
+        return None
+    t = stage_internal_surface(ws / "input.stl", ws / "_internal_stls",
+                               intake_patches=intake_patches, input_kind=input_kind)
+    shutil.copy2(t["fluid_boundary"], ws / FLUID_BOUNDARY)
+    record = {k: t[k] for k in ("openings", "interior_point", "bbox_min", "bbox_max", "wall_name")}
+    record["patches"] = t["facts"]["patches"]
+    (ws / "internal_surface.json").write_text(json.dumps(record, indent=1))
+    return {"ports": list(t["openings"]), **record}
+
+
+def _discrete_surfaces(gmsh) -> list[dict]:
+    """Tag, patch name, area and centroid of every discrete surface, from its own triangles."""
+    import numpy as np
+    ntags, coords, _ = gmsh.model.mesh.getNodes()
+    ntags = np.asarray(ntags, dtype=np.int64)
+    pts = np.asarray(coords, dtype=float).reshape(-1, 3)
+    index = np.zeros(int(ntags.max()) + 1 if len(ntags) else 1, dtype=np.int64)
+    index[ntags] = np.arange(len(ntags))
+    out = []
+    for _, tag in gmsh.model.getEntities(2):
+        _types, _tags, nodes = gmsh.model.mesh.getElements(2, tag)
+        if not len(nodes):
+            continue
+        conn = np.asarray(nodes[0], dtype=np.int64).reshape(-1, 3)
+        tri = pts[index[conn]]
+        a = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+        c = (tri.mean(axis=1) * a[:, None]).sum(axis=0) / max(float(a.sum()), 1e-300)
+        out.append({"tag": tag, "name": gmsh.model.getEntityName(2, tag), "area": round(float(a.sum()), 8),
+                    "centroid": [round(float(v), 6) for v in c]})
+    return out
+
+
+def _inspect_fluid_boundary(ws: Path) -> dict:
+    import gmsh
+    _mine = not gmsh.isInitialized()
+    if _mine:
+        gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("inspect_surface")
+        # loaded EXACTLY as the driver loads it, so every tag reported here is the tag it meshes
+        from meshpipeline.engines.gmsh.driver import _load_fluid_boundary
+        _load_fluid_boundary(gmsh, ws / FLUID_BOUNDARY)
+        surfaces = _discrete_surfaces(gmsh)
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+        gmsh.model.remove()
+    finally:
+        if _mine:
+            gmsh.finalize()
+    return {
+        "volumes": 1,
+        "surfaces": surfaces,
+        "curves": [],
+        "bbox": [xmin, ymin, zmin, xmax, ymax, zmax],
+        "diag": ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5,
+        "note": ("The upload is a triangle surface, staged as ONE closed fluid volume: each surface "
+                 "tag above is one patch, already named for the declaration (the wall and each "
+                 "inlet/outlet). Map each contracted group to the surface of the same name; the "
+                 "driver fills the volume they enclose."),
+    }
+
+
 def _inspect_surface(ws: Path, stl: Path) -> dict:
     """The face table of a SURFACE upload, classified exactly as the driver will classify it
     (engines/gmsh/surface_volume.py), so the tags a builder binds groups to are the tags meshed."""
@@ -138,7 +224,14 @@ def _inspect_surface(ws: Path, stl: Path) -> dict:
 def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
     ws = Path(workspace)
     geom = ws / "geometry.step"
+    if (ws / FLUID_BOUNDARY).exists():
+        return _inspect_fluid_boundary(ws)
     if not geom.exists():
+        from meshpipeline.cad.internal_surface import staging_failure
+        why = staging_failure(ws)
+        if why:
+            # the true reason the fluid boundary was never staged, not just a missing file
+            return {"error": f"the geometry could not be staged for gmsh: {why}"}
         stl = ws / geometry_file
         if stl.exists():
             return _inspect_surface(ws, stl)
@@ -150,6 +243,8 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
         gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
+        # the size the builder is told is the surface's, not OpenCascade's loose envelope
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("inspect")
         gmsh.model.occ.importShapes(str(geom))
         gmsh.model.occ.synchronize()

@@ -231,6 +231,7 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "run_guarded", fake_run)
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
     # the surface stage once, then two generator attempts
     assert res["rc"] == 0 and len(calls) == 3
@@ -266,6 +267,7 @@ def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_now", lambda: clock["t"])
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=1000)
     # the surface stage (700 s) and one generator step (700 s) exhaust the 1000 s budget: the
     # remaining ladder steps are not started, and the note says so
@@ -304,6 +306,7 @@ def test_a_completed_fill_is_also_written_as_an_openfoam_case(tmp_path, monkeypa
     monkeypatch.setattr(R, "export_openfoam_case", lambda ws, **kw: exported.append(kw) or "openfoam_case")
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=900)
     assert res["rc"] == 0 and res["openfoam_case"] == "openfoam_case"
     assert len(exported) == 1 and 0 < exported[0]["timeout"] <= 900
@@ -386,6 +389,7 @@ def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "run_guarded", fake_run)
     (tmp_path / "vmtk_spec.json").write_text(json.dumps({"source_ids": [0], "target_ids": [1],
                                                         "boundary_layers": 3}))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
     assert len(calls) == 1 and "repair_note" not in res
 
@@ -436,12 +440,97 @@ def test_geometry_report_lists_the_staged_ports(tmp_path):
     assert "local radius" in rep["note"].lower()
 
 
-def test_stage_lumen_does_not_apply_to_surfaces_or_undeclared_runs(tmp_path):
+def test_stage_lumen_does_not_apply_without_a_staged_surface_or_a_declaration(tmp_path):
     assert LS.stage_lumen(tmp_path, tmp_path / "lumen.stl", prepared=None,
                           intake_patches=[{"name": "inlet", "type": "inlet"}]) is None
     assert LS.stage_lumen(tmp_path, tmp_path / "body.step", prepared=None,
                           intake_patches=[]) is None
     assert not (tmp_path / LS.STAGING_FACT).exists()
+
+
+def _open_tube_stl(path, r=0.02, length=0.2, n=32):
+    from meshpipeline.cad.stl_io import write_stl_binary
+    tris = []
+    for k in range(n):
+        a0, a1 = 2 * np.pi * k / n, 2 * np.pi * ((k + 1) % n) / n     # the seam closes exactly
+        for j in range(4):
+            x0, x1 = length * j / 4, length * (j + 1) / 4
+            p = [[x, r * np.cos(a), r * np.sin(a)] for x in (x0, x1) for a in (a0, a1)]
+            tris += [(p[0], p[3], p[2]), (p[0], p[1], p[3])]
+    write_stl_binary(path, tris)
+
+
+_TUBE_PORTS = [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 40},
+               {"name": "outlet", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 40},
+               {"name": "wall", "type": "wall"}]
+
+
+def test_an_undeclared_surface_upload_is_still_staged_as_the_lumen_vmtk_inspects(tmp_path):
+    """No ports declared yet: the upload itself becomes lumen.vtp, so geometry_report lists its
+    open profiles instead of saying the workspace was never staged."""
+    from meshpipeline.engines.vmtk.vmtk_runner import inspect_stl
+    _open_tube_stl(tmp_path / "input.stl")
+    assert LS.stage_lumen(tmp_path, tmp_path / "scan.stl", prepared=None, intake_patches=[]) is None
+    rep = inspect_stl(tmp_path)
+    assert not rep.get("error") and rep["n_open_profiles"] == 2
+
+
+def test_a_step_whose_brep_cannot_be_opened_is_staged_from_its_own_surface(tmp_path, monkeypatch):
+    """A faceted STEP (a shell of triangles, not a solid) fails the B-rep path; its staged
+    surface is closed at the confirmed openings instead of the lumen never being written."""
+    from meshpipeline.cad import cad_tessellate
+    _open_tube_stl(tmp_path / "input.stl")
+
+    def no_solid(*_a, **_k):
+        raise RuntimeError("internal-flow input is not a watertight SOLID")
+    monkeypatch.setattr(cad_tessellate, "tessellate_internal", no_solid)
+    rec = LS.stage_lumen(tmp_path, tmp_path / "faceted.stp", prepared=None, intake_patches=_TUBE_PORTS)
+    assert rec is not None and {p["name"] for p in rec["ports"]} == {"inlet", "outlet"}
+    assert (tmp_path / LS.LUMEN_OPEN).exists()
+
+
+def test_a_staging_failure_reaches_the_engines_report_with_its_true_reason(tmp_path, monkeypatch):
+    from meshpipeline.agents.builder import attempt
+    from meshpipeline.engines.vmtk import vmtk_runner
+
+    def broken(*_a, **_k):
+        raise ValueError("the surface holds too few triangles to bound a fluid")
+    monkeypatch.setattr(vmtk_runner, "stage_declared", broken)
+    monkeypatch.setattr("meshpipeline.cad.staging.staged_surface",
+                        lambda g, p: type("S", (), {"consumed": None})())
+    geometry = type("G", (), {"path": str(tmp_path / "scan.stl")})()
+    attempt._stage_declared(tmp_path, geometry, {"intake_patches": _TUBE_PORTS}, "vmtk")
+    rep = vmtk_runner.inspect_stl(tmp_path)
+    assert "too few triangles" in rep["error"], rep
+
+
+def test_stage_lumen_opens_a_surface_upload_at_its_confirmed_openings(tmp_path):
+    """A capped vessel surface (STL, metres, staged as input.stl): the shared internal-flow staging
+    finds each confirmed opening's capped face, and the lumen vmtk reads is the wall with those
+    faces taken out - real holes, one per declared port, under the declared names."""
+    from meshpipeline.cad.stl_io import write_stl_binary
+
+    r, length, n = 0.02, 0.2, 32
+    tris = []
+    for k in range(n):
+        a0, a1 = 2 * np.pi * k / n, 2 * np.pi * (k + 1) / n
+        for j in range(4):
+            x0, x1 = length * j / 4, length * (j + 1) / 4
+            p = [[x, r * np.cos(a), r * np.sin(a)] for x in (x0, x1) for a in (a0, a1)]
+            tris += [(p[0], p[3], p[2]), (p[0], p[1], p[3])]
+        for x, s in ((0.0, -1), (length, 1)):
+            q0, q1 = [x, r * np.cos(a0), r * np.sin(a0)], [x, r * np.cos(a1), r * np.sin(a1)]
+            tris.append(([x, 0, 0], q1, q0) if s < 0 else ([x, 0, 0], q0, q1))
+    write_stl_binary(tmp_path / "input.stl", tris)
+    patches = [{"name": "aortic_root", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 40},
+               {"name": "descending", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 40},
+               {"name": "vessel", "type": "wall"}]
+    rec = LS.stage_lumen(tmp_path, tmp_path / "upload.stl", prepared=None, intake_patches=patches,
+                         input_kind="fluid-domain")
+    assert rec is not None
+    assert {p["name"] for p in rec["ports"]} == {"aortic_root", "descending"}
+    assert rec["n_open_loops"] == 2, "the lumen must be open at exactly the two declared ports"
+    assert (tmp_path / LS.LUMEN_OPEN).exists() and (tmp_path / "lumen.vtp").exists()
 
 
 def test_the_builder_hook_is_inert_without_geometry_or_hook(tmp_path):

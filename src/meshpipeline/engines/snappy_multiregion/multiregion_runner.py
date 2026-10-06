@@ -165,8 +165,30 @@ def render_block_mesh(bbox_min, bbox_max, base_cell: float, pad: float = 0.15) -
         _HDR.format(cls="dictionary", loc="system", obj="blockMeshDict")
         + "\nscale 1;\n\nvertices\n(\n" + vtxt + "\n);\n\n"
         + f"blocks\n(\n    hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)\n);\n\n"
-        + "edges ();\nboundary ();\nmergePatchPairs ();\n"
+        + "edges ();\n"
+        # THE OUTSIDE IS A NAMED WALL PATCH, not blockMesh's unnamed default (an `empty` patch that
+        # snappyHexMesh refuses to relax a 3D mesh against). It is what the cells outside every
+        # declared region are cut back to (native.py), and what the ports are taken from.
+        + f"boundary\n(\n    {EXTERIOR_PATCH}\n    {{\n        type wall;\n        faces\n        (\n"
+        + "            (0 3 2 1)\n            (4 5 6 7)\n            (0 1 5 4)\n"
+        + "            (2 3 7 6)\n            (1 2 6 5)\n            (0 4 7 3)\n"
+        + "        );\n    }\n);\nmergePatchPairs ();\n"
     )
+
+
+#: the background's outer boundary, and every face left facing it once the cells outside all
+#: declared regions are removed (native.py: topoSet + subsetMesh before splitMeshRegions)
+EXTERIOR_PATCH = "exterior"
+#: the cellSet of every cell in a declared region
+ZONED_SET = "zoned"
+
+
+def render_zoned_set_dict(rmap: dict) -> str:
+    """topoSet actions: the cells of every declared region's cellZone, as one cellSet."""
+    acts = [f"    {{ name {ZONED_SET}; type cellSet; action {'new' if i == 0 else 'add'}; "
+            f"source zoneToCell; zone {name}; }}" for i, name in enumerate(rmap)]
+    return (_HDR.format(cls="dictionary", loc="system", obj="topoSetDict")
+            + "\nactions\n(\n" + "\n".join(acts) + "\n);\n")
 
 
 def interface_name(region_a: str, region_b: str) -> str:
@@ -270,24 +292,85 @@ def _prepared_from(context):
     return geometry.prepared
 
 
+#: B-rep formats an assembly can arrive in, by suffix
+_CAD_SUFFIXES = (".step", ".stp", ".iges", ".igs", ".brep", ".brp")
+
+
+def _read_cad_shape(geom_path):
+    """The whole shape of a STEP, IGES or BREP file, as OpenCASCADE transfers it."""
+    from OCP.IFSelect import IFSelect_RetDone
+    suffix = Path(geom_path).suffix.lower()
+    if suffix in (".brep", ".brp"):
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepTools import BRepTools
+        from OCP.TopoDS import TopoDS_Shape
+        shape = TopoDS_Shape()
+        if not BRepTools.Read_s(shape, str(geom_path), BRep_Builder()):
+            raise RuntimeError(f"OpenCASCADE could not read CAD file: {Path(geom_path).name}")
+        return shape
+    if suffix in (".iges", ".igs"):
+        from OCP.IGESControl import IGESControl_Reader as _Reader
+    else:
+        from OCP.STEPControl import STEPControl_Reader as _Reader
+    reader = _Reader()
+    if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
+        raise RuntimeError(f"OpenCASCADE could not read CAD file: {Path(geom_path).name}")
+    reader.TransferRoots()
+    return reader.OneShape()
+
+
+def read_surface_solids(stl_path, out_dir, *, scale: float = 1.0) -> list[dict]:
+    """The solids of an assembly that arrived as a surface: each NAMED solid of an ASCII STL is one
+    body; an unnamed soup is split into the closed bodies it bounds (surface_solids.split_shells:
+    a shared face written twice comes apart, a cavity stays with the body around it, and the file's
+    winding is not trusted). Coordinates are multiplied by `scale` (metres out)."""
+    import json as _json
+
+    import numpy as np
+
+    from meshpipeline.cad.stl_io import read_stl_solids, write_stl_binary
+    from meshpipeline.engines.snappy_multiregion.surface_solids import shell_facts, split_shells
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    named = {n: np.asarray(t, dtype=float) * scale for n, t in read_stl_solids(Path(stl_path)).items()
+             if len(t)}
+    bodies: list[tuple[str, np.ndarray]] = []
+    if len(named) > 1:
+        bodies = list(named.items())
+    else:
+        soup = next(iter(named.values())) if named else np.zeros((0, 3, 3))
+        bodies = [(f"shell_{i}", sh) for i, sh in enumerate(split_shells(soup))]
+    if not bodies:
+        raise RuntimeError("the surface holds no closed solid - a multi-region case needs one "
+                           "closed solid per region")
+    solids: list[dict] = []
+    for idx, (name, tris) in enumerate(bodies):
+        fx = shell_facts(tris)
+        stl = out_dir / f"solid_{idx}.stl"
+        write_stl_binary(stl, [tuple(map(tuple, t)) for t in tris])
+        solids.append({"index": idx, "stl": str(stl), "volume": round(fx["volume"], 12),
+                       "bbox_min": fx["bbox_min"], "bbox_max": fx["bbox_max"],
+                       "centroid": [round(v, 6) for v in fx["centroid"]], "name": name})
+    (out_dir / "solids.json").write_text(_json.dumps(solids))
+    return solids
+
+
 def read_assembly_solids(geom_path, out_dir, *, prepared=None) -> list[dict]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if Path(geom_path).suffix.lower() not in _CAD_SUFFIXES:
+        # a SURFACE assembly (STL): its closed shells are its solids
+        return read_surface_solids(geom_path, out_dir,
+                                   scale=prepared.to_metres if prepared is not None else 1.0)
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.BRepGProp import BRepGProp
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.gp import gp_Trsf
     from OCP.GProp import GProp_GProps
-    from OCP.IFSelect import IFSelect_RetDone
-    from OCP.STEPControl import STEPControl_Reader
     from OCP.StlAPI import StlAPI_Writer
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
-    reader = STEPControl_Reader()
-    if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
-        raise RuntimeError(f"OpenCASCADE could not read CAD file: {Path(geom_path).name}")
-    reader.TransferRoots()
-    shape = reader.OneShape()
+    shape = _read_cad_shape(geom_path)
     if prepared is None:
         raise ValueError(
             "the multiregion bundle needs the typed coordinate state to place its assembly in "
@@ -323,18 +406,8 @@ def read_assembly_solids(geom_path, out_dir, *, prepared=None) -> list[dict]:
 
 
 def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
-    import json
     ws = Path(workspace)
-    meta = ws / "_assembly" / "solids.json"
-    if meta.exists():
-        solids = json.loads(meta.read_text())
-    else:
-        # Recomputing needs the coordinate state; it comes from the run's own geometry through
-        # the builder tool context, never from a lookup this bundle performs for itself.
-        solids = read_assembly_solids(ws / "geometry.step", ws / "_assembly",
-                                      prepared=_prepared_from(context))
-        (ws / "_assembly").mkdir(parents=True, exist_ok=True)
-        meta.write_text(json.dumps(solids))
+    solids = ensure_assembly_solids(ws, context=context)
     # SCALE-AWARE PLANNING (engine-owned): a multi-scale assembly (mm fasteners in a
     # 0.3 m air box) cannot be resolved by one global surface level - the 19-solid stress
     # runs burned every attempt on exactly that. Report each solid's characteristic size,
@@ -379,13 +452,45 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
                     "solids (see per_solid_scale.needed_level)"}
 
 
+def staged_cad(ws: Path) -> Path | None:
+    """The staged B-rep of this workspace, whichever CAD format it arrived in."""
+    for suffix in _CAD_SUFFIXES:
+        p = Path(ws) / f"geometry{suffix}"
+        if p.exists():
+            return p
+    return None
+
+
+def ensure_assembly_solids(ws: Path, *, context=None) -> list[dict]:
+    """The assembly's solids (_assembly/solids.json), read once: from the staged B-rep when the
+    upload was CAD (its coordinate state comes from the run's own geometry, through the builder
+    tool context), from the staged surface (input.stl, already metres) when it was a surface."""
+    import json
+    ws = Path(ws)
+    meta = ws / "_assembly" / "solids.json"
+    if meta.exists():
+        return json.loads(meta.read_text())
+    cad = staged_cad(ws)
+    if cad is not None:
+        solids = read_assembly_solids(cad, ws / "_assembly", prepared=_prepared_from(context))
+    elif (ws / "input.stl").exists():
+        solids = read_surface_solids(ws / "input.stl", ws / "_assembly", scale=1.0)
+    else:
+        raise RuntimeError("nothing was staged: no CAD assembly and no surface in the workspace")
+    (ws / "_assembly").mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps(solids))
+    return solids
+
+
 def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
     import json
     import shutil
 
     from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _whole
     out_stl = Path(out_stl); ws = out_stl.parent
-    shutil.copy2(geom_path, ws / "geometry.step")
+    # the B-rep is staged under its OWN format: an IGES copied to geometry.step was read by the
+    # STEP reader and refused ("OpenCASCADE could not read CAD file")
+    shutil.copy2(geom_path, ws / f"geometry{Path(geom_path).suffix.lower()}")
     _whole(geom_path, out_stl, prepared=prepared)                # preview of the whole assembly
     solids = read_assembly_solids(geom_path, ws / "_assembly", prepared=prepared)
     (ws / "_assembly" / "solids.json").write_text(json.dumps(solids))
@@ -423,7 +528,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     # silently dropped. (The prompt always said "assign EVERY solid"; a live 19-solid run
     # showed prompt-only rules do not hold - and the old `if i in by_index` silently
     # dropped unknown indices instead of rejecting them.)
-    solids = json.loads((ws / "_assembly" / "solids.json").read_text())
+    solids = ensure_assembly_solids(ws)
     by_index = {int(s["index"]): s for s in solids}
     _assigned: list[int] = [int(i) for r in rmap.values() for i in r["solids"]]
     _seen: set[int] = set()
@@ -498,6 +603,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
             break
     (ws / "system" / "blockMeshDict").write_text(
         render_block_mesh(allmins, allmaxs, base_cell, pad=_pad))
+    (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
     (ws / "system" / "snappyHexMeshDict").write_text(
         render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
                                interface_refinement=interface_refinement, n_layers=n_layers,

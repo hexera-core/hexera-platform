@@ -2,7 +2,8 @@
 # (cad/open_ends) on the shapes real files throw at it: thin and thick walls, cut ends that are not
 # flat, a ring split by a seam, a slanted cut, a hole in the side of a curved wall, a tiny hole in a
 # big part, a part drawn far from the origin, an assembly of touching solids - and what is not a
-# hole: a fluid body's capped mouth, the inside junction of a tee.
+# hole: a fluid body's capped mouth, the inside junction of a tee. And the lids of a fluid body
+# (find_caps): told from the flat facets of a coarse or rough wall, wherever they sit.
 # Boundaries: numpy meshes built here, and OpenCASCADE for the shapes that need a boolean (skipped
 # where it is not installed). No files beyond the test's own, no model, no storage.
 from __future__ import annotations
@@ -12,7 +13,7 @@ import math
 import numpy as np
 import pytest
 
-from meshpipeline.cad.open_ends import find_holes
+from meshpipeline.cad.open_ends import find_caps, find_holes
 
 SIDES = 48
 
@@ -210,6 +211,81 @@ def test_a_tiny_hole_in_a_big_part_is_found():
     holes = find_holes(_occ_tris(box, deflection=0.002))
     sizes = sorted(round(h.equivalent_diameter, 3) for h in holes)
     assert sizes == pytest.approx([0.01, 0.6], rel=0.03), sizes
+
+
+def _capped(r=0.05, length=0.3, sides=SIDES, rows=1):
+    """The fluid volume of a straight pipe along +x: its wall and a flat lid over each end."""
+    tris = list(_tube(r, length=length, sides=sides, rows=rows))
+    ring0 = [(0.0, r * math.cos(2 * math.pi * k / sides), r * math.sin(2 * math.pi * k / sides)) for k in range(sides)]
+    ring1 = [(length, y, z) for _, y, z in ring0]
+    for k in range(sides):
+        tris.append(((0.0, 0.0, 0.0), ring0[(k + 1) % sides], ring0[k]))
+        tris.append(((length, 0.0, 0.0), ring1[k], ring1[(k + 1) % sides]))
+    return np.asarray(tris, dtype=float)
+
+
+def _lids(tris):
+    return [c for c in find_caps(tris) if c.likely]
+
+
+def test_a_capped_pipe_has_its_two_lids():
+    lids = sorted(_lids(_capped()), key=lambda c: c.centroid[0])
+    assert len(lids) == 2
+    for lid, out in zip(lids, (-1.0, 1.0)):
+        assert lid.normal[0] == pytest.approx(out, abs=1e-9)             # out of the fluid
+        assert lid.equivalent_diameter == pytest.approx(_equivalent(0.05), rel=1e-6)
+        assert lid.sharp == pytest.approx(1.0) and lid.confidence >= 0.9
+
+
+def test_a_coarse_pipe_keeps_its_lids_and_its_facets_are_not_lids():
+    # nine facets round the pipe, rows of them along it: each run of facets is a flat strip, and
+    # its edges crease 40 degrees - but no more than every other edge of the wall, so none is a lid
+    tris = _capped(sides=9, rows=12)
+    lids = _lids(tris)
+    assert len(lids) == 2 and all(abs(abs(c.normal[0]) - 1.0) < 1e-9 for c in lids)
+    assert len(find_caps(tris, min_area=0.0)) > 2                         # the strips are there, as faces
+
+
+def test_a_rough_pipe_keeps_its_flat_lids():
+    # a pipe wall from a rough scan, every corner moved by a tenth of a facet, its two cut ends
+    # flat: the wall's patches crease at random, the lids' rims stay corners
+    tris = _capped(sides=24, rows=40)
+    pts = tris.reshape(-1, 3)
+    on_lid = (np.abs(pts[:, 0]) < 1e-12) | (np.abs(pts[:, 0] - 0.3) < 1e-12)
+    rng = np.random.default_rng(3)
+    key = {tuple(p): rng.normal(0.0, 0.0013, 3) for p in map(tuple, np.round(pts, 12))}
+    move = np.asarray([key[tuple(p)] for p in np.round(pts, 12)])
+    move[on_lid, 0] = 0.0                                                   # a lid's corners stay in its plane
+    lids = _lids((pts + move).reshape(-1, 3, 3))
+    assert len(lids) == 2, [(round(c.sharp, 2), np.round(c.centroid, 3)) for c in lids]
+
+
+def test_a_closed_smooth_body_coarsely_faceted_has_no_lids():
+    # a coarse ellipsoid: flat facets everywhere, every edge a crease like its neighbours
+    u, v = np.meshgrid(np.linspace(0, np.pi, 9), np.linspace(0, 2 * np.pi, 13))
+    P = np.stack([0.3 * np.sin(u) * np.cos(v), 0.1 * np.sin(u) * np.sin(v), 0.15 * np.cos(u)], axis=-1)
+    tris = []
+    for i in range(12):
+        for j in range(8):
+            a, b, c, d = P[i, j], P[i + 1, j], P[i, j + 1], P[i + 1, j + 1]
+            tris += [(a, b, d), (a, d, c)]
+    assert _lids(np.asarray(tris)) == []
+
+
+def test_a_side_branchs_lid_is_a_lid_wherever_it_sits():
+    # the fluid of a pipe with a short branch off its side: the branch's lid is nowhere near the
+    # part's ends or its box, and it is as much an opening as they are
+    pytest.importorskip("OCP")
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    fluid = BRepAlgoAPI_Fuse(_cyl(0, 0, 0, (1, 0, 0), 0.05, 0.6), _cyl(0.2, 0, 0, (0, 1, 1), 0.012, 0.1)).Shape()
+    tris = _occ_tris(fluid, deflection=0.004)
+    lids = _lids(tris)
+    assert len(lids) == 3, [(np.round(c.centroid, 3), round(c.sharp, 2)) for c in lids]
+    branch = next(c for c in lids if c.centroid[1] > 0.01)
+    assert branch.normal @ np.array([0.0, 1.0, 1.0]) / math.sqrt(2) == pytest.approx(1.0, abs=1e-3)
+    assert branch.equivalent_diameter == pytest.approx(0.024, rel=0.05)
+    assert find_holes(tris) == []                                       # a fluid body has lids, not holes
 
 
 def test_the_inside_of_a_tees_junction_is_not_a_hole():

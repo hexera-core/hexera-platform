@@ -244,10 +244,12 @@ def test_a_relaxation_is_never_switched_to_on_its_own(quiet):
 def test_the_run_ends_with_an_offer_that_states_the_change():
     rec = lad.final_record(_fluid_domain(retry_count=2), succeeded=False, system_failure=False)
     offer = rec["offer"]
-    assert offer["engine"] == "snappy" and offer["same_contract"] is False
+    # the first hex engine on the ladder that takes a fluid domain: cfMesh (it declares a fluid
+    # solid for internal flow), then snappyHexMesh
+    assert offer["engine"] == "cfmesh" and offer["same_contract"] is False
     assert any("OpenFOAM" in c for c in offer["changes"])
     assert any("hex-dominant cells instead of tetrahedral" in c for c in offer["changes"])
-    assert 'Reply "use snappyHexMesh"' in offer["text"]
+    assert 'Reply "use cfMesh"' in offer["text"]
     assert "did not switch without asking" in offer["text"]
 
 
@@ -550,8 +552,9 @@ def test_an_admission_refusal_is_not_recorded_as_a_build():
                                 "cause": "geometry_rejected",
                                 "reason": "it cannot take this geometry as it is",
                                 "refused_before_building": True}]
-    # and the refusal still ends with an out: another engine, differences stated
-    assert rec["offer"]["engine"] == "snappy" and rec["offer"]["same_contract"] is False
+    # and the refusal still ends with an out: another engine, differences stated (cfMesh: first
+    # on the ladder, and it takes a fluid domain)
+    assert rec["offer"]["engine"] == "cfmesh" and rec["offer"]["same_contract"] is False
 
 
 def test_the_run_seeds_provenance_after_the_pin_and_the_dispute():
