@@ -139,22 +139,40 @@ def _read_flow_topology(ws) -> str:
         return ""
 
 
-def _boundary_triangles(gmsh):
+def _boundary_triangles(gmsh, surfaces=None):
     """Node coordinates and the 3-node boundary triangles of the current mesh, as arrays
-    indexed into the node array (gmsh tags are not contiguous)."""
+    indexed into the node array (gmsh tags are not contiguous). With `surfaces` (surface tags),
+    only their triangles, and only the nodes those use."""
     import numpy as np
     tags, coords, _ = gmsh.model.mesh.getNodes()
     pts = np.asarray(coords, dtype=float).reshape(-1, 3)
     idx = np.zeros(int(max(tags)) + 1 if len(tags) else 1, dtype=np.int64)
     idx[np.asarray(tags, dtype=np.int64)] = np.arange(len(tags))
     tris = []
-    etypes, _etags, enodes = gmsh.model.mesh.getElements(2)
-    for et, en in zip(etypes, enodes, strict=True):
-        nn = gmsh.model.mesh.getElementProperties(et)[3]
-        conn = np.asarray(en, dtype=np.int64).reshape(-1, nn)[:, :3]   # corners of tri3/tri6
-        tris.append(idx[conn])
+    for tag in (surfaces if surfaces is not None else [-1]):
+        etypes, _etags, enodes = gmsh.model.mesh.getElements(2, tag)
+        for et, en in zip(etypes, enodes, strict=True):
+            nn = gmsh.model.mesh.getElementProperties(et)[3]
+            conn = np.asarray(en, dtype=np.int64).reshape(-1, nn)[:, :3]   # corners of tri3/tri6
+            tris.append(idx[conn])
     faces = np.concatenate(tris) if tris else np.zeros((0, 3), dtype=np.int64)
-    return pts, faces
+    if surfaces is None or not len(faces):
+        return pts, faces
+    used, faces = np.unique(faces, return_inverse=True)
+    return pts[used], np.asarray(faces).reshape(-1, 3)
+
+
+def _wall_surfaces(gmsh, spec: dict) -> list[int] | None:
+    """The surface tags of the groups the spec gives the wall role, read off the model's own
+    physical groups (so a boundary re-classified by angle is read by its carried-over names);
+    None when no group is a wall (the whole boundary is measured, as before)."""
+    walls = {str(g.get("name")) for g in (spec.get("groups") or [])
+             if str(g.get("role") or "").strip().lower() == "wall"}
+    out: list[int] = []
+    for dim, ptag in gmsh.model.getPhysicalGroups(2):
+        if gmsh.model.getPhysicalName(dim, ptag) in walls:
+            out.extend(int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, ptag))
+    return sorted(set(out)) or None
 
 
 def deepest_point(candidates, boundary_points):
@@ -249,13 +267,22 @@ def _surface_interior_point(pts, faces):
     return p
 
 
-def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -> tuple:
+def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False,
+                   walls: list[int] | None = None) -> tuple:
     """For an internal-flow fluid domain: mesh once coarsely at the clamp size h, measure the
     local passage radius on that boundary (engines/radius_field.local_radius: half the
     inward chord to the opposite wall), and return (callback, surface_points, radius, note).
     A CLASSIFIED SURFACE is measured on the triangles it arrived with, before any meshing: they
     ARE its boundary, and a coarse mesh cleared off a discrete surface takes the surface with
     it (the elbow STL's remesh then ran past 13 CPU minutes without finishing, 2026-10-04).
+    THE PASSAGE IS READ ON THE WALL (`walls`, the wall group's surfaces), never across the lids:
+    a lid is where the flow is cut, not a wall it is squeezed against. Read across its lid, a wall
+    meeting it at a slant - the rocket nozzle's 45-degree exit cone - gave chords that shrink to
+    nothing at the lid's rim, and the field's floor (the smallest reading within one radius)
+    spread them: 59% of a 33-50 mm bore read under 12 mm and 5% under 1 mm, and gmsh filled the
+    71 cm3 nozzle with 7.2 M tets that did not finish in 25 minutes (lab, 2026-10-05). On the wall
+    alone, a ray that leaves through an opening borrows the nearest reading (local_radius), as
+    vmtk's open lumen does, and a point on a lid takes the size of the nearest wall point.
     Anything missing (no flow_topology, no pyvista, a surface the chord cannot read) returns
     (None, None, None, why) and the clamp sizing stands - the gate still measures the result."""
     if _read_flow_topology(ws) != "internal":
@@ -264,23 +291,26 @@ def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -
         from meshpipeline.engines.radius_field import local_radius
     except Exception as exc:  # noqa: BLE001 - standalone use without pyvista
         return None, None, None, f"local radius unavailable ({type(exc).__name__})"
+    on = " on the wall" if walls else ""
     try:
         if discrete:
-            pts, faces = _boundary_triangles(gmsh)
+            # the inside is the inside of the CLOSED boundary, lids and all
+            inside = _surface_interior_point(*_boundary_triangles(gmsh))
+            pts, faces = _boundary_triangles(gmsh, walls)
             if len(faces) < 4:
                 return None, None, None, "no boundary triangles on the surface"
-            r = local_radius(pts, faces, _surface_interior_point(pts, faces), diag * 1e-5,
-                             diag / 2.0)
+            r = local_radius(pts, faces, inside, diag * 1e-5, diag / 2.0)
             sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
-            return passage_size_callback(pts, sizes), pts, r, "local radius (input surface)"
+            return passage_size_callback(pts, sizes), pts, r, "local radius (input surface)" + on
         gmsh.model.mesh.generate(3)
-        pts, faces = _boundary_triangles(gmsh)
+        inside = _interior_point(gmsh, _boundary_triangles(gmsh)[0])
+        pts, faces = _boundary_triangles(gmsh, walls)
         if len(faces) < 4:
             return None, None, None, "no boundary triangles on the coarse mesh"
-        r = local_radius(pts, faces, _interior_point(gmsh, pts), diag * 1e-5, diag / 2.0)
+        r = local_radius(pts, faces, inside, diag * 1e-5, diag / 2.0)
         sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
         gmsh.model.mesh.clear()
-        return passage_size_callback(pts, sizes), pts, r, "local radius"
+        return passage_size_callback(pts, sizes), pts, r, "local radius" + on
     except Exception as exc:  # noqa: BLE001 - a sizing aid must never lose the mesh
         if not discrete:
             gmsh.model.mesh.clear()
@@ -887,7 +917,8 @@ def main(workspace: str) -> int:
 
         # PASSAGE SIZING (fluid domains): elements from the local radius, about
         # PASSAGE_CELLS_ACROSS across every passage, instead of one size for the whole part.
-        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete)
+        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete,
+                                                 walls=_wall_surfaces(gmsh, spec))
         _passage: dict = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS}
         if _cb is not None:
             gmsh.model.mesh.setSizeCallback(_cb)
@@ -920,7 +951,8 @@ def main(workspace: str) -> int:
             gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
             leftover = _refill_classified(gmsh, boundary, spec)
-            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True)
+            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True,
+                                                     walls=_wall_surfaces(gmsh, spec))
             _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
                         "surface_route": "classified by angle"}
             if _cb is not None:
