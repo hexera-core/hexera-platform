@@ -467,10 +467,14 @@ def staged_cad(ws: Path) -> Path | None:
     return None
 
 
-#: A region needs at least this many cells across its thinnest wall for snappy to give it a
-#: connected cellZone. s_duct_001_cht's 7.7 mm pipe wall under 7-14 mm cells came out as five
-#: unzoned pieces (domain1..domain5) and no wall_solid at all (lab, 2026-10-06).
-MIN_CELLS_ACROSS_REGION = 2.0
+#: A region needs at least this many cells across its thinnest wall, at its surface level, for
+#: snappy to give it a connected cellZone. Calibrated on the 18 home-turf CHT assemblies (lab,
+#: 2026-10-06): the two walls under the default level's cell - s_duct_001_cht (0.53 across, a
+#: 7.7 mm wall under 14 mm cells) and s_duct_008_cht (0.33) - came out of the split with no
+#: wall_solid (s_duct_001: five unzoned pieces, domain1..domain5); walls from 0.61 across up kept
+#: their zone. One cell is the least that holds a zone everywhere, not by where cells happen to
+#: fall; a first rule of two cells raised 13 of the 18 walls and timed s_duct_001 out at 50 min.
+MIN_CELLS_ACROSS_REGION = 1.0
 #: A solid is a SHELL - a wall whose thickness, not its extent, is what castellation must resolve -
 #: when 2 x volume / area (a thin wall's thickness) is under this fraction of its smallest extent.
 #: A cube reads 1/3, a rod 1/2, a plate 1: none is a shell; a pipe wall reads t / D.
@@ -515,8 +519,8 @@ def level_for(base_cell: float, size: float, cells_across: float) -> int:
 def thin_region_levels(rmap: dict, by_index: dict, base_cell: float, surface_level,
                        region_refinement: dict | None = None) -> dict[str, dict]:
     """{region: {"thickness": m, "level": the level its thinnest wall needs}} for every region
-    holding a shell solid that its current level (the builder's override, else surface_level)
-    leaves under MIN_CELLS_ACROSS_REGION cells across."""
+    holding a shell solid that its current surface level (the builder's override, else
+    surface_level) leaves under MIN_CELLS_ACROSS_REGION cells across."""
     region_refinement = region_refinement or {}
     out: dict[str, dict] = {}
     for name, r in rmap.items():
@@ -655,9 +659,9 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     diag = sum((allmaxs[i] - allmins[i]) ** 2 for i in range(3)) ** 0.5
     base_cell = max(diag / 40.0, 1e-6)
 
-    # A THIN REGION gets the level its wall needs: a solid region under two cells across its wall
-    # loses its cellZone (s_duct_001_cht's 7.7 mm pipe wall under 7-14 mm cells split into five
-    # unzoned pieces and no wall_solid). Raised here, never lowered below what the builder asked;
+    # A THIN REGION gets the level its wall needs: a region under one cell across its wall loses
+    # its cellZone (s_duct_001_cht's 7.7 mm pipe wall under 14 mm cells split into five unzoned
+    # pieces and no wall_solid). Raised here, never lowered below what the builder asked;
     # beyond MAX_THIN_REGION_LEVEL it is said, not meshed into pieces.
     region_refinement = {k: list(v) for k, v in dict(region_refinement).items()}
     _thin = thin_region_levels(rmap, by_index, base_cell, surface_level, region_refinement)
@@ -720,7 +724,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
             f"{k} (wall {v['wall_thickness_mm']:g} mm, needs surface level {v['level']})"
             for k, v in unresolved.items())
             + f" need more than surface level {MAX_THIN_REGION_LEVEL} to put "
-            f"{MIN_CELLS_ACROSS_REGION:g} cells across the wall; meshed as asked, such a region "
+            f"{MIN_CELLS_ACROSS_REGION:g} cell(s) across the wall; meshed as asked, such a region "
             "usually comes out in pieces. Say so to the user rather than retrying blindly.")
     return out
 

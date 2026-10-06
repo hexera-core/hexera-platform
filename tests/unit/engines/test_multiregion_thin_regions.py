@@ -30,7 +30,8 @@ def test_a_pipe_wall_is_read_by_its_thickness_and_a_block_rod_or_plate_by_its_ex
     assert R.wall_thickness({"index": 3, "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 1]}) is None
 
 
-def test_the_level_that_puts_two_cells_across_the_wall():
+def test_the_level_that_puts_cells_across_the_wall():
+    assert R.level_for(BASE, T, R.MIN_CELLS_ACROSS_REGION) == 3   # 7.1 mm cells: 1.07 across 7.7 mm
     assert R.level_for(BASE, T, 2.0) == 4                   # 57 mm / 16 = 3.6 mm: 2.2 across 7.7 mm
     assert R.level_for(1.0, 0.5, 2.0) == 2                  # exactly 2 across at 1/4
     assert R.level_for(1.0, 4.0, 2.0) == 0
@@ -41,9 +42,14 @@ def test_only_a_region_left_under_two_cells_across_is_raised():
                          {"name": "wall_solid", "type": "solid", "solids": [1]}])
     by_index = {0: FLUID, 1: WALL}
     got = R.thin_region_levels(rmap, by_index, BASE, (2, 2))
-    assert set(got) == {"wall_solid"} and got["wall_solid"]["level"] == 4
+    assert set(got) == {"wall_solid"} and got["wall_solid"]["level"] == 3
     # a builder that already asked for the level is left as it is
-    assert R.thin_region_levels(rmap, by_index, BASE, (2, 2), {"wall_solid": [4, 4]}) == {}
+    assert R.thin_region_levels(rmap, by_index, BASE, (2, 2), {"wall_solid": [3, 3]}) == {}
+    # straight_reducer_006_cht's 8.7 mm wall in a 2.29 m assembly: 0.61 across at level 2, and it
+    # kept its zone at baseline; raised to one cell across all the same (level 3: 1.22)
+    reducer = dict(WALL, volume=math.pi * (D + 0.00872) * 0.00872 * L)
+    assert R.thin_region_levels(rmap, {0: FLUID, 1: reducer}, 2.287 / 40, (2, 2))["wall_solid"][
+        "level"] == 3
 
 
 def _ws(tmp_path, solids):
@@ -68,7 +74,7 @@ def test_configure_raises_the_thin_wall_region_and_says_so(tmp_path, monkeypatch
                                                   "level": 4}}
     shm = (ws / "system" / "snappyHexMeshDict").read_text()
     assert "level (2 2);" in shm                 # the fluid keeps the global level
-    assert "level (4 5);" in shm                 # the wall: 4, + the interface refinement
+    assert "level (3 4);" in shm                 # the wall: 3, + the interface refinement
 
 
 def test_a_wall_too_thin_to_afford_is_said_not_meshed_into_pieces(tmp_path, monkeypatch):
@@ -90,5 +96,5 @@ def test_the_geometry_report_gives_the_wall_its_level(tmp_path):
         {**FLUID, "centroid": [1, 0, 0.2]}, {**WALL, "centroid": [1, 0, 0.2]}]))
     rep = R.inspect_stl(ws)
     row = {p["index"]: p for p in rep["per_solid_scale"]}
-    assert row[1]["wall_thickness"] == pytest.approx(T, rel=0.02) and row[1]["needed_level"] == 4
+    assert row[1]["wall_thickness"] == pytest.approx(T, rel=0.02) and row[1]["needed_level"] == 3
     assert "wall_thickness" not in row[0]
