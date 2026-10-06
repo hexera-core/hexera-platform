@@ -290,6 +290,19 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update, isNaming: () => naming };
 }
 
+/** The names of a thermal model's placed parts beside their colours, in the stage's corner. */
+function partsLegend(patches) {
+  const el = document.createElement("div"); el.className = "gc-legend";
+  el.style.cssText = "position:absolute;left:8px;bottom:8px;max-height:45%;overflow:auto;padding:6px 8px;"
+    + "border-radius:6px;background:rgba(255,255,255,0.88);color:#2a2f36;font-size:11px;line-height:1.5;z-index:2";
+  const named = patches.filter((pt) => pt.name), rows = named.slice(0, 40);
+  el.innerHTML = rows.map((pt) => {
+    const c = (Array.isArray(pt.color) ? pt.color : BODY).map((v) => Math.round(v * 255)).join(",");
+    return `<div><span style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;background:rgb(${c})"></span>${esc(pt.name)}</div>`;
+  }).join("") + (named.length > rows.length ? `<div>and ${named.length - rows.length} more</div>` : "");
+  return el;
+}
+
 function initScene(sessionId, box, surf, p) {
   const host = document.getElementById("gs-canvas-" + sessionId);
   const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
@@ -332,12 +345,16 @@ function initScene(sessionId, box, surf, p) {
     const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
     const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(true);
     const pr = actor.getProperty();
-    pr.setColor(BODY[0], BODY[1], BODY[2]); pr.setEdgeVisibility(false);
+    // a thermal model's placed parts each carry a colour of their own; any other skin is one body
+    const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
+    pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
     pr.setInterpolationToPhong();
     pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
     ren.addActor(actor);
     skins.push({ actor, pd, pts, polys });
   });
+  /* THE PARTS - a thermal model drawn as its placed parts: the legend names each colour */
+  if (surf.parts) host.appendChild(partsLegend(surf.patches || []));
   /* THE SHARP EDGES - dark hairlines where faces meet at an angle, and along open rims */
   let edgeCount = 0;
   if (surf.edges && surf.edges.lines_b64) {

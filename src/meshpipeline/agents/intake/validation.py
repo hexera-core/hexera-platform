@@ -43,7 +43,7 @@ ADMIT_MALFORMED = "malformed"
 _HARD_IMPOSSIBLE_CODES = frozenset({
     "purpose_incompatible", "input_kind_incompatible", "dimensionality_unsupported",
     "symmetry_unsupported", "multiple_wall_patches_unsupported", "geometry_unsuitable",
-    "ground_plane_unsupported", "boundary_count_unsupported",
+    "ground_plane_unsupported", "boundary_count_unsupported", "source_format_unsupported",
 })
 
 # The two lines closing every impossible message: they preserve user intent, name NO alternative
@@ -140,7 +140,8 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                     "multiple_wall_patches_unsupported": ["patches", "engine"],
                     "ground_plane_unsupported": ["patches", "engine"],
                     "boundary_count_unsupported": ["patches", "engine"],
-                    "geometry_unsuitable": ["geometry", "engine"]}
+                    "geometry_unsuitable": ["geometry", "engine"],
+                    "source_format_unsupported": ["geometry", "engine"]}
         return {"verdict": ADMIT_IMPOSSIBLE, "blocking_rule_code": r0.code,
                 "blocking_rule_codes": sorted({r.code for r in hard}),
                 "selected_engine": _eng, "conflicting_field_names": field_of.get(r0.code, ["engine"]),

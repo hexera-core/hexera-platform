@@ -16,7 +16,7 @@ from meshpipeline.engines.registry import (
 )
 
 ENGINES = sorted(engine_names())
-EXPECTED_ENGINES = ["cfmesh", "gmsh", "snappy", "snappy_multiregion", "vmtk"]
+EXPECTED_ENGINES = ["cfmesh", "gmsh", "snapgrid", "snappy", "snappy_multiregion", "vmtk"]
 
 
 def test_the_registry_matches_the_declared_engine_ledger():
@@ -325,7 +325,7 @@ def test_every_engine_declares_exactly_its_own_gates_criteria_axes_and_tools():
     from pathlib import Path
 
     frozen = json.loads((Path(__file__).parent / "engine_contract_keys.json").read_text())
-    assert sorted(frozen) == EXPECTED_ENGINES, "the frozen fixture no longer covers five engines"
+    assert sorted(frozen) == EXPECTED_ENGINES, "the frozen fixture no longer covers every engine"
     for engine in EXPECTED_ENGINES:
         spec = get_spec(engine)
         expected = frozen[engine]

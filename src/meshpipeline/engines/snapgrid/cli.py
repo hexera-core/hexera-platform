@@ -12,7 +12,8 @@ each with its mappedWall interfaces), constant/regionProperties, snapgrid_report
 regions, thin layers, curved parts, interfaces, checks, timings) and thermal_model.json (the
 physics, in the fused path's sidecar shape). checkMesh then reads the whole mesh once (and each
 region, in parallel, when there are few). Exit code 0 when the mesh is written and checked clean;
-2 when the file cannot be meshed (the reason is printed); 3 when the check found a problem.
+2 when the file cannot be meshed (the reason is printed); 3 when the check found a problem;
+4 when the mesh would not match the file (a mesher bug, never written).
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     from meshpipeline.cad.ingest.ecxml import EcxmlError
+    from meshpipeline.cad.ingest.ecxml_build import FidelityError
     from meshpipeline.engines.snapgrid.grid import GridPlan, OverBudget
     from meshpipeline.engines.snapgrid.mesher import mesh_ecxml
 
@@ -68,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     except EcxmlError as exc:
         print(f"NOT MESHED: {exc}", file=sys.stderr)
         return 2
+    except FidelityError as exc:
+        print(f"NOT MESHED (the mesh would not be the file's model - a mesher bug): {exc}",
+              file=sys.stderr)
+        return 4
     rep = result.report
     g = rep["grid"]
     print(f"grid {g['cells']:,} cells in {g['blocks']} block(s), max neighbour ratio "
