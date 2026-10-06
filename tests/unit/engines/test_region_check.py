@@ -24,6 +24,7 @@ from meshpipeline.engines.region_check import (
     record_port_openings,
     recorded_port_openings,
     size_notes,
+    trusted_declaration,
 )
 from meshpipeline.engines.registry import get_spec
 
@@ -209,13 +210,13 @@ def test_a_typed_size_the_geometry_disagrees_with_is_said_plainly():
     notes = size_notes(PVC, {**PVC_BORES, "outlet": 0.000330})
     assert notes == [
         "inlet_1: you said about 20 mm across; the opening measures 32 mm across (803 mm2); "
-        "using the measured opening.",
+        "using the measured opening",
         "inlet_2: you said about 20 mm across; the opening measures 32 mm across (803 mm2); "
-        "using the measured opening."]
+        "using the measured opening"]
     ring = [{"name": "inlet", "type": "inlet", "diameter_mm": 151.19, "inner_diameter_mm": 124.75}]
     assert size_notes(ring, {"inlet": 0.0179}) == [
         "inlet: you said an annulus about 151.19 mm across round a 124.75 mm centre; the opening "
-        "measures 17,900 mm2 (about 151 mm across); using the measured opening."]
+        "measures 17,900 mm2 (about 151 mm across); using the measured opening"]
     assert size_notes(ring, {"inlet": 0.0057}) == []           # agrees: nothing to say
     assert size_notes(PVC, {}) == []                            # nothing measured: nothing to say
 
@@ -313,3 +314,13 @@ def test_gmsh_measures_each_port_on_the_face_its_binder_finds():
         assert out == {"inlet": [discs[0]], "outlet": [discs[1]], "wall": [side]}
     finally:
         gmsh.finalize()
+
+
+def test_the_mesh_is_sized_from_the_measured_opening_where_the_typed_size_disagrees():
+    sized = trusted_declaration(PVC, {**PVC_BORES, "outlet": 0.000330})
+    by = {p["name"]: p for p in sized}
+    assert "diameter_mm" not in by["inlet_1"] and "diameter_mm" not in by["inlet_2"]
+    assert by["inlet_1"]["near_mm"] == [-38, 0, 0]                 # still located
+    assert by["outlet"]["diameter_mm"] == 20.0                      # agrees: kept as typed
+    assert by["wall"] == {"name": "wall", "type": "wall"}
+    assert trusted_declaration(PVC, {}) == PVC                      # nothing measured: as typed

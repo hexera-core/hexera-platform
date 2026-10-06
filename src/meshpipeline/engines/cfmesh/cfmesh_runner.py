@@ -508,8 +508,11 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     _bore = read_input_kind(ws) != "fluid-domain"
     try:
         t, _wall_key, _bound_note = _bind_intake_shared(t, _decl, bore=_bore)
-        from meshpipeline.engines.region_check import record_port_openings
-        record_port_openings(workspace, t.get("openings"), bore=_bore, intake_patches=_decl)
+        from meshpipeline.engines.region_check import record_port_openings, trusted_declaration
+        # sized from the measured opening where the typed size disagrees (as the gate judges it)
+        _sizing_decl = trusted_declaration(
+            _decl, record_port_openings(workspace, t.get("openings"), bore=_bore,
+                                        intake_patches=_decl))
     except BindError as exc:
         # a refusal, not a failure: the declaration and the measured geometry disagree, and
         # only the user can settle it
@@ -528,7 +531,7 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         feature_angle=float(args.get("feature_angle", 30.0)))
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
-    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, port_declaration(workspace))
+    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, _sizing_decl)
 
     _patches = list(contract_patches or [])
     if not _patches:

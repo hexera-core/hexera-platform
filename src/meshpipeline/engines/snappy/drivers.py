@@ -1069,9 +1069,13 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _bore = str(state.get("input_kind") or "").strip() != "fluid-domain"
         t, _wall_key, _bound_note = _bind_declared_ports(
             t, state.get("intake_patches") or [], bore=_bore)
-        from meshpipeline.engines.region_check import record_port_openings
-        record_port_openings(workspace, t.get("openings"), bore=_bore,
-                             intake_patches=state.get("intake_patches") or [])
+        from meshpipeline.engines.region_check import record_port_openings, trusted_declaration
+        # the declaration the mesh is SIZED from: a typed size the measured opening disagrees with
+        # gives way to the measurement (said in the binding note), as the port gate judges it
+        _sizing_decl = trusted_declaration(
+            state.get("intake_patches") or [],
+            record_port_openings(workspace, t.get("openings"), bore=_bore,
+                                 intake_patches=state.get("intake_patches") or []))
         _srcs = dict(t["stls"])
         if t.get("folded_stls"):
             # blind plugs are wall, physically: their triangles join the wall surface
@@ -1105,7 +1109,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
     # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
     # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
-    _dh = _port_hydraulic_diameters(_srcs, _wall_key, state.get("intake_patches") or [])
+    _dh = _port_hydraulic_diameters(_srcs, _wall_key, _sizing_decl)
     _bore_name = _bore_port_name(t)
     if _dh.get(_bore_name):
         bore_D = min(bore_D, float(_dh[_bore_name]))
@@ -1150,7 +1154,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     from asyncio import to_thread as _to_thread
     try:
         _passage_field = await _to_thread(_staged_passage_field, t, _srcs, _wall_key,
-                                          state.get("intake_patches") or [])
+                                          _sizing_decl)
     except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
         logger.exception("internal build: passage field failed - continuing without local "
                          "narrow-passage refinement - job_id=%s", job_id)

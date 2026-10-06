@@ -383,7 +383,7 @@ def bind_intake(t: dict, intake_patches: list, *, bore: bool = True) -> tuple[di
     note = (f"bound to your declared ports: {rows}; wall = {b.wall_name}"
             + (f"; {len(b.folded_into_wall)} blind face(s) folded into the wall"
                if b.folded_into_wall else "")
-            + (". Sizes: " + " ".join(sizes) if sizes else ""))
+            + (". Sizes: " + "; ".join(sizes) if sizes else ""))
     return out, b.wall_name, note
 
 

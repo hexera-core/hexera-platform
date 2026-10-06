@@ -187,16 +187,45 @@ def size_notes(intake_patches, measured: Mapping[str, float] | None,
     for p in intake_patches or []:
         if not (isinstance(p, Mapping) and str(p.get("type") or "") in ("inlet", "outlet")):
             continue
-        name = str(p.get("name") or "")
-        typed, got = declared_port_area_m2(p), _num(measured.get(name))
-        if not (typed and got) or band[0] <= got / typed <= band[1]:
+        if not _disagrees(p, measured, band):
             continue
+        name = str(p.get("name") or "")
+        typed, got = declared_port_area_m2(p) or 0.0, float(measured[name])
         round_bore = _num(p.get("diameter_mm")) and not _num(p.get("inner_diameter_mm"))
         size = (f"{_across_mm(got):.0f} mm across ({got * 1e6:,.0f} mm2)" if round_bore
                 else f"{got * 1e6:,.0f} mm2 (about {_across_mm(got):.0f} mm across)")
         said = _typed(p) or f"{typed * 1e6:,.0f} mm2"
         out.append(f"{name}: you said {said}; the opening measures {size}; using the measured "
-                   "opening.")
+                   "opening")
+    return out
+
+
+#: the fields a declared port states its size in (engines/port_binding.DeclaredPatch)
+_SIZE_KEYS = ("diameter_mm", "inner_diameter_mm", "outer_diameter_mm", "width_mm", "height_mm",
+              "area_mm2")
+
+
+def _disagrees(p: Mapping, measured: Mapping[str, float], band: tuple[float, float]) -> bool:
+    typed, got = declared_port_area_m2(p), _num(measured.get(str(p.get("name") or "")))
+    if typed is None or got is None:
+        return False
+    return not band[0] <= got / typed <= band[1]
+
+
+def trusted_declaration(intake_patches, measured: Mapping[str, float] | None,
+                        band: tuple[float, float] = SIZE_AGREES_BAND) -> list:
+    """The declaration as the mesh is SIZED from: every port whose typed size the measured opening
+    disagrees with (the ports size_notes speaks of) loses its typed size, so the measured opening
+    sizes the mesh there as it is judged there. pvc_mixing_tee's "about 20 mm" on a 32 mm bore
+    sized snappy's cells for a 20 mm pipe: 1.2M cells where the 32 mm declaration takes 0.39M."""
+    measured = dict(measured or {})
+    out = []
+    for p in intake_patches or []:
+        if (isinstance(p, Mapping) and str(p.get("type") or "") in ("inlet", "outlet")
+                and _disagrees(p, measured, band)):
+            out.append({k: v for k, v in p.items() if k not in _SIZE_KEYS})
+        else:
+            out.append(p)
     return out
 
 
@@ -308,6 +337,6 @@ def gate_port_areas(ctx) -> tuple[bool, str]:
 
 __all__ = ["PORT_AREA_BAND", "PORT_OPENINGS_FILE", "SIZE_AGREES_BAND", "declared_port_area_m2",
            "delivered_areas", "expected_port_areas", "flow_area_m2", "gate_port_areas",
-           "measured_openings", "typed_port_areas",
+           "measured_openings", "trusted_declaration", "typed_port_areas",
            "measured_port_areas", "patch_areas_from_vtk", "port_area_misses",
            "record_port_openings", "recorded_port_openings", "size_notes"]
