@@ -110,15 +110,25 @@ def boundary_by_patch(polymesh) -> tuple[np.ndarray, np.ndarray, np.ndarray, lis
     """(points, triangles, patch index of each triangle, patches) of a polyMesh boundary, read from
     its `points`, `faces` and `boundary` files. Polygons are fanned from their first vertex, which
     keeps OpenFOAM's winding: every boundary face normal points OUT of the fluid."""
+    pts, tri, owner, patches, _e, _eo = boundary_by_patch_with_edges(polymesh)
+    return pts, tri, owner, patches
+
+
+def boundary_by_patch_with_edges(polymesh) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                                                     list[dict], np.ndarray, np.ndarray]:
+    """boundary_by_patch, plus the polygons' own edges and the patch index of each edge: the
+    edges a cell size is read from (engines/passage.measure_passage says why not the fan's)."""
     from meshpipeline.engines.cfmesh.polymesh_surface import (
         read_boundary_faces,
         read_boundary_patches,
         read_points,
     )
+    from meshpipeline.engines.passage import polygon_edges
     pm = Path(polymesh)
     patches = [p for p in read_boundary_patches(pm) if p["n_faces"] > 0]
-    empty: tuple[np.ndarray, np.ndarray, np.ndarray, list[dict]] = (
-        np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64), [])
+    empty: tuple[np.ndarray, np.ndarray, np.ndarray, list[dict], np.ndarray, np.ndarray] = (
+        np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=np.int64), [],
+        np.zeros((0, 2), dtype=np.int64), np.zeros(0, dtype=np.int64))
     if not patches:
         return empty
     points = np.asarray(read_points(pm), dtype=float)
@@ -127,6 +137,8 @@ def boundary_by_patch(polymesh) -> tuple[np.ndarray, np.ndarray, np.ndarray, lis
     tail = read_boundary_faces(pm, first, last - first)
     tris: list[np.ndarray] = []
     owner: list[np.ndarray] = []
+    edges: list[np.ndarray] = []
+    edge_owner: list[np.ndarray] = []
     for k, p in enumerate(patches):
         polys = [f for f in tail[p["start_face"] - first:p["start_face"] - first + p["n_faces"]]
                  if len(f) >= 3]
@@ -138,11 +150,16 @@ def boundary_by_patch(polymesh) -> tuple[np.ndarray, np.ndarray, np.ndarray, lis
             for j in range(1, int(n) - 1):
                 tris.append(np.stack([ids[:, 0], ids[:, j], ids[:, j + 1]], axis=1))
                 owner.append(np.full(len(ids), k, dtype=np.int64))
+        pe = polygon_edges(polys)
+        edges.append(pe)
+        edge_owner.append(np.full(len(pe), k, dtype=np.int64))
     if not tris:
         return empty
     tri = np.concatenate(tris)
     used, inv = np.unique(tri, return_inverse=True)
-    return points[used], inv.reshape(tri.shape), np.concatenate(owner), patches
+    # every polygon corner is a corner of its fan, so the same numbering holds the edges
+    return (points[used], inv.reshape(tri.shape), np.concatenate(owner), patches,
+            np.searchsorted(used, np.concatenate(edges)), np.concatenate(edge_owner))
 
 
 # #
@@ -386,13 +403,15 @@ def main_way_radius(points, tris, port_of_tri, *, narrow_width: float,
 # #
 
 def own_readings(points, wall_tris, sample, *, reach_cells: float = REACH_CELLS,
-                 deadline: float | None = None
+                 deadline: float | None = None, edges=None
                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(radius, mean edge, vertex area, inward normal) at each sampled wall point: the radius is
     half the chord from the point along its inward normal to the first wall that faces back across
     it, by the radius_field rules (a fold of the point's own face is skipped; a grazing or
     from-behind hit is no reading, NaN). The faces must be wound outward (a polyMesh boundary is).
     No hit within `reach_cells` local edges reads +inf: a passage at least that many cells across.
+    `edges`, the wall polygons' own edges when the triangles are their fans, give the mean edge
+    (engines/passage.measure_passage: a fan's diagonals are not cell edges).
 
     Read AS IS, with no floor from the neighbours: each point is judged by the passage it bounds.
     """
@@ -414,12 +433,8 @@ def own_readings(points, wall_tris, sample, *, reach_cells: float = REACH_CELLS,
         np.add.at(pn, f[:, k], fn)
         np.add.at(va, f[:, k], area2 / 6.0)
     pn /= np.maximum(np.linalg.norm(pn, axis=1), 1e-300)[:, None]
-    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
-    length = np.linalg.norm(pts[e[:, 1]] - pts[e[:, 0]], axis=1)
-    acc = (np.bincount(e[:, 0], weights=length, minlength=len(pts))
-           + np.bincount(e[:, 1], weights=length, minlength=len(pts)))
-    cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
-    edge = acc / np.maximum(cnt, 1)
+    from meshpipeline.engines.passage import mean_edge, triangle_edges
+    edge = mean_edge(pts, triangle_edges(f) if edges is None else edges)
     mesh = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     # the static cell locator, not the OBB tree local_radius uses: the same hits ten times faster
     # on a 400k-face wall; the hit points are recomputed exactly below
@@ -490,13 +505,15 @@ def _stats(values: np.ndarray) -> dict:
 
 def flow_evidence(points, tris, port_of_tri, *, wall_of_tri=None,
                   floor: float = PASSAGE_FLOOR_CELLS, sample_points: int = SAMPLE_POINTS,
-                  seed: int = 0, deadline: float | None = None) -> dict:
+                  seed: int = 0, deadline: float | None = None, wall_edges=None) -> dict:
     """The passage-flow record of a closed fluid boundary (port triangles carry their port's index
     in `port_of_tri`, every other one -1): the cells across at sampled wall points, split into side
     passages and the rest by the main way's narrowest section. `wall_of_tri` marks the WALL
     triangles the chords are cast from and against, as the measure beside the mesh casts them
-    (a symmetry plane closes the fluid but is no wall); every non-port triangle by default. {} when
-    nothing can be said (no wall, fewer than two ports)."""
+    (a symmetry plane closes the fluid but is no wall); every non-port triangle by default.
+    `wall_edges`, the wall polygons' own edges when the triangles are their fans, give the cell
+    size, as they do for the measure beside the mesh. {} when nothing can be said (no wall, fewer
+    than two ports)."""
     pts = np.asarray(points, dtype=float)
     tri = np.asarray(tris, dtype=np.int64)
     port = np.asarray(port_of_tri, dtype=np.int64)
@@ -508,7 +525,8 @@ def flow_evidence(points, tris, port_of_tri, *, wall_of_tri=None,
     rng = np.random.default_rng(seed)
     sample = np.sort(rng.choice(wall_ids, size=min(int(sample_points), len(wall_ids)),
                                 replace=False))
-    r, edge, area, inward = own_readings(pts, wall_tris, sample, deadline=deadline)
+    r, edge, area, inward = own_readings(pts, wall_tris, sample, deadline=deadline,
+                                         edges=wall_edges)
     read = ~np.isnan(r)
     if read.sum() < 20:
         return {}
@@ -579,7 +597,7 @@ def passage_flow_of_polymesh(workspace, quality: dict | None, *,
     t0 = time.monotonic()
     deadline = t0 + budget_s if budget_s and budget_s > 0 else None
     try:
-        pts, tris, patch_of_tri, patches = boundary_by_patch(pm)
+        pts, tris, patch_of_tri, patches, edges, patch_of_edge = boundary_by_patch_with_edges(pm)
         if not patches:
             return {}
         is_port = np.asarray([p["type"] in PORT_PATCH_TYPES for p in patches])
@@ -590,8 +608,11 @@ def passage_flow_of_polymesh(workspace, quality: dict | None, *,
         # them (engines/passage.WALL_PATCH_TYPES); a mesh without one is read on every non-port
         is_wall = np.asarray([p["type"] in WALL_PATCH_TYPES for p in patches])
         wall_of_tri = is_wall[patch_of_tri] if is_wall.any() else None
+        # the cell size at a wall point from the wall polygons' own edges, not their fans'
+        wall_of_edge = (is_wall[patch_of_edge] if is_wall.any()
+                        else ~is_port[patch_of_edge])
         record = flow_evidence(pts, tris, port_of_tri, wall_of_tri=wall_of_tri, floor=floor,
-                               deadline=deadline)
+                               deadline=deadline, wall_edges=edges[wall_of_edge])
     except EvidenceOverdue:
         logger.warning("passage flow reading abandoned after %.0f s; the floor is judged as "
                        "measured", budget_s)
@@ -704,5 +725,6 @@ def refuse_under_resolved(verdict: ResolutionVerdict, advice: str, **facts):
 __all__ = ["EVIDENCE_BUDGET_S", "MAX_VOXELS", "NECK_MIN_POINTS", "REACH_CELLS", "VOXEL_SLACK",
            "SAMPLE_POINTS", "SIDE_FRACTION", "SIDE_SHARE_MAX", "FluidCopy", "MainWay",
            "ResolutionVerdict", "fluid_copy",
-           "boundary_by_patch", "flow_evidence", "judge_resolution", "main_way_radius",
+           "boundary_by_patch", "boundary_by_patch_with_edges", "flow_evidence",
+           "judge_resolution", "main_way_radius",
            "own_readings", "passage_flow_of_polymesh", "refuse_under_resolved"]
