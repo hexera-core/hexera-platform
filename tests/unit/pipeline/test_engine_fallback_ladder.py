@@ -346,9 +346,11 @@ def test_after_a_switch_the_offer_names_every_engine_that_failed():
                                   "switches": [{"attempt": 2, "from": "cfmesh",
                                                 "to": "snappy"}]})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
-    # external: after cfMesh and snappy, the only rung left is gmsh, which needs a fluid domain -
-    # nothing is left to offer rather than an engine that cannot build the declaration
-    assert offer is None
+    # external: after cfMesh and snappy, the rung left is gmsh, which cuts a body out of a
+    # far-field box itself - offered with what changes, never switched to silently
+    assert offer["engine"] == "gmsh" and offer["same_contract"] is False
+    assert offer["text"].startswith("Neither cfMesh nor snappyHexMesh could mesh this shape")
+    assert any("Abaqus" in c for c in offer["changes"])
     internal = _fluid_domain(engine="snappy", engine_params={}, retry_count=2,
                              executor_failed_gate="finalize", input_kind="body-surface",
                              engine_ladder={"approved": "cfmesh", "attempts": [

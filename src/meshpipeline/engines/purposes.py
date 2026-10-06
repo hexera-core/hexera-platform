@@ -164,6 +164,19 @@ def is_compatible(spec, purpose_key: str, input_kind: str | None = None) -> bool
     )
 
 
+def serving_capabilities(spec, purpose_key: str, input_kind: str | None) -> list:
+    """The capabilities of `spec` that produce this purpose's mesh from this geometry (the ones
+    is_compatible accepts on)."""
+    p = PURPOSES[purpose_key]
+    req, req_topo = p.requires_mesh_kind, p.flow_topology
+    req = (req,) if isinstance(req, str) else tuple(req)
+    admitted = kinds_admitted_as(input_kind, req)
+    return [c for c in spec.capabilities
+            if c.output_kind in req
+            and (input_kind is None or c.input_kind in admitted)
+            and (not req_topo or req_topo in c.topologies)]
+
+
 def engines_producing_topology(specs: dict, topo: str) -> list[str]:
     return sorted(
         name for name, sp in specs.items()
