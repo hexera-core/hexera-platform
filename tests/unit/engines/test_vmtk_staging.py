@@ -61,11 +61,34 @@ def test_seed_points_are_one_source_the_largest_port_and_every_other_port_a_targ
 def test_sizing_is_tied_to_the_smallest_and_largest_port():
     s = LS.sizing(_PORTS)
     assert s["edge_bound"] == pytest.approx(0.10 / LS.RIM_DIVISIONS)
-    assert s["min_edge_length"] == pytest.approx(0.10 * LS.MIN_EDGE_FRACTION)
+    # the floor guards against a zero-size target: half the cell at the radius floor
+    assert s["min_edge_length"] == pytest.approx(0.15 * 0.10 * LS.RADIUS_LO_FRACTION
+                                                 * LS.MIN_EDGE_OF_FLOOR)
     assert s["max_edge_length"] == pytest.approx(0.30 * LS.MAX_EDGE_FRACTION)
     assert s["min_edge_length"] < s["edge_bound"] < s["max_edge_length"]
     assert s["radius_lo"] == pytest.approx(0.10 * LS.RADIUS_LO_FRACTION)
     assert s["radius_hi"] == pytest.approx(0.30 * LS.RADIUS_HI_FRACTION)
+
+
+def test_the_narrow_end_is_read_on_the_hydraulic_diameter():
+    # an annulus (a 151 mm bore round a 125 mm rod) is as narrow as its 26 mm gap, a flat duct
+    # as its thin side - the area-equivalent diameter (85 mm) put the radius floor above the
+    # real half-gap and clipped the whole field up to it
+    ring = {"name": "inlet", "size_m": 0.0854, "hydraulic_m": 0.0264, "area_m2": 0.00573}
+    s = LS.sizing([ring, {**ring, "name": "outlet"}])
+    assert s["radius_lo"] == pytest.approx(0.0264 * LS.RADIUS_LO_FRACTION)
+    assert s["radius_lo"] < 0.5 * 0.0264                       # under the true half-gap
+    assert s["edge_bound"] == pytest.approx(0.0264 / LS.RIM_DIVISIONS)
+    assert s["max_edge_length"] == pytest.approx(0.0854 * LS.MAX_EDGE_FRACTION)
+
+
+def test_an_opening_is_measured_with_its_hydraulic_diameter_and_loop_count():
+    disk = pv.Disc(inner=0.0, outer=0.05, c_res=48, r_res=4).triangulate().clean()
+    ring = pv.Disc(inner=0.04, outer=0.05, c_res=48, r_res=2).triangulate().clean()
+    d = LS._measure_opening(disk)
+    assert d["loops"] == 1 and d["hydraulic_m"] == pytest.approx(0.1, rel=0.02)
+    a = LS._measure_opening(ring)
+    assert a["loops"] == 2 and a["hydraulic_m"] == pytest.approx(0.02, rel=0.03)
 
 
 def _tube(radius=0.05, length=0.4, n_around=24, n_along=8):

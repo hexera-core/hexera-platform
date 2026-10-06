@@ -365,6 +365,11 @@
     "patch_contract",
     true,
     "GROUPS"
+   ],
+   [
+    "port_areas",
+    true,
+    "GROUPS"
    ]
   ],
   "input_contract": {

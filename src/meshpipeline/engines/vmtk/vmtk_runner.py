@@ -57,6 +57,11 @@ _DEFAULTS: dict = {
     # staged route only: whether vmtkmeshgenerator remeshes the (already remeshed) surface
     # again before capping and filling; the repair ladder toggles it
     "generator_remesh": True,
+    # GEOMETRY FACTS from staging (lumen_staging.measure_openings): 'simple' caps each opening
+    # with a flat fan, 'annular' stitches a ring between an opening's two rims (an annulus round a
+    # centre rod); wall_pieces > 1 keeps every piece of the wall through the remesh (the rod)
+    "capping_method": "simple",
+    "wall_pieces": 1,
     # CENTERLINE SEEDING - must be NON-INTERACTIVE. vmtk's 'openprofiles'/'pickpoint'
     # selectors open an X render window and abort in a headless worker (verified: SIGABRT,
     # "bad X server connection"). The non-interactive selectors are:
@@ -125,7 +130,11 @@ def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
         "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
         "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
         *(["-collapseangle", f"{collapse_angle:g}"] if collapse_angle is not None else []),
-        "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
+        # one piece: the largest (it drops what the remesh orphans); several by design - the
+        # bore and the rod of an annulus - every piece, cleaned of orphan points
+        "--pipe", "vmtksurfaceconnectivity",
+        *(["-method", "all", "-cleanoutput", "1"] if int(s.get("wall_pieces") or 1) > 1
+          else ["-method", "largest"]),
         "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
     ]
     generate = [
@@ -133,9 +142,16 @@ def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
         "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
         "-edgelengthfactor", f"{elf:g}", *_clamp_args(s),
         "-skipcapping", "0", "-skipremeshing", "0" if s.get("generator_remesh", True) else "1",
-        *_layer_args(s), "-tetrahedralize", "1", "-ofile", _MESH,
+        *_capping_args(s), *_layer_args(s), "-tetrahedralize", "1",
+        "-ofile", _MESH,
     ]
     return surface, generate
+
+
+def _capping_args(s: dict) -> list[str]:
+    # vmtk's own 'simple' is left implicit, so a disk-capped run's argv is what it always was
+    method = str(s.get("capping_method") or "simple")
+    return [] if method == "simple" else ["-cappingmethod", method]
 
 
 def _clamp_args(s: dict) -> list[str]:
@@ -498,6 +514,41 @@ def _fill_completed(ws: Path, result: dict) -> bool:
     return not any(f in low for f in _TETGEN_FAILURES)
 
 
+def _folded_share(ws: Path) -> float | None:
+    """How far a completed fill's tetrahedra overlap: their summed volume over what the mesh's
+    own boundary encloses, less one (check_mesh's overlap test, run before the fill is accepted).
+    vmtk's layer generator has no collision handling, so where two walls meet at a corner - a
+    rectangular duct's edges, a wye crotch - the stacks grow into each other and TetGen still
+    completes; the ladder used to stop there and ship a mesh check_mesh then refused
+    (fluid_radius_elbow: 27.7% overlap). None when it cannot be measured."""
+    import numpy as np
+    try:
+        mesh = _read_surface(ws / _MESH)
+        tets = mesh.extract_cells_by_type(_VTK_TETRA)
+        if not tets.n_cells:
+            return None
+        vol = np.asarray(tets.compute_cell_sizes(length=False, area=False,
+                                                 volume=True).cell_data["Volume"])
+        return _overlap_fraction(mesh, float(np.abs(vol).sum()))
+    except Exception:  # noqa: BLE001 - evidence, not a verdict; check_mesh judges again
+        logger.warning("vmtk: the fill's overlap could not be measured", exc_info=True)
+        return None
+
+
+def _thinner(ladder: list[dict], i: int) -> int | None:
+    """The first ladder step after `i` whose layer stack is thinner than step i's (fewer layers,
+    or the same count thinner): the move for a stack that folded into itself."""
+    cur = ladder[i]
+
+    def depth(s: dict) -> float:
+        return int(s.get("boundary_layers") or 0) * float(s["boundary_layer_thickness_factor"])
+
+    for j in range(i + 1, len(ladder)):
+        if depth(ladder[j]) < depth(cur) - 1e-12:
+            return j
+    return None
+
+
 _LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
 _LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
 _now = time.monotonic       # the run clock; tests substitute it
@@ -664,7 +715,9 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             (ws / "log.vmtk").write_text("\n".join([*notes, result.get("log_tail") or ""]))
             return result
     last = 0
-    for i, strat in enumerate(ladder):
+    i = 0
+    while i < len(ladder):
+        strat = ladder[i]
         if i and deadline - _now() < floor:
             notes.append(f"[vmtk] {len(ladder) - i} ladder step(s) not started: under "
                          f"{floor:g} s of the {int(timeout)} s budget left")
@@ -674,11 +727,27 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         if i:
             (ws / _MESH).unlink(missing_ok=True)
         result = _run_pype(ws, argv, timeout=left())
-        if _fill_completed(ws, result) or i == len(ladder) - 1:
+        nxt: int | None = i + 1 if i + 1 < len(ladder) else None
+        if _fill_completed(ws, result):
+            if not staged or int(strat.get("boundary_layers") or 0) <= 0:
+                break
+            folded = _folded_share(ws)
+            if folded is None or folded <= OVERLAP_TOLERANCE:
+                break
+            nxt = _thinner(ladder, i)
+            if nxt is None or deadline - _now() < floor:
+                break
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill completed but "
+                         f"its boundary layer folded into itself (the tetrahedra overlap by "
+                         f"{folded * 100:.1f}%) - next: {_step_label(ladder[nxt])}")
+            i = nxt
+            continue
+        if nxt is None:
             break
         notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill did not complete "
                      f"(last generator stage: {_last_stage(result) or 'unknown'}) - next: "
-                     f"{_step_label(ladder[i + 1])}")
+                     f"{_step_label(ladder[nxt])}")
+        i = nxt
     if notes:
         effective = dict(ladder[last])
         effective["repair_note"] = "; ".join(notes)
@@ -1185,6 +1254,44 @@ def _overlap_fraction(grid, tet_volume: float) -> float | None:
 
 
 
+#: A delivered cap outside this band of its STAGED opening's area is not that opening. Tighter
+#: than the shared gate's band against the declared size (region_check.PORT_AREA_BAND): the
+#: staged opening is measured on the very rims vmtk caps, so only a different region misses it.
+STAGED_CAP_BAND = (0.75, 1.25)
+
+
+def patch_areas(patches: dict) -> dict[str, float]:
+    """{patch name: area m2} of the delivered boundary (name -> triangles as coordinate triples)."""
+    import numpy as np
+    out: dict[str, float] = {}
+    for name, tris in patches.items():
+        if not tris:
+            continue
+        t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+        out[str(name)] = float(0.5 * np.linalg.norm(
+            np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+    return out
+
+
+def _caps_off_their_openings(ws: Path, patches: dict) -> list[str]:
+    """Every delivered cap named after a staged port, held to that port's open area by the shared
+    region check (engines/region_check.port_area_misses). The fill can bound a different region
+    than the fluid and pass every other check - its tetrahedra tile their own boundary exactly:
+    an annulus delivered as the full pipe (the rod dropped by the remesh, each cap a full disk
+    three times the ring), a metal part delivered as the volume inside its OUTER skin (the bore
+    dropped, each cap the size of the flange). The caps say so, so this is fatal. [] when
+    nothing was staged to compare with."""
+    from meshpipeline.engines.region_check import port_area_misses
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    staged = read_staging(ws) or {}
+    expected = {str(p.get("name")): float(p.get("open_area_m2") or p.get("area_m2") or 0.0)
+                for p in staged.get("ports") or [] if p.get("name")}
+    misses = port_area_misses(patch_areas(patches), expected, band=STAGED_CAP_BAND)
+    return [f"the '{m['name']}' cap covers {m['delivered_m2'] * 1e6:,.0f} mm2 where the opening is "
+            f"{m['expected_m2'] * 1e6:,.0f} mm2 - the mesh fills a different region than the fluid "
+            "(a wall piece was lost or an outer skin was meshed)" for m in misses]
+
+
 def _run_policy() -> RunPolicy:
     from meshpipeline.engines.vmtk.spec import SPEC
 
@@ -1299,6 +1406,15 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # ("lumen_wall"). The review surface carries the DECLARED name, so the reviewer inspects
         # the patch the manifest lists instead of an empty one beside an undeclared "wall".
         _declared_walls = [n for n, r in patch_types.items() if r == "wall"]
+        _wrong = _caps_off_their_openings(ws, _review)
+        if _wrong:
+            q["fatal"] = [*q.get("fatal", []), *_wrong]
+            q["mesh_ok"] = False
+        # each delivered boundary's area, for the shared port-area gate (engines/region_check),
+        # which holds every inlet/outlet to the size the user DECLARED, as for every engine
+        _areas = patch_areas(_review)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
         if len(_declared_walls) == 1 and "wall" in _review and _declared_walls[0] != "wall":
             _review[_declared_walls[0]] = _review.pop("wall")
         if _review:
