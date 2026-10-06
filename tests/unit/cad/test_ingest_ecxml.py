@@ -331,7 +331,7 @@ def test_the_physics_is_kept_beside_the_geometry(stb):
     assert facts["counts"]["fans"] == 1
 
 
-def test_the_step_names_every_region_and_keeps_the_metres(stb):
+def test_the_step_names_every_region_in_millimetres(stb):
     from meshpipeline.cad.ingest.cad import read_step, shape_stats
     from meshpipeline.cad.regions import regions_of
     from meshpipeline.cad.unit_evidence import parser_applied_unit, read_declared_unit
@@ -341,12 +341,12 @@ def test_the_step_names_every_region_and_keeps_the_metres(stb):
     assert names.names == stb["canonical"].regions and names.source == "roots"
     st = shape_stats(read_step(path))
     assert st["solids"] == len(names.names)
-    assert st["bounds_min"] == pytest.approx([-0.03, -0.03, -0.02], abs=1e-6)
-    assert st["bounds_max"] == pytest.approx([0.15, 0.12, 0.06], abs=1e-6)
-    # the numbers are the file's metres under OCC's label; the source's unit says so
+    assert st["bounds_min"] == pytest.approx([-30.0, -30.0, -20.0], abs=1e-6)
+    assert st["bounds_max"] == pytest.approx([150.0, 120.0, 60.0], abs=1e-6)
+    # the file's metres, built in millimetres (OpenCASCADE's fixed tolerances are then 0.1 nm)
     assert parser_applied_unit(path) is LengthUnit.millimetre
     evidence = read_declared_unit(path)
-    assert evidence.resolved and evidence.unit is LengthUnit.metre
+    assert evidence.resolved and evidence.unit is LengthUnit.millimetre
 
 
 def test_an_ecxml_meshes_at_its_true_size(stb, tmp_path):
@@ -360,14 +360,14 @@ def test_an_ecxml_meshes_at_its_true_size(stb, tmp_path):
     src = tmp_path / "source.ecxml"
     src.write_bytes(tiny_board().xml())
     declared = read_declared_unit(src)          # what the upload records
-    assert declared.resolved and declared.unit is LengthUnit.metre
+    assert declared.resolved and declared.unit is LengthUnit.millimetre
     ref = source_ref(local_file=src, filename="board.ecxml")
     geom = MaterializedGeometry(
         ref=ref, interpretation=interpretation_ref(geometry_source_id=ref.source_id,
                                                    unit=declared.unit),
         local_path=canonical_path(src))
     assert geom.local_path == tmp_path / "source.step"
-    assert _consumed_state(geom, geom.local_path.suffix).to_metres == pytest.approx(1.0)
+    assert _consumed_state(geom, geom.local_path.suffix).to_metres == pytest.approx(1e-3)
 
 
 def test_the_multiregion_report_names_each_solid(stb, tmp_path):
@@ -379,8 +379,8 @@ def test_the_multiregion_report_names_each_solid(stb, tmp_path):
     from meshpipeline.engines.snappy_multiregion.multiregion_runner import read_assembly_solids
 
     interp = GeometryInterpretation(
-        interpretation_id="i", owner_id="o", geometry_source_id="s", unit=LengthUnit.metre,
-        scale_to_metres=1.0, basis=ResolutionBasis.file_declared, evidence="ecxml")
+        interpretation_id="i", owner_id="o", geometry_source_id="s", unit=LengthUnit.millimetre,
+        scale_to_metres=1e-3, basis=ResolutionBasis.file_declared, evidence="ecxml")
     solids = read_assembly_solids(stb["canonical"].path, tmp_path / "asm",
                                   prepared=from_occ_transfer(interp, LengthUnit.millimetre))
     by_name = {s.get("name"): s for s in solids}
@@ -423,7 +423,7 @@ def test_for_icepak_a_solid_inside_another_wins_whatever_the_order():
                  .block("Inner", (0.02, 0.02, 0.02), (0.01, 0.01, 0.01), "M")
                  .block("Housing", (0.0, 0.0, 0.0), (0.05, 0.05, 0.05), "M"))
     assert "Inner" not in flo.region_names
-    assert any("wholly overwritten" in n for n in flo.notes)
+    assert any(n.startswith("Overlap: Housing overwrite(s) all of Inner") for n in flo.notes)
 
 
 def test_a_sealed_enclosure_keeps_its_own_air():
@@ -560,6 +560,97 @@ def test_heatsink_blocks_count_toward_the_object_bound(monkeypatch):
     fins = [(f"F{i}", (0.001 * i, 0, 0), (0.0005, 0.01, 0.01), "M", 0.0) for i in range(10)]
     with pytest.raises(EcxmlError, match="more than 5 objects"):
         read_ecxml(Ecxml("hs").heatsink("HS", fins).xml())
+
+# ------------------------------------------------------------------------------ fidelity ----
+def _die_on_substrate(gap_m: float, *, scale: float = 1.0) -> Ecxml:
+    """A 2 x 2 x 0.3 mm die over a 6 x 6 x 0.5 mm substrate, `gap_m` above it; `scale` grows the
+    domain (and so the size the file's precision is judged at) without moving the parts."""
+    doc = Ecxml("die").domain((0, 0, 0), (0.01 * scale, 0.01 * scale, 0.004 * scale))
+    doc.material("Si", 2330, 700, 0.8, ("isotropic", 150.0))
+    doc.material("Cu", 8900, 385, 0.1, ("isotropic", 390.0))
+    doc.block("Substrate", (0.002, 0.002, 0.001), (0.006, 0.006, 0.0005), "Cu")
+    doc.block("Die", (0.004, 0.004, 0.0015 + gap_m), (0.002, 0.002, 0.0003), "Si", 1.0)
+    return doc
+
+
+def _distance_mm(built, a: str, b: str) -> float:
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    shapes = dict(built.named)
+    d = BRepExtrema_DistShapeShape(shapes[a], shapes[b])
+    d.Perform()
+    return float(d.Value())
+
+
+def test_a_die_two_micrometres_above_its_substrate_is_never_fused_into_contact():
+    r = _build(_die_on_substrate(2e-6))
+    side = r.sidecar
+    # independently of the build's own checks: the solids are still 2 um apart...
+    assert _distance_mm(r, "Die", "Substrate") == pytest.approx(0.002, abs=1e-9)
+    # ...no face is shared between them, and the air fills exactly what they leave
+    assert ["Die", "Substrate"] not in side["solid_contacts"]
+    assert _vol(r, "Die") == pytest.approx(0.002 * 0.002 * 0.0003, rel=1e-9)
+    assert _vol(r, "air") == pytest.approx(0.01 * 0.01 * 0.004 - 0.006 * 0.006 * 0.0005
+                                           - 0.002 * 0.002 * 0.0003, rel=1e-9)
+    tol = side["tolerances_m"]
+    assert tol["smallest_gap"] == pytest.approx(2e-6, rel=1e-6)
+    assert tol["boolean_fuzzy"] <= 2e-7                 # a tenth of the gap at most
+    assert any(line.startswith("Smallest gap between parts: 2 um") for line in r.report)
+    assert any(line.startswith("Checked:") for line in r.notes)
+
+
+def test_a_die_on_its_substrate_shares_the_face_between_them():
+    r = _build(_die_on_substrate(0.0))
+    assert ["Die", "Substrate"] in r.sidecar["solid_contacts"]
+    assert _distance_mm(r, "Die", "Substrate") == pytest.approx(0.0, abs=1e-12)
+    assert _vol(r, "Die") == pytest.approx(0.002 * 0.002 * 0.0003, rel=1e-9)
+
+
+def test_a_gap_the_files_precision_cannot_tell_from_contact_is_refused_with_the_way_on():
+    from meshpipeline.cad.ingest.ecxml_build import FidelityError
+
+    # a 0.3 um bond line in a 1.3 m model: float32 cannot place it to better than ~0.1 um
+    with pytest.raises(FidelityError) as err:
+        _build(_die_on_substrate(3e-7, scale=100.0))
+    said = str(err.value)
+    assert "cannot be told apart from contact" in said and "0.3 um (Substrate and Die)" in said
+    assert "sub-assembly" in said
+
+
+def test_float32_noise_is_read_as_the_contact_it_is():
+    # Flotherm's float32: the die written 10 nm above the substrate's top in a 0.3 m model
+    r = _build(_die_on_substrate(1e-8, scale=30.0))
+    assert ["Die", "Substrate"] in r.sidecar["solid_contacts"]
+    assert r.sidecar["tolerances_m"]["coordinates_snapped"] >= 1
+    assert any("read as the same plane" in line for line in r.report)
+
+
+def test_every_overlap_and_drop_is_in_the_build_report():
+    doc = Ecxml("report").domain((0, 0, 0), (0.1, 0.1, 0.1))
+    doc.block("First", (0.0, 0.0, 0.0), (0.04, 0.04, 0.04), "M")
+    doc.block("Second", (0.02, 0.0, 0.0), (0.04, 0.04, 0.04), "M")
+    doc.block("Off", (0.07, 0.07, 0.07), (0.01, 0.01, 0.01), "M", active=False)
+    doc.block("Away", (0.3, 0.3, 0.3), (0.01, 0.01, 0.01), "M")
+    doc.plate("Sheet", (0.06, 0.07, 0.01), (0.03, 0.0, 0.03), "+xz", "M")
+    r = _build(doc)
+    text = "\n".join(r.report)
+    assert "Overlap: Second overwrite(s) 32,000 mm3 of First (50% of it; the later object" in text
+    assert "Switched off in the file, so not meshed: Off." in text
+    assert "Not built: Away - it lies outside the solution domain." in text
+    assert "Not meshed: Sheet, a plate without a usable thickness" in text
+    assert r.report[-1].startswith("Checked: 2 of 2 solid volume(s) match the file's numbers")
+    assert r.sidecar["build_report"] == r.report
+    # what the user reads on the geometry check: the checks, the overlaps and every drop
+    assert {n.split(":")[0] for n in r.notes} >= {"Checked", "Overlap", "Not built", "Not meshed"}
+
+
+def test_a_build_that_lost_volume_is_refused(monkeypatch):
+    from meshpipeline.cad.ingest import ecxml_build as eb
+
+    real = eb._expected_volume
+    monkeypatch.setattr(eb, "_expected_volume", lambda p, d: (real(p, d) or 0.0) * 1.01)
+    with pytest.raises(eb.FidelityError, match="the file's numbers give"):
+        _build(tiny_board())
 
 # ------------------------------------------------------------------------------ the check ----
 def test_the_check_takes_the_files_word_for_each_side_of_the_domain():

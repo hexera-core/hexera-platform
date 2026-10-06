@@ -30,9 +30,12 @@ def declared_unit(path: Path, key: str):
         return _3dm_unit(path, UnitEvidence)
     if key == "ecxml":
         # JEP181A 4.1: "All numeric values are implicitly assumed to be in SI units. The schema
-        # does not allow for specification of a non-SI unit." Lengths are metres, always.
-        return UnitEvidence(True, LengthUnit.metre,
-                            "ECXML states every length in metres (JEDEC JEP181A, 4.1)")
+        # does not allow for specification of a non-SI unit." Lengths are metres, always - and
+        # the solids are built from them in millimetres (cad/ingest/ecxml_build.UNIT), so the
+        # unit of the geometry every engine reads is the millimetre.
+        return UnitEvidence(True, LengthUnit.millimetre,
+                            "ECXML states every length in metres (JEDEC JEP181A, 4.1); its solids "
+                            "are built in millimetres")
     return None
 
 

@@ -242,7 +242,7 @@ def _ecxml_to_step(src: Path, dest: Path) -> CanonicalGeometry:
     try:
         built, stats = ecxml_to_step(src, dest)
     except EcxmlError as exc:
-        raise IngestError(f"the ECXML file could not be read: {exc}") from exc
+        raise IngestError(f"the ECXML model could not be converted: {exc}") from exc
     return CanonicalGeometry(path=dest, kind=GeometryKind.cad, source_format="ecxml",
                              converted=True, regions=built.region_names,
                              notes=tuple(built.notes), stats=stats,

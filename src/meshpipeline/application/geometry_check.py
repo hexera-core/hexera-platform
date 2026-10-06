@@ -445,13 +445,14 @@ def declared_openings(facts: dict, thermal: dict) -> None:
     * a side with neither, not walled off, is an opening the size of the side, named for it;
     * a side the file's plates wall off offers nothing.
 
-    Positions are in the check's metres (the file's metres times the confirmed scale)."""
+    Positions are metres: the thermal model states them in SI (JEP181A 4.1), whatever unit its
+    solids are built in."""
     from meshpipeline.contracts.patch_names import mesh_safe
 
     patches = [p for p in thermal.get("patches") or [] if p.get("domain_face")]
     if not patches:
         return
-    scale = float(facts.get("scale_to_m") or 1.0)        # file units -> metres (ECXML: 1)
+    scale = 1.0
     fans_in = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "inlet")
     fans_out = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "outlet")
     vent_role = "inlet" if fans_out and not fans_in else "outlet"
