@@ -18,3 +18,15 @@ def test_regions_with_cells_say_nothing(tmp_path):
     (tmp_path / "log.topoSet").write_text("    Using zone fluid with 208395 cells\n")
     assert N.empty_regions(tmp_path) == []
     assert N.empty_regions(tmp_path / "missing") == []
+
+
+def test_the_missing_split_is_reported_by_its_cause(tmp_path):
+    import pytest
+
+    from meshpipeline.engines.snappy_multiregion import regions as RG
+    with pytest.raises(RG.RegionPropertiesError, match="regionProperties is missing"):
+        RG.read_region_properties(tmp_path)
+    (tmp_path / N.STOP_REASON_FILE).write_text(
+        N.empty_regions_reason(tmp_path, ["fluid", "wall_solid"]))
+    with pytest.raises(RG.RegionPropertiesError, match="no cell was placed in region"):
+        RG.read_region_properties(tmp_path)

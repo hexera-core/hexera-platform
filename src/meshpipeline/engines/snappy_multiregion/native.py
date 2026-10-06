@@ -104,9 +104,13 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
                 # here with the cause snappy leaves behind: it could not tell the region's inside
                 # from its outside because the region's surface is not closed.
                 logs.append(f"[regions] no cells in {', '.join(empty)}")
+                why = empty_regions_reason(ws, empty)
+                # ...and kept beside the case, so the split's absence is reported by its cause
+                # (regions.read_region_properties), not as "regionProperties is missing"
+                (ws / STOP_REASON_FILE).write_text(why)
                 out = describe_native_result(
                     returncode=1, args=["bash", "-lc", command], stage="regions",
-                    output="\n".join(logs) + "\n" + empty_regions_reason(ws, empty))
+                    output="\n".join(logs) + "\n" + why)
                 out["empty_regions"] = empty
                 return out
 
@@ -135,6 +139,10 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
     result.update({"layer_coverage": layer.get("overall_pct"),
                    "per_patch_layers": layer.get("per_patch")})
     return result
+
+
+#: why the run stopped before the region split, in words (read by regions.read_region_properties)
+STOP_REASON_FILE = "multiregion_stop_reason.txt"
 
 
 def empty_regions(ws: Path) -> list[str]:
