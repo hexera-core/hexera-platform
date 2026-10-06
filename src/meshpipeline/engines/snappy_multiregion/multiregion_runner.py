@@ -402,7 +402,53 @@ def read_assembly_solids(geom_path, out_dir, *, prepared=None) -> list[dict]:
         exp.Next()
     if not solids:
         raise RuntimeError("the CAD file contains no solids - a multi-region case needs a multi-solid assembly")
+    _attach_solid_names(geom_path, solids, trsf)
     return solids
+
+
+def _attach_solid_names(geom_path, solids: list[dict], trsf) -> None:
+    """The name each solid carries in the CAD file (a named assembly component or top-level
+    shape - an ECXML model's 'air', 'PCB', 'CPU_heat_sink'), matched to the solid by its centroid
+    and volume, so the builder maps regions by the names the file gives instead of guessing from
+    sizes. Never fatal: a file that names nothing reports no names."""
+    import math
+
+    try:
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
+        from OCP.TopAbs import TopAbs_SOLID
+        from OCP.TopExp import TopExp_Explorer
+
+        from meshpipeline.cad.regions import _meaningful, components_of
+
+        _doc, tool, found, _roots = components_of(Path(geom_path))
+        if len({n for _label, n in found if _meaningful(n)}) < 2:
+            return
+        named: list[tuple[list[float], float, str]] = []
+        for label, name in found:
+            shape = tool.GetShape_s(label)
+            if not _meaningful(name) or shape is None or shape.IsNull():
+                continue
+            shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+            exp = TopExp_Explorer(shape, TopAbs_SOLID)
+            while exp.More():
+                props = GProp_GProps()
+                BRepGProp.VolumeProperties_s(exp.Current(), props)
+                c = props.CentreOfMass()
+                named.append(([c.X(), c.Y(), c.Z()], abs(props.Mass()), name))
+                exp.Next()
+        lo = [min(s["bbox_min"][i] for s in solids) for i in range(3)]
+        hi = [max(s["bbox_max"][i] for s in solids) for i in range(3)]
+        tol = 1e-6 * (math.dist(lo, hi) or 1.0)
+        for s in solids:
+            near = [(math.dist(c, s["centroid"]), v, n) for c, v, n in named]
+            near = [t for t in near if t[0] <= tol and abs(t[1] - abs(s["volume"]))
+                    <= max(1e-4 * t[1], 2e-12)]
+            if near:
+                s["name"] = min(near)[2]
+    except Exception as exc:  # noqa: BLE001 - names are a help to the builder, never a failure
+        logger.info("multiregion: solid names could not be read (%s)", exc)
 
 
 def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
@@ -438,7 +484,8 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
             "raising the global surface_level (which multiplies cells everywhere); if the "
             "budget cannot afford their needed_level, say so and stop - do not silently "
             "under-resolve them (their cellZone will leak and the region split will fail).")
-    return {"solids": [{k: s[k] for k in ("index", "volume", "bbox_min", "bbox_max", "centroid")}
+    return {"solids": [{k: s[k] for k in ("index", "name", "volume", "bbox_min", "bbox_max",
+                                          "centroid") if k in s}
                        for s in solids],
             "n_solids": len(solids),
             "assembly_diag": round(assembly_diag, 6),

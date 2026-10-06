@@ -113,16 +113,35 @@ def _cad_regions(path: Path) -> CadRegions:
 def regions_of(path) -> CadRegions:
     # Never fatal: a file this cannot describe is reported as carrying no regions, which is what
     # the caller would otherwise have assumed anyway.
-    from meshpipeline.contracts.intake_formats import is_cad
+    from meshpipeline.contracts.intake_formats import format_for_suffix, is_cad
 
     p = Path(path)
     try:
         if p.suffix.lower() == ".stl":       # the canonical surface: its named solids
             return _stl_regions(p)
         if is_cad(p):
+            fmt = format_for_suffix(p.suffix)
+            if fmt is not None and not fmt.canonical:
+                return _converted_regions(p)
             return _cad_regions(p)
     except Exception as exc:
         logger.info("cad regions: %s could not be described (%s)", p.name, exc)
+    return CadRegions()
+
+
+def _converted_regions(path: Path) -> CadRegions:
+    """The regions of a CAD format that is converted before anything reads it (BREP, ECXML): the
+    regions of its canonical STEP, which the conversion names - so what the intake is told is what
+    the engines will be handed."""
+    import tempfile
+
+    from meshpipeline.cad.ingest import canonicalise
+
+    with tempfile.TemporaryDirectory(prefix="regions_") as tmp:
+        canonical = canonicalise(path, Path(tmp), stem="regions")
+    names = tuple(canonical.regions)
+    if len(set(names)) > 1:
+        return CadRegions(names=names, source="roots")
     return CadRegions()
 
 
