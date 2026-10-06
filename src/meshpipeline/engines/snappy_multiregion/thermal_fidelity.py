@@ -35,10 +35,12 @@ CELLS_ACROSS = 2
 #: across lost its zone to unzoned 'domainN' regions on the lab (ECXML-TEST, enclosure_fans);
 #: walls at 3.2 cells and more (the set-top box's 2.5 mm case) came out whole.
 PLAN_CELLS_ACROSS = 3
-#: A region's meshed volume may differ from the file's by this fraction. Resolved lab meshes of
-#: ECXML models come within 0.44% (a cylinder; box parts within 0.01%, 2026-10-06); the wrong
-#: meshes ECXML-TEST found were +8.4% and +79.6%.
-VOLUME_RTOL = 0.03
+#: A region's meshed volume may differ from the file's by this fraction. Faithful lab meshes of
+#: ECXML models (2026-10-06): within 0.44% on the four test models (box parts within 0.01%), and
+#: -0.8% to +3.1% over a 101-part board, where 0603 resistors at ~4.9 cells across snap 2-3%
+#: large - snapping on a small box, with every layer and contact kept. The wrong meshes
+#: ECXML-TEST found were +8.4% (a die) and +79.6% (a TIM with one cell across).
+VOLUME_RTOL = 0.05
 #: configure_mesh's background cell is the assembly's diagonal over this.
 BACKGROUND_DIVISIONS = 40.0
 #: Cells per (surface area / cell size^2) at a surface's refinement level: snappy's cells on and
