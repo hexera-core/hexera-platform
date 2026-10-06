@@ -130,9 +130,10 @@ HOME_TURF = (
     TurfRow("thin_wall_fraction", ">", 0.3, "weak",
             "Much of the body is thin sheet or blade: tetrahedra pinned across its sharp edges come "
             "out as flat slivers (rotors, propellers, high-lift wings).", flow="external"),
-    TurfRow("sharp_edges", ">", 8.0, "weak",
-            "Many sharp edges: tetrahedra pinned between two faces at a sharp edge can come out as "
-            "flat slivers.", flow="external"),
+    TurfRow("sharp_edges", ">", 6.0, "weak",
+            "Many sharp edges: tetrahedra pinned between two faces at a sharp edge come out as flat "
+            "slivers (blade-row passages at 6.5-9.7: worst face 86-88 degrees; rotors, high-lift "
+            "aircraft)."),
 )
 
 
