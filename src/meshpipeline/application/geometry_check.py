@@ -389,9 +389,10 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
             thermal_key = check_object_key(session_id, "thermal_model.json")
             _store_json(thermal_key, thermal)
             facts.setdefault("thermal_model", {})["object_key"] = thermal_key
-            # the file names its parts and which one is the air: an assembly of regions, not a
-            # body to guess about
+            # the file names its parts and which one is the air: an assembly of regions whose air
+            # fills the domain box, not a body to guess about
             facts["input_kind"] = "solid-assembly"
+            facts["flow"] = "internal"
             if isinstance(facts.get("confidence"), dict):
                 facts["confidence"]["input_kind"] = 0.95
             declared_openings(facts, thermal)
@@ -429,61 +430,88 @@ def _thermal_sidecar(canonical_path: Path) -> dict | None:
     return read_ecxml_sidecar(canonical_path)
 
 
-#: A declared patch "is" a measured opening when it covers this much of the opening's face.
-_DECLARED_COVER = 0.99
+#: A side counts as walled off when its wall plates cover this much of it.
+_WALLED = 0.99
+_OPENING_ROLES = ("fan", "vent")
 
 
 def declared_openings(facts: dict, thermal: dict) -> None:
-    """A thermal model SAYS what each side of its domain is - a fan, a vent, a wall, or open
-    air - so the openings measured on the air box take the file's word: a side the file walls off
-    is not offered as an opening, and a side that is a fan or a vent carries that object's name
-    and its direction. A side the file leaves bare stays an opening, named for the side. The
-    measured position and size are kept: they are what the stage draws."""
+    """A thermal model SAYS what each side of its solution domain is - a fan, a vent, a wall, or
+    open air - so its openings are the file's, not a guess from the shape of the air box (which
+    is a plain box, and reads as six openings, or none for an external flow):
+
+    * each fan and each vent on a side is an opening, at its own rectangle, under its own name;
+      a fan blowing in is an inlet, one blowing out an outlet, and a vent takes the other role;
+    * a side with neither, not walled off, is an opening the size of the side, named for it;
+    * a side the file's plates wall off offers nothing.
+
+    Positions are in the check's metres (the file's metres times the confirmed scale)."""
     from meshpipeline.contracts.patch_names import mesh_safe
 
     patches = [p for p in thermal.get("patches") or [] if p.get("domain_face")]
     if not patches:
         return
     scale = float(facts.get("scale_to_m") or 1.0)        # file units -> metres (ECXML: 1)
-    kept, dropped = [], []
-    for o in facts.get("openings") or []:
-        normal = [float(v) for v in (o.get("normal") or (0.0, 0.0, 0.0))]
-        axis = max(range(3), key=lambda i: abs(normal[i]))
-        if abs(normal[axis]) < 0.99:
-            kept.append(o)
-            continue
-        face = ("+" if normal[axis] > 0 else "-") + "xyz"[axis]
-        on_face = [p for p in patches if p["domain_face"] == face]
-        area = float(o.get("area_m2") or 0.0)
-        # the patches are in the file's metres; the measured opening in the check's metres
-        covered = {p["role"]: 0.0 for p in on_face}
-        for p in on_face:
-            covered[p["role"]] += float(p.get("area_m2") or 0.0) * scale * scale
-        whole = [p for p in on_face if p["role"] not in ("wall", "domain_boundary")
-                 and float(p.get("area_m2") or 0.0) * scale * scale >= _DECLARED_COVER * area]
-        if not whole and covered.get("wall", 0.0) >= _DECLARED_COVER * area > 0:
-            dropped.append(f"{o.get('name')} ({face})")
-            continue
-        named = whole[0] if whole else next(
-            (p for p in on_face if p["role"] == "domain_boundary"), None)
-        if named is not None:
-            o["name"] = mesh_safe(named["name"], fallback=f"side_{face[1]}")
-            if named.get("suggested_type") in ("inlet", "outlet"):
-                o["role"] = named["suggested_type"]
-            o["declared_by"] = {"object": named.get("object"), "role": named.get("role"),
-                                "name": named.get("name")}
-            o["confidence"] = 0.95
-        vents = [p["name"] for p in on_face if p not in whole and p["role"] not in
-                 ("wall", "domain_boundary")]
-        if vents:
-            o.setdefault("notes", []).append(
-                f"the file places {', '.join(vents[:6])} on this side")
-        kept.append(o)
-    facts["openings"] = kept
-    if dropped:
+    fans_in = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "inlet")
+    fans_out = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "outlet")
+    vent_role = "inlet" if fans_out and not fans_in else "outlet"
+    box = (thermal.get("domain") or {}).get("box_m") or {}
+    openings, walled = [], []
+    for axis in range(3):
+        for sign in ("-", "+"):
+            face = sign + "xyz"[axis]
+            on_face = [p for p in patches if p["domain_face"] == face]
+            side = next((p for p in on_face if p["role"] == "domain_boundary"), None)
+            side_area = _side_area(box, axis)
+            walls = sum(float(p.get("area_m2") or 0.0) for p in on_face if p["role"] == "wall")
+            devices = [p for p in on_face if p["role"] in _OPENING_ROLES]
+            if devices:
+                for p in devices:
+                    role = p.get("suggested_type") if p["role"] == "fan" else vent_role
+                    openings.append(_declared_opening(p, face, role, scale, mesh_safe))
+            elif side is not None and not (side_area > 0 and walls >= _WALLED * side_area):
+                opening = _declared_opening(side, face, vent_role, scale, mesh_safe)
+                opening["confidence"] = 0.6       # open air: which way it flows is the user's
+                openings.append(opening)
+            else:
+                walled.append(face)
+    for i, o in enumerate(openings, 1):
+        o["id"] = i
+    facts["openings"] = openings
+    if walled:
         facts.setdefault("notes", []).append(
-            "the thermal model walls off " + ", ".join(dropped)
-            + ", so those sides are not offered as openings")
+            "the thermal model closes the domain's " + ", ".join(walled)
+            + " side(s) with walls, so they are not offered as openings")
+
+
+def _side_area(box: dict, axis: int) -> float:
+    try:
+        lo, hi = box["min"], box["max"]
+        a, b = (hi[i] - lo[i] for i in range(3) if i != axis)
+        return float(a * b)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def _declared_opening(patch: dict, face: str, role, scale: float, mesh_safe) -> dict:
+    """An opening as the geometry stage draws it, from a patch the thermal model declares."""
+    import math
+
+    axis = "xyz".index(face[1])
+    normal = [0.0, 0.0, 0.0]
+    normal[axis] = 1.0 if face[0] == "+" else -1.0         # out of the air, like every opening
+    centre = [float(v) * scale for v in patch["centre_m"]]
+    w, h = (float(v) * scale for v in patch["size_m"])
+    area = w * h
+    return {"id": 0, "face": None, "name": mesh_safe(patch["name"], fallback=f"side_{face[1]}"),
+            "role": role if role in ("inlet", "outlet") else "outlet", "kind": "disc",
+            "shape": "rectangle", "confidence": 0.95, "centroid_m": centre,
+            "centroid_mm": [c * 1000.0 for c in centre], "normal": normal, "area_m2": area,
+            "area_mm2": area * 1e6, "on_extremity": True, "clear_ahead": True,
+            "width_mm": w * 1000.0, "height_mm": h * 1000.0,
+            "diameter_mm": math.sqrt(4.0 * area / math.pi) * 1000.0,
+            "declared_by": {"object": patch.get("object"), "role": patch.get("role"),
+                            "name": patch.get("name")}}
 
 
 def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict | None:

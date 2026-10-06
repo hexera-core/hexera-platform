@@ -524,31 +524,73 @@ def test_the_job_materialiser_refuses_a_broken_ecxml_as_the_users_to_fix(tmp_pat
     assert "ECXML" in str(err.value)
 
 
+def test_the_intake_hears_the_same_region_names_without_building_anything():
+    from meshpipeline.cad.ingest.ecxml_build import build, plan_region_names
+
+    overlap = (Ecxml("overlap").domain((0, 0, 0), (0.1, 0.1, 0.1))
+               .block("Hidden", (0.01, 0.01, 0.01), (0.01, 0.01, 0.01), "M")
+               .block("Cover", (0.0, 0.0, 0.0), (0.05, 0.05, 0.05), "M")
+               .block("Away", (0.3, 0.3, 0.3), (0.01, 0.01, 0.01), "M"))
+    for doc in (set_top_box(), ducted_board(), tiny_board(), overlap):
+        model = read_ecxml(doc.xml())
+        assert plan_region_names(model) == build(model).region_names
+
+
+def test_every_watt_is_accounted_for():
+    doc = Ecxml("power").domain((0, 0, 0), (0.1, 0.1, 0.1))
+    doc.block("Kept", (0.0, 0.0, 0.0), (0.02, 0.02, 0.02), "M", 2.0)
+    doc.block("Away", (0.3, 0.3, 0.3), (0.01, 0.01, 0.01), "M", 3.0)
+    doc.source("Src", (0.05, 0.05, 0.05), (0.01, 0.01, 0.01), 4.0)
+    doc.mcad("Ext", (0, 0, 0), "x.step", "M", 5.0)
+    side = _build(doc).sidecar
+    assert side["total_power_W"] == pytest.approx(14.0)
+    assert side["power_W"] == {"in_solid_regions": 2.0, "in_heat_sources": 4.0,
+                               "in_plates_not_meshed": 0.0, "in_parts_not_built": 8.0}
+    assert {r["name"] for r in side["not_built"]} == {"Away", "Ext"}
+
+
+def test_heatsink_blocks_count_toward_the_object_bound(monkeypatch):
+    monkeypatch.setattr(ecxml_mod, "MAX_OBJECTS", 5)
+    fins = [(f"F{i}", (0.001 * i, 0, 0), (0.0005, 0.01, 0.01), "M", 0.0) for i in range(10)]
+    with pytest.raises(EcxmlError, match="more than 5 objects"):
+        read_ecxml(Ecxml("hs").heatsink("HS", fins).xml())
+
 # ------------------------------------------------------------------------------ the check ----
-def _side_opening(oid, face, size_m):
-    axis = "xyz".index(face[1])
-    normal = [0.0, 0.0, 0.0]
-    normal[axis] = 1.0 if face[0] == "+" else -1.0
-    return {"id": oid, "name": f"outlet_{oid}", "role": "outlet", "normal": normal,
-            "area_m2": size_m[0] * size_m[1], "centroid_m": [0.0, 0.0, 0.0], "confidence": 0.85}
-
-
 def test_the_check_takes_the_files_word_for_each_side_of_the_domain():
     from meshpipeline.application.geometry_check import declared_openings
     from meshpipeline.cad.ingest.ecxml_build import build
 
     side = build(read_ecxml(ducted_board().xml())).sidecar
-    faces = {"-x": (0.24, 0.036), "+x": (0.24, 0.036), "-y": (0.12, 0.036),
-             "+y": (0.12, 0.036), "-z": (0.12, 0.24), "+z": (0.12, 0.24)}
-    facts = {"scale_to_m": 1.0, "notes": [],
-             "openings": [_side_opening(i, f, s) for i, (f, s) in enumerate(faces.items(), 1)]}
+    # whatever the shape-reading made of the air box (here: nothing, as for an external flow)
+    facts = {"scale_to_m": 1.0, "notes": [], "openings": []}
     declared_openings(facts, side)
-    got = {o["name"]: o["role"] for o in facts["openings"]}
-    # the fan blows in, the grille lets out, the four thin walls are walls
-    assert got == {"Inlet_fan": "inlet", "Outlet": "outlet"}
-    assert any("walls off" in n for n in facts["notes"])
-    bare = build(read_ecxml(tiny_board().xml())).sidecar
-    facts = {"scale_to_m": 1.0, "notes": [],
-             "openings": [_side_opening(1, "+x", (0.04, 0.02))]}
-    declared_openings(facts, bare)
-    assert [o["name"] for o in facts["openings"]] == ["domain_xmax"]
+    got = {o["name"]: (o["role"], o["normal"], round(o["area_m2"], 9)) for o in facts["openings"]}
+    # the fan blows in, the grille lets the air out, the four thin walls close their sides
+    assert got == {"Inlet_fan": ("inlet", [0.0, 1.0, 0.0], 0.00432),
+                   "Outlet": ("outlet", [0.0, -1.0, 0.0], 0.00432)}
+    assert [o["id"] for o in facts["openings"]] == [1, 2]
+    fan = next(o for o in facts["openings"] if o["name"] == "Inlet_fan")
+    assert fan["centroid_mm"] == pytest.approx([0.0, 120.0, 12.0])
+    assert any("closes the domain's -x, +x, -z, +z" in n for n in facts["notes"])
+    # a model in open air: every side is an opening named for it
+    facts = {"scale_to_m": 1.0, "notes": [], "openings": [{"id": 9}]}
+    declared_openings(facts, build(read_ecxml(tiny_board().xml())).sidecar)
+    assert [o["name"] for o in facts["openings"]] == [
+        "domain_xmin", "domain_xmax", "domain_ymin", "domain_ymax", "domain_zmin", "domain_zmax"]
+
+
+def test_a_fan_in_a_walled_side_is_offered_at_its_own_rectangle():
+    from meshpipeline.application.geometry_check import declared_openings
+    from meshpipeline.cad.ingest.ecxml_build import build
+
+    doc = Ecxml("end wall").domain((0, 0, 0), (0.1, 0.2, 0.05))
+    doc.plate("End", (0.0, 0.2, 0.0), (0.1, 0.001, 0.05), "+xz", "M")
+    doc.fan2d("Pusher", (0.03, 0.2, 0.01), (0.04, 0.0, 0.03), "+xz", 0.002)
+    doc.block("B", (0.02, 0.05, 0.01), (0.02, 0.02, 0.02), "M")
+    facts = {"scale_to_m": 1.0, "notes": [], "openings": []}
+    declared_openings(facts, build(read_ecxml(doc.xml())).sidecar)
+    pusher = next(o for o in facts["openings"] if o["name"] == "Pusher")
+    assert pusher["role"] == "outlet" and pusher["area_m2"] == pytest.approx(0.04 * 0.03)
+    assert pusher["centroid_m"] == pytest.approx([0.05, 0.2, 0.025])
+    # the bare sides stay open; with the fan blowing out, they are where the air comes in
+    assert {o["role"] for o in facts["openings"] if o["name"].startswith("domain_")} == {"inlet"}

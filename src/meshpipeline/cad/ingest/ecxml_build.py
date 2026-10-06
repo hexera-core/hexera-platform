@@ -103,6 +103,7 @@ class _Part:
     wall: bool = False            # an enclosure or a plate: devices in it open it
     notes: list[str] = field(default_factory=list)
     walls: list[tuple[int, float, float, _Box]] = field(default_factory=list)  # axis, lo, hi, slab
+    dropped: str = ""             # why it is not meshed, when it is not
 
 
 @dataclass
@@ -273,9 +274,8 @@ def _unique_namer() -> Callable[..., str]:
 
 
 # ------------------------------------------------------------------------------ the build ---
-def build(model: EcxmlModel) -> EcxmlBuild:
-    objs = model.active_objects
-    notes: list[str] = list(model.notes)
+def _snap_function(model: EcxmlModel, objs: list[Obj]) -> Callable[[Obj], _Box]:
+    """An object's box with every bound moved onto the plane it is meant to share (SNAP_M)."""
     by_axis: list[list[float]] = [[], [], []]
     for o in objs:
         if o.location is not None and o.size is not None:
@@ -291,6 +291,13 @@ def build(model: EcxmlModel) -> EcxmlBuild:
     def snapped(o: Obj) -> _Box:
         return _Box([snap(i, o.lo[i]) for i in range(3)], [snap(i, o.hi[i]) for i in range(3)])
 
+    return snapped
+
+
+def build(model: EcxmlModel) -> EcxmlBuild:
+    objs = model.active_objects
+    notes: list[str] = list(model.notes)
+    snapped = _snap_function(model, objs)
     domain_box, domain_source = _domain(model.domain, objs, snapped)
     if domain_box is None:
         raise EcxmlError("the ECXML model holds no object with a size and no solution domain, so "
@@ -402,6 +409,12 @@ def build(model: EcxmlModel) -> EcxmlBuild:
     _open_walls(parts, devices, model.producer, notes, tol)
     _clip_to_domain(parts, domain_box, notes)
     _resolve_overlaps(parts, model.producer, notes)
+    for p in parts:
+        if p.shape is None:
+            records["not_built"].append({
+                "name": p.objects[0].props.get("heatsink") or p.objects[0].name, "kind": p.kind,
+                "path": list(p.objects[0].path), "material": p.material, "power_W": p.power,
+                "why": p.dropped or "it could not be built"})
     parts = [p for p in parts if p.shape is not None]
 
     materials_per_heatsink: dict[str, int] = {}
@@ -464,8 +477,24 @@ def build(model: EcxmlModel) -> EcxmlBuild:
         "monitor_points": records["monitor_points"],
         "inactive_objects": records["inactive"], "not_built": records["not_built"],
         "ignored_elements": model.ignored_elements,
+        # what the file states, and where it lands: in a meshed solid, applied by a source's box
+        # or rectangle, or left out with a part that is not meshed (listed in not_built)
         "total_power_W": sum(float(o.power or 0.0) for o in objs
-                             if o.kind not in ("assembly", "heatsink", "externalMcadFile")),
+                             if o.kind not in ("assembly", "heatsink")),
+        "power_W": {
+            "in_solid_regions": sum(float(p.power or 0.0) for p in parts),
+            "in_heat_sources": sum(float(s.get("power_W") or 0.0)
+                                   for k in ("volume_heat_sources", "surface_heat_sources")
+                                   for s in records[k])
+                               + sum(float(p.get("power_W") or 0.0) for p in records["patches"]
+                                     if p.get("role") == "heat_flux"),
+            "in_plates_not_meshed": sum(float(b.get("power_W") or 0.0)
+                                        for b in records["baffles"])
+                                    + sum(float(p.get("power_W") or 0.0)
+                                          for p in records["patches"] if p.get("role") == "wall"),
+            "in_parts_not_built": sum(float(r.get("power_W") or 0.0)
+                                      for r in records["not_built"]),
+        },
         "notes": notes,
     }
     if model.ignored_elements:
@@ -717,6 +746,7 @@ def _clip_to_domain(parts: list[_Part], domain: _Box, notes: list[str]) -> None:
         if not p.box.overlaps(domain, 0.0):
             notes.append(f"{p.objects[0].label}: outside the solution domain, so not meshed")
             p.shape = None
+            p.dropped = "it lies outside the solution domain"
             continue
         if dom is None:
             dom = _occ_box(domain)
@@ -750,6 +780,7 @@ def _resolve_overlaps(parts: list[_Part], producer: str, notes: list[str]) -> No
         if after <= 1e-9 * max(before, 1e-30) or not _solids(cut):
             notes.append(f"{p.objects[0].label}: wholly overwritten by later objects, so not meshed")
             p.shape = None
+            p.dropped = "objects that take precedence overwrite all of it (JEP181A 4.5.1)"
             continue
         if after < before * (1 - 1e-9):
             p.notes.append(f"{100 * (1 - after / before):.3g}% of it is overwritten by objects "
@@ -830,6 +861,79 @@ def _domain_patches(domain: _Box, objects: list[dict]) -> list[dict]:
                 "meaning": "a side of the solution domain; ECXML sets no condition per side (its "
                            "ambientConditions describe the air outside the domain)"})
     return out
+
+
+# ------------------------------------------------------------------------------ names only --
+def plan_region_names(model: EcxmlModel) -> tuple[str, ...]:
+    """The region names build() gives this model, worked out without building any geometry - for
+    the intake, which asks while a person waits and must not wait for booleans. The same parts, in
+    the same order, through the same namer; a part is left out where build() leaves it out by its
+    box: outside the domain, or inside the box of a solid block that takes precedence. Only the
+    geometry can settle two rarer cases, where the lists may differ: a part hidden by several
+    parts together (or inside a cylinder), and a sealed enclosure's own air ("air_2")."""
+    objs = model.active_objects
+    snapped = _snap_function(model, objs)
+    domain_box, _source = _domain(model.domain, objs, snapped)
+    if domain_box is None:
+        return ()
+    tol = max(SNAP_M, 1e-7 * math.dist(domain_box.lo, domain_box.hi))
+    planned: list[dict] = []
+    heatsinks: dict[tuple, list[Obj]] = {}
+    for o in objs:
+        if o.kind in ("assembly", "heatsink"):
+            continue
+        if o.props.get("heatsink"):
+            heatsinks.setdefault((o.path, o.material), []).append(o)
+            continue
+        if o.location is None or o.size is None:
+            continue
+        box = snapped(o)
+        if o.kind in ("solid3dBlock", "printedCircuitBoard", "twoResistorModel"):
+            planned.append({"raw": o.name, "kind": o.kind, "box": box, "order": o.order,
+                            "full_box": True})
+        elif o.kind in ("solidCylinder", "enclosure"):
+            planned.append({"raw": o.name, "kind": o.kind, "box": box, "order": o.order,
+                            "full_box": False})
+        elif o.kind == "solid2dBlock" and not _on_domain_face(o, box, domain_box, tol):
+            axis = axis_of_plane(o.plane)
+            thickness = box.hi[axis] - box.lo[axis]
+            span = min(box.hi[i] - box.lo[i] for i in range(3) if i != axis)
+            if SNAP_M < thickness <= span:
+                planned.append({"raw": o.name, "kind": o.kind, "box": box, "order": o.order,
+                                "full_box": True})
+    for (_path, material), group in heatsinks.items():
+        boxes = [snapped(o) for o in group]
+        planned.append({"raw": "", "kind": "heatsink", "material": material,
+                        "heatsink": str(group[0].props["heatsink"]),
+                        "box": _Box([min(b.lo[i] for b in boxes) for i in range(3)],
+                                    [max(b.hi[i] for b in boxes) for i in range(3)]),
+                        "order": max(o.order for o in group), "full_box": False})
+    icepak = model.producer.strip().lower() == "icepak"
+
+    def wins(a: dict, b: dict) -> bool:
+        if icepak and a["box"].inside(b["box"]) and not b["box"].inside(a["box"]):
+            return True
+        if icepak and b["box"].inside(a["box"]) and not a["box"].inside(b["box"]):
+            return False
+        return a["order"] > b["order"]
+
+    kept = [p for p in planned if p["box"].overlaps(domain_box, 0.0)
+            and not any(q is not p and q["full_box"] and p["box"].inside(q["box"]) and wins(q, p)
+                        for q in planned)]
+    per_heatsink: dict[str, int] = {}
+    for p in kept:
+        if p["kind"] == "heatsink":
+            per_heatsink[p["heatsink"]] = per_heatsink.get(p["heatsink"], 0) + 1
+    namer = _unique_namer()
+    names = [namer(FLUID_NAME)]
+    for p in kept:
+        if p["kind"] == "heatsink":
+            raw = p["heatsink"] if per_heatsink[p["heatsink"]] == 1 else \
+                f"{p['heatsink']}_{p.get('material') or 'part'}"
+        else:
+            raw = p["raw"]
+        names.append(namer(raw))
+    return tuple(names)
 
 
 # ------------------------------------------------------------------------------ STEP --------

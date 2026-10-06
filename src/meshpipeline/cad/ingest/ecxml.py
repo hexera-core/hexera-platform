@@ -39,8 +39,10 @@ SPEC = "JEDEC JEP181A (November 2023), ECXML schema Rev 2.0"
 MAX_ECXML_BYTES = 256 * 1024 * 1024
 #: Element nesting. Every assembly level adds two (assembly/geometry); 200 is ~95 levels deep.
 MAX_DEPTH = 200
-#: Elements in the whole file (each object is ~20 elements).
-MAX_ELEMENTS = 4_000_000
+#: Elements in the whole file (each object is ~20 elements). The tree is held in memory while it
+#: is read - about 150 bytes an element, so this caps the read near 150 MB however the file is
+#: built.
+MAX_ELEMENTS = 1_000_000
 #: Model objects (blocks, boards, fans...) - a whole server rack is a few thousand.
 MAX_OBJECTS = 50_000
 #: The text of one element: a name or a number, never megabytes.
@@ -100,7 +102,7 @@ class EcxmlError(ValueError):
 
 
 # ------------------------------------------------------------------------------ safe XML ----
-@dataclass
+@dataclass(slots=True)
 class Node:
     tag: str                                  # local name, any namespace prefix dropped
     line: int
@@ -506,6 +508,8 @@ class _Reader:
                     raise EcxmlError(self._where(path + (obj.name,), "a heatsink needs at least one "
                                                                      "solid3dBlock in <parts>"))
                 for b in blocks:
+                    if len(out) >= MAX_OBJECTS:
+                        raise EcxmlError(f"the model holds more than {MAX_OBJECTS:,} objects")
                     out.append(self.obj(b, path + (obj.name,), inactive_parent or not obj.active,
                                         heatsink=obj.name))
                 self._extensions(parts, ("solid3dBlock",))
